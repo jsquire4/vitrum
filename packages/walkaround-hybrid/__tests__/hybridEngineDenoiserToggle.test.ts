@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { DenoiserAdapterPass } from '../src/pipeline/passes/DenoiserAdapterPass.js';
-import type { Denoiser } from '../src/pipeline/denoisers/index.js';
+import {
+  DENOISER_READY_STATE,
+  type Denoiser,
+} from '../src/pipeline/denoisers/index.js';
 
 function makeStubDenoiser(id: Denoiser['id']): Denoiser {
   return {
     id,
     passLabels: [],
+    state: () => DENOISER_READY_STATE,
     initialize: async () => {},
     dispatch: () => null,
     resize: () => {},

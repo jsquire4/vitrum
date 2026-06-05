@@ -143,20 +143,13 @@ function packMeshAreaTriangle(
     return null;
   }
   const positions = primitive.positions;
-  const indices =
-    primitive.indices ??
-    (() => {
-      const generated = new Uint32Array(positions.length / 3);
-      for (let i = 0; i < generated.length; i += 1) generated[i] = i;
-      return generated;
-    })();
-  if (indices.length < 3 || positions.length < 9) {
+  if ((primitive.indices?.length ?? positions.length / 3) < 3 || positions.length < 9) {
     warnings.push(`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`);
     return null;
   }
-  const i0 = indices[0] ?? 0;
-  const i1 = indices[1] ?? 0;
-  const i2 = indices[2] ?? 0;
+  const i0 = primitive.indices?.[0] ?? 0;
+  const i1 = primitive.indices?.[1] ?? 1;
+  const i2 = primitive.indices?.[2] ?? 2;
   const fetchPos = (idx: number): [number, number, number] => [
     positions[idx * 3] ?? 0,
     positions[idx * 3 + 1] ?? 0,

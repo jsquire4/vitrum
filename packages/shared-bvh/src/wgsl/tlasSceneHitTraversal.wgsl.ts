@@ -110,26 +110,22 @@ fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
         if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
         let instIdx = tlasInstanceIndices[permIdx];
         let m = instIdx * 4u;
-        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal) || m + 3u >= arrayLength(&tlasInstanceLocalToWorld)) { continue; }
+        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal)) { continue; }
         let w2l0 = tlasInstanceWorldToLocal[m];
         let w2l1 = tlasInstanceWorldToLocal[m + 1u];
         let w2l2 = tlasInstanceWorldToLocal[m + 2u];
         let w2l3 = tlasInstanceWorldToLocal[m + 3u];
-        let l2w0 = tlasInstanceLocalToWorld[m];
-        let l2w1 = tlasInstanceLocalToWorld[m + 1u];
-        let l2w2 = tlasInstanceLocalToWorld[m + 2u];
-        let l2w3 = tlasInstanceLocalToWorld[m + 3u];
         var localRay: Ray;
         localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
         localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+        var localTMax = tMax;
+        if (tMax < INFINITY * 0.5) {
+          let localEnd = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMax);
+          localTMax = max(dot(localEnd - localRay.origin, localRay.direction), tMin);
+        }
         var localHit: SceneHit;
         let blasRoot = select(0u, tlasBlasRoots[instIdx], instIdx < arrayLength(&tlasBlasRoots));
-        _ = traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, false);
-        if (!localHit.didHit || localHit.dist <= tMin) { continue; }
-        let localHitPos = localRay.origin + localRay.direction * localHit.dist;
-        let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-        let worldDist = dot(worldHitPos - ray.origin, ray.direction);
-        if (worldDist > tMin && worldDist < tMax) {
+        if (traceMeshBvh(localRay, tMin, localTMax, false, &localHit, blasRoot, false)) {
           return true;
         }
       }

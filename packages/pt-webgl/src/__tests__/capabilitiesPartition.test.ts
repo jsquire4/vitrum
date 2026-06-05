@@ -8,14 +8,13 @@
  *      pt-webgl's `setScene` expands it into N baked THREE.Mesh instances
  *      (`expandInstancedMeshesInScene`) BEFORE the fork's geometry generator
  *      runs, so each instance renders at its real per-instance world
- *      transform. `analytic` is NOT supported (no THREE conversion path — the
- *      converter throws on it).
+ *      transform. `analytic` IS accepted by pt-webgl through a generated mesh
+ *      fallback before the THREE conversion path.
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
  *      this.capabilities)` BEFORE calling `vitrumSceneToThree`, so a now-
  *      supported `instanced-mesh` is KEPT (flows through to the converter)
- *      while an unsupported `analytic` is warn-skipped (NOT thrown / NOT
- *      silently flowed through) and only the supported subset reaches the
- *      converter.
+ *      and a now-supported `analytic` is converted to a MeshPrimitive fallback
+ *      that the converter can ingest.
  *
  * `vitrumSceneToThree` is mocked with a spy that records the scene it
  * receives so we can assert the converter only ever sees the supported
@@ -120,13 +119,16 @@ describe('pt-webgl capability/partition reconciliation', () => {
     warnSpy?.mockRestore();
   });
 
-  it('declares mesh / skinned-mesh / instanced-mesh and NOT analytic', async () => {
+  it('declares mesh / skinned-mesh / instanced-mesh and analytic fallback support', async () => {
     const engine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
     const kinds = engine.capabilities.supportedPrimitiveKinds!;
     expect(kinds.has('mesh')).toBe(true);
     expect(kinds.has('skinned-mesh')).toBe(true);
     expect(kinds.has('instanced-mesh')).toBe(true);
-    expect(kinds.has('analytic')).toBe(false);
+    expect(kinds.has('analytic')).toBe(true);
+    expect(engine.capabilities.supportedAnalyticShapes).toEqual(
+      new Set(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
+    );
   });
 
   it('keeps an instanced-mesh (now supported) flowing through to the converter, not warn-skipped', async () => {
@@ -148,23 +150,29 @@ describe('pt-webgl capability/partition reconciliation', () => {
     expect(last.primitives.some((p) => p.kind === 'instanced-mesh')).toBe(true);
   });
 
-  it('warn-skips an analytic primitive instead of throwing, and keeps supported nodes', async () => {
+  it('converts an analytic primitive to a generated mesh fallback before THREE conversion', async () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
 
-    // Behavior change: analytic was THROW (vitrumSceneToThree), now warn-skip.
     expect(() =>
       engine.setScene(sceneWith([meshPrimitive('mesh-a'), analyticPrimitive('sphere-a')])),
     ).not.toThrow();
 
-    // A warning was emitted naming the analytic primitive.
     const warned = warnSpy.mock.calls.flat().map(String);
-    expect(warned.some((m) => m.includes('sphere-a') && m.includes('not supported'))).toBe(true);
+    expect(warned.some((m) => m.includes('sphere-a') && m.includes('not supported'))).toBe(false);
 
-    // The converter only saw the supported mesh — analytic was filtered out
-    // BEFORE vitrumSceneToThree ran (so its throw never fired).
+    // The converter sees the authored mesh plus a generated MeshPrimitive for
+    // the analytic sphere. The authored scene is still cached by the engine for
+    // future params/shape patches; this is only the render-ingestion view.
     const last = seenScenes.at(-1)!;
-    expect(last.primitives.map((p) => String(p.id))).toEqual(['mesh-a']);
+    expect(last.primitives.map((p) => String(p.id))).toEqual(['mesh-a', 'sphere-a']);
     expect(last.primitives.some((p) => p.kind === 'analytic')).toBe(false);
+    const generated = last.primitives.find((p) => p.id === 'sphere-a');
+    expect(generated?.kind).toBe('mesh');
+    if (generated?.kind !== 'mesh') throw new Error('expected analytic fallback to be a mesh');
+    expect(generated.positions.length).toBeGreaterThan(0);
+    expect(generated.normals.length).toBe(generated.positions.length);
+    expect(generated.indices?.length).toBeGreaterThan(0);
+    expect(generated.material.baseColor).toEqual([1, 0, 0]);
   });
 });

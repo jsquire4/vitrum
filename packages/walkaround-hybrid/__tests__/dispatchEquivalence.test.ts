@@ -37,7 +37,6 @@ import { AtrousIndirectPass } from '../src/pipeline/passes/AtrousIndirectPass.js
 import { AtrousDenoiser } from '../src/pipeline/denoisers/atrous.js';
 import type { DenoiserDispatchContext } from '../src/pipeline/denoisers/index.js';
 import { composePassLabels } from '../src/pipeline/passes/passOrder.js';
-import { DENOISER_PASS_LABELS } from '../src/pipeline/denoisers/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import { RISPass } from '../src/pipeline/passes/RISPass.js';
 import { TemporalReservoirPass } from '../src/pipeline/passes/TemporalReservoirPass.js';
@@ -46,7 +45,11 @@ import { ShadePass } from '../src/pipeline/passes/ShadePass.js';
 import { GTAOPass } from '../src/pipeline/passes/GTAOPass.js';
 import { DenoiserAdapterPass } from '../src/pipeline/passes/DenoiserAdapterPass.js';
 import { CompositePass } from '../src/pipeline/passes/CompositePass.js';
-import type { Denoiser } from '../src/pipeline/denoisers/index.js';
+import {
+  DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
+  type Denoiser,
+} from '../src/pipeline/denoisers/index.js';
 import type { Pass, PassDispatchContext, PassFrameState } from '../src/pipeline/Pass.js';
 import type { PassLabel } from '../src/pipeline/timestampQueries.js';
 
@@ -423,6 +426,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     const denoiser = {
       id: 'atrous-variance',
       passLabels: DENOISER_PASS_LABELS['atrous-variance'],
+      state: () => DENOISER_READY_STATE,
     } as unknown as Denoiser;
 
     const reg = new PassRegistry();

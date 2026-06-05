@@ -5,10 +5,10 @@
  * Pins two invariants the 2026-05-28 reconciliation locked in:
  *   1. The declared `supported*Kinds` match what the engine genuinely
  *      RENDERS, not just what it ingests:
- *        - primitives: mesh / skinned-mesh / instanced-mesh (the
- *          vitrumSceneToThree BVH+DDGI path; instanced-mesh is genuine here
- *          via the TLAS per-instance traversal); NOT analytic (no THREE
- *          conversion path — the converter throws on it).
+ *        - primitives: mesh / skinned-mesh / instanced-mesh / analytic.
+ *          Instanced-mesh is genuine via the TLAS per-instance traversal;
+ *          analytic is accepted through a generated MeshPrimitive fallback
+ *          before the vitrumSceneToThree BVH+DDGI path.
  *        - emitters: directional / rect-area / disc-area / point / spot /
  *          mesh-area (rect/disc → ReSTIR-DI tris + DDGI fixtures; mesh-area →
  *          mesh emissive; point/spot → DDGI fixture lights; directional →
@@ -18,9 +18,9 @@
  *          (not warn-skipped) and reaches the DDGI sun path.
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
  *      this.capabilities)` BEFORE any vitrumSceneToThree conversion, so an
- *      unsupported node (`analytic` primitive) is warn-skipped (NOT thrown /
- *      NOT silently flowed through) and `_lastScene` holds only the supported
- *      subset, while a supported `directional` emitter is retained.
+ *      unsupported nodes are warn-skipped (NOT thrown / NOT silently flowed
+ *      through), while supported analytics stay in authored `_lastScene` and
+ *      appear as generated meshes in `_renderScene`.
  *
  * The engine is constructed directly (not via the factory, which bootstraps
  * with an empty scene) against a minimal duck-typed GPUDevice stub. Only the
@@ -151,14 +151,17 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     errorSpy?.mockRestore();
   });
 
-  it('declares mesh / skinned-mesh / instanced-mesh and NOT analytic', () => {
+  it('declares mesh / skinned-mesh / instanced-mesh and analytic fallback support', () => {
     const engine = new HybridEngine(makeOpts());
     try {
       const kinds = engine.capabilities.supportedPrimitiveKinds!;
       expect(kinds.has('mesh')).toBe(true);
       expect(kinds.has('skinned-mesh')).toBe(true);
       expect(kinds.has('instanced-mesh')).toBe(true);
-      expect(kinds.has('analytic')).toBe(false);
+      expect(kinds.has('analytic')).toBe(true);
+      expect(engine.capabilities.supportedAnalyticShapes).toEqual(
+        new Set(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
+      );
     } finally {
       engine.dispose();
     }
@@ -188,10 +191,19 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       // No skip-warning for the supported nodes.
       expect(warnSpy.mock.calls.flat().some((m) => String(m).includes('not supported'))).toBe(false);
 
-      // The stored scene retains the supported primitive + emitter.
-      const stored = (engine as unknown as { _lastScene: Scene })._lastScene;
+      // The stored authored scene retains the supported primitive + emitter,
+      // and the render-ingestion predicate treats an instanced-only core scene
+      // as a real triangle source for vitrumSceneToThree / TLAS init.
+      const internals = engine as unknown as {
+        _lastScene: Scene;
+        _renderScene: Scene;
+        _coreSceneSuppliesMeshes(): boolean;
+      };
+      const stored = internals._lastScene;
       expect(stored.primitives.map((p) => String(p.id))).toContain('inst-a');
       expect(stored.emitters.map((e) => String(e.id))).toContain('rect-a');
+      expect(internals._renderScene.primitives.map((p) => String(p.id))).toEqual(['inst-a']);
+      expect(internals._coreSceneSuppliesMeshes()).toBe(true);
     } finally {
       engine.dispose();
     }
@@ -220,24 +232,30 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it('warn-skips an analytic primitive instead of throwing, keeping supported nodes', () => {
+  it('keeps authored analytics and exposes generated mesh fallback to render ingestion', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = new HybridEngine(makeOpts());
     try {
-      // Behavior change: analytic was effectively a THROW (vitrumSceneToThree at
-      // BVH build); now it is warn-skipped at setScene before conversion.
       expect(() =>
         engine.setScene(sceneWith([meshPrimitive('mesh-a'), analyticPrimitive('sphere-a')])),
       ).not.toThrow();
 
       const warned = warnSpy.mock.calls.flat().map(String);
-      expect(warned.some((m) => m.includes('sphere-a') && m.includes('not supported'))).toBe(true);
+      expect(warned.some((m) => m.includes('sphere-a') && m.includes('not supported'))).toBe(false);
 
-      // The stored scene holds only the supported mesh — analytic dropped
-      // BEFORE the converter runs, so its throw never fires.
-      const stored = (engine as unknown as { _lastScene: Scene })._lastScene;
-      expect(stored.primitives.map((p) => String(p.id))).toEqual(['mesh-a']);
-      expect(stored.primitives.some((p) => p.kind === 'analytic')).toBe(false);
+      const internals = engine as unknown as { _lastScene: Scene; _renderScene: Scene };
+      expect(internals._lastScene.primitives.map((p) => p.kind)).toEqual(['mesh', 'analytic']);
+      expect(internals._lastScene.primitives.map((p) => String(p.id))).toEqual(['mesh-a', 'sphere-a']);
+
+      const render = internals._renderScene;
+      expect(render.primitives.map((p) => String(p.id))).toEqual(['mesh-a', 'sphere-a']);
+      expect(render.primitives.some((p) => p.kind === 'analytic')).toBe(false);
+      const generated = render.primitives.find((p) => p.id === 'sphere-a');
+      expect(generated?.kind).toBe('mesh');
+      if (generated?.kind !== 'mesh') throw new Error('expected analytic fallback to be a mesh');
+      expect(generated.positions.length).toBeGreaterThan(0);
+      expect(generated.normals.length).toBe(generated.positions.length);
+      expect(generated.material.baseColor).toEqual([1, 0, 0]);
     } finally {
       engine.dispose();
     }

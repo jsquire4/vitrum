@@ -76,6 +76,7 @@ describe('pt-webgl promise ledger compliance', () => {
     expect(sorted(caps.supportedEmitterKinds)).toEqual(sorted(expected.supportedEmitterKinds));
     expect(sorted(caps.supportedEnvironmentKinds ?? [])).toEqual(sorted(expected.supportedEnvironmentKinds));
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
+    expect(caps.supportDetails).toEqual(expected.supportDetails);
 
     expect(typeof engine.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engine.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);
@@ -89,4 +90,3 @@ describe('pt-webgl promise ledger compliance', () => {
     expect(typeof engine.debug === 'object').toBe(expected.methodPromises.debug);
   });
 });
-

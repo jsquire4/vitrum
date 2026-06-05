@@ -43,7 +43,10 @@ import {
   TemporalReservoirPass,
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
-import type { Denoiser } from '../src/pipeline/denoisers/index.js';
+import {
+  DENOISER_READY_STATE,
+  type Denoiser,
+} from '../src/pipeline/denoisers/index.js';
 
 const stubPipeline = {} as GPUComputePipeline;
 const stubRenderPipeline = {} as GPURenderPipeline;
@@ -54,6 +57,7 @@ const makeStubDenoiser = (id: string, labels: readonly string[]): Denoiser =>
   ({
     id: id as Denoiser['id'],
     passLabels: labels as Denoiser['passLabels'],
+    state: () => DENOISER_READY_STATE,
     initialize: async () => {},
     dispatch: () => null,
     resize: () => {},

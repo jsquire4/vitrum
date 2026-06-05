@@ -18,7 +18,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { asBackendTexture, asMat4, narrowToBackendTexture } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, asBackendTexture, asMat4, narrowToBackendTexture } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -398,6 +398,7 @@ class PTEngineWebGPU implements Engine {
       supportedPrimitiveKinds: new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
       supportedEnvironmentKinds: new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
       presentationMode: 'offscreen-texture',
+      supportDetails: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
       experimentalFeatures: new Set([
         'experimental-backend',
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
@@ -548,19 +549,27 @@ class PTEngineWebGPU implements Engine {
     current: number,
     target: number,
   ): void {
-    const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
-    const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
-    this.#emitFrameStats({
-      frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
-      spp,
-      ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
-    });
-    this.#emitProgress({
-      kind: 'pt-spp',
-      current,
-      target,
-      fraction: target > 0 ? Math.max(0, Math.min(1, current / target)) : 1,
-    });
+    const hasFrameSubs = this.#onFrameSubs.size > 0;
+    const hasProgressSubs = this.#onProgressSubs.size > 0;
+    if (!hasFrameSubs && !hasProgressSubs) return;
+
+    if (hasFrameSubs) {
+      const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
+      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+      this.#emitFrameStats({
+        frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
+        spp,
+        ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+      });
+    }
+    if (hasProgressSubs) {
+      this.#emitProgress({
+        kind: 'pt-spp',
+        current,
+        target,
+        fraction: target > 0 ? Math.max(0, Math.min(1, current / target)) : 1,
+      });
+    }
   }
 
   /**
@@ -751,18 +760,20 @@ class PTEngineWebGPU implements Engine {
     // a no-op + allocates nothing when the flag is off (default render untouched).
     let restirPtReady = false;
     if (this.#restirPtReuse) {
-      gpu.ensureReservoirBuffers(width, height);
-      gpu.ensureReservoirPipelines();
-      gpu.writeReservoirParams(width, height, this.#restirPtMClamp, this.#restirPtWCap);
-      gpu.buildReservoirBindGroups(this.#sceneBuffers);
-      restirPtReady =
-        gpu.rptProducerPipeline != null &&
-        gpu.rptTemporalPipeline != null &&
-        gpu.rptResolvePipeline != null &&
-        gpu.rptProducerGroup0 != null &&
-        gpu.pathTraceBindGroup1 != null &&
-        gpu.pathTraceBindGroup2 != null &&
-        gpu.pathTraceBindGroup3 != null;
+      const reservoirBuffersReady = gpu.ensureReservoirBuffers(width, height);
+      if (reservoirBuffersReady) {
+        gpu.ensureReservoirPipelines();
+        gpu.writeReservoirParams(width, height, this.#restirPtMClamp, this.#restirPtWCap);
+        gpu.buildReservoirBindGroups(this.#sceneBuffers);
+        restirPtReady =
+          gpu.rptProducerPipeline != null &&
+          gpu.rptTemporalPipeline != null &&
+          gpu.rptResolvePipeline != null &&
+          gpu.rptProducerGroup0 != null &&
+          gpu.pathTraceBindGroup1 != null &&
+          gpu.pathTraceBindGroup2 != null &&
+          gpu.pathTraceBindGroup3 != null;
+      }
     }
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });

@@ -15,8 +15,9 @@ import type * as THREE from 'three';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import {
   convertInstancedMesh,
-  convertMesh,
+  convertMeshToPrimitives,
   convertSkinnedMesh,
+  emissiveMaterialAreaEmitter,
   emissiveMeshAreaEmitter,
   stripEmissive,
 } from './mesh.js';
@@ -131,14 +132,23 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
         ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
          ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
       if (isBasicTransparent) return;
-      const prim = convertMesh(mesh);
-      const meshEmitter = emissiveMeshAreaEmitter(mesh);
-      if (meshEmitter != null) {
-        emitters.push(meshEmitter);
-        primitives.push(stripEmissive(prim));
-        return;
+      const splitMaterials = Array.isArray(mesh.material) && mesh.geometry.groups.length > 0
+        ? mesh.material
+        : null;
+      const meshPrimitives = convertMeshToPrimitives(mesh);
+      for (let primitiveIndex = 0; primitiveIndex < meshPrimitives.length; primitiveIndex += 1) {
+        const prim = meshPrimitives[primitiveIndex]!;
+        const sourceMaterial = splitMaterials != null
+          ? splitMaterials[mesh.geometry.groups[primitiveIndex]!.materialIndex ?? 0] ?? null
+          : rawMat ?? null;
+        const meshEmitter = emissiveMaterialAreaEmitter(sourceMaterial, prim.id);
+        if (meshEmitter != null) {
+          emitters.push(meshEmitter);
+          primitives.push(stripEmissive(prim));
+          continue;
+        }
+        primitives.push(prim);
       }
-      primitives.push(prim);
       return;
     }
 

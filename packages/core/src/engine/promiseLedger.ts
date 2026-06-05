@@ -1,7 +1,12 @@
 import type { AnalyticShape, ScenePrimitive } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
-import type { EngineCapabilities, FramePresentationMode, IncrementalPatchSupport } from './capabilities.js';
+import type {
+  BackendSupportDetails,
+  EngineCapabilities,
+  FramePresentationMode,
+  IncrementalPatchSupport,
+} from './capabilities.js';
 
 export type BackendId = 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu';
 
@@ -39,6 +44,7 @@ export interface BackendPromiseRecord {
   readonly supportedEnvironmentKinds: readonly SceneEnvironment['kind'][];
   readonly supportedAnalyticShapes: readonly AnalyticShape[];
   readonly presentationMode: FramePresentationMode;
+  readonly supportDetails: BackendSupportDetails;
   readonly methodPromises: BackendMethodPromises;
   readonly frameInputPromises: FrameInputPromises;
 }
@@ -69,6 +75,7 @@ type _LedgerCapabilitySlice = Pick<
   | 'supportsAuxBuffers'
   | 'accumulates'
   | 'presentationMode'
+  | 'supportDetails'
 >;
 // `U extends T` in the type parameter position emits TS2344 if U is not
 // assignable to T — unlike `declare const x: never` which is always valid.
@@ -134,6 +141,39 @@ const ALL_PATCHES_SUPPORTED: IncrementalPatchSupport = Object.freeze({
   topology: true,
 });
 
+const ALL_EMITTERS_NATIVE: BackendSupportDetails['emitters'] = Object.freeze({
+  directional: 'native',
+  'rect-area': 'native',
+  'disc-area': 'native',
+  point: 'native',
+  spot: 'native',
+  'mesh-area': 'native',
+});
+
+const NO_ANALYTIC_SHAPES: BackendSupportDetails['analyticShapes'] = Object.freeze({
+  sphere: 'unsupported',
+  box: 'unsupported',
+  capsule: 'unsupported',
+  cylinder: 'unsupported',
+  'h-channel-came': 'unsupported',
+});
+
+const PT_WEBGPU_ANALYTIC_SHAPES_NATIVE: BackendSupportDetails['analyticShapes'] = Object.freeze({
+  sphere: 'native',
+  box: 'native',
+  capsule: 'native',
+  cylinder: 'native',
+  'h-channel-came': 'native',
+});
+
+const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticShapes'] = Object.freeze({
+  sphere: 'fallback-generated-mesh',
+  box: 'fallback-generated-mesh',
+  capsule: 'fallback-generated-mesh',
+  cylinder: 'fallback-generated-mesh',
+  'h-channel-came': 'fallback-generated-mesh',
+});
+
 /**
  * Machine-checkable backend contract truth table.
  *
@@ -152,10 +192,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsAuxBuffers: true,
     accumulates: false,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh; analytic
-    // has no THREE-conversion path (partitionSceneBySupport warn-skips it).
+    // primitives are accepted in the authored scene and converted to generated
+    // MeshPrimitive fallbacks before the THREE/BVH/GI ingestion path consumes
+    // them.
     // instanced-mesh IS genuine here — walkaround renders instances via the
     // TLAS per-instance traversal path.
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
     // mesh emissive material; point/spot → DDGI fixture lights. Spots carry
     // real cone data (spotAxis + cosInner/cosOuter) and evalPointLight in the
@@ -169,8 +211,35 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // so there is no DI double-count.
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
-    supportedAnalyticShapes: [],
+    supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'swapchain-required',
+    supportDetails: {
+      primitives: {
+        mesh: 'native',
+        'skinned-mesh': 'native',
+        'instanced-mesh': 'native',
+        analytic: 'fallback-generated-mesh',
+      },
+      emitters: ALL_EMITTERS_NATIVE,
+      environments: {
+        none: 'native',
+        hdri: 'approximate',
+        'procedural-sky': 'unsupported',
+      },
+      analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
+      mutations: {
+        transform: 'native',
+        positions: 'native',
+        material: 'native',
+        emitter: 'native',
+        topology: 'fallback-rebuild',
+        addPrimitive: 'fallback-rebuild',
+        removePrimitive: 'fallback-rebuild',
+        environment: 'approximate',
+        resize: 'native',
+        lighting: 'native',
+      },
+    },
     methodPromises: {
       updatePrimitive: true,
       updateEmitter: true,
@@ -202,8 +271,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsAuxBuffers: false,
     accumulates: true,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh;
-    // analytic has no THREE-conversion path (partitionSceneBySupport
-    // warn-skips it).
+    // analytic is accepted by pt-webgl through a generated MeshPrimitive
+    // fallback immediately before THREE conversion. The authored analytic
+    // scene remains cached so params/shape patches can full-rebuild.
     // instanced-mesh IS supported — vitrumSceneToThree builds a single
     // THREE.InstancedMesh (shared with walkaround's TLAS path), and pt-webgl's
     // setScene expands it into N baked THREE.Mesh instances
@@ -211,11 +281,44 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // runs, so each instance renders at its real per-instance world transform.
     // (The fork's convertToStaticGeometry bakes only mesh.matrixWorld and
     // ignores instanceMatrix, hence the pt-webgl-side pre-bake.)
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
-    supportedAnalyticShapes: [],
+    supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'offscreen-texture',
+    supportDetails: {
+      primitives: {
+        mesh: 'native',
+        'skinned-mesh': 'native',
+        'instanced-mesh': 'native',
+        analytic: 'fallback-generated-mesh',
+      },
+      emitters: ALL_EMITTERS_NATIVE,
+      environments: {
+        none: 'native',
+        hdri: 'native',
+        'procedural-sky': 'unsupported',
+      },
+      analyticShapes: {
+        sphere: 'fallback-generated-mesh',
+        box: 'fallback-generated-mesh',
+        capsule: 'fallback-generated-mesh',
+        cylinder: 'fallback-generated-mesh',
+        'h-channel-came': 'fallback-generated-mesh',
+      },
+      mutations: {
+        transform: 'native',
+        positions: 'native',
+        material: 'native',
+        emitter: 'native',
+        topology: 'native',
+        addPrimitive: 'fallback-rebuild',
+        removePrimitive: 'fallback-rebuild',
+        environment: 'native',
+        resize: 'unsupported',
+        lighting: 'unsupported',
+      },
+    },
     methodPromises: {
       updatePrimitive: true,
       updateEmitter: true,
@@ -245,6 +348,33 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'offscreen-texture',
+    supportDetails: {
+      primitives: {
+        mesh: 'native',
+        'skinned-mesh': 'native',
+        'instanced-mesh': 'native',
+        analytic: 'native',
+      },
+      emitters: ALL_EMITTERS_NATIVE,
+      environments: {
+        none: 'native',
+        hdri: 'native',
+        'procedural-sky': 'native',
+      },
+      analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
+      mutations: {
+        transform: 'native',
+        positions: 'native',
+        material: 'native',
+        emitter: 'native',
+        topology: 'native',
+        addPrimitive: 'fallback-rebuild',
+        removePrimitive: 'fallback-rebuild',
+        environment: 'native',
+        resize: 'unsupported',
+        lighting: 'unsupported',
+      },
+    },
     methodPromises: {
       updatePrimitive: true,
       updateEmitter: true,
@@ -264,4 +394,3 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     },
   },
 };
-

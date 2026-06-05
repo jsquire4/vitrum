@@ -41,13 +41,18 @@ fn environmentDimensions() -> vec2u {
   return vec2u(params.environmentMapWidth, params.environmentMapHeight);
 }
 
-fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
+struct EnvironmentLookup {
+  color: vec3f,
+  pdf: f32,
+};
+
+fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {
-    return sampleSky(dir);
+    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
   }
   let dims = environmentDimensions();
   if (dims.x == 0u || dims.y == 0u) {
-    return sampleSky(dir);
+    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
   }
   let phi = atan2(dir.z, dir.x);
   let theta = acos(clamp(dir.y, -1.0, 1.0));
@@ -57,31 +62,21 @@ fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
   let y = min(u32(floor(v * f32(dims.y))), dims.y - 1u);
   let idx = y * dims.x + x;
   if (idx >= arrayLength(&environmentMapTexels)) {
-    return sampleSky(dir);
+    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
   }
   let texel = environmentMapTexels[idx];
-  return texel.rgb * max(params.environmentSun.w, 0.0);
+  return EnvironmentLookup(
+    texel.rgb * max(params.environmentSun.w, 0.0),
+    max(texel.w, 1e-8),
+  );
+}
+
+fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
+  return environmentLookup(dir).color;
 }
 
 fn environmentPdf(dir: vec3f) -> f32 {
-  if (!hasEnvironmentMap()) {
-    return 1.0 / (4.0 * PI);
-  }
-  let dims = environmentDimensions();
-  if (dims.x == 0u || dims.y == 0u) {
-    return 1.0 / (4.0 * PI);
-  }
-  let phi = atan2(dir.z, dir.x);
-  let theta = acos(clamp(dir.y, -1.0, 1.0));
-  let u = fract(phi * INV_2PI + 0.5);
-  let v = clamp(theta * INV_PI, 0.0, 0.999999);
-  let x = min(u32(floor(u * f32(dims.x))), dims.x - 1u);
-  let y = min(u32(floor(v * f32(dims.y))), dims.y - 1u);
-  let idx = y * dims.x + x;
-  if (idx >= arrayLength(&environmentMapTexels)) {
-    return 1.0 / (4.0 * PI);
-  }
-  return max(environmentMapTexels[idx].w, 1e-8);
+  return environmentLookup(dir).pdf;
 }
 
 // Environment-map importance sampler. Returns a BsdfSample where
@@ -266,10 +261,9 @@ fn bsdfEnvironmentConnectionContribution(
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
   let shadowRay = Ray(hitPos + normal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
-  let envPdf = environmentPdf(wi);
-  let envColor = sampleEnvironmentColor(wi);
-  let misWeight = powerHeuristic(bsdfPdf, envPdf);
+  let env = environmentLookup(wi);
+  let misWeight = powerHeuristic(bsdfPdf, env.pdf);
   let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-  return throughputAtVertex * brdf * nDotL * envColor * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * env.color * misWeight / max(bsdfPdf, 1e-6);
 }
 `;

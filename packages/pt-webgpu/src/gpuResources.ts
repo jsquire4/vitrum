@@ -528,10 +528,10 @@ export class GpuResources {
    * (Re)allocate the ReSTIR-PT reservoir ping-pong buffers (`Cur` / `Prev`,
    * 144 B/px), the `rpt_result` buffer (16 B/px), and the RestirPtParams UBO to
    * the requested dims. No-op (returns `false`) when reuse is OFF. Returns `true`
-   * when the buffers were (re)created — the caller must then rebuild the reuse
-   * bind groups (invalidateBindGroups handles that). Refuses to grow past the
-   * per-buffer safety ceiling (returns `false`, leaving any prior buffers as-is);
-   * the caller skips the reuse passes that frame.
+   * when buffers for the requested frame dimensions are available, whether they
+   * were freshly created or already cached. Refuses to grow past the per-buffer
+   * safety ceiling (returns `false`, leaving any prior buffers as-is); the caller
+   * skips the reuse passes that frame instead of dispatching against stale sizes.
    *
    * Both reservoir buffers are zero-cleared on (re)allocation so the FIRST frame's
    * temporal pass reads an empty (M=0) history rather than garbage.
@@ -555,7 +555,7 @@ export class GpuResources {
       this.rptReservoirCur != null &&
       this.rptReservoirByteSize === reservoirBytes &&
       this.rptResultByteSize === resultBytes;
-    if (ready) return false;
+    if (ready) return true;
 
     this.rptReservoirCur?.destroy();
     this.rptReservoirPrev?.destroy();

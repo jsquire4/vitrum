@@ -7,6 +7,7 @@ const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      '@vitrum/core': path.join(repoRoot, '../core/src/index.ts'),
       '@vitrum/stained-glass-extensions': path.join(
         repoRoot,
         '../stained-glass-extensions/src/index.ts',

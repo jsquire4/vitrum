@@ -21,9 +21,17 @@ import type {
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
-import { asBackendTexture, patchPrimitiveInScene, patchEmitterInScene, partitionSceneBySupport } from '@vitrum/core';
+import {
+  BACKEND_PROMISE_LEDGER,
+  analyticPrimitiveToMesh,
+  asBackendTexture,
+  patchPrimitiveInScene,
+  patchEmitterInScene,
+  partitionSceneBySupport,
+} from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type {
+  AnalyticShape,
   Scene,
   ScenePrimitive,
   SceneEmitter,
@@ -164,6 +172,16 @@ export interface PTEngineWebGL2Telemetry {
 export type PTEngineWebGL2FrameOutput = FrameOutput & {
   readonly telemetry?: PTEngineWebGL2Telemetry | undefined;
 };
+
+function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
+  let changed = false;
+  const primitives = scene.primitives.map((primitive) => {
+    if (primitive.kind !== 'analytic') return primitive;
+    changed = true;
+    return analyticPrimitiveToMesh(primitive);
+  });
+  return changed ? { ...scene, primitives } : scene;
+}
 
 interface DeviceLimits {
   readonly maxTextureSize: number;
@@ -508,7 +526,8 @@ export class PTEngineWebGL2 implements Engine {
   #vitrumScene: Scene | null = null;
   #lastTlasAudit: PtWebglTlasAudit | null = null;
   #threeSceneRoot: ThreeScene | null = null;
-  #cameraSignature = '';
+  #hasCameraSignature = false;
+  #cameraSignatureValues = new Float64Array(38);
   #lastRenderWidth = 0;
   #lastRenderHeight = 0;
   #contextLostHandler: ((ev: Event) => void) | null = null;
@@ -762,11 +781,12 @@ export class PTEngineWebGL2 implements Engine {
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      supportedAnalyticShapes: new Set(),
+      supportedAnalyticShapes: new Set<AnalyticShape>(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
       // vitrumSceneToThree (the THREE-conversion ingestion path) handles
-      // mesh / skinned-mesh / instanced-mesh and throws on `analytic` (no
-      // THREE conversion path) — so `analytic` stays OUT; partitionSceneBySupport
-      // warn-skips it at setScene before the converter can throw.
+      // mesh / skinned-mesh / instanced-mesh. Analytic primitives are accepted
+      // by pt-webgl as generated mesh fallbacks before the THREE conversion;
+      // the authored analytic scene remains cached so params/shape patches can
+      // still rebuild from the original primitive contract.
       //
       // instanced-mesh IS supported: vitrumSceneToThree builds a single
       // THREE.InstancedMesh (shared with walkaround's TLAS path), and
@@ -776,7 +796,7 @@ export class PTEngineWebGL2 implements Engine {
       // per-instance world transforms (the fork's convertToStaticGeometry
       // bakes only mesh.matrixWorld and ignores instanceMatrix, which is why
       // pt-webgl pre-bakes the per-instance matrices into separate meshes).
-      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh']),
+      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic']),
       supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
         'rect-area',
@@ -787,6 +807,7 @@ export class PTEngineWebGL2 implements Engine {
       ]),
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
       presentationMode: 'offscreen-texture',
+      supportDetails: BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails,
       ...(experimental.size > 0 ? { experimentalFeatures: experimental } : {}),
       causticStrategy: this.#causticStrategy,
     };
@@ -862,10 +883,10 @@ export class PTEngineWebGL2 implements Engine {
       throw new Error('setScene: engine is disposed');
     }
     // Capability filter (warn + skip) — consume this engine's OWN declared
-    // support sets to drop kinds it cannot ingest (e.g. `analytic`, whose
-    // THREE-conversion path does not exist) BEFORE `vitrumSceneToThree` runs.
-    // Without this, an analytic primitive would reach the converter and throw;
-    // the warn-skip model matches pt-webgpu's `buildPackedScene` behaviour.
+    // support sets before the render-scene conversion. `analytic` is supported
+    // here via generated mesh fallback, so the authored scene stays intact for
+    // later updatePrimitive(params) rebuilds while the THREE/fork path receives
+    // a mesh-only scene it can ingest.
     const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
     for (const warning of warnings) {
       console.warn(`[vitrum/pt-webgl] ${warning}`);
@@ -877,12 +898,13 @@ export class PTEngineWebGL2 implements Engine {
     // cached denoised image is also stale. Drop it.
     this.#oidnDispatcher?.invalidate();
     this.#vitrumScene = scene;
-    this.#lastTlasAudit = auditPtWebglSceneForTlas(scene);
+    const renderScene = sceneWithAnalyticMeshFallback(scene);
+    this.#lastTlasAudit = auditPtWebglSceneForTlas(renderScene);
     if (this.#lastTlasAudit.needsTlas) {
       console.warn(`[vitrum/pt-webgl] ${this.#lastTlasAudit.detail}`);
     }
-    this.#cameraSignature = '';
-    const threeScene = vitrumSceneToThree(scene);
+    this.#hasCameraSignature = false;
+    const threeScene = vitrumSceneToThree(renderScene);
     // pt-webgl-side instanced-mesh expansion. `vitrumSceneToThree` (shared
     // with walkaround, which traverses InstancedMesh per-instance transforms
     // directly in its TLAS path) builds a single THREE.InstancedMesh per
@@ -1002,8 +1024,9 @@ export class PTEngineWebGL2 implements Engine {
    *   • Duplicate `id` throws BEFORE any mutation — the dup check runs against
    *     the live `#vitrumScene`, and `nextScene` is only built (and `setScene`
    *     only called) once it passes, so the scene is unchanged on throw.
-   *   • Unsupported primitive kinds / analytic shapes are warn-skipped by the
-   *     `partitionSceneBySupport` filter inside `setScene` (they do not throw).
+   *   • Unsupported primitive kinds (or future analytic shapes outside the
+   *     capability set) are warn-skipped by the `partitionSceneBySupport` filter
+   *     inside `setScene` (they do not throw).
    *   • Accumulation resets — `setScene`'s `tracer.setScene` clears the fork
    *     accumulator and `#oidnDispatcher.invalidate()` drops the stale denoise.
    */
@@ -1115,16 +1138,48 @@ export class PTEngineWebGL2 implements Engine {
     this.setScene(next);
   }
 
-  #makeCameraSignature(input: FrameInput): string {
+  #cameraInputChanged(input: FrameInput): boolean {
     const viewport = input.viewport;
-    return [
-      ...input.viewMatrix,
-      ...input.projMatrix,
-      ...input.cameraPosition,
-      viewport.width,
-      viewport.height,
-      viewport.devicePixelRatio,
-    ].join(',');
+    const values = this.#cameraSignatureValues;
+    let changed = !this.#hasCameraSignature;
+    let offset = 0;
+    for (let i = 0; i < 16; i += 1, offset += 1) {
+      const v = input.viewMatrix[i] ?? 0;
+      if (values[offset] !== v) {
+        values[offset] = v;
+        changed = true;
+      }
+    }
+    for (let i = 0; i < 16; i += 1, offset += 1) {
+      const v = input.projMatrix[i] ?? 0;
+      if (values[offset] !== v) {
+        values[offset] = v;
+        changed = true;
+      }
+    }
+    for (let i = 0; i < 3; i += 1, offset += 1) {
+      const v = input.cameraPosition[i] ?? 0;
+      if (values[offset] !== v) {
+        values[offset] = v;
+        changed = true;
+      }
+    }
+    if (values[offset] !== viewport.width) {
+      values[offset] = viewport.width;
+      changed = true;
+    }
+    offset += 1;
+    if (values[offset] !== viewport.height) {
+      values[offset] = viewport.height;
+      changed = true;
+    }
+    offset += 1;
+    if (values[offset] !== viewport.devicePixelRatio) {
+      values[offset] = viewport.devicePixelRatio;
+      changed = true;
+    }
+    this.#hasCameraSignature = true;
+    return changed;
   }
 
   /** Assemble the per-frame telemetry record from the just-completed sample
@@ -1232,11 +1287,9 @@ export class PTEngineWebGL2 implements Engine {
       };
     }
 
-    const cameraSignature = this.#makeCameraSignature(input);
-    if (cameraSignature !== this.#cameraSignature) {
+    if (this.#cameraInputChanged(input)) {
       applyFrameToPerspectiveCamera(this.#camera, input);
       (this.#pathTracer as unknown as WebGLPathTracerCompat).setCamera(this.#camera);
-      this.#cameraSignature = cameraSignature;
       this.#oidnDispatcher?.invalidate();
     }
 

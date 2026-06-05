@@ -28,6 +28,7 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(sorted(caps.supportedEmitterKinds)).toEqual(sorted(expected.supportedEmitterKinds));
     expect(sorted(caps.supportedEnvironmentKinds ?? [])).toEqual(sorted(expected.supportedEnvironmentKinds));
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
+    expect(caps.supportDetails).toEqual(expected.supportDetails);
 
     expect(caps.supportsAddRemovePrimitive).toBe(expected.supportsAddRemovePrimitive);
 
@@ -43,4 +44,3 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(typeof engine.debug === 'object').toBe(expected.methodPromises.debug);
   });
 });
-

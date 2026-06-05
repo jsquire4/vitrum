@@ -45,6 +45,41 @@ describe('backend promise ledger', () => {
     expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportsAddRemovePrimitive).toBe(true);
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportsAddRemovePrimitive).toBe(true);
   });
+
+  it('keeps supportDetails aligned with coarse supported-kind sets', () => {
+    for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
+      const primitiveKinds = new Set<string>(rec.supportedPrimitiveKinds);
+      for (const [kind, mode] of Object.entries(rec.supportDetails.primitives)) {
+        expect(primitiveKinds.has(kind)).toBe(mode !== 'unsupported');
+      }
+
+      const emitterKinds = new Set<string>(rec.supportedEmitterKinds);
+      for (const [kind, mode] of Object.entries(rec.supportDetails.emitters)) {
+        expect(emitterKinds.has(kind)).toBe(mode !== 'unsupported');
+      }
+
+      const environmentKinds = new Set<string>(rec.supportedEnvironmentKinds);
+      for (const [kind, mode] of Object.entries(rec.supportDetails.environments)) {
+        expect(environmentKinds.has(kind)).toBe(mode !== 'unsupported');
+      }
+
+      const analyticShapes = new Set<string>(rec.supportedAnalyticShapes);
+      for (const [shape, mode] of Object.entries(rec.supportDetails.analyticShapes)) {
+        expect(analyticShapes.has(shape)).toBe(mode !== 'unsupported');
+      }
+    }
+  });
+
+  it('keeps supportDetails mutation rows aligned with promised optional methods', () => {
+    for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.supportDetails.mutations.emitter !== 'unsupported').toBe(rec.methodPromises.updateEmitter);
+      expect(rec.supportDetails.mutations.environment !== 'unsupported').toBe(rec.methodPromises.updateEnvironment);
+      expect(rec.supportDetails.mutations.addPrimitive !== 'unsupported').toBe(rec.methodPromises.addPrimitive);
+      expect(rec.supportDetails.mutations.removePrimitive !== 'unsupported').toBe(rec.methodPromises.removePrimitive);
+      expect(rec.supportDetails.mutations.resize !== 'unsupported').toBe(rec.methodPromises.setSize);
+      expect(rec.supportDetails.mutations.lighting !== 'unsupported').toBe(rec.methodPromises.updateLighting);
+    }
+  });
 });
 
 describe('mat4 branding', () => {
@@ -71,4 +106,3 @@ describe('backend texture branding', () => {
     expect(narrowToBackendTextureFormat<'webgpu', string>(branded)).toBe(f);
   });
 });
-

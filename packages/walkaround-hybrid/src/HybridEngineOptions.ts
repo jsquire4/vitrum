@@ -15,6 +15,7 @@ import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { CascadeDim } from '@vitrum/walkaround-rc';
 import type { Tunables } from './HybridEngineTuning.js';
+import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
 
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
@@ -234,12 +235,18 @@ export interface HybridEngineOptions extends EngineOptions {
    *   - `'walkaround-hybrid'.bvhMode` (PR-2) — `'merged'` | `'tlas'` to
    *     force CPU pack mode. When omitted, multi-mesh / instanced vitrum
    *     scenes default to TLAS pack (GPU traversal still merged until PR-3).
+   *   - `'walkaround-hybrid'.resolveEnvironmentMap` — optional host callback
+   *     for resolving opaque HDRI handles into walkaround-hybrid's diffuse
+   *     sky scalars. The core `EnvironmentMapRef` remains opaque; this hook is
+   *     the typed escape hatch for hosts that already have a CPU-side average /
+   *     precomputed probe for that handle.
    */
   readonly extensions?: Readonly<Record<string, unknown>> & {
     readonly 'walkaround-hybrid'?: {
       readonly oidnModelUrl?: string;
       readonly oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
       readonly bvhMode?: 'merged' | 'tlas';
+      readonly resolveEnvironmentMap?: HybridEnvironmentMapResolver;
     };
   };
 

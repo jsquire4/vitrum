@@ -37,6 +37,7 @@
 
 import * as THREE from 'three';
 import type {
+  AnalyticShape,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -46,7 +47,7 @@ import type {
   ProgressStats,
 } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
-import { partitionSceneBySupport } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
 import type { BackendTexture } from '@vitrum/core';
@@ -108,6 +109,20 @@ import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
+import {
+  resolveHybridEnvironment,
+  type HybridEnvironmentResolverExtensions,
+} from './environment/resolveHybridEnvironment.js';
+
+function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
+  let changed = false;
+  const primitives = scene.primitives.map((primitive) => {
+    if (primitive.kind !== 'analytic') return primitive;
+    changed = true;
+    return analyticPrimitiveToMesh(primitive);
+  });
+  return changed ? { ...scene, primitives } : scene;
+}
 
 // Re-export the option / lighting interfaces from their dedicated module so
 // the package's public surface (`./HybridEngine.js` import path) stays
@@ -502,8 +517,8 @@ export class HybridEngine implements Engine {
   /** Fires the one-time `FrameInput.viewport`-ignored dev warning at most once
    *  per engine instance (see {@link renderFrame}). */
   private _viewportMismatchWarned = false;
-  /** Fires the one-time "non-native environment kind" warning at most once per
-   *  engine instance (see {@link _skyScalarsFromEnvironment}). */
+  /** Fires environment-resolution warnings at most once per engine instance
+   *  (see {@link _skyScalarsFromEnvironment}). */
   private _proceduralSkyWarned = false;
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
@@ -519,8 +534,12 @@ export class HybridEngine implements Engine {
   /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
    *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
   private readonly _threeScene:           THREE.Scene | null;
+  /** Optional host environment resolver extension. Used only by
+   *  updateEnvironment() to reduce opaque HDRI handles into the diffuse
+   *  sky-dome scalars this backend consumes. */
+  private readonly _environmentResolverExtensions: HybridEnvironmentResolverExtensions | null;
   /** Lazily-synthesized THREE.Scene root from the most recent vitrum
-   *  setScene() — caches `vitrumSceneToThree(_lastScene)` so DDGI updateFrame
+   *  setScene() — caches `vitrumSceneToThree(_renderScene)` so DDGI updateFrame
    *  doesn't re-traverse on every frame. Reset on every setScene(). */
   private _synthesizedThreeScene:         THREE.Scene | null = null;
   private readonly _isSceneReady:         () => boolean;
@@ -676,9 +695,15 @@ export class HybridEngine implements Engine {
   private _bvhBuffers:  SceneBVHBuffers | null       = null;
 
   // ── Scene (from @vitrum/core contract) ────────────────────────────────
-  /** Last scene passed via `setScene()`. When it contains `mesh` primitives,
-   *  ReSTIR BVH + DDGI probe walks use `vitrumSceneToThree(this._lastScene)`. */
+  /** Last authored scene accepted via `setScene()`. Incremental updates patch
+   *  this snapshot so analytic primitives retain their `shape` / `params`
+   *  semantics even when the renderer consumes generated mesh fallbacks. */
   private _lastScene: Scene | null = null;
+
+  /** Render-ingestion view derived from {@link _lastScene}: analytic primitives
+   *  become deterministic MeshPrimitive fallbacks with the same id/material/
+   *  transform. BVH, DDGI, ReSTIR, RC, and THREE conversion consume this view. */
+  private _renderScene: Scene | null = null;
 
   /** Last-frame camera (copied) for debug click-to-pick (`pickPrimitive`, T3.G).
    *  Captured each `renderFrame`; null until the first frame. */
@@ -783,6 +808,7 @@ export class HybridEngine implements Engine {
       ? new GpuSkinningSubsystem(opts.device, true)
       : null;
     this._threeScene            = opts.threeScene ?? null;
+    this._environmentResolverExtensions = opts.extensions ?? null;
     this._primaryLightDir       = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
@@ -869,12 +895,12 @@ export class HybridEngine implements Engine {
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._cfg.maxBounces,
-      supportedAnalyticShapes:   new Set(),
-      // BVH + DDGI ingest via vitrumSceneToThree, which handles
-      // mesh / skinned-mesh / instanced-mesh and throws on anything else
-      // (analytic). `analytic` stays OUT — partitionSceneBySupport drops it
-      // with a warning at setScene before the converter can throw.
-      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh']),
+      supportedAnalyticShapes:   new Set<AnalyticShape>(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
+      // BVH + DDGI ingest via a render-scene view. Mesh/skinned/instanced-mesh
+      // flow through directly; analytic primitives are accepted in the authored
+      // scene and converted to deterministic MeshPrimitive fallbacks before
+      // vitrumSceneToThree / ReSTIR / DDGI / RC consume them.
+      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic']),
       // Emitter kinds that genuinely reach a renderable state:
       //   - rect-area / disc-area → THREE.RectAreaLight, harvested as ReSTIR-DI
       //     direct emitter tris (collectRectAreaLightEmitterTris) AND projected
@@ -907,6 +933,7 @@ export class HybridEngine implements Engine {
       ]),
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
       presentationMode:          'swapchain-required',
+      supportDetails:            BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails,
       experimentalFeatures:      new Set(['svgf-real-conservative-objid']),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround
@@ -964,26 +991,24 @@ export class HybridEngine implements Engine {
    * in sync for the non-mesh case and for auxiliary Object3D state you have not
    * serialized into the core `Scene`.
    *
-   * **Capability filter:** the scene is first partitioned against this engine's
-   * declared `supported*Kinds` (warn + skip). Unsupported kinds — notably
-   * `analytic`, which has no THREE-conversion path — are dropped with a
-   * `console.warn` before conversion, so they never reach (and throw from)
-   * `vitrumSceneToThree`.
+   * **Capability filter + analytic fallback:** the scene is first partitioned
+   * against this engine's declared `supported*Kinds` (warn + skip). Supported
+   * analytic primitives stay in the authored `_lastScene`, then `_renderScene`
+   * replaces them with generated MeshPrimitive fallbacks before the THREE/BVH/GI
+   * ingestion path runs.
    *
    * @param inputScene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
    */
   setScene(inputScene: Scene): void {
-    // Capability filter (warn + skip) — consume this engine's OWN declared
-    // support sets to drop kinds it cannot ingest (e.g. `analytic`, whose
-    // THREE-conversion path does not exist) BEFORE `vitrumSceneToThree` runs
-    // in `_ensureThreeSceneRoot` / the lifecycle BVH-build phase. Without this,
-    // an analytic primitive would reach the converter and throw; the warn-skip
-    // model matches pt-webgpu's `buildPackedScene` behaviour.
+    // Capability filter (warn + skip) consumes this engine's OWN declared
+    // support sets. The supported authored scene remains the mutation source of
+    // truth; `_renderScene` is the mesh-like ingestion view.
     const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
     for (const warning of warnings) {
       console.warn(`[vitrum/walkaround-hybrid] ${warning}`);
     }
     this._lastScene = scene;
+    this._renderScene = sceneWithAnalyticMeshFallback(scene);
     // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
     // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
     if (this._synthesizedThreeScene != null) {
@@ -1010,8 +1035,8 @@ export class HybridEngine implements Engine {
   private _ensureThreeSceneRoot(): THREE.Scene | null {
     if (this._threeScene != null) return this._threeScene;
     if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
-    if (this._lastScene != null && this._coreSceneSuppliesMeshes()) {
-      this._synthesizedThreeScene = vitrumSceneToThree(this._lastScene);
+    if (this._renderScene != null && this._coreSceneSuppliesMeshes()) {
+      this._synthesizedThreeScene = vitrumSceneToThree(this._renderScene);
       return this._synthesizedThreeScene;
     }
     return null;
@@ -1128,6 +1153,7 @@ export class HybridEngine implements Engine {
   private _applyUpdateResult(result: PrimitiveUpdateResult): void {
     this._bvhBuffers = result.bvhBuffers;
     this._lastScene = result.updatedScene;
+    this._renderScene = sceneWithAnalyticMeshFallback(result.updatedScene);
     if (result.applySubsystems !== false) {
       this._applyPrimitiveUpdateSubsystems(result);
     }
@@ -1199,7 +1225,7 @@ export class HybridEngine implements Engine {
       ddgi: this._ddgi,
       rc: this._rc,
       bvhBuffers: this._bvhBuffers,
-      lastScene: this._lastScene,
+      lastScene: this._renderScene,
       syncDdgi: true,
       allowRcSceneRebuild: true,
       ensureThreeSceneRoot: () => this._ensureThreeSceneRoot(),
@@ -1214,6 +1240,9 @@ export class HybridEngine implements Engine {
         'HybridEngine.updatePrimitive: no scene set. Call setScene(scene) first.',
       );
     }
+    if (this._renderScene == null) {
+      this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
+    }
     const ctx: PrimitiveUpdateContext = {
       bvhBuffers:            this._bvhBuffers,
       threeRoot:             this._ensureThreeSceneRoot(),
@@ -1222,6 +1251,7 @@ export class HybridEngine implements Engine {
       primaryLightDir:       this._primaryLightDir,
       primaryLightIntensity: this._primaryLightIntensity,
       lastScene:             this._lastScene,
+      renderScene:           this._renderScene,
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {
       return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };
@@ -1256,8 +1286,9 @@ export class HybridEngine implements Engine {
    *   • Duplicate `id` throws BEFORE any mutation — the dup check runs against
    *     the live `_lastScene`, and `nextScene` is only built (and `setScene`
    *     only called) once it passes, so the scene is unchanged on throw.
-   *   • Unsupported primitive kinds / analytic shapes are warn-skipped by the
-   *     `partitionSceneBySupport` filter inside `setScene` (they do not throw).
+   *   • Unsupported primitive kinds (or future analytic shapes outside the
+   *     capability set) are warn-skipped by the `partitionSceneBySupport` filter
+   *     inside `setScene` (they do not throw).
    *   • Accumulation / temporal history resets — `setScene` tears down the
    *     pipeline (blank accumulator + reservoirs + DDGI/ReSTIR/RC rebuild) and
    *     reinitialises.
@@ -1354,6 +1385,7 @@ export class HybridEngine implements Engine {
     }
 
     this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
+    this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
 
     const emitterSlice = rebuildEmitterBuffersFromSceneRoots(
       [threeRoot],
@@ -1399,8 +1431,8 @@ export class HybridEngine implements Engine {
     // and silently dropped chroma / used the wrong area, drifting from the
     // freshly-built init state.
     const sceneForSun =
-      this._coreSceneSuppliesMeshes() && this._lastScene != null
-        ? this._lastScene
+      this._coreSceneSuppliesMeshes() && this._renderScene != null
+        ? this._renderScene
         : null;
     const sceneLights =
       sceneForSun != null
@@ -1519,8 +1551,8 @@ export class HybridEngine implements Engine {
       // still drives the shade-side Lo_emit via the WalkaroundUBO). Absent a
       // scene directional, the config intensity is the multiplier as before.
       const sceneForSun =
-        this._coreSceneSuppliesMeshes() && this._lastScene != null
-          ? this._lastScene
+        this._coreSceneSuppliesMeshes() && this._renderScene != null
+          ? this._renderScene
           : null;
       this._ddgi.setSunIntensityMultiplier(
         directionalSunMultiplier(sceneForSun, opts.primaryLightIntensity),
@@ -1582,15 +1614,16 @@ export class HybridEngine implements Engine {
    * and materials are untouched. That is the whole point of an env-only fast
    * path (cf. `setScene`, which tears the pipeline down).
    *
-   * **Known limitation (HDRI directionality/colour).** Because there is no
-   * baker, an `hdri` env's opaque texture is NOT sampled: only its `intensity`
-   * is honoured (→ `skyIrradiance`); its dominant colour + rotation are not
-   * reflected and `skyTint` is left as the host last set it (via opts /
-   * `updateLighting`). A host that wants a tinted sky should pair an
-   * `updateLighting({ skyTint })`. A `procedural-sky` env (NOT in this backend's
-   * `supportedEnvironmentKinds`) is best-effort: its `intensity` is applied and a
-   * one-time warning is logged. The full directional IBL is a `pt-webgl` /
-   * `pt-webgpu` capability, not a walkaround-hybrid one.
+   * **Known limitation (HDRI directionality).** Because there is no baker, an
+   * opaque `hdri` handle is not directionally sampled by this backend. The
+   * resolver can still derive diffuse sky tint/energy from raw numeric
+   * RGB/RGBA payloads, or from
+   * `extensions['walkaround-hybrid'].resolveEnvironmentMap` when a host supplies
+   * a precomputed average for opaque handles. Rotation and directional sky
+   * distribution remain unsupported here; full environment-map sampling is a
+   * converged-PT backend capability. A `procedural-sky` env (not in this
+   * backend's `supportedEnvironmentKinds`) is approximated as diffuse sky
+   * scalars with a one-time warning.
    *
    * After {@link dispose} this is a safe no-op (matches the runtime-update
    * siblings + the `@vitrum/engine` facade's `'noop'` disposed-behaviour for
@@ -1615,6 +1648,9 @@ export class HybridEngine implements Engine {
     // setScene() carries its own environment.
     if (this._lastScene != null) {
       this._lastScene = { ...this._lastScene, environment: nextEnv };
+      this._renderScene = this._renderScene != null
+        ? { ...this._renderScene, environment: nextEnv }
+        : sceneWithAnalyticMeshFallback(this._lastScene);
     }
 
     // Map the env onto this backend's sky-dome scalars (the only env channel it
@@ -1645,9 +1681,9 @@ export class HybridEngine implements Engine {
    * Mapping (see {@link updateEnvironment} for the full rationale):
    *  - `none` → `skyIrradiance: 0` (sky contributes no light; matches
    *    `applyEnvironment`'s black-background `none`). Tint left unchanged.
-   *  - `hdri` → `skyIrradiance: intensity ?? 1` (the only HDRI channel a
-   *    baker-less stack can honour). Tint + rotation NOT derived (no opaque-ref
-   *    sampling); `skyTint` left unchanged.
+   *  - `hdri` → raw numeric payloads / host extension resolvers can provide
+   *    diffuse `skyTint` + `skyIrradiance`; opaque handles without a resolver
+   *    fall back to intensity-only.
    *  - `procedural-sky` → best-effort `skyIrradiance: intensity ?? 1` + a
    *    one-time `console.warn` (this kind is outside `supportedEnvironmentKinds`
    *    here — full procedural sky is a converged-PT-backend feature).
@@ -1655,34 +1691,19 @@ export class HybridEngine implements Engine {
   private _skyScalarsFromEnvironment(
     env: SceneEnvironment,
   ): { skyTint?: [number, number, number]; skyIrradiance?: number } {
-    switch (env.kind) {
-      case 'none':
-        // Sky off: zero the irradiance scalar (the sky-dome term drops out of
-        // both the probe rays and the shade pass). Leave the tint colour alone.
-        return { skyIrradiance: 0 };
-      case 'hdri':
-        // No baker on this stack — honour only the HDRI intensity as the sky
-        // irradiance. Colour + rotationY are not reflected (would need a baked
-        // dominant/average colour the walkaround stack does not compute).
-        return { skyIrradiance: env.intensity ?? 1 };
-      default: {
-        // `procedural-sky` (or any future kind) is not natively wired here —
-        // apply its intensity (if present) and warn once so the partial support
-        // is visible rather than a silent drop.
-        const intensity = (env as { intensity?: number }).intensity;
-        if (!this._proceduralSkyWarned) {
-          this._proceduralSkyWarned = true;
-          console.warn(
-            `[HybridEngine] updateEnvironment: environment kind '${(env as { kind: string }).kind}' ` +
-              `is not natively supported on the walkaround-hybrid backend ` +
-              `(supportedEnvironmentKinds: 'none' | 'hdri'). Applying its intensity ` +
-              `to the diffuse sky-dome only — its directional sky is ignored. Use ` +
-              `the pt-webgl / pt-webgpu backend for a procedural / image-based sky.`,
-          );
-        }
-        return typeof intensity === 'number' ? { skyIrradiance: intensity } : {};
+    const resolved = resolveHybridEnvironment(env, {
+      extensions: this._environmentResolverExtensions,
+    });
+    if (resolved.warnings.length > 0 && !this._proceduralSkyWarned) {
+      this._proceduralSkyWarned = true;
+      for (const warning of resolved.warnings) {
+        console.warn(`[HybridEngine] updateEnvironment: ${warning}`);
       }
     }
+    return {
+      ...(resolved.skyTint !== undefined ? { skyTint: resolved.skyTint } : {}),
+      ...(resolved.skyIrradiance !== undefined ? { skyIrradiance: resolved.skyIrradiance } : {}),
+    };
   }
 
   // ── Progressive handoff seed source ──────────────────────────────────────
@@ -1911,7 +1932,7 @@ export class HybridEngine implements Engine {
         ddgiTraversalScene: self._ddgiTraversalScene,
         rc: self._rc,
         skinning: self._skinning,
-        lastScene: self._lastScene,
+        lastScene: self._renderScene,
       },
       lighting: self._lightingSnapshot(),
       filter: self._denoiserFilterDeps(),
@@ -2152,12 +2173,16 @@ export class HybridEngine implements Engine {
 
   // ── Private helpers ────────────────────────────────────────────────────
 
-  /** True when `_lastScene` supplies at least one triangle mesh primitive
-   *  (rest-pose skinned meshes count — host pushes deformed positions via
-   *  `updatePrimitive`, but the BVH still needs a non-empty scene to build). */
+  /** True when the render-ingestion scene supplies at least one triangle-backed
+   *  primitive. Rest-pose skinned meshes count — host pushes deformed positions
+   *  via `updatePrimitive`, but the BVH still needs a non-empty scene to build.
+   *  Instanced meshes count as well because `vitrumSceneToThree` creates a real
+   *  THREE.InstancedMesh and the walkaround TLAS path consumes its instances. */
   private _coreSceneSuppliesMeshes(): boolean {
-    const s = this._lastScene;
-    return s != null && s.primitives.some((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh');
+    const s = this._renderScene;
+    return s != null && s.primitives.some(
+      (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
+    );
   }
 
   /**
@@ -2243,7 +2268,7 @@ export class HybridEngine implements Engine {
       // internal size so the composite upscale stays correct.
       get width() { return self._internalWidth; },
       get height() { return self._internalHeight; },
-      get lastScene() { return self._lastScene; },
+      get lastScene() { return self._renderScene; },
       get primaryLightDir() { return self._primaryLightDir; },
       get primaryLightIntensity() { return self._primaryLightIntensity; },
       get preferredSwapChainFormat() { return getPreferredSwapChainFormat(); },
@@ -2259,7 +2284,7 @@ export class HybridEngine implements Engine {
           ddgi: self._ddgi,
           rc: self._rc,
           bvhBuffers: bvh,
-          lastScene: self._lastScene,
+          lastScene: self._renderScene,
           syncDdgi: true,
           allowRcSceneRebuild: true,
           ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),

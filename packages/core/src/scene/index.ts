@@ -13,6 +13,7 @@
 export * from './math.js';
 export * from './material.js';
 export * from './analyticParams.js';
+export * from './analyticToMesh.js';
 export * from './primitives.js';
 export * from './emitters.js';
 export * from './environment.js';

@@ -136,6 +136,8 @@ describe('routePrimitivePatch — outcome + side effects (characterization)', ()
       vitrumScene: vitrumScene(meshPrimRecord('m')),
     } satisfies PrimitivePatchContext;
 
+    const beforeAttr = mesh.geometry.getAttribute('position');
+    const beforeArray = beforeAttr.array;
     const outcome = routePrimitivePatch(ctx, 'm', {
       positions: new Float32Array([0, 0.1, 0, 1, 0.1, 0, 0, 1.1, 0]),
     });
@@ -143,7 +145,13 @@ describe('routePrimitivePatch — outcome + side effects (characterization)', ()
     expect(outcome).toBe('commit');
     expect(generate).toHaveBeenCalledTimes(1);
     expect(tracer.reset).toHaveBeenCalled();
-    expect(mesh.geometry.getAttribute('position').count).toBe(3);
+    const afterAttr = mesh.geometry.getAttribute('position');
+    expect(afterAttr).toBe(beforeAttr);
+    expect(afterAttr.array).toBe(beforeArray);
+    expect(afterAttr.count).toBe(3);
+    expect(Array.from(afterAttr.array.slice(0, 9))).toEqual(
+      Array.from(new Float32Array([0, 0.1, 0, 1, 0.1, 0, 0, 1.1, 0])),
+    );
   });
 
   it('positions vertex-COUNT change → "fallback" (mutator bails BEFORE fork regen)', () => {

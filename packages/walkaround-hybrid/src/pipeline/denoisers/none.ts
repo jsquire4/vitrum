@@ -13,9 +13,11 @@
 
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 export class NoneDenoiser implements Denoiser {
@@ -24,6 +26,10 @@ export class NoneDenoiser implements Denoiser {
 
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No resources to allocate; the pipeline samples the raw HDR target.
+  }
+
+  state(): DenoiserState {
+    return DENOISER_READY_STATE;
   }
 
   dispatch(_ctx: DenoiserDispatchContext): GPUTexture | null {

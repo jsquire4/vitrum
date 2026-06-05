@@ -25,9 +25,11 @@ import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 /** Number of à-trous iterations. Matches the legacy hard-coded value. */
@@ -43,6 +45,10 @@ export class AtrousDenoiser implements Denoiser {
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No persistent GPU resources to allocate eagerly; the per-iter
     // UBO is lazy-allocated on first dispatch via `_uboRef`.
+  }
+
+  state(): DenoiserState {
+    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {

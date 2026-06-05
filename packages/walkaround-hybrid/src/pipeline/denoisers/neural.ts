@@ -14,9 +14,11 @@
 
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 import { NEURAL_PACK_WGSL } from '../../shaders/neuralPack.wgsl.js';
@@ -46,6 +48,7 @@ export class NeuralDenoiser implements Denoiser {
   private _outputTex: GPUTexture | null = null;
   private _outputTexW = 0;
   private _outputTexH = 0;
+  private _lastFallbackReason: string | null = null;
 
   constructor(options?: { inferenceGraph?: InferenceGraph }) {
     this._inferenceGraph = options?.inferenceGraph;
@@ -53,7 +56,10 @@ export class NeuralDenoiser implements Denoiser {
   }
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
-    if (this._inferenceGraph == null) return;
+    if (this._inferenceGraph == null) {
+      this._lastFallbackReason = 'inference graph not supplied';
+      return;
+    }
     this._width = ctx.width;
     this._height = ctx.height;
     const device = ctx.device;
@@ -89,20 +95,56 @@ export class NeuralDenoiser implements Denoiser {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this._reallocForSize(device, ctx.width, ctx.height);
+    this._lastFallbackReason = null;
+  }
+
+  state(): DenoiserState {
+    if (this.disabled) {
+      return { status: 'fallback', reason: 'inference graph not supplied' };
+    }
+    if (this._lastFallbackReason != null) {
+      return { status: 'fallback', reason: this._lastFallbackReason };
+    }
+    if (
+      this._device == null ||
+      this._packPipeline == null ||
+      this._unpackPipeline == null ||
+      this._packParamsBuf == null ||
+      this._unpackParamsBuf == null
+    ) {
+      return { status: 'fallback', reason: 'neural denoiser is not initialized' };
+    }
+    if (
+      this._noisyBuf == null ||
+      this._albedoBuf == null ||
+      this._normalsBuf == null ||
+      this._outputBuf == null ||
+      this._outputTex == null
+    ) {
+      return { status: 'fallback', reason: 'neural tensor buffers are not allocated' };
+    }
+    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null {
-    if (this._inferenceGraph == null) return null;
+    if (this._inferenceGraph == null) {
+      this._lastFallbackReason = 'inference graph not supplied';
+      return null;
+    }
     if (
       this._packPipeline == null ||
       this._unpackPipeline == null ||
       this._packParamsBuf == null ||
       this._unpackParamsBuf == null
     ) {
+      this._lastFallbackReason = 'neural denoiser is not initialized';
       return ctx.resources.common.hdrColorTexture;
     }
     // InferenceGraph tensor buffers are fixed at initialization dimensions.
     if (ctx.width !== this._width || ctx.height !== this._height) {
+      this._lastFallbackReason =
+        `size changed from ${this._width}x${this._height} to ` +
+        `${ctx.width}x${ctx.height}`;
       if (!this._loggedSizeMismatch) {
         this._loggedSizeMismatch = true;
         console.warn(
@@ -122,8 +164,10 @@ export class NeuralDenoiser implements Denoiser {
       this._outputBuf == null ||
       this._outputTex == null
     ) {
+      this._lastFallbackReason = 'neural tensor buffers are not allocated';
       return ctx.resources.common.hdrColorTexture;
     }
+    this._lastFallbackReason = null;
     const pixelCount = ctx.width * ctx.height;
     const params = new Uint32Array([ctx.width, ctx.height, pixelCount, 0]);
     device.queue.writeBuffer(this._packParamsBuf, 0, params);
@@ -187,6 +231,7 @@ export class NeuralDenoiser implements Denoiser {
     this._width = w;
     this._height = h;
     this._loggedSizeMismatch = false;
+    this._lastFallbackReason = null;
     if (this._device != null) {
       this._reallocForSize(this._device, w, h);
     }
@@ -213,6 +258,7 @@ export class NeuralDenoiser implements Denoiser {
     this._packPipeline = null;
     this._unpackPipeline = null;
     this._device = null;
+    this._lastFallbackReason = 'neural denoiser has been disposed';
   }
 
   private _reallocForSize(device: GPUDevice, w: number, h: number): void {

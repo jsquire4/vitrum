@@ -17,9 +17,8 @@
  * raw hdrColorTexture so high-variance pixels still get spatial smoothing
  * from the chain even when temporal history is thin.
  *
- * All four pipelines use `layout: 'auto'`; the per-iter à-trous UBO is
- * allocated transiently per frame (5 × 16 B = 80 B) and destroyed after
- * `queue.submit()` — owning these is part of the per-frame work.
+ * All four pipelines use `layout: 'auto'`; the à-trous chain owns one
+ * persistent UBO per iteration to avoid per-frame GPUBuffer churn.
  */
 
 import {
@@ -46,9 +45,11 @@ import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 export class SVGFRealDenoiser implements Denoiser {
@@ -63,6 +64,10 @@ export class SVGFRealDenoiser implements Denoiser {
 
   /** Reprojection UBO — packed once at init time, stable per frame. */
   private readonly _reprojUboRef: UboRef = { buf: undefined };
+  private readonly _atrousUboRefs: UboRef[] = Array.from(
+    { length: SVGF_REAL_DEFAULT_ATROUS_ITERATIONS },
+    () => ({ buf: undefined }),
+  );
 
   /** Ping-pong index for history/moments/prevRadiance (0 = A→read, B→write). */
   private _pingPong = 0;
@@ -129,6 +134,19 @@ export class SVGFRealDenoiser implements Denoiser {
     const scratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
     packSVGFReprojUniforms(SVGF_REPROJ_DEFAULT_UNIFORMS, scratch);
     device.queue.writeBuffer(this._reprojUboRef.buf, 0, scratch);
+
+    const atrousUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+    for (let i = 0; i < this._atrousUboRefs.length; i += 1) {
+      this._atrousUboRefs[i]!.buf = device.createBuffer({
+        label: `svgf-real-atrous-ubo-${i}`,
+        size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+        usage: atrousUsage,
+      });
+    }
+  }
+
+  state(): DenoiserState {
+    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {
@@ -239,11 +257,6 @@ export class SVGFRealDenoiser implements Denoiser {
     const sa = this._atrousPipeline;
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
     const varView = svgf.svgfVarianceTexture.createView();
-    // Collect transient per-iteration UBOs so they can be destroyed after submit().
-    // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
-    // release GPU memory. The pipeline calls this denoiser's `cleanupAfterSubmit()`
-    // hook after `device.queue.submit()` has drained the encoder.
-    this._pendingTransientUbos = [];
     const denoised = runAtrousChain(encoder, sa, {
       iterations: SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
       startTex: radWrite,
@@ -252,23 +265,19 @@ export class SVGFRealDenoiser implements Denoiser {
       wgX: wgX16,
       wgY: wgY16,
       computeDesc,
-      // Each iteration allocates its own transient UBO (so the pipeline can
-      // release them after submit) and assembles the verbatim 6-binding
-      // layout. Identical JS ordering to the prior loop.
+      // Each iteration has a separate persistent UBO, so encoded dispatches
+      // keep their own constants while avoiding per-frame GPUBuffer churn.
       bindGroupFor: (iter, inputView, outputView) => {
         packAtrousVarianceAtrousUniforms(
           { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
           atrousUboBytes,
           0,
         );
-        // One 16-byte UBO per atrous iteration (5 × 16 = 80 bytes total per frame).
-        const iterUbo = device.createBuffer({
-          label: `svgf-real-atrous-ubo-${iter}`,
-          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
+        const iterUbo = this._atrousUboRefs[iter]?.buf;
+        if (iterUbo == null) {
+          throw new Error(`SVGFRealDenoiser: missing atrous UBO for iteration ${iter}`);
+        }
         device.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
-        this._pendingTransientUbos.push(iterUbo);
         return buildAtrousVarianceAtrousBindGroup(
           device, sa,
           inputView, outputView,
@@ -292,22 +301,6 @@ export class SVGFRealDenoiser implements Denoiser {
     return denoised;
   }
 
-  // ── Transient per-frame UBO bookkeeping ─────────────────────────────────
-
-  /** Per-iter à-trous UBOs created in the current dispatch; the pipeline
-   *  calls {@link cleanupAfterSubmit} after `queue.submit()` to drain
-   *  this list and destroy each entry. */
-  private _pendingTransientUbos: GPUBuffer[] = [];
-
-  /** Free the transient per-iter UBOs allocated in the most recent
-   *  {@link dispatch}. Called by the pipeline after `queue.submit()` so
-   *  the GPU queue retains the command buffer's reference while host-side
-   *  handles are released. */
-  cleanupAfterSubmit(): void {
-    for (const ubo of this._pendingTransientUbos) ubo.destroy();
-    this._pendingTransientUbos = [];
-  }
-
   resize(_w: number, _h: number): void {
     // The new persistent SVGF textures (owned by FrameResources) are
     // blank, so the ping-pong index must restart at 0 to avoid reading
@@ -318,7 +311,9 @@ export class SVGFRealDenoiser implements Denoiser {
   dispose(): void {
     this._reprojUboRef.buf?.destroy();
     this._reprojUboRef.buf = undefined;
-    for (const ubo of this._pendingTransientUbos) ubo.destroy();
-    this._pendingTransientUbos = [];
+    for (const ref of this._atrousUboRefs) {
+      ref.buf?.destroy();
+      ref.buf = undefined;
+    }
   }
 }

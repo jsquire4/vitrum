@@ -285,12 +285,10 @@ const SCENE_WITH_MESH: Scene = {
   environment: { kind: 'none' },
 };
 
-// Uses a `point` emitter: walkaround-hybrid does NOT support scene-supplied
-// `directional` emitters (the DDGI sun is config-driven via the constructor /
-// updateLighting, so partitionSceneBySupport warn-skips a scene directional and
-// it never lands in `_lastScene`). `point` genuinely reaches DDGI fixture
-// lights, so it survives the partition filter and the updateEmitter fast-path
-// has a real emitter to patch.
+// Uses a `point` emitter because this test patches position-bearing fixture
+// lights. Scene-supplied `directional` emitters are supported too (mapped to
+// the DDGI sun path), but they do not exercise the point/spot fixture update
+// branch this test is pinning.
 const SCENE_WITH_EMITTER: Scene = {
   ...SCENE_WITH_MESH,
   emitters: [

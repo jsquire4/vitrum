@@ -34,6 +34,40 @@ import {
 } from './expandInstancedMeshes.js';
 import { ForkAccess, type WebGLPathTracerCompat } from './forkAccess.js';
 
+function matrix4FromArrayLike(values: ArrayLike<number>): Matrix4 {
+  const m = new Matrix4();
+  const e = m.elements;
+  for (let i = 0; i < 16; i += 1) {
+    e[i] = values[i] ?? 0;
+  }
+  return m;
+}
+
+function replaceOrUpdateFloatAttribute(
+  geometry: BufferGeometry,
+  name: string,
+  values: ArrayLike<number>,
+  itemSize: number,
+): boolean {
+  const count = values.length / itemSize;
+  if (!Number.isInteger(count)) return false;
+
+  const attr = geometry.getAttribute(name);
+  if (
+    attr instanceof BufferAttribute &&
+    attr.array instanceof Float32Array &&
+    attr.count === count &&
+    attr.array.length === values.length
+  ) {
+    (attr.array as Float32Array).set(values);
+    attr.needsUpdate = true;
+    return true;
+  }
+
+  geometry.setAttribute(name, new BufferAttribute(new Float32Array(values), itemSize));
+  return true;
+}
+
 /** Distributive `keyof` over a discriminated union. `T extends T` with `T` as
  *  a naked generic parameter forces distribution, so this yields the UNION of
  *  every variant's keys (`kind | id | color | … | meshId`), not just the common
@@ -179,12 +213,15 @@ function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): 
   if (positions == null) return false;
   const posAttr = mesh.geometry.getAttribute('position');
   const vertCount = positions.length / 3;
-  if (posAttr != null && posAttr.count !== vertCount) {
+  if (!Number.isInteger(vertCount) || (posAttr != null && posAttr.count !== vertCount)) {
     return false;
   }
-  mesh.geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  if (patch.normals != null && patch.normals.length !== positions.length) {
+    return false;
+  }
+  if (!replaceOrUpdateFloatAttribute(mesh.geometry, 'position', positions, 3)) return false;
   if (patch.normals != null) {
-    mesh.geometry.setAttribute('normal', new BufferAttribute(new Float32Array(patch.normals), 3));
+    if (!replaceOrUpdateFloatAttribute(mesh.geometry, 'normal', patch.normals, 3)) return false;
   }
   return true;
 }
@@ -354,7 +391,7 @@ function buildPrimitivePatchHandlers(ctx: PrimitivePatchContext): readonly Primi
         }
         const transform = (patch as Partial<MeshPrimitive>).transform;
         if (transform != null && transform.length >= 16) {
-          const m = new Matrix4().fromArray(Array.from(transform));
+          const m = matrix4FromArrayLike(transform);
           mesh.matrix.copy(m);
           mesh.matrixWorld.copy(m);
           mesh.matrixAutoUpdate = false;

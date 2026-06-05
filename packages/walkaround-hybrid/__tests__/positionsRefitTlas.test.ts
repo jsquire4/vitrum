@@ -72,6 +72,7 @@ describe('positionsRefit TLAS (C2)', () => {
       primaryLightDir: [0, -1, 0],
       primaryLightIntensity: 1,
       lastScene: scene,
+      renderScene: scene,
     };
 
     const result = positionsRefit('box-a', { positions: shifted }, ctx);

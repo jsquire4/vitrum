@@ -95,6 +95,23 @@ import type { DDGI } from './ddgi/DDGI.js';
 
 const REFIT_STRIDE = 4; // bvhPositions packs world xyz into [0..2] + uv-as-u32 in [3]
 
+function f32Copy(values: ArrayLike<number>): Float32Array {
+  return new Float32Array(values);
+}
+
+function u32Copy(values: ArrayLike<number>): Uint32Array {
+  return new Uint32Array(values);
+}
+
+function matrix4FromArrayLike(values: ArrayLike<number>): THREE.Matrix4 {
+  const m = new THREE.Matrix4();
+  const e = m.elements;
+  for (let i = 0; i < 16; i += 1) {
+    e[i] = values[i] ?? 0;
+  }
+  return m;
+}
+
 /**
  * Patch fields whose presence forces the full SAH `topologyRebuild` path
  * (Option (a)) rather than a transform/positions fast path. `positions` is
@@ -190,6 +207,11 @@ export interface PrimitiveUpdateContext {
   readonly primaryLightIntensity: number;
   /** Current vitrum scene snapshot — kept in sync on successful fast paths. */
   readonly lastScene: Scene;
+  /** Mesh-like render-ingestion scene matching the current BVH pack. Backends
+   *  that accept authored analytic primitives convert them to generated mesh
+   *  fallbacks here, so TLAS refit / BVH rebuild helpers always see the same
+   *  primitive kinds that were packed into {@link PrimitiveTlasBinding}. */
+  readonly renderScene: Scene;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -285,7 +307,7 @@ export function transformRefit(
         );
       }
       if (meshPatch.transform && meshPatch.transform.length >= 16) {
-        const m = new THREE.Matrix4().fromArray(Array.from(meshPatch.transform));
+        const m = matrix4FromArrayLike(meshPatch.transform);
         meshRef.matrix.copy(m);
         meshRef.matrixWorld.copy(m);
         meshRef.matrixAutoUpdate = false;
@@ -293,18 +315,21 @@ export function transformRefit(
       const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, {
         transform: meshPatch.transform,
       });
+      const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, {
+        transform: meshPatch.transform,
+      });
       const prev = captureTlasSnapshot(bvh.tlas);
-      const refit = refitTlasTransforms(updatedScene, bvh.primitiveTlasBindings, prev);
+      const refit = refitTlasTransforms(updatedRenderScene, bvh.primitiveTlasBindings, prev);
       if (refit.ok) {
         applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
         const range = bvh.meshVertexRanges.find((r) => r.name === id);
         if (range != null && meshPatch.transform && meshPatch.transform.length >= 16) {
-          range.matrixWorldAtBuild.set(new Float32Array(meshPatch.transform));
+          range.matrixWorldAtBuild.set(f32Copy(meshPatch.transform));
         }
         ctx.pipeline?.requestAccumReset();
         ctx.ddgi.markInstancesDirty();
         const rcBounds = computeWorldAabbForBindings(
-          updatedScene,
+          updatedRenderScene,
           bvh.primitiveTlasBindings,
         );
         return {
@@ -343,7 +368,7 @@ export function transformRefit(
   const newMat = new THREE.Matrix4();
   const transform = (patch as { transform?: ArrayLike<number> }).transform;
   if (transform && transform.length >= 16) {
-    newMat.fromArray(Array.from(transform));
+    newMat.copy(matrix4FromArrayLike(transform));
   } else {
     newMat.identity();
   }
@@ -355,7 +380,7 @@ export function transformRefit(
   // already-baked world-space vertex through D to get the new
   // world-space vertex; equivalent to local⁻¹ → new-world round-trip
   // but without storing local-space positions.
-  const oldMatWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
+  const oldMatWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
   const oldMatWorldInv = new THREE.Matrix4().copy(oldMatWorld).invert();
   const delta = new THREE.Matrix4().multiplyMatrices(newMat, oldMatWorldInv);
 
@@ -466,7 +491,7 @@ export function positionsRefit(
     }
     meshRef.geometry.setAttribute(
       'position',
-      new THREE.BufferAttribute(new Float32Array(Array.from(newLocalPositions)), 3),
+      new THREE.BufferAttribute(f32Copy(newLocalPositions), 3),
     );
 
     const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
@@ -480,7 +505,7 @@ export function positionsRefit(
       positionsF32[off + 2] = newLocalPositions[v * 3 + 2] ?? 0;
     }
 
-    const localAabb = computeLocalAabb(new Float32Array(Array.from(newLocalPositions)));
+    const localAabb = computeLocalAabb(f32Copy(newLocalPositions));
     if (localAabb == null) {
       return topologyRebuild(id, patch, ctx);
     }
@@ -499,14 +524,15 @@ export function positionsRefit(
     const meshPosPatch = patch as Partial<MeshPrimitive>;
     const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
       ? {
-          positions: new Float32Array(Array.from(newLocalPositions)),
-          normals: new Float32Array(Array.from(meshPosPatch.normals)),
+          positions: f32Copy(newLocalPositions),
+          normals: f32Copy(meshPosPatch.normals),
         }
-      : { positions: new Float32Array(Array.from(newLocalPositions)) };
+      : { positions: f32Copy(newLocalPositions) };
     const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+    const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, posPatch);
 
     const prev = captureTlasSnapshot(bvh.tlas);
-    const refit = refitTlasTransforms(updatedScene, bindings, prev);
+    const refit = refitTlasTransforms(updatedRenderScene, bindings, prev);
     if (refit.ok) {
       applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
     } else {
@@ -515,7 +541,7 @@ export function positionsRefit(
 
     ctx.pipeline?.requestAccumReset();
     ctx.ddgi.invalidateProbeCache();
-    const rcBounds = computeWorldAabbForBindings(updatedScene, bindings);
+    const rcBounds = computeWorldAabbForBindings(updatedRenderScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {
       bvhBuffers: outBvh,
@@ -553,14 +579,14 @@ export function positionsRefit(
   // (no aliasing surprises).
   meshRef.geometry.setAttribute(
     'position',
-    new THREE.BufferAttribute(new Float32Array(Array.from(newLocalPositions)), 3),
+    new THREE.BufferAttribute(f32Copy(newLocalPositions), 3),
   );
 
   // The BVH stores WORLD-space positions in a stride-4 layout
   // ([x, y, z, uvPacked] per vertex). Apply the cached matrixWorldAtBuild
   // to lift the new local positions into world space, preserving the .w
   // (UV pack) lane from the existing slice.
-  const matWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
+  const matWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
   const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
   const STRIDE = 4;
   const baseVertex = range.vertexStart;
@@ -590,11 +616,11 @@ export function positionsRefit(
 
   const meshPosPatch = patch as Partial<MeshPrimitive>;
   const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
-    ? {
-        positions: new Float32Array(Array.from(newLocalPositions)),
-        normals: new Float32Array(Array.from(meshPosPatch.normals)),
+      ? {
+        positions: f32Copy(newLocalPositions),
+        normals: f32Copy(meshPosPatch.normals),
       }
-    : { positions: new Float32Array(Array.from(newLocalPositions)) };
+    : { positions: f32Copy(newLocalPositions) };
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
 
   return { bvhBuffers: bvh, updatedScene };
@@ -640,6 +666,7 @@ export function refitSkinnedMeshAfterGpuWrite(
       ? { positions: new Float32Array(localPositions), normals: new Float32Array(localNormals) }
       : { positions: new Float32Array(localPositions) };
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+  const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, posPatch);
 
   if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
     const binding = bvh.primitiveTlasBindings.find((b) => b.primitiveId === id);
@@ -678,7 +705,7 @@ export function refitSkinnedMeshAfterGpuWrite(
     ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
 
     const prev = captureTlasSnapshot(bvh.tlas);
-    const refit = refitTlasTransforms(updatedScene, bindings, prev);
+    const refit = refitTlasTransforms(updatedRenderScene, bindings, prev);
     if (!refit.ok) {
       throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): TLAS transform refit failed.`);
     }
@@ -686,7 +713,7 @@ export function refitSkinnedMeshAfterGpuWrite(
 
     ctx.pipeline?.requestAccumReset();
     ctx.ddgi.markInstancesDirty();
-    const rcBounds = computeWorldAabbForBindings(updatedScene, bindings);
+    const rcBounds = computeWorldAabbForBindings(updatedRenderScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {
       bvhBuffers: outBvh,
@@ -705,7 +732,7 @@ export function refitSkinnedMeshAfterGpuWrite(
     );
   }
 
-  const matWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
+  const matWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
   const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
   const STRIDE = 4;
   const baseVertex = range.vertexStart;
@@ -804,7 +831,7 @@ export function topologyRebuild(
   }
 
   if (p.transform && p.transform.length >= 16) {
-    const m = new THREE.Matrix4().fromArray(Array.from(p.transform));
+    const m = matrix4FromArrayLike(p.transform);
     meshRef.matrix.copy(m);
     meshRef.matrixWorld.copy(m);
     meshRef.matrixAutoUpdate = false;
@@ -812,36 +839,37 @@ export function topologyRebuild(
   if (p.positions) {
     meshRef.geometry.setAttribute(
       'position',
-      new THREE.BufferAttribute(new Float32Array(Array.from(p.positions)), 3),
+      new THREE.BufferAttribute(f32Copy(p.positions), 3),
     );
   }
   if (p.normals) {
     meshRef.geometry.setAttribute(
       'normal',
-      new THREE.BufferAttribute(new Float32Array(Array.from(p.normals)), 3),
+      new THREE.BufferAttribute(f32Copy(p.normals), 3),
     );
   }
   if (p.uvs) {
     meshRef.geometry.setAttribute(
       'uv',
-      new THREE.BufferAttribute(new Float32Array(Array.from(p.uvs)), 2),
+      new THREE.BufferAttribute(f32Copy(p.uvs), 2),
     );
   }
   if (p.tangents) {
     meshRef.geometry.setAttribute(
       'tangent',
-      new THREE.BufferAttribute(new Float32Array(Array.from(p.tangents)), 4),
+      new THREE.BufferAttribute(f32Copy(p.tangents), 4),
     );
   }
   if (p.indices) {
     meshRef.geometry.setIndex(
-      new THREE.BufferAttribute(new Uint32Array(Array.from(p.indices)), 1),
+      new THREE.BufferAttribute(u32Copy(p.indices), 1),
     );
   }
 
   // Rebuild the BVH from the patched THREE scene. The old buffers are
   // released after the new ones are uploaded.
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
+  const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
   const oldBuffers = ctx.bvhBuffers;
   const bvhOpts = {
     primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
@@ -857,7 +885,7 @@ export function topologyRebuild(
     oldBuffers.scenePack != null
   ) {
     const rebuilt = rebuildReSTIRSceneBVHPrimitive(
-      updatedScene,
+      updatedRenderScene,
       id,
       [root],
       oldBuffers,
@@ -865,10 +893,10 @@ export function topologyRebuild(
     );
     newBuffers =
       'ok' in rebuilt && rebuilt.ok === false
-        ? buildReSTIRSceneBVHForScene(updatedScene, [root], bvhOpts)
+        ? buildReSTIRSceneBVHForScene(updatedRenderScene, [root], bvhOpts)
         : (rebuilt as SceneBVHBuffers);
   } else {
-    newBuffers = buildReSTIRSceneBVHForScene(updatedScene, [root], bvhOpts);
+    newBuffers = buildReSTIRSceneBVHForScene(updatedRenderScene, [root], bvhOpts);
   }
   if (oldBuffers) disposeSceneBVH(oldBuffers);
 
@@ -885,7 +913,7 @@ export function topologyRebuild(
 
   const rcBounds =
     newBuffers.bvhMode === 'tlas' && newBuffers.primitiveTlasBindings.length > 0
-      ? computeWorldAabbForBindings(updatedScene, newBuffers.primitiveTlasBindings)
+      ? computeWorldAabbForBindings(updatedRenderScene, newBuffers.primitiveTlasBindings)
       : null;
 
   return {

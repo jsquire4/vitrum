@@ -45,9 +45,11 @@ import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 /**
@@ -182,6 +184,10 @@ export class AtrousVarianceDenoiser implements Denoiser {
       size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
       usage: U,
     });
+  }
+
+  state(): DenoiserState {
+    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {

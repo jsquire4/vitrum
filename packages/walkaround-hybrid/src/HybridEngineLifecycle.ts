@@ -67,7 +67,8 @@ export interface PipelineInitHost {
   readonly height: number;
   /** Optional escape-hatch host-supplied THREE.Scene. */
   readonly threeScene: THREE.Scene | null;
-  /** Latest vitrum scene supplied via setScene(); may be null pre-bootstrap. */
+  /** Latest render-ingestion scene; analytic primitives have already been
+   * converted to generated MeshPrimitive fallbacks. May be null pre-bootstrap. */
   readonly lastScene: Scene | null;
   readonly primaryLightDir: readonly [number, number, number];
   readonly primaryLightIntensity: number;

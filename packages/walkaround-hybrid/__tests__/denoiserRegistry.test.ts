@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  DENOISER_READY_STATE,
   DenoiserRegistry,
   type Denoiser,
   type DenoiserDispatchContext,
@@ -25,6 +26,7 @@ function stubDenoiser(id: DenoiserId, disabled = false): Denoiser {
     id,
     disabled,
     passLabels: [],
+    state: () => DENOISER_READY_STATE,
     initialize: async (_ctx: DenoiserInitContext) => undefined,
     dispatch: (_ctx: DenoiserDispatchContext) => null,
     resize: (_w: number, _h: number) => undefined,

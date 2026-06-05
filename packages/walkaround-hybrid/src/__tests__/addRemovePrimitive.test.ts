@@ -231,7 +231,7 @@ describe('walkaround-hybrid HybridEngine.addPrimitive / removePrimitive', () => 
     }
   });
 
-  it('warn-skips an unsupported-kind addition via setScene partition (does not throw)', () => {
+  it('accepts an analytic addition: authored kind kept, generated mesh fallback rendered', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = new HybridEngine(makeOpts());
     try {
@@ -243,13 +243,19 @@ describe('walkaround-hybrid HybridEngine.addPrimitive / removePrimitive', () => 
         params: new Float32Array([0, 0, 0, 1]),
         material: { baseColor: [1, 0, 0], roughness: 0.3, metallic: 0 },
       } as unknown as ScenePrimitive;
-      // addPrimitive's dup check passes (id is new); the unsupported KIND is
-      // dropped by partitionSceneBySupport inside setScene with a warning.
+      // analytic is a SUPPORTED kind now (generated-MeshPrimitive fallback):
+      // partitionSceneBySupport keeps it — no warn-skip, no throw.
       expect(() => engine.addPrimitive(analytic)).not.toThrow();
       const warned = warnSpy.mock.calls.flat().map(String);
-      expect(warned.some((m) => m.includes('sphere-x') && m.includes('not supported'))).toBe(true);
-      // The filtered scene retains only the supported survivors.
-      expect(storedIds(engine)).toEqual(['mesh-a', 'mesh-b']);
+      expect(warned.some((m) => m.includes('sphere-x') && m.includes('not supported'))).toBe(false);
+      // The authored snapshot keeps the analytic primitive as-authored…
+      expect(storedIds(engine)).toEqual(['mesh-a', 'mesh-b', 'sphere-x']);
+      const stored = (engine as unknown as { _lastScene: Scene })._lastScene;
+      expect(stored.primitives.find((p) => p.id === 'sphere-x')?.kind).toBe('analytic');
+      // …while the render-ingestion view replaces it with a generated mesh.
+      const render = (engine as unknown as { _renderScene: Scene })._renderScene;
+      const generated = render.primitives.find((p) => p.id === 'sphere-x');
+      expect(generated?.kind).toBe('mesh');
     } finally {
       engine.dispose();
     }

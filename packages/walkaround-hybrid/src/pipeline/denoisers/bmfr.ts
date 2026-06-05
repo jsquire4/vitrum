@@ -44,9 +44,11 @@ import { BMFR_MODULE, WGSL_MODULES } from '../wgslModules.js';
 import { checkShaderCompile } from '../shaderUtils.js';
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 export class BmfrDenoiser implements Denoiser {
@@ -86,6 +88,10 @@ export class BmfrDenoiser implements Denoiser {
     });
 
     this._allocHistory(width, height);
+  }
+
+  state(): DenoiserState {
+    return DENOISER_READY_STATE;
   }
 
   private _allocHistory(width: number, height: number): void {
@@ -177,4 +183,3 @@ export class BmfrDenoiser implements Denoiser {
     this._ubo?.destroy();
   }
 }
-

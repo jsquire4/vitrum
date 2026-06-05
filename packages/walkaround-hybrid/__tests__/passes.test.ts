@@ -29,7 +29,10 @@ import {
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import type { PassGateOptions } from '../src/pipeline/Pass.js';
-import type { Denoiser } from '../src/pipeline/denoisers/index.js';
+import {
+  DENOISER_READY_STATE,
+  type Denoiser,
+} from '../src/pipeline/denoisers/index.js';
 
 // Stub GPU resources — we never call dispatch in these tests, so the
 // pipelines/refs only need to be present, not real.
@@ -44,6 +47,7 @@ const makeStubDenoiser = (id: string, labels: readonly string[]): Denoiser =>
   ({
     id: id as Denoiser['id'],
     passLabels: labels as Denoiser['passLabels'],
+    state: () => DENOISER_READY_STATE,
     initialize: async () => {},
     dispatch: () => null,
     resize: () => {},

@@ -38,8 +38,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // naga compile gate (wsl-gpu mnee-slab-wgsl-compile.ts) — the byte-identity goldens
     // alone do NOT catch a symbol-scope regression. Recompute (sha256 of
     // PT_WEBGPU_TRACE_WGSL) on any intentional WGSL change and update both here.
-    expect(digest).toBe('04a831e0c2ca414973e7ae4e3329e80404b32dfbde4233645d7f42507d75d0f0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215540);
+    expect(digest).toBe('dc7d33a438d7a6df99c4a6b35e1573d4ab49454ca47f10440bdd2ec6bd370776');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(214901);
   });
 });
 
@@ -213,15 +213,18 @@ describe('pt-webgpu WGSL material contract', () => {
     );
   });
 
-  it('uses conservative local-ray bounds for TLAS instance traversal under scaling', () => {
-    // Local instance-space t does not match world-space t under non-uniform
-    // transforms, so BLAS queries must run unbounded and clamp in world space.
+  it('uses conservative local-ray bounds for TLAS closest-hit traversal under scaling', () => {
+    // Closest-hit traversal keeps the prior unbounded local BLAS query because
+    // the dynamic closest world distance is clamped after reconstruction.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, true);');
   });
 
-  it('skips bary/normal reconstruction on TLAS any-hit instance traversal', () => {
+  it('uses finite local-ray bounds for TLAS any-hit instance traversal', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('captureShadingDetails: bool');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, false);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var localTMax = tMax;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let localEnd = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMax);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('localTMax = max(dot(localEnd - localRay.origin, localRay.direction), tMin);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, localTMax, false, &localHit, blasRoot, false)');
   });
 
   it('returns closest-hit result from traceMeshBvh when in closest mode', () => {

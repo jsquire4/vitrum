@@ -80,6 +80,21 @@ export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabe
   'oidn-final': Object.freeze([]),
 } as Record<DenoiserId, readonly PassLabel[]>);
 
+/** Coarse host-visible lifecycle state for a denoiser entry.
+ *
+ * `state()` is diagnostic only: callers can surface whether a selected
+ * denoiser is actively producing filtered output, warming an async backend,
+ * using a fallback signal, or sitting in a retryable failure mode without
+ * changing the frame dispatch contract.
+ */
+export interface DenoiserState {
+  readonly status: 'ready' | 'warming-up' | 'in-flight' | 'fallback' | 'failed';
+  readonly reason?: string;
+  readonly retryable?: boolean;
+}
+
+export const DENOISER_READY_STATE: DenoiserState = Object.freeze({ status: 'ready' });
+
 /**
  * Initialization context handed to {@link Denoiser.initialize}.
  *
@@ -154,6 +169,9 @@ export interface Denoiser {
    *  denoiser. Pass-through denoisers return `[]`. The order MUST match
    *  the order the labels appear inside {@link Denoiser.dispatch}. */
   readonly passLabels: readonly import('../timestampQueries.js').PassLabel[];
+
+  /** Current lifecycle state for host diagnostics and telemetry. */
+  state(): DenoiserState;
 
   /** Compile pipelines, create BGLs, allocate persistent textures/buffers.
    *  Awaited once at engine boot. */

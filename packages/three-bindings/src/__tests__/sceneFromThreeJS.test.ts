@@ -20,6 +20,96 @@ describe('sceneFromThreeJS', () => {
     expect(v.environment.kind).toBe('none');
   });
 
+  it('splits grouped multi-material Mesh geometry into stable per-group primitives', () => {
+    const s = new THREE.Scene();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      1, 1, 0,
+    ]), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]), 3));
+    g.setIndex([0, 1, 2, 2, 1, 3]);
+    g.addGroup(0, 3, 1);
+    g.addGroup(3, 3, 0);
+
+    const mesh = new THREE.Mesh(g, [
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0) }),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
+    ]);
+    s.add(mesh);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(2);
+
+    const first = v.primitives[0]!;
+    const second = v.primitives[1]!;
+    expect(first.kind).toBe('mesh');
+    expect(second.kind).toBe('mesh');
+    if (first.kind !== 'mesh' || second.kind !== 'mesh') return;
+
+    expect(first.id).toBe(`${mesh.uuid}:group:0:material:1`);
+    expect(second.id).toBe(`${mesh.uuid}:group:1:material:0`);
+    expect(first.indices).toBeUndefined();
+    expect(second.indices).toBeUndefined();
+    expect(first.positions).toEqual(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]));
+    expect(second.positions).toEqual(new Float32Array([
+      0, 1, 0,
+      1, 0, 0,
+      1, 1, 0,
+    ]));
+    expect(first.material.baseColor).toEqual([1, 0, 0]);
+    expect(second.material.baseColor).toEqual([0, 1, 0]);
+  });
+
+  it('targets split mesh-area emitters at the derived group primitive id', () => {
+    const s = new THREE.Scene();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]), 3));
+    g.addGroup(0, 3, 1);
+
+    const mesh = new THREE.Mesh(g, [
+      new THREE.MeshStandardMaterial({ color: 0x333333 }),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: new THREE.Color(0.25, 0.5, 1),
+        emissiveIntensity: 4,
+      }),
+    ]);
+    s.add(mesh);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(1);
+    expect(v.emitters).toHaveLength(1);
+    expect(v.emitters[0]).toMatchObject({
+      kind: 'mesh-area',
+      meshId: `${mesh.uuid}:group:0:material:1`,
+      color: [0.25, 0.5, 1],
+      intensity: 4,
+    });
+    expect(v.primitives[0]!.kind).toBe('mesh');
+    expect(v.primitives[0]!.material.emissive).toEqual([0, 0, 0]);
+  });
+
   it('emissive MeshPhysicalMaterial emits mesh-area and strips duplicate emissive on primitive', () => {
     const s = new THREE.Scene();
     const mesh = new THREE.Mesh(
@@ -152,6 +242,7 @@ describe('sceneFromThreeJS', () => {
     s.add(new THREE.Mesh(g, m));
     const v = sceneFromThreeJS(s);
     expect(v.primitives).toHaveLength(1);
+    expect(v.emitters).toHaveLength(0);
     const prim = v.primitives[0]!;
     expect(prim.kind).toBe('mesh');
     // convertBasicMaterial synthesizes a flat self-lit color via emissive.

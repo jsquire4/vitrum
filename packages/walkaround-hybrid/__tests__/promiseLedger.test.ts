@@ -42,6 +42,7 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(sorted(caps.supportedEmitterKinds)).toEqual(sorted(expected.supportedEmitterKinds));
     expect(sorted(caps.supportedEnvironmentKinds ?? [])).toEqual(sorted(expected.supportedEnvironmentKinds));
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
+    expect(caps.supportDetails).toEqual(expected.supportDetails);
 
     expect(typeof engineView.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engineView.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);
@@ -53,4 +54,3 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(typeof engineView.debug === 'object').toBe(expected.methodPromises.debug);
   });
 });
-

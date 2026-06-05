@@ -25,7 +25,15 @@ import { luminance } from './math.js';
  * the corresponding MeshPrimitive material so emission is not double-counted.
  */
 export function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
-  const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  const rawMat = Array.isArray(mesh.material) ? mesh.material[0] ?? null : mesh.material;
+  return emissiveMaterialAreaEmitter(rawMat, mesh.uuid);
+}
+
+/** Detect a sampled mesh-area light from the source THREE material. */
+export function emissiveMaterialAreaEmitter(
+  rawMat: THREE.Material | null,
+  meshId: MeshPrimitive['id'],
+): SceneEmitter | null {
   if (rawMat == null) return null;
   const asStd = rawMat as THREE.MeshStandardMaterial & { emissiveIntensity?: number };
   if (asStd.emissive == null) return null;
@@ -34,8 +42,8 @@ export function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
   if (luminance(em.r, em.g, em.b, ei) < 1e-7) return null;
   return {
     kind: 'mesh-area',
-    id: `mesh-emissive-${mesh.uuid}`,
-    meshId: mesh.uuid,
+    id: `mesh-emissive-${String(meshId)}`,
+    meshId,
     color: [em.r, em.g, em.b],
     intensity: ei,
     castShadow: true,
@@ -56,15 +64,29 @@ export function stripEmissive(prim: MeshPrimitive): MeshPrimitive {
 // Attribute extractors
 // ────────────────────────────────────────────────────────────────────────────
 
+interface FloatAttribute {
+  readonly array: Float32Array;
+  readonly itemSize: number;
+}
+
+function extractFloatAttribute(
+  geo: THREE.BufferGeometry,
+  name: string,
+): FloatAttribute | undefined {
+  const attr = geo.getAttribute(name);
+  if (attr == null) return undefined;
+  const arr = attr.array;
+  return {
+    array: arr instanceof Float32Array ? arr : new Float32Array(arr),
+    itemSize: attr.itemSize,
+  };
+}
+
 function extractAttribute(
   geo: THREE.BufferGeometry,
   name: string,
 ): Float32Array | undefined {
-  const attr = geo.getAttribute(name);
-  if (attr == null) return undefined;
-  const arr = attr.array;
-  if (arr instanceof Float32Array) return arr;
-  return new Float32Array(arr);
+  return extractFloatAttribute(geo, name)?.array;
 }
 
 function extractIndex(
@@ -89,8 +111,18 @@ function requireAttribute(
   label: string,
   meshTypeName: string,
 ): Float32Array {
-  const arr = extractAttribute(geo, name);
-  if (arr == null) {
+  const attr = requireFloatAttribute(geo, name, label, meshTypeName);
+  return attr.array;
+}
+
+function requireFloatAttribute(
+  geo: THREE.BufferGeometry,
+  name: 'position' | 'normal',
+  label: string,
+  meshTypeName: string,
+): FloatAttribute {
+  const attr = extractFloatAttribute(geo, name);
+  if (attr == null) {
     if (name === 'normal') {
       throw new Error(
         `${meshTypeName} "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
@@ -98,7 +130,7 @@ function requireAttribute(
     }
     throw new Error(`${meshTypeName} "${label}" has no position attribute.`);
   }
-  return arr;
+  return attr;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -143,28 +175,87 @@ function convertFirstMaterial(
     : convertMaterial(rawMat as THREE.MeshStandardMaterial);
 }
 
+function convertMaterialAt(
+  materials: readonly THREE.Material[],
+  materialIndex: number,
+  label: string,
+  groupIndex: number,
+) {
+  const rawMat = materials[materialIndex] ?? null;
+  return convertFirstMaterial(
+    rawMat,
+    `${label} group ${groupIndex}`,
+    'Mesh',
+  );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Mesh converter
 // ────────────────────────────────────────────────────────────────────────────
+
+interface MeshAttributeSet {
+  readonly positions: FloatAttribute;
+  readonly normals: FloatAttribute;
+  readonly uvs?: FloatAttribute;
+  readonly uv1?: FloatAttribute;
+  readonly tangents?: FloatAttribute;
+  readonly colors?: FloatAttribute;
+  readonly indices?: Uint32Array | Uint16Array;
+}
+
+function extractMeshAttributeSet(
+  geo: THREE.BufferGeometry,
+  label: string,
+  meshTypeName: string,
+): MeshAttributeSet {
+  const uvs = extractFloatAttribute(geo, 'uv');
+  const uv1 = extractFloatAttribute(geo, 'uv1') ?? extractFloatAttribute(geo, 'uv2');
+  const tangents = extractFloatAttribute(geo, 'tangent');
+  const colors = extractFloatAttribute(geo, 'color');
+  const indices = extractIndex(geo);
+
+  return {
+    positions: requireFloatAttribute(geo, 'position', label, meshTypeName),
+    normals: requireFloatAttribute(geo, 'normal', label, meshTypeName),
+    ...(uvs != null ? { uvs } : {}),
+    // THREE r152+ names the 2nd UV set 'uv1'; older geometry used 'uv2'.
+    ...(uv1 != null ? { uv1 } : {}),
+    ...(tangents != null ? { tangents } : {}),
+    ...(colors != null ? { colors } : {}),
+    ...(indices != null ? { indices } : {}),
+  };
+}
+
+function buildMeshPrimitive(
+  id: string,
+  attrs: MeshAttributeSet,
+  transform: Mat4,
+  material: MeshPrimitive['material'],
+): MeshPrimitive {
+  return {
+    kind: 'mesh',
+    id,
+    positions: attrs.positions.array,
+    normals: attrs.normals.array,
+    transform,
+    material,
+    ...(attrs.uvs != null ? { uvs: attrs.uvs.array } : {}),
+    ...(attrs.uv1 != null ? { uv1: attrs.uv1.array } : {}),
+    ...(attrs.tangents != null ? { tangents: attrs.tangents.array } : {}),
+    ...(attrs.colors != null ? { colors: attrs.colors.array } : {}),
+    ...(attrs.indices != null ? { indices: attrs.indices } : {}),
+  };
+}
 
 export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = requireAttribute(geo, 'position', label, 'Mesh');
-  const normals = requireAttribute(geo, 'normal', label, 'Mesh');
-
-  const uvs = extractAttribute(geo, 'uv');
-  // THREE r152+ names the 2nd UV set 'uv1'; older geometry used 'uv2'.
-  const uv1 = extractAttribute(geo, 'uv1') ?? extractAttribute(geo, 'uv2');
-  const tangents = extractAttribute(geo, 'tangent');
-  const colors = extractAttribute(geo, 'color');
-  const indices = extractIndex(geo);
-
+  const attrs = extractMeshAttributeSet(geo, label, 'Mesh');
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
 
   // Multi-material meshes: warn and fall back to first material.
-  // Geometry-group splitting (each group gets its own material) is a future enhancement.
+  // sceneFromThreeJS uses convertMeshToPrimitives for group-aware expansion.
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
       `@vitrum/three-bindings: unsupported multi-material mesh at "${label}" (${obj.material.length} materials). ` +
@@ -174,19 +265,162 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
 
   const material = convertFirstMaterial(obj.material, label, 'Mesh');
 
+  return buildMeshPrimitive(obj.uuid, attrs, transform, material);
+}
+
+function validateGroupRange(
+  group: THREE.BufferGeometry['groups'][number],
+  groupIndex: number,
+  label: string,
+  limit: number,
+  rangeKind: 'index' | 'vertex',
+): void {
+  if (!Number.isInteger(group.start) || !Number.isInteger(group.count) || group.start < 0 || group.count < 0) {
+    throw new Error(
+      `Mesh "${label}" group ${groupIndex} has invalid ${rangeKind} range start=${group.start}, count=${group.count}.`,
+    );
+  }
+  if (group.start + group.count > limit) {
+    throw new Error(
+      `Mesh "${label}" group ${groupIndex} ${rangeKind} range [${group.start}, ${group.start + group.count}) exceeds ${rangeKind} count ${limit}.`,
+    );
+  }
+}
+
+function materialIndexForGroup(
+  group: THREE.BufferGeometry['groups'][number],
+  groupIndex: number,
+  materialCount: number,
+  label: string,
+): number {
+  const materialIndex = group.materialIndex ?? 0;
+  if (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= materialCount) {
+    throw new Error(
+      `Mesh "${label}" group ${groupIndex} references material index ${materialIndex}, but the mesh has ${materialCount} materials.`,
+    );
+  }
+  return materialIndex;
+}
+
+function vertexIndicesForGroup(
+  group: THREE.BufferGeometry['groups'][number],
+  groupIndex: number,
+  label: string,
+  attrs: MeshAttributeSet,
+): Uint32Array {
+  const vertexCount = Math.floor(attrs.positions.array.length / attrs.positions.itemSize);
+  if (attrs.indices != null) {
+    validateGroupRange(group, groupIndex, label, attrs.indices.length, 'index');
+    const out = new Uint32Array(group.count);
+    for (let i = 0; i < group.count; i += 1) {
+      const vertexIndex = attrs.indices[group.start + i]!;
+      if (vertexIndex >= vertexCount) {
+        throw new Error(
+          `Mesh "${label}" group ${groupIndex} references vertex ${vertexIndex}, but the position attribute has ${vertexCount} vertices.`,
+        );
+      }
+      out[i] = vertexIndex;
+    }
+    return out;
+  }
+
+  validateGroupRange(group, groupIndex, label, vertexCount, 'vertex');
+  const out = new Uint32Array(group.count);
+  for (let i = 0; i < group.count; i += 1) out[i] = group.start + i;
+  return out;
+}
+
+function copyAttributeForVertices(attr: FloatAttribute, vertexIndices: Uint32Array): Float32Array {
+  const out = new Float32Array(vertexIndices.length * attr.itemSize);
+  for (let outVertex = 0; outVertex < vertexIndices.length; outVertex += 1) {
+    const srcOffset = vertexIndices[outVertex]! * attr.itemSize;
+    const dstOffset = outVertex * attr.itemSize;
+    for (let component = 0; component < attr.itemSize; component += 1) {
+      out[dstOffset + component] = attr.array[srcOffset + component] ?? 0;
+    }
+  }
+  return out;
+}
+
+function sliceMeshAttributesForGroup(
+  attrs: MeshAttributeSet,
+  vertexIndices: Uint32Array,
+): MeshAttributeSet {
   return {
-    kind: 'mesh',
-    id: obj.uuid,
-    positions,
-    normals,
-    transform,
-    material,
-    ...(uvs != null ? { uvs } : {}),
-    ...(uv1 != null ? { uv1 } : {}),
-    ...(tangents != null ? { tangents } : {}),
-    ...(colors != null ? { colors } : {}),
-    ...(indices != null ? { indices } : {}),
+    positions: {
+      array: copyAttributeForVertices(attrs.positions, vertexIndices),
+      itemSize: attrs.positions.itemSize,
+    },
+    normals: {
+      array: copyAttributeForVertices(attrs.normals, vertexIndices),
+      itemSize: attrs.normals.itemSize,
+    },
+    ...(attrs.uvs != null
+      ? {
+          uvs: {
+            array: copyAttributeForVertices(attrs.uvs, vertexIndices),
+            itemSize: attrs.uvs.itemSize,
+          },
+        }
+      : {}),
+    ...(attrs.uv1 != null
+      ? {
+          uv1: {
+            array: copyAttributeForVertices(attrs.uv1, vertexIndices),
+            itemSize: attrs.uv1.itemSize,
+          },
+        }
+      : {}),
+    ...(attrs.tangents != null
+      ? {
+          tangents: {
+            array: copyAttributeForVertices(attrs.tangents, vertexIndices),
+            itemSize: attrs.tangents.itemSize,
+          },
+        }
+      : {}),
+    ...(attrs.colors != null
+      ? {
+          colors: {
+            array: copyAttributeForVertices(attrs.colors, vertexIndices),
+            itemSize: attrs.colors.itemSize,
+          },
+        }
+      : {}),
   };
+}
+
+/**
+ * Convert a normal THREE.Mesh into one or more vitrum MeshPrimitives.
+ *
+ * When THREE geometry groups and a material array are present, each group is
+ * materialized as a compact triangle-list primitive so backends do not need a
+ * new draw-range field in the core contract. convertMesh remains the legacy
+ * single-primitive helper for callers/tests that rely on that shape.
+ */
+export function convertMeshToPrimitives(obj: THREE.Mesh): MeshPrimitive[] {
+  const materials = obj.material;
+  if (!Array.isArray(materials) || obj.geometry.groups.length === 0) {
+    return [convertMesh(obj)];
+  }
+
+  const geo = obj.geometry;
+  const label = obj.name || obj.uuid;
+  const attrs = extractMeshAttributeSet(geo, label, 'Mesh');
+  const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
+
+  return geo.groups.map((group, groupIndex): MeshPrimitive => {
+    const materialIndex = materialIndexForGroup(group, groupIndex, materials.length, label);
+    const material = convertMaterialAt(materials, materialIndex, label, groupIndex);
+    const vertexIndices = vertexIndicesForGroup(group, groupIndex, label, attrs);
+    const groupAttrs = sliceMeshAttributesForGroup(attrs, vertexIndices);
+    return buildMeshPrimitive(
+      `${obj.uuid}:group:${groupIndex}:material:${materialIndex}`,
+      groupAttrs,
+      transform,
+      material,
+    );
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────────────

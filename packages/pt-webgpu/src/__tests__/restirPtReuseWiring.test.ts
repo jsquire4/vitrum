@@ -36,6 +36,7 @@ interface Recorder {
   pipelineEntryPoints: string[];
   bufferLabels: string[];
   bindGroupLabels: string[];
+  computePassLabels: string[];
 }
 
 function makeFullTierDevice(rec: Recorder): GPUDevice {
@@ -47,7 +48,10 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
     end: vi.fn(),
   };
   const encoder = {
-    beginComputePass: vi.fn(() => pass),
+    beginComputePass: vi.fn((desc?: { label?: string }) => {
+      rec.computePassLabels.push(desc?.label ?? '');
+      return pass;
+    }),
     clearBuffer: vi.fn(),
     copyBufferToBuffer: vi.fn(),
     finish: vi.fn(() => ({})),
@@ -79,7 +83,7 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
 }
 
 function emptyRecorder(): Recorder {
-  return { shaderCodes: [], pipelineEntryPoints: [], bufferLabels: [], bindGroupLabels: [] };
+  return { shaderCodes: [], pipelineEntryPoints: [], bufferLabels: [], bindGroupLabels: [], computePassLabels: [] };
 }
 
 function makeScene(): Scene {
@@ -126,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215540);
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(214901);
     // The default trace must NOT contain any restir-pt reuse entry point.
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtTemporal');
@@ -192,6 +196,42 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     // The debug result buffer is exposed.
     const buf = (engine as unknown as { getRestirPtResultBuffer(): unknown }).getRestirPtResultBuffer();
     expect(buf).not.toBeNull();
+    engine.dispose();
+  });
+
+  it('ON: cached same-size reservoirs still dispatch reuse on later frames', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      restirPtReuse: true,
+    });
+    engine.setScene(makeScene());
+    engine.renderFrame(frameInput(16));
+    engine.renderFrame(frameInput(16));
+
+    expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.produce').length).toBe(2);
+    expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.temporal').length).toBe(2);
+    expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.resolve').length).toBe(2);
+    engine.dispose();
+  });
+
+  it('ON: over-budget reservoirs skip the reuse setup for that frame', async () => {
+    const rec = emptyRecorder();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      restirPtReuse: true,
+    });
+    engine.setScene(makeScene());
+    engine.renderFrame(frameInput(2048));
+
+    expect(rec.bufferLabels).not.toContain('vitrum.pt-webgpu.restirPt.reservoir.cur');
+    expect(rec.bufferLabels).not.toContain('vitrum.pt-webgpu.restirPt.reservoir.prev');
+    expect(rec.pipelineEntryPoints).not.toContain('restirPtProduce');
+    expect(rec.computePassLabels).not.toContain('vitrum.pt-webgpu.restirPt.produce');
+    expect(warnSpy.mock.calls.flat().map(String).some((m) => m.includes('Skipping ReSTIR-PT reuse'))).toBe(true);
+
+    warnSpy.mockRestore();
     engine.dispose();
   });
 

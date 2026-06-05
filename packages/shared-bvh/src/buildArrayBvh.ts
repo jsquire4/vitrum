@@ -141,6 +141,16 @@ function makeEmptyBin(): BinData {
   };
 }
 
+function resetBin(bin: BinData): void {
+  bin.min[0] = Infinity;
+  bin.min[1] = Infinity;
+  bin.min[2] = Infinity;
+  bin.max[0] = -Infinity;
+  bin.max[1] = -Infinity;
+  bin.max[2] = -Infinity;
+  bin.count = 0;
+}
+
 function growBin(bin: BinData, r: TriangleRecord): void {
   bin.min[0] = Math.min(bin.min[0], r.min[0]);
   bin.min[1] = Math.min(bin.min[1], r.min[1]);
@@ -257,6 +267,21 @@ export function buildArrayBvh(
 
   const nodes: NodeBuild[] = [];
   const orderedTriangles: number[] = [];
+  const bins: BinData[] = Array.from({ length: numBins }, makeEmptyBin);
+  const prefixMinX = new Float32Array(numBins);
+  const prefixMinY = new Float32Array(numBins);
+  const prefixMinZ = new Float32Array(numBins);
+  const prefixMaxX = new Float32Array(numBins);
+  const prefixMaxY = new Float32Array(numBins);
+  const prefixMaxZ = new Float32Array(numBins);
+  const prefixCount = new Int32Array(numBins);
+  const suffixMinX = new Float32Array(numBins);
+  const suffixMinY = new Float32Array(numBins);
+  const suffixMinZ = new Float32Array(numBins);
+  const suffixMaxX = new Float32Array(numBins);
+  const suffixMaxY = new Float32Array(numBins);
+  const suffixMaxZ = new Float32Array(numBins);
+  const suffixCount = new Int32Array(numBins);
 
   /**
    * Recursively build a BVH subtree for `subset` starting at `nodes[nodes.length]`.
@@ -331,7 +356,7 @@ export function buildArrayBvh(
       if (span <= 1e-9) continue; // degenerate — all centroids co-planar on this axis
 
       // Bin triangles.
-      const bins: BinData[] = Array.from({ length: numBins }, makeEmptyBin);
+      for (let i = 0; i < numBins; i += 1) resetBin(bins[i]!);
       for (const r of subset) {
         const t = (r.centroid[axis]! - cMin[axis]!) / span;
         const binIdx = Math.min(numBins - 1, Math.floor(t * numBins));
@@ -339,14 +364,6 @@ export function buildArrayBvh(
       }
 
       // Prefix left sweep: prefixMin/Max[i] = merged AABB of bins [0..i].
-      const prefixMinX = new Float32Array(numBins);
-      const prefixMinY = new Float32Array(numBins);
-      const prefixMinZ = new Float32Array(numBins);
-      const prefixMaxX = new Float32Array(numBins);
-      const prefixMaxY = new Float32Array(numBins);
-      const prefixMaxZ = new Float32Array(numBins);
-      const prefixCount = new Int32Array(numBins);
-
       {
         let bminX = Infinity, bminY = Infinity, bminZ = Infinity;
         let bmaxX = -Infinity, bmaxY = -Infinity, bmaxZ = -Infinity;
@@ -367,14 +384,6 @@ export function buildArrayBvh(
       }
 
       // Suffix right sweep: suffixMin/Max[i] = merged AABB of bins [i..numBins-1].
-      const suffixMinX = new Float32Array(numBins);
-      const suffixMinY = new Float32Array(numBins);
-      const suffixMinZ = new Float32Array(numBins);
-      const suffixMaxX = new Float32Array(numBins);
-      const suffixMaxY = new Float32Array(numBins);
-      const suffixMaxZ = new Float32Array(numBins);
-      const suffixCount = new Int32Array(numBins);
-
       {
         let bminX = Infinity, bminY = Infinity, bminZ = Infinity;
         let bmaxX = -Infinity, bmaxY = -Infinity, bmaxZ = -Infinity;

@@ -54,9 +54,11 @@ import {
 } from '@vitrum/shared-denoisers';
 import {
   DENOISER_PASS_LABELS,
+  DENOISER_READY_STATE,
   type Denoiser,
   type DenoiserDispatchContext,
   type DenoiserInitContext,
+  type DenoiserState,
 } from './index.js';
 
 /**
@@ -172,6 +174,10 @@ function rgbF32ToRgba16fRowAligned(
   return { buffer: buf, bytesPerRow };
 }
 
+function errorReason(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export class OIDNFinalDenoiser implements Denoiser {
   readonly id = 'oidn-final' as const;
   readonly passLabels = DENOISER_PASS_LABELS['oidn-final'];
@@ -199,6 +205,11 @@ export class OIDNFinalDenoiser implements Denoiser {
    *  Each `dispatch` call short-circuits if this is set, so concurrent
    *  kicks are not allowed. */
   private _inFlight = false;
+  /** True while initialize() is preloading the ONNX runtime/session. */
+  private _warmupInFlight = false;
+  /** Last async preload/inference failure, surfaced via state() until retry. */
+  private _lastFailureReason: string | null = null;
+  private _lastFailureRetryable = true;
   /** Disposed-flag — set in `dispose`. The background chain checks this
    *  after every await to bail out (and skip writes to destroyed textures). */
   private _disposed = false;
@@ -229,6 +240,8 @@ export class OIDNFinalDenoiser implements Denoiser {
     this._device = ctx.device;
     this._width = ctx.width;
     this._height = ctx.height;
+    this._disposed = false;
+    this._lastFailureReason = null;
 
     // Owned output texture — full-res rgba16float, same layout / usage as
     // the SVGF-real / atrous-variance ping-pongs so downstream
@@ -248,12 +261,50 @@ export class OIDNFinalDenoiser implements Denoiser {
     // pay the ~500 ms — 5 s "first run" cost on top of the inference cost.
     // The bridge caches the InferenceSession by modelUrl so subsequent
     // denoiseFinal calls skip session creation.
-    await preloadOIDNModel({
-      modelUrl: this._modelUrl,
-      ...(this._executionProviders !== undefined
-        ? { executionProviders: this._executionProviders }
-        : {}),
-    });
+    this._warmupInFlight = true;
+    try {
+      await preloadOIDNModel({
+        modelUrl: this._modelUrl,
+        ...(this._executionProviders !== undefined
+          ? { executionProviders: this._executionProviders }
+          : {}),
+      });
+    } catch (err) {
+      this._lastFailureReason = `OIDN preload failed: ${errorReason(err)}`;
+      this._lastFailureRetryable = false;
+      throw err;
+    } finally {
+      this._warmupInFlight = false;
+    }
+  }
+
+  state(): DenoiserState {
+    if (this.disabled) {
+      return { status: 'fallback', reason: 'OIDN modelUrl not supplied' };
+    }
+    if (this._disposed) {
+      return { status: 'fallback', reason: 'OIDN denoiser has been disposed' };
+    }
+    if (this._lastFailureReason != null) {
+      return {
+        status: 'failed',
+        reason: this._lastFailureReason,
+        retryable: this._lastFailureRetryable,
+      };
+    }
+    if (this._warmupInFlight) {
+      return { status: 'warming-up', reason: 'preloading OIDN model' };
+    }
+    if (this._inFlight) {
+      return { status: 'in-flight', reason: 'OIDN inference cycle in flight' };
+    }
+    if (this._device == null || this._denoisedOutputTexture == null) {
+      return { status: 'warming-up', reason: 'OIDN denoiser is not initialized' };
+    }
+    if (!this._haveDenoisedOutput) {
+      return { status: 'fallback', reason: 'waiting for first OIDN output' };
+    }
+    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null {
@@ -265,6 +316,7 @@ export class OIDNFinalDenoiser implements Denoiser {
     // the frame's compute work — no extra submission, no GPU stall.
     if (!this._inFlight && !this._disposed) {
       this._inFlight = true;
+      this._lastFailureReason = null;
       void this._runInferenceCycle(ctx).finally(() => {
         this._inFlight = false;
       });
@@ -386,11 +438,14 @@ export class OIDNFinalDenoiser implements Denoiser {
         { width: W, height: H, depthOrArrayLayers: 1 },
       );
       this._haveDenoisedOutput = true;
+      this._lastFailureReason = null;
     } catch (err) {
       // Swallow + log. The stale output texture remains visible; the next
       // dispatch will retry. Hosts can detect persistent failure by
       // observing that `_haveDenoisedOutput` never flips true (no public
       // surface for this yet — W11 follow-up could expose a status hook).
+      this._lastFailureReason = `OIDN inference cycle failed: ${errorReason(err)}`;
+      this._lastFailureRetryable = true;
       console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
     } finally {
       // Release the readback buffers — they're transient per-cycle.
@@ -425,6 +480,9 @@ export class OIDNFinalDenoiser implements Denoiser {
 
   dispose(): void {
     this._disposed = true;
+    this._warmupInFlight = false;
+    this._inFlight = false;
+    this._lastFailureReason = null;
     if (this._denoisedOutputTexture) {
       try { this._denoisedOutputTexture.destroy(); } catch { /* ignore */ }
       this._denoisedOutputTexture = null;

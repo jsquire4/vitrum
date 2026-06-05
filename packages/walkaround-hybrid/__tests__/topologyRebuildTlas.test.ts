@@ -71,6 +71,7 @@ describe('topologyRebuild TLAS (C2)', () => {
       primaryLightDir: [0, -1, 0],
       primaryLightIntensity: 1,
       lastScene: scene,
+      renderScene: scene,
       restirBvhModeOverride: 'tlas',
     };
 

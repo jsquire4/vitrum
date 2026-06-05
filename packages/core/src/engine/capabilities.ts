@@ -22,6 +22,42 @@ export interface IncrementalPatchSupport {
   readonly topology: boolean;
 }
 
+export type BackendSupportMode =
+  /** Implemented as-authored by the backend's native scene/render path. */
+  | 'native'
+  /** Implemented by rebuilding backend scene state instead of a targeted patch. */
+  | 'fallback-rebuild'
+  /** Implemented by converting the authored primitive into generated mesh data. */
+  | 'fallback-generated-mesh'
+  /** Implemented with a documented approximation rather than full authored fidelity. */
+  | 'approximate'
+  /** Not supported by this backend. */
+  | 'unsupported';
+
+export interface BackendMutationSupportDetails {
+  readonly transform: BackendSupportMode;
+  readonly positions: BackendSupportMode;
+  readonly material: BackendSupportMode;
+  readonly emitter: BackendSupportMode;
+  readonly topology: BackendSupportMode;
+  readonly addPrimitive: BackendSupportMode;
+  readonly removePrimitive: BackendSupportMode;
+  readonly environment: BackendSupportMode;
+  readonly resize: BackendSupportMode;
+  readonly lighting: BackendSupportMode;
+}
+
+export interface BackendSupportDetails {
+  /** Per primitive-kind fidelity. Existing broad capability sets stay available
+   *  for host gating; this detail map says whether support is native,
+   *  fallback-generated, approximate, or unsupported. */
+  readonly primitives: Readonly<Partial<Record<ScenePrimitive['kind'], BackendSupportMode>>>;
+  readonly emitters: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>;
+  readonly environments: Readonly<Partial<Record<SceneEnvironment['kind'], BackendSupportMode>>>;
+  readonly analyticShapes: Readonly<Partial<Record<AnalyticShape, BackendSupportMode>>>;
+  readonly mutations: BackendMutationSupportDetails;
+}
+
 export type FramePresentationMode =
   /** Backend requires host-supplied swap-chain textures every frame. */
   | 'swapchain-required'
@@ -105,6 +141,13 @@ export interface EngineCapabilities {
   readonly presentationMode?: FramePresentationMode;
   /** Backend-specific feature IDs that are intentionally non-final / approximate. */
   readonly experimentalFeatures?: ReadonlySet<string>;
+
+  /** Fine-grained, host-readable implementation detail for professional
+   *  conformance checks. This is additive to the legacy boolean/set fields:
+   *  existing hosts can keep using the coarse shape, while diagnostics and
+   *  conformance tests can distinguish native support from rebuild fallbacks,
+   *  generated-mesh fallbacks, approximations, and unsupported rows. */
+  readonly supportDetails?: BackendSupportDetails;
 
   // ── Specular caustics (RFE-05) ──────────────────────────────────────────
   /**
