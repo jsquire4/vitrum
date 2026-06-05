@@ -141,7 +141,13 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   // weights (the canonical is a resampling technique, not an un-weighted base).
   let cCur = f32(rCur.M);
   let cPrev = f32(prevM);
-  let pHatCur_native = restirPtTargetAt(rCur.xv, rCur.nv, rCur.xs, rCur.Lo);
+  // Eye directions for the integrand-matching target (the BRDF needs wo at each
+  // domain's visible vertex). The scene is static this increment; the prev camera
+  // ≈ current for small motion, so params.cameraPos serves both domains — an
+  // unbiased approximation (p̂ only sets resampling variance, not the mean).
+  let woCur  = restirpt_safe_normalize(params.cameraPos.xyz - rCur.xv);
+  let woPrev = restirpt_safe_normalize(params.cameraPos.xyz - rPrev.xv);
+  let pHatCur_native = restirPtTargetAt(rCur.xv, rCur.nv, woCur, rCur.albV, rCur.roughnessV, rCur.metalV, rCur.xs, rCur.Lo);
 
   // Decide whether prev is a VALID reconnection-shift candidate (prefix match,
   // non-degenerate base half-G, positive Jacobian, non-zero shifted+native
@@ -155,8 +161,8 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   var pHatPrev_native: f32 = 0.0;
   if (prevValid) {
     J = restirPtShiftJacobian(rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns);
-    pHatPrev_atCur  = restirPtTargetAt(rCur.xv, rCur.nv, rPrev.xs, rPrev.Lo);
-    pHatPrev_native = restirPtTargetAt(rPrev.xv, rPrev.nv, rPrev.xs, rPrev.Lo);
+    pHatPrev_atCur  = restirPtTargetAt(rCur.xv, rCur.nv, woCur, rCur.albV, rCur.roughnessV, rCur.metalV, rPrev.xs, rPrev.Lo);
+    pHatPrev_native = restirPtTargetAt(rPrev.xv, rPrev.nv, woPrev, rPrev.albV, rPrev.roughnessV, rPrev.metalV, rPrev.xs, rPrev.Lo);
     prevValid = (J > 0.0)
              && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
              && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
@@ -173,7 +179,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     if (prevValid) {
       // prev's sample re-rooted onto the CURRENT domain is p̂_cur(T z_prev); the
       // canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
-      let pHatPrev_atCurSample = restirPtTargetAt(rPrev.xv, rPrev.nv, rCur.xs, rCur.Lo);
+      let pHatPrev_atCurSample = restirPtTargetAt(rPrev.xv, rPrev.nv, woPrev, rPrev.albV, rPrev.roughnessV, rPrev.metalV, rCur.xs, rCur.Lo);
       let denomCur = restirPtPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
       m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
     }
@@ -204,7 +210,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseReservoirPTWGris(&rGris, rptParams.wCap);
+  finaliseReservoirPTWGris(&rGris, rptParams.wCap, params.cameraPos.xyz);
   // Refresh the reconnection-shift cache so downstream reuse (and next frame's
   // temporal step, since rGris becomes rPrev) sees a base edge rooted at THIS
   // pixel's visible vertex.

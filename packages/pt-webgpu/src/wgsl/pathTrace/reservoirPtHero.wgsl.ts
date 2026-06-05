@@ -40,14 +40,15 @@
  *                see the unbiasedness note below; this is the hero-stack field
  *                the diffuse-only GI version does not need (it cosine-samples).
  *
- * The hero target p̂ (the resampling heuristic, NOT the integrand) is the SAME
- * diffuse-cosine-luminance proxy the proven GI version uses:
- *   p̂(z) = luminance(Lo) · max(0, cos(nv, xv→xs)) · INV_PI
- * (see `restirPtTargetAt`). It is a scalar resampling heuristic; the W finalize
- * divides it OUT (W = w_sum/p̂), so the converged mean does NOT depend on it —
- * only the resampling variance does. The RESOLVE pass reconstructs the path
- * contribution with the REAL visible-vertex BRDF (`evaluateBrdf`), not the
- * proxy. (See the unbiasedness note.)
+ * The hero target p̂ (the resampling heuristic) is the INTEGRAND-MATCHING target —
+ * the luminance of the real unshadowed reconnection contribution:
+ *   p̂(z) = luminance( f_bsdf(xv; wo→wi) · max(0, cos(nv, wi)) · Lo ),  wi = xv→xs
+ * (see `restirPtTargetAt`, using the visible-vertex BRDF — B3). It is a scalar
+ * resampling heuristic; the W finalize divides it OUT (W = w_sum/p̂), so the
+ * converged mean does NOT depend on it — only the resampling VARIANCE does, which
+ * is exactly why matching the integrand (vs the old diffuse-cosine proxy) reduces
+ * variance decisively for a glossy xv. The RESOLVE pass reconstructs the path
+ * contribution with the SAME real BRDF (`evaluateBrdf`). (See the unbiasedness note.)
  *
  * ── Unbiasedness note (the load-bearing energy-consistency argument) ─────────
  * Let the producer sample wi_recon from the visible-vertex BSDF with the true
@@ -73,11 +74,13 @@
  *     invalid (the reconnection shift assumes the reconnection vertex is reached
  *     by a non-singular prefix BSDF). The PRODUCER therefore writes an EMPTY
  *     reservoir (M = 0) for specular/transmissive xv — that pixel does not reuse.
- *   • A MODERATELY-GLOSSY xv is reused approximately: the geometric reconnection
- *     shift holds xs fixed and re-roots the edge, but the glossy BRDF at xv is
- *     direction-sensitive and the diffuse-cosine target under-weights it, so the
- *     temporal feedback can drift slightly. This is the documented regime
- *     limitation of prefix-1 reconnection reuse (exact for diffuse xv only).
+ *   • A MODERATELY-GLOSSY xv: the geometric reconnection shift holds xs fixed and
+ *     re-roots the edge; the glossy BRDF at xv is direction-sensitive. The
+ *     INTEGRAND-MATCHING target (B3) now weights such candidates by the REAL BRDF
+ *     in the temporal MIS (was a diffuse-cosine proxy that under-weighted them), so
+ *     the prefix-1 glossy reuse is resampled correctly — unbiased by construction
+ *     (W cancels p̂) and variance-reduced. (A full random-replay shift for
+ *     multi-vertex glossy PREFIXES — which prefix-1 lacks — remains a later item.)
  *
  * ════════════════════════════════════════════════════════════════════════════
  * Phase-0 written-but-unread fields (the hybrid-shift + rngSeed headroom)
@@ -327,20 +330,25 @@ fn updateReservoirPT(
 }
 
 // The hero target function p̂ in the domain whose visible vertex is xv:
-//   p̂(z) = luminance(Lo) · max(0, cos(nv, xv→xs)) · INV_PI
-// This is the SAME diffuse-cosine-luminance proxy the proven GI version uses
-// (reservoirGi.wgsl.ts finaliseGIReservoirW / grisTargetAt). It is a SCALAR
-// resampling heuristic only — W = w_sum/p̂ divides it out, so the converged mean
-// is INDEPENDENT of it (see the unbiasedness note in the file header); the
-// RESOLVE pass reconstructs with the REAL evaluateBrdf at xv. Returns 0 on a
-// degenerate edge (the caller treats a 0 target as "contributes nothing").
-fn restirPtTargetAt(xv: vec3f, nv: vec3f, xs: vec3f, Lo: vec3f) -> f32 {
+//   p̂(z) = luminance( f_bsdf(xv; wo→wi) · max(0, cos(nv, wi)) · Lo ),  wi = xv→xs
+// the INTEGRAND-MATCHING target (the luminance of the real unshadowed reconnection
+// contribution, using the visible-vertex BRDF) — NOT the diffuse-cosine proxy the
+// diffuse-only GI version uses. It is a SCALAR resampling heuristic only — W =
+// w_sum/p̂ divides it out, so the converged mean is INDEPENDENT of it (the producer
+// W = 1/p_src cancellation holds for ANY p̂ — see the unbiasedness note); the RESOLVE
+// pass likewise reconstructs with the REAL evaluateBrdf at xv. Matching the integrand
+// only reduces RESAMPLING VARIANCE — decisively for a GLOSSY visible vertex whose
+// direction-sensitive BRDF the old cosine proxy mis-weighted (the documented prefix-1
+// glossy drift, fixed here). Returns 0 on a degenerate / back-facing edge.
+fn restirPtTargetAt(xv: vec3f, nv: vec3f, wo: vec3f, albV: vec3f, roughnessV: f32, metalV: f32, xs: vec3f, Lo: vec3f) -> f32 {
   let d = xs - xv;
   let dist2 = dot(d, d);
   if (dist2 < 1e-8) { return 0.0; }
   let wi = d * inverseSqrt(dist2);
   let cosTheta = max(0.0, dot(nv, wi));
-  return luminance(Lo) * cosTheta * INV_PI;
+  if (cosTheta <= 0.0) { return 0.0; }
+  let f = evaluateBrdf(albV, roughnessV, metalV, nv, wo, wi);
+  return luminance(f * cosTheta * Lo);
 }
 
 // ── GRIS pairwise MIS (Lin 2022 §"pairwise MIS") — mirrors walkaround-hybrid's
@@ -371,9 +379,10 @@ fn restirPtPairwiseDenomCanonical(
 // Mirrors walkaround-hybrid finaliseGIReservoirWGris EXACTLY (the GRIS form),
 // with the hero target p̂ via restirPtTargetAt. wCap bounds the temporal-feedback
 // gain (the V19 grison-divergence guard).
-fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32) {
+fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32, cameraPos: vec3f) {
   if ((*r).M > 0u) {
-    let pHatF = restirPtTargetAt((*r).xv, (*r).nv, (*r).xs, (*r).Lo);
+    let wo = restirpt_safe_normalize(cameraPos - (*r).xv);
+    let pHatF = restirPtTargetAt((*r).xv, (*r).nv, wo, (*r).albV, (*r).roughnessV, (*r).metalV, (*r).xs, (*r).Lo);
     let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
     (*r).W = min(W_raw, wCap);
   }

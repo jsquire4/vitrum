@@ -89,13 +89,28 @@ describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finaliz
   });
 
   it('finalises with the GRIS form finaliseReservoirPTWGris (W = w_sum/p̂, NO /M)', () => {
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris, rptParams.wCap);');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris, rptParams.wCap, params.cameraPos.xyz);');
     // The GRIS finalize must NOT divide by M (the MIS weights already sum to 1).
     const finalizeBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn finaliseReservoirPTWGris('),
     ).split('\n').slice(0, 8).join('\n');
     expect(finalizeBody).toContain('(*r).w_sum / pHatF');
     expect(finalizeBody).not.toMatch(/f32\(\(\*r\)\.M\)/); // no ·M normalisation
+  });
+
+  it('uses the INTEGRAND-MATCHING target (evaluateBrdf·cos·Lo), not the diffuse-cosine proxy (B3)', () => {
+    // The hero target p̂ matches the integrand (the real visible-vertex BRDF) so the
+    // temporal MIS weights glossy candidates correctly. Unbiased by construction
+    // (W = w_sum/p̂ cancels p̂ — see the producer 1-sample note), variance-reducing
+    // for a glossy visible vertex whose BRDF the old cosine proxy mis-weighted.
+    const targetBody = RESERVOIR_PT_HERO_WGSL.slice(
+      RESERVOIR_PT_HERO_WGSL.indexOf('fn restirPtTargetAt('),
+    ).split('\n').slice(0, 12).join('\n');
+    expect(targetBody).toContain('evaluateBrdf(albV, roughnessV, metalV, nv, wo, wi)');
+    expect(targetBody).toContain('luminance(f * cosTheta * Lo)');
+    expect(targetBody).not.toContain('INV_PI'); // the old diffuse-cosine proxy is gone
+    // wo is threaded from the camera at the call sites (producer + temporal + finalize).
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('restirpt_safe_normalize(params.cameraPos.xyz - rCur.xv)');
   });
 
   it('reprojects via the previous-frame camera matrix (params.prevViewProj)', () => {
@@ -158,7 +173,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');
   });
 
   it('gates specular / transmissive visible vertices to an EMPTY reservoir (no reuse)', () => {

@@ -34,7 +34,7 @@
  * the reconnection split clean and matches Lin 2022's cached L_o at x_s.
  *
  * The producer's 1-sample RIS candidate weight is  w = p̂ / p_src  where
- *   p̂    = restirPtTargetAt(xv, nv, xs, Lo)  = luminance(Lo)·cos(nv,wi_recon)·INV_PI
+ *   p̂    = restirPtTargetAt(xv, nv, woV, mat, xs, Lo) = luminance(f_bsdf·cos·Lo)  (integrand-matching, B3)
  *          (the diffuse-cosine resampling proxy — a SCALAR heuristic), and
  *   p_src = the REAL directional pdf that GENERATED wi_recon at xv
  *          (brdfDirectionalPdf at the visible vertex).
@@ -444,13 +444,16 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   r.xv = xv; r.nv = nv;
   r.albV = baseColorV; r.roughnessV = roughnessV; r.metalV = metallicV;
   r.prefixVertexCount = 1u;
-  // Candidate target (the diffuse-cosine proxy) for the single reconnection
-  // sample. p̂ uses (xv, nv, xs, Lo); the candidate weight is p̂ / p_src.
-  let pHat = restirPtTargetAt(xv, nv, xs, Lo);
+  // Candidate target (integrand-matching: f_bsdf·cos·Lo with the visible-vertex
+  // BRDF) for the single reconnection sample. The candidate weight is p̂ / p_src.
+  // For 1-sample RIS p̂ cancels in W = w_sum/p̂ = 1/p_src, so this does NOT change the
+  // producer's mean — it sets the cross-frame-consistent p̂ the temporal MIS
+  // resamples against (the same target finalise uses).
+  let pHat = restirPtTargetAt(xv, nv, woV, baseColorV, roughnessV, metallicV, xs, Lo);
   let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);
   updateReservoirPT(&r, xs, ns, Lo, pdfSrc, wCandidate, &rng);
   // GRIS finalize: W = w_sum / p̂ (NO /M — the temporal pass folds with MIS).
-  finaliseReservoirPTWGris(&r, rptParams.wCap);
+  finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);
   // Refresh the reconnection-shift cache from the chosen base edge xv → xs.
   refreshReconnectionCachePT(&r);
 
