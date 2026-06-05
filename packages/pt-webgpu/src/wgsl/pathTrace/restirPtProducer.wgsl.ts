@@ -274,20 +274,30 @@ fn rptComputeLoAtReconnection(
     // Direct lighting (NEE) at this suffix vertex.
     Lo = Lo + rptDirectAtVertex(rng, pos, normal, wo, baseColor, roughness, metallic, suffixThroughput);
 
-    // Sample the next onward direction. The suffix walk uses the cosine
-    // (diffuse) lobe as the robust default — it keeps Lo well-defined for any
-    // onward surface; the reconnection vertex itself was validated diffuse-ish by
-    // the caller's reusable-visible-vertex gate, and onward indirect is a
-    // second-order term whose exact lobe choice changes variance, not the mean
-    // (f·cos/pdf = albedo for the cosine lobe is the correct diffuse transport).
+    // Sample the next onward direction with the cosine (diffuse) lobe — the robust
+    // default that keeps Lo well-defined for any onward surface; the reconnection
+    // vertex was validated diffuse-ish by the reusable-visible-vertex gate, and the
+    // onward indirect is a second-order term whose exact lobe choice changes
+    // variance, not the mean.
     let cosSample = cosineHemisphereSample(rng, normal);
     let nextDir = cosSample.wi;
-    if (max(dot(normal, nextDir), 0.0) <= 1e-5) { break; }
-    let f0 = mix(vec3f(0.04), baseColor, metallic);
-    let cosO = max(dot(normal, wo), 0.0);
-    let fres = fresnelSchlick(cosO, f0);
-    let kd = (vec3f(1.0) - fres) * (1.0 - metallic);
-    suffixThroughput = suffixThroughput * kd * baseColor;
+    let nDotNext = max(dot(normal, nextDir), 0.0);
+    if (nDotNext <= 1e-5) { break; }
+    // Onward-bounce throughput = the EXACT cosine-sampling MC estimator
+    //   f·cos / pdf   with pdf = cos·INV_PI   (cosSample.pdf),
+    // evaluated with the FULL BRDF (evaluateBrdf, whose diffuse kd uses the
+    // HALF-VECTOR Fresnel). This is critical at GRAZING wo: the prior throughput
+    // "(1 - fresnelSchlick(dot(n,wo)))*baseColor" applied the VIEW-ANGLE Fresnel,
+    // which -> 1 as wo grazes, collapsing the diffuse transport toward 0 (a ~10%/
+    // bounce energy loss that COMPOUNDED with suffix depth — the ReSTIR-PT reuse
+    // ~15% deficit; the deeper a suffix bounce, the more oblique its wo). The
+    // physically-correct Lambertian cosine-sample throughput has NO view-angle
+    // collapse (f·cos/pdf = albedo for an ideal diffuse lobe). Verified exact
+    // (ratio 1.000 ∀ wo angle) vs dense-quadrature in wsl-gpu/scripts/
+    // restir-pt-onward-jsmodel.ts. evaluateBrdf also folds the small onward
+    // specular response in, matching the megakernel's onward transport.
+    let fOnward = evaluateBrdf(baseColor, roughness, metallic, normal, wo, nextDir);
+    suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
     prevAllowsAreaMis = true; // diffuse onward bounce: next emission handled by NEE/MIS.
 
     let nextHit = traceClosest(Ray(pos + normal * 1e-3, nextDir), 1e-4, INFINITY);
