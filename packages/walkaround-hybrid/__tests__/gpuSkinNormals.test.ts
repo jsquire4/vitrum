@@ -16,7 +16,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  GPU_SKIN_BVH_WGSL,
   GPU_SKIN_BVH_WITH_NORMALS_WGSL,
 } from '../src/skin/gpuSkinBvh.wgsl.js';
 
@@ -25,13 +24,10 @@ describe('GPU normal-skinning WGSL', () => {
     expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
       '@group(0) @binding(7) var<storage, read_write> skinnedNormals: array<vec4f>',
     );
-    // The old position-only kernel did NOT have a normal output.
-    expect(GPU_SKIN_BVH_WGSL).not.toContain('skinnedNormals');
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).not.toContain('skinnedNormals[vi]');
   });
 
   it('with-normals kernel actually reads the rest normals (binding 2)', () => {
-    // The position-only kernel bound restNormals but never read it.
-    expect(GPU_SKIN_BVH_WGSL).not.toContain('restNormals[vi]');
     expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('restNormals[vi]');
   });
 
@@ -64,12 +60,8 @@ describe('GPU normal-skinning WGSL', () => {
     expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).not.toContain('skinnedNormals[vi] = vec4f(safeN, 0.0)');
   });
 
-  it('position math is preserved between the two kernels', () => {
-    // Both accumulate sp via the weighted bone-matrix product and apply the
-    // world matrix the same way.
-    for (const src of [GPU_SKIN_BVH_WGSL, GPU_SKIN_BVH_WITH_NORMALS_WGSL]) {
-      expect(src).toContain('sp = sp + wi * p4');
-      expect(src).toContain('outPos = (skinParams.matrixWorld * sp).xyz');
-    }
+  it('with-normals kernel still skins positions into bvhPositions', () => {
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('sp = sp + wi * p4');
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('outPos = (skinParams.matrixWorld * sp).xyz');
   });
 });

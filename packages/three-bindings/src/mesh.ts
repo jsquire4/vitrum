@@ -69,6 +69,17 @@ interface FloatAttribute {
   readonly itemSize: number;
 }
 
+/** Exact identity check for a 16-element column-major matrix. */
+function isIdentityMat16(m: ArrayLike<number>): boolean {
+  return (
+    m[0] === 1 && m[5] === 1 && m[10] === 1 && m[15] === 1 &&
+    m[1] === 0 && m[2] === 0 && m[3] === 0 &&
+    m[4] === 0 && m[6] === 0 && m[7] === 0 &&
+    m[8] === 0 && m[9] === 0 && m[11] === 0 &&
+    m[12] === 0 && m[13] === 0 && m[14] === 0
+  );
+}
+
 function extractFloatAttribute(
   geo: THREE.BufferGeometry,
   name: string,
@@ -82,13 +93,6 @@ function extractFloatAttribute(
   };
 }
 
-function extractAttribute(
-  geo: THREE.BufferGeometry,
-  name: string,
-): Float32Array | undefined {
-  return extractFloatAttribute(geo, name)?.array;
-}
-
 function extractIndex(
   geo: THREE.BufferGeometry,
 ): Uint32Array | Uint16Array | undefined {
@@ -97,22 +101,6 @@ function extractIndex(
   const arr = idx.array;
   if (arr instanceof Uint32Array || arr instanceof Uint16Array) return arr;
   return new Uint32Array(arr);
-}
-
-/**
- * Extract a required vertex attribute (position/normal), throwing a converter
- * error labelled with the mesh type when it is missing. `label` is the
- * caller-facing mesh identifier; `meshTypeName` is the THREE class name used in
- * the error prefix (e.g. "Mesh", "InstancedMesh", "SkinnedMesh").
- */
-function requireAttribute(
-  geo: THREE.BufferGeometry,
-  name: 'position' | 'normal',
-  label: string,
-  meshTypeName: string,
-): Float32Array {
-  const attr = requireFloatAttribute(geo, name, label, meshTypeName);
-  return attr.array;
 }
 
 function requireFloatAttribute(
@@ -431,12 +419,7 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = requireAttribute(geo, 'position', label, 'InstancedMesh');
-  const normals = requireAttribute(geo, 'normal', label, 'InstancedMesh');
-
-  const uvs = extractAttribute(geo, 'uv');
-  const tangents = extractAttribute(geo, 'tangent');
-  const indices = extractIndex(geo);
+  const attrs = extractMeshAttributeSet(geo, label, 'InstancedMesh');
 
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
@@ -458,13 +441,15 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
   return {
     kind: 'instanced-mesh',
     id: obj.uuid,
-    positions,
-    normals,
+    positions: attrs.positions.array,
+    normals: attrs.normals.array,
     material,
     instances,
-    ...(uvs != null ? { uvs } : {}),
-    ...(tangents != null ? { tangents } : {}),
-    ...(indices != null ? { indices } : {}),
+    ...(attrs.uvs != null ? { uvs: attrs.uvs.array } : {}),
+    ...(attrs.uv1 != null ? { uv1: attrs.uv1.array } : {}),
+    ...(attrs.tangents != null ? { tangents: attrs.tangents.array } : {}),
+    ...(attrs.colors != null ? { colors: attrs.colors.array } : {}),
+    ...(attrs.indices != null ? { indices: attrs.indices } : {}),
   };
 }
 
@@ -485,8 +470,9 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = requireAttribute(geo, 'position', label, 'SkinnedMesh');
-  const normals = requireAttribute(geo, 'normal', label, 'SkinnedMesh');
+  const attrs = extractMeshAttributeSet(geo, label, 'SkinnedMesh');
+  const positions = attrs.positions.array;
+  const normals = attrs.normals.array;
 
   // SkinnedMesh requires skinIndex + skinWeight attributes per glTF 2.0.
   const skinIndexAttr = geo.getAttribute('skinIndex');
@@ -535,26 +521,24 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     }
   }
 
-  // Mesh bind matrix: identity for glTF-typical use, but non-identity when
-  // the host called `mesh.bind(skeleton, customBindMatrix)` or bound after
-  // positioning the mesh. Three.js stores both bindMatrix and its inverse.
-  // We only emit them when bindMatrix is not identity (saves bytes + makes
-  // the common case clearly identity-defaulted).
-  const bm = obj.bindMatrix.elements;
-  const isIdentityBind =
-    bm[0] === 1 && bm[5] === 1 && bm[10] === 1 && bm[15] === 1 &&
-    bm[1] === 0 && bm[2] === 0 && bm[3] === 0 &&
-    bm[4] === 0 && bm[6] === 0 && bm[7] === 0 &&
-    bm[8] === 0 && bm[9] === 0 && bm[11] === 0 &&
-    bm[12] === 0 && bm[13] === 0 && bm[14] === 0;
-  const bindMatrix = isIdentityBind ? undefined : new Float32Array(obj.bindMatrix.elements);
-  const bindMatrixInverse = isIdentityBind
-    ? undefined
-    : new Float32Array(obj.bindMatrixInverse.elements);
+  // Mesh bind matrices: identity for a mesh bound at the origin, but the
+  // pair must be emitted when EITHER is non-identity. In THREE's 'attached'
+  // bindMode, `bindMatrixInverse = inverse(matrixWorld)` even while
+  // `bindMatrix` stays identity — that inverse is exactly the term that
+  // cancels the node transform back out of the world-space bone matrices,
+  // making the solveSkin output MESH-LOCAL so consumers apply `transform`
+  // exactly once. (Checking only bindMatrix here used to drop the pair,
+  // so solveSkin emitted world-space positions and every consumer that
+  // applied `transform` on top double-transformed any skinned mesh whose
+  // node carries a non-identity world matrix.)
+  const bmIdentity = isIdentityMat16(obj.bindMatrix.elements);
+  const bmiIdentity = isIdentityMat16(obj.bindMatrixInverse.elements);
+  const emitBind = !(bmIdentity && bmiIdentity);
+  const bindMatrix = emitBind ? new Float32Array(obj.bindMatrix.elements) : undefined;
+  const bindMatrixInverse = emitBind
+    ? new Float32Array(obj.bindMatrixInverse.elements)
+    : undefined;
 
-  const uvs = extractAttribute(geo, 'uv');
-  const tangents = extractAttribute(geo, 'tangent');
-  const indices = extractIndex(geo);
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
 
   // ── Morph targets ────────────────────────────────────────────────────────
@@ -616,9 +600,11 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     boneInverses,
     transform,
     material,
-    ...(uvs != null ? { uvs } : {}),
-    ...(tangents != null ? { tangents } : {}),
-    ...(indices != null ? { indices } : {}),
+    ...(attrs.uvs != null ? { uvs: attrs.uvs.array } : {}),
+    ...(attrs.uv1 != null ? { uv1: attrs.uv1.array } : {}),
+    ...(attrs.tangents != null ? { tangents: attrs.tangents.array } : {}),
+    ...(attrs.colors != null ? { colors: attrs.colors.array } : {}),
+    ...(attrs.indices != null ? { indices: attrs.indices } : {}),
     ...(morphTargets != null ? { morphTargets } : {}),
     ...(morphTargetNormals != null ? { morphTargetNormals } : {}),
     ...(morphWeights != null ? { morphWeights } : {}),

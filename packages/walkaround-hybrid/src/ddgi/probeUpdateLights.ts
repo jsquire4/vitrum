@@ -5,6 +5,8 @@ import type { DDGILight } from './types.js';
 
 const MAX_DDGI_PROBE_LIGHTS = 16;
 const LIGHT_STRIDE_FLOATS = 16;
+export const DDGI_PROBE_LIGHTS_BUFFER_BYTES =
+  (4 + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS) * Float32Array.BYTES_PER_ELEMENT;
 
 export function packDDGIProbeLights(
   lights: readonly DDGILight[],

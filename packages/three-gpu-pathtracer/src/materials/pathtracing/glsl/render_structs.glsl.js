@@ -28,7 +28,7 @@ export const render_structs = /* glsl */`
 		uint depth;
 		float wavelength;
 		float wavelengthPdf;
-		float throughput;
+		vec3 throughput;
 		Material fogMaterial;
 
 	};
@@ -44,7 +44,7 @@ export const render_structs = /* glsl */`
 		result.traversals = 0;
 		result.wavelength = 550.0;
 		result.wavelengthPdf = 1.0 / 400.0;
-		result.throughput = 1.0;
+		result.throughput = vec3( 1.0 );
 		result.depth = 0u;
 		result.fogMaterial.fogVolume = false;
 		return result;

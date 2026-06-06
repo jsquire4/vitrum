@@ -28,6 +28,9 @@ import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
 import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { SCENE_TRAVERSAL_WGSL } from '../sceneTraversal.wgsl.js';
+import { RESTIR_CAST_PRIMARY_WGSL } from '../restirCastPrimary.wgsl.js';
+import { TEMPORAL_WGSL } from '../temporal.wgsl.js';
+import { SPATIAL_WGSL } from '../spatial.wgsl.js';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from '../../skin/gpuSkinBvh.wgsl.js';
 import { BIND_GROUP_TABLE } from '../../pipeline/bindGroupDescriptors.js';
 import { SHADE_MODULE } from '../shade.wgsl.js';
@@ -153,6 +156,20 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     expect(src).toMatch(/instanceIndex\s*\*\s*4u/);
     expect(src).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
     expect(src).not.toMatch(/geoNormal,\s*ubo\.bvhMode\s*==\s*1u/);
+  });
+
+  it('canonical temporal/spatial primary cast uses the same smooth shading normal for p-hat inputs', () => {
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/let\s+geoNormal\s*=\s*hit\.normal/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/s\.normal\s*=\s*smoothShadingNormal\s*\(/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/bvh_normal\[hit\.indices\.x\]\.xyz/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
+  });
+
+  it.each([
+    ['temporal', TEMPORAL_WGSL],
+    ['spatial', SPATIAL_WGSL],
+  ])('%s declares bvh_normal for castPrimary smooth-normal evaluation', (_name, src) => {
+    expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
   });
 
   it('smoothShadingNormal takes isTlas + world-to-local columns and transforms the local blend', () => {

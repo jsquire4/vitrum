@@ -1,8 +1,8 @@
 /**
  * DDGI Probe Update — Pass 1: Ray Casting.
  *
- * One workgroup per probe in the active set. Each thread handles 3 rays
- * (96 rays / 32 threads). Writes ray hit results to a storage buffer for
+ * One workgroup per probe in the active set. Each thread handles
+ * ceil(RAYS_PER_PROBE / 32) rays (192 rays / 32 threads today). Writes ray hit results to a storage buffer for
  * Pass 2 (the atlas blend pass).
  */
 
@@ -522,4 +522,3 @@ fn probeUpdateRays(
   }
 }
 `; }
-

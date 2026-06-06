@@ -177,7 +177,7 @@ export interface RestirGIFrameResources {
 /** DDGI 1×1 atlas placeholders + the DDGI uniform buffer (gate UBO). */
 export interface DDGIFrameResources {
   ddgiPlaceholderRgba16f: GPUTexture;
-  ddgiPlaceholderRg16f: GPUTexture;
+  ddgiPlaceholderVisRgba16f: GPUTexture;
   ddgiUboBuffer: GPUBuffer;
 }
 
@@ -196,7 +196,7 @@ export interface GTAOFrameResources {
    */
   aoHalfTexture: GPUTexture;
   /**
-   * Sprint 15 — Full-resolution GTAO occlusion factor (r16float). Written by
+   * Sprint 15 — Full-resolution GTAO occlusion factor (rgba16float). Written by
    * `gtaoUpsampleMain`; sampled by `shade.wgsl` to modulate the diffuse
    * indirect / direct terms. 1-frame lagged from current shade (AO computes
    * from current frame's gNormalDepth but shade reads the *previous* frame's
@@ -271,21 +271,17 @@ export interface SVGFFrameResources {
  *
  * When PPG is not enabled, every field is `undefined` and the PPG passes are
  * never registered (see `PPGCoordinator.enabled`). When enabled,
- * these buffers are uploaded each rebuild cycle and bound into the PPG guide
- * + update passes:
+ * these buffers are uploaded each rebuild cycle and bound into the PPG update
+ * pass plus the gi-ris guided-sampling path:
  *
  *   - sTreeBuf       — serialised spatial kd-tree (Float32Array)
  *   - dTreeBuf       — concatenated per-cell directional quadtrees
  *   - dTreeOffsetsBuf — sTree-cell → dTreeBuf base-offset table
  *   - fluxAtomicsBuf — atomic u32 flux accumulator (one slot per dTree node)
- *   - samplesPosBuf  — per-pixel sample positions (training input; W9 P1 stub-filled)
- *   - samplesDirBuf  — per-pixel sample directions (training input)
- *   - samplesLiBuf   — per-pixel incoming radiance L_i (deviation-3 binding)
- *   - sampleOutBuf   — per-pixel guide sample output (xyz=dir, w=pdf)
- *   - guideUboBuffer — guide kernel UBO (pixelCount, alpha, scene bounds)
  *   - updateUboBuffer — update kernel UBO (sampleCount, fluxBudget)
  *
- * See `ppg/serialise.ts` for the buffer layout.
+ * The update pass trains directly from `restirGI.reservoirGiCurrentBuffer`.
+ * See `ppg/serialise.ts` for the tree buffer layout.
  */
 interface PPGFrameResources {
   /** Set only when `ppgEnabled` was true at engine init. */
@@ -294,14 +290,7 @@ interface PPGFrameResources {
   dTreeOffsetsBuf?: GPUBuffer;
   /** Atomic u32 accumulator — one slot per dTree node (matches dTreeBuf layout). */
   fluxAtomicsBuf?: GPUBuffer;
-  /** Per-pixel sample inputs to the update kernel (training). */
-  samplesPosBuf?: GPUBuffer;
-  samplesDirBuf?: GPUBuffer;
-  samplesLiBuf?: GPUBuffer;
-  /** Per-pixel guide sample output (xyz=dir world, w=pdf). */
-  sampleOutBuf?: GPUBuffer;
-  /** Guide + update kernel UBOs. */
-  guideUboBuffer?: GPUBuffer;
+  /** Update kernel UBO. */
   updateUboBuffer?: GPUBuffer;
 }
 
@@ -493,7 +482,7 @@ export function destroyFrameResources(r: FrameResources): void {
 
   // ddgi
   r.ddgi.ddgiPlaceholderRgba16f.destroy();
-  r.ddgi.ddgiPlaceholderRg16f.destroy();
+  r.ddgi.ddgiPlaceholderVisRgba16f.destroy();
   r.ddgi.ddgiUboBuffer.destroy();
 
   // common (second wave — variance + motion + tier + resolved)
@@ -542,11 +531,6 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ppg.dTreeBuf?.destroy();
   r.ppg.dTreeOffsetsBuf?.destroy();
   r.ppg.fluxAtomicsBuf?.destroy();
-  r.ppg.samplesPosBuf?.destroy();
-  r.ppg.samplesDirBuf?.destroy();
-  r.ppg.samplesLiBuf?.destroy();
-  r.ppg.sampleOutBuf?.destroy();
-  r.ppg.guideUboBuffer?.destroy();
   r.ppg.updateUboBuffer?.destroy();
   // neural — empty placeholder; nothing to destroy until W10.
 }
@@ -566,9 +550,6 @@ export function destroyFrameResources(r: FrameResources): void {
  *                      × DTREE_NODE_F32 + per-cell header.
  *   - dTreeOffsetsBuf: u32 × maxSpatialCells.
  *   - fluxAtomicsBuf:  u32 × maxSpatialCells × maxDTreeNodesPerCell.
- *   - samples*Buf:     vec4f × (width × height).
- *   - sampleOutBuf:    vec4f × (width × height).
- *   - guideUboBuffer:  48 bytes (12 × f32 — see PPGGuideUBO in WGSL).
  *   - updateUboBuffer: 16 bytes (4 × u32 — see PPGUpdateUBO in WGSL).
  *
  * The host can resize via {@link allocatePPGResources} on a new
@@ -598,7 +579,6 @@ export function allocatePPGResources(
 ): void {
   const maxSpatialCells = opts?.maxSpatialCells ?? 1_024;
   const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? 341;
-  const pixelCount = Math.max(1, width * height);
 
   // Layout constants — must match serialise.ts.
   const STREE_HEADER_F32 = 4;
@@ -630,33 +610,6 @@ export function allocatePPGResources(
     label: 'ppg-fluxAtomics',
     size: Math.max(16, fluxAtomicsCount * 4),
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  // Sample input buffers — vec4f per pixel.
-  const samplesSize = Math.max(16, pixelCount * 16);
-  res.ppg.samplesPosBuf = device.createBuffer({
-    label: 'ppg-samplesPos',
-    size: samplesSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.samplesDirBuf = device.createBuffer({
-    label: 'ppg-samplesDir',
-    size: samplesSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.samplesLiBuf = device.createBuffer({
-    label: 'ppg-samplesLi',
-    size: samplesSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.sampleOutBuf = device.createBuffer({
-    label: 'ppg-sampleOut',
-    size: samplesSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.guideUboBuffer = device.createBuffer({
-    label: 'ppg-guide-ubo',
-    size: 48, // 12 × f32 — see PPGGuideUBO in ppgGuide.wgsl.ts.
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   res.ppg.updateUboBuffer = device.createBuffer({
     label: 'ppg-update-ubo',

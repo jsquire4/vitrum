@@ -137,12 +137,11 @@ fn probeUpdateBlendIrradiance(
     // interpolation in shade.wgsl correctly drops these probes from the
     // 8-probe stencil.
     if (ray.hitDistance < 0.05) { continue; }
-    // Paper Lambertian cosine kernel — Majercik 2019 §3 Algorithm 1.
-    // Weight = max(0, n·d) where n is the atlas-texel outgoing direction and
-    // d is the probe ray direction. This is the standard cosine weight for
-    // irradiance accumulation; summing ray contributions with this weight and
-    // then dividing by totalWeight produces the correct irradiance E at each
-    // atlas texel (after Change 3 moves albedo/π to the receiver side).
+    // Paper Lambertian cosine kernel - Majercik 2019 section 3 Algorithm 1.
+    // Weight = max(0, n.d) where n is the atlas-texel outgoing direction and
+    // d is the probe ray direction. This pass stores the cosine-weighted
+    // incoming-radiance mean, E / PI; ddgiSample reconstructs true irradiance
+    // at the sampling boundary before receivers apply albedo / PI.
     // Per-frame SO(3) rotation (Change 1 / Item 6) decorrelates ray samples
     // across frames so the temporal EMA can average the higher per-frame
     // variance produced by a true cosine kernel vs the narrower pow(8) lobe.
@@ -256,4 +255,3 @@ fn probeUpdateBlendVisibility(
 
 `;
 }
-

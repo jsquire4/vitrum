@@ -16,9 +16,9 @@ describe('PPG training utilities', () => {
   });
 
   // ── Leaf-v decorrelation (Task 0.1 correctness fix) ──────────────────────
-  // The GPU production sampler (ppgGuide.wgsl `dTreeSampleLeafBase` →
-  // `ppgGuideMain`) draws TWO FRESH lcg randoms for the leaf u,v jitter AFTER
-  // the flux-proportional descent, so the leaf jitter is INDEPENDENT of which
+  // The GPU production sampler (ppgPdf.wgsl `ppgDTreeSampleLeafBase` ->
+  // `ppgSampleGuidedDir`) draws fresh randoms for the leaf u,v jitter after
+  // the flux-proportional descent, so the leaf jitter is independent of which
   // leaf was picked. The CPU oracle previously REUSED the descent-consumed
   // `u0` for `vSample`, correlating the v-position with the descent path. The
   // fix carries the rescaled descent residual into vSample instead. These

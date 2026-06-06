@@ -12,7 +12,7 @@
  *      return type guarantee — the function must return a Float32Array).
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   denoiseFinal,
   preloadOIDNModel,
@@ -21,6 +21,11 @@ import {
   _nchwToHwc,
 } from '../src/oidnBridge.js';
 import type { OIDNDenoiseInputs, OIDNDenoiseOptions } from '../src/oidnBridge.js';
+
+afterEach(() => {
+  vi.doUnmock('onnxruntime-web');
+  vi.resetModules();
+});
 
 // ── Export presence ───────────────────────────────────────────────────────────
 
@@ -58,6 +63,56 @@ describe('clearOIDNCache', () => {
   it('is a no-op before any denoiseFinal call (no throw)', () => {
     clearOIDNCache();
     clearOIDNCache(); // idempotent
+  });
+
+  it('releases cached ORT sessions before clearing the map', async () => {
+    vi.resetModules();
+    const release = vi.fn();
+    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({ run, release })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await bridge.preloadOIDNModel({ modelUrl: '/mock.onnx', executionProviders: ['wasm'] });
+
+    bridge.clearOIDNCache();
+    expect(release).toHaveBeenCalledTimes(1);
+
+    bridge.clearOIDNCache();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releaseOIDNCacheEntry releases only the matching cached session', async () => {
+    vi.resetModules();
+    const releases = [vi.fn(), vi.fn()];
+    let createCount = 0;
+    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({ run, release: releases[createCount++]! })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await bridge.preloadOIDNModel({ modelUrl: '/a.onnx', executionProviders: ['wasm'] });
+    await bridge.preloadOIDNModel({ modelUrl: '/b.onnx', executionProviders: ['wasm'] });
+
+    bridge.releaseOIDNCacheEntry({ modelUrl: '/a.onnx', executionProviders: ['wasm'] });
+    expect(releases[0]).toHaveBeenCalledTimes(1);
+    expect(releases[1]).not.toHaveBeenCalled();
+
+    bridge.clearOIDNCache();
+    expect(releases[0]).toHaveBeenCalledTimes(1);
+    expect(releases[1]).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -85,7 +85,6 @@ import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composi
 import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
 import { PPG_TREE_LAYOUT_MODULE } from '../ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
-import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
 import { PPG_PDF_MODULE } from '../ppg/ppgPdf.wgsl.js';
 import { NEURAL_PACK_MODULE } from '../shaders/neuralPack.wgsl.js';
 import { NEURAL_UNPACK_MODULE } from '../shaders/neuralUnpack.wgsl.js';
@@ -120,7 +119,6 @@ export {
   COMPOSITE_VERT_MODULE,
   COMPOSITE_FRAG_MODULE,
   PPG_UPDATE_MODULE,
-  PPG_GUIDE_MODULE,
 };
 
 // ── Shared-denoisers wrappers ──────────────────────────────────────────────
@@ -300,7 +298,6 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // PPG (Müller 2017 — opt-in, compiled only when ppgEnabled)
   [PPG_TREE_LAYOUT_MODULE.name, PPG_TREE_LAYOUT_MODULE],
   [PPG_UPDATE_MODULE.name, PPG_UPDATE_MODULE],
-  [PPG_GUIDE_MODULE.name, PPG_GUIDE_MODULE],
   // PPG guided-sampling pdf-eval + sampler for gi-ris (always available so
   // risGi's include-graph resolves; the bindings it declares are gated by
   // ubo.ppgEnabled at runtime).

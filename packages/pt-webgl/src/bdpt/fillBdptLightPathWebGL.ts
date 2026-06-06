@@ -5,6 +5,7 @@
  */
 
 import type { Scene } from '@vitrum/core';
+import { float32ToFloat16Bits } from '@vitrum/shared-denoisers';
 import {
   DataTexture,
   FloatType,
@@ -12,6 +13,7 @@ import {
   NearestFilter,
   RGBAFormat,
   type Texture,
+  type TextureDataType,
   type WebGLRenderer,
 } from 'three';
 import {
@@ -63,6 +65,20 @@ export function fillBdptLightPathWebGL(
   uploadLightPathTexture(renderer, texture, width, data);
 }
 
+export function encodeBdptLightPathTextureData(
+  data: Float32Array,
+  texType: TextureDataType,
+): Float32Array | Uint16Array {
+  if (texType !== HalfFloatType) {
+    return data;
+  }
+  const half = new Uint16Array(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    half[i] = float32ToFloat16Bits(data[i] ?? 0);
+  }
+  return half;
+}
+
 function uploadLightPathTexture(
   renderer: WebGLRenderer,
   texture: Texture,
@@ -71,7 +87,8 @@ function uploadLightPathTexture(
 ): void {
   const prevRt = renderer.getRenderTarget();
   const texType = texture.type === FloatType ? FloatType : HalfFloatType;
-  const src = new DataTexture(data, width, 3, RGBAFormat, texType);
+  const uploadData = encodeBdptLightPathTextureData(data, texType);
+  const src = new DataTexture(uploadData, width, 3, RGBAFormat, texType);
   src.minFilter = NearestFilter;
   src.magFilter = NearestFilter;
   src.needsUpdate = true;
@@ -93,7 +110,7 @@ function uploadLightPathTexture(
     renderer.state.bindTexture(gl.TEXTURE_2D, webglTexture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     const glType = texType === HalfFloatType ? gl.HALF_FLOAT : gl.FLOAT;
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 3, gl.RGBA, glType, data);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 3, gl.RGBA, glType, uploadData);
   } finally {
     renderer.setRenderTarget(prevRt);
     src.dispose();

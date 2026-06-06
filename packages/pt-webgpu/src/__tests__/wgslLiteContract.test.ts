@@ -16,8 +16,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // / sample fns compose into lite — audited), so the lite RENDER is
     // byte-identical; only the dead baryVW compute + the let→var keywords moved the
     // SHA (length unchanged).
-    expect(digest).toBe('903e3f3b9a977737cd859d8e03a5556a910f086603ae987f5c4981bf73e81cf7');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72242);
+    // Re-pinned 2026-06-06: FrameParams dropped the never-read heroStrategy slot
+    // (replaced by _padAuto0, −3 chars). Render-neutral; lite never read it.
+    expect(digest).toBe('b703967ed772af5e99594c72d6c66d580fda8d5c68e7bc1dfb9ad0a55f7634f8');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72239);
   });
 });
 

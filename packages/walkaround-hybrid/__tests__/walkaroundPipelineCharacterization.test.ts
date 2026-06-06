@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import {
   AtrousIndirectPass,
   CompositePass,
@@ -28,7 +29,6 @@ import {
   IndirectCombinePass,
   IndirectTemporalAccumPass,
   MotionVectorsPass,
-  PPGGuidePass,
   PPGUpdatePass,
   ReGIRBuildPass,
   ResolvePass,
@@ -94,7 +94,6 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
   reg.register(new ResolvePass(stubPipeline, stubUboRef));
   reg.register(new CompositePass(stubRenderPipeline));
-  reg.register(new PPGGuidePass(stubPipeline));
   reg.register(new PPGUpdatePass(stubPipeline));
   reg.register(new ReGIRBuildPass(
     stubPipeline,
@@ -127,10 +126,18 @@ const GOLDEN_REGISTERED_IDS = [
   'temporalAccum',
   'resolve',
   'composite',
-  'ppg-guide',
   'ppg-update',
   'regir-build',
 ];
+
+type PipelineUboRefShape = {
+  _atrousIndirectUboRef: object;
+  _accumUboRef: object;
+  _sampleBudgetUboRef: object;
+  _sampleCountUboRef: object;
+  _resolveUboRef: object;
+  readonly _perPassUboRefs: readonly object[];
+};
 
 describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
   it('registers exactly the expected pass set in source order', () => {
@@ -153,7 +160,6 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'gi-ris',
       'gi-temporal',
       'gi-spatial-2',
-      'ppg-guide',
       'shade',
       'gtao',
       'gtao-upsample',
@@ -190,7 +196,6 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'gi-temporal',
       'gi-spatial-1',
       'gi-spatial-2',
-      'ppg-guide',
       'shade',
       'gtao',
       'gtao-upsample',
@@ -208,5 +213,24 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'resolve',
       'composite',
     ]);
+  });
+
+  it('keeps the indirect atrous UBO out of the eager pipeline-owned dispose list', async () => {
+    installWebGPUPolyfills();
+    const { WalkaroundGPUPipeline } = await import('../src/pipeline/WalkaroundGPUPipeline.js');
+    const pipeline = Object.create(WalkaroundGPUPipeline.prototype) as PipelineUboRefShape;
+    const atrousIndirect = { buf: 'atrous' };
+    const accum = { buf: 'accum' };
+    const sampleBudget = { buf: 'sample-budget' };
+    const sampleCount = { buf: 'sample-count' };
+    const resolve = { buf: 'resolve' };
+    pipeline._atrousIndirectUboRef = atrousIndirect;
+    pipeline._accumUboRef = accum;
+    pipeline._sampleBudgetUboRef = sampleBudget;
+    pipeline._sampleCountUboRef = sampleCount;
+    pipeline._resolveUboRef = resolve;
+
+    expect(pipeline._perPassUboRefs).toEqual([accum, sampleBudget, sampleCount, resolve]);
+    expect(pipeline._perPassUboRefs).not.toContain(atrousIndirect);
   });
 });

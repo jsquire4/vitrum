@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { float16BitsToFloat32 } from '@vitrum/shared-denoisers';
 import type { Scene } from '@vitrum/core';
+import { FloatType, HalfFloatType } from 'three';
 import { BDPT_KIND_INVALID, BDPT_KIND_LIGHT, sampleBdptBounce0FromScene } from '../bdpt/bdptSceneEmittersCpu.js';
-import { packBdptLightPathColumnsWebGL } from '../bdpt/fillBdptLightPathWebGL.js';
+import {
+  encodeBdptLightPathTextureData,
+  packBdptLightPathColumnsWebGL,
+} from '../bdpt/fillBdptLightPathWebGL.js';
 
 const cornellEmitters: Scene = {
   primitives: [],
@@ -37,5 +42,19 @@ describe('packBdptLightPathColumnsWebGL', () => {
     for (let col = 0; col < 3; col += 1) {
       expect(data[col * 4 + 3]).toBe(BDPT_KIND_INVALID);
     }
+  });
+
+  it('encodes half-float upload payloads as binary16 Uint16Array', () => {
+    const data = new Float32Array([1, 0.5, -2, 65504]);
+    const floatPayload = encodeBdptLightPathTextureData(data, FloatType);
+    expect(floatPayload).toBe(data);
+
+    const halfPayload = encodeBdptLightPathTextureData(data, HalfFloatType);
+    expect(halfPayload).toBeInstanceOf(Uint16Array);
+    const half = halfPayload as Uint16Array;
+    expect(float16BitsToFloat32(half[0]!)).toBeCloseTo(1, 6);
+    expect(float16BitsToFloat32(half[1]!)).toBeCloseTo(0.5, 6);
+    expect(float16BitsToFloat32(half[2]!)).toBeCloseTo(-2, 6);
+    expect(float16BitsToFloat32(half[3]!)).toBeCloseTo(65504, 0);
   });
 });

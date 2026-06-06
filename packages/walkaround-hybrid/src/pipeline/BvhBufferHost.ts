@@ -15,6 +15,7 @@ import {
   refreshEmissiveTexture,
   type EmissiveTexture,
 } from './bvhEmissiveTexture.js';
+import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -138,6 +139,45 @@ export class BvhBufferHost {
       tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer!,
       tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer!,
     };
+  }
+
+  gpuMemorySections(): GpuMemoryExternalSections {
+    const section: Record<string, unknown> = {};
+    const add = (name: string, resource: unknown): void => {
+      if (resource != null) section[name] = resource;
+    };
+
+    add('bvhNodesBuffer', this._bvhNodesBuffer);
+    add('bvhIndexBuffer', this._bvhIndexBuffer);
+    add('bvhNormalBuffer', this._bvhNormalBuffer);
+    add('bvhPositionBuffer', this._bvhPositionBuffer);
+    add('emitterBuffer', this._emitterBuffer);
+    add('emitterCdfBuffer', this._emitterCdfBuffer);
+    add('lightTreeBuffer', this._lightTreeBuffer);
+    add('tlasNodesBuffer', this._tlasNodesBuffer);
+    add('tlasInstanceIndicesBuffer', this._tlasInstanceIndicesBuffer);
+    add('tlasBlasRootsBuffer', this._tlasBlasRootsBuffer);
+    add('tlasInstanceWorldToLocalBuffer', this._tlasInstanceWorldToLocalBuffer);
+    add('tlasInstanceLocalToWorldBuffer', this._tlasInstanceLocalToWorldBuffer);
+
+    if (this._bvhBeerTexture != null) {
+      section.bvhBeerTexture = {
+        width: this._bvhBeerTexture.width,
+        height: this._bvhBeerTexture.height,
+        depthOrArrayLayers: 1,
+        format: 'r32uint' as GPUTextureFormat,
+      };
+    }
+    if (this._bvhEmissiveTexture != null) {
+      section.bvhEmissiveTexture = {
+        width: this._bvhEmissiveTexture.width,
+        height: this._bvhEmissiveTexture.height,
+        depthOrArrayLayers: 1,
+        format: 'rgba32float' as GPUTextureFormat,
+      };
+    }
+
+    return { staticScene: section as GpuMemoryResourceSection };
   }
 
   updateEmitters(

@@ -68,6 +68,11 @@ That layout includes TLAS, analytic shapes, HDRI, point/spot/rect/mesh area ligh
 motion vectors, variance moments, and caustic strategies. Check the browser console
 for `[vitrum/pt-webgpu] Full trace tier: …` on startup.
 
+Caustic truthfulness: `causticStrategy: 'manifold-nee'` is the validated MNEE
+path. `causticStrategy: 'photon-map'` remains an approximate density-estimation
+mode and is reported through `capabilities.experimentalFeatures` as
+`pt-webgpu-photon-map-approximate`.
+
 The **lite** tier exists only as a **CI / SwiftShader fallback** (often **10** /
 **4** limits in headless Chromium on Linux). WSL2 without GPU passthrough frequently
 hits lite even when the machine has a GPU elsewhere — use native Windows/macOS Chrome

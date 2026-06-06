@@ -41,14 +41,14 @@ export interface PassGateOptions {
   readonly denoiserMode: string;
   /** Whether PPG (path-guiding) is enabled. */
   readonly ppgEnabled: boolean;
-  /** Phase-0 productization — whether the PPG TRAIN passes (guide + update)
-   *  dispatch THIS frame. The orchestrator sets this to
+  /** Phase-0 productization — whether the PPG update TRAIN pass dispatches
+   *  THIS frame. The orchestrator sets this to
    *  `frameCount % ppgDispatchInterval === 0` so a low quality preset can
    *  amortise the path-guiding training cost across frames. The learned
    *  sTree/dTree GPU buffers PERSIST between train cycles and the gi-ris guided
-   *  SAMPLING reads them every frame regardless, so this only gates the two
-   *  train passes — never the guided sampling. Absent ⇒ treated as `true`
-   *  (every frame, no behaviour change). Only `PPGGuidePass`/`PPGUpdatePass`
+   *  SAMPLING reads them every frame regardless, so this only gates training
+   *  flux accumulation — never guided sampling. Absent ⇒ treated as `true`
+   *  (every frame, no behaviour change). Only `PPGUpdatePass`
    *  read it; it has no effect when `ppgEnabled` is false. */
   readonly ppgTrainThisFrame?: boolean;
   /** Phase-0 productization — whether GTAO runs this config. `false` (low

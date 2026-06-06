@@ -8,7 +8,8 @@
  * making the migration auditable field-by-field for any downstream consumer
  * who reads `res.X` and needs to find the new path.
  *
- * PPG and neural are intentionally empty for now (W9 / W10 will populate).
+ * PPG resources are lazy opt-in; neural inference resources are owned by the
+ * inference graph rather than this frame-resource bundle.
  *
  * See plan/premium-grade-refactor-20260517.md §W1-R2 and
  * complexity-sweep-20260517 findings A3 + B6.
@@ -66,7 +67,7 @@ const FIELD_MIGRATION_TABLE = [
 
   // ddgi ──────────────────────────────────────────────────────────────────
   ['ddgiPlaceholderRgba16f',         'ddgi'],
-  ['ddgiPlaceholderRg16f',           'ddgi'],
+  ['ddgiPlaceholderVisRgba16f',      'ddgi'],
   ['ddgiUboBuffer',                  'ddgi'],
 
   // gtao ──────────────────────────────────────────────────────────────────

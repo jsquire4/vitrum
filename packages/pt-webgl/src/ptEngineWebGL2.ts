@@ -745,6 +745,7 @@ export class PTEngineWebGL2 implements Engine {
   get capabilities(): EngineCapabilities {
     const experimental = new Set<string>();
     if (this.#bdpt) experimental.add('bdpt-approximate');
+    if (this.#causticStrategy !== 'none') experimental.add('pt-webgl-caustic-approximate');
     // Real Jakob & Hanika 2019 RGB→spectrum upsampling (Gauss–Newton sigmoid
     // fit in @vitrum/shared-samplers). Still flagged `experimental` because the
     // spectral fidelity row is not yet promoted in the renderer-fidelity matrix,

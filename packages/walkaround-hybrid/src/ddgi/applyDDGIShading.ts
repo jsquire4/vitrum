@@ -165,11 +165,10 @@ export function applyDDGIShading(
       iW, iH, vW, vH,
     );
 
-    // Lambertian receiver: outgoing diffuse from indirect = (albedo/π) · E_ddgi.
-    // Atlas holds true irradiance E per Sweep M7 — albedo/π baking moved from
-    // producer (probeUpdateRays.wgsl.ts) to consumer here.
-    // Receiver equation: L_o_indirect = (albedo / π) · E_ddgi
-    // Reference: Majercik 2019 §3; M7 DDGI Coherent Physical Model.
+    // Lambertian receiver: outgoing diffuse from indirect = (albedo / PI) * E_ddgi.
+    // ddgiSample reconstructs true irradiance E from the atlas mean; albedo / PI
+    // baking stays on the consumer side per M7 DDGI Coherent Physical Model.
+    // Reference: Majercik 2019 section 3.
     const PI_INV = uniform(1.0 / Math.PI);
     // AnyNode casts below are needed because three/tsl typings are conservative
     // and don't model wgslFn return types precisely.

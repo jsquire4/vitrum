@@ -34,7 +34,6 @@ import {
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
   MOTION_VECTORS_MODULE,
-  PPG_GUIDE_MODULE,
   PPG_UPDATE_MODULE,
   RESOLVE_MODULE,
   RIS_GI_MODULE,
@@ -94,7 +93,6 @@ import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporal
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
 import { PPG_TREE_LAYOUT_WGSL } from '../src/ppg/ppgTreeLayout.wgsl.js';
-import { PPG_GUIDE_WGSL } from '../src/ppg/ppgGuide.wgsl.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/ppgUpdate.wgsl.js';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -447,17 +445,14 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  // PPG (Müller 2017) — ppgUpdate now requires canonical luminance (W8
-  // follow-up cleanup); ppgGuide is still standalone.
+  // PPG (Müller 2017) — ppgUpdate requires canonical luminance (W8
+  // follow-up cleanup). Guided sampling is inlined in gi-ris via ppgPdf.
 
   it('ppgUpdate: LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL', () => {
     const composed = composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES);
     expect(composed).toBe(LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL);
   });
 
-  it('ppgGuide: PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_GUIDE_WGSL', () => {
-    expect(composeWgsl(PPG_GUIDE_MODULE, WGSL_MODULES)).toBe(PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_GUIDE_WGSL);
-  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -629,9 +624,9 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 //      the TOP of the composed string, reordering bytes — the exact failure
 //      mode common.wgsl.ts documents for honest inter-sibling `requires`.
 //
-//  (b) The block is NOT identical across consumers: ris/shade/risGi carry
-//      `bvh_normal` (binding 11) but temporal/spatial do not; shade adds
-//      `bvh_beer` (binding 5) + `bvh_emissive` (binding 12); risGi omits
+//  (b) The block is NOT identical across consumers: every scene-traversal pass
+//      carries `bvh_normal` (binding 11), but shade adds `bvh_beer`
+//      (binding 5) + `bvh_emissive` (binding 12); risGi omits
 //      `emitters`/`emitterCdf` (bindings 3/4). A single shared fragment can
 //      reproduce none of them verbatim.
 //
@@ -641,13 +636,13 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 // sits mid-file after the @group(3) texture bindings.
 // ──────────────────────────────────────────────────────────────────────────
 describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable byte-identically)', () => {
-  it('bvh_normal (binding 11) is present in ris/shade/risGi but absent in temporal/spatial', () => {
+  it('bvh_normal (binding 11) is present in every scene-traversal pass', () => {
     const norm = '@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;';
     expect(RIS_WGSL).toContain(norm);
     expect(SHADE_WGSL).toContain(norm);
     expect(RIS_GI_WGSL).toContain(norm);
-    expect(TEMPORAL_WGSL).not.toContain(norm);
-    expect(SPATIAL_WGSL).not.toContain(norm);
+    expect(TEMPORAL_WGSL).toContain(norm);
+    expect(SPATIAL_WGSL).toContain(norm);
   });
 
   it('shade carries bvh_beer (binding 5) + bvh_emissive (binding 12) that no other consumer has', () => {
@@ -665,10 +660,14 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     expect(RIS_GI_WGSL).not.toContain(emit);
   });
 
-  it('the binding subsets are pairwise distinct — no shared fragment reproduces all', () => {
+  it('the binding subsets span ≥3 distinct shapes — no single shared fragment reproduces all', () => {
     // Reduce each consumer to its @group(1) binding-name set; assert at least
     // three distinct shapes exist (ris, shade, risGi all differ), which is what
     // makes a single hoisted `sceneBindings` fragment impossible.
+    // 2026-06-06 (G-P0.1 smooth-normal reuse consistency): temporal + spatial
+    // gained bvh_normal @binding(11), which made temporal's group(1) block
+    // IDENTICAL to ris's — that convergence is pinned below; the ≥3-distinct-
+    // shapes rationale for keeping the block inlined still holds.
     const group1Lines = (src: string): string =>
       src
         .split('\n')
@@ -679,7 +678,7 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     const temporal = group1Lines(TEMPORAL_WGSL);
     const risGi = group1Lines(RIS_GI_WGSL);
     expect(ris).not.toBe(shade);
-    expect(ris).not.toBe(temporal);
+    expect(ris).toBe(temporal); // converged under G-P0.1 — same scene-binding shape
     expect(ris).not.toBe(risGi);
     expect(shade).not.toBe(temporal);
   });

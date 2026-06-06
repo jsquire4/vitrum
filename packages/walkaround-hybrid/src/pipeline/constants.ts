@@ -9,7 +9,7 @@
  * Size of the WalkaroundUBO in bytes (416 = 26 × 16-byte aligned vec4 slots).
  *
  * Layout details: see `uboUpdater.ts` header comment (the full field-by-field
- * breakdown lives there alongside `writeWalkaroundUBO`).
+ * breakdown lives there alongside `updateUBO`).
  *
  * The value must stay in sync with:
  *   - `createBuffer({ size: … })` in `createCommonFrameResources.ts`

@@ -24,7 +24,6 @@ const FRAME_FIELDS = [
   ['triIntersectEpsilon', 'f32'],
   ['tlasNodeCount', 'u32'],
   ['spectralEnabled', 'u32'],
-  ['heroStrategy', 'u32'],
   ['heroLambdaNm', 'f32'],
   ['heroPdf', 'f32'],
   ['cmfIntegralX', 'f32'],

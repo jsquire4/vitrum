@@ -407,6 +407,9 @@ class PTEngineWebGPU implements Engine {
           : []),
         ...(this.#bdpt ? (['pt-webgpu-bdpt'] as const) : []),
         ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
+        ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
+          ? (['pt-webgpu-photon-map-approximate'] as const)
+          : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.

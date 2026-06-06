@@ -4,7 +4,7 @@
 import type { EngineDebugSurface, GpuMemoryBreakdown, Scene } from '@vitrum/core';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { pickPrimitiveCpu, type PickCamera } from './debug/pickPrimitive.js';
-import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
+import { estimateFrameResourcesMemory, type GpuMemoryExternalSections } from './pipeline/gpuMemoryEstimate.js';
 import type { FrameResources } from './pipeline/resourceManager.js';
 import type { PipelineDebugTextures } from './pipeline/PipelineDebugTextures.js';
 
@@ -23,6 +23,7 @@ export interface HybridEngineDebugDeps {
    * `WalkaroundGPUPipeline.frameResources` getter.
    */
   pipelineResources: () => FrameResources | null;
+  pipelineMemoryExternalSections: () => GpuMemoryExternalSections;
   denoiserPassEnabled: () => boolean;
   setDenoiserPassEnabled: (enabled: boolean) => void;
   setPipelineDenoiserPassEnabled: (enabled: boolean) => void;
@@ -62,7 +63,7 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
     estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
       const res = deps.pipelineResources();
       if (res == null) return null;
-      return estimateFrameResourcesMemory(res);
+      return estimateFrameResourcesMemory(res, deps.pipelineMemoryExternalSections());
     },
     // T3.G click-to-pick: CPU ray-cast of pixel (x,y) against the retained core
     // scene using the last-frame camera. Returns null before the first frame

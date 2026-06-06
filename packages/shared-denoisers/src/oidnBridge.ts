@@ -229,6 +229,9 @@ export async function preloadOIDNModel(opts: OIDNDenoiseOptions): Promise<void> 
  * from scratch (including another model load).
  */
 export function clearOIDNCache(): void {
+  for (const session of _sessionCache.values()) {
+    _releaseSession(session);
+  }
   _sessionCache.clear();
 }
 
@@ -278,6 +281,13 @@ interface _OrtSession {
   ) => Promise<Record<string, { data: Float32Array }>>;
 }
 
+function _releaseSession(session: unknown): void {
+  const release = (session as { release?: unknown }).release;
+  if (typeof release === 'function') {
+    release.call(session);
+  }
+}
+
 async function _loadORT(): Promise<_OrtModule> {
   try {
     // Dynamic import of the optional peerDependency 'onnxruntime-web'.
@@ -319,7 +329,12 @@ function _sessionCacheKey(opts: OIDNDenoiseOptions): string {
 export function releaseOIDNCacheEntry(
   opts: Pick<OIDNDenoiseOptions, 'modelUrl' | 'executionProviders'>,
 ): void {
-  _sessionCache.delete(_sessionCacheKey(opts as OIDNDenoiseOptions));
+  const key = _sessionCacheKey(opts as OIDNDenoiseOptions);
+  const session = _sessionCache.get(key);
+  if (session !== undefined) {
+    _releaseSession(session);
+  }
+  _sessionCache.delete(key);
 }
 
 async function _getOrCreateSession(

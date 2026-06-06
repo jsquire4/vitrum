@@ -107,12 +107,11 @@ export const bdpt_light_subpath = /* glsl */`
 				return;
 			}
 
-			// Emitter position and normal.
-			// lightRec.point = surface point on the emitter.
-			// lightRec.direction = direction FROM receiver TO emitter (world space).
-			// Emitter normal ≈ -lightRec.direction (emission is toward the scene).
+			// Emitter position and normal from the light sampler.
+			// Area lights use the sampled surface point and geometric normal;
+			// punctual/directional lights provide synthetic stable vertices.
 			vec3 emitPos    = lightRec.point;
-			vec3 emitNormal = normalize( -lightRec.direction );
+			vec3 emitNormal = normalize( lightRec.normal );
 
 			// Cosine-weighted hemisphere scatter direction from the emitter surface.
 			// This gives the first scattered ray direction from the light.

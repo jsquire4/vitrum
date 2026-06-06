@@ -349,6 +349,3 @@ ${RESTIR_PT_TEMPORAL_WGSL}
 ${RESTIR_PT_RESOLVE_WGSL}
 `;
 }
-
-/** Eager default composition (the reuse unit with the full-tier scene bindings). */
-export const PT_WEBGPU_RESTIR_PT_REUSE_WGSL = composePtWebgpuReuseWgsl();

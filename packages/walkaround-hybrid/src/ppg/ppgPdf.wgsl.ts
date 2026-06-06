@@ -5,13 +5,10 @@
  * Light-Transport Simulation", §3.2 (dTree sampling), §3.4 (MIS mixture).
  *
  * === Why this module exists ===
- * `ppgGuide.wgsl.ts` already samples the dTree, but its descent helpers read
- * the PPG trees through `@group(0)` bindings owned by the standalone PPG guide
- * pipeline. The gi-ris pass compiles against the SHARED hybrid pipeline layout
- * (frame/scene/ubo/hybridLayers), so it cannot reach those `@group(0)` buffers.
- * This module re-declares the three PPG tree buffers on the `hybridLayers`
- * group (group 3, bindings 6/7/8 — packed there because the adapter caps
- * `maxBindGroups = 4`) and provides:
+ * gi-ris compiles against the shared hybrid pipeline layout
+ * (frame/scene/ubo/hybridLayers), so the guide sampler must read the learned
+ * PPG trees from the `hybridLayers` group (group 3, bindings 6/7/8 — packed
+ * there because the adapter caps `maxBindGroups = 4`) and provides:
  *
  *   1. `ppgEvalPdf(pos, wi)`        — the SOLID-ANGLE guide pdf p_guide(ωi) for
  *                                     an ARBITRARY world direction. Mirrors the
@@ -19,18 +16,17 @@
  *                                     defensive MIS weight stays unbiased.
  *   2. `ppgSampleGuidedDir(pos,&rng)` — draw a world direction from the learned
  *                                     dTree (flux-proportional descent + leaf
- *                                     jitter), mirroring `dTreeSampleLeafBase`
- *                                     in ppgGuide.wgsl.
+ *                                     jitter), mirroring the CPU dTree sampler.
  *
  * Both descend the SAME serialised layout the producer (`serialise.ts`) and the
- * training kernels (`ppgUpdate.wgsl`, `ppgGuide.wgsl`) use — if the layout
- * constants change there, they must change here in lock-step.
+ * training kernel (`ppgUpdate.wgsl`) use — if the layout constants change there,
+ * they must change here in lock-step.
  *
  * === Octahedral convention ===
  * The dTree stores oct UV in [0,1]². A world direction maps to that UV via
  *   uv = octEncode(dir) * 0.5 + 0.5          (octEncode → [-1,1]²)
  * which is byte-identical to the producer's `dirToOct` (ppgUpdate.wgsl) and the
- * inverse of `octDecode(uv * 2 - 1)` (== ppgGuide's `octToDir`). Reusing the
+ * inverse of `octDecode(uv * 2 - 1)`. Reusing the
  * canonical `octEncode`/`octDecode` from @vitrum/shared-samplers
  * (requires: ['octahedralCore']) keeps the encode/decode in one place.
  *
@@ -54,7 +50,7 @@ export const PPG_PDF_WGSL = /* wgsl */ `
 @group(3) @binding(8) var<storage, read> ppgDTreeOffsets_gi : array<u32>;
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
-// STREE_HEADER_F32, STREE_NODE_STRIDE — shared with ppgGuide and ppgUpdate).
+// STREE_HEADER_F32, STREE_NODE_STRIDE — shared with ppgUpdate).
 const PPG_FOUR_PI: f32 = 12.566370614359172; // 4π — uniform-fallback pdf = 1/4π
 
 // ── World direction → dTree [0,1]² octahedral UV ────────────────────────────
@@ -136,7 +132,7 @@ fn ppgEvalPdf(pos: vec3<f32>, wi: vec3<f32>) -> f32 {
   return (leafFlux / totalFlux) / max(solidAng, 1e-12);
 }
 
-// ── Flux-proportional dTree leaf sampler (mirror of ppgGuide.dTreeSampleLeafBase) ─
+// ── Flux-proportional dTree leaf sampler ─────────────────────────────────────
 fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {

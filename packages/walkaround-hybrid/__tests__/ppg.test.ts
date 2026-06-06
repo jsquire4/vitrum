@@ -324,19 +324,18 @@ describe('PPG MIS — power-heuristic identity', () => {
 // ── Test 6: Training-signal contract (deviation 3) ───────────────────────────
 
 describe('PPG WGSL — training-signal contract', () => {
-  it('ppgUpdate kernel reads from an L_i (incoming radiance) input, not Lo', () => {
-    // The PRIOR scaffold trained on Lo (post-clamp outgoing radiance from the
-    // shade pass). The rebuild MUST train on incoming radiance L_i. We verify
-    // the WGSL kernel string references an L_i / incoming binding rather than
-    // a Lo / outgoing one.
+  it('ppgUpdate kernel trains from accepted ReSTIR-GI reservoirs, not dead sample buffers', () => {
+    // The prior scaffold allocated ppgSamplesPos/Dir/Li buffers but never wrote
+    // them. The live kernel must read accepted reservoir records instead:
+    // xv at [0..2], xs at [8..10], M at [15], and Lo at [16..18].
     expect(PPG_UPDATE_WGSL).not.toMatch(/Lo_clamp|Lo_outgoing|outgoingRadiance/);
-    // Look for the L_i contract: the kernel binds an incoming-radiance buffer.
-    // Either explicit `Li` / `incomingRadiance` symbol, or a binding doc-comment.
-    const acceptsLiContract =
-      /\bLi\b/.test(PPG_UPDATE_WGSL) ||
-      /incomingRadiance/.test(PPG_UPDATE_WGSL) ||
-      /incoming.{0,30}radiance/i.test(PPG_UPDATE_WGSL);
-    expect(acceptsLiContract).toBe(true);
+    expect(PPG_UPDATE_WGSL).not.toMatch(/ppgSamplesPos|ppgSamplesDir|ppgLiSamples/);
+    expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent');
+    expect(PPG_UPDATE_WGSL).toContain('RESERVOIR_GI_STRIDE_LOCAL');
+    expect(PPG_UPDATE_WGSL).toContain('b + 0u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 8u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 15u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 16u');
   });
 
   it('ppgUpdate kernel includes a workgroup_size declaration (sanity check)', () => {

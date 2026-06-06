@@ -18,9 +18,14 @@ export const bsdf_functions = /* glsl */`
 
 	// RFE-03 / Sprint 14 — defined before bsdfEval since GLSL parses top-down and
 	// some drivers don't accept forward-declarations whose params reference user structs.
-	float activeLayerWeight( SurfaceRecord surf, float heroWavelength ) {
-		if ( ! surf.hasActiveLayer ) return 1.0;
-		return heroScalarFromRgb( surf.activeLayerTransmission, heroWavelength );
+	vec3 pathThroughputFromRgb( vec3 rgb, float heroWavelength ) {
+		if ( uSpectralRendering == 0 ) return max( rgb, vec3( 0.0 ) );
+		return vec3( heroScalarFromRgb( rgb, heroWavelength ) );
+	}
+
+	vec3 activeLayerThroughput( SurfaceRecord surf, float heroWavelength ) {
+		if ( ! surf.hasActiveLayer ) return vec3( 1.0 );
+		return pathThroughputFromRgb( surf.activeLayerTransmission, heroWavelength );
 	}
 
 	// diffuse
@@ -277,7 +282,8 @@ export const bsdf_functions = /* glsl */`
 	// It is called at the hero wavelength sampled from sampleHeroWavelength in the main loop.
 	//
 	// New uniforms: iorCauchyA, iorCauchyB, iorCauchyC (see PhysicalPathTracingMaterial.js).
-	// Sprint 8 uniforms (u_ior0, u_dispersionStrength) are kept for backward compatibility.
+	// Legacy Sprint 8 scalar dispersion uniforms were removed; per-material
+	// dispersion now flows through surf.dispersionStrength.
 	//
 	float cauchyIORatLambda( float lambdaNm, float A, float B, float C ) {
 		float lambdaUm = lambdaNm * 0.001;  // nm → µm
@@ -341,6 +347,34 @@ export const bsdf_functions = /* glsl */`
 			return evalSpectrumAtHero( heroWavelength );
 		}
 		return heroScalarFromRgb( rgb, heroWavelength );
+	}
+
+	vec3 mediumAlbedoThroughput( vec3 rgb, float heroWavelength ) {
+		if ( uSpectralRendering == 0 ) return max( rgb, vec3( 0.0 ) );
+		return vec3( mediumAlbedoHero( rgb, heroWavelength ) );
+	}
+
+	vec3 transmissionAttenuationThroughput(
+		sampler2D materialsTex,
+		float dist,
+		vec3 attColor,
+		float attDist,
+		bool hasSpectral,
+		uint materialIndex,
+		float heroWavelength
+	) {
+		if ( uSpectralRendering == 0 ) {
+			return transmissionAttenuation( dist, attColor, attDist );
+		}
+		return vec3( transmissionAttenuationHero(
+			materialsTex,
+			dist,
+			attColor,
+			attDist,
+			hasSpectral,
+			materialIndex,
+			heroWavelength
+		) );
 	}
 
 	// Sprint 12: dielectric transmission with hero-wavelength Cauchy IOR.
@@ -592,7 +626,7 @@ export const bsdf_functions = /* glsl */`
 		// gate this is the paper-accurate sigmoid reflectance of the representative medium
 		// albedo; otherwise the legacy smoothstep tent projection. Beer-Lambert attenuation
 		// stays an explicit scalar factor so units (reflectance × transmittance) are preserved.
-		sssRec.throughput = mediumAlbedoHero( surf.sssAlbedo, heroWavelength ) * beerLambert;
+		sssRec.throughput = mediumAlbedoThroughput( surf.sssAlbedo, heroWavelength ) * beerLambert;
 		return sssRec;
 
 	}
@@ -605,7 +639,7 @@ export const bsdf_functions = /* glsl */`
 			sampleRec.specularPdf = 0.0;
 			sampleRec.pdf = 1.0 / ( 4.0 * PI );
 			sampleRec.direction = sampleSphere( rand2( 16 ) );
-			sampleRec.throughput = heroScalarFromRgb( surf.color / ( 4.0 * PI ), heroWavelength );
+			sampleRec.throughput = pathThroughputFromRgb( surf.color / ( 4.0 * PI ), heroWavelength );
 			return sampleRec;
 
 		}
@@ -680,7 +714,7 @@ export const bsdf_functions = /* glsl */`
 				ScatterRecord dispResult;
 				vec3 dispColor;
 				dispResult.pdf = bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, dispResult.specularPdf, dispColor );
-				dispResult.throughput = heroScalarFromRgb( dispColor, heroWavelength );
+				dispResult.throughput = pathThroughputFromRgb( dispColor, heroWavelength );
 				dispResult.direction = normalize( surf.normalBasis * wi );
 				return dispResult;
 			} else {
@@ -698,7 +732,7 @@ export const bsdf_functions = /* glsl */`
 		ScatterRecord result;
 		vec3 resultColor;
 		result.pdf = bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, result.specularPdf, resultColor );
-		result.throughput = heroScalarFromRgb( resultColor, heroWavelength );
+		result.throughput = pathThroughputFromRgb( resultColor, heroWavelength );
 		result.direction = normalize( surf.normalBasis * wi );
 
 		return result;

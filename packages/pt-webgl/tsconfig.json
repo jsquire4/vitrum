@@ -5,7 +5,12 @@
     "noEmit": true,
     "paths": {
       "@vitrum/core": ["../core/src/index.ts"],
-      "@vitrum/shared-denoisers": ["../shared-denoisers/src/index.ts"]
+      "@vitrum/scene-lighting": ["../scene-lighting/src/index.ts"],
+      "@vitrum/shared-denoisers": ["../shared-denoisers/src/index.ts"],
+      "@vitrum/shared-samplers": ["../shared-samplers/src/index.ts"],
+      "@vitrum/stained-glass-extensions": ["../stained-glass-extensions/src/index.ts"],
+      "@vitrum/three-bindings": ["../three-bindings/src/index.ts"],
+      "three-gpu-pathtracer": ["../three-gpu-pathtracer/src/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"]

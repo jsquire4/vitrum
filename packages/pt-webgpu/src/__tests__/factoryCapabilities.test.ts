@@ -14,6 +14,7 @@ describe('createPTEngine_WebGPU', () => {
       causticStrategy: 'manifold-nee',
     });
     expect(engine.capabilities.causticStrategy).toBe('manifold-nee');
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-approximate')).toBe(false);
   });
 
   it('supports photon-map capability reporting path', async () => {
@@ -22,6 +23,7 @@ describe('createPTEngine_WebGPU', () => {
       causticStrategy: 'photon-map',
     });
     expect(engine.capabilities.causticStrategy).toBe('photon-map');
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-approximate')).toBe(true);
   });
 
   it('reports current incremental patch support matrix', async () => {

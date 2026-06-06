@@ -139,18 +139,6 @@ export const spectral_accumulator = /* glsl */`
 		return ( pX + pY + pZ ) / 3.0;
 	}
 
-	// Sample a hero wavelength from pdf(λ) ∝ Y(λ) (luminous efficiency).
-	// GLSL mirror of @vitrum/shared-samplers/src/wavelengthSampling.ts::sampleHeroWavelength.
-	// Kept for backward compat — production sampler is sampleHeroWavelengthMIS.
-	float sampleHeroWavelength( float u, out float pdf ) {
-		int lo;
-		float t;
-		float lambda = sampleCmfCdfInverse( u, uYCmfCdf, lo, t );
-		float yAtLambda = cmfAtSegment( uCmfY, lo, t );
-		pdf = ( uYCmfIntegral > 0.0 ) ? yAtLambda / uYCmfIntegral : 0.0;
-		return lambda;
-	}
-
 	// One-sample MIS hero wavelength sampler across X, Y, Z CMFs (Wilkie 2015 §3.3).
 	// GLSL mirror of @vitrum/shared-samplers/src/wavelengthSampling.ts::sampleHeroWavelengthMIS.
 	//
@@ -187,15 +175,16 @@ export const spectral_accumulator = /* glsl */`
 	//   B =  0.0556434·X − 0.2040259·Y + 1.0572252·Z
 	//
 	// GLSL mirror of @vitrum/shared-samplers/src/wavelengthSampling.ts::wavelengthToRGB.
-	vec3 wavelengthToRGB( float lambda, float throughput, float pdfLambda ) {
-		if ( uSpectralRendering == 0 ) return vec3( throughput );
+	vec3 wavelengthToRGB( float lambda, vec3 throughput, float pdfLambda ) {
+		if ( uSpectralRendering == 0 ) return throughput;
 		if ( pdfLambda <= 0.0 ) return vec3( 0.0 );
 
 		float x = sampleCmfX( lambda );
 		float y = sampleCmfY( lambda );
 		float z = sampleCmfZ( lambda );
 
-		float weight = throughput / max( pdfLambda * uYCmfIntegral, 1e-6 );
+		float scalarThroughput = throughput.r;
+		float weight = scalarThroughput / max( pdfLambda * uYCmfIntegral, 1e-6 );
 		vec3 xyz = vec3( x, y, z ) * weight;
 
 		// XYZ → linear sRGB (Bradford-adapted D65 matrix, IEC 61966-2-1:1999)

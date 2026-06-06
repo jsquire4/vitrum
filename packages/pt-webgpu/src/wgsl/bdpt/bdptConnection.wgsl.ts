@@ -33,6 +33,8 @@
  */
 export const PT_WEBGPU_BDPT_CONNECTION_WGSL = /* wgsl */ `
 const BDPT_KIND_INVALID: f32 = 3.0;
+// Firefly guard for rare near-singular connection paths. This is not a
+// transport term; keep it high enough that ordinary BDPT energy is unaffected.
 const BDPT_CONTRIBUTION_CLAMP: f32 = 100.0;
 const BDPT_MAX_MERGED: u32 = 19u; // c(<=2) + e(<=8) + 3, with headroom
 

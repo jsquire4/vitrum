@@ -182,7 +182,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     visibility: 'compute',
     entries: [
       { binding: 0, kind: 'uniform', note: 'WalkaroundUBO (256 bytes)' },
-      { binding: 1, kind: 'tex', note: 'Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged' },
+      { binding: 1, kind: 'tex', note: 'Sprint 15 — full-res GTAO occlusion factor (rgba16float), 1-frame lagged' },
       // Slot 2 — Sprint 9 adaptive-sampling tier (r32uint, sample-budget output).
       // risGi reads it to scale M_GI per pixel; ris/temporal/spatial/shade
       // declare the slot for layout compat but do not reference the symbol.

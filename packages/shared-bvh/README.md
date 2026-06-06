@@ -11,6 +11,7 @@ Shared BVH builder + canonical layout used by DDGI, RC, and ReSTIR GI engines (p
 - `BVH_INTERSECT_WGSL` — canonical WGSL string (Möller–Trumbore + AABB slab + 60-deep stack traversal) consumed by every WGSL-side BVH reader.
 - `MATERIAL_ENTRY_WGSL` — canonical WGSL struct declaration for the material entry, kept in lockstep with the TS packer.
 - `invertMat4` — 4×4 matrix inversion utility shared by TLAS packing and pt-webgpu's scene setup.
+- `expandIndicesToStride4(indices, payloadFn?)` — explicit stride-3→stride-4 helper for consumers that need a `vec4u` index buffer payload lane. It is a public convenience, not a production pipeline dependency.
 
 ## Node layout
 

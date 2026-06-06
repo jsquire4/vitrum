@@ -65,7 +65,6 @@ export const PPG_MAX_SPATIAL_CELLS = 16_384;
 /**
  * ReSTIR-GI reservoir stride — number of u32 elements per reservoir in the
  * flat array<u32> buffer. Single source of truth shared between:
- *   - `ppgGuide.wgsl.ts` (interpolated as RESERVOIR_GI_STRIDE_LOCAL in WGSL)
  *   - `createRestirGIFrameResources.ts` (used to compute the buffer byte size)
  *
  * Must stay in lockstep with `const RESERVOIR_GI_STRIDE: u32 = 30u;` in

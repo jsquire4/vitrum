@@ -185,7 +185,7 @@ export class EquirectCamera extends Camera {
 export class PhysicalSpotLight extends SpotLight {
 
 	radius: number;
-	iesTexture: DataTexture | null;
+	iesMap: DataTexture | null;
 
 }
 

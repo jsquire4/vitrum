@@ -59,7 +59,6 @@ struct FrameParams {
   triIntersectEpsilon: f32,${epsilonSuffix}
   tlasNodeCount: u32,
   spectralEnabled: u32,
-  heroStrategy: u32,
   heroLambdaNm: f32,
   heroPdf: f32,
   cmfIntegralX: f32,
@@ -70,6 +69,7 @@ struct FrameParams {
   bdptMaxEyeDepth: u32,
   lightTreeEnabled: u32,
   lightTreeNodeCount: u32,
+  _padAuto0: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,

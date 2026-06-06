@@ -27,6 +27,18 @@ describe('sampleBdptBounce0FromScene', () => {
     expect(v!.pdfJoint).toBeGreaterThan(0);
   });
 
+  it('samples rect-area emitters with independent 2-D coordinates', () => {
+    const v = sampleBdptBounce0FromScene(cornellEmitters, 42);
+    expect(v).not.toBeNull();
+    const u = (v!.emitPos[0] - 0) / 0.5;
+    const areaV = (v!.emitPos[2] - 0) / 0.5;
+    expect(u).toBeGreaterThanOrEqual(-1);
+    expect(u).toBeLessThanOrEqual(1);
+    expect(areaV).toBeGreaterThanOrEqual(-1);
+    expect(areaV).toBeLessThanOrEqual(1);
+    expect(u + areaV).not.toBeCloseTo(0, 9);
+  });
+
   // Regression for the bounce-0 tangent-frame bug: the cosine hemisphere
   // direction is `wi = t*x + b*y + n*z`. The original code scaled the
   // bitangent `b` by `x` instead of `y`, leaving the `y = r*sin(phi)` local
@@ -78,9 +90,13 @@ describe('sampleBdptBounce0FromScene', () => {
     };
     const v = sampleBdptBounce0FromScene(discScene, 7);
     expect(v).not.toBeNull();
-    expect(v!.emitPos[0]).toBeCloseTo(1.495852037593665, 9);
-    expect(v!.emitPos[1]).toBeCloseTo(1.548056832775566, 9);
-    expect(v!.emitPos[2]).toBeCloseTo(3.0404583807206635, 9);
+    const dx = v!.emitPos[0] - 1;
+    const dy = v!.emitPos[1] - 2;
+    const dz = v!.emitPos[2] - 3;
+    expect(Math.hypot(dx, dy, dz)).toBeLessThanOrEqual(0.5);
+    expect(v!.emitPos[0]).toBeCloseTo(1.1015282661842045, 9);
+    expect(v!.emitPos[1]).toBeCloseTo(1.9674695470769268, 9);
+    expect(v!.emitPos[2]).toBeCloseTo(2.988281647377868, 9);
     expect(v!.emitNormal[0]).toBeCloseTo(0.2062842492517587, 9);
     expect(v!.emitNormal[1]).toBeCloseTo(0.30942637387763805, 9);
     expect(v!.emitNormal[2]).toBeCloseTo(0.9282791216329142, 9);

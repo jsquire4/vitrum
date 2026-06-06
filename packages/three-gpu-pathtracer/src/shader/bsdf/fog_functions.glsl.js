@@ -8,15 +8,4 @@ export const fog_functions = /* glsl */`
 
 	}
 
-	ScatterRecord sampleFogVolume( SurfaceRecord surf, vec2 uv ) {
-
-		ScatterRecord sampleRec;
-		sampleRec.specularPdf = 0.0;
-		sampleRec.pdf = 1.0 / ( 2.0 * PI );
-		sampleRec.direction = sampleSphere( uv );
-		sampleRec.throughput = 1.0;
-		return sampleRec;
-
-	}
-
 `;

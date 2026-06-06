@@ -14,7 +14,6 @@ import {
   GTAOUpsamplePass,
   IndirectCombinePass,
   IndirectTemporalAccumPass,
-  PPGGuidePass,
   PPGUpdatePass,
   ResolvePass,
   RISGIPass,
@@ -197,14 +196,6 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.pipeline).toBe(stubRenderPipeline);
   });
 
-  it('PPGGuidePass: gated on ppgEnabled', () => {
-    const p = new PPGGuidePass(stubPipeline);
-    expect(p.id).toBe('ppg-guide');
-    expect(p.dependencies).toEqual(['gi-spatial-2']);
-    expect(p.gates({ ...DEFAULT_GATE, ppgEnabled: false })).toBe(false);
-    expect(p.gates({ ...DEFAULT_GATE, ppgEnabled: true })).toBe(true);
-  });
-
   it('PPGUpdatePass: gated on ppgEnabled', () => {
     const p = new PPGUpdatePass(stubPipeline);
     expect(p.id).toBe('ppg-update');
@@ -215,7 +206,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
 });
 
 describe('Pass entries — topological registration', () => {
-  it('all 19 passes register + sort with no cycles', () => {
+  it('all 18 passes register + sort with no cycles', () => {
     const reg = new PassRegistry();
     reg.register(new SampleBudgetPass(stubPipeline, stubUboRef, stubUboRef));
     reg.register(new RISPass(stubPipeline));
@@ -234,9 +225,8 @@ describe('Pass entries — topological registration', () => {
     reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
     reg.register(new ResolvePass(stubPipeline, stubUboRef));
     reg.register(new CompositePass(stubRenderPipeline));
-    reg.register(new PPGGuidePass(stubPipeline));
     reg.register(new PPGUpdatePass(stubPipeline));
-    expect(reg.size()).toBe(19);
+    expect(reg.size()).toBe(18);
     const order = reg.sortedPasses().map((p) => p.id);
     // Spot-check the topo: sample-budget first, composite last.
     expect(order[0]).toBe('sample-budget');
@@ -268,10 +258,8 @@ describe('Pass entries — topological registration', () => {
     reg.register(new RISGIPass(stubPipeline));
     reg.register(new TemporalGIReservoirPass(stubPipeline));
     reg.register(new SpatialGIReservoirPass(stubPipeline));
-    reg.register(new PPGGuidePass(stubPipeline));
     reg.register(new PPGUpdatePass(stubPipeline));
     const active = reg.activePasses({ denoiserMode: 'atrous-variance', ppgEnabled: false }).map((p) => p.id);
-    expect(active).not.toContain('ppg-guide');
     expect(active).not.toContain('ppg-update');
     expect(active).toContain('shade');
   });

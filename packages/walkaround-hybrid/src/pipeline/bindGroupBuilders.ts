@@ -334,7 +334,7 @@ interface HybridLayersResources {
   ddgiIrrTex: GPUTexture | null;
   ddgiVisTex: GPUTexture | null;
   ddgiPlaceholderRgba16f: GPUTexture;
-  ddgiPlaceholderRg16f: GPUTexture;
+  ddgiPlaceholderVisRgba16f: GPUTexture;
   nearestSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
   // W8 Phase 3 (2026-05-18) — RC cascade-0 + params. Both fields are
@@ -360,7 +360,7 @@ export function buildHybridLayersBindGroup(
   r: HybridLayersResources,
 ): GPUBindGroup {
   const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;
-  const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderRg16f;
+  const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderVisRgba16f;
   return device.createBindGroup({
     label: 'hybrid-layers-bg',
     layout: getHybridLayersBindGroupLayout(device, cache),
@@ -604,59 +604,16 @@ export function buildAtrousVarianceAtrousBindGroup(
 
 // ── PPG bind groups (W9 — Müller 2017 path guiding) ──────────────────────────
 //
-// The PPG guide / update kernels use `layout: 'auto'` (the WGSL declares its
-// own bindings rather than referencing a cached BGL family), so these helpers
-// take the pipeline's `getBindGroupLayout` accessor instead of a `BGLCache`.
-// They centralise the two-group construction the PPG passes previously inlined
-// so every host-side bind group goes through the build*BindGroup convention.
+// The PPG update kernel uses `layout: 'auto'` (the WGSL declares its own
+// bindings rather than referencing a cached BGL family), so this helper takes
+// the pipeline's `getBindGroupLayout` accessor instead of a `BGLCache`.
+// Guided sampling itself is inlined in gi-ris via ppgPdf.wgsl.
 
 /** Pipeline auto-layout accessor — `GPUComputePipeline.getBindGroupLayout`. */
 export type AutoLayoutFor = (index: number) => GPUBindGroupLayout;
 
-export interface PpgGuideBindGroupResources {
-  sTreeBuf: GPUBuffer;
-  dTreeBuf: GPUBuffer;
-  dTreeOffsetsBuf: GPUBuffer;
-  sampleOutBuf: GPUBuffer;
-  /** W9 Phase 2 — spatial-fused GI reservoir (per-pixel primary-hit xv). */
-  reservoirGiCurrentBuffer: GPUBuffer;
-  guideUboBuffer: GPUBuffer;
-}
-
-/**
- * Build the two auto-layout bind groups for the PPG guide kernel
- * (ppgGuide.wgsl.ts):
- *   group(0): sTree / dTree / dTreeOffsets / sampleOut / reservoirGiCurrent
- *   group(1): guideUbo
- */
-export function buildPpgGuideBindGroups(
-  device: GPUDevice,
-  getBindGroupLayout: AutoLayoutFor,
-  r: PpgGuideBindGroupResources,
-): readonly [GPUBindGroup, GPUBindGroup] {
-  const bg0 = device.createBindGroup({
-    label: 'ppg-guide-bg0',
-    layout: getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: r.sTreeBuf } },
-      { binding: 1, resource: { buffer: r.dTreeBuf } },
-      { binding: 2, resource: { buffer: r.dTreeOffsetsBuf } },
-      { binding: 3, resource: { buffer: r.sampleOutBuf } },
-      { binding: 4, resource: { buffer: r.reservoirGiCurrentBuffer } },
-    ],
-  });
-  const bg1 = device.createBindGroup({
-    label: 'ppg-guide-bg1',
-    layout: getBindGroupLayout(1),
-    entries: [{ binding: 0, resource: { buffer: r.guideUboBuffer } }],
-  });
-  return [bg0, bg1];
-}
-
 export interface PpgUpdateBindGroupResources {
-  samplesPosBuf: GPUBuffer;
-  samplesDirBuf: GPUBuffer;
-  samplesLiBuf: GPUBuffer;
+  reservoirGiCurrentBuffer: GPUBuffer;
   fluxAtomicsBuf: GPUBuffer;
   sTreeBuf: GPUBuffer;
   dTreeBuf: GPUBuffer;
@@ -667,8 +624,7 @@ export interface PpgUpdateBindGroupResources {
 /**
  * Build the two auto-layout bind groups for the PPG update kernel
  * (ppgUpdate.wgsl.ts):
- *   group(0): samplesPos / samplesDir / samplesLi / fluxAtomics /
- *             sTree / dTree / dTreeOffsets
+ *   group(0): reservoirGiCurrent / fluxAtomics / sTree / dTree / dTreeOffsets
  *   group(1): updateUbo
  */
 export function buildPpgUpdateBindGroups(
@@ -680,13 +636,11 @@ export function buildPpgUpdateBindGroups(
     label: 'ppg-update-bg0',
     layout: getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: r.samplesPosBuf } },
-      { binding: 1, resource: { buffer: r.samplesDirBuf } },
-      { binding: 2, resource: { buffer: r.samplesLiBuf } },
-      { binding: 3, resource: { buffer: r.fluxAtomicsBuf } },
-      { binding: 4, resource: { buffer: r.sTreeBuf } },
-      { binding: 5, resource: { buffer: r.dTreeBuf } },
-      { binding: 6, resource: { buffer: r.dTreeOffsetsBuf } },
+      { binding: 0, resource: { buffer: r.reservoirGiCurrentBuffer } },
+      { binding: 1, resource: { buffer: r.fluxAtomicsBuf } },
+      { binding: 2, resource: { buffer: r.sTreeBuf } },
+      { binding: 3, resource: { buffer: r.dTreeBuf } },
+      { binding: 4, resource: { buffer: r.dTreeOffsetsBuf } },
     ],
   });
   const bg1 = device.createBindGroup({
@@ -696,4 +650,3 @@ export function buildPpgUpdateBindGroups(
   });
   return [bg0, bg1];
 }
-

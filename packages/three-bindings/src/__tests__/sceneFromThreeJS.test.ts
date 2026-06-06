@@ -200,6 +200,59 @@ describe('sceneFromThreeJS', () => {
     expect(prim.boneInverses.length).toBe(16);
   });
 
+  it('converts directional and spot light directions from world-space target positions', () => {
+    const s = new THREE.Scene();
+
+    const directionalGroup = new THREE.Object3D();
+    directionalGroup.position.set(10, 0, 0);
+    const dl = new THREE.DirectionalLight(0xffffff, 2);
+    dl.name = 'sun';
+    dl.position.set(0, 5, 0);
+    dl.target.position.set(0, 0, 0);
+    directionalGroup.add(dl);
+    s.add(directionalGroup);
+
+    const spotGroup = new THREE.Object3D();
+    spotGroup.position.set(0, 4, 0);
+    const spot = new THREE.SpotLight(0xffffff, 3);
+    spot.name = 'spot';
+    spot.position.set(0, 0, 3);
+    spot.target.position.set(0, 0, 0);
+    spotGroup.add(spot);
+    s.add(spotGroup);
+
+    const v = sceneFromThreeJS(s);
+    const directional = v.emitters.find((e) => e.kind === 'directional');
+    const spotEmitter = v.emitters.find((e) => e.kind === 'spot');
+    expect(directional?.kind).toBe('directional');
+    expect(spotEmitter?.kind).toBe('spot');
+    if (directional?.kind !== 'directional' || spotEmitter?.kind !== 'spot') return;
+
+    const sunLen = Math.hypot(10, 5, 0);
+    expect(directional.direction[0]).toBeCloseTo(10 / sunLen);
+    expect(directional.direction[1]).toBeCloseTo(5 / sunLen);
+    expect(directional.direction[2]).toBeCloseTo(0);
+
+    const spotLen = Math.hypot(0, 4, 3);
+    expect(spotEmitter.direction[0]).toBeCloseTo(0);
+    expect(spotEmitter.direction[1]).toBeCloseTo(4 / spotLen);
+    expect(spotEmitter.direction[2]).toBeCloseTo(3 / spotLen);
+  });
+
+  it('converts RectAreaLight axes from orientation and width/height without baking object scale', () => {
+    const s = new THREE.Scene();
+    const rect = new THREE.RectAreaLight(0xffffff, 1, 2, 4);
+    rect.scale.set(3, 5, 1);
+    s.add(rect);
+
+    const v = sceneFromThreeJS(s);
+    const emitter = v.emitters.find((e) => e.kind === 'rect-area');
+    expect(emitter?.kind).toBe('rect-area');
+    if (emitter?.kind !== 'rect-area') return;
+    expect(Math.hypot(...emitter.uAxis)).toBeCloseTo(1);
+    expect(Math.hypot(...emitter.vAxis)).toBeCloseTo(2);
+  });
+
   it('throws on SkinnedMesh missing skinIndex attribute', () => {
     const s = new THREE.Scene();
     const geo = new THREE.BoxGeometry(1, 1, 1);

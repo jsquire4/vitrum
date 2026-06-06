@@ -45,9 +45,8 @@ interface NonDenoiserPassEntry {
  * on `gtao-upsample + 1` — means `composePassLabels` has a single source
  * of truth (this table) instead of an implicit constant pointing into it.
  *
- * PPG update + guide passes are included so timestamp-query layouts
- * stay aligned when `ppgEnabled` is true (see `PPGUpdatePass` /
- * `PPGGuidePass`).
+ * PPG update is included so timestamp-query layouts stay aligned when
+ * `ppgEnabled` is true (see `PPGUpdatePass`).
  */
 // File-local. The matching JSDoc + comment references in
 // timestampQueries.ts (lines 127 + 137) cite the name by spelling, not by
@@ -69,7 +68,6 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
   { id: 'ppg-update', labels: ['ppg-update'] },
-  { id: 'ppg-guide', labels: ['ppg-guide'] },
   // Virtual denoiser-adapter slot — labels come from the active Denoiser
   // and are spliced here by `composePassLabels`.
   { id: 'denoiser-adapter', labels: [] },

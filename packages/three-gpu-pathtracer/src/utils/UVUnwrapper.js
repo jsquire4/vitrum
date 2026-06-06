@@ -47,7 +47,7 @@ export class UVUnwrapper {
 		xatlas.HEAPF32.set( geometry.attributes.uv.array, meshInfo.uvOffset / Float32Array.BYTES_PER_ELEMENT );
 
 		const statusCode = xatlas.addMesh();
-		if ( statusCode !== AddMeshStatus.Success ) {
+		if ( statusCode !== 0 ) {
 
 			throw new Error( `UVUnwrapper: Error adding mesh. Status code ${ statusCode }` );
 
@@ -63,8 +63,8 @@ export class UVUnwrapper {
 		const newPositionArray = new Float32Array( meshData.newVertexCount * 3 );
 		const newNormalArray = new Float32Array( meshData.newVertexCount * 3 );
 		const newUvArray = new Float32Array( meshData.newVertexCount * 2 );
-		const newUv2Array = new Float32Array( xatlas.HEAPF32.buffer, meshData.uvOffset, meshData.newVertexCount * 2 );
-		const newIndexArray = new Uint32Array( xatlas.HEAPU32.buffer, meshData.indexOffset, meshData.newIndexCount );
+		const newUv2Array = new Float32Array( new Float32Array( xatlas.HEAPF32.buffer, meshData.uvOffset, meshData.newVertexCount * 2 ) );
+		const newIndexArray = new Uint32Array( new Uint32Array( xatlas.HEAPU32.buffer, meshData.indexOffset, meshData.newIndexCount ) );
 		const originalIndexArray = new Uint32Array(
 			xatlas.HEAPU32.buffer,
 			meshData.originalIndexOffset,
@@ -86,15 +86,14 @@ export class UVUnwrapper {
 		}
 
 		const newGeometry = new BufferGeometry();
-		newGeometry.addAttribute( 'position', new Float32BufferAttribute( newPositionArray, 3 ) );
-		newGeometry.addAttribute( 'normal', new Float32BufferAttribute( newNormalArray, 3 ) );
-		newGeometry.addAttribute( 'uv', new Float32BufferAttribute( newUvArray, 2 ) );
-		newGeometry.addAttribute( 'uv2', new Float32BufferAttribute( newUv2Array, 2 ) );
+		newGeometry.setAttribute( 'position', new Float32BufferAttribute( newPositionArray, 3 ) );
+		newGeometry.setAttribute( 'normal', new Float32BufferAttribute( newNormalArray, 3 ) );
+		newGeometry.setAttribute( 'uv', new Float32BufferAttribute( newUvArray, 2 ) );
+		newGeometry.setAttribute( 'uv2', new Float32BufferAttribute( newUv2Array, 2 ) );
 		newGeometry.setIndex( new Uint32BufferAttribute( newIndexArray, 1 ) );
 
-		mesh.geometry = newGeometry;
-
 		xatlas.destroyAtlas();
+		return newGeometry;
 
 	}
 

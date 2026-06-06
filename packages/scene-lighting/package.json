@@ -16,6 +16,7 @@
     "directory": "packages/scene-lighting"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
   },

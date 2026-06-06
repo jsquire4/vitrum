@@ -105,8 +105,8 @@ export interface PipelineInitHost {
    *  Same compile-time discipline as `restirPtReuse` (a runtime flag binding an
    *  extra group on the default path is the GRIS-class regression). */
   readonly nrcEnabled: boolean;
-  /** PPG train-pass dispatch cadence (≥ 1). The ppg-guide + ppg-update passes
-   *  dispatch on `frameCount % ppgDispatchInterval === 0`. */
+  /** PPG train-pass dispatch cadence (>= 1). The ppg-update pass dispatches
+   *  on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
   /** ReGIR (Boksansky 2021) grid-based DI light-selection config. `undefined`
    *  ⇒ ReGIR off (RIS uses the light-tree path). Threaded into
@@ -426,7 +426,7 @@ export class PipelineInitCoordinator {
           // gi-ris pipeline layout: 4-group DDGI default vs 5-group inline-MLP
           // variant). Default OFF = the verbatim DDGI-estimate gi-ris pass.
           nrcEnabled: host.nrcEnabled,
-          // Phase-0 — PPG train-pass cadence (ppg-guide + ppg-update gate on
+          // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
           ppgDispatchInterval: host.ppgDispatchInterval,

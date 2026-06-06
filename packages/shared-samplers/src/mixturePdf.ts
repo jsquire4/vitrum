@@ -70,7 +70,8 @@ export function powerHeuristic(pdf1: number, pdf2: number, beta: number = 2): nu
  *
  * This is the denominator of the MIS weight in the one-sample model when
  * any of the N strategies could have generated the sample. The selection
- * probabilities must sum to 1; if they don't, the result is scaled accordingly.
+ * probabilities should sum to 1. The function intentionally does not renormalize
+ * them, so callers with unnormalized weights receive the weighted sum they passed.
  *
  * Typical usage in PT direct lighting:
  *   strategies: [BSDF sampling, env-map sampling, light-tree sampling]

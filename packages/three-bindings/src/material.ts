@@ -195,7 +195,7 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
   // Only the full SpectralCurve shape is accepted:
   //   { wavelengthStart: number, wavelengthEnd: number, values: Float32Array }
   // The deprecated bare Float32Array path was removed in the 2026-05-11 sweep
-  // (pre-alpha; no external consumers). See Foundations Item #35 / D11.
+  // (internal compatibility; no external consumers). See Foundations Item #35 / D11.
   const rawSpectral = ud[K.SPECTRAL_ATTEN];
   if (
     rawSpectral != null &&

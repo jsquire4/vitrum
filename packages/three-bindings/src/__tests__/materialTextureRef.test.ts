@@ -103,4 +103,51 @@ describe('toTextureRef ↔ fromTextureRef round-trip', () => {
     expect(outMat.map!.offset.y).toBeCloseTo(0.2);
     expect(outMat.map!.repeat.x).toBeCloseTo(4);
   });
+
+  it('re-applies physical lobe texture maps through THREE to vitrum to THREE', () => {
+    const src = new THREE.MeshPhysicalMaterial();
+    src.aoMap = new THREE.Texture();
+    src.aoMapIntensity = 0.4;
+    src.transmission = 1;
+    src.transmissionMap = new THREE.Texture();
+    src.clearcoat = 1;
+    src.clearcoatMap = new THREE.Texture();
+    src.clearcoatRoughnessMap = new THREE.Texture();
+    src.clearcoatNormalMap = new THREE.Texture();
+    src.clearcoatNormalScale.set(0.25, 0.25);
+    src.sheen = 1;
+    src.sheenColorMap = new THREE.Texture();
+    src.sheenRoughnessMap = new THREE.Texture();
+    src.iridescence = 1;
+    src.iridescenceMap = new THREE.Texture();
+    src.iridescenceThicknessMap = new THREE.Texture();
+    src.anisotropy = 1;
+    src.anisotropyMap = new THREE.Texture();
+
+    const spec = convertMaterial(src);
+    const scene = vitrumSceneToThree({
+      primitives: [{
+        kind: 'mesh',
+        id: 'physical-maps',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: spec,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+    const outMat = (scene.children[0] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
+    expect(outMat.aoMap).toBe(src.aoMap);
+    expect(outMat.aoMapIntensity).toBeCloseTo(0.4);
+    expect(outMat.transmissionMap).toBe(src.transmissionMap);
+    expect(outMat.clearcoatMap).toBe(src.clearcoatMap);
+    expect(outMat.clearcoatRoughnessMap).toBe(src.clearcoatRoughnessMap);
+    expect(outMat.clearcoatNormalMap).toBe(src.clearcoatNormalMap);
+    expect(outMat.clearcoatNormalScale.x).toBeCloseTo(0.25);
+    expect(outMat.sheenColorMap).toBe(src.sheenColorMap);
+    expect(outMat.sheenRoughnessMap).toBe(src.sheenRoughnessMap);
+    expect(outMat.iridescenceMap).toBe(src.iridescenceMap);
+    expect(outMat.iridescenceThicknessMap).toBe(src.iridescenceThicknessMap);
+    expect(outMat.anisotropyMap).toBe(src.anisotropyMap);
+  });
 });

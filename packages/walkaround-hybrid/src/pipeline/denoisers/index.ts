@@ -183,14 +183,6 @@ export interface Denoiser {
    *  raw HDR texture directly). */
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null;
 
-  /** Optional cleanup hook called by the pipeline AFTER its
-   *  `device.queue.submit()` has been called for the frame the denoiser
-   *  just dispatched. Allows a denoiser to release per-frame transient
-   *  GPU buffers (e.g. the per-à-trous-iter UBOs SVGF-real allocates)
-   *  once the GPU queue has taken ownership of the encoded command
-   *  buffer. Default implementations are no-ops. */
-  cleanupAfterSubmit?(): void;
-
   /** Resize callback — denoiser may reallocate persistent resources. */
   resize(width: number, height: number): void;
 

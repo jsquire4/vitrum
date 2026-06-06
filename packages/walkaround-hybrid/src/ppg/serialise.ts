@@ -105,7 +105,7 @@ export const STREE_HEADER_F32 = 4;
  * (`allocatePPGResources({ maxDTreeNodesPerCell: < 341 })`), only the first
  * `maxNodes` nodes are serialised. Crucially, this must NOT leave a dangling
  * `firstChild` pointer inside the served region — the WGSL traversal
- * (`ppgGuide.wgsl.ts`) descends via `firstChild` with no `>= nodeCount` bound
+ * (`ppgPdf.wgsl.ts`) descends via `firstChild` with no `>= nodeCount` bound
  * and the per-cell dTree blocks are concatenated contiguously, so a child
  * index past the served prefix would read into the NEXT cell's data. We
  * therefore PROMOTE any served interior node whose four children fall outside

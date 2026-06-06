@@ -19,9 +19,9 @@
  *     (−J_vertex⁻¹·J_light), the geometric quantity the connection PDF is built on.
  *   • mneePdfJacobianDet — the area-light connection-PDF factor |dω_recv/dA_light|.
  *
- * REMAINING (radiometric, deliberately NOT here): wiring these into
- * `manifoldNeeContribution` to replace the cone-search — its validation is a
- * caustic render against a converged reference (design the scene offline first).
+ * Integration note: the production MNEE path consumes this solver through the
+ * pt-webgpu caustic pipeline. Radiometric validation remains a rendered
+ * caustic A/B against a converged reference.
  *
  * Ref: Hanika, Droske, Fascione, "Manifold Next Event Estimation," EGSR 2015;
  *      Jakob & Marschner, "Manifold Exploration," SIGGRAPH 2012.

@@ -27,7 +27,6 @@ export { SpatialReservoirPass } from './SpatialReservoirPass.js';
 export { RISGIPass } from './RISGIPass.js';
 export { TemporalGIReservoirPass } from './TemporalGIReservoirPass.js';
 export { SpatialGIReservoirPass } from './SpatialGIReservoirPass.js';
-export { PPGGuidePass } from './PPGGuidePass.js';
 export { ShadePass } from './ShadePass.js';
 export { MotionVectorsPass } from './MotionVectorsPass.js';
 export { PPGUpdatePass } from './PPGUpdatePass.js';

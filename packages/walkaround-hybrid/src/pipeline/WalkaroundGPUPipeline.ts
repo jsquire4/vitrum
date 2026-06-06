@@ -42,6 +42,7 @@ import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import { BvhBufferHost } from './BvhBufferHost.js';
+import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import {
   createFrameResources,
   destroyFrameResources,
@@ -82,7 +83,6 @@ import {
   IndirectCombinePass,
   IndirectTemporalAccumPass,
   MotionVectorsPass,
-  PPGGuidePass,
   PPGUpdatePass,
   ReGIRBuildPass,
   ResolvePass,
@@ -206,13 +206,10 @@ function registerPasses(
   registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef));
   const compositePass = new CompositePass(compiled.compositePipeline);
   registry.register(compositePass);
-  // PPG passes — only register when the pipelines compiled successfully.
+  // PPG update pass — only register when the pipeline compiled successfully.
   // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
   // can be registered unconditionally here, but skipping registration
   // when the pipeline is undefined avoids holding a stale field.
-  if (compiled.ppgGuidePipeline) {
-    registry.register(new PPGGuidePass(compiled.ppgGuidePipeline));
-  }
   if (compiled.ppgUpdatePipeline) {
     registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
   }
@@ -637,7 +634,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _regir: ReGIRCoordinator = new ReGIRCoordinator(resolveReGIRConfig());
 
   /** Phase-0 productization — PPG train-pass dispatch cadence (roadmap §5.3).
-   *  The ppg-guide + ppg-update passes dispatch only on frames where
+   *  The ppg-update pass dispatches only on frames where
    *  `_frameCount % _ppgDispatchInterval === 0`; the learned sTree/dTree GPU
    *  buffers persist between cycles and gi-ris guided sampling reads them every
    *  frame, so a higher interval trades training freshness for a lower per-frame
@@ -724,16 +721,15 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _bglCache: BGLCache = {};
 
   // Per-pass UBO buffers owned by the pipeline (i.e. NOT owned by a
-  // denoiser — denoiser-private UBOs are field-owned by each Denoiser
-  // implementation under `denoisers/`). Two access patterns coexist:
-  //  - Builder-managed (lazy): _atrousIndirectUboRef is passed by reference
-  //    into buildAtrousBindGroup (via AtrousIndirectPass) which lazy-allocates
-  //    on first dispatch, so the builder owns its UBO lifetime.
-  //  - Eager: _accumUboRef and the adaptive-sampling UBOs
-  //    (_sampleBudgetUboRef / _sampleCountUboRef / _resolveUboRef) are
-  //    allocated upfront in initialize().
-  // dispose() walks all via the `_perPassUboRefs` array below so adding
-  // a new UBO only requires registering it there.
+  // denoiser; denoiser-private UBOs are field-owned by each Denoiser
+  // implementation under `denoisers/`). The indirect atrous UBO is passed by
+  // reference into AtrousIndirectPass, lazy-allocated by buildAtrousBindGroup,
+  // and destroyed by AtrousIndirectPass.dispose(); it is intentionally not in
+  // the generic pipeline-owned list below.
+  //
+  // Eager pipeline-owned refs are allocated upfront in initialize().
+  // dispose() walks those via `_perPassUboRefs` so adding a new eager UBO only
+  // requires registering it there.
   /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
    *  doesn't race the legacy denoiser's per-iteration sigma writes. */
   private _atrousIndirectUboRef: UboRef = { buf: undefined };
@@ -744,7 +740,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _resolveUboRef:      UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
-      this._atrousIndirectUboRef,
       this._accumUboRef,
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
@@ -771,6 +766,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    */
   get frameResources(): FrameResources | null {
     return this._initialized ? this._res : null;
+  }
+
+  get gpuMemoryExternalSections(): GpuMemoryExternalSections {
+    return this._initialized ? this._bvhHost.gpuMemorySections() : {};
   }
 
   /**
@@ -999,8 +998,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  GRIS-class regression (f8df9a4). Full-tier-only (the ctor forbids
        *  `tier:'lite' + nrcEnabled`). */
       nrcEnabled?: boolean;
-      /** Phase-0 — PPG train-pass (guide + update) dispatch cadence. The two
-       *  passes dispatch only on frames where `frameCount % N === 0`. `1`
+      /** Phase-0 — PPG train-pass dispatch cadence. The update pass dispatches
+       *  only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
        *  learned tree persists between cycles, so gi-ris guided sampling is
        *  unaffected. Clamped to ≥ 1. Only meaningful when `ppgEnabled` is true. */
@@ -1100,8 +1099,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // (allocates resources, builds sTree, uploads UBOs) once the pass
     // registry is wired.
     const ppgEnabled = (options?.ppgEnabled ?? false) &&
-      compiled.ppgUpdatePipeline !== undefined &&
-      compiled.ppgGuidePipeline  !== undefined;
+      compiled.ppgUpdatePipeline !== undefined;
 
     // ── Denoiser registry: build, register builtins, look up + initialise
     //    the active denoiser. `neural` / `oidn-final` are REAL denoisers; they
@@ -1443,11 +1441,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       mixAlpha: this._ppg.mixAlpha,
     }, this._regir.uboState());
 
-    // W9 — refresh the PPG guide UBO so the kernel's per-frame RNG salt
-    // (and any future per-frame inputs) stay current. The update UBO is
-    // static-per-resolution and need not be re-uploaded each frame.
-    this._ppg.refreshGuideUBO(this._res, W, H, this._frameCount);
-
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._res.common.placeholderTexture.createView();
 
@@ -1565,11 +1558,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const gateOpts: PassGateOptions = {
       denoiserMode: this._denoiserMode,
       ppgEnabled: this._ppg.enabled,
-      // Phase-0 — PPG train-pass modulo gate. The ppg-guide + ppg-update passes
-      // dispatch only on multiples of `_ppgDispatchInterval`. interval=1 ⇒
-      // always true (every frame). The persisted tree + gi-ris guided sampling
-      // are unaffected — this only skips the two TRAIN passes on off-interval
-      // frames. (`_ppgDispatchInterval` is clamped ≥ 1 in initialize().)
+      // Phase-0 — PPG train-pass modulo gate. The ppg-update pass dispatches
+      // only on multiples of `_ppgDispatchInterval`. interval=1 ⇒ always true
+      // (every frame). The persisted tree + gi-ris guided sampling are
+      // unaffected — this only skips flux accumulation on off-interval frames.
+      // (`_ppgDispatchInterval` is clamped ≥ 1 in initialize().)
       ppgTrainThisFrame: this._frameCount % this._ppgDispatchInterval === 0,
       // Phase-0 — gate GTAO + its upsample when the preset disabled it.
       gtaoEnabled: this._gtaoEnabled,
@@ -1646,14 +1639,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     if (this._nrc !== null) {
       void this._nrc.trainFromRecords().catch(() => { /* device lost / disposed */ });
     }
-
-    // Per-frame denoiser cleanup. Runs after `queue.submit()` — the GPU
-    // queue holds its own reference to the encoded command buffer, so
-    // it is safe to release host-side handles to anything the denoiser
-    // wrote into this frame's encoder. SVGFRealDenoiser uses this hook
-    // to destroy the 5 transient per-iter UBOs it allocates each frame;
-    // other denoisers implement it as a no-op (or omit it entirely).
-    this._activeDenoiser?.cleanupAfterSubmit?.();
 
     // Kick async readback of the timestamp buffer we just copied into.
     // Pass the layout labels so the async callback labels each slot
@@ -1735,4 +1720,3 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._ddgi.setRCInputs(inputs);
   }
 }
-

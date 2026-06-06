@@ -144,7 +144,11 @@ fn ddgiSample(
     // shade.wgsl ddgiSampleFromBindings; was vec3f(0.05) prior to consolidation).
     return vec3f(0.0);
   }
-  return sum / totalWeight;
+  let meanIncomingRadiance = sum / totalWeight;
+  // The atlas stores a cosine-weighted incoming-radiance mean (E / PI).
+  // Reconstruct true irradiance here so every receiver consumes the same
+  // physical quantity and applies Lambertian albedo / PI exactly once.
+  return meanIncomingRadiance * 3.141592653589793;
 }
 `;
 

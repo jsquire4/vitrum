@@ -68,7 +68,6 @@ function reconstructExpected(
   f[FrameParamsSlot.triIntersectEpsilon] = 1e-5;
   u[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
   u[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
-  u[FrameParamsSlot.heroStrategy] = 0;
   f[FrameParamsSlot.heroLambdaNm] = 550.0;
   f[FrameParamsSlot.heroPdf] = 1.0;
   f[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
@@ -308,7 +307,6 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.triIntersectEpsilon]).toBeCloseTo(1e-5, 10);
     expect(u[FrameParamsSlot.tlasNodeCount]).toBe(7);
     expect(u[FrameParamsSlot.spectralEnabled]).toBe(0);
-    expect(u[FrameParamsSlot.heroStrategy]).toBe(0);
     expect(f[FrameParamsSlot.heroLambdaNm]).toBe(550);
     expect(f[FrameParamsSlot.heroPdf]).toBe(1);
     expect(u[FrameParamsSlot.bdptEnabled]).toBe(0);

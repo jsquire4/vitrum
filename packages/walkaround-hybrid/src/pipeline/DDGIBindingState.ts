@@ -205,7 +205,7 @@ export class DDGIBindingState implements PipelineSubsystem {
       ddgiIrrTex:             this._irrTex,
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:   frameResources.ddgi.ddgiPlaceholderRg16f,
+      ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
       nearestSampler:         frameResources.common.nearestSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer:       this._rcCascade0 ?? rcPh.cascade0,

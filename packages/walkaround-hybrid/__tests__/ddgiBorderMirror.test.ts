@@ -397,19 +397,21 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.index('ddgi-border-irr')).toBeGreaterThan(layout.index('indirect-combine'));
   });
 
-  it('atrous-variance layout reports 32 slots (31 + trailing opt-in regir-build)', () => {
+  it('atrous-variance layout reports 31 slots (30 + trailing opt-in regir-build)', () => {
+    // 2026-06-06: the dead ppg-guide pass was removed from the order table
+    // (G-P1.1) — every layout dropped exactly one slot.
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
-    expect(layout.slotCount).toBe(32);
+    expect(layout.slotCount).toBe(31);
     expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 
-  it('atrous layout reports 30 slots (29 + trailing opt-in regir-build)', () => {
+  it('atrous layout reports 29 slots (28 + trailing opt-in regir-build)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
-    expect(layout.slotCount).toBe(30);
+    expect(layout.slotCount).toBe(29);
   });
 
-  it('MAX_PASS_COUNT is 35 (includes the trailing opt-in regir-build slot)', () => {
-    expect(MAX_PASS_COUNT).toBe(35);
+  it('MAX_PASS_COUNT is 34 (includes the trailing opt-in regir-build slot)', () => {
+    expect(MAX_PASS_COUNT).toBe(34);
   });
 });
 

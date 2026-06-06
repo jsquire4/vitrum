@@ -41,6 +41,23 @@ function makeStubPathTracer() {
   };
 }
 
+function makeCountingUniform<T>(initialValue: T) {
+  let current = initialValue;
+  let writes = 0;
+  return {
+    get value(): T {
+      return current;
+    },
+    set value(next: T) {
+      writes += 1;
+      current = next;
+    },
+    get writes(): number {
+      return writes;
+    },
+  };
+}
+
 describe('driveForkMaterialUniforms', () => {
   it('uploads CMF and CDF tables when scene is set', () => {
     const scene = new Scene();
@@ -65,6 +82,38 @@ describe('driveForkMaterialUniforms', () => {
     expect(uniforms.uCausticStrategy.value).toBe(1);
     expect(uniforms.uMneeMaxIterations.value).toBe(12);
     expect(uniforms.uMneeMaxChainLength.value).toBe(4);
+  });
+
+  it('uploads static spectral tables once per fork material while dynamic uniforms keep updating', () => {
+    const pathTracer = makeStubPathTracer();
+    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const cmfX = makeCountingUniform<unknown>(null);
+    const yCdf = makeCountingUniform<unknown>(null);
+    const yIntegral = makeCountingUniform(0);
+    const spectralRendering = makeCountingUniform(-1);
+    uniforms.uCmfX = cmfX;
+    uniforms.uYCmfCdf = yCdf;
+    uniforms.uYCmfIntegral = yIntegral;
+    uniforms.uSpectralRendering = spectralRendering;
+
+    driveForkMaterialUniforms(pathTracer, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: false,
+    });
+    driveForkMaterialUniforms(pathTracer, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: true,
+    });
+
+    expect(cmfX.writes).toBe(1);
+    expect(yCdf.writes).toBe(1);
+    expect(yIntegral.writes).toBe(1);
+    expect(spectralRendering.writes).toBe(2);
+    expect(spectralRendering.value).toBe(1);
   });
 
   it('does not override per-material scalar uniforms', () => {

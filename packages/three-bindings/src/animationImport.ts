@@ -26,7 +26,8 @@ function mapInterpolation(track: THREE.KeyframeTrack): AnimationInterpolation {
   // THREE.InterpolateDiscrete = 2300, InterpolateLinear = 2301, InterpolateSmooth = 2302.
   const mode = (track as { getInterpolation?: () => number }).getInterpolation?.();
   if (mode === THREE.InterpolateDiscrete) return 'STEP';
-  if (mode === THREE.InterpolateSmooth) return 'CUBICSPLINE';
+  // THREE's smooth interpolation does not store glTF CUBICSPLINE in/out tangent
+  // triplets in track.values, so exporting it as CUBICSPLINE would corrupt shape.
   return 'LINEAR';
 }
 

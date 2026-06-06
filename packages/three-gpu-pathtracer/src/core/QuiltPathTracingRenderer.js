@@ -148,6 +148,12 @@ export class QuiltPathTracingRenderer extends PathTracingRenderer {
 
 	}
 
+	set samples( v ) {
+
+		this._samples = v;
+
+	}
+
 	constructor( ...args ) {
 
 		super( ...args );

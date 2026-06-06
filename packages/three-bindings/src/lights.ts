@@ -14,15 +14,44 @@ import { colorToVec3 } from './material.js';
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-function normalizeVec3(x: number, y: number, z: number, label?: string): Vec3 {
+function normalizeVec3(
+  x: number,
+  y: number,
+  z: number,
+  label?: string,
+  fallback: Vec3 = [0, 0, -1],
+): Vec3 {
   const len = Math.sqrt(x * x + y * y + z * z);
   if (len === 0) {
     if (label != null) {
-      console.warn(`@vitrum/three-bindings: light "${label}" has zero-length direction; using fallback [0,0,-1].`);
+      console.warn(`@vitrum/three-bindings: light "${label}" has zero-length direction; using fallback [${fallback.join(',')}].`);
     }
-    return [0, 0, -1];
+    return fallback;
   }
   return [x / len, y / len, z / len];
+}
+
+function worldPositionOf(obj: THREE.Object3D): Vec3 {
+  obj.updateWorldMatrix(true, false);
+  const e = obj.matrixWorld.elements;
+  return [e[12] ?? 0, e[13] ?? 0, e[14] ?? 0];
+}
+
+function rectHalfAxisFromWorldColumn(
+  me: THREE.Matrix4['elements'],
+  offset: 0 | 4,
+  halfSize: number,
+  label: string,
+  fallback: Vec3,
+): Vec3 {
+  const axis = normalizeVec3(
+    me[offset] ?? 0,
+    me[offset + 1] ?? 0,
+    me[offset + 2] ?? 0,
+    label,
+    fallback,
+  );
+  return [axis[0] * halfSize, axis[1] * halfSize, axis[2] * halfSize];
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -64,6 +93,7 @@ export function convertLight(
   warnedTypes: Set<string>,
 ): SceneEmitter | null {
   const label = light.name || light.uuid;
+  light.updateWorldMatrix(true, false);
   const color = colorToVec3(light.color);
   const id = light.uuid;
 
@@ -79,9 +109,11 @@ export function convertLight(
 
   if ((light as THREE.DirectionalLight).isDirectionalLight === true) {
     const dl = light as THREE.DirectionalLight;
-    const dx = dl.position.x - dl.target.position.x;
-    const dy = dl.position.y - dl.target.position.y;
-    const dz = dl.position.z - dl.target.position.z;
+    const pos = worldPositionOf(dl);
+    const target = worldPositionOf(dl.target);
+    const dx = pos[0] - target[0];
+    const dy = pos[1] - target[1];
+    const dz = pos[2] - target[2];
     const direction = normalizeVec3(dx, dy, dz, label);
     const emitter: DirectionalEmitter = {
       kind: 'directional',
@@ -97,11 +129,12 @@ export function convertLight(
     const rl = light as THREE.RectAreaLight;
     // RectAreaLight faces -Z in local space; derive uAxis/vAxis from world matrix.
     const me = rl.matrixWorld.elements;
-    // Column 0 = local X (half-width), column 1 = local Y (half-height).
+    // Column 0 = local X orientation, column 1 = local Y orientation. Width and
+    // height carry the physical size; object scale is not baked into the core axes.
     const hw = rl.width / 2;
     const hh = rl.height / 2;
-    const uAxis: Vec3 = [me[0] * hw, me[1] * hw, me[2] * hw];
-    const vAxis: Vec3 = [me[4] * hh, me[5] * hh, me[6] * hh];
+    const uAxis = rectHalfAxisFromWorldColumn(me, 0, hw, label, [1, 0, 0]);
+    const vAxis = rectHalfAxisFromWorldColumn(me, 4, hh, label, [0, 1, 0]);
     const position: Vec3 = [me[12], me[13], me[14]];
     const emitter: RectAreaEmitter = {
       kind: 'rect-area',
@@ -117,7 +150,7 @@ export function convertLight(
 
   if ((light as THREE.PointLight).isPointLight === true) {
     const pl = light as THREE.PointLight;
-    const position: Vec3 = [pl.position.x, pl.position.y, pl.position.z];
+    const position = worldPositionOf(pl);
     const emitter: PointEmitter = {
       kind: 'point',
       id,
@@ -132,10 +165,11 @@ export function convertLight(
 
   if ((light as THREE.SpotLight).isSpotLight === true) {
     const sl = light as THREE.SpotLight;
-    const position: Vec3 = [sl.position.x, sl.position.y, sl.position.z];
-    const dx = sl.position.x - sl.target.position.x;
-    const dy = sl.position.y - sl.target.position.y;
-    const dz = sl.position.z - sl.target.position.z;
+    const position = worldPositionOf(sl);
+    const target = worldPositionOf(sl.target);
+    const dx = position[0] - target[0];
+    const dy = position[1] - target[1];
+    const dz = position[2] - target[2];
     const direction = normalizeVec3(dx, dy, dz, label);
     const emitter: SpotEmitter = {
       kind: 'spot',

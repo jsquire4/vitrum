@@ -18,7 +18,7 @@
  *   Lead crystal (PbK50): A=1.5800,  B=0.01000 µm², C=0.00050 µm⁴, Abbe≈32
  *
  * Sprint 8 context: Sprint 8 used an implicit Cauchy formula via the fork
- * shader (u_dispersionStrength ≈ B * 1e6 to match nm² scaling).  This file
+ * material payload (`dispersionStrength` ≈ B * 1e6 to match nm² scaling). This file
  * extracts the formula as a standalone TypeScript utility for host-side use,
  * testing, and documentation.
  *
@@ -101,8 +101,8 @@ export const CAUCHY_FLINT_GLASS: { A: number; B: number; C: number } = {
  * Reference: Schott Lanthanum-flint / heavy flint data; Shannon "Art of Optics".
  *
  * Note on Sprint 8 mapping:
- *   The Sprint 8 shader parameter `u_dispersionStrength` is approximately equal
- *   to `B * 1e6 / (589.3²)` when λ is in nm rather than µm.
+ *   The fork material payload's `dispersionStrength` is approximately equal to
+ *   `B * 1e6 / (589.3²)` when λ is in nm rather than µm.
  *   For lead crystal B = 0.0066 µm²: the nm² equivalent scales to roughly 0.019
  *   — close to the Sprint 8 empirical slider default of 0.018.
  */

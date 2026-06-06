@@ -29,15 +29,6 @@ export const volume_march = /* glsl */`
 		return min( t, maxT );
 	}
 
-	// Equi-angular PDF for a scatter at distance t along the ray,
-	// given light at perpendicular distance D and closest-approach t_c.
-	// GLSL mirror of @vitrum/shared-samplers/src/equiAngular.ts.
-	float equiAngularPdf( float t, float tC, float D, float thetaRange ) {
-		if ( D < 1e-6 || thetaRange < 1e-6 ) return 1.0 / max( 1e-6, t );
-		float ratio = ( t - tC ) / D;
-		return 1.0 / ( D * thetaRange * ( 1.0 + ratio * ratio ) );
-	}
-
 	// Henyey-Greenstein phase function — GLSL mirror of hgPhase.ts::evaluateHG.
 	// p(cosTheta, g) = (1 - g²) / (4π (1 + g² - 2g·cosTheta)^(3/2))
 	// Normalized to integrate to 1 over the sphere.

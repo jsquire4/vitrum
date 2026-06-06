@@ -3,8 +3,7 @@
 // gracefully omits them when it doesn't (consumers typeof-check per the
 // Engine contract).
 //
-// We can't unit-test wrapWithIdempotentDispose directly (it's not exported),
-// so this is a structural / API-shape test that exercises the contract via
+// This is a structural / API-shape test that exercises wrapWithIdempotentDispose via
 // a fake engine and asserts the public T3.E surface compiles.
 
 import { describe, it, expect } from 'vitest';

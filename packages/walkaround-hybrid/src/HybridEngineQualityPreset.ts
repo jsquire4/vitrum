@@ -70,12 +70,12 @@ export interface QualityPreset {
    *  Engine default is 4 (the historical hardcoded `/4`). */
   readonly ddgiUpdateDivisor: number;
   /** PPG (Müller 2017 path-guiding) train-pass dispatch cadence (roadmap §5.3).
-   *  The guide + update compute passes run only on frames where
+   *  The update compute pass runs only on frames where
    *  `frameCount % ppgDispatchInterval === 0`; the learned sTree/dTree persists
    *  between updates, so a lower cadence is a pure cost lever — the gi-ris
    *  guided SAMPLING still consumes the most-recent tree EVERY frame (only the
-   *  train passes skip). `1` = every frame (no behaviour change — ultra/high);
-   *  `N > 1` runs the train passes every Nth frame (medium/low). Always ≥ 1
+   *  update pass skips). `1` = every frame (no behaviour change — ultra/high);
+   *  `N > 1` runs the train pass every Nth frame (medium/low). Always ≥ 1
    *  (`0`/negative would skip forever); a host may override per-engine via
    *  `HybridEngineOptions.ppgDispatchInterval`. */
   readonly ppgDispatchInterval: number;

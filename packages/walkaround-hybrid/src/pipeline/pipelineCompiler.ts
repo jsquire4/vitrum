@@ -37,7 +37,6 @@ import {
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
   MOTION_VECTORS_MODULE,
-  PPG_GUIDE_MODULE,
   PPG_UPDATE_MODULE,
   RESOLVE_MODULE,
   REGIR_BUILD_MODULE,
@@ -82,8 +81,6 @@ interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
   /** T2.H3 — PPG update kernel (training on L_i, Müller §3.3). */
   ppgUpdatePipeline?: GPUComputePipeline;
-  /** T2.H3 — PPG guide kernel (dTree direction sampling + MIS PDF, Müller §3.2, §3.4). */
-  ppgGuidePipeline?: GPUComputePipeline;
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
@@ -421,36 +418,24 @@ export async function compilePipelines(
     primitive: { topology: 'triangle-list' },
   });
 
-  // T2.H3 — PPG pipelines (Müller 2017 §3.2–3.4): opt-in via opts.ppgEnabled.
-  // Both kernels use `layout: 'auto'` — their bind group layouts are simple
-  // enough that WebGPU can derive them from the shader without a manual
-  // PipelineLayout. pipelineCompiler only compiles; bind-group creation and
-  // dispatch live in WalkaroundGPUPipeline.renderFrame.
+  // T2.H3 — PPG update pipeline (Müller 2017 §3.3): opt-in via opts.ppgEnabled.
+  // Guided sampling itself is inlined in gi-ris via ppgPdf.wgsl; the update
+  // kernel is the only standalone PPG training pass.
   let ppgUpdatePipeline: GPUComputePipeline | undefined;
-  let ppgGuidePipeline:  GPUComputePipeline | undefined;
   if (opts?.ppgEnabled) {
     const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES) });
-    const ppgGuideSM  = device.createShaderModule({ label: 'ppg-guide',  code: composeWgsl(PPG_GUIDE_MODULE,  WGSL_MODULES) });
-    for (const [label, sm] of [['ppg-update', ppgUpdateSM], ['ppg-guide', ppgGuideSM]] as [string, GPUShaderModule][]) {
-      const info = await sm.getCompilationInfo();
-      const errs = info.messages.filter(m => m.type === 'error');
-      if (errs.length > 0) {
-        console.error(`[ReSTIR] PPG shader compile errors in '${label}':`, errs.map(e => `line ${e.lineNum}: ${e.message}`));
-        throw new Error(`[ReSTIR] PPG shader compile error in '${label}': ${errs[0]!.message}`);
-      }
+    const info = await ppgUpdateSM.getCompilationInfo();
+    const errs = info.messages.filter(m => m.type === 'error');
+    if (errs.length > 0) {
+      console.error('[ReSTIR] PPG shader compile errors in \'ppg-update\':', errs.map(e => `line ${e.lineNum}: ${e.message}`));
+      throw new Error(`[ReSTIR] PPG shader compile error in 'ppg-update': ${errs[0]!.message}`);
     }
-    [ppgUpdatePipeline, ppgGuidePipeline] = await Promise.all([
-      device.createComputePipelineAsync({
-        label: 'ppg-update', layout: 'auto',
-        compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
-      }),
-      device.createComputePipelineAsync({
-        label: 'ppg-guide', layout: 'auto',
-        compute: { module: ppgGuideSM, entryPoint: 'ppgGuideMain' },
-      }),
-    ]);
+    ppgUpdatePipeline = await device.createComputePipelineAsync({
+      label: 'ppg-update', layout: 'auto',
+      compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
+    });
     if (opts?.verbose) {
-      console.log('[ReSTIR] PPG pipelines compiled (Müller 2017 — sTree + dTree + MIS)');
+      console.log('[ReSTIR] PPG update pipeline compiled (Muller 2017 - sTree + dTree training)');
     }
   }
 
@@ -505,10 +490,8 @@ export async function compilePipelines(
     spatialGiPipeline,
     indirectCombinePipeline,
     indirectTemporalAccumPipeline,
-    // T2.H3 — PPG pipelines (Müller 2017): only present when ppgEnabled.
-    ...(ppgUpdatePipeline !== undefined && ppgGuidePipeline !== undefined
-      ? { ppgUpdatePipeline, ppgGuidePipeline }
-      : {}),
+    // T2.H3 — PPG update pipeline (Müller 2017): only present when ppgEnabled.
+    ...(ppgUpdatePipeline !== undefined ? { ppgUpdatePipeline } : {}),
     // ReGIR grid-build (Boksansky 2021): only present when regirEnabled.
     ...(regirBuildPipeline !== undefined ? { regirBuildPipeline } : {}),
   };

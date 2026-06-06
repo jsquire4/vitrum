@@ -78,12 +78,13 @@ function sanitizePositiveFinite(value: number, fallback: number, max: number): n
 }
 
 const missingUniformWarnings = new Set<string>();
+const staticSpectralUniformMaterials = new WeakSet<PathTracerMaterialLike>();
 
-function setUniform<T>(material: PathTracerMaterialLike | null, name: string, value: T): void {
+function setUniform<T>(material: PathTracerMaterialLike | null, name: string, value: T): boolean {
   const u = material?.uniforms?.[name] as UniformRef<T> | undefined;
   if (u != null) {
     u.value = value;
-    return;
+    return true;
   }
   if (!missingUniformWarnings.has(name)) {
     missingUniformWarnings.add(name);
@@ -91,6 +92,7 @@ function setUniform<T>(material: PathTracerMaterialLike | null, name: string, va
       `@vitrum/pt-webgl: fork uniform "${name}" missing on path tracer material; check fork/bridge compatibility.`,
     );
   }
+  return false;
 }
 
 /**
@@ -127,22 +129,29 @@ export function driveForkMaterialUniforms(
   const material = ForkAccess.getMaterial(pathTracer);
   if (material == null) return;
 
-  setUniform(material, 'uCmfX', CIE_X_TABLE);
-  setUniform(material, 'uCmfY', CIE_Y_TABLE);
-  setUniform(material, 'uCmfZ', CIE_Z_TABLE);
-  // CDFs for the GLSL MIS hero-wavelength sampler (Wilkie 2014 §3.3).
-  // Y-only sampling collapses blue/red to near-zero at low SPP because Y(λ)
-  // is heavily concentrated near 555 nm; uploading X and Z CDFs lets the
-  // shader pick from any of three strategies with balance-heuristic mixture pdf.
-  setUniform(material, 'uXCmfCdf', X_CMF_CDF_FLOAT32);
-  setUniform(material, 'uYCmfCdf', Y_CMF_CDF_FLOAT32);
-  setUniform(material, 'uZCmfCdf', Z_CMF_CDF_FLOAT32);
-  // Trapezoidal integrals in table-space; shader/host treat these as relative
-  // normalization constants. Computed at module init from CIE_X/Y/Z_TABLE so
-  // the values stay in sync with the source data automatically.
-  setUniform(material, 'uXCmfIntegral', X_CMF_INTEGRAL);
-  setUniform(material, 'uYCmfIntegral', Y_CMF_INTEGRAL);
-  setUniform(material, 'uZCmfIntegral', Z_CMF_INTEGRAL);
+  if (!staticSpectralUniformMaterials.has(material)) {
+    const uploadedStaticSpectralUniforms = [
+      setUniform(material, 'uCmfX', CIE_X_TABLE),
+      setUniform(material, 'uCmfY', CIE_Y_TABLE),
+      setUniform(material, 'uCmfZ', CIE_Z_TABLE),
+      // CDFs for the GLSL MIS hero-wavelength sampler (Wilkie 2014 section 3.3).
+      // Y-only sampling collapses blue/red to near-zero at low SPP because Y(lambda)
+      // is heavily concentrated near 555 nm; uploading X and Z CDFs lets the
+      // shader pick from any of three strategies with balance-heuristic mixture pdf.
+      setUniform(material, 'uXCmfCdf', X_CMF_CDF_FLOAT32),
+      setUniform(material, 'uYCmfCdf', Y_CMF_CDF_FLOAT32),
+      setUniform(material, 'uZCmfCdf', Z_CMF_CDF_FLOAT32),
+      // Trapezoidal integrals in table-space; shader/host treat these as relative
+      // normalization constants. Computed at module init from CIE_X/Y/Z_TABLE so
+      // the values stay in sync with the source data automatically.
+      setUniform(material, 'uXCmfIntegral', X_CMF_INTEGRAL),
+      setUniform(material, 'uYCmfIntegral', Y_CMF_INTEGRAL),
+      setUniform(material, 'uZCmfIntegral', Z_CMF_INTEGRAL),
+    ].every(Boolean);
+    if (uploadedStaticSpectralUniforms) {
+      staticSpectralUniformMaterials.add(material);
+    }
+  }
   setUniform(material, 'uSpectralRendering', causticOptions?.spectralRendering === true ? 1 : 0);
   setUniform(material, 'uRadianceClamp', causticOptions?.radianceClamp ?? 0);
 

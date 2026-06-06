@@ -1,14 +1,10 @@
 /**
  * spatialFilter.wgsl.ts — 37-tap hexagonal-kernel edge-stopping spatial filter.
  *
- * Exported as a WGSL string constant + a TypeScript descriptor of the bind
- * group layout.  Consumed by the host's PT preview post-process pipeline as
- * a compute pass inserted first in the EffectComposer chain (before Bloom).
- *
- * The filter auto-disables at the host level when `pathtracer.samples > 24`
- * (temporal accumulation has converged and the filter would over-blur).
- * The WGSL kernel itself is always applied when dispatched; the enable gate
- * lives in the host's orchestration code, not in the shader.
+ * Exported as an internal WGSL string constant + a TypeScript descriptor of
+ * the bind group layout. This kernel is not wired into a production host path
+ * today; callers that dispatch it own their own enable gate, resource binding,
+ * and sample-count policy.
  *
  * Algorithm:
  *   Bilateral edge-stopping filter with a 37-tap hexagonal kernel.

@@ -88,7 +88,12 @@ export interface EngineOptions {
    * 'photon-map':    Biased photon mapping for caustics. Trace forward photons
    *                  from lights; store caustic photons in a spatial data
    *                  structure; use density estimation at diffuse shading points
-   *                  to reconstruct caustic radiance. Biased but robust.
+   *                  to reconstruct caustic radiance. Biased and currently
+   *                  reported as approximate by backends that expose it.
+   *
+   * Backend note: `pt-webgpu`'s `manifold-nee` path is the validated MNEE
+   * implementation. `pt-webgl`'s fork caustic modes and `pt-webgpu`'s
+   * `photon-map` mode are approximate/experimental capability rows.
    *
    * Default: 'none'.
    *

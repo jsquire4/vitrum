@@ -184,6 +184,18 @@ function makeEngine(): HybridEngine {
   });
 }
 
+function makeEngineWithoutThreeScene(): HybridEngine {
+  return new HybridEngine({
+    device:                makeMockDevice(),
+    width:                 64,
+    height:                64,
+    primaryLightDir:       [0, -1, 0],
+    primaryLightIntensity: 1.0,
+    skyTint:               [1, 1, 1],
+    skyIrradiance:         1.0,
+  });
+}
+
 const SCENE_WITH_MESH: Scene = {
   primitives: [
     {
@@ -337,5 +349,30 @@ describe('HybridEngine — dispose() honours in-flight init (Fix 2)', () => {
 
     // Immediately reflects 'disposed' even though teardown is deferred.
     expect(engine.state).toBe('disposed');
+  });
+
+  it('_teardownPipeline disposes a lazily synthesized THREE scene root', () => {
+    const engine = makeEngineWithoutThreeScene();
+    const e = engine as unknown as {
+      _lastScene: Scene | null;
+      _renderScene: Scene | null;
+      _synthesizedThreeScene: THREE.Scene | null;
+      _ensureThreeSceneRoot: () => THREE.Scene | null;
+      _teardownPipeline: () => void;
+    };
+    const s = getState();
+
+    e._lastScene = SCENE_WITH_MESH;
+    e._renderScene = SCENE_WITH_MESH;
+
+    const root = e._ensureThreeSceneRoot();
+    expect(root).toBeInstanceOf(THREE.Scene);
+    expect(e._synthesizedThreeScene).toBe(root);
+
+    e._teardownPipeline();
+
+    expect(s.disposeSceneRootCalls).toContain(root);
+    expect(e._synthesizedThreeScene).toBeNull();
+    engine.dispose();
   });
 });

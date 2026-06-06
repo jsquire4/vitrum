@@ -6,10 +6,8 @@
  * Layering note (verbatim from the prior comment at the manual-dispatch
  * site): denoising IS a separate concept from pass scheduling — denoisers
  * return a texture handle (whereas Passes mutate the encoder + frame
- * ledger) and the `Denoiser` lifecycle has the additional
- * `cleanupAfterSubmit` hook. The adapter pass preserves that distinction
- * by delegating to the active Denoiser; it does NOT subsume the Denoiser
- * abstraction.
+ * ledger). The adapter pass preserves that distinction by delegating to the
+ * active Denoiser; it does NOT subsume the Denoiser abstraction.
  *
  * Dependencies:
  *   - `gtao-upsample` — was the last pass run before the denoiser dispatch

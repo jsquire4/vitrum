@@ -151,7 +151,7 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
         prevB = accB * invW;
         prevM1 = accM1 * invW;
         prevM2 = accM2 * invW;
-        newH = Math.round(accH * invW) + 1;
+        newH = Math.trunc(accH * invW) + 1;
         alpha = Math.max(alphaMin, 1 / (newH + 1));
       } else {
         newH = 1;

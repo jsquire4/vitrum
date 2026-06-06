@@ -4,8 +4,7 @@
  * Demonstrates:
  *   - attachVitrum() with prefer:'realtime' for live GI updates
  *   - sceneFromThreeJS() for procedural scene construction
- *   - engine.updateEmitter() + refreshDdgiLightsFromThreeScene() for light
- *     slider changes (no full setScene debounce)
+ *   - engine.updateEmitter() for light slider changes (no full setScene debounce)
  *   - engine.onFrame() telemetry for FPS HUD
  *
  * Host code: <200 LoC. Scene: procedural room (~50 lines).

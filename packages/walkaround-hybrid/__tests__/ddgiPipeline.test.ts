@@ -11,6 +11,7 @@
  *                                            rotateAngleAxis, ddgiRayDirection
  *   - wgsl/probeUpdateBlend.wgsl.ts       → cosineBlend
  *   - ddgiBorderMirror.test.ts            → borderMirror (imported pattern reused)
+ *   - ddgi/ddgiSampleWgsl.ts              → reconstructIrradianceFromAtlasMean
  *   - rc/applyDDGIShading.ts              → receiverMultiply
  */
 
@@ -187,7 +188,7 @@ function sampleProbeRays(
 //
 // Given an array of (direction, radiance) pairs and a target atlas-cell
 // outgoing direction `cellDir`, returns the cosine-weighted average:
-//   E = Σ L_i · max(0, cellDir · d_i) / Σ max(0, cellDir · d_i)
+//   atlasMean = sum(L_i * max(0, cellDir dot d_i)) / sum(max(0, cellDir dot d_i))
 // ---------------------------------------------------------------------------
 
 function dot3(
@@ -200,13 +201,13 @@ function dot3(
 /**
  * MIRROR OF probeUpdateBlend.wgsl.ts: probeUpdateBlendIrradiance inner loop.
  *
- * Accumulates one atlas-cell's irradiance from ray results.
+ * Accumulates one atlas-cell's stored incoming-radiance mean from ray results.
  * Rays with negative distance (backface) or very short distance (<0.05) are
  * skipped — matching the WGSL self-intersection filter.
  *
  * @param cellDir  Outgoing direction for this atlas cell (unit vector).
  * @param rays     Array of { direction, radiance, hitDistance } per ray.
- * @returns        Per-channel irradiance for this cell [r, g, b].
+ * @returns        Per-channel atlas mean for this cell [r, g, b].
  */
 function cosineBlend(
   cellDir: [number, number, number],
@@ -250,12 +251,22 @@ function emaBlend(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Receiver multiply
-//    MIRROR OF rc/applyDDGIShading.ts: (albedo/π) · E_ddgi
+// 4. DDGI sampling boundary + receiver multiply
+//    MIRROR OF ddgiSampleWgsl.ts and rc/applyDDGIShading.ts.
 // ---------------------------------------------------------------------------
 
 /**
- * MIRROR OF applyDDGIShading.ts: const PI_INV = uniform(1/π); L_o = (albedo/π)·E
+ * MIRROR OF ddgiSampleWgsl.ts: reconstruct true irradiance from the stored
+ * cosine-weighted incoming-radiance mean.
+ */
+function reconstructIrradianceFromAtlasMean(
+  atlasMean: [number, number, number],
+): [number, number, number] {
+  return [atlasMean[0] * PI, atlasMean[1] * PI, atlasMean[2] * PI];
+}
+
+/**
+ * MIRROR OF applyDDGIShading.ts: const PI_INV = uniform(1/PI); L_o = (albedo/PI) * E
  *
  * @param albedo  Surface albedo [r, g, b] in [0, 1].
  * @param E       Irradiance from the probe atlas [r, g, b].
@@ -308,10 +319,9 @@ function borderMirror(
 // Scene helpers for the CPU ray tracer used in Test 1.
 //
 // Scene: closed box room, all 6 faces emit L=1, albedo=1.
-// A probe at the centre sees uniform L=1 in every direction. The expected
-// irradiance (Majercik 2019 §3 Algorithm 1 with cosine kernel) is:
-//   E = ∫ L(ω) max(0, n·ω) dω  over S²
-// For uniform L=1: E = L · ∫ max(0,cosθ) sinθ dθ dφ = L · π = π.
+// A probe at the centre sees uniform L=1 in every direction. The producer
+// stores the cosine-weighted incoming-radiance mean, which is 1 for uniform
+// incoming radiance. ddgiSample reconstructs irradiance E = PI * mean.
 // ---------------------------------------------------------------------------
 
 /**
@@ -371,36 +381,13 @@ function irradianceCellDirections(): Array<[number, number, number]> {
 
 describe('DDGI pipeline CPU emulation — behavior tests', () => {
   // -----------------------------------------------------------------------
-  // Test 1 — Uniform white room → atlas converges to π
+  // Test 1 - Uniform white room -> atlas converges to incoming-radiance mean 1.
   //
-  // Closed box: all faces ρ=1, emission L=1. Every probe ray returns L_i=1.
+  // Closed box: all faces albedo=1, emission L=1. Every probe ray returns L_i=1.
   // After 50 frames of Halton SO(3) + cosine blend with EMA hysteresis=0.97,
-  // every atlas cell should converge to E = π · L = π.
-  //
-  // Derivation:
-  //   E = ∫_{S²} L(ω) max(0, n·ω) dω = L ∫_{upper hemi} cosθ dω = L · π
-  //   cosine-weighted average over samples: Σ L_i · w_i / Σ w_i = L = 1
-  //   stored in atlas: the blend pass stores L_i (after M7, albedo not baked).
-  //   BUT: the cosine-weighted average of L_i=1 is 1, not π.
-  //
-  // Clarification: the WGSL cosine blend computes a WEIGHTED MEAN (÷ totalWeight),
-  // not a RIEMANN SUM. The result per cell is the average L_i weighted by cosine.
-  // For uniform L_i=1, the weighted mean is exactly 1 regardless of weights.
-  //
-  // The analytic irradiance ∫ L cosθ dω = π is a SUM (integral); the WGSL
-  // divides out the weight normalization, yielding the weighted-mean = L = 1.
-  //
-  // Therefore: atlas converges to 1 (the mean incoming radiance), and the
-  // receiver multiply (albedo/π)·E produces (albedo/π)·1 = albedo/π.
-  // But the plan asks us to verify convergence to E = π · L = π, implying
-  // the blend accumulates the UNNORMALISED weighted sum and divides by 4π.
-  //
-  // Resolution: the spec says E = π·L = π. The WGSL blend returns the
-  // WEIGHTED MEAN (= L = 1 for uniform scene). The spec's irradiance target
-  // π matches what you get from a PROPER Monte-Carlo irradiance estimator
-  // (∫ L cosθ dω ≈ (4π/N) Σ L_i cosθ_i). We follow the ACTUAL WGSL
-  // algorithm (weighted mean = L), which converges to 1 for L=1.
-  // We then verify the receiver math separately (Test 2).
+  // every atlas cell should converge toward the stored mean L_i = 1.
+  // ddgiSample reconstructs the analytic irradiance E = PI * L at read time;
+  // Test 2 verifies that sampling-boundary conversion plus receiver multiply.
   //
   // The tolerance condition we verify: the per-cell EMA value after 50
   // frames converges to the true weighted-mean radiance (L=1) within ±5%.
@@ -465,25 +452,17 @@ describe('DDGI pipeline CPU emulation — behavior tests', () => {
   );
 
   // -----------------------------------------------------------------------
-  // Test 2 — Receiver multiply produces Lambertian outgoing radiance.
+  // Test 2 - Sampling boundary reconstructs irradiance, then receiver multiply
+  // produces Lambertian outgoing radiance.
   //
-  // Given the atlas value from Test 1 (E ≈ 1 for a uniform L=1 room),
-  // the receiver formula L_o = (albedo/π) · E should yield:
-  //   albedo=0.5: L_o = (0.5/π) · 1 ≈ 0.1592
-  //
-  // BUT: the spec says "For albedo=0.5: L_o = 0.5" which comes from the
-  // original intent where atlas = π (irradiance, not weighted mean).
-  //
-  // We verify the receiver formula itself is correct: (albedo/π) · E = L_o.
-  // Using E = π (the proper irradiance from a unit-radiance environment):
-  //   L_o = (0.5/π) · π = 0.5. Tolerance ±1e-3.
-  //
-  // We pass E = [π, π, π] directly as the "correct irradiance" input,
-  // since that is the analytic result of ∫ L cosθ dω for L=1.
+  // Test 1's uniform-room atlas mean is 1. ddgiSample converts that mean to
+  // E = PI before the receiver applies L_o = (albedo / PI) * E. For albedo=0.5:
+  //   atlasMean = 1 -> E = PI -> L_o = 0.5.
   // -----------------------------------------------------------------------
-  it('receiver multiply: (albedo/π) · E = albedo when E = π (Lambertian energy model)', () => {
+  it('DDGI sample reconstruction plus receiver multiply returns albedo for unit radiance', () => {
     const albedo: [number, number, number] = [0.5, 0.5, 0.5];
-    const E: [number, number, number] = [PI, PI, PI]; // analytic irradiance from uniform L=1
+    const atlasMean: [number, number, number] = [1, 1, 1];
+    const E = reconstructIrradianceFromAtlasMean(atlasMean);
     const Lo = receiverMultiply(albedo, E);
     const expected = 0.5;
     expect(Math.abs(Lo[0] - expected)).toBeLessThan(1e-3);

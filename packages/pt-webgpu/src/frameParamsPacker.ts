@@ -113,7 +113,6 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
   paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
   paramsU32[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
-  paramsU32[FrameParamsSlot.heroStrategy] = 0;
   paramsF32[FrameParamsSlot.heroLambdaNm] = 550.0;
   paramsF32[FrameParamsSlot.heroPdf] = 1.0;
   paramsF32[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;

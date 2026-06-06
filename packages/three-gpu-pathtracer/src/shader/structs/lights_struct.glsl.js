@@ -28,7 +28,6 @@ export const lights_struct = /* glsl */`
 
 		// spot light fields
 		float radius;
-		float near;
 		float decay;
 		float distance;
 		float coneCos;

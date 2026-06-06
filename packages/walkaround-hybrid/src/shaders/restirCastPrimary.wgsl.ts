@@ -58,7 +58,17 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
     return s;
   }
   s.pos    = ray.origin + ray.direction * hit.dist;
-  s.normal = hit.normal;
+  let geoNormal = hit.normal;
+  let n_isTlas = ubo.bvhMode == 1u;
+  let n_base = hit.instanceIndex * 4u;
+  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_i = select(0u, n_base, n_ok);
+  s.normal = smoothShadingNormal(
+    hit, geoNormal,
+    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    n_ok,
+    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
+  );
   s.wo     = -ray.direction;
   let matColor = decodeMaterialColor(hit.matColorPacked);
   let isGlass  = matColor.a > 0.3;

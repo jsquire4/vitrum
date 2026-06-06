@@ -589,7 +589,7 @@ export interface HybridEngineOptions extends EngineOptions {
 
   /**
    * PPG train-pass dispatch cadence (Müller 2017 §3.3). The path-guiding
-   * `guide` + `update` compute passes run only on frames where
+   * `update` compute pass runs only on frames where
    * `frameCount % ppgDispatchInterval === 0`. The learned sTree/dTree GPU
    * buffers PERSIST between train cycles and the gi-ris guided SAMPLING reads
    * them EVERY frame, so a higher interval is a pure training-cost lever — it

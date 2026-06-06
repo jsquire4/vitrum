@@ -47,6 +47,13 @@ function dot3(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+function hash01(seed: number, stream: number): number {
+  let x = (seed ^ Math.imul(stream, 0x9e3779b9)) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
+  x = Math.imul(x ^ (x >>> 15), 0x846ca68b) >>> 0;
+  return ((x ^ (x >>> 16)) >>> 0) / 2 ** 32;
+}
+
 /**
  * Right-handed orthonormal tangent/bitangent for a (normalized) surface normal,
  * picking a stable up-reference to avoid the degeneracy when `n ≈ ±Y`. Single
@@ -119,6 +126,8 @@ export function sampleBdptBounce0FromScene(
 ): BdptBounce0Vertex | null {
   const uPick = ((frameSeed * 2654435761) >>> 0) / 2 ** 32;
   const uHemi = (((frameSeed + 1) * 1597334677) >>> 0) / 2 ** 32;
+  const uArea0 = hash01(frameSeed, 2);
+  const uArea1 = hash01(frameSeed, 3);
   const picked = pickEmitterFlat(scene, uPick);
   if (picked == null) return null;
   const { emitter, discretePdf } = picked;
@@ -142,8 +151,8 @@ export function sampleBdptBounce0FromScene(
       return finishBounce0(emitter.position, axis, rad, discretePdf, uHemi);
     }
     case 'rect-area': {
-      const u = uHemi * 2 - 1;
-      const v = (1 - uHemi) * 2 - 1;
+      const u = uArea0 * 2 - 1;
+      const v = uArea1 * 2 - 1;
       const emitPos: Vec3 = [
         emitter.position[0] + emitter.uAxis[0] * u + emitter.vAxis[0] * v,
         emitter.position[1] + emitter.uAxis[1] * u + emitter.vAxis[1] * v,
@@ -153,10 +162,8 @@ export function sampleBdptBounce0FromScene(
       return finishBounce0(emitPos, emitNormal, rad, discretePdf, uHemi);
     }
     case 'disc-area': {
-      const u = uHemi * 2 - 1;
-      const v = (1 - uHemi) * 2 - 1;
-      const r = Math.sqrt(u * u + v * v) * emitter.radius;
-      const angle = Math.atan2(v, u);
+      const r = Math.sqrt(uArea0) * emitter.radius;
+      const angle = 2 * PI * uArea1;
       const n = normalize3(emitter.normal);
       const { t, b } = buildTangentFrame(n);
       const emitPos: Vec3 = [

@@ -29,13 +29,11 @@ import { materialEmissiveLe } from './packingHelpers.js';
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
- *   0..11  : vertexA (12 bytes)
- *   12..23 : vertexB (12 bytes)
- *   24..35 : vertexC (12 bytes)
- *   36..47 : normal  (12 bytes)
- *   48..51 : area    ( 4 bytes)
- *   52..63 : color   (12 bytes)
- *   64..67 : intensity (4 bytes)
+ *   0..15  : vertexA.xyz + pad
+ *   16..31 : vertexB.xyz + pad
+ *   32..47 : vertexC.xyz + pad
+ *   48..63 : normal.xyz + area
+ *   64..79 : Le.rgb + intensity
  * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
  */
 // EMITTER_STRIDE / EMITTER_FLOATS — file-local (only used inside this

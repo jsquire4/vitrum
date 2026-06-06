@@ -11,7 +11,7 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
 - **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
-- **PPG** path guiding (Müller et al. 2017) — opt-in via `EngineOptions.ppgEnabled`; sTree + dTree on CPU with WGSL update/guide kernels under `src/ppg/`.
+- **PPG** path guiding (Müller et al. 2017) — opt-in via `EngineOptions.ppgEnabled`; sTree + dTree on CPU with WGSL update training plus inline gi-ris guided sampling under `src/ppg/`.
 
 ## Denoisers
 
@@ -94,7 +94,7 @@ src/
     passes/              — One file per pass (RIS, RIS-GI, Temporal[GI], Spatial[GI],
                            Shade, IndirectCombine, IndirectTemporalAccum, AtrousIndirect,
                            GTAO, GTAOUpsample, Composite, Resolve, SampleBudget,
-                           PPGGuide, PPGUpdate) + declarative passOrder
+                           PPGUpdate) + declarative passOrder
     denoisers/           — Denoiser registry (atrous, atrous-variance, svgf-real,
                            neural, oidn-final, none)
     pipelineCompiler.ts  — WGSL include-graph (declarative `requires:`; W1-R6)
@@ -105,7 +105,7 @@ src/
                            indirectTemporalAccum, gtao, gtaoUpsample,
                            composite, resolve, sampleBudget, welfordTemporal
   ppg/                   — Practical Path Guiding (Müller 2017): sTree + dTree on CPU,
-                           ppgUpdate/ppgGuide WGSL kernels (opt-in via ppgEnabled)
+                           ppgUpdate WGSL + gi-ris inline guiding (opt-in via ppgEnabled)
   neural/                — U-Net denoiser (Chaitanya 2017): InferenceGraph,
                            inputPacker, unetArchitecture, weights loader (opt-in
                            via denoiser: 'neural'); WGSL kernels under neural/wgsl/

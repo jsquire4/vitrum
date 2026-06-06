@@ -95,6 +95,7 @@ describe('pt-webgl capabilities', () => {
       causticStrategy: 'manifold-nee',
     });
     expect(engine.capabilities.causticStrategy).toBe('manifold-nee');
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgl-caustic-approximate')).toBe(true);
   });
 
   it('supports photon-map capability reporting path', async () => {
@@ -103,6 +104,7 @@ describe('pt-webgl capabilities', () => {
       causticStrategy: 'photon-map',
     });
     expect(engine.capabilities.causticStrategy).toBe('photon-map');
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgl-caustic-approximate')).toBe(true);
   });
 
   it('downscales render targets to the configured memory budget', async () => {

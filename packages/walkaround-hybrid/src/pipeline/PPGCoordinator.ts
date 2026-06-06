@@ -4,13 +4,13 @@
  *
  * Extracted from {@link WalkaroundGPUPipeline} in the 2026-05-18 refactor
  * sweep: the pipeline used to hold `_ppgEnabled`, `_ppgSTree`, `_ppgSceneAABB`
- * plus three UBO/buffer writers (`_uploadPPGTree`, `_writePPGGuideUBO`,
- * `_writePPGUpdateUBO`) as private members. Concentrating them here keeps
+ * plus tree/update UBO writers (`_uploadPPGTree`, `_writePPGUpdateUBO`) as
+ * private members. Concentrating them here keeps
  * the orchestrator focused on pass scheduling and gives PPG a single owner
  * for its CPU-side sTree, scene bounds, and serialise / upload lifecycle.
  *
  * Lifecycle: the pipeline constructs one `PPGCoordinator` and forwards
- * `initialize`, `onResize`, `refreshGuideUBO`, and `dispose` calls. When PPG
+ * `initialize`, `onResize`, and `dispose` calls. When PPG
  * is disabled (host opt-out, or one of the compute pipelines failed to
  * compile) every method is a cheap no-op — `enabled` stays `false`.
  */
@@ -33,10 +33,8 @@ import type { PipelineSubsystem } from './PipelineSubsystem.js';
  * `ReGIRCoordinator`): scan the BVH position buffer (which the host always
  * uploads, per `restir/bvhCompute.ts`), pad 1%, fall back to ±10 when empty.
  *
- * Phase 1: this AABB is used for two things — the sTree root cell extents
- * (so adaptive splits subdivide the actual scene volume), and the placeholder
- * "scene centre" query position uploaded into the guide UBO (until Phase 2
- * wires a per-pixel surface-position buffer).
+ * This AABB is used for the sTree root cell extents so adaptive splits
+ * subdivide the actual scene volume.
  */
 function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: number } }): AABB {
   return deriveSceneAABBFromBvhPositions(bvh);
@@ -44,8 +42,8 @@ function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: 
 
 /**
  * Owns the PPG bootstrap state (enable flag, sTree, scene AABB) and the
- * three serialise/upload writers. All methods are safe no-ops when PPG was
- * not enabled (or never initialized).
+ * serialise/upload writers. All methods are safe no-ops when PPG was not
+ * enabled (or never initialized).
  */
 export class PPGCoordinator implements PipelineSubsystem {
   private readonly _device: GPUDevice;
@@ -56,9 +54,8 @@ export class PPGCoordinator implements PipelineSubsystem {
    *  initialize() when ppgEnabled is true; serialised to GPU buffers per
    *  frame (Phase 1: static empty tree uploaded once). */
   private _sTree: STree | null = null;
-  /** Scene-bounds AABB carried in the guide UBO so the kernel can map flat
-   *  pixel indices to the (placeholder) world-space query position for sTree
-   *  descent. Set from the BVH bounds at initialize() time. */
+  /** Scene-bounds AABB used to initialise the spatial tree root. Set from the
+   *  BVH bounds at initialize() time. */
   private _sceneAABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
   private _fluxReadbackBuffer: GPUBuffer | null = null;
   private _fluxReadbackInFlight = false;
@@ -70,17 +67,6 @@ export class PPGCoordinator implements PipelineSubsystem {
    * would churn the GC with a multi-MB allocation every readback window.
    */
   private _fluxZeroScratch: Uint32Array | null = null;
-  /**
-   * Reusable staging buffer for the 48-byte guide UBO. {@link refreshGuideUBO}
-   * runs every frame but only the per-frame RNG seed (u32 slot 3) changes; the
-   * rest (dims, alpha, scene AABB) is static between resizes. Keeping the
-   * staging buffer resident avoids a fresh `ArrayBuffer(48)` allocation on
-   * every single frame (GC pressure on the hot render path).
-   */
-  private readonly _guideUboData = new ArrayBuffer(48);
-  private readonly _guideUboU32 = new Uint32Array(this._guideUboData);
-  private readonly _guideUboF32 = new Float32Array(this._guideUboData);
-
   constructor(device: GPUDevice) {
     this._device = device;
   }
@@ -93,9 +79,8 @@ export class PPGCoordinator implements PipelineSubsystem {
 
   /** MIS mixing weight α (Müller §3.4) the gi-ris RIS source pdf uses for the
    *  guided/cosine mixture `p_src = α·p_guide + (1−α)·p_cos`. Currently the
-   *  paper default {@link PPG_MIS_ALPHA}; matches the value baked into the
-   *  guide-kernel UBO so the host-side training and gi-ris guided sampling
-   *  agree on α. */
+   *  paper default {@link PPG_MIS_ALPHA}; update training and gi-ris guided
+   *  sampling agree on this value through the shared host constant. */
   get mixAlpha(): number {
     return PPG_MIS_ALPHA;
   }
@@ -106,7 +91,7 @@ export class PPGCoordinator implements PipelineSubsystem {
    * Derives scene bounds from the uploaded BVH, builds a single-cell sTree
    * at those bounds, allocates the PPG GPU buffers via
    * {@link allocatePPGResources}, then uploads the serialised tree and packs
-   * both UBOs. No-op when `ppgEnabled` is false — leaves `enabled` at false.
+   * the update UBO. No-op when `ppgEnabled` is false — leaves `enabled` at false.
    *
    * The kernels descend the serialised buffers each frame; the CPU refines +
    * re-uploads on rebuild cycles (Phase 2 follow-up).
@@ -117,23 +102,20 @@ export class PPGCoordinator implements PipelineSubsystem {
     width: number,
     height: number,
     ppgEnabled: boolean,
-    frameCount: number,
+    _frameCount: number,
   ): void {
     if (!ppgEnabled) {
       this._enabled = false;
       return;
     }
     this._enabled = true;
-    // Derive scene bounds from the uploaded BVH if available — for Phase 1
-    // we use a generous default that contains any plausible walkaround
-    // scene. The world-space query position is currently the scene centre
-    // (see ppgGuide.wgsl.ts), so the exact bound doesn't drive correctness
-    // until Phase 2 wires a per-pixel position buffer.
+    // Derive scene bounds from the uploaded BVH if available; the initial
+    // single-cell sTree root must cover the rendered scene before adaptive
+    // splits begin.
     this._sceneAABB = derivePPGSceneAABB(bvhBuffers);
     this._sTree = buildSTree(this._sceneAABB);
     allocatePPGResources(this._device, frameResources, width, height);
     this._uploadTree(frameResources);
-    this._writeGuideUBO(frameResources, width, height, frameCount);
     this._writeUpdateUBO(frameResources, width, height);
   }
 
@@ -149,47 +131,12 @@ export class PPGCoordinator implements PipelineSubsystem {
     frameResources: FrameResources,
     width: number,
     height: number,
-    frameCount: number,
+    _frameCount: number,
   ): void {
     if (!this._enabled) return;
     allocatePPGResources(this._device, frameResources, width, height);
     this._uploadTree(frameResources);
-    this._writeGuideUBO(frameResources, width, height, frameCount);
     this._writeUpdateUBO(frameResources, width, height);
-  }
-
-  /**
-   * Refresh the guide-kernel UBO so the kernel's per-frame RNG salt (and any
-   * future per-frame inputs) stay current. The update UBO is
-   * static-per-resolution and is NOT touched here.
-   *
-   * Called once per frame from {@link WalkaroundGPUPipeline.renderFrame}.
-   * No-op when PPG is disabled.
-   */
-  refreshGuideUBO(
-    frameResources: FrameResources,
-    width: number,
-    height: number,
-    frameCount: number,
-  ): void {
-    if (!this._enabled) return;
-    const buf = frameResources.ppg.guideUboBuffer;
-    if (!buf) return;
-    // Per-frame fast path: only the RNG seed (u32 slot 3) changes frame to
-    // frame. The static fields (dims/alpha/scene AABB) were packed at
-    // initialize()/onResize() into the resident `_guideUboData`. We rewrite
-    // just that slot and re-upload — no per-frame ArrayBuffer allocation.
-    //
-    // Defensive: if a caller ever changes resolution WITHOUT an onResize()
-    // (the current pipeline always routes resize through onResize, so this is
-    // belt-and-braces), the resident dims would be stale. Detect that and
-    // fall back to the full pack so behaviour is identical for every caller.
-    if (this._guideUboU32[0] !== (width * height) || this._guideUboU32[1] !== width) {
-      this._writeGuideUBO(frameResources, width, height, frameCount);
-      return;
-    }
-    this._guideUboU32[3] = frameCount >>> 0;
-    this._device.queue.writeBuffer(buf, 0, this._guideUboData);
   }
 
   /**
@@ -340,48 +287,8 @@ export class PPGCoordinator implements PipelineSubsystem {
   }
 
   /**
-   * W9 — Pack and upload the guide-kernel UBO. Layout matches `PPGGuideUBO`
-   * in `ppgGuide.wgsl.ts` (12 × f32 = 48 bytes):
-   *   [0]    pixelCount      (u32)
-   *   [1]    imgWidth        (u32)
-   *   [2]    alpha           (f32, MIS mixing weight)
-   *   [3]    frameSeed       (u32)
-   *   [4..6] sceneMin xyz    (f32)
-   *   [7..9] sceneMax xyz    (f32)
-   *   [10..11] padding
-   */
-  private _writeGuideUBO(
-    frameResources: FrameResources,
-    width: number,
-    height: number,
-    frameCount: number,
-  ): void {
-    if (!this._enabled) return;
-    const buf = frameResources.ppg.guideUboBuffer;
-    if (!buf) return;
-    // Full pack into the resident staging buffer (init / resize path). The
-    // per-frame `refreshGuideUBO` rewrites only the seed slot afterward.
-    const u32 = this._guideUboU32;
-    const f32 = this._guideUboF32;
-    const pixelCount = width * height;
-    u32[0] = pixelCount;
-    u32[1] = width;
-    f32[2] = PPG_MIS_ALPHA;
-    u32[3] = frameCount >>> 0;
-    f32[4] = this._sceneAABB.min[0];
-    f32[5] = this._sceneAABB.min[1];
-    f32[6] = this._sceneAABB.min[2];
-    f32[7] = this._sceneAABB.max[0];
-    f32[8] = this._sceneAABB.max[1];
-    f32[9] = this._sceneAABB.max[2];
-    u32[10] = 0;
-    u32[11] = 0;
-    this._device.queue.writeBuffer(buf, 0, this._guideUboData);
-  }
-
-  /**
    * W9 — Pack and upload the update-kernel UBO. Layout (16 bytes):
-   *   [0] sampleCount  (u32)
+   *   [0] sampleCount  (u32) — half-res ReSTIR-GI reservoir entries
    *   [1] fluxBudget   (u32) — total atomic slots
    *   [2..3] padding
    */
@@ -395,9 +302,11 @@ export class PPGCoordinator implements PipelineSubsystem {
     if (!buf) return;
     const fluxAtomics = frameResources.ppg.fluxAtomicsBuf;
     const fluxBudget = fluxAtomics ? Math.floor(fluxAtomics.size / 4) : 0;
+    const halfW = Math.max(1, Math.floor(width / 2));
+    const halfH = Math.max(1, Math.floor(height / 2));
     const data = new ArrayBuffer(16);
     const u32 = new Uint32Array(data);
-    u32[0] = width * height;
+    u32[0] = halfW * halfH;
     u32[1] = fluxBudget;
     u32[2] = 0;
     u32[3] = 0;

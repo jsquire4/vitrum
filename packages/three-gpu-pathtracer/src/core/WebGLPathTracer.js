@@ -137,6 +137,7 @@ export class WebGLPathTracer {
 		this._previousEnvironment = null;
 		this._previousBackground = null;
 		this._internalBackground = null;
+		this._colorBackground = null;
 
 		// options
 		this.renderDelay = 100;
@@ -334,7 +335,9 @@ export class WebGLPathTracer {
 
 			if ( scene.background !== this._previousBackground ) {
 
-				const background = new CubeToEquirectGenerator( this._renderer ).generate( scene.background );
+				const generator = new CubeToEquirectGenerator( this._renderer );
+				const background = generator.generate( scene.background );
+				generator.dispose();
 				this._internalBackground = background;
 				material.backgroundMap = background;
 				material.backgroundAlpha = 1;
@@ -357,8 +360,11 @@ export class WebGLPathTracer {
 
 				if ( scene.environment.isCubeTexture ) {
 
-					const environment = new CubeToEquirectGenerator( this._renderer ).generate( scene.environment );
+					const generator = new CubeToEquirectGenerator( this._renderer );
+					const environment = generator.generate( scene.environment );
 					material.envMapInfo.updateFrom( environment );
+					environment.dispose();
+					generator.dispose();
 
 				} else {
 
@@ -554,7 +560,12 @@ export class WebGLPathTracer {
 
 		this._quad.dispose();
 		this._quad.material.dispose();
+		this._lowResPathTracer.dispose();
 		this._pathTracer.dispose();
+		this._internalBackground?.dispose();
+		this._internalBackground = null;
+		this._colorBackground?.dispose();
+		this._colorBackground = null;
 
 	}
 

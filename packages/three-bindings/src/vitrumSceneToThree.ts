@@ -59,7 +59,16 @@ const PHYSICAL_MATERIAL_TEXTURE_FIELDS = [
   'metalnessMap',
   'emissiveMap',
   'alphaMap',
+  'aoMap',
   'transmissionMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
 ] as const satisfies readonly (keyof MeshPhysicalMaterial)[];
 
 /**
@@ -103,8 +112,35 @@ function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (emissiveMap) mat.emissiveMap = emissiveMap;
   const alphaMap = fromTextureRef(m.alphaMap);
   if (alphaMap) mat.alphaMap = alphaMap;
+  const aoMap = fromTextureRef(m.aoMap);
+  if (aoMap) {
+    mat.aoMap = aoMap;
+    mat.aoMapIntensity = m.aoMapIntensity ?? 1;
+  }
   const transmissionMap = fromTextureRef(m.transmissionMap);
   if (transmissionMap) mat.transmissionMap = transmissionMap;
+  const clearcoatMap = fromTextureRef(m.clearcoatMap);
+  if (clearcoatMap) mat.clearcoatMap = clearcoatMap;
+  const clearcoatRoughnessMap = fromTextureRef(m.clearcoatRoughnessMap);
+  if (clearcoatRoughnessMap) mat.clearcoatRoughnessMap = clearcoatRoughnessMap;
+  const clearcoatNormalMap = fromTextureRef(m.clearcoatNormalMap);
+  if (clearcoatNormalMap) {
+    mat.clearcoatNormalMap = clearcoatNormalMap;
+    mat.clearcoatNormalScale.set(
+      m.clearcoatNormalScale ?? 1,
+      m.clearcoatNormalScale ?? 1,
+    );
+  }
+  const sheenColorMap = fromTextureRef(m.sheenColorMap);
+  if (sheenColorMap) mat.sheenColorMap = sheenColorMap;
+  const sheenRoughnessMap = fromTextureRef(m.sheenRoughnessMap);
+  if (sheenRoughnessMap) mat.sheenRoughnessMap = sheenRoughnessMap;
+  const iridescenceMap = fromTextureRef(m.iridescenceMap);
+  if (iridescenceMap) mat.iridescenceMap = iridescenceMap;
+  const iridescenceThicknessMap = fromTextureRef(m.iridescenceThicknessMap);
+  if (iridescenceThicknessMap) mat.iridescenceThicknessMap = iridescenceThicknessMap;
+  const anisotropyMap = fromTextureRef(m.anisotropyMap);
+  if (anisotropyMap) mat.anisotropyMap = anisotropyMap;
 }
 
 /**
@@ -278,7 +314,13 @@ function isTexture(x: unknown): x is Texture {
  * the solveSkin-deformed buffers for the rest-pose `p.positions`/`p.normals`.
  */
 function buildGeometry(
-  p: { uvs?: Float32Array; tangents?: Float32Array; indices?: Uint32Array | Uint16Array },
+  p: {
+    uvs?: Float32Array;
+    uv1?: Float32Array;
+    tangents?: Float32Array;
+    colors?: Float32Array;
+    indices?: Uint32Array | Uint16Array;
+  },
   positions: Float32Array,
   normals: Float32Array,
 ): BufferGeometry {
@@ -286,7 +328,13 @@ function buildGeometry(
   geo.setAttribute('position', new BufferAttribute(positions, 3));
   geo.setAttribute('normal', new BufferAttribute(normals, 3));
   if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
+  if (p.uv1) geo.setAttribute('uv1', new BufferAttribute(p.uv1, 2));
   if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
+  if (p.colors) {
+    const vertexCount = Math.floor(positions.length / 3);
+    const itemSize = vertexCount > 0 ? Math.floor(p.colors.length / vertexCount) : 3;
+    geo.setAttribute('color', new BufferAttribute(p.colors, itemSize === 4 ? 4 : 3));
+  }
   if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
   return geo;
 }
@@ -475,7 +523,7 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       const d = e.direction;
       _u.set(d[0], d[1], d[2]).multiplyScalar(1000);
       L.position.copy(_u);
-      L.target.position.set(0, 0, 0);
+      L.target.position.copy(_u).multiplyScalar(-1);
       L.add(L.target);
       L.userData['cellPower'] = 0;
       return L;
@@ -516,9 +564,9 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.position.set(e.position[0], e.position[1], e.position[2]);
       const dir = e.direction;
       L.target.position.set(
-        e.position[0] - dir[0] * 10,
-        e.position[1] - dir[1] * 10,
-        e.position[2] - dir[2] * 10,
+        -dir[0] * 10,
+        -dir[1] * 10,
+        -dir[2] * 10,
       );
       L.add(L.target);
       L.userData['cellPower'] = luminance(e.color, e.intensity);

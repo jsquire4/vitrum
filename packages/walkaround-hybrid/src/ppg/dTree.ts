@@ -58,7 +58,7 @@ export function buildEmptyDTree(initialDepth: number): DTree {
  * are stored at consecutive indices `[firstChild, firstChild+1,
  * firstChild+2, firstChild+3]` (NW, NE, SW, SE). This matches the assumption
  * built into {@link findDTreeLeaf} and into the GPU traversal in
- * `ppgGuide.wgsl.ts`:
+ * `ppgPdf.wgsl.ts`:
  *
  *     idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0)
  *
@@ -252,10 +252,10 @@ export function dTreeSample(
     if (node.isLeaf) {
       // Leaf jitter must be UNIFORM within the leaf rectangle AND INDEPENDENT
       // of the flux-proportional descent path. The GPU production sampler
-      // (ppgGuide.wgsl.ts `dTreeSampleLeafBase` → `ppgGuideMain`) draws TWO
-      // FRESH `lcg` randoms (`r0`, `r1`) for the leaf u,v jitter *after* the
-      // descent, so its jitter is fully decorrelated from which leaf was
-      // picked. The old CPU oracle instead reused the SAME `u0` that had
+      // (ppgPdf.wgsl.ts `ppgDTreeSampleLeafBase` -> `ppgSampleGuidedDir`)
+      // draws two fresh randoms for the leaf u,v jitter after the descent, so
+      // its jitter is fully decorrelated from which leaf was picked. The old
+      // CPU oracle instead reused the SAME `u0` that had
       // already been consumed by the descent (`remaining = u0 * totalFlux`,
       // decremented through the tree) for `vSample`, correlating the leaf
       // v-position with the descent path — a divergence from the GPU.

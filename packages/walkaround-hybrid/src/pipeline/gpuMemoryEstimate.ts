@@ -38,6 +38,9 @@
 import type { GpuMemoryBreakdown } from '@vitrum/core';
 import type { FrameResources } from './resourceManager.js';
 
+export type GpuMemoryResourceSection = Readonly<Record<string, unknown>>;
+export type GpuMemoryExternalSections = Readonly<Record<string, GpuMemoryResourceSection>>;
+
 /**
  * Bytes per texel for every WebGPU `GPUTextureFormat` the walkaround
  * pipeline currently uses. Extending this table is the supported path
@@ -192,12 +195,44 @@ function textureBytes(t: MeasurableTexture): number {
  * which is the point — the estimator should not silently rot when a
  * future sprint adds a texture.
  */
-export function estimateFrameResourcesMemory(res: FrameResources): GpuMemoryBreakdown {
+export function estimateFrameResourcesMemory(
+  res: FrameResources,
+  externalSections: GpuMemoryExternalSections = {},
+): GpuMemoryBreakdown {
   // Mutable accumulators; frozen on return.
   const byCategory: Record<string, number> = {};
   const byTextureFormat: Record<string, number> = {};
   const byBufferUsage: Record<string, number> = {};
   let total = 0;
+
+  const addSection = (cat: string, section: GpuMemoryResourceSection): void => {
+    let catBytes = 0;
+    for (const fieldName of Object.keys(section)) {
+      const obj = section[fieldName] as Record<string, unknown> | null | undefined;
+      if (obj == null) continue;
+
+      if (typeof obj.format === 'string' &&
+          typeof obj.width === 'number' &&
+          typeof obj.height === 'number') {
+        const tex = obj as unknown as MeasurableTexture;
+        const bytes = textureBytes(tex);
+        catBytes += bytes;
+        byTextureFormat[tex.format] = (byTextureFormat[tex.format] ?? 0) + bytes;
+        continue;
+      }
+
+      if (typeof obj.size === 'number' &&
+          typeof obj.usage === 'number') {
+        const buf = obj as unknown as MeasurableBuffer;
+        const bytes = buf.size;
+        catBytes += bytes;
+        const usageClass = classifyBufferUsage(buf.usage);
+        byBufferUsage[usageClass] = (byBufferUsage[usageClass] ?? 0) + bytes;
+      }
+    }
+    byCategory[cat] = (byCategory[cat] ?? 0) + catBytes;
+    total += catBytes;
+  };
 
   // ── Walk each FrameResources sub-struct ────────────────────────────────
   // Cast to a record-of-records so we can iterate the public sub-struct
@@ -242,6 +277,10 @@ export function estimateFrameResourcesMemory(res: FrameResources): GpuMemoryBrea
     }
     byCategory[cat] = catBytes;
     total += catBytes;
+  }
+
+  for (const [cat, section] of Object.entries(externalSections)) {
+    addSection(cat, section);
   }
 
   return Object.freeze({

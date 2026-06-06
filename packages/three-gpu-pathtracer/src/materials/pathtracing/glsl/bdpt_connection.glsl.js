@@ -35,6 +35,8 @@
  */
 export const bdpt_connection = /* glsl */`
 
+	// Firefly guard for rare near-singular connection paths. This is not a
+	// transport term; keep it high enough that ordinary BDPT energy is unaffected.
 	#define BDPT_CONTRIBUTION_CLAMP 100.0
 	#define BDPT_MAX_EYE_DEPTH 8
 	#define BDPT_MAX_MERGED 19
@@ -227,11 +229,12 @@ export const bdpt_connection = /* glsl */`
 		if ( gTerm <= 0.0 ) return vec3( 0.0 );
 		if ( ! bdptIsVisible( eyePos, lightPos, eyeState ) ) return vec3( 0.0 );
 
-		// eye BSDF × cosθ toward the light (bsdfResult returns BSDF×cosθ/pdf).
+		// eye BSDF x cos(theta) toward the light. bsdfResult writes BSDF*cos to
+		// eyeBsdfColor and returns the directional PDF separately.
 		vec3 eyeBsdfColor;
 		float eyeBsdfPdf = bsdfResult( eyeWo, connDir, eyeSurf, eyeState.wavelength, eyeBsdfColor );
 		if ( eyeBsdfPdf <= 0.0 ) return vec3( 0.0 );
-		vec3 eyeBsdfCosTheta = eyeBsdfColor * eyeBsdfPdf;
+		vec3 eyeBsdfCosTheta = eyeBsdfColor;
 
 		// light vertex Lambertian BSDF × cosθ toward the eye.
 		float cosLight = max( dot( lightNormal, -connDir ), 0.0 );

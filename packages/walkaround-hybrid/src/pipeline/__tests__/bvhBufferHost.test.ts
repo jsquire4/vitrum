@@ -2,9 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SceneBVHBuffers } from '../../restir/bvhCompute.js';
 
 vi.mock('../resourceManager.js', () => ({
-  uploadBuffer: vi.fn(() => ({ destroy: vi.fn() })),
-  uploadBufferPadded: vi.fn(() => ({ destroy: vi.fn() })),
-  createDummyStorageBuffer: vi.fn(() => ({ destroy: vi.fn() })),
+  uploadBuffer: vi.fn((_device, data: ArrayBuffer, usage: number) => ({
+    size: data.byteLength,
+    usage,
+    destroy: vi.fn(),
+  })),
+  uploadBufferPadded: vi.fn((_device, data: ArrayBuffer, extraBytes: number, usage: number) => ({
+    size: data.byteLength + extraBytes,
+    usage,
+    destroy: vi.fn(),
+  })),
+  createDummyStorageBuffer: vi.fn(() => ({
+    size: 16,
+    usage: 0x80,
+    destroy: vi.fn(),
+  })),
 }));
 
 // WS1 — beer is a texture now; mock its host helper so the test stays
@@ -63,6 +75,13 @@ describe('BvhBufferHost', () => {
     expect(r.bvhNodesBuffer).toBeDefined();
     expect(r.tlasNodesBuffer).toBeDefined();
     expect(host.lightTreeBuffer()).toBeDefined();
+    const mem = host.gpuMemorySections().staticScene;
+    if (mem == null) throw new Error('expected staticScene memory section');
+    expect(mem['bvhNodesBuffer']).toMatchObject({ size: 64, usage: 0x80 });
+    expect(mem['lightTreeBuffer']).toMatchObject({ size: 64, usage: 0x80 });
+    expect(mem['tlasNodesBuffer']).toMatchObject({ size: 16, usage: 0x80 });
+    expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
+    expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
     host.dispose();
   });
 

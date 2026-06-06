@@ -12,7 +12,7 @@ export function createDdgiFrameResources(device: GPUDevice): DDGIFrameResources 
     format: 'rgba16float',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  const ddgiPlaceholderRg16f = device.createTexture({
+  const ddgiPlaceholderVisRgba16f = device.createTexture({
     label: 'ddgi-placeholder-vis',
     size: [1, 1],
     format: 'rgba16float',
@@ -27,7 +27,7 @@ export function createDdgiFrameResources(device: GPUDevice): DDGIFrameResources 
 
   return {
     ddgiPlaceholderRgba16f,
-    ddgiPlaceholderRg16f,
+    ddgiPlaceholderVisRgba16f,
     ddgiUboBuffer,
   };
 }

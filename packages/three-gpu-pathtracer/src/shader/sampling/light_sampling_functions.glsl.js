@@ -34,6 +34,8 @@ export const light_sampling_functions = /* glsl */`
 
 	struct LightRecord {
 
+		vec3 point;
+		vec3 normal;
 		float dist;
 		vec3 direction;
 		float pdf;
@@ -70,6 +72,8 @@ export const light_sampling_functions = /* glsl */`
 				float cosTheta = dot( rayDirection, normal );
 				didHit = true;
 				lightRec.dist = dist;
+				lightRec.point = rayOrigin + rayDirection * dist;
+				lightRec.normal = normal;
 				// Guard against grazing angles / degenerate area terms causing
 				// divide-by-zero or negative PDFs in MIS weights.
 				float denom = max( abs( light.area * cosTheta ), EPSILON );
@@ -117,6 +121,8 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.type = light.type;
 		lightRec.emission = light.color * light.intensity;
 		lightRec.dist = dist;
+		lightRec.point = randomPos;
+		lightRec.normal = lightNormal;
 		lightRec.direction = direction;
 
 		// Guard against grazing-angle and zero-area degeneracies so MIS weights
@@ -160,6 +166,8 @@ export const light_sampling_functions = /* glsl */`
 		LightRecord lightRec;
 		lightRec.type = light.type;
 		lightRec.dist = dist;
+		lightRec.point = randomPos;
+		lightRec.normal = normal;
 		lightRec.direction = direction;
 		lightRec.emission = light.color * light.intensity * distanceAttenuation * spotAttenuation;
 		lightRec.pdf = 1.0;
@@ -234,8 +242,10 @@ export const light_sampling_functions = /* glsl */`
 			}
 
 			LightRecord rec;
+			rec.point = light.u;
 			rec.direction = normalize( lightRay );
 			rec.dist = length( lightRay );
+			rec.normal = - rec.direction;
 			rec.pdf = 1.0;
 			rec.emission = light.color * light.intensity * distanceFalloff;
 			rec.type = light.type;
@@ -247,6 +257,8 @@ export const light_sampling_functions = /* glsl */`
 			LightRecord rec;
 			rec.dist = 1e10;
 			rec.direction = light.u;
+			rec.point = - light.u * rec.dist;
+			rec.normal = light.u;
 			rec.pdf = 1.0;
 			rec.emission = light.color * light.intensity;
 			rec.type = light.type;

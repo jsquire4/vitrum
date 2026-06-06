@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Mesh, Texture } from 'three';
+import { DirectionalLight, Mesh, SpotLight, Texture, Vector3 } from 'three';
 import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
 import { resolveEnvironment } from '../environment.js';
 
@@ -124,6 +124,51 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
     });
     expect(userData['vitrumFrontLayer']).toEqual({ transmission: [0.4, 0.5, 0.6], roughness: 0.22 });
     expect(userData['vitrumBackLayer']).toEqual({ transmission: [0.9, 0.85, 0.8], roughness: 0.1 });
+  });
+});
+
+describe('vitrumSceneToThree light target transforms', () => {
+  it('parents directional and spot targets with local offsets that preserve world-space direction', () => {
+    const scene = vitrumSceneToThree({
+      primitives: [],
+      emitters: [
+        {
+          kind: 'directional',
+          id: 'sun',
+          color: [1, 1, 1],
+          intensity: 1,
+          direction: [0, 1, 0],
+        },
+        {
+          kind: 'spot',
+          id: 'spot',
+          color: [1, 1, 1],
+          intensity: 1,
+          position: [4, 5, 6],
+          direction: [0, 0, 1],
+          angle: Math.PI / 5,
+        },
+      ],
+      environment: { kind: 'none' },
+    });
+    const sun = scene.children.find((x) => x instanceof DirectionalLight) as DirectionalLight | undefined;
+    const spot = scene.children.find((x) => x instanceof SpotLight) as SpotLight | undefined;
+    expect(sun).toBeDefined();
+    expect(spot).toBeDefined();
+    if (sun == null || spot == null) return;
+
+    // Compose world matrices BEFORE reading positions — lights are added with
+    // `position` set but matrixWorld still identity until an update pass runs
+    // (consumers like the fork call updateMatrixWorld themselves).
+    scene.updateMatrixWorld(true);
+
+    const sunPos = new Vector3().setFromMatrixPosition(sun.matrixWorld);
+    const sunTarget = new Vector3().setFromMatrixPosition(sun.target.matrixWorld);
+    expect(sunPos.sub(sunTarget).normalize().y).toBeCloseTo(1);
+
+    const spotPos = new Vector3().setFromMatrixPosition(spot.matrixWorld);
+    const spotTarget = new Vector3().setFromMatrixPosition(spot.target.matrixWorld);
+    expect(spotPos.sub(spotTarget).normalize().z).toBeCloseTo(1);
   });
 });
 

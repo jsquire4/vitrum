@@ -1,5 +1,5 @@
 /**
- * PPG tree layout constants — shared by ppgGuide, ppgUpdate, and ppgPdf.
+ * PPG tree layout constants — shared by ppgUpdate and ppgPdf.
  *
  * These constants mirror the flat-buffer serialisation layout produced by
  * `serialise.ts`. If the serialiser changes these values, all three shader
@@ -21,7 +21,7 @@ const STREE_HEADER_F32 : u32 = 4u;
 const STREE_NODE_STRIDE: u32 = 16u;
 `;
 
-/** PPG tree layout constants — required by ppgGuide, ppgUpdate, and ppgPdf. */
+/** PPG tree layout constants — required by ppgUpdate and ppgPdf. */
 export const PPG_TREE_LAYOUT_MODULE: WgslModule = {
   name: 'ppgTreeLayout',
   source: PPG_TREE_LAYOUT_WGSL,

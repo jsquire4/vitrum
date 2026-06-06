@@ -90,6 +90,15 @@ export type AnalyticShape =
  *   Captured at bind time; constant for the life of the primitive.
  * - `material` / `transform` mirror `MeshPrimitive`.
  *
+ * SPACE CONVENTION: with world-space `bones`, the bare formula above lands in
+ * WORLD space — yet consumers apply `transform` once on top. Hosts whose
+ * skinned node carries a non-identity `transform` MUST therefore supply
+ * `bindMatrix`/`bindMatrixInverse` such that the solve returns MESH-LOCAL
+ * positions (THREE attached-bindMode: `bindMatrixInverse =
+ * inverse(matrixWorld)` — exactly the term that cancels the node transform
+ * out of the world-space bone chain). `@vitrum/three-bindings` captures the
+ * pair automatically whenever either matrix is non-identity.
+ *
  * The CPU-side solver (`solveSkin`) lives in `@vitrum/core` (re-exported by
  * `@vitrum/three-bindings`); the engine ingests the deformed positions through
  * the existing `HybridEngine.updatePrimitive` positions-refit fast path (A3).

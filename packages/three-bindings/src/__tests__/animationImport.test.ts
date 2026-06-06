@@ -47,4 +47,17 @@ describe('convertAnimations — THREE clips → vitrum AnimationClip (P3)', () =
     const [out] = convertAnimations([clip], root);
     expect(out?.channels).toHaveLength(0);
   });
+
+  it('maps THREE InterpolateSmooth to LINEAR because glTF CUBICSPLINE needs tangent triples', () => {
+    const mesh = new THREE.Mesh();
+    mesh.name = 'N';
+    const root = new THREE.Scene();
+    root.add(mesh);
+    const track = new THREE.VectorKeyframeTrack('N.position', [0, 1], [0, 0, 0, 1, 1, 1]);
+    track.setInterpolation(THREE.InterpolateSmooth);
+    const clip = new THREE.AnimationClip('smooth', 1, [track]);
+
+    const [out] = convertAnimations([clip], root);
+    expect(out?.channels[0]?.sampler.interpolation).toBe('LINEAR');
+  });
 });

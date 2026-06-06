@@ -215,8 +215,8 @@ interface ParsedHybridEngineConfig {
   /** Resolved DDGI round-robin probe-update divisor (preset, overridden by opts). */
   readonly ddgiUpdateDivisor: number;
   /** Resolved PPG train-pass dispatch cadence (preset, overridden by opts).
-   *  Threaded into `pipeline.initialize` so the ppg-guide + ppg-update passes
-   *  gate on `frameCount % ppgDispatchInterval`. Always ≥ 1. */
+   *  Threaded into `pipeline.initialize` so the ppg-update pass gates on
+   *  `frameCount % ppgDispatchInterval`. Always >= 1. */
   readonly ppgDispatchInterval: number;
   /** ReGIR (Boksansky 2021) grid-based DI light-selection config (pass-through
    *  from opts; `undefined` ⇒ off). Threaded into `pipeline.initialize`. */
@@ -960,6 +960,7 @@ export class HybridEngine implements Engine {
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
       debugTextures: () => this._pipeline?.getDebugTextures() ?? null,
       pipelineResources: () => this._pipeline?.frameResources ?? null,
+      pipelineMemoryExternalSections: () => this._pipeline?.gpuMemoryExternalSections ?? {},
       // T3.G click-to-pick: the retained core scene + last-frame camera + canvas
       // size feed the CPU ray-cast in createHybridEngineDebugSurface.
       pickScene: () => this._lastScene,
@@ -1011,10 +1012,7 @@ export class HybridEngine implements Engine {
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
     // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
     // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
-    if (this._synthesizedThreeScene != null) {
-      try { disposeVitrumThreeSceneRoot(this._synthesizedThreeScene); } catch {}
-      this._synthesizedThreeScene = null;
-    }
+    this._disposeSynthesizedThreeScene();
 
     // W8 Phase 2 — rebuild the RC BVH + cascade buffers against the new
     // scene. Synthesise a fresh THREE root if needed (lazy via
@@ -1034,6 +1032,7 @@ export class HybridEngine implements Engine {
    *  pipeline will throw at BVH build with a clear message. */
   private _ensureThreeSceneRoot(): THREE.Scene | null {
     if (this._threeScene != null) return this._threeScene;
+    if (this._ddgiTraversalScene != null) return this._ddgiTraversalScene;
     if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
     if (this._renderScene != null && this._coreSceneSuppliesMeshes()) {
       this._synthesizedThreeScene = vitrumSceneToThree(this._renderScene);
@@ -1450,29 +1449,9 @@ export class HybridEngine implements Engine {
     this._ddgi.invalidateProbeCache();
   }
 
-  // ── Runtime lighting update ────────────────────────────────────────────
+  // ── GI state persistence ────────────────────────────────────────────────
 
   /**
-   * Runtime update of the primary directional light + sky parameters.
-   *
-   * Re-uploads the WalkaroundUBO at the next frame start (the existing UBO
-   * uploader reads live engine fields each frame — no frozen snapshot to
-   * bust). Invalidates the DDGI probe atlas so it re-converges over the
-   * next ~8 frames. Resets the temporal accumulator (history discarded;
-   * α=1 for the very next frame).
-   *
-   * **No pipelines or GPU buffers are recreated.** The only cost is:
-   *   - 2 JS field writes per changed field (field + DDGI sun-intensity mirror)
-   *   - DDGI re-convergence over the default `STRIDE` frames (~133 ms at
-   *     60 FPS)
-   *   - 1 frame of temporal-accumulator reset overhead
-   *
-   * **Use case:** time-of-day scrubbing in stainedGlass without engine
-   * teardown. Eliminates the engine-recreation workaround documented at
-   * `useVitrumWalkaroundEngine.ts:34` (stainedGlass audit Gap 1).
-   *
-   * Calling with an empty object (`{}`) is a safe no-op.
-   *
    * Export the converged DDGI global-illumination state (the "cached light
    * field") so the host can persist it (e.g. to IndexedDB via
    * {@link serializeGIState}) and restore it next session without re-converging.
@@ -1522,6 +1501,15 @@ export class HybridEngine implements Engine {
   }
 
   /**
+   * Runtime update of the primary directional light + sky parameters.
+   *
+   * Re-uploads the WalkaroundUBO at the next frame start. Invalidates the DDGI
+   * probe atlas so it re-converges over the next ~8 frames, and resets the
+   * temporal accumulator so stale lighting does not bleed through history.
+   *
+   * No pipelines or GPU buffers are recreated; calling with an empty object is
+   * a safe no-op.
+   *
    * @param opts - Partial lighting overrides. Omitted fields are unchanged.
    */
   updateLighting(opts: Partial<LightingOptions>): void {
@@ -2203,13 +2191,23 @@ export class HybridEngine implements Engine {
       disposeSceneBVH(this._bvhBuffers);
       this._bvhBuffers = null;
     }
-    if (this._ddgiTraversalScene) {
-      disposeVitrumThreeSceneRoot(this._ddgiTraversalScene);
+    const traversalScene = this._ddgiTraversalScene;
+    if (traversalScene) {
+      disposeVitrumThreeSceneRoot(traversalScene);
       this._ddgiTraversalScene = null;
     }
+    this._disposeSynthesizedThreeScene(traversalScene);
     if (this._state !== 'disposed') {
       this._state = 'initializing';
     }
+  }
+
+  private _disposeSynthesizedThreeScene(alreadyDisposed: THREE.Scene | null = null): void {
+    const scene = this._synthesizedThreeScene;
+    if (scene == null) return;
+    this._synthesizedThreeScene = null;
+    if (scene === alreadyDisposed) return;
+    try { disposeVitrumThreeSceneRoot(scene); } catch {}
   }
 
   /** Construction-time immutable config consumed by the init coordinator.

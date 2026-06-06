@@ -154,6 +154,35 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
       expect(prevColor[i * 3 + 2] ?? 0).toBeCloseTo(0.4, 1);
     }
   });
+
+  it('matches WGSL history truncation for subpixel bilinear reprojection', () => {
+    const W = 2, H = 2;
+    const color = makeColor(W, H, 0.2, 0.2, 0.2);
+    const { depth1, norm, objId } = makeGeo(W, H, 1.0, 0, 0, 1);
+    const motion = new Float32Array(W * H * 2);
+    motion[0] = 0.25;
+    motion[1] = 0.25;
+
+    const result = svgfReprojCPU({
+      currColor: color,
+      prevColor: color,
+      motionVec: motion,
+      currDepth: depth1,
+      currNormal: norm,
+      currObjId: objId,
+      prevDepth: depth1,
+      prevNormal: norm,
+      prevObjId: objId,
+      historyLengthIn: new Uint32Array([2, 4, 4, 4]),
+      momentsIn: new Float32Array(W * H * 2).fill(0.1),
+      width: W,
+      height: H,
+    });
+
+    // Shader path uses u32(weightedHistory) + 1, so 2.875 truncates to 2.
+    // A rounded CPU oracle would incorrectly produce 4 here.
+    expect(result.historyLengthOut[0]).toBe(3);
+  });
 });
 
 // ── Test 2: Disocclusion reset ───────────────────────────────────────────────

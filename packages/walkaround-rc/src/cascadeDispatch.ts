@@ -65,8 +65,6 @@ interface DispatchHandles {
   mergeBindGroups: GPUBindGroup[];
   /** Owned placeholder env texture when caller provided none. */
   placeholderEnvTexture?: GPUTexture;
-  /** True when envSampler is dispatcher-owned and should be destroyed on dispose. */
-  ownsEnvSampler?: boolean;
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -234,6 +232,10 @@ export class RCDispatcher {
   private _castShaderModule:  GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
   private _lastError: Error | null = null;
+  /** Dummy 32-byte TLAS placeholder buffers created in merged mode (see
+   *  `_dummyStorageBuffer`). Tracked so `dispose()` can destroy them — they
+   *  are not retained on `DispatchHandles`. */
+  private _dummyTlasBuffers: GPUBuffer[] = [];
   /** B3b (2026-05-19) — per-instance cascade dimensions. Defaults to the
    *  Cornell-tuned `CASCADE_DIMS`; hosts override via constructor for
    *  non-Cornell aspect ratios / scene scales. */
@@ -321,6 +323,10 @@ export class RCDispatcher {
       this._handles.placeholderEnvTexture?.destroy();
       this._handles = null;
     }
+    for (const buf of this._dummyTlasBuffers) {
+      buf.destroy();
+    }
+    this._dummyTlasBuffers = [];
     this._lastError = null;
     this._castShaderModule  = null;
     this._mergeShaderModule = null;
@@ -364,11 +370,13 @@ export class RCDispatcher {
     // is the exact analogue of the DDGI fix `ea88803` (same root cause); latent
     // because RC's probe shader had no GPU-compile/bind gate (W8 CPU-only) until
     // the RC core-BVH converged A/B exercised it.
-    return device.createBuffer({
+    const buf = device.createBuffer({
       label,
       size: 32,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this._dummyTlasBuffers.push(buf);
+    return buf;
   }
 
   /** Build bind group layout for a merge pass (3 entries: upper + lower cascades + uniforms). */
@@ -395,13 +403,11 @@ export class RCDispatcher {
     envTextureView: GPUTextureView;
     envSampler: GPUSampler;
     placeholderEnvTexture?: GPUTexture;
-    ownsEnvSampler: boolean;
   } {
     if (opts.envTextureView && opts.envSampler) {
       return {
         envTextureView: opts.envTextureView,
         envSampler: opts.envSampler,
-        ownsEnvSampler: false,
       };
     }
     const placeholderTex = device.createTexture({
@@ -420,7 +426,6 @@ export class RCDispatcher {
       envTextureView: placeholderTex.createView({ label: 'rc-env-placeholder-view' }),
       envSampler: device.createSampler({ label: 'rc-env-placeholder-sampler' }),
       placeholderEnvTexture: placeholderTex,
-      ownsEnvSampler: true,
     };
   }
 
@@ -471,7 +476,6 @@ export class RCDispatcher {
       envTextureView,
       envSampler,
       placeholderEnvTexture,
-      ownsEnvSampler,
     } = this._resolveEnvBindingRaw(device, opts);
 
     // ── Cast passes (one per cascade) ──────────────────────────────────────
@@ -608,7 +612,6 @@ export class RCDispatcher {
       castBindGroups,
       mergeBindGroups,
       ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
-      ownsEnvSampler,
     };
   }
 }

@@ -313,7 +313,6 @@ export const get_surface_record_function = /* glsl */`
 		surf.sssAlbedo = material.sssAlbedo;
 		surf.hasSpectralAttenuation = material.hasSpectralAttenuation;
 		surf.activeLayerTransmission = hasFaceLayer ? layerTransmission : vec3( 1.0 );
-		surf.activeLayerRoughness = layerRoughness;
 		surf.hasActiveLayer = hasFaceLayer;
 		surf.materialIndex = materialIndex;
 		surf.attenuationColor = material.attenuationColor;

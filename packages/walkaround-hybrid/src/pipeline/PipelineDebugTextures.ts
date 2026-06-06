@@ -31,7 +31,7 @@ export interface PipelineDebugTextures {
   hdrIndirectTexture: GPUTexture | null;
 
   /**
-   * Full-resolution GTAO ambient-occlusion factor (`r16float`).
+   * Full-resolution GTAO ambient-occlusion factor (`rgba16float`).
    * Written by `gtaoUpsampleMain`; sampled by shade to modulate diffuse terms.
    * Corresponds to `FrameResources.gtao.aoFullTexture`.
    */

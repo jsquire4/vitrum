@@ -1046,7 +1046,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       spotLightsBuffer.destroy();
       rectAreaLightsBuffer.destroy();
       meshAreaLightsBuffer.destroy();
-      lightTreeBuffer.destroy();
+      // Light-tree buffer is realloc-swapped by rebuildLightTreeForScene when
+      // the node count changes — resolve it late off `uploaded` like the
+      // BLAS/TLAS handles, or the swapped-in buffer leaks (and the original
+      // gets a benign double-destroy).
+      uploaded.lightTreeBuffer.destroy();
       uploaded.tlasNodesBuffer.destroy();
       uploaded.tlasInstanceIndicesBuffer.destroy();
       uploaded.tlasBlasRootsBuffer.destroy();

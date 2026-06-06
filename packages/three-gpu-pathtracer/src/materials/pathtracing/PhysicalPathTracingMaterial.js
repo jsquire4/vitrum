@@ -145,14 +145,8 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				// assigned per-material (only their constructor defaults), so they were
 				// removed when sssSample() was fixed to read surf.* instead.
 
-				// Sprint 8: chromatic dispersion uniforms (u_dispersionStrength = 0 disables).
-				// u_ior0               = base IOR at 589.3 nm (sodium D line).
-				// u_dispersionStrength = Cauchy B coefficient in nm² scaled for slider.
-				//                        0 = no dispersion; 0.018 = lead crystal (bevel default).
 				// u_jakobCoeffs        = (c0, c1, c2) polynomial from rgbToSpectralCoefficients.
 				//                        defaults to (0,0,0) → flat 50% spectrum (no chromatic weight).
-				u_ior0: { value: 1.5 },
-				u_dispersionStrength: { value: 0.0 },
 				u_jakobCoeffs: { value: new Vector3( 0.0, 0.0, 0.0 ) },
 
 				// Sprint 12: hero-wavelength spectral accumulator uniforms.
@@ -362,9 +356,6 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				uniform vec3 u_scatterAlbedo;
 				uniform float u_anisotropyG;
 
-				// Sprint 8: chromatic dispersion uniforms
-				uniform float u_ior0;
-				uniform float u_dispersionStrength;
 				uniform vec3 u_jakobCoeffs;
 				uniform float iorCauchyA;
 				uniform float iorCauchyB;
@@ -616,7 +607,7 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 								// the paper-accurate sigmoid reflectance of the representative medium
 								// albedo; otherwise the legacy RGB→hero smoothstep projection. Both
 								// return a unit-less albedo in [0,1], so energy is preserved.
-								state.throughput *= mediumAlbedoHero( u_scatterAlbedo, state.wavelength ) * transmittance;
+								state.throughput *= mediumAlbedoThroughput( u_scatterAlbedo, state.wavelength ) * transmittance;
 
 								// Advance ray from scatter position with new direction.
 								ray.origin = scatterPos;
@@ -798,7 +789,7 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 							! surf.frontFace;
 						if ( canUseSss ) {
 							scatterRec = sssSample( - ray.direction, surf, state.wavelength );
-							scatterRec.throughput *= activeLayerWeight( surf, state.wavelength );
+							scatterRec.throughput *= activeLayerThroughput( surf, state.wavelength );
 						} else {
 							scatterRec = bsdfSample( - ray.direction, surf, state.wavelength );
 						}
@@ -992,7 +983,7 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 						// attenuate the throughput color by the medium color
 						if ( ! surf.frontFace ) {
 
-							state.throughput *= transmissionAttenuationHero(
+							state.throughput *= transmissionAttenuationThroughput(
 								materials,
 								surfaceHit.dist,
 								surf.attenuationColor,
@@ -1011,7 +1002,8 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 						uint minBounces = 3u;
 						float depthProb = float( state.depth < minBounces );
 
-						float rrProb = scatterRec.throughput / max( scatterRec.pdf, 1e-6 );
+						float scatterScalar = max( scatterRec.throughput.r, max( scatterRec.throughput.g, scatterRec.throughput.b ) );
+						float rrProb = scatterScalar / max( scatterRec.pdf, 1e-6 );
 						rrProb = sqrt( rrProb );
 						rrProb = max( rrProb, depthProb );
 						rrProb = min( rrProb, 1.0 );
@@ -1028,7 +1020,7 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 
 						// adjust the throughput and discard and exit if we find discard the sample if there are any NaNs
 						state.throughput *= scatterRec.throughput / scatterRec.pdf;
-						if ( isnan( state.throughput ) || isinf( state.throughput ) ) {
+						if ( any( isnan( state.throughput ) ) || any( isinf( state.throughput ) ) ) {
 
 							break;
 

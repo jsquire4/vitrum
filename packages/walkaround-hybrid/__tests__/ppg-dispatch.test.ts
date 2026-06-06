@@ -5,12 +5,11 @@
  * MUST dispatch non-zero workgroup counts (no more `dispatchWorkgroups(0,0,0)`
  * stubs). We exercise the Pass.dispatch path with mock GPU surfaces, capture
  * every `dispatchWorkgroups(x,y,z)` call, and verify each PPG dispatch
- * receives positive counts derived from (width, height).
+ * receives positive counts derived from the half-res ReSTIR-GI reservoir grid.
  */
 
 import { describe, it, expect } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
-import { PPGGuidePass } from '../src/pipeline/passes/PPGGuidePass.js';
 import { PPGUpdatePass } from '../src/pipeline/passes/PPGUpdatePass.js';
 import type { PassDispatchContext, PassGateOptions } from '../src/pipeline/Pass.js';
 
@@ -84,26 +83,19 @@ function makeMinimalCtx(
   const device = makeMockDevice() as unknown as GPUDevice;
   const encoder = makeMockEncoder(captured) as unknown as GPUCommandEncoder;
 
-  // Build a minimal FrameResources shape — only the .ppg sub-struct matters
-  // for these tests.
+  // Build a minimal FrameResources shape — only the .ppg sub-struct plus the
+  // GI reservoir source matter for these tests.
   const ppgResources = ppgEnabled
     ? {
         sTreeBuf: makeMockBuffer(),
         dTreeBuf: makeMockBuffer(),
         dTreeOffsetsBuf: makeMockBuffer(),
         fluxAtomicsBuf: makeMockBuffer(),
-        samplesPosBuf: makeMockBuffer(),
-        samplesDirBuf: makeMockBuffer(),
-        samplesLiBuf: makeMockBuffer(),
-        sampleOutBuf: makeMockBuffer(),
-        guideUboBuffer: makeMockBuffer(),
         updateUboBuffer: makeMockBuffer(),
       }
     : {};
 
-  // Cast through unknown — we only touch resources.ppg + .restirGI in the PPG pass paths.
-  // W9 Phase 2: PPGGuidePass also reads `resources.restirGI.reservoirGiCurrentBuffer`
-  // for the per-pixel primary-hit position lookup.
+  // Cast through unknown — we only touch resources.ppg in the PPG update path.
   const resources = {
     ppg: ppgResources,
     restirGI: { reservoirGiCurrentBuffer: makeMockBuffer() },
@@ -137,23 +129,7 @@ function makeMinimalCtx(
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('PPG dispatch — W9 acceptance: no more (0,0,0) stubs', () => {
-  it('PPGGuidePass dispatches a positive 1-D workgroup count = ceil(W*H / 64)', () => {
-    const pipeline = makeMockPipeline() as unknown as GPUComputePipeline;
-    const pass = new PPGGuidePass(pipeline);
-    const W = 256, H = 256;
-    const captured: CapturedDispatch[] = [];
-    pass.dispatch(makeMinimalCtx(W, H, captured, true));
-    expect(captured.length).toBe(1);
-    expect(captured[0]!.label).toBe('ppg-guide');
-    const expectedWG = Math.max(1, Math.ceil((W * H) / 64));
-    expect(captured[0]!.wgX).toBe(expectedWG);
-    expect(captured[0]!.wgY).toBe(1);
-    expect(captured[0]!.wgZ).toBe(1);
-    // The key acceptance criterion: NOT (0,0,0).
-    expect(captured[0]!.wgX).toBeGreaterThan(0);
-  });
-
-  it('PPGUpdatePass dispatches a positive 1-D workgroup count = ceil(W*H / 64)', () => {
+  it('PPGUpdatePass dispatches a positive 1-D workgroup count = ceil((halfW*halfH) / 64)', () => {
     const pipeline = makeMockPipeline() as unknown as GPUComputePipeline;
     const pass = new PPGUpdatePass(pipeline);
     const W = 128, H = 128;
@@ -161,20 +137,12 @@ describe('PPG dispatch — W9 acceptance: no more (0,0,0) stubs', () => {
     pass.dispatch(makeMinimalCtx(W, H, captured, true));
     expect(captured.length).toBe(1);
     expect(captured[0]!.label).toBe('ppg-update');
-    const expectedWG = Math.max(1, Math.ceil((W * H) / 64));
+    const halfSamples = Math.max(1, Math.floor(W / 2)) * Math.max(1, Math.floor(H / 2));
+    const expectedWG = Math.max(1, Math.ceil(halfSamples / 64));
     expect(captured[0]!.wgX).toBe(expectedWG);
     expect(captured[0]!.wgY).toBe(1);
     expect(captured[0]!.wgZ).toBe(1);
     expect(captured[0]!.wgX).toBeGreaterThan(0);
-  });
-
-  it('PPGGuidePass throws if PPG resources are unallocated (contract enforcement)', () => {
-    const pipeline = makeMockPipeline() as unknown as GPUComputePipeline;
-    const pass = new PPGGuidePass(pipeline);
-    const captured: CapturedDispatch[] = [];
-    // Pass `ppgEnabled=false` so resources stay unallocated.
-    expect(() => pass.dispatch(makeMinimalCtx(64, 64, captured, false))).toThrow(/PPG.*resources/);
-    expect(captured.length).toBe(0);
   });
 
   it('PPGUpdatePass throws if PPG resources are unallocated', () => {
@@ -187,11 +155,12 @@ describe('PPG dispatch — W9 acceptance: no more (0,0,0) stubs', () => {
 
   it('dispatch workgroup count scales with image dimensions', () => {
     const pipeline = makeMockPipeline() as unknown as GPUComputePipeline;
-    const pass = new PPGGuidePass(pipeline);
+    const pass = new PPGUpdatePass(pipeline);
     for (const [W, H] of [[64, 64], [256, 144], [1920, 1080], [3840, 2160]] as const) {
       const captured: CapturedDispatch[] = [];
       pass.dispatch(makeMinimalCtx(W, H, captured, true));
-      const expected = Math.max(1, Math.ceil((W * H) / 64));
+      const halfSamples = Math.max(1, Math.floor(W / 2)) * Math.max(1, Math.floor(H / 2));
+      const expected = Math.max(1, Math.ceil(halfSamples / 64));
       expect(captured[0]!.wgX).toBe(expected);
     }
   });
@@ -199,13 +168,13 @@ describe('PPG dispatch — W9 acceptance: no more (0,0,0) stubs', () => {
 
 // ── Item B — PPG train-pass dispatch-interval skip gate ─────────────────────
 //
-// The ppg-guide + ppg-update TRAIN passes gate on
+// The ppg-update TRAIN pass gates on
 // `opts.ppgEnabled && (opts.ppgTrainThisFrame ?? true)`. The orchestrator
 // computes `ppgTrainThisFrame = frameCount % ppgDispatchInterval === 0`, so a
 // higher interval amortises the path-guiding training cost across frames. The
 // learned sTree/dTree GPU buffers persist between train cycles and gi-ris
-// guided SAMPLING reads them every frame, so this gate ONLY governs the two
-// train passes — never the guided sampling. We assert the gate predicate
+// guided SAMPLING reads them every frame, so this gate ONLY governs the update
+// train pass — never guided sampling. We assert the gate predicate
 // directly (its load-bearing logic) AND drive a frame loop through the exact
 // modulo the pipeline uses to confirm the skip/run pattern.
 
@@ -225,7 +194,6 @@ function gateOptsForFrame(
 
 describe('PPG train-pass dispatch interval (Item B skip gate)', () => {
   const passes = [
-    { name: 'PPGGuidePass', make: () => new PPGGuidePass(makeMockPipeline() as unknown as GPUComputePipeline) },
     { name: 'PPGUpdatePass', make: () => new PPGUpdatePass(makeMockPipeline() as unknown as GPUComputePipeline) },
   ] as const;
 
@@ -266,7 +234,7 @@ describe('PPG train-pass dispatch interval (Item B skip gate)', () => {
   it('interval=N actually SKIPS the dispatch on off-interval frames and RUNS it on multiples', () => {
     // Wire gate → dispatch exactly as the orchestrator does: gate first, then
     // dispatch only if the gate passes. Count dispatches across a frame loop.
-    const guide = new PPGGuidePass(makeMockPipeline() as unknown as GPUComputePipeline);
+    const update = new PPGUpdatePass(makeMockPipeline() as unknown as GPUComputePipeline);
     const interval = 4;
     const W = 128, H = 128;
     let dispatched = 0;
@@ -274,10 +242,10 @@ describe('PPG train-pass dispatch interval (Item B skip gate)', () => {
     for (let f = 0; f < 16; f++) {
       const captured: CapturedDispatch[] = [];
       const ctx = makeMinimalCtx(W, H, captured, true);
-      if (guide.gates(gateOptsForFrame(f, interval))) {
-        guide.dispatch(ctx);
+      if (update.gates(gateOptsForFrame(f, interval))) {
+        update.dispatch(ctx);
         dispatched++;
-        expect(captured.length).toBe(1); // ran ⇒ exactly one ppg-guide dispatch
+        expect(captured.length).toBe(1); // ran ⇒ exactly one ppg-update dispatch
       } else {
         skipped++;
         expect(captured.length).toBe(0); // skipped ⇒ NO dispatch captured
@@ -288,8 +256,8 @@ describe('PPG train-pass dispatch interval (Item B skip gate)', () => {
     expect(skipped).toBe(12);
   });
 
-  it('guided sampling is independent of the train gate (gate governs only ppg-guide/ppg-update)', () => {
-    // The skip gate is scoped to the two PPG TRAIN pass classes. No other pass
+  it('guided sampling is independent of the train gate (gate governs only ppg-update)', () => {
+    // The skip gate is scoped to the PPG update TRAIN pass. No other pass
     // reads `ppgTrainThisFrame`; gi-ris (the guided-sampling consumer) is a
     // SharedBindGroupPass whose gates() ignores options entirely and always
     // returns true. We assert that contract here so a future refactor that

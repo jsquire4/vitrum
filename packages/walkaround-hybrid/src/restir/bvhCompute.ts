@@ -127,7 +127,7 @@ export interface SceneBVHBuffers {
    * `baseVertex+vi`.
    */
   bvhNormals: StorageBufferHandle;
-  /** EmitterTri[] — 64-byte emitter struct per emissive triangle. */
+  /** EmitterTri[] — 80-byte emitter struct per emissive triangle. */
   emitters: StorageBufferHandle;
   /** f32[] — CDF over emitter power (same length as emitters). */
   emitterCdf: StorageBufferHandle;
@@ -486,4 +486,3 @@ export function rebuildEmitterBuffersFromSceneRoots(
 export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
   buffers.mergedGeometry.dispose();
 }
-

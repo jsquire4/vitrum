@@ -2,7 +2,7 @@
  * ProbeUpdatePass — DDGI probe update via raw WebGPU compute.
  *
  * Uses the renderer's raw GPUDevice to run two compute passes per frame:
- *  Pass 1 (probeUpdateRays): for each active probe, fire 96 rays via
+ *  Pass 1 (probeUpdateRays): for each active probe, fire 192 rays via
  *          inline BVH traversal, collect radiance at hit points.
  *  Pass 2 (probeUpdateBlend): blend ray results into octahedral atlas
  *          textures with EWMA temporal hysteresis.
@@ -43,7 +43,7 @@ import { makeProbeUpdateBorderIrrWGSL, makeProbeUpdateBorderVisWGSL } from './wg
 import { packDDGIGridParams } from './ddgiGridUbo.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
-import { packDDGIProbeLights } from './probeUpdateLights.js';
+import { DDGI_PROBE_LIGHTS_BUFFER_BYTES, packDDGIProbeLights } from './probeUpdateLights.js';
 import {
   packProbeUpdateBlendParams,
   packProbeUpdateFrameParams,
@@ -326,7 +326,7 @@ export class ProbeUpdatePass {
       tlasL2wBuf:      makeBuffer(16, RO),
       traceParamsBuf:  makeBuffer(16, UB),
       materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:       makeBuffer(16 * 80 + 16, UB),
+      lightsBuf:       makeBuffer(DDGI_PROBE_LIGHTS_BUFFER_BYTES, UB),
       gridParamsBuf:   makeBuffer(64, UB),
       frameParamsBuf:  makeBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
       blendParamsBuf:  makeBuffer(16, UB),

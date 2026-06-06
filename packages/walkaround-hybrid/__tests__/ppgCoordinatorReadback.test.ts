@@ -122,12 +122,7 @@ function makeHarness(fluxBacking: Uint32Array) {
       dTreeBuf: { label: 'dTree', destroy: () => {} },
       dTreeOffsetsBuf: offsetsBuf,
       fluxAtomicsBuf: fluxBuf,
-      guideUboBuffer: { label: 'guide-ubo', size: 48, destroy: () => {} },
       updateUboBuffer: { label: 'update-ubo', size: 16, destroy: () => {} },
-      samplesPosBuf: { destroy: () => {} },
-      samplesDirBuf: { destroy: () => {} },
-      samplesLiBuf: { destroy: () => {} },
-      sampleOutBuf: { destroy: () => {} },
     },
   } as unknown as FrameResources;
 

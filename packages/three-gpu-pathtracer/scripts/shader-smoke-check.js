@@ -23,13 +23,21 @@ const bsdf = read('./src/shader/bsdf/bsdf_functions.glsl.js');
 const spectral = read('./src/shader/bsdf/spectral_accumulator.glsl.js');
 const util = read('./src/shader/common/util_functions.glsl.js');
 const materialMain = read('./src/materials/pathtracing/PhysicalPathTracingMaterial.js');
+const fogFunctions = read('./src/shader/bsdf/fog_functions.glsl.js');
+const volumeMarch = read('./src/shader/bsdf/volume_march.glsl.js');
 const lightSampling = read('./src/shader/sampling/light_sampling_functions.glsl.js');
 const bdptConnection = read('./src/materials/pathtracing/glsl/bdpt_connection.glsl.js');
 const bdptLightSubpath = read('./src/materials/pathtracing/glsl/bdpt_light_subpath.glsl.js');
+const webglPathTracer = read('./src/core/WebGLPathTracer.js');
+const surfaceRecordStruct = read('./src/shader/structs/surface_record_struct.glsl.js');
+const lightsStruct = read('./src/shader/structs/lights_struct.glsl.js');
+const pathTracingSceneGenerator = read('./src/core/PathTracingSceneGenerator.js');
+const uvUnwrapper = read('./src/utils/UVUnwrapper.js');
+const quiltPathTracingRenderer = read('./src/core/QuiltPathTracingRenderer.js');
 
 expectMatch(renderStructs, /float wavelength;/, 'RenderState missing wavelength field');
 expectMatch(renderStructs, /float wavelengthPdf;/, 'RenderState missing wavelengthPdf field');
-expectMatch(renderStructs, /float throughput;/, 'RenderState missing scalar throughput field');
+expectMatch(renderStructs, /vec3 throughput;/, 'RenderState missing RGB throughput field');
 expectNoMatch(renderStructs, /throughputColor/, 'RenderState still contains legacy throughputColor');
 
 expectMatch(
@@ -59,8 +67,13 @@ expectMatch(
 expectMatch(spectral, /uniform int uSpectralRendering;/, 'spectral accumulator missing preview-mode gate uniform');
 expectMatch(
 	spectral,
-	/if\s*\(\s*uSpectralRendering\s*==\s*0\s*\)\s*return vec3\s*\(\s*throughput\s*\)/,
+	/if\s*\(\s*uSpectralRendering\s*==\s*0\s*\)\s*return throughput/,
 	'spectral accumulator must keep low-SPP preview path RGB-stable by default',
+);
+expectMatch(
+	bsdf,
+	/if\s*\(\s*uSpectralRendering\s*==\s*0\s*\)\s*return max\s*\(\s*rgb,\s*vec3\s*\(\s*0\.0\s*\)\s*\)/,
+	'pathThroughputFromRgb must keep RGB throughput in the default preview path',
 );
 
 expectMatch(
@@ -135,12 +148,12 @@ if (evalSpectrumAtHeroIdx === -1 || mediumAlbedoHeroIdx === -1 || evalSpectrumAt
 }
 expectMatch(
 	bsdf,
-	/sssRec\.throughput = mediumAlbedoHero\(\s*u_sssAlbedo,\s*heroWavelength\s*\)\s*\*\s*beerLambert/,
+	/sssRec\.throughput = mediumAlbedoThroughput\(\s*surf\.sssAlbedo,\s*heroWavelength\s*\)\s*\*\s*beerLambert/,
 	'SSS single-scatter albedo must flow through mediumAlbedoHero (gated Jakob–Hanika reflectance)',
 );
 expectMatch(
 	materialMain,
-	/state\.throughput \*= mediumAlbedoHero\(\s*u_scatterAlbedo,\s*state\.wavelength\s*\)\s*\*\s*transmittance/,
+	/state\.throughput \*= mediumAlbedoThroughput\(\s*u_scatterAlbedo,\s*state\.wavelength\s*\)\s*\*\s*transmittance/,
 	'volume single-scatter albedo must flow through mediumAlbedoHero (gated Jakob–Hanika reflectance)',
 );
 // The legacy preview-stable RGB projection must still exist as the default branch.
@@ -253,5 +266,72 @@ expectNoMatch(
 	/scatterRec\.pdf,\s*\/\/ eyePdfFwd/,
 	'eye loop must not pass the old scalar eyePdfFwd=scatterRec.pdf hack to the connection',
 );
+
+// Lifecycle hygiene: generated cube-to-equirect helpers and secondary render
+// targets are easy to leak because they are off the main PathTracingRenderer.
+expectMatch(
+	webglPathTracer,
+	/_lowResPathTracer\.dispose\(\)/,
+	'WebGLPathTracer.dispose must dispose the dynamic low-res PathTracingRenderer',
+);
+expectMatch(
+	webglPathTracer,
+	/_colorBackground\?\.\s*dispose\(\)/,
+	'WebGLPathTracer.dispose must dispose the cached color background texture',
+);
+expectMatch(
+	webglPathTracer,
+	/generator\.dispose\(\);[\s\S]*?this\._internalBackground = background/,
+	'cube-background update must dispose the CubeToEquirectGenerator after conversion',
+);
+expectMatch(
+	webglPathTracer,
+	/material\.envMapInfo\.updateFrom\(\s*environment\s*\);[\s\S]*?environment\.dispose\(\);[\s\S]*?generator\.dispose\(\);/,
+	'cube-environment update must dispose the generated equirect texture and generator after envMapInfo upload',
+);
+
+// Low-traffic fork utilities should stay constructible and compatible with
+// modern THREE even when app code rarely exercises them.
+expectNoMatch(
+	pathTracingSceneGenerator,
+	/materialUuids\.length !== length/,
+	'PathTracingSceneGenerator must compare material UUID cache against materials.length, not undefined length',
+);
+expectNoMatch(
+	uvUnwrapper,
+	/AddMeshStatus/,
+	'UVUnwrapper must not reference the undefined AddMeshStatus enum',
+);
+expectMatch(
+	uvUnwrapper,
+	/statusCode !== 0/,
+	'UVUnwrapper must treat xatlas status 0 as success',
+);
+expectNoMatch(
+	uvUnwrapper,
+	/\.addAttribute\(/,
+	'UVUnwrapper must use BufferGeometry.setAttribute with modern THREE',
+);
+expectNoMatch(
+	uvUnwrapper,
+	/mesh\.geometry = newGeometry/,
+	'UVUnwrapper.generate must return the unwrapped geometry instead of assigning to an undefined mesh',
+);
+expectMatch(
+	uvUnwrapper,
+	/return newGeometry;/,
+	'UVUnwrapper.generate must return the unwrapped BufferGeometry',
+);
+expectMatch(
+	quiltPathTracingRenderer,
+	/set samples\(\s*v\s*\)/,
+	'QuiltPathTracingRenderer must provide a samples setter for PathTracingRenderer construction/reset',
+);
+expectNoMatch(fogFunctions, /sampleFogVolume/, 'dead sampleFogVolume helper must stay deleted');
+expectNoMatch(volumeMarch, /equiAngularPdf/, 'dead equiAngularPdf helper must stay deleted');
+expectNoMatch(spectral, /float sampleHeroWavelength\(/, 'legacy Y-only GLSL sampleHeroWavelength helper must stay deleted');
+expectNoMatch(materialMain, /uniform float u_ior0|uniform float u_dispersionStrength|u_ior0:\s*\{|u_dispersionStrength:\s*\{/, 'dead Sprint-8 dispersion uniforms must stay deleted');
+expectNoMatch(surfaceRecordStruct, /activeLayerRoughness/, 'write-only SurfaceRecord.activeLayerRoughness must stay deleted');
+expectNoMatch(lightsStruct, /float near;/, 'write-only Light.near field must stay deleted');
 
 console.log('Shader smoke checks passed.');

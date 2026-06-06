@@ -143,6 +143,34 @@ describe('classifyBufferUsage', () => {
   });
 });
 
+describe('external GPU resource sections', () => {
+  it('merges static scene buffers and textures into the same breakdown', () => {
+    const device = makeStubDevice();
+    const base = estimateFrameResourcesMemory(createFrameResources(device, 64, 64));
+    const withScene = estimateFrameResourcesMemory(
+      createFrameResources(device, 64, 64),
+      {
+        staticScene: {
+          bvhNodesBuffer: {
+            size: 256,
+            usage: GPUBufferUsage.STORAGE,
+          },
+          bvhBeerTexture: {
+            width: 8,
+            height: 2,
+            format: 'r32uint' as GPUTextureFormat,
+          },
+        },
+      },
+    );
+
+    expect(withScene.byCategory.staticScene).toBe(256 + 8 * 2 * 4);
+    expect(withScene.byBufferUsage.storage).toBe((base.byBufferUsage.storage ?? 0) + 256);
+    expect(withScene.byTextureFormat.r32uint).toBe((base.byTextureFormat.r32uint ?? 0) + 8 * 2 * 4);
+    expect(withScene.total).toBe(base.total + withScene.byCategory.staticScene!);
+  });
+});
+
 // ─── Whole-engine 1920×1080 budget assertion ────────────────────────────────
 
 describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {

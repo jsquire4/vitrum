@@ -62,14 +62,20 @@ describe('three-gpu-pathtracer uniform contract (integration)', () => {
     // (4) Off-gate fallback is the legacy smoothstep projection (heroScalarFromRgb).
     expect(helperBody).toContain('return heroScalarFromRgb( rgb, heroWavelength )');
 
-    // (5) The helper is actually called at the medium single-scatter albedo sites
+    // (5) The helper is actually called through the vec3 throughput adapters at
+    //     the medium single-scatter albedo sites
     //     (volume scatter + SSS), so the gated reflectance reaches the shaded result.
     expect(fragment).toContain(
-      'state.throughput *= mediumAlbedoHero( u_scatterAlbedo, state.wavelength ) * transmittance',
+      'state.throughput *= mediumAlbedoThroughput( u_scatterAlbedo, state.wavelength ) * transmittance',
     );
     expect(fragment).toContain(
-      'sssRec.throughput = mediumAlbedoHero( surf.sssAlbedo, heroWavelength ) * beerLambert',
+      'sssRec.throughput = mediumAlbedoThroughput( surf.sssAlbedo, heroWavelength ) * beerLambert',
     );
+
+    // (5a) Default rendering keeps RGB throughput; spectral mode collapses to a
+    //      replicated hero scalar only behind the explicit spectral gate.
+    expect(fragment).toContain('vec3 pathThroughputFromRgb( vec3 rgb, float heroWavelength )');
+    expect(fragment).toContain('if ( uSpectralRendering == 0 ) return max( rgb, vec3( 0.0 ) )');
 
     // (5b) SSS reads the PER-MATERIAL SurfaceRecord fields (packed from the
     //      MaterialsTexture via material_struct → get_surface_record), NOT the
@@ -86,5 +92,40 @@ describe('three-gpu-pathtracer uniform contract (integration)', () => {
     const helperIdx = fragment.indexOf('float mediumAlbedoHero( vec3 rgb, float heroWavelength )');
     expect(evalIdx).toBeGreaterThanOrEqual(0);
     expect(helperIdx).toBeGreaterThan(evalIdx);
+  });
+
+  it('declares BDPT light sample point/normal fields consumed by the light-subpath pass', () => {
+    const PhysicalPathTracingMaterial = (
+      PathTracerPkg as unknown as { PhysicalPathTracingMaterial?: new () => unknown }
+    ).PhysicalPathTracingMaterial;
+    expect(typeof PhysicalPathTracingMaterial).toBe('function');
+    if (PhysicalPathTracingMaterial == null) return;
+
+    const material = new PhysicalPathTracingMaterial();
+    const fragment = ((material as unknown as { fragmentShader?: string }).fragmentShader ?? '')
+      .replace(/\s+/g, ' ');
+    const structStart = fragment.indexOf('struct LightRecord');
+    expect(structStart).toBeGreaterThanOrEqual(0);
+    const structEnd = fragment.indexOf('};', structStart);
+    const lightRecordStruct = fragment.slice(structStart, structEnd);
+    expect(lightRecordStruct).toContain('vec3 point;');
+    expect(lightRecordStruct).toContain('vec3 normal;');
+    expect(fragment).toContain('vec3 emitPos = lightRec.point;');
+    expect(fragment).toContain('vec3 emitNormal = normalize( lightRec.normal );');
+  });
+
+  it('keeps BDPT connection contribution dimensionally correct: BSDF*cos is not multiplied by pdf', () => {
+    const PhysicalPathTracingMaterial = (
+      PathTracerPkg as unknown as { PhysicalPathTracingMaterial?: new () => unknown }
+    ).PhysicalPathTracingMaterial;
+    expect(typeof PhysicalPathTracingMaterial).toBe('function');
+    if (PhysicalPathTracingMaterial == null) return;
+
+    const material = new PhysicalPathTracingMaterial();
+    const fragment = ((material as unknown as { fragmentShader?: string }).fragmentShader ?? '')
+      .replace(/\s+/g, ' ');
+    expect(fragment).toContain('float eyeBsdfPdf = bsdfResult(');
+    expect(fragment).toContain('vec3 eyeBsdfCosTheta = eyeBsdfColor;');
+    expect(fragment).not.toContain('vec3 eyeBsdfCosTheta = eyeBsdfColor * eyeBsdfPdf;');
   });
 });

@@ -18,7 +18,7 @@
  *       atrous-variance-atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
  *       ddgi-border-vis, temporalAccum, resolve, composite
- *       (MAX_PASS_COUNT = 34 is the svgf-real+PPG worst case)
+ *       (MAX_PASS_COUNT = 34 is the svgf-real+PPG+ReGIR worst case)
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -79,20 +79,19 @@ export type PassLabel =
   | 'indirect-combine'
   | 'ddgi-border-irr'
   | 'ddgi-border-vis'
-  // T2.H3 — PPG paper-faithful (Müller 2017) opt-in passes
+  // T2.H3 — PPG paper-faithful (Müller 2017) opt-in update pass
   | 'ppg-update'
-  | 'ppg-guide'
   | 'temporalAccum'
   | 'resolve'
   | 'composite';
 
 /**
  * Worst-case slot count across all supported configurations (svgf-real + PPG +
- * motion-vectors). Used to size the GPU querySet + resolve/readback buffers so
+ * motion-vectors + ReGIR). Used to size the GPU querySet + resolve/readback buffers so
  * allocation survives every runtime layout. Verify against `buildPassLayout`
  * if you add a pass.
  */
-export const MAX_PASS_COUNT = 35;
+export const MAX_PASS_COUNT = 34;
 
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is

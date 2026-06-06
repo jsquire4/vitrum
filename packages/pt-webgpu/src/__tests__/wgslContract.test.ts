@@ -38,8 +38,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // naga compile gate (wsl-gpu mnee-slab-wgsl-compile.ts) — the byte-identity goldens
     // alone do NOT catch a symbol-scope regression. Recompute (sha256 of
     // PT_WEBGPU_TRACE_WGSL) on any intentional WGSL change and update both here.
-    expect(digest).toBe('dc7d33a438d7a6df99c4a6b35e1573d4ab49454ca47f10440bdd2ec6bd370776');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(214901);
+    // Re-pinned 2026-06-06: FrameParams dropped the never-read heroStrategy slot
+    // (replaced by _padAuto0) and bdptConnection.wgsl gained a firefly-guard
+    // comment above BDPT_CONTRIBUTION_CLAMP. Both are render-neutral.
+    expect(digest).toBe('748b72ae3e9dbafc65b73500964529b0d46c6b1263ff73d5fe4ad1ff3ea42832');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215050);
   });
 });
 
