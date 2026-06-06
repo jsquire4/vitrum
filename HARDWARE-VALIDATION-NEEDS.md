@@ -6,6 +6,16 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 
 ---
 
+> ## ⚡ G-sweep GPU capture results (2026-06-06, wsl-gpu harness — lavapipe oracle + dzn/RTX-4090; artifacts: `wsl-gpu/captures/g-sweep-2026-06-06/`)
+> - **G-P0.1 ReSTIR smooth-normal reuse — PASS.** Sphere-in-Cornell, linear-HDR `direct` tap: reuse-on vs RIS-only (temporal+spatial patched to pass-through) |Δ| = 3.17% (1.1σ — consistent with 0); discrimination control (castPrimary geometric-normal revert) = 34.98% (11.7σ) bias on the same estimator. `wsl-gpu/tests/g-p01-restir-reuse.mjs`.
+> - **G-P0.2 DDGI Lambertian energy — PASS.** Real producer chain (ProbeUpdatePass → blend → exported `DDGI_SAMPLE_WGSL` → albedo/π receiver), analytic f64 sky-irradiance reference: 6/6 gated interior normals in [0.95,1.05] (0.970–0.996), lavapipe + dzn agree <0.1%; literal uniform-L (+Y) check 0.98. Residual ~2% = 192-ray quadrature. Note: octahedral border-wrap puts cardinal-axis normals on cell edges (−Y 1.057 / −Z 0.933) — atlas property, not a π error. `wsl-gpu/scripts/ddgi-uniform-energy-ab.ts`.
+> - **G-P0.3 fork RGB throughput — PASS** (and found a pt-webgpu P0 en route, fixed in `daa9716`: intersectionCore within-leaf closest-hit was last-writer-wins → face-on thin slabs rendered black; ALL pre-`daa9716` pt-webgpu baselines embed it → **refresh reference renders before the next fidelity gate**). White-surface bleed gradients: pt-webgl +0.081/+0.079 vs pt-webgpu +0.047/+0.050 vs old-bug expectation ≈0; both engines internally symmetric ±0.003.
+> - **G-P1.1 PPG — wiring FIXED in `daa9716`, radiometric acceptance INSPECT.** `opts.ppgEnabled` used to die at the lite-tier guard (PPG inert through the public API — ppg-on/off were byte-identical). Now live: on/off genuinely diverge, converged means match within noise (Δ5.4% vs ~6.6% floor → unbiased), but **no variance reduction on the open Cornell** (ratio 0.95×) — cosine is near-optimal there; V17's "measurable reduction" needs a guiding-favourable scene (occluded/indirect-dominant). Keep V17 open with that scene note. `wsl-gpu/tests/g-p11-ppg.mjs`.
+> - **G-P1.2 WebGL BDPT — PASS (on-rig scope).** Required fixing a fork HEAD blocker first (`activeLayerWeight` dangling call broke the WHOLE fragment shader; string-only smoke was a false green — a GLSL call-closure gate now guards the class). Post-fix: BDPT-on/off compile + render finite/non-black, means within ~4%; NEW `gp12-bdpt-compile` scenario proves `FEATURE_BDPT=1` compiles under WebGL2 (the `lightRec.point` class). Runtime BDPT *connections* on ANGLE stay engine-disabled by policy → true hardware-GL connection render remains the Windows-Chrome follow-up.
+> - **NEW INSPECT (from the G-P0.1 harness):** the 5-wall Cornell drove the walkaround TLAS path to zero ReSTIR-DI/GI signal headless (merged-BVH scene works); not in these items' scope — investigate separately.
+
+---
+
 ## 0. Why WSL can't do this (verified)
 `tools/benchmark-runner` adapter probe (`VITRUM_PROBE_START_SERVER=1 npm run benchmark:pt-webgpu-adapter-probe`) reports, for BOTH the "hardware" and "swiftshader" Playwright profiles in WSL2:
 ```
