@@ -294,7 +294,6 @@ fn traceMeshBvh(
     if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
       let count = splitOrCount & 0x0000ffffu;
       let start = node.rightChildOrTriOffset;
-      let triFar = select(tMaxBound, (*hit).dist, closest);
       for (var i = 0u; i < count; i = i + 1u) {
         let t = start + i;
         if (t >= min(params.triangleCount, arrayLength(&indices))) {
@@ -308,7 +307,14 @@ fn traceMeshBvh(
         let b = positions[tri.y].xyz;
         let c = positions[tri.z].xyz;
         let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
-        if (hitT > tMin && hitT < triFar) {
+        // LIVE upper bound — in closest mode compare against the RUNNING
+        // nearest (*hit).dist (initialized to tMaxBound above), re-read every
+        // iteration. A per-leaf snapshot here made the accept last-writer-wins
+        // WITHIN a leaf: a farther triangle tested later overwrote a nearer
+        // accepted hit, so thin slabs (walls) shaded from their buried far
+        // face — NEE always occluded + bounce rays trapped → black geometry
+        // (G-P0.3 capture found this via the face-on Cornell back wall).
+        if (hitT > tMin && hitT < select(tMaxBound, (*hit).dist, closest)) {
           if (!closest) {
             return true;
           }

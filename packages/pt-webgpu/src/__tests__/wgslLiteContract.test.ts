@@ -18,8 +18,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // SHA (length unchanged).
     // Re-pinned 2026-06-06: FrameParams dropped the never-read heroStrategy slot
     // (replaced by _padAuto0, −3 chars). Render-neutral; lite never read it.
-    expect(digest).toBe('b703967ed772af5e99594c72d6c66d580fda8d5c68e7bc1dfb9ad0a55f7634f8');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72239);
+    // Re-pinned 2026-06-06 (2): intersectionCore closest-hit live-bound fix
+    // (see wgslContract.test.ts) — lite composes the same core. RENDER-CHANGING
+    // on purpose; GPU-validated via the G-P0.3 capture matrix.
+    expect(digest).toBe('d78372ff5267152911d09b354267e498d90b24a823b8b204778416f258e53398');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72749);
   });
 });
 

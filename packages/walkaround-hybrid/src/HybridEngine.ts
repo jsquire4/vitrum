@@ -199,6 +199,13 @@ interface ParsedHybridEngineConfig {
    *  When ON, the suffix cache-query + per-frame training passes are live.
    *  FORBIDDEN on tier:'lite'. */
   readonly nrcEnabled: number;
+  /** PPG (Müller 2017) guided-sampling flag (0 = off, 1 = on). COMPILE-TIME
+   *  at the pipeline level: `ppgEnabled` builds the ppg-update pipeline and
+   *  drives the UBO gate; OFF is bit-identical to the cosine kernel.
+   *  FORBIDDEN on tier:'lite'. (G-P1.1 follow-up: opts.ppgEnabled used to be
+   *  read only by the lite-tier guard and never forwarded to the pipeline —
+   *  PPG was inert through the public API.) */
+  readonly ppgEnabled: number;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   readonly rebuildKeyFingerprintSeen: string;
@@ -427,6 +434,10 @@ export function deriveHybridEngineConfig(
     // (which tier:'lite' forbids — validated above). The real gate is compile-time
     // (selects the risGiNrc variant); this value is mirrored into the UBO.
     nrcEnabled: opts.nrcEnabled === true ? 1 : 0,
+    // PPG guided sampling. Default 0 (OFF) — bit-identical cosine kernel.
+    // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
+    // built when a host opts in (tier:'lite' forbids it — validated above).
+    ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
     rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
@@ -2246,6 +2257,8 @@ export class HybridEngine implements Engine {
       // forward the boolean so the pipeline builds the matching gi-ris layout
       // (4-group DDGI default vs 5-group inline-MLP variant).
       nrcEnabled: this._cfg.nrcEnabled === 1,
+      // PPG guided sampling — builds the ppg-update pipeline + UBO gate.
+      ppgEnabled: this._cfg.ppgEnabled === 1,
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
       regirConfig: this._cfg.regirConfig,
     };

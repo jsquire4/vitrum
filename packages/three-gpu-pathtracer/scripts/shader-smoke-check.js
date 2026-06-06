@@ -334,4 +334,112 @@ expectNoMatch(materialMain, /uniform float u_ior0|uniform float u_dispersionStre
 expectNoMatch(surfaceRecordStruct, /activeLayerRoughness/, 'write-only SurfaceRecord.activeLayerRoughness must stay deleted');
 expectNoMatch(lightsStruct, /float near;/, 'write-only Light.near field must stay deleted');
 
+// ── GLSL call-closure gate (2026-06-06) ─────────────────────────────────────
+// The regex pins above are string checks — they CANNOT catch a call to a
+// function that does not exist (the `activeLayerWeight` vs
+// `activeLayerThroughput` dangling call shipped green through this script and
+// broke the whole fork fragment shader at GL compile time). This section
+// extracts every function CALL from the *.glsl.js chunk library and asserts
+// each callee is either a GLSL builtin, a struct constructor, or a function
+// DEFINED somewhere in the fork's embedded GLSL (chunks + the material JS
+// template literals). It is the GLSL analogue of the WGSL naga-compile gate.
+{
+	const { readdirSync, statSync } = await import('node:fs');
+	const { join } = await import('node:path');
+
+	const walk = (dir, out = []) => {
+		for (const name of readdirSync(dir)) {
+			const p = join(dir, name);
+			if (statSync(p).isDirectory()) walk(p, out);
+			else if (name.endsWith('.js')) out.push(p);
+		}
+		return out;
+	};
+
+	const srcRoot = resolve(process.cwd(), './src');
+	const allJs = walk(srcRoot);
+	const chunkFiles = allJs.filter((p) => p.endsWith('.glsl.js'));
+
+	// Pull template-literal bodies (the embedded GLSL) out of a JS file.
+	// `${...}` interpolations are replaced with the placeholder type `float`
+	// so JS-parameterized definitions (e.g. sobol.glsl.js `${ type } sobolReverseBits(`)
+	// remain visible as definitions while JS call noise inside interpolations
+	// disappears. Comments are stripped; `#define` macro names are collected as
+	// definitions BEFORE preprocessor lines are stripped.
+	const collectDefines = (glsl, into) => {
+		for (const m of glsl.matchAll(/^\s*#define\s+([a-zA-Z_]\w*)/gm)) into.add(m[1]);
+	};
+	const glslOf = (file, definesInto) => {
+		const text = readFileSync(file, 'utf8');
+		const literals = text.match(/`[^`]*`/gs) ?? [];
+		let glsl = literals.join('\n');
+		for (let i = 0; i < 4 && /\$\{[^{}]*\}/.test(glsl); i += 1) {
+			glsl = glsl.replace(/\$\{[^{}]*\}/g, 'float');
+		}
+		glsl = glsl
+			.replace(/\/\*[\s\S]*?\*\//g, ' ')
+			.replace(/\/\/[^\n]*/g, ' ');
+		if (definesInto) collectDefines(glsl, definesInto);
+		return glsl.replace(/^\s*#[^\n]*/gm, ' ');
+	};
+
+	// DEFINITIONS universe: every embedded GLSL template literal in src/**.js
+	// (chunks may call functions defined by the including material).
+	const defined = new Set();
+	let defsGlsl = '';
+	for (const f of allJs) defsGlsl += glslOf(f, defined) + '\n';
+	for (const m of defsGlsl.matchAll(
+		/(?:^|[;{}\s])(?:float|u?int|bool|void|[iub]?vec[234]|mat[234](?:x[234])?|[A-Z]\w*)\s+([a-zA-Z_]\w*)\s*\(/g,
+	)) {
+		defined.add(m[1]);
+	}
+	for (const m of defsGlsl.matchAll(/struct\s+([A-Z]\w*)/g)) defined.add(m[1]);
+
+	// Symbols provided by EXTERNAL GLSL composed into the final shader at
+	// runtime — not defined in this repo, verified by provenance:
+	//   - THREE ShaderChunk `#include <common>` (PhysicalPathTracingMaterial.js:231):
+	//     saturate, pow2, pow3, pow4, luminance, texture2D (compat alias).
+	//   - three-mesh-bvh `BVHShaderGLSL.*` (PhysicalPathTracingMaterial.js:244-245):
+	//     uTexelFetch1D, bvhIntersectFirstHit.
+	for (const ext of [
+		'saturate', 'pow2', 'pow3', 'pow4', 'luminance', 'texture2D',
+		'uTexelFetch1D', 'bvhIntersectFirstHit',
+	]) {
+		defined.add(ext);
+	}
+
+	const GLSL_BUILTINS = new Set((
+		'abs acos acosh all any asin asinh atan atanh bitCount bitfieldExtract bitfieldInsert bitfieldReverse ' +
+		'ceil clamp cos cosh cross degrees determinant dFdx dFdy distance dot equal exp exp2 faceforward ' +
+		'findLSB findMSB floatBitsToInt floatBitsToUint floor fma fract frexp fwidth greaterThan ' +
+		'greaterThanEqual intBitsToFloat inverse inversesqrt isinf isnan ldexp length lessThan lessThanEqual ' +
+		'log log2 matrixCompMult max min mix mod modf normalize not notEqual outerProduct packHalf2x16 ' +
+		'packSnorm2x16 packUnorm2x16 pow radians reflect refract round roundEven sign sin sinh smoothstep ' +
+		'sqrt step tan tanh texelFetch texture textureGrad textureLod textureSize transpose trunc ' +
+		'uintBitsToFloat unpackHalf2x16 unpackSnorm2x16 unpackUnorm2x16 ' +
+		'float int uint bool vec2 vec3 vec4 ivec2 ivec3 ivec4 uvec2 uvec3 uvec4 bvec2 bvec3 bvec4 ' +
+		'mat2 mat3 mat4 mat2x2 mat2x3 mat2x4 mat3x2 mat3x3 mat3x4 mat4x2 mat4x3 mat4x4 ' +
+		'if for while switch return defined layout'
+	).split(/\s+/));
+
+	const undefinedCalls = new Map();
+	for (const f of chunkFiles) {
+		const body = glslOf(f);
+		for (const m of body.matchAll(/([a-zA-Z_]\w*)\s*\(/g)) {
+			const callee = m[1];
+			if (GLSL_BUILTINS.has(callee) || defined.has(callee)) continue;
+			const rel = f.slice(srcRoot.length + 1);
+			if (!undefinedCalls.has(callee)) undefinedCalls.set(callee, rel);
+		}
+	}
+	if (undefinedCalls.size > 0) {
+		const lines = [...undefinedCalls.entries()].map(([fn, file]) => `  ${fn}() — first seen in src/${file}`);
+		throw new Error(
+			`GLSL call-closure FAILED — ${undefinedCalls.size} call(s) to functions defined nowhere in the fork GLSL:\n` +
+			lines.join('\n'),
+		);
+	}
+	console.log(`GLSL call-closure: OK (${defined.size} definitions cover all chunk calls).`);
+}
+
 console.log('Shader smoke checks passed.');

@@ -41,8 +41,13 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-06: FrameParams dropped the never-read heroStrategy slot
     // (replaced by _padAuto0) and bdptConnection.wgsl gained a firefly-guard
     // comment above BDPT_CONTRIBUTION_CLAMP. Both are render-neutral.
-    expect(digest).toBe('748b72ae3e9dbafc65b73500964529b0d46c6b1263ff73d5fe4ad1ff3ea42832');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215050);
+    // Re-pinned 2026-06-06 (2): intersectionCore closest-hit leaf loop now
+    // compares against the LIVE running (*hit).dist instead of a per-leaf
+    // snapshot — the snapshot made within-leaf acceptance last-writer-wins
+    // (thin slabs shaded from their buried far face → black walls). RENDER-
+    // CHANGING on purpose; GPU-validated via the G-P0.3 capture matrix.
+    expect(digest).toBe('f933406dbd4281904028ffb827c7801a8bc2fa535b4dc8297015b3640e47a804');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215560);
   });
 });
 

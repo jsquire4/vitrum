@@ -552,9 +552,9 @@ export const bsdf_functions = /* glsl */`
 
 		// RFE-03 / Sprint 14: apply selected front/back layer absorption exactly once
 		// in the BSDF evaluation flow, after all lobes have been summed.
-		// activeLayerWeight() returns 1.0 when surf.hasActiveLayer is false, so
-		// non-layered materials are unaffected.
-		color *= activeLayerWeight( surf, heroWavelength );
+		// activeLayerThroughput() returns vec3(1.0) when surf.hasActiveLayer is
+		// false, so non-layered materials are unaffected.
+		color *= activeLayerThroughput( surf, heroWavelength );
 
 		float pdf =
 			dpdf * diffuseWeight

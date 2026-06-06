@@ -105,6 +105,10 @@ export interface PipelineInitHost {
    *  Same compile-time discipline as `restirPtReuse` (a runtime flag binding an
    *  extra group on the default path is the GRIS-class regression). */
   readonly nrcEnabled: boolean;
+  /** PPG (Müller 2017) guided sampling — when true the pipeline builds the
+   *  ppg-update pipeline and enables the UBO gate; false = bit-identical
+   *  cosine kernel. */
+  readonly ppgEnabled: boolean;
   /** PPG train-pass dispatch cadence (>= 1). The ppg-update pass dispatches
    *  on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
@@ -176,6 +180,7 @@ export type HybridInitStaticConfig = Pick<
   | 'giSpatialPasses'
   | 'restirPtReuse'
   | 'nrcEnabled'
+  | 'ppgEnabled'
   | 'ppgDispatchInterval'
   | 'regirConfig'
 >;
@@ -426,6 +431,11 @@ export class PipelineInitCoordinator {
           // gi-ris pipeline layout: 4-group DDGI default vs 5-group inline-MLP
           // variant). Default OFF = the verbatim DDGI-estimate gi-ris pass.
           nrcEnabled: host.nrcEnabled,
+          // PPG (Müller 2017) guided sampling — builds the ppg-update pipeline
+          // and the UBO gate. (G-P1.1 follow-up: this forward was missing, so
+          // opts.ppgEnabled died at the lite-tier guard and PPG was inert
+          // through the public API.)
+          ppgEnabled: host.ppgEnabled,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
