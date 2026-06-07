@@ -376,7 +376,7 @@ describe('sceneFromThreeJS', () => {
     expect(prim.material.emissive).toBeDefined();
   });
 
-  it('throws with the InstancedMesh-prefixed unsupported-material message', () => {
+  it('throws the unsupported-material error for an InstancedMesh with ShaderMaterial', () => {
     const s = new THREE.Scene();
     const im = new THREE.InstancedMesh(
       new THREE.BoxGeometry(1, 1, 1),
@@ -384,10 +384,10 @@ describe('sceneFromThreeJS', () => {
       1,
     );
     s.add(im);
-    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type.*material ShaderMaterial/);
+    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type at .*: ShaderMaterial/);
   });
 
-  it('throws with the SkinnedMesh-subjected unsupported-material message', () => {
+  it('throws the unsupported-material error for a SkinnedMesh with ShaderMaterial', () => {
     const s = new THREE.Scene();
     const geo = new THREE.BoxGeometry(1, 1, 1);
     const vc = geo.attributes.position!.count;
@@ -403,7 +403,7 @@ describe('sceneFromThreeJS', () => {
     sm.add(bone);
     sm.bind(new THREE.Skeleton([bone]));
     s.add(sm);
-    expect(() => sceneFromThreeJS(s)).toThrow(/SkinnedMesh material ShaderMaterial/);
+    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type at .*: ShaderMaterial/);
   });
 
   it('throws "Mesh ... has no normal attribute" via requireAttribute', () => {

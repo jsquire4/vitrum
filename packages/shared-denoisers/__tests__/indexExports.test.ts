@@ -8,8 +8,8 @@ describe('@vitrum/shared-denoisers barrel exports', () => {
     const demodulated = demodulateAlbedo(color, albedo, 1);
     const remodulated = remodulateAlbedo(demodulated, albedo, 1);
 
-    expect(remodulated[0]).toBeCloseTo(color[0]);
-    expect(remodulated[1]).toBeCloseTo(color[1]);
-    expect(remodulated[2]).toBeCloseTo(color[2]);
+    expect(remodulated[0]).toBeCloseTo(color[0]!);
+    expect(remodulated[1]).toBeCloseTo(color[1]!);
+    expect(remodulated[2]).toBeCloseTo(color[2]!);
   });
 });
