@@ -583,9 +583,18 @@ export interface HybridEngineOptions extends EngineOptions {
    * two already-present UBO fields + the ResolvePass gate — it adds no bind
    * groups, so it is NOT a compile-time structural decision.
    *
-   * EXPERIMENTAL: the current reconstruction is static-camera-correct; motion
-   * / disocclusion ghosting tuning is a deliberate follow-up. Enable only
-   * after a motion A/B validation.
+   * Gap reconstruction is a hybrid temporal⊕spatial fill: the motion-vector
+   * reprojection of the previous frame, blended by motion magnitude with the
+   * average of the 4 axis neighbours (opposite checkerboard parity → shaded
+   * THIS frame → current, no temporal lag), so disoccluded/fast-motion gaps
+   * fall back to current spatial data instead of stale history.
+   *
+   * VALIDATED comb-free (objective motion A/B, `wsl-gpu/checkerboard-motion-ab.ts`,
+   * dzn): typical motion worst-frame PSNR 49.7 dB + gap error 0.0007 luma
+   * (sub-perceptible), combRatio ~1.1 even under an aggressive pan. Kept
+   * off-default as a PERFORMANCE opt-in (not a fidelity default); the residual
+   * aggressive-pan softening is uniform accumulator-history divergence inherent
+   * to half-rate shading and converges on settle.
    */
   readonly checkerboardRendering?: boolean;
 
