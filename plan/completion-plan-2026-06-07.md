@@ -221,15 +221,12 @@ Phase 2          Phase 3            Phase 4
 Phase 5  ── 5-A matrix promote · 5-B contract · 5-C examples · 5-D docs · 5-E ⚖️ pkg · 5-F frontier
 ```
 
-## MAINTAINER DECISIONS GATING THE PLAN (only these need you)
-1. **Phase 4 ⚖️** — Is walkaround host-agnosticism (THREE-decouple T1–T5) a v1
-   requirement, or a documented internal dependency? (Biggest scope fork — weeks.)
-2. **2-C ⚖️** — Fork caustics: demote to `approximate` (recommend) or implement?
-3. **2-E ⚖️** — Checkerboard: enable per-tier by default once Oracle 0-B passes
-   the chosen motion budget, or keep off-default opt-in?
-4. **5-E ⚖️** — Packaging/publish posture (you've said no publish without instruction).
-5. **0-H ⚖️** — Invest in an in-tree (CI) shader-execution test path, or keep
-   radiometric validation external-harness-only?
+## MAINTAINER DECISIONS — RESOLVED 2026-06-07
+1. **Phase 4 — DO IT.** Host-agnosticism (THREE-decouple T1–T5) IS a v1 requirement. Execute.
+2. **2-C — DEMOTE.** Fork caustics → `approximate` (honest label; MNEE is the reference). No physical WebGL2 caustic impl.
+3. **2-E — ENABLE on medium/low tiers.** Checkerboard ON in the `medium`+`low` quality presets, OFF for `ultra`+`high`. PRECONDITION: measure the real shade-pass GPU-time saving first (timestamps were unavailable on dzn — must confirm the win is real on a timestamp-capable adapter before flipping the presets; if the saving is marginal, report back).
+4. **5-E — DEFERRED.** Packaging/publish posture parked (maintainer will revisit).
+5. **0-H / validation — HYBRID.** `npm test` stays GPU-free; the pre-push lavapipe+dzn GPU smoke is the shader-execution gate, EXTENDED with analytic oracles (octahedral round-trip, energy conservation, residual→0). No GPU in CI `npm test`.
 
-Everything else is engineering I can execute and self-validate against the
-oracles above — no sight required.
+Everything else is engineering I execute and self-validate against the oracles
+above — no sight required.
