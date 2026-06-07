@@ -28,10 +28,10 @@
  *   Local coordinates (lx, ly) in [0, CELL+1].
  *   N = CELL (interior dimension).
  *
- *   Top edge    (ly=0,   1 ≤ lx ≤ N): copy from interior (N+1-lx, 2)
- *   Bottom edge (ly=N+1, 1 ≤ lx ≤ N): copy from interior (N+1-lx, N-1)
- *   Left edge   (lx=0,   1 ≤ ly ≤ N): copy from interior (2,       N+1-ly)
- *   Right edge  (lx=N+1, 1 ≤ ly ≤ N): copy from interior (N-1,     N+1-ly)
+ *   Top edge    (ly=0,   1 ≤ lx ≤ N): copy from interior (N+1-lx, 1)
+ *   Bottom edge (ly=N+1, 1 ≤ lx ≤ N): copy from interior (N+1-lx, N)
+ *   Left edge   (lx=0,   1 ≤ ly ≤ N): copy from interior (1,       N+1-ly)
+ *   Right edge  (lx=N+1, 1 ≤ ly ≤ N): copy from interior (N,       N+1-ly)
  *   Corner (0,0):       copy from interior (N,   N)
  *   Corner (N+1,0):     copy from interior (1,   N)
  *   Corner (0,N+1):     copy from interior (N,   1)
@@ -145,11 +145,20 @@ fn mirror(lx: u32, ly: u32) -> vec2u {
   if (lx == N + 1u && ly == 0u)        { return vec2u(1u,  N);   }
   if (lx == 0u && ly == N + 1u)        { return vec2u(N,   1u);  }
   if (lx == N + 1u && ly == N + 1u)    { return vec2u(1u,  1u);  }
-  // Edges
-  if (ly == 0u)                         { return vec2u(N + 1u - lx, 2u);         }
-  if (ly == N + 1u)                     { return vec2u(N + 1u - lx, N - 1u);     }
-  if (lx == 0u)                         { return vec2u(2u,           N + 1u - ly); }
-  if (lx == N + 1u)                     { return vec2u(N - 1u,       N + 1u - ly); }
+  // Edges — mirror to the ADJACENT interior row/col (offset 1), reversed.
+  // (Fix 2026-06-07: was offset 2 / N-1 — an off-by-one that copied the SECOND
+  // interior row/col instead of the first. vitrum's blend octUv convention
+  // (pixel+0.5)/N puts the octahedral seam half a texel before pixel 0, so
+  // the border texel reflects to the immediately-adjacent interior texel, NOT
+  // the next one in — matching the RTXGI/Majercik 2019 section 3.2 reference. The
+  // off-by-one biased every axis-aligned receiver normal (floors/walls — they
+  // land on octahedral cell edges/corners): GPU ground-truth vs a CPU f64
+  // path-trace showed +x/-x/-y at 23/34/60% error while interior diagonals
+  // were 2-4%. With offset 1 the axis-aligned normals match ground truth.)
+  if (ly == 0u)                         { return vec2u(N + 1u - lx, 1u);         }
+  if (ly == N + 1u)                     { return vec2u(N + 1u - lx, N);          }
+  if (lx == 0u)                         { return vec2u(1u,           N + 1u - ly); }
+  if (lx == N + 1u)                     { return vec2u(N,            N + 1u - ly); }
   // Interior — caller must discard this thread.
   return vec2u(lx, ly);  // sentinel: same coord → interior (unused)
 }
