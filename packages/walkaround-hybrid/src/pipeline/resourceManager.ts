@@ -372,9 +372,21 @@ export function uploadBufferPadded(
   return buf;
 }
 
-/** 16-byte zeroed storage buffer for unused scene-BGL slots (merged BVH mode). */
+/** Zeroed storage buffer for unused scene-BGL slots (merged BVH mode).
+ *
+ *  32 bytes, NOT 16: scene binding 6 is `tlasNodes: array<BVHNode>` whose
+ *  struct stride is 32 → WebGPU's minimum binding size for that slot is 32.
+ *  A 16-byte placeholder is REJECTED at bind-group creation ("Binding size 16
+ *  … less than minimum 32" on lavapipe AND dzn), invalidating the WHOLE scene
+ *  bind group in merged mode — every ReSTIR pass then no-ops and the render
+ *  is black. This is the exact bug class already fixed for DDGI (ea88803)
+ *  and RC (`RCDispatcher._dummyStorageBuffer`); the ReSTIR scene BGL kept the
+ *  16-byte placeholder from PR-3 (29942f9) because the TLAS auto-rule
+ *  (>1 mesh → tlas) hid the merged path from every multi-mesh test scene.
+ *  Single-mesh scenes (auto → merged) and tier:'lite' (forces merged)
+ *  rendered black GI from 2026-05-26 until this fix. */
 export function createDummyStorageBuffer(device: GPUDevice, _label: string): GPUBuffer {
-  return uploadBuffer(device, new ArrayBuffer(16), GPUBufferUsage.STORAGE);
+  return uploadBuffer(device, new ArrayBuffer(32), GPUBufferUsage.STORAGE);
 }
 
 /**
