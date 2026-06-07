@@ -556,7 +556,6 @@ Phase 4 — Frontier (gated on host integration feedback)
 | `plan/tier4-vision-not-yet.md` | Moonshots (gated) |
 | `plan/differentiable-rt.md` | Inverse rendering (reference image → matching scene); phased, gated frontier |
 | `HARDWARE-VALIDATION-NEEDS.md` | GPU-only validation backlog |
-| `plan/gpu-validation-followup-20260528.md` | Post-sweep GPU deferrals |
 | `packages/walkaround-hybrid/README.md` | Real-time stack features |
 | `packages/pt-webgpu/README.md` | Experimental boundary + tiers |
 | `items_to_fix.md` | Historical; Sections A–E closed |
