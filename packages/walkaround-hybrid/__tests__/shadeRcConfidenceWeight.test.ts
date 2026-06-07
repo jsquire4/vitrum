@@ -45,7 +45,11 @@ function composeIndirect(
 ): BlendResult {
   const m = Math.min(Math.max(Meff / Math.max(restirGiMClamp, 1), 0), 1);
   const cRestir = m;
-  const cRc = Math.min(Math.max(rcWeight, 0), 1) * (1 - m);
+  // RC-has-energy gate (2026-06-07): RC weight is forced to 0 when the sampled
+  // cascade carries no radiance (Lo_rc ≈ 0), so a scene outside RC's light
+  // model can never replace the ReSTIR-GI estimate with RC's zero.
+  const rcHasEnergy = Math.max(loRc[0], loRc[1], loRc[2]) > 1e-6;
+  const cRc = Math.min(Math.max(rcWeight, 0), 1) * (1 - m) * (rcHasEnergy ? 1 : 0);
   const cSum = cRestir + cRc;
   const wRc = cSum > 1e-6 ? cRc / Math.max(cSum, 1e-6) : 0.0;
   const wRestir = 1.0 - wRc;
@@ -144,6 +148,32 @@ describe('shade lo_indirect — confidence-ratio RC/ReSTIR composition', () => {
     expect(Number.isNaN(r.lo[0])).toBe(false);
     expect(r.lo).toEqual([0, 0, 0]);
   });
+
+  // (e) RC-has-energy gate: the failure mode that motivated the gate. RC is
+  // ENABLED at full weight, but the scene is OUTSIDE RC's light model (rect-
+  // area-lit only ⇒ every cascade zero ⇒ Lo_rc == 0). Without the gate, a
+  // partially-converged pixel would hand RC weight `rcWeight·(1−m)` and blend
+  // toward RC's ZERO, darkening the (correct) ReSTIR-GI indirect. The gate
+  // must force w_rc = 0 so ReSTIR-GI keeps full weight.
+  it('(e) RC enabled but cascade empty (Lo_rc=0) does NOT steal weight from ReSTIR', () => {
+    const loRestir: [number, number, number] = [0.4, 0.5, 0.6];
+    const loRc: [number, number, number] = [0, 0, 0]; // out-of-model scene → empty cascade
+    for (const Meff of [1, 8, 25]) {
+      const r = composeIndirect(loRestir, loRc, Meff, 50, /* rcWeight */ 1.0);
+      expect(r.wRc).toBe(0);
+      expect(r.wRestir).toBe(1);
+      // The ReSTIR-GI estimate survives intact — no darkening.
+      expect(r.lo).toEqual(loRestir);
+    }
+  });
+
+  // (e2) The gate is strictly a zero-energy guard: as soon as the cascade
+  // carries ANY radiance, the blend is exactly the ungated confidence MIS.
+  it('(e2) gate is inert once the cascade has energy (blend unchanged)', () => {
+    const r = composeIndirect([1, 1, 1], [0.001, 0.001, 0.001], /* Meff */ 1, 50, /* rcWeight */ 1.0);
+    // Lo_rc above the 1e-6 floor ⇒ gate = 1 ⇒ standard m=0.02 ⇒ w_rc ≈ 0.98.
+    expect(r.wRc).toBeGreaterThan(0.9);
+  });
 });
 
 describe('shade lo_indirect — WGSL structural pins', () => {
@@ -159,7 +189,9 @@ describe('shade lo_indirect — WGSL structural pins', () => {
       /let m\s*=\s*clamp\(Meff\s*\/\s*f32\(max\(ubo\.restirGiMClamp,\s*1u\)\),\s*0\.0,\s*1\.0\);/,
     );
     expect(SHADE_WGSL).toContain('let cRestir = m;');
-    expect(SHADE_WGSL).toContain('let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m);');
+    // RC-has-energy gate: cRc carries the select(0,1,rcHasEnergy) factor.
+    expect(SHADE_WGSL).toContain('let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;');
+    expect(SHADE_WGSL).toContain('let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);');
     expect(SHADE_WGSL).toMatch(/let wRc\s*=\s*select\(0\.0,\s*cRc\s*\/\s*max\(cSum,\s*1e-6\),\s*cSum\s*>\s*1e-6\);/);
     expect(SHADE_WGSL).toContain('let wRestirGi = 1.0 - wRc;');
   });

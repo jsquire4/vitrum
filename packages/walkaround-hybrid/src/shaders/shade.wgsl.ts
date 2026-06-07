@@ -384,7 +384,19 @@ fn lo_indirect(
   let Lo_rc = sampleCascadeC0(pos, normal);
   let m = clamp(Meff / f32(max(ubo.restirGiMClamp, 1u)), 0.0, 1.0);
   let cRestir = m;
-  let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m);
+  // RC-has-energy gate (algorithm-combination-fitness fix, 2026-06-07):
+  // the confidence MIS hands RC weight rcWeight*(1-m) purely from the host
+  // toggle, with no check that RC's cascades actually carry radiance. On a
+  // scene OUTSIDE RC's light model (RC samples sun + emissive geometry + env
+  // only — NOT the rect-area emitter list; see walkaround-rc probeRayCast),
+  // every cascade is zero by construction, so a non-zero rcWeight would
+  // REPLACE the (correct) ReSTIR-GI estimate with RC's zero → black indirect.
+  // Gating cRc on the already-computed Lo_rc closes that: an empty cascade
+  // forces cRc=0 ⇒ wRestirGi=1 ⇒ ReSTIR-GI keeps full weight. Bit-identity
+  // preserved both ways — RC off ⇒ rcWeight=0 AND Lo_rc=0, RC on-with-energy
+  // ⇒ the gate is 1.0 and the blend is unchanged.
+  let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;
+  let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);
   let cSum = cRestir + cRc;
   // max() in the denominator keeps the (always-evaluated) select arm finite —
   // no inf/NaN to leak even though select discards it when cSum ≈ 0.
