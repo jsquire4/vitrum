@@ -24,6 +24,23 @@ v1 requirement vs documented internal dependency — a maintainer decision.
 
 ---
 
+## ⚡ REVISED SCOPE (2026-06-07, after the first execution wave)
+**The audit ledger overstates the open work.** 3 of the first 4 agents found their
+target ALREADY FIXED by the 2026-06-06 G-sweep (`178f80d`) — three-bindings
+G-P0.4 (all 5 asymmetries), the fork P2 sweep (G-P2.1/2.2/2.3/2.4 — dispose
+leaks, dead-GLSL removal, the `length` ReferenceError, the lint gate), and the
+two "zero-test" packages (already had thin suites). The audit was filed BEFORE
+`178f80d` landed, so its P1/P2 list is mostly closed. **The genuinely-remaining
+real work is narrower than the audit implied:**
+- **Phase 0 oracle suite** — genuinely new (0-F denoiser ✅ built; 0-D/0-E/0-G remain).
+- **1-A DDGI octahedral solid-angle** — real, confirmed by the oracle this session.
+- **2-A PPG defects** (refine-loop runaway + base-GI instability) — real, V17.
+- **2-B WebGL-BDPT** `lightRec.point` compile — verify vs `178f80d` then fix.
+- **Phase 4 THREE-decouple T1–T5** — real, intricate, byte-identity-gated.
+The hygiene/coverage phases (3) are mostly DONE; treat them as verify-and-add-
+coverage, not implement. Re-scope effort: closer to a defensible v1 than the
+audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
+
 ## STATUS LEGEND
 - ✅ DONE + oracle-validated · 🟡 partially done / needs verify · 🔴 open · ⚖️ needs maintainer decision
 
