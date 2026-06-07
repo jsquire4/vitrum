@@ -92,7 +92,7 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
   reg.register(new IndirectCombinePass(stubPipeline));
   reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
-  reg.register(new ResolvePass(stubPipeline, stubUboRef));
+  reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
   reg.register(new CompositePass(stubRenderPipeline));
   reg.register(new PPGUpdatePass(stubPipeline));
   reg.register(new ReGIRBuildPass(

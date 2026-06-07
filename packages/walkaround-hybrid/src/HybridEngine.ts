@@ -210,6 +210,12 @@ interface ParsedHybridEngineConfig {
    *  read only by the lite-tier guard and never forwarded to the pipeline —
    *  PPG was inert through the public API.) */
   readonly ppgEnabled: number;
+  /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
+   *  `false` by default (every preset sets it false too). Threaded into
+   *  `pipeline.initialize({ checkerboard })`; OFF is bit-identical to the
+   *  pre-checkerboard pipeline (the gap early-out is never taken and the
+   *  ResolvePass passes through). EXPERIMENTAL — pending motion A/B. */
+  readonly checkerboard: boolean;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   readonly rebuildKeyFingerprintSeen: string;
@@ -442,6 +448,11 @@ export function deriveHybridEngineConfig(
     // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
     // built when a host opts in (tier:'lite' forbids it — validated above).
     ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
+    // Checkerboard half-res shading. Explicit opt wins, else the preset value
+    // (FALSE in every preset). Default OFF ⇒ shade shades every pixel +
+    // ResolvePass passes through = bit-identical to the pre-checkerboard
+    // pipeline. EXPERIMENTAL — pending motion A/B.
+    checkerboard: opts.checkerboardRendering ?? preset.checkerboard,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
     rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
@@ -2280,6 +2291,9 @@ export class HybridEngine implements Engine {
       // PPG guided sampling — builds the ppg-update pipeline + UBO gate.
       ppgEnabled: this._cfg.ppgEnabled === 1,
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
+      // Checkerboard half-res shading — flips the ResolvePass gate + the
+      // per-frame shade UBO fields. OFF (default) is bit-identical.
+      checkerboard: this._cfg.checkerboard,
       regirConfig: this._cfg.regirConfig,
     };
   }

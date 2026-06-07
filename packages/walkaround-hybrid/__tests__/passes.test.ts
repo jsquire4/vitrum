@@ -184,7 +184,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
   });
 
   it('ResolvePass: depends on temporalAccum', () => {
-    const p = new ResolvePass(stubPipeline, stubUboRef);
+    const p = new ResolvePass(stubPipeline, stubUboRef, false);
     expect(p.id).toBe('resolve');
     expect(p.dependencies).toEqual(['temporalAccum']);
   });
@@ -223,7 +223,7 @@ describe('Pass entries — topological registration', () => {
     reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
     reg.register(new IndirectCombinePass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
-    reg.register(new ResolvePass(stubPipeline, stubUboRef));
+    reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
     reg.register(new CompositePass(stubRenderPipeline));
     reg.register(new PPGUpdatePass(stubPipeline));
     expect(reg.size()).toBe(18);

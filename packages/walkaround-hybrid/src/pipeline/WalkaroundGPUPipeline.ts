@@ -124,6 +124,9 @@ interface RegisterPassesDeps {
   diSpatialPasses: 1 | 2;
   giSpatialPasses: 1 | 2;
   restirPtReuseStructural: boolean;
+  /** Checkerboard half-res shading flag (host opt-in). Threaded into the
+   *  ResolvePass ctor; OFF ⇒ passthrough (byte-identity). */
+  checkerboard: boolean;
   sampleBudgetUboRef: UboRef;
   sampleCountUboRef: UboRef;
   accumUboRef: UboRef;
@@ -203,7 +206,7 @@ function registerPasses(
   ));
   registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
   registry.register(new TemporalAccumPass(compiled.accumPipeline, deps.accumUboRef));
-  registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef));
+  registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef, deps.checkerboard));
   const compositePass = new CompositePass(compiled.compositePipeline);
   registry.register(compositePass);
   // PPG update pass — only register when the pipeline compiled successfully.
@@ -676,6 +679,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  single-group pipeline (the known-good default). Resolved once in
    *  initialize() from the host flag — NOT a per-frame UBO decision. */
   private _restirPtReuseStructural = false;
+  /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
+   *  OFF by default ⇒ shade.wgsl shades every pixel + ResolvePass passes through
+   *  (byte-identity); ON ⇒ shade skips the gap half of the checkerboard and
+   *  ResolvePass reprojects it. Resolved once in initialize() from the host
+   *  flag; consumed by the ResolvePass construction AND the per-frame shade UBO
+   *  (frameParity / checkerboardOn). EXPERIMENTAL — pending motion A/B. */
+  private _checkerboard = false;
   /** NRC (Müller et al. 2021) live cache subsystem. Non-null ONLY when the
    *  engine was created with `nrcEnabled` (full-tier). When null (default) the
    *  gi-ris pipeline is the verbatim 4-group DDGI pass and no NRC GPU resources
@@ -988,6 +998,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  all-black frame (f8df9a4). Host opt-in via
        *  `HybridEngineOptions.restirPtReuse`. */
       restirPtReuse?: boolean;
+      /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
+       *  OFF (default) ⇒ shade.wgsl shades every pixel and ResolvePass passes
+       *  through (byte-identical to the pre-checkerboard pipeline). ON ⇒ shade
+       *  skips the gap half of the checkerboard and ResolvePass reprojects those
+       *  pixels from the previous frame. Stored on `_checkerboard`; consumed by
+       *  the ResolvePass ctor + the per-frame shade UBO (frameParity /
+       *  checkerboardOn). EXPERIMENTAL — pending motion A/B. */
+      checkerboard?: boolean;
       /** NRC (Müller et al. 2021) live cache — COMPILE-TIME structural gate.
        *  When true, the gi-ris pipeline is built with a 5th `@group(4)` NRC bind
        *  group + the inline-MLP-forward shader variant, and a per-engine
@@ -1047,6 +1065,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // Stored so the pass constructors below bind the scene group at @group(1)
     // iff the GRIS pipeline variant was built.
     this._restirPtReuseStructural = options?.restirPtReuse ?? false;
+
+    // ── Resolve the checkerboard half-res-shading flag ─────────────────────
+    // OFF (default) ⇒ shade shades every pixel + ResolvePass passes through
+    // (byte-identity). Not a compile-time structural decision — no extra bind
+    // groups; it only flips two already-present UBO fields + the ResolvePass
+    // gate — so it is resolved here and consumed at construction + per frame.
+    this._checkerboard = options?.checkerboard ?? false;
 
     // ── Resolve the NRC structural gate BEFORE compiling pipelines ─────────
     // nrcEnabled is a COMPILE-TIME decision (mirrors restirPtReuse): it selects
@@ -1155,6 +1180,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       diSpatialPasses: this._diSpatialPasses,
       giSpatialPasses: this._giSpatialPasses,
       restirPtReuseStructural: this._restirPtReuseStructural,
+      checkerboard: this._checkerboard,
       sampleBudgetUboRef: this._sampleBudgetUboRef,
       sampleCountUboRef: this._sampleCountUboRef,
       accumUboRef: this._accumUboRef,
@@ -1443,10 +1469,19 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // weight α. gi-ris reads ppgEnabled/ppgMixAlpha from the UBO to decide
     // whether to guide candidate sampling; when off, α collapses to 0 and the
     // gi-ris RIS source pdf reduces to cosθ/π exactly (ppg-OFF bit-identity).
+    // Checkerboard half-res shading state (host opt-in; default OFF). When OFF
+    // both UBO fields pack as 0 ⇒ byte-identical layout and shadeMain shades
+    // every pixel. frameParity is `_frameCount & 1` — the SAME phase ResolvePass
+    // packs into ResolveUniforms within this frame (it reads `passCtx.frameCount
+    // = this._frameCount`, set below before the end-of-frame increment), so the
+    // shade gap-out pixels match the resolve gap-fill pixels exactly.
     updateUBO(d, this._res.common.uboBuffer, inputs, {
       enabled: this._ppg.enabled,
       mixAlpha: this._ppg.mixAlpha,
-    }, this._regir.uboState());
+    }, this._regir.uboState(), {
+      enabled: this._checkerboard,
+      frameParity: this._frameCount & 1,
+    });
 
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._res.common.placeholderTexture.createView();

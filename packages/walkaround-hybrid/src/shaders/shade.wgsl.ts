@@ -410,6 +410,19 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
   if (any(gid.xy >= dims)) { return; }
 
+  // Checkerboard half-res shading (opt-in; OFF by default => this branch is
+  // never taken => bit-identical with the full-shade kernel). When ON, GAP
+  // pixels ((gid.x+gid.y)&1u != frameParity) skip the expensive lighting and
+  // leave their prior-frame output untouched; resolve.wgsl reprojects them.
+  // frameParity here is the SAME frameCount&1 phase ResolvePass writes into
+  // ResolveUniforms.frameParity, so the pixels skipped here are exactly the
+  // pixels resolve gap-fills. Static/converging camera: leaving the prior
+  // frame's stores is correct (resolve does the reprojection); motion +
+  // disocclusion tuning is a deliberate follow-up.
+  if (ubo.checkerboardOn == 1u && ((gid.x + gid.y) & 1u) != (ubo.frameParity & 1u)) {
+    return;
+  }
+
   let pixelIdx = gid.y * dims.x + gid.x;
   var rng = pcgInit(gid.x ^ 11111u, gid.y ^ 22222u, ubo.frameSeed ^ 0xDEADu);
 

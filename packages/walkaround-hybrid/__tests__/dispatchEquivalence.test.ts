@@ -220,7 +220,7 @@ describe('Theme-E dispatch equivalence — single-bind-group passes', () => {
     { name: 'GTAOUpsamplePass', make: () => new GTAOUpsamplePass(stubPipeline('gtaoUp')), label: 'gtao-upsample', dims: [8, 8, 1] },
     { name: 'IndirectCombinePass', make: () => new IndirectCombinePass(stubPipeline('indComb')), label: 'indirect-combine', dims: [4, 4, 1] },
     { name: 'TemporalAccumPass', make: () => new TemporalAccumPass(stubPipeline('tAccum'), { buf: undefined }), label: 'temporalAccum', dims: [4, 4, 1] },
-    { name: 'ResolvePass', make: () => new ResolvePass(stubPipeline('resolve'), { buf: buf('resolveUbo') }), label: 'resolve', dims: [8, 8, 1] },
+    { name: 'ResolvePass', make: () => new ResolvePass(stubPipeline('resolve'), { buf: buf('resolveUbo') }, false), label: 'resolve', dims: [8, 8, 1] },
     {
       name: 'SampleBudgetPass',
       make: () => new SampleBudgetPass(stubPipeline('budget'), { buf: buf('budgetUbo') }, { buf: buf('countUbo') }),
@@ -446,7 +446,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     reg.register(new AtrousIndirectPass(stubPipeline, stubUbo));
     reg.register(new IndirectCombinePass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUbo));
-    reg.register(new ResolvePass(stubPipeline, stubUbo));
+    reg.register(new ResolvePass(stubPipeline, stubUbo, false));
     reg.register(new CompositePass(stubRender));
 
     const active = reg.activePasses({ denoiserMode: 'atrous-variance', ppgEnabled: false });

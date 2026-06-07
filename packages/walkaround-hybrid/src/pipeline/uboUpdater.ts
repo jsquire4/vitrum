@@ -30,9 +30,9 @@
  *   offset 304: restirGiSpatialRadiusPx     (f32 = 4 bytes) — sweep 2026-05-18
  *   offset 308: restirGiSpatialNormalDotMin (f32 = 4 bytes) — sweep 2026-05-18
  *   offset 312: restirGiSpatialCoplanarTol  (f32 = 4 bytes) — sweep 2026-05-18
- *   offset 316: _padPreVec3                 (f32 = 4 bytes — align next vec3 to 16)
+ *   offset 316: frameParity                 (u32 = 4 bytes) — checkerboard frame phase (was _padPreVec3)
  *   offset 320: indirectFireflyClamp        (vec3f = 12 bytes) — sweep 2026-05-18
- *   offset 332: _padEnd                     (f32 = 4 bytes)
+ *   offset 332: checkerboardOn              (u32 = 4 bytes) — checkerboard sparse-shade gate (was _padEnd)
  *   offset 336: bvhMode                     (u32 = 4 bytes) — PR-3
  *   offset 340: tlasNodeCount               (u32 = 4 bytes)
  *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — T5 (was _tracePad0)
@@ -125,6 +125,28 @@ export interface RegirUboState {
   readonly gridFloatOffset: number;
 }
 
+/**
+ * Live checkerboard half-res-shading state injected by the pipeline (NOT part of
+ * the host {@link PipelineFrameInputs} contract — it is a pipeline-resolved
+ * structural flag plus the per-frame parity phase).
+ *
+ * `enabled` mirrors the pipeline's `_checkerboard` field (the host opt-in). When
+ * `enabled` is false BOTH packed fields stay 0, so the UBO is byte-identical to
+ * the pre-checkerboard layout and `shadeMain`'s gap early-out is never taken.
+ * `frameParity` is the SAME `frameCount & 1` phase ResolvePass writes into the
+ * separate ResolveUniforms buffer, so the shade gap pixels match the resolve
+ * gap-fill pixels exactly.
+ */
+export interface CheckerboardUboState {
+  readonly enabled: boolean;
+  /** frameCount & 1 — the checkerboard phase that is "shaded" this frame. */
+  readonly frameParity: number;
+}
+
+/** Checkerboard-OFF default — both fields zero ⇒ shadeMain shades every pixel
+ *  and the packed UBO is byte-identical to the pre-checkerboard layout. */
+const CHECKERBOARD_OFF: CheckerboardUboState = { enabled: false, frameParity: 0 };
+
 /** ReGIR-OFF default — every field zero ⇒ the kernel's `regirEnabled == 0`
  *  gate keeps RIS on the light-tree path bit-for-bit. */
 const REGIR_OFF: RegirUboState = {
@@ -150,6 +172,11 @@ export function updateUBO(
    *  don't run ReGIR (and the existing tests) keep the light-tree DI path
    *  bit-identically (regirEnabled=0). */
   regir: RegirUboState = REGIR_OFF,
+  /** Live checkerboard half-res-shading state from the pipeline. Defaults to OFF
+   *  so callers that don't run checkerboard (and the existing tests) keep the
+   *  full-shade path with frameParity=0/checkerboardOn=0 — both pad slots stay
+   *  zero, so the UBO is byte-identical to the pre-checkerboard layout. */
+  checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
 ): void {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
@@ -192,11 +219,19 @@ export function updateUBO(
   f32[76] = inputs.restirGI.restirGiSpatialRadiusPx;
   f32[77] = inputs.restirGI.restirGiSpatialNormalDotMin;
   f32[78] = inputs.restirGI.restirGiSpatialCoplanarTol;
-  // f32[79] = _padPreVec3 (zero — keeps indirectFireflyClamp vec3-aligned).
+  // u32[79] = frameParity (offset 316 — the former _padPreVec3 slot). The
+  // checkerboard frame phase (frameCount & 1) the shade gap early-out compares
+  // against. 0 when checkerboard is OFF, so the slot stays zero (byte-identity)
+  // and indirectFireflyClamp below remains vec3-aligned.
+  u32[79] = checkerboard.enabled ? (checkerboard.frameParity & 1) >>> 0 : 0;
   f32[80] = inputs.filter.indirectFireflyClamp[0];
   f32[81] = inputs.filter.indirectFireflyClamp[1];
   f32[82] = inputs.filter.indirectFireflyClamp[2];
-  // f32[83] = _padEnd (zero).
+  // u32[83] = checkerboardOn (offset 332 — the former _padEnd slot). 0 ⇒
+  // shadeMain shades EVERY pixel (gap early-out never taken ⇒ bit-identity); 1 ⇒
+  // shadeMain skips the gap pixels for resolve.wgsl to reproject. Absent ⇒ 0
+  // (OFF), so callers + existing tests that never set it stay byte-identical.
+  u32[83] = checkerboard.enabled ? 1 : 0;
   u32[84] = inputs.bvh.bvhMode >>> 0;
   u32[85] = inputs.bvh.tlasNodeCount >>> 0;
   // T5 — stained-glass opt-in flag bits (repurposed _tracePad0 at offset 344).

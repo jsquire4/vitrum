@@ -1,10 +1,15 @@
 /**
  * ResolvePass — sparse-shade gap-fill pass.
  *
- * Passthrough mode only — checkerboardOn is hardcoded to 0. Every pixel
- * copies through from `writeAccum` to `common.resolvedTexture`. The
- * sparse-shade checkerboard path is unexercised pending a sparse-write
- * upgrade in shade.wgsl.
+ * `checkerboardOn` is driven by the pipeline's `_checkerboard` flag (host
+ * opt-in via HybridEngineOptions.checkerboardRendering; default OFF). When OFF
+ * the pass is passthrough — every pixel copies through from `writeAccum` to
+ * `common.resolvedTexture` (byte-identical to the pre-checkerboard wire-in).
+ * When ON, shade.wgsl writes only the SHADED half of the checkerboard and this
+ * pass reprojects the GAP pixels from the previous frame's radiance via the
+ * motion-vector G-buffer slot. The `frameParity` (frameCount & 1) it packs is
+ * the SAME phase shade.wgsl reads from the WalkaroundUBO, so the gap pixels
+ * shade skips are exactly the pixels reprojected here.
  *
  * Layout note: resolve uses `@workgroup_size(8, 8, 1)` —
  * dispatch with `wgX/wgY` (`ceil(W/8)`), NOT the 16×16-sized counts.
@@ -27,13 +32,18 @@ export class ResolvePass implements Pass {
 
   private readonly _pipeline: GPUComputePipeline;
   private readonly _uboRef: UboRef;
+  /** Host opt-in (pipeline `_checkerboard`). OFF (default) ⇒ passthrough
+   *  (every pixel shaded ⇒ byte-identity); ON ⇒ checkerboard gap-fill. */
+  private readonly _checkerboard: boolean;
 
   constructor(
     pipeline: GPUComputePipeline,
     uboRef: UboRef,
+    checkerboard: boolean,
   ) {
     this._pipeline = pipeline;
     this._uboRef = uboRef;
+    this._checkerboard = checkerboard;
   }
 
   gates(): boolean {
@@ -53,7 +63,7 @@ export class ResolvePass implements Pass {
       screenW:        width,
       screenH:        height,
       frameParity:    frameCount & 1,
-      checkerboardOn: 0,
+      checkerboardOn: this._checkerboard ? 1 : 0,
     });
     device.queue.writeBuffer(this._uboRef.buf!, 0, resolveUboBytes);
     const bg = buildResolveBindGroup(

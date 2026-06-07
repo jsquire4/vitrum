@@ -109,6 +109,12 @@ export interface PipelineInitHost {
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
   readonly ppgEnabled: boolean;
+  /** Checkerboard half-res shading — when true shade.wgsl shades only one
+   *  checkerboard phase per frame and ResolvePass reprojects the gap; false
+   *  (default) shades every pixel + passes through (bit-identical). Threaded
+   *  into `pipeline.initialize({ checkerboard })`. EXPERIMENTAL — motion A/B
+   *  pending. */
+  readonly checkerboard: boolean;
   /** PPG train-pass dispatch cadence (>= 1). The ppg-update pass dispatches
    *  on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
@@ -181,6 +187,7 @@ export type HybridInitStaticConfig = Pick<
   | 'restirPtReuse'
   | 'nrcEnabled'
   | 'ppgEnabled'
+  | 'checkerboard'
   | 'ppgDispatchInterval'
   | 'regirConfig'
 >;
@@ -436,6 +443,10 @@ export class PipelineInitCoordinator {
           // opts.ppgEnabled died at the lite-tier guard and PPG was inert
           // through the public API.)
           ppgEnabled: host.ppgEnabled,
+          // Checkerboard half-res shading. OFF (default) ⇒ shade shades every
+          // pixel + ResolvePass passes through = bit-identical to the
+          // pre-checkerboard pipeline. EXPERIMENTAL — motion A/B pending.
+          checkerboard: host.checkerboard,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.

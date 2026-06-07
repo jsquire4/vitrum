@@ -565,6 +565,30 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly restirPtReuse?: boolean;
 
+  // ── Checkerboard half-res shading ─────────────────────────────────────────
+
+  /**
+   * Enable half-res CHECKERBOARD shading + temporal-resolve reconstruction.
+   *
+   * When `true`, `shade.wgsl` shades only one checkerboard phase per frame
+   * (the SHADED half, `(px+py)&1 == frameCount&1`) and skips the GAP half;
+   * `resolve.wgsl` reconstructs the gap pixels by reprojecting the previous
+   * frame's radiance through the motion-vector G-buffer. This roughly halves
+   * the per-frame shading cost on a static / converging camera.
+   *
+   * Default: `false` — OFF shades EVERY pixel and the resolve pass passes
+   * through, so the render is BIT-IDENTICAL to the pre-checkerboard pipeline
+   * (the OFF-is-bit-identical opt-in pattern shared by `rcEnabled` /
+   * `ppgEnabled` / `restirPtReuse` / `nrcEnabled` / `regir`). The flag flips
+   * two already-present UBO fields + the ResolvePass gate — it adds no bind
+   * groups, so it is NOT a compile-time structural decision.
+   *
+   * EXPERIMENTAL: the current reconstruction is static-camera-correct; motion
+   * / disocclusion ghosting tuning is a deliberate follow-up. Enable only
+   * after a motion A/B validation.
+   */
+  readonly checkerboardRendering?: boolean;
+
   // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
 
   /**

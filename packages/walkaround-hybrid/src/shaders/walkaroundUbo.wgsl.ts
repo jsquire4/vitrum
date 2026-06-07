@@ -112,9 +112,23 @@ struct WalkaroundUBO {
   restirGiSpatialRadiusPx:    f32,     //  offset 304 — spatialGi disc-sample radius (half-res pixels)
   restirGiSpatialNormalDotMin:f32,     //  offset 308 — spatialGi normal-alignment cosine min
   restirGiSpatialCoplanarTol: f32,     //  offset 312 — spatialGi tangent-plane distance tolerance
-  _padPreVec3:                f32,     //  offset 316 — pad to align vec3f to 16-byte boundary
-  indirectFireflyClamp:       vec3f,   //  offset 320 — shade indirect channel per-channel HDR clamp
-  _padEnd:                    f32,     //  offset 332 — align vec3 to 336
+  // Checkerboard half-res shading parity (repurposed _padPreVec3 - byte-size
+  // unchanged, slot stays 16-byte align for the vec3f that follows). When
+  // checkerboard is OFF the host writes 0 here (its prior pad value), so the
+  // packed UBO is BYTE-IDENTICAL to the pre-checkerboard layout. Consumed only
+  // when checkerboardOn == 1u; it is the SAME frameCount&1 phase ResolvePass
+  // writes into ResolveUniforms.frameParity, so the shade gap-out pixels match
+  // the resolve gap-fill pixels exactly.
+  frameParity:                u32,     //  offset 316 - checkerboard frame phase (frameCount & 1); was _padPreVec3
+  indirectFireflyClamp:       vec3f,   //  offset 320 - shade indirect channel per-channel HDR clamp
+  // Checkerboard sparse-shade gate (repurposed _padEnd - byte-size unchanged).
+  // 0 => shadeMain shades EVERY pixel (the checkerboard gap early-out is never
+  // taken => bit-identity with the pre-checkerboard kernel). 1 => shadeMain skips
+  // the GAP pixels ((gid.x+gid.y)&1u != frameParity), leaving their prior-frame
+  // output for resolve.wgsl to reproject. Host opt-in via
+  // HybridEngineOptions.checkerboardRendering - the OFF-is-bit-identical pattern
+  // shared by RC/PPG/ReGIR/NRC. EXPERIMENTAL pending motion A/B (V-item).
+  checkerboardOn:             u32,     //  offset 332 - checkerboard sparse-shade gate; was _padEnd
   bvhMode:                    u32,     //  offset 336 — 0 merged world BVH, 1 TLAS+local BLAS
   tlasNodeCount:              u32,     //  offset 340 — TLAS node count (0 → merged path)
   // T5 — stained-glass opt-in flags (repurposed pad slot; byte-size unchanged).

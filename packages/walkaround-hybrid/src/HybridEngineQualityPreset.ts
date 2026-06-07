@@ -82,6 +82,11 @@ export interface QualityPreset {
   /** Documentary only — whether the host UI should default-offer RC/PPG/neural
    *  for this tier. The engine NEVER forces these on from a preset. */
   readonly enableRcPpgNeuralByDefault: boolean;
+  /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
+   *  FALSE in EVERY preset — checkerboard ships off-default + inert pending a
+   *  motion A/B (same discipline as RC/PPG/neural: presets never force it on).
+   *  A host opts in explicitly via `opts.checkerboardRendering`. */
+  readonly checkerboard: boolean;
 }
 
 /**
@@ -101,6 +106,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
     ppgDispatchInterval: 1,                  // every frame — no behaviour change when PPG is on.
     enableRcPpgNeuralByDefault: false,
+    checkerboard: false,                     // off-default + inert (motion A/B pending) — never forced on by a preset.
   },
   high: {
     resolutionFactor: 0.85,
@@ -113,6 +119,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
     ppgDispatchInterval: 1,                  // every frame (high keeps full PPG cadence)
     enableRcPpgNeuralByDefault: false,
+    checkerboard: false,                     // off-default + inert (motion A/B pending).
   },
   medium: {
     resolutionFactor: 0.67,
@@ -127,6 +134,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
     ppgDispatchInterval: 2,                  // train every 2nd frame — ~½ the PPG train cost; tree persists between updates so quality drift is negligible.
     enableRcPpgNeuralByDefault: false,
+    checkerboard: false,                     // off-default + inert (motion A/B pending).
   },
   low: {
     resolutionFactor: 0.5,
@@ -140,6 +148,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
     ppgDispatchInterval: 4,                  // budget: train every 4th frame — ~¼ the PPG train cost.
     enableRcPpgNeuralByDefault: false,
+    checkerboard: false,                     // off-default + inert (motion A/B pending).
   },
 });
 
