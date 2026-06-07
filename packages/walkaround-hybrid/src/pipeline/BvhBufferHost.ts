@@ -62,6 +62,8 @@ export class BvhBufferHost {
   private _tlasInstanceWorldToLocalBuffer: GPUBuffer | null = null;
   private _tlasInstanceLocalToWorldBuffer: GPUBuffer | null = null;
   private _emitterBuffer: GPUBuffer | null = null;
+  /** Number of 80-byte EmitterTri entries in `_emitterBuffer` (for RC NEE). */
+  private _emitterCount = 0;
   private _emitterCdfBuffer: GPUBuffer | null = null;
   private _lightTreeBuffer: GPUBuffer | null = null;
 
@@ -102,6 +104,7 @@ export class BvhBufferHost {
     this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
+    this._emitterCount = bvhBuffers.emitterCount;
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
     // Combined light-tree + ReGIR-grid buffer (tree nodes in front, grid region
     // zeroed at the tail). `_regirGridBytes == 0` ⇒ exactly `uploadBuffer`.
@@ -118,6 +121,13 @@ export class BvhBufferHost {
       throw new Error('[BvhBufferHost] uploadInitial must run before lightTreeBuffer');
     }
     return this._lightTreeBuffer;
+  }
+
+  /** Shared rect-area emitter buffer + tri count for RC NEE (group-agnostic —
+   *  emitters are world-space triangles). Null before `uploadInitial`. */
+  emitterBufferAndCount(): { buffer: GPUBuffer; count: number } | null {
+    if (this._emitterBuffer == null) return null;
+    return { buffer: this._emitterBuffer, count: this._emitterCount };
   }
 
   sceneBindGroupResources(): SceneBindGroupResources {
@@ -188,6 +198,9 @@ export class BvhBufferHost {
     this._emitterCdfBuffer?.destroy();
     this._lightTreeBuffer?.destroy();
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
+    // updateEmitters' Pick omits emitterCount; derive from the packed byte
+    // length (EmitterTri = 80 bytes — cpuData is the raw packed array, exact).
+    this._emitterCount = bvhBuffers.emitters.cpuData.byteLength / 80;
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
     // Re-upload the selection tree: emitters changed, so the tree's leaf
     // emitterIndex → emitter array mapping (and powers) changed with them.

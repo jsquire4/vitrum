@@ -66,6 +66,12 @@ interface RCFrameInputs {
   readonly sunColor:            readonly [number, number, number];
   readonly frameSeed:           number;
   readonly triIntersectEpsilon: number;
+  /** Rect-area emitter NEE (2026-06-07): the main pipeline's packed
+   *  `array<EmitterTri>` buffer + its triangle count, shared into RC so its
+   *  probe cast can NEE-sample the emitter list. Omit/0 ⇒ RC's prior light
+   *  model (sun + emissive geometry + env). */
+  readonly emittersBuf?:        GPUBuffer;
+  readonly emitterCount?:       number;
 }
 
 /**
@@ -398,6 +404,9 @@ export class RCSubsystem implements PipelineSubsystem {
       triIntersectEpsilon: inputs.triIntersectEpsilon,
       bvhMode:          this._bvhMode,
       tlasNodeCount:    this._tlasNodeCount,
+      ...(inputs.emittersBuf != null
+        ? { emittersBuf: inputs.emittersBuf, emitterCount: inputs.emitterCount ?? 0 }
+        : {}),
       ...(bvh.tlasNodesBuf != null
         ? {
             tlasNodesBuf: bvh.tlasNodesBuf,

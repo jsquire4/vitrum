@@ -123,6 +123,14 @@ export interface RCDispatchOptsRaw {
   tlasBlasRootsBuf?: GPUBuffer;
   tlasInstanceWorldToLocalBuf?: GPUBuffer;
   tlasInstanceLocalToWorldBuf?: GPUBuffer;
+
+  /** Rect-area emitter NEE (2026-06-07). The packed `array<EmitterTri>` buffer
+   *  (80 bytes/tri — share the main pipeline's `BvhBufferHost._emitterBuffer`)
+   *  + its triangle count. Omit (or count 0) to keep RC's prior light model
+   *  (sun + emissive geometry + env); the dispatcher binds an 80-byte zero
+   *  placeholder so the bind group stays valid. */
+  emittersBuf?: GPUBuffer;
+  emitterCount?: number;
 }
 
 // ─── Uniform data builders ────────────────────────────────────────────────────
@@ -149,6 +157,7 @@ function buildCascadeUniformDataInto(
   triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
   bvhMode: number,
   tlasNodeCount: number,
+  emitterCount: number,
   dims: readonly CascadeDim[] = CASCADE_DIMS,
 ): void {
   const dim = dims[k]!;
@@ -162,8 +171,10 @@ function buildCascadeUniformDataInto(
   // rayGridSize(u), intervalNear(f), intervalFar(f), cascadeIndex(u)
   // sunDirection(3f), _pad2(f)
   // sunColor(3f), envIntensity(f)
-  // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), _pad4a(u)
-  // Total: 40 float/uint values = 160 bytes
+  // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), bvhMode(u)
+  // tlasNodeCount(u), emitterCount(u) [slot 29 — RC emitter NEE]
+  // Total allocation 40 float/uint = 160 bytes (WGSL struct padded to its
+  // 16-byte-aligned size; the trailing slots are slack).
   const ui = new Uint32Array(d.buffer);
   d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
   d[4]  = s[0]; d[5]  = s[1]; d[6]  = s[2]; d[7]  = 0;
@@ -180,6 +191,7 @@ function buildCascadeUniformDataInto(
   d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
   ui[27] = bvhMode >>> 0;
   ui[28] = tlasNodeCount >>> 0;
+  ui[29] = emitterCount >>> 0;
 }
 
 function buildMergeUniformData(
@@ -274,6 +286,7 @@ export class RCDispatcher {
       const pass = handles.castPasses[k]!;
       const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
       const tlasNodeCount = opts.tlasNodeCount ?? 0;
+      const emitterCount = opts.emitterCount ?? 0;
       buildCascadeUniformDataInto(
         pass.cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
@@ -282,6 +295,7 @@ export class RCDispatcher {
         opts.triIntersectEpsilon ?? 1e-5,
         bvhMode,
         tlasNodeCount,
+        emitterCount,
         dims,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -353,11 +367,12 @@ export class RCDispatcher {
         { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_emitters
       ],
     });
   }
 
-  private _dummyStorageBuffer(device: GPUDevice, label: string): GPUBuffer {
+  private _dummyStorageBuffer(device: GPUDevice, label: string, size = 32): GPUBuffer {
     // Merged mode (bvhMode == 0) never traverses the TLAS, but the probe-ray
     // shader STILL declares the five TLAS bindings (group 0, bindings 9–13). The
     // first, `rc_tlas_nodes: array<BVHNode>`, has a 32-byte struct stride → a
@@ -372,7 +387,7 @@ export class RCDispatcher {
     // the RC core-BVH converged A/B exercised it.
     const buf = device.createBuffer({
       label,
-      size: 32,
+      size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this._dummyTlasBuffers.push(buf);
@@ -469,6 +484,12 @@ export class RCDispatcher {
     const tlasBlasBuf = opts.tlasBlasRootsBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-blas-dummy');
     const tlasW2lBuf = opts.tlasInstanceWorldToLocalBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-w2l-dummy');
     const tlasL2wBuf = opts.tlasInstanceLocalToWorldBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-l2w-dummy');
+    // Rect-area emitter NEE buffer (binding 14, array<EmitterTri>). When absent,
+    // bind an 80-byte zero placeholder — one EmitterTri stride, the minimum
+    // binding size for the runtime array. emitterCount==0 ⇒ the shader's NEE
+    // loop never reads it. 80 (not 32) bytes because EmitterTri is 80 bytes;
+    // a sub-stride placeholder would be rejected like the TLAS 16-vs-32 class.
+    const emittersBuf = opts.emittersBuf ?? this._dummyStorageBuffer(device, 'rc-emitters-dummy', 80);
 
     // Env texture + sampler. If the caller supplied both, use them; otherwise
     // create a 1×1 black placeholder.
@@ -509,6 +530,7 @@ export class RCDispatcher {
       const cascadeParamsRaw = new Float32Array(40);
       const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
       const tlasNodeCount = opts.tlasNodeCount ?? 0;
+      const emitterCount = opts.emitterCount ?? 0;
       buildCascadeUniformDataInto(
         cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
@@ -517,6 +539,7 @@ export class RCDispatcher {
         opts.triIntersectEpsilon ?? 1e-5,
         bvhMode,
         tlasNodeCount,
+        emitterCount,
         cascadeDims,
       );
       const cascadeParamsBuf = device.createBuffer({
@@ -550,6 +573,7 @@ export class RCDispatcher {
           { binding: 11, resource: { buffer: tlasBlasBuf } },
           { binding: 12, resource: { buffer: tlasW2lBuf } },
           { binding: 13, resource: { buffer: tlasL2wBuf } },
+          { binding: 14, resource: { buffer: emittersBuf } },
         ],
       });
 

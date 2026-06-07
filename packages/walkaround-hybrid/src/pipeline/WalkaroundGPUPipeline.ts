@@ -1253,6 +1253,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized ? this._bvhHost.getBvhPositionBuffer() : null;
   }
 
+  /** Shared rect-area emitter buffer + tri count for RC emitter NEE. Null
+   *  before init. Emitters are world-space triangles, so the same buffer the
+   *  shade/ReSTIR-DI path uses is valid for the RC probe cast — no re-upload. */
+  getEmitterBufferAndCount(): { buffer: GPUBuffer; count: number } | null {
+    return this._initialized ? this._bvhHost.emitterBufferAndCount() : null;
+  }
+
   /** WS1 — live merged per-vertex normal buffer for GPU skinning writes. */
   getBvhNormalBuffer(): GPUBuffer | null {
     return this._initialized ? this._bvhHost.getBvhNormalBuffer() : null;

@@ -130,6 +130,30 @@ struct CascadeUniforms {
   triIntersectEpsilon: f32,  // E2: UBO-plumbed (was local const 1e-5)
   bvhMode           : u32,   // C2: 0 merged, 1 TLAS+local BLAS
   tlasNodeCount     : u32,
+  // RC emitter-NEE (2026-06-07): number of rect-area emitter triangles in
+  // rc_emitters. 0 ⇒ the NEE loop is skipped and RC's light model stays
+  // sun+emissive+env (the prior behaviour, byte-identical). Host packs this
+  // at slot 29 (offset 116) in buildCascadeUniformDataInto.
+  emitterCount      : u32,
+};
+
+// ─── EmitterTri struct ────────────────────────────────────────────────────────
+// 80-byte rect-area emitter triangle, layout-identical to the shade/ReSTIR-DI
+// EmitterTri (reservoirDi.wgsl.ts) so RC can BIND THE SAME host buffer the main
+// pipeline already builds (BvhBufferHost._emitterBuffer) — no second upload, no
+// new dummy-buffer (the 32-byte-min bind class). World-space triangle + its
+// front-face normal + radiance Le.
+struct EmitterTri {
+  vA:        vec3f,
+  _padA:     f32,
+  vB:        vec3f,
+  _padB:     f32,
+  vC:        vec3f,
+  _padC:     f32,
+  normal:    vec3f,
+  area:      f32,
+  Le:        vec3f,
+  intensity: f32,
 };
 
 // ─── MaterialEntry struct ─────────────────────────────────────────────────────
@@ -212,6 +236,55 @@ fn traceSunVisibility(
 @group(0) @binding(11) var<storage, read>      rc_tlas_blas_roots:       array<u32>;
 @group(0) @binding(12) var<storage, read>      rc_tlas_w2l:              array<vec4f>;
 @group(0) @binding(13) var<storage, read>      rc_tlas_l2w:              array<vec4f>;
+@group(0) @binding(14) var<storage, read>      rc_emitters:              array<EmitterTri>;
+
+// ─── Rect-area emitter NEE ────────────────────────────────────────────────────
+// RC's prior light model (radiance = directSun + emissive + envTransmission)
+// could see emissive GEOMETRY a probe ray directly hit, but NOT the abstract
+// rect-area emitter list — so a rect-area-only scene produced all-zero cascades
+// (the 2026-06-07 "RC cascade-zero" regime gap). This adds one-sample-per-
+// emitter next-event estimation at the probe-ray hit: for each emitter triangle
+// sample a point, shadow-test through RC's own BVH, and add the Lambertian
+// diffuse-reflected contribution. Summing one sample per emitter (rather than
+// CDF-importance-sampling a single emitter) is unbiased and lower-variance for
+// the handful of emitters a walkaround scene carries, and needs no CDF buffer.
+//
+// Estimator (area-form, pdf = 1/area ⇒ 1/pdf = area):
+//   Lo += (albedo/π) · Le · (cosSurf · cosLight / dist²) · area · vis
+// cosLight uses the emitter's front face only (one-sided), matching the
+// shade/ReSTIR-DI convention. The shadow ray reuses traceSunVisibility's
+// glass-aware semantics via rcTraceFirstHit: an OPAQUE hit before the light
+// occludes; we ignore glass tint here (kept simple — RC is a coarse GI cache).
+fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, triEps: f32) -> vec3f {
+  var Lo = vec3f(0.0);
+  for (var ei: u32 = 0u; ei < count; ei = ei + 1u) {
+    let e = rc_emitters[ei];
+    // Per-emitter jittered area sample.
+    let s0 = pcgHashToF32(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
+    let s1 = pcgHashToF32(seed0 * 7919u ^ (ei * 0x85EBCA6Bu + 0x2u));
+    let su = sqrt(s0);
+    let pos = (1.0 - su) * e.vA + (su * (1.0 - s1)) * e.vB + (su * s1) * e.vC;
+
+    let toL    = pos - hitPos;
+    let dist2  = max(dot(toL, toL), 1e-8);
+    let dist   = sqrt(dist2);
+    let wi     = toL / dist;
+    let cosSurf  = dot(n, wi);
+    let cosLight = dot(e.normal, -wi);   // emitter front face only
+    if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
+
+    // Opaque shadow test toward the light sample (stop just short of it).
+    var sRay = Ray();
+    sRay.origin    = hitPos + n * 0.01;
+    sRay.direction = wi;
+    let sHit = rcTraceFirstHit(sRay, triEps);
+    if (sHit.didHit && sHit.dist < dist - 0.02) { continue; }
+
+    let G = (cosSurf * cosLight) / dist2;
+    Lo = Lo + albedo * 0.31831 * e.Le * G * e.area;   // 0.31831 = 1/π
+  }
+  return Lo;
+}
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 // Verbatim from probeRayCastKernel wgslFn body.
@@ -285,6 +358,11 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
 
+    // Rect-area emitter NEE (2026-06-07): closes the regime gap where RC saw
+    // sun + emissive geometry + env but NOT the abstract rect-area emitter
+    // list. emitterCount==0 ⇒ no-op (RC's prior light model, byte-identical).
+    let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps);
+
     let emissive = matEmissive;
 
     var transContrib = vec3f(0.0);
@@ -317,7 +395,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       }
     }
 
-    radiance = directSun + emissive + transContrib;
+    radiance = directSun + emitterNEE + emissive + transContrib;
   }
 
   let outIdx = probeIdx * u.raysPerProbe + rayIdx;

@@ -351,6 +351,12 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
 
   const pipeline = deps.subsystems.pipeline!;
   if (deps.subsystems.rc) {
+    // Share the main pipeline's rect-area emitter buffer into RC so its probe
+    // cast can NEE-sample the emitter list (closes the RC out-of-model regime
+    // gap — RC otherwise saw only sun + emissive geometry + env). World-space
+    // triangles ⇒ the same buffer is valid for RC's BVH; null ⇒ RC keeps its
+    // prior light model.
+    const rcEmitters = pipeline.getEmitterBufferAndCount();
     deps.subsystems.rc.dispatchFrame({
       sunDirection: deps.lighting.primaryLightDir,
       sunColor: [
@@ -360,6 +366,9 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
       ],
       frameSeed: input.frameSeed,
       triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
+      ...(rcEmitters != null
+        ? { emittersBuf: rcEmitters.buffer, emitterCount: rcEmitters.count }
+        : {}),
     });
     pipeline.setRCInputs(deps.subsystems.rc.buildRCInputs(deps.flags.rcWeight));
   } else {
