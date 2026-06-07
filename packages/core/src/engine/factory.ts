@@ -14,10 +14,21 @@ import type { Engine } from './index.js';
  *  wraps three-gpu-pathtracer and bakes IBL); `@vitrum/pt-webgpu` narrows to
  *  `GPUDevice` (the backend uses compute shaders with no Three.js coupling).
  *  Each backend's package documents its concrete device type via the options
- *  interface that extends `EngineOptions`. */
-export type EngineFactory<TOptions extends EngineOptions = EngineOptions> = (
+ *  interface that extends `EngineOptions`.
+ *
+ *  `TEngine` defaults to the erased {@link Engine} contract — that is the shape
+ *  the host-agnostic `createEngine` facade returns. A NAMED backend factory
+ *  (e.g. `createPTEngine_WebGL2`) narrows `TEngine` to `Engine & <backend
+ *  surface>` so a host that deliberately picks one backend gets its stable,
+ *  backend-specific public methods typed, while the universal contract stays
+ *  free of backend specifics. `TEngine` MUST extend {@link Engine}: every
+ *  factory still produces an Engine first. */
+export type EngineFactory<
+  TOptions extends EngineOptions = EngineOptions,
+  TEngine extends Engine = Engine,
+> = (
   opts: TOptions,
-) => Promise<Engine>;
+) => Promise<TEngine>;
 
 /** Immutable creation-time configuration passed to an engine factory. Once
  *  the engine exists, this configuration does not change.
@@ -88,12 +99,21 @@ export interface EngineOptions {
    * 'photon-map':    Biased photon mapping for caustics. Trace forward photons
    *                  from lights; store caustic photons in a spatial data
    *                  structure; use density estimation at diffuse shading points
-   *                  to reconstruct caustic radiance. Biased and currently
-   *                  reported as approximate by backends that expose it.
+   *                  to reconstruct caustic radiance. APPROXIMATE / stylized — NOT
+   *                  a radiometric reference: on `pt-webgpu`, GPU-A/B'd against the
+   *                  forward-traced oracle that validated MNEE it recovers only
+   *                  ~21% of the true caustic energy and fires on ~1% of caustic
+   *                  pixels, with a hardcoded world-unit gather radius (~6×
+   *                  firing-rate swing under a scale change) and a flat brightness
+   *                  fudge (~20% of its reported energy). Backends that expose it
+   *                  advertise it as approximate.
    *
-   * Backend note: `pt-webgpu`'s `manifold-nee` path is the validated MNEE
-   * implementation. `pt-webgl`'s fork caustic modes and `pt-webgpu`'s
-   * `photon-map` mode are approximate/experimental capability rows.
+   * Backend note: `pt-webgpu`'s `manifold-nee` path is the VALIDATED REFERENCE
+   * caustic (~98.7% oracle energy, scale-invariant) — prefer it for fidelity.
+   * `pt-webgl`'s fork caustic modes and `pt-webgpu`'s `photon-map` mode are
+   * approximate/experimental capability rows. Evidence for the pt-webgpu numbers:
+   * GPU A/B dzn RTX-4090, 2026-06-07,
+   * `wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.
    *
    * Default: 'none'.
    *

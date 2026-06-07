@@ -179,6 +179,39 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
     expect(updateEmitterSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards getScene to the wrapped engine and returns its canonical Scene', () => {
+    const scene: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
+    const getSceneSpy = vi.fn((): Scene | null => scene);
+    const engine = {
+      ...makeFakeEngine({ withUpdateEnvironment: true }),
+      getScene: getSceneSpy,
+    } as Engine;
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    expect(typeof proxy.getScene).toBe('function');
+    expect(proxy.getScene!()).toBe(scene);
+    expect(getSceneSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits getScene when the wrapped engine does not implement it', () => {
+    const engine = makeFakeEngine({ withUpdateEnvironment: true });
+    // makeFakeEngine does not define getScene.
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    expect(proxy.getScene).toBeUndefined();
+  });
+
+  it('returns null from getScene after dispose without forwarding', () => {
+    const scene: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
+    const getSceneSpy = vi.fn((): Scene | null => scene);
+    const engine = {
+      ...makeFakeEngine({ withUpdateEnvironment: true }),
+      getScene: getSceneSpy,
+    } as Engine;
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    proxy.dispose();
+    expect(proxy.getScene!()).toBeNull();
+    expect(getSceneSpy).not.toHaveBeenCalled();
+  });
+
   it('omits patch methods when incremental facets advertise full-rebuild only', () => {
     const updatePrimitiveSpy = vi.fn();
     const updateEmitterSpy = vi.fn();

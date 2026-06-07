@@ -1040,6 +1040,17 @@ export class HybridEngine implements Engine {
     this._initCoordinator.startInit();
   }
 
+  /** Read back the retained canonical core {@link Scene} (`_lastScene` — the
+   *  capability-filtered `supported` authored scene, NOT the synthesized
+   *  THREE.Scene the BVH/DDGI ingestion derives from it), or null before the
+   *  first `setScene`. Implements the optional `Engine.getScene` contract — see
+   *  its JSDoc for the no-defensive-copy / frozen-by-contract semantics. The
+   *  reference survives {@link dispose}; the facade wrapper gates the
+   *  post-dispose read. */
+  getScene(): Scene | null {
+    return this._lastScene;
+  }
+
   /** T3.H removal: lazily synthesize a THREE.Scene from the most recent
    *  vitrum Scene if (a) the host did not pass `threeScene` at construction,
    *  and (b) the vitrum Scene supplies meshes. Caller is responsible for
@@ -2343,6 +2354,27 @@ export class HybridEngine implements Engine {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
+ * The walkaround-hybrid backend's STABLE, public-facing surface BEYOND the
+ * host-agnostic {@link Engine} contract: DDGI GI-state persistence (the "cached
+ * light field"). {@link createWalkaroundEngine_Hybrid} returns
+ * `Promise<Engine & HybridEngineGISurface>` so a host that deliberately picks
+ * this backend by name gets the export/import methods typed — without the
+ * universal contract baking in a backend-specific feature. (`@vitrum/engine`'s
+ * `createEngine` facade forwards these same methods via its internal
+ * `GIStatePersistable` shape; this is the backend-package-level peer of that.)
+ */
+export interface HybridEngineGISurface {
+  /** Export the converged DDGI GI state ("cached light field") for host
+   *  persistence, or null if the probe atlases aren't allocated yet. Async
+   *  (atlas readback uses mapAsync). See {@link HybridEngine.exportGIState}. */
+  exportGIState(): Promise<GIStateSnapshot | null>;
+  /** Restore a previously {@link exportGIState}-ed snapshot. Returns false
+   *  (no-op) on a dims mismatch or unallocated atlases. See
+   *  {@link HybridEngine.importGIState}. */
+  importGIState(snapshot: GIStateSnapshot): boolean;
+}
+
+/**
  * Create a HybridEngine instance and begin asynchronous pipeline initialisation.
  *
  * The engine is returned immediately in `'initializing'` state. The host
@@ -2351,9 +2383,12 @@ export class HybridEngine implements Engine {
  *
  * @param opts  Creation-time options. `opts.device` must be a live GPUDevice.
  */
-export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> = async (
+export const createWalkaroundEngine_Hybrid: EngineFactory<
+  HybridEngineOptions,
+  Engine & HybridEngineGISurface
+> = async (
   opts: HybridEngineOptions,
-): Promise<Engine> => {
+): Promise<Engine & HybridEngineGISurface> => {
   // Duck-type GPUDevice validation — `instanceof GPUDevice` is not reliable
   // across realms; checking for a known required method is more robust.
   if (

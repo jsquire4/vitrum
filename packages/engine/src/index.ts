@@ -35,6 +35,18 @@ export {
   type AttachVitrumHandle,
 } from './lifecycle/vanilla.js';
 
+// Raw WebGPU device negotiation — the lifecycle-layer peer of attachVitrum for
+// hosts that drive the backend factories directly. Acquires a HOST-OWNED
+// adapter + device + preferred-format + AdapterProfile; the host owns the
+// device's lifecycle (must device.destroy() it). Reuses the same limit
+// thresholds the backend factories apply — no hidden ownership.
+export {
+  negotiateWebGPUDevice,
+  type NegotiateWebGPUDeviceOptions,
+  type NegotiatedWebGPUDevice,
+  type NegotiateTarget,
+} from './negotiateWebGPUDevice.js';
+
 // Convenience re-exports — hosts can `import { createEngine, type Engine } from '@vitrum/engine'`.
 export type {
   Engine,

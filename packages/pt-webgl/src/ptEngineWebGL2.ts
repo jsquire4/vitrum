@@ -742,6 +742,16 @@ export class PTEngineWebGL2 implements Engine {
     return this.#lastTlasAudit;
   }
 
+  /** Read back the retained canonical core {@link Scene} (the capability-filtered
+   *  `supported` scene stored in {@link setScene}), or null before the first
+   *  `setScene`. Implements the optional `Engine.getScene` contract — see its
+   *  JSDoc for the no-defensive-copy / frozen-by-contract semantics. The
+   *  reference survives {@link dispose} (only GPU resources are freed there);
+   *  the facade wrapper still gates the post-dispose read. */
+  getScene(): Scene | null {
+    return this.#vitrumScene;
+  }
+
   get capabilities(): EngineCapabilities {
     const experimental = new Set<string>();
     if (this.#bdpt) experimental.add('bdpt-approximate');
@@ -1488,9 +1498,46 @@ export class PTEngineWebGL2 implements Engine {
   }
 }
 
-export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async (
+/**
+ * The WebGL2 path-tracer backend's STABLE, public-facing surface BEYOND the
+ * host-agnostic {@link Engine} contract. {@link createPTEngine_WebGL2} returns
+ * `Promise<Engine & PTEngineWebGL2Surface>` so a host that deliberately picks
+ * this backend by name gets the extra methods typed — without `createEngine`
+ * (the erased facade) having to leak backend specifics into the universal
+ * contract.
+ *
+ * Only genuinely public, documented seams are included. Lower-level fork
+ * plumbing the engine exposes for test harnesses / BDPT wiring
+ * (`fillBdptLightPath`, `bdptAdvanceFrame`, `getAccumulationRenderTarget`,
+ * the `iblBakerCache` getter) is intentionally NOT part of this typed surface —
+ * those leak fork / THREE internals and are reachable on the concrete
+ * {@link PTEngineWebGL2} class for advanced callers, not promised here.
+ */
+export interface PTEngineWebGL2Surface {
+  /** Bake (or fetch the cached bake of) an analytic Preetham sky equirect using
+   *  this engine's per-instance IBL bake cache, suitable for `scene.environment`.
+   *  The returned `DataTexture` is engine-owned — do NOT dispose it directly.
+   *  See {@link PTEngineWebGL2.bakeSkyEquirect}. */
+  bakeSkyEquirect(params: SkyParams): DataTexture;
+
+  /** The most recent scene's TLAS audit (whether the scene needed an instanced
+   *  TLAS the WebGL2 fork can only approximate with a merged BVH), or null
+   *  before the first `setScene`. See {@link PTEngineWebGL2.getSceneTlasAudit}. */
+  getSceneTlasAudit(): PtWebglTlasAudit | null;
+
+  /** The most recently completed OIDN-denoised RGB image, or null when the
+   *  engine was not built with `denoiser: 'oidn-final'` / inference is still in
+   *  flight / the accumulator was just invalidated. See
+   *  {@link PTEngineWebGL2.getDenoisedFrame}. */
+  getDenoisedFrame(): DenoisedFrame | null;
+}
+
+export const createPTEngine_WebGL2: EngineFactory<
+  PTEngineWebGL2Options,
+  Engine & PTEngineWebGL2Surface
+> = async (
   opts: PTEngineWebGL2Options,
-): Promise<Engine> => {
+): Promise<Engine & PTEngineWebGL2Surface> => {
   if (opts.device == null || typeof (opts.device as { getContext?: unknown }).getContext !== 'function') {
     throw new TypeError(
       'createPTEngine_WebGL2: device must be a THREE.WebGLRenderer instance (got null/undefined or an object without a getContext() method)',

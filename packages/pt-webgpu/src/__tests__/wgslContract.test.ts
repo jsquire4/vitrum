@@ -46,8 +46,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // snapshot — the snapshot made within-leaf acceptance last-writer-wins
     // (thin slabs shaded from their buried far face → black walls). RENDER-
     // CHANGING on purpose; GPU-validated via the G-P0.3 capture matrix.
-    expect(digest).toBe('f933406dbd4281904028ffb827c7801a8bc2fa535b4dc8297015b3640e47a804');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215560);
+    // Re-pinned 2026-06-07: photon-map demotion comment block added to
+    // caustic.wgsl.ts (honest-labeling, COMMENT-ONLY — verified no WGSL-code
+    // line changed; the demotion docs the gatherRadius/strategyScale constants).
+    expect(digest).toBe('3c439c130532fca46848256db4114a3e86102d767cc71f825c670e8d5b29df26');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(217233);
   });
 });
 

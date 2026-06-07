@@ -1006,6 +1006,15 @@ class PTEngineWebGPU implements Engine {
     return this.#postDenoiser?.getLatestDenoised() ?? null;
   }
 
+  /** Read back the retained canonical core {@link Scene} (the capability-filtered
+   *  `supported` scene stored in {@link setScene}), or null before the first
+   *  `setScene` — and also after {@link dispose}, which drops `#scene`.
+   *  Implements the optional `Engine.getScene` contract — see its JSDoc for the
+   *  no-defensive-copy / frozen-by-contract semantics. */
+  getScene(): Scene | null {
+    return this.#scene;
+  }
+
   // ── Inverse rendering (differentiable RT) — WS5 ──────────────────────────
   //
   // Phase 0 (finite-difference) + the validated Phase-1 BSDF adjoint oracle.
@@ -1308,9 +1317,34 @@ class PTEngineWebGPU implements Engine {
   }
 }
 
-export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async (
+/**
+ * The WebGPU path-tracer backend's STABLE, public-facing surface BEYOND the
+ * host-agnostic {@link Engine} contract. {@link createPTEngine_WebGPU} returns
+ * `Promise<Engine & PTEngineWebGPUSurface>` so a host that deliberately picks
+ * this backend by name gets the extra methods typed — without `createEngine`
+ * (the erased facade) having to leak backend specifics into the universal
+ * contract.
+ *
+ * Deliberately minimal: only the converged-denoise read-back is stable host
+ * API. The off-default / experimental seams (`getRestirPtResultBuffer`,
+ * `bdptAdvanceFrame`) are NOT promised here — ReSTIR-PT reuse + the BDPT
+ * light-subpath wiring are inert-by-default research paths, and exposing their
+ * raw `GPUBuffer` plumbing in a stable surface would over-promise. The
+ * concrete engine class stays unexported, so those remain internal.
+ */
+export interface PTEngineWebGPUSurface {
+  /** The most recently completed OIDN-denoised RGB image for the current
+   *  converged cohort, or null when the engine was not built with
+   *  `denoiser: 'oidn-final'` / inference is still in flight. */
+  getDenoisedFrame(): DenoisedFrame | null;
+}
+
+export const createPTEngine_WebGPU: EngineFactory<
+  PTEngineWebGPUOptions,
+  Engine & PTEngineWebGPUSurface
+> = async (
   opts: PTEngineWebGPUOptions,
-): Promise<Engine> => {
+): Promise<Engine & PTEngineWebGPUSurface> => {
   if (opts.device == null || typeof (opts.device).createCommandEncoder !== 'function') {
     throw new TypeError(
       'createPTEngine_WebGPU: device must be a GPUDevice instance',

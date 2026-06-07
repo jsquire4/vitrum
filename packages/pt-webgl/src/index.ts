@@ -24,6 +24,7 @@ export type {
   PTEngineWebGL2QualityMode,
   PTEngineWebGL2Telemetry,
   PTEngineWebGL2FrameOutput,
+  PTEngineWebGL2Surface,
 } from './ptEngineWebGL2.js';
 
 // Task 4.4 Theme A — scheduler state machine + the `updatePrimitive` patch

@@ -69,6 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **pt-webgpu `causticStrategy:'photon-map'` formally demoted to APPROXIMATE/stylized (2026-06-07, honest-labeling only — zero rendering change).** GPU A/B (dzn RTX-4090) vs the forward-traced oracle that validated MNEE shows photon-map recovers only ~21% of true caustic energy and fires on ~1% of caustic pixels (vs `manifold-nee` 98.7% / 99.4%), with a hardcoded world-unit `gatherRadius=0.35` (~6× firing-rate swing under a radiometrically-null scene rescale) and a flat `1+0.25·transmission` brightness fudge (~20% of its reported energy). `causticStrategy:'manifold-nee'` is the validated reference caustic. Docs/comments updated at the two constant sites (`caustic.wgsl.ts`), `core` `causticStrategy` JSDoc (`factory.ts`), `pt-webgpu/README.md`, and `plan/renderer-fidelity-matrix.md`; the `pt-webgpu-photon-map-approximate` experimentalFeatures flag already advertised this. Evidence: `wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.
 - Benchmark-runner env parsing now fail-fast for invalid numeric configuration values (quality-mode bench + lifecycle soak), preventing silent NaN-driven false positives.
 - Project maturity wording is normalized from "pre-alpha/prototype" to "experimental backend" across active architecture docs (`README.md`, `AGENTS.md`, `CLAUDE.md`, `plan/library-architecture.md`).
 

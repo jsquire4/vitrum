@@ -9,7 +9,7 @@ export type {
 } from './hostScene/types.js';
 
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
-export type { HybridEngineOptions, LightingOptions } from './HybridEngine.js';
+export type { HybridEngineOptions, LightingOptions, HybridEngineGISurface } from './HybridEngine.js';
 export {
   FrameBudgetController,
   DEFAULT_FRAME_BUDGET_CONFIG,

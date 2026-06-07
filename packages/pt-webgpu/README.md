@@ -68,10 +68,20 @@ That layout includes TLAS, analytic shapes, HDRI, point/spot/rect/mesh area ligh
 motion vectors, variance moments, and caustic strategies. Check the browser console
 for `[vitrum/pt-webgpu] Full trace tier: …` on startup.
 
-Caustic truthfulness: `causticStrategy: 'manifold-nee'` is the validated MNEE
-path. `causticStrategy: 'photon-map'` remains an approximate density-estimation
-mode and is reported through `capabilities.experimentalFeatures` as
-`pt-webgpu-photon-map-approximate`.
+Caustic truthfulness: `causticStrategy: 'manifold-nee'` is the **validated
+reference** caustic path — GPU-A/B'd against a forward-traced oracle it recovers
+~98.7% of the true caustic energy, fires on 99.4% of caustic pixels, and is
+scale-invariant (no world-unit magic constant). `causticStrategy: 'photon-map'`
+is an **approximate / stylized** density-estimation mode, NOT a radiometric
+reference: against the same oracle it recovers only ~21% of the true caustic
+energy and fires on ~1% of caustic pixels, carries a hardcoded world-unit gather
+radius (`gatherRadius = 0.35`, ~6× firing-rate swing under a radiometrically-null
+scene rescale) and a flat brightness fudge (`1 + 0.25·transmission`, ~20% of its
+reported energy). It is reported through `capabilities.experimentalFeatures` as
+`pt-webgpu-photon-map-approximate`. Use `'manifold-nee'` for fidelity; reach for
+`'photon-map'` only as a cheap, clearly-approximate alternative. Evidence:
+GPU A/B dzn RTX-4090, 2026-06-07,
+`wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.
 
 The **lite** tier exists only as a **CI / SwiftShader fallback** (often **10** /
 **4** limits in headless Chromium on Linux). WSL2 without GPU passthrough frequently

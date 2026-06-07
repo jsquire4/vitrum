@@ -21,6 +21,10 @@ export interface BackendMethodPromises {
   readonly onFrame: boolean;
   readonly onProgress: boolean;
   readonly debug: boolean;
+  /** Whether the backend implements the optional `Engine.getScene()` scene
+   *  read-back (returns the retained canonical core {@link Scene}). All three
+   *  shipping backends retain the core Scene and implement it. */
+  readonly getScene: boolean;
 }
 
 export interface FrameInputPromises {
@@ -257,6 +261,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onFrame: true,
       onProgress: true,
       debug: true,
+      getScene: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: false,
@@ -330,6 +335,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onFrame: true,
       onProgress: true,
       debug: false,
+      getScene: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,
@@ -386,6 +392,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onFrame: true,
       onProgress: true,
       debug: true,
+      getScene: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,

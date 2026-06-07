@@ -182,6 +182,18 @@ export function wrapWithIdempotentDispose(
       disposed ? false : giEngine.importGIState!(snapshot);
   }
 
+  // Scene read-back (`getScene`). A value-returning read forwarded here (not via
+  // the OPTIONAL_METHOD_PROXIES table, which only models noop/empty-unsub/throw)
+  // so a host can reach the backend's retained canonical `Scene` through the
+  // wrapped engine instead of shadowing scene state. Disposed → null: the
+  // contract says no method except state/capabilities is valid after dispose, so
+  // the facade gives a uniform null regardless of whether the backend nulls its
+  // own scene reference on teardown (pt-webgpu) or keeps it (pt-webgl/hybrid).
+  const sceneEngine = engine as Engine;
+  if (typeof sceneEngine.getScene === 'function') {
+    proxy.getScene = () => (disposed ? null : sceneEngine.getScene!());
+  }
+
   // Progressive walkaround→PT seed source/sink (P8). These value-returning /
   // bespoke-disposed-semantics methods are forwarded here (not via the
   // OPTIONAL_METHOD_PROXIES table, which only models noop/empty-unsub/throw) so

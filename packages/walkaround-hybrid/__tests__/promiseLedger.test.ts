@@ -52,5 +52,6 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(typeof engineView.onFrame === 'function').toBe(expected.methodPromises.onFrame);
     expect(typeof engineView.onProgress === 'function').toBe(expected.methodPromises.onProgress);
     expect(typeof engineView.debug === 'object').toBe(expected.methodPromises.debug);
+    expect(typeof engineView.getScene === 'function').toBe(expected.methodPromises.getScene);
   });
 });

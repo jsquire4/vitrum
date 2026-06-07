@@ -48,7 +48,15 @@ import { MNEE_NEWTON_MAX_ITERS, MNEE_CHAIN_MAX_ITERS } from './mneeNewton.wgsl.j
  *    remains for the DIRECTIONAL-light multi-bounce-glass case the single-interface
  *    point-light refraction solve does not yet cover.
  *  - `photonMapContribution` — caustic strategy mode 2 (Jensen 1996 photon
- *    mapping with a tiny in-shader photon pass + Gaussian gather kernel)
+ *    mapping with a tiny in-shader photon pass + Gaussian gather kernel). This is
+ *    the APPROXIMATE/stylized caustic mode (`causticStrategy:'photon-map'`,
+ *    advertised as `pt-webgpu-photon-map-approximate`), NOT a radiometric reference:
+ *    GPU A/B vs the forward-traced oracle that validated MNEE recovers only ~21% of
+ *    the true caustic energy and fires on ~1% of caustic pixels, with a hardcoded
+ *    world-unit gather radius + a flat brightness fudge (see those two sites below).
+ *    The validated reference caustic is the mode-1 MNEE path
+ *    (`causticStrategy:'manifold-nee'`, ~98.7% oracle energy, scale-invariant).
+ *    Evidence: wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
  *
  * Depends on FrameParams bindings (materials, lightDir, pointLights,
  * spotLights) from `material.wgsl.ts`, evaluateBrdf + brdfDirectionalPdf,
@@ -896,10 +904,21 @@ fn photonMapContribution(
   if (availableLightCount == 0u) { return vec3f(0.0); }
   let photonCount = u32(clamp(f32(params.mneeMaxIterations) * 2.0, 8.0, 32.0));
   let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
-  // Photon-gather radius in world units. Hardcoded at 0.35 for the current
-  // calibration scene. Exposed as a named local so the photon density / cell
-  // size relationship is easy to tune in one place. Future: lift to a params
-  // field if hosts need scene-relative tuning.
+  // Photon-gather radius in ABSOLUTE world units — a NON-PHYSICAL, scene-relative
+  // constant with no radiometric anchor. Hardcoded at 0.35 for one calibration
+  // scene; it is NOT a fraction of the caustic footprint, so it mis-scales with the
+  // world. GPU A/B (dzn RTX-4090, 2026-06-07) vs the same forward-traced oracle that
+  // validated MNEE: holding the rendered image radiometrically INVARIANT and only
+  // rescaling the scene ×10, this fixed radius swings the caustic firing-rate ~6×
+  // (1.1% → 6.4% of caustic pixels) — 100% an artifact of this constant. The
+  // photon-map strategy as a whole recovers only ~21% of the true caustic energy
+  // and fires on ~1% of pixels, which is WHY causticStrategy:'photon-map' is the
+  // APPROXIMATE/stylized mode (advertised as pt-webgpu-photon-map-approximate) and
+  // causticStrategy:'manifold-nee' (98.7% oracle energy, scale-invariant) is the
+  // validated reference caustic. Evidence:
+  // wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
+  // Future: lift to a params field with a scene-relative bandwidth (progressive
+  // photon-mapping kernel) if photon-map is ever promoted toward radiometric.
   let gatherRadius = 0.35;
   let gatherRadius2 = gatherRadius * gatherRadius;
   var contribution = vec3f(0.0);
@@ -995,6 +1014,16 @@ fn photonMapContribution(
       ray.direction = nextDir;
     }
   }
+  // NON-PHYSICAL brightness fudge: a flat scalar (1 + 0.25·transmission) with no
+  // radiometric basis. On the calibration scene (transmission = 1) this is a 1.25×
+  // multiplier, so 20% of the reported photon-map energy (0.25 / 1.25) is pure fudge
+  // (GPU A/B, dzn RTX-4090, 2026-06-07; de-fudged ratio drops from 0.213 → 0.171 of
+  // the forward-traced oracle). It nudges magnitude but CANNOT repair the missing
+  // ~79% of energy or the wrong spatial profile — a band-aid, not physics. This is
+  // part of WHY causticStrategy:'photon-map' is the APPROXIMATE mode; the validated
+  // reference caustic is causticStrategy:'manifold-nee' (no such fudge — 98.7%
+  // oracle energy, scale-invariant). Evidence:
+  // wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
   let strategyScale = 1.0 + 0.25 * transmission;
   return contribution * strategyScale;
 }

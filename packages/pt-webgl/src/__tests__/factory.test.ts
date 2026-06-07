@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createPTEngine_WebGL2 } from '../index.js';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
+import type { Engine } from '@vitrum/core';
+import { createPTEngine_WebGL2, type PTEngineWebGL2Surface } from '../index.js';
 
 // Mock the absorbed `three-gpu-pathtracer` renderer package. The test only
 // exercises input validation that runs before any WebGLPathTracer construction,
@@ -22,5 +23,19 @@ describe('createPTEngine_WebGL2', () => {
     await expect(
       createPTEngine_WebGL2({ device: {} as never }),
     ).rejects.toThrow(TypeError);
+  });
+
+  it('is typed to return Engine & PTEngineWebGL2Surface (backend-typed factory)', () => {
+    // Compile-time assertion: the named backend factory narrows the return type
+    // to the typed intersection (not the erased `Promise<Engine>`), so a host
+    // picking this backend by name gets the backend surface methods typed.
+    type Returned = Awaited<ReturnType<typeof createPTEngine_WebGL2>>;
+    expectTypeOf<Returned>().toEqualTypeOf<Engine & PTEngineWebGL2Surface>();
+    // The surface methods are present on the typed return.
+    expectTypeOf<Returned>().toHaveProperty('bakeSkyEquirect');
+    expectTypeOf<Returned>().toHaveProperty('getSceneTlasAudit');
+    expectTypeOf<Returned>().toHaveProperty('getDenoisedFrame');
+    // The intersection is still assignable to the universal Engine contract.
+    expectTypeOf<Returned>().toMatchTypeOf<Engine>();
   });
 });

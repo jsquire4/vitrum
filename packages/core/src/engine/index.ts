@@ -58,6 +58,40 @@ export interface Engine {
    *  if the scene hasn't changed (engines may compare structural hashes). */
   setScene(scene: Scene): void;
 
+  /** Read back the engine's currently-retained scene — the inverse of
+   *  {@link setScene}. Lets hosts (e.g. a hero viewer, an editor undo stack)
+   *  stop shadowing scene state in parallel with the engine.
+   *
+   *  **Returns the canonical `@vitrum/core` {@link Scene}** — never a backend
+   *  host object. Backends that ingest through an internal THREE.Scene
+   *  (`@vitrum/pt-webgl`, `@vitrum/walkaround-hybrid`) still return the vitrum
+   *  Scene they were handed, not their synthesized THREE graph.
+   *
+   *  **Identity / mutation semantics (NOT a defensive copy):** the returned
+   *  value is the engine's RETAINED reference to the scene it is currently
+   *  rendering. {@link Scene} (and all its members) is declared deeply
+   *  `readonly` in this contract, so it is immutable *by contract* — callers
+   *  MUST treat the result as frozen and MUST NOT mutate it (e.g. by casting
+   *  away `readonly`). A deep clone is deliberately NOT made: scenes carry
+   *  large typed-array geometry buffers, and copying them on every read would
+   *  be a silent O(scene) cost on a method hosts may poll. To change the scene,
+   *  author a new {@link Scene} and call {@link setScene} (or use the
+   *  incremental `updatePrimitive` / `addPrimitive` / … paths) — the same
+   *  copy-on-write discipline the patch helpers already use.
+   *
+   *  **What is returned is the SUPPORTED scene, not the raw input.** Backends
+   *  capability-filter the incoming scene (warn-and-skip unsupported primitive
+   *  kinds / analytic shapes / emitter kinds) before retaining it, so the
+   *  returned scene may have fewer primitives than the one passed to
+   *  {@link setScene}. This is the scene the engine is actually rendering — the
+   *  honest answer to "what is on screen."
+   *
+   *  Returns `null` when no scene has been set yet (or when the backend dropped
+   *  its scene reference on {@link dispose}). Optional: a backend that cannot
+   *  retain the canonical core Scene without inventing state omits this method
+   *  entirely; hosts MUST `typeof`-check before calling. */
+  getScene?(): Scene | null;
+
   /** Patch a single primitive in-place. Engine MAY internally fall back to a
    *  full `setScene` rebuild if the diff is too disruptive (e.g., changing
    *  geometry vertex counts). Available only when
