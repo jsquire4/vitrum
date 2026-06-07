@@ -14,7 +14,7 @@
 // where M_XYZ_to_sRGB is the Bradford-adapted D65 matrix (IEC 61966-2-1:1999).
 //
 // CMF tables are uploaded as uniform arrays (81 entries × 3 channels).
-// The Y-CMF CDF (82 entries) is used for importance-sampling sampleHeroWavelength.
+// The Y-CMF CDF (82 entries) is used for importance-sampling sampleHeroWavelengthMIS.
 //
 // New uniforms (added to PhysicalPathTracingMaterial.js in this sprint):
 //   uCmfX[81]      — CIE x̄(λ) table (380–780 nm at 5 nm steps)

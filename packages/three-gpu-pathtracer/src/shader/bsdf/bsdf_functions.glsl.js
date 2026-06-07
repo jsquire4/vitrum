@@ -279,7 +279,7 @@ export const bsdf_functions = /* glsl */`
 	//   n(λ) = A + B/λ² + C/λ⁴    (λ in µm)
 	//
 	// This function is the Sprint 12 replacement for Sprint 8's per-channel Cauchy approach.
-	// It is called at the hero wavelength sampled from sampleHeroWavelength in the main loop.
+	// It is called at the hero wavelength sampled from sampleHeroWavelengthMIS in the main loop.
 	//
 	// New uniforms: iorCauchyA, iorCauchyB, iorCauchyC (see PhysicalPathTracingMaterial.js).
 	// Legacy Sprint 8 scalar dispersion uniforms were removed; per-material
