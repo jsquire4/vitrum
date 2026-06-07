@@ -37,15 +37,15 @@ const RC_ACCEPTANCE_ENABLED =
   process.env['VITRUM_RC_ACCEPTANCE'] === '1';
 
 describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance', () => {
-  function readMetrics(): {
+  function readMetrics(envVar = 'VITRUM_RC_ACCEPTANCE_METRICS'): {
     readonly rcDeltaMean: number;
     readonly pipelineCreatesBefore: number;
     readonly pipelineCreatesAfter: number;
   } {
-    const path = process.env['VITRUM_RC_ACCEPTANCE_METRICS'];
+    const path = process.env[envVar];
     if (!path) {
       throw new Error(
-        'VITRUM_RC_ACCEPTANCE=1 requires VITRUM_RC_ACCEPTANCE_METRICS=<json file> ' +
+        `VITRUM_RC_ACCEPTANCE=1 requires ${envVar}=<json file> ` +
         'produced by tools/benchmark-runner.',
       );
     }
@@ -71,9 +71,22 @@ describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance
     };
   }
 
-  it('rcEnabled: true produces a visible Lo_indirect delta vs rcEnabled: false (Cornell box, 32 frames)', () => {
-    const metrics = readMetrics();
+  // Two-scene gate (2026-06-07, tools/reference-renders/rc-gate-2026-06-07/).
+  // RC's light model is sun + emissive geometry + env + rect-area emitter NEE;
+  // one scene can't be both indirect-dominant (strong RC signal) AND sun-lit
+  // (requires an open box → direct-dominant). So Scene 1 gates emitter NEE at
+  // full strength; Scene 2 is a directSun LIVENESS check (weaker by nature).
+  it('Scene 1 (emitter NEE, enclosed Cornell): rcEnabled produces a strong Lo_indirect delta', () => {
+    const metrics = readMetrics('VITRUM_RC_ACCEPTANCE_METRICS');
     expect(metrics.rcDeltaMean).toBeGreaterThan(0.005);
+  });
+
+  it('Scene 2 (directSun, open Cornell): RC sun path is live (non-zero indirect delta)', () => {
+    // Liveness, not strength: open sun scenes are direct-dominant so RC's GI is
+    // a small image fraction. RC's sun path is separately validated at full
+    // strength by tlas-zero-gi-bisect (--sun=2: indirect 0.000356 → 0.0528).
+    const metrics = readMetrics('VITRUM_RC_SUN_METRICS');
+    expect(metrics.rcDeltaMean).toBeGreaterThan(0.0005);
   });
 
   it('rcEnabled: true → false toggles bit-identically on the bind-group path (no recompile)', () => {
