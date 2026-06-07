@@ -60,4 +60,51 @@ describe('convertAnimations — THREE clips → vitrum AnimationClip (P3)', () =
     const [out] = convertAnimations([clip], root);
     expect(out?.channels[0]?.sampler.interpolation).toBe('LINEAR');
   });
+
+  // G-P0.4(e) / G-P2.7: discrete (STEP) interpolation was previously untested.
+  // THREE.InterpolateDiscrete must map to glTF 'STEP' so a consumer evaluating
+  // the emitted sampler holds each keyframe value (no interpolation) rather than
+  // lerping — the audit flagged the absence of STEP/CUBICSPLINE import coverage.
+  it('maps THREE InterpolateDiscrete to STEP', () => {
+    const mesh = new THREE.Mesh();
+    mesh.name = 'N';
+    const root = new THREE.Scene();
+    root.add(mesh);
+    const track = new THREE.VectorKeyframeTrack('N.position', [0, 1], [0, 0, 0, 1, 1, 1]);
+    track.setInterpolation(THREE.InterpolateDiscrete);
+    const clip = new THREE.AnimationClip('step', 1, [track]);
+
+    const [out] = convertAnimations([clip], root);
+    expect(out?.channels[0]?.sampler.interpolation).toBe('STEP');
+  });
+
+  // Default linear tracks (the GLTFLoader common case) keep LINEAR — guards the
+  // STEP/SMOOTH special-cases from accidentally swallowing the default path.
+  it('maps the default (InterpolateLinear) track to LINEAR', () => {
+    const mesh = new THREE.Mesh();
+    mesh.name = 'N';
+    const root = new THREE.Scene();
+    root.add(mesh);
+    const track = new THREE.VectorKeyframeTrack('N.position', [0, 1], [0, 0, 0, 1, 1, 1]);
+    track.setInterpolation(THREE.InterpolateLinear);
+    const clip = new THREE.AnimationClip('linear', 1, [track]);
+
+    const [out] = convertAnimations([clip], root);
+    expect(out?.channels[0]?.sampler.interpolation).toBe('LINEAR');
+  });
+
+  // A morphTargetInfluences track resolves to the 'weights' channel — pins the
+  // 4th entry in PROPERTY_TO_PATH that no other test exercised.
+  it('maps morphTargetInfluences to the weights channel', () => {
+    const mesh = new THREE.Mesh();
+    mesh.name = 'Morpher';
+    const root = new THREE.Scene();
+    root.add(mesh);
+    const track = new THREE.NumberKeyframeTrack('Morpher.morphTargetInfluences', [0, 1], [0, 1]);
+    const clip = new THREE.AnimationClip('morph', 1, [track]);
+
+    const [out] = convertAnimations([clip], root);
+    expect(out?.channels).toHaveLength(1);
+    expect(out?.channels[0]?.target.path).toBe('weights');
+  });
 });

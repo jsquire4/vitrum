@@ -430,6 +430,164 @@ describe('vitrumSceneToThree: emissive / alphaMap mapping', () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// G-P0.4 (d) — reverse path (vitrumSceneToThree) must NOT silently drop the
+// opacity / alphaMode / AO / lobe-texture fields the forward path produces.
+//
+// Before the d72d39b "round-trip restores" fix, vitrumMaterialToThree forwarded
+// only the 7 base maps + Disney lobe SCALARS, so a core-authored alpha-blend /
+// AO'd / clearcoat-mapped material lost those when the walkaround engine
+// synthesized its THREE scene (BVH/DDGI source) or when fed to pt-webgl —
+// transparency survived only via transmission>0. Each test below asserts a field
+// that the FORWARD path (convertMaterial) already extracts now survives the
+// REVERSE conversion too. These would have caught the silent-drop asymmetry.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('vitrumSceneToThree: G-P0.4(d) alpha / opacity reverse path', () => {
+  it('forwards opacity onto the THREE material', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      opacity: 0.4,
+    });
+    expect(threeMat.opacity).toBeCloseTo(0.4);
+  });
+
+  it('alphaMode=blend → transparent=true, alphaTest=0', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      alphaMode: 'blend', opacity: 0.5,
+    });
+    expect(threeMat.transparent).toBe(true);
+    expect(threeMat.alphaTest).toBe(0);
+  });
+
+  it('alphaMode=mask → alphaTest = alphaCutoff, transparent=false', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      alphaMode: 'mask', alphaCutoff: 0.33,
+    });
+    expect(threeMat.transparent).toBe(false);
+    expect(threeMat.alphaTest).toBeCloseTo(0.33);
+  });
+
+  it('alphaMode=mask without explicit cutoff defaults alphaTest to 0.5 (glTF default)', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      alphaMode: 'mask',
+    });
+    expect(threeMat.alphaTest).toBeCloseTo(0.5);
+  });
+
+  it('bare opacity < 1 (no alphaMode) implies transparent (so blend survives without transmission)', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      opacity: 0.6,
+    });
+    expect(threeMat.transparent).toBe(true);
+    expect(threeMat.opacity).toBeCloseTo(0.6);
+  });
+});
+
+describe('vitrumSceneToThree: G-P0.4(d) AO map reverse path', () => {
+  it('forwards aoMap and aoMapIntensity', () => {
+    const aoMap = new THREE.Texture();
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      aoMap: asTextureRef(aoMap),
+      aoMapIntensity: 0.7,
+    });
+    expect(threeMat.aoMap).toBe(aoMap);
+    expect(threeMat.aoMapIntensity).toBeCloseTo(0.7);
+  });
+
+  it('aoMap with default intensity round-trips as intensity 1', () => {
+    const aoMap = new THREE.Texture();
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      aoMap: asTextureRef(aoMap),
+    });
+    expect(threeMat.aoMap).toBe(aoMap);
+    expect(threeMat.aoMapIntensity).toBeCloseTo(1);
+  });
+});
+
+describe('vitrumSceneToThree: G-P0.4(d) lobe + transmission texture maps reverse path', () => {
+  it('forwards transmissionMap, clearcoat/sheen/iridescence/anisotropy maps (not just the scalar lobes)', () => {
+    const transmissionMap = new THREE.Texture();
+    const clearcoatMap = new THREE.Texture();
+    const clearcoatRoughnessMap = new THREE.Texture();
+    const clearcoatNormalMap = new THREE.Texture();
+    const sheenColorMap = new THREE.Texture();
+    const sheenRoughnessMap = new THREE.Texture();
+    const iridescenceMap = new THREE.Texture();
+    const iridescenceThicknessMap = new THREE.Texture();
+    const anisotropyMap = new THREE.Texture();
+
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.4, metallic: 0,
+      transmission: 0.5,
+      transmissionMap: asTextureRef(transmissionMap),
+      clearcoatMap: asTextureRef(clearcoatMap),
+      clearcoatRoughnessMap: asTextureRef(clearcoatRoughnessMap),
+      clearcoatNormalMap: asTextureRef(clearcoatNormalMap),
+      sheenColorMap: asTextureRef(sheenColorMap),
+      sheenRoughnessMap: asTextureRef(sheenRoughnessMap),
+      iridescenceMap: asTextureRef(iridescenceMap),
+      iridescenceThicknessMap: asTextureRef(iridescenceThicknessMap),
+      anisotropyMap: asTextureRef(anisotropyMap),
+    });
+
+    expect(threeMat.transmissionMap).toBe(transmissionMap);
+    expect(threeMat.clearcoatMap).toBe(clearcoatMap);
+    expect(threeMat.clearcoatRoughnessMap).toBe(clearcoatRoughnessMap);
+    expect(threeMat.clearcoatNormalMap).toBe(clearcoatNormalMap);
+    expect(threeMat.sheenColorMap).toBe(sheenColorMap);
+    expect(threeMat.sheenRoughnessMap).toBe(sheenRoughnessMap);
+    expect(threeMat.iridescenceMap).toBe(iridescenceMap);
+    expect(threeMat.iridescenceThicknessMap).toBe(iridescenceThicknessMap);
+    expect(threeMat.anisotropyMap).toBe(anisotropyMap);
+  });
+});
+
+describe('Full round-trip: G-P0.4(d) alpha + AO + maps THREE → vitrum → THREE', () => {
+  it('preserves alphaMode/alphaCutoff, opacity, aoMap(+intensity) and the lobe maps', () => {
+    const aoMap = new THREE.Texture();
+    const transmissionMap = new THREE.Texture();
+    const clearcoatMap = new THREE.Texture();
+
+    const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    // alphaMode=mask path: alphaTest>0 → convertMaterial reports 'mask'.
+    original.alphaTest = 0.4;
+    original.opacity = 0.85;
+    original.aoMap = aoMap;
+    original.aoMapIntensity = 0.6;
+    original.transmission = 0.5;
+    original.transmissionMap = transmissionMap;
+    original.clearcoat = 0.8;
+    original.clearcoatMap = clearcoatMap;
+
+    // THREE → core
+    const vitrumMat = convertMaterial(original);
+    expect(vitrumMat.alphaMode).toBe('mask');
+    expect(vitrumMat.alphaCutoff).toBeCloseTo(0.4);
+    expect(vitrumMat.opacity).toBeCloseTo(0.85);
+    expect(vitrumMat.aoMap).toBeDefined();
+    expect(vitrumMat.aoMapIntensity).toBeCloseTo(0.6);
+    expect(vitrumMat.transmissionMap).toBeDefined();
+    expect(vitrumMat.clearcoatMap).toBeDefined();
+
+    // core → THREE (the previously-dropping direction)
+    const back = vitrumMatToThreeMat(vitrumMat);
+    expect(back.alphaTest).toBeCloseTo(0.4);
+    expect(back.transparent).toBe(false); // mask is not transparent
+    expect(back.opacity).toBeCloseTo(0.85);
+    expect(back.aoMap).toBe(aoMap);
+    expect(back.aoMapIntensity).toBeCloseTo(0.6);
+    expect(back.transmissionMap).toBe(transmissionMap);
+    expect(back.clearcoatMap).toBe(clearcoatMap);
+  });
+});
+
 describe('Full round-trip: anisotropy THREE → vitrum → THREE (Gap 5)', () => {
   it('preserves anisotropy=0.7 and anisotropyRotation=0.3 through the full round-trip', () => {
     const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });

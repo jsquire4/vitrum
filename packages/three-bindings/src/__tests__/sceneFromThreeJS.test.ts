@@ -157,6 +157,70 @@ describe('sceneFromThreeJS', () => {
     expect(prim.id).toBe(im.uuid);
   });
 
+  it('preserves rotation + scale + parent-world instance transforms (TLAS)', () => {
+    // G-P0.4 / G-P2.7: all prior InstancedMesh fixtures used identity/translation
+    // matrices, so the rotation/scale path through convertInstancedMesh
+    // (getMatrixAt → premultiply(matrixWorld)) was unpinned. Build a non-trivial
+    // per-instance matrix (rotate Z 30°, scale, translate) under a parent group
+    // that itself carries a world transform, and assert the composed result
+    // (parentWorld · instanceLocal) survives byte-for-byte into instances[i].
+    const s = new THREE.Scene();
+
+    const parent = new THREE.Object3D();
+    parent.position.set(5, -2, 3);
+    parent.rotation.set(0, Math.PI / 4, 0); // 45° about Y
+    parent.scale.set(1, 2, 1);
+    s.add(parent);
+
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshPhysicalMaterial(),
+      2,
+    );
+    parent.add(im);
+
+    const local0 = new THREE.Matrix4().compose(
+      new THREE.Vector3(1, 2, 3),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 6)), // 30° Z
+      new THREE.Vector3(2, 0.5, 1.5),
+    );
+    const local1 = new THREE.Matrix4().compose(
+      new THREE.Vector3(-4, 0, 1),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 3, 0, 0)), // 60° X
+      new THREE.Vector3(0.25, 3, 1),
+    );
+    im.setMatrixAt(0, local0);
+    im.setMatrixAt(1, local1);
+    im.instanceMatrix.needsUpdate = true;
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(1);
+    const prim = v.primitives[0]!;
+    expect(prim.kind).toBe('instanced-mesh');
+    if (prim.kind !== 'instanced-mesh') return;
+    expect(prim.instances).toHaveLength(2);
+
+    // Independent expected matrices: parentWorld · instanceLocal (column-major).
+    s.updateMatrixWorld(true);
+    const expected0 = new THREE.Matrix4().multiplyMatrices(im.matrixWorld, local0);
+    const expected1 = new THREE.Matrix4().multiplyMatrices(im.matrixWorld, local1);
+
+    for (let k = 0; k < 16; k += 1) {
+      expect(prim.instances[0]![k]).toBeCloseTo(expected0.elements[k]!, 5);
+      expect(prim.instances[1]![k]).toBeCloseTo(expected1.elements[k]!, 5);
+    }
+
+    // Sanity: the rotation/scale block is genuinely non-identity (would have been
+    // missed by translation-only fixtures — the determinant of the upper 3×3 is
+    // the product of the three scales × parent scale, not 1).
+    const m0 = expected0.elements;
+    const isIdentityRotScale =
+      m0[0] === 1 && m0[5] === 1 && m0[10] === 1 &&
+      m0[1] === 0 && m0[2] === 0 && m0[4] === 0 &&
+      m0[6] === 0 && m0[8] === 0 && m0[9] === 0;
+    expect(isIdentityRotScale).toBe(false);
+  });
+
   it('skips transparent MeshBasicMaterial InstancedMesh overlays like plain meshes', () => {
     const s = new THREE.Scene();
     const im = new THREE.InstancedMesh(
