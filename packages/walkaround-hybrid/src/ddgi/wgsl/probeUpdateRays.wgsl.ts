@@ -486,19 +486,39 @@ fn probeUpdateRays(
           indirect = textureSampleLevel(irradiancePrev, irradianceSamp, iUv, 0.0).rgb;
         }
 
-        // Store raw incoming radiance L_i at the probe (direct + indirect
-        // from the hit surface). Do NOT premultiply by albedo/π here.
+        // Outgoing radiance from the BOUNCE surface toward the probe.
         //
-        // The blend kernel (probeUpdateBlend) applies a cosine weight and
-        // averages over rays; the result stored in the atlas is irradiance E
-        // (Majercik 2019 §3 Algorithm 1). The receiver (applyDDGIShading.ts
-        // or giReceiver.ts) applies (albedo/π) · E to produce outgoing
-        // Lambertian diffuse radiance at the shaded point.
+        // direct (evalDirectLighting) and indirect (previous-frame atlas
+        // lookup) are both IRRADIANCE E at the bounce surface — no BRDF. A
+        // Lambertian bounce surface re-emits Lo = (baseColor/π)·E toward the
+        // probe; that factor belongs to the BOUNCE surface and is applied
+        // HERE. The receiver factor ((albedo/π)·E_atlas in
+        // applyDDGIShading.ts / giReceiver.ts) is the SHADED point's BRDF —
+        // a different surface. Both factors are required in a physically
+        // correct chain: light → wall (ρ_wall/π) → probe atlas (E) →
+        // receiver (ρ_recv/π).
         //
-        // M7 DDGI Coherent Physical Model: albedo/π baking moved from
-        // producer to receiver to eliminate the double-albedo error
-        // (albedo²/π²) that required the 3fb63e3 band-aid gain reduction.
-        var radiance = (direct + indirect);
+        // Post-fix math contract (Majercik 2019 §3 Algorithm 1):
+        //   producer : stores Lo = (baseColor_hit/π) · E_hit
+        //   blend    : cosine-weights rays → atlas holds irradiance E
+        //   receiver : applies (albedo_receiver/π) · E
+        //
+        // History: M7 (e66429d Change 3) removed the producer factor,
+        // diagnosing producer·receiver albedo as the "double-albedo error"
+        // behind the 3fb63e3 gain band-aid — but those are two DIFFERENT
+        // surfaces' BRDFs, not double-counting. The real pre-M7 brightness
+        // bug was the non-physical pow(8) blend basis + missing SO(3) ray
+        // rotation, which M7 Changes 1–2 fixed in the same commit. The
+        // white-bounce model M7 left behind stored E itself: perfectly
+        // achromatic bounce (zero colour bleed — red/green walls produce
+        // grey indirect) and ≈π/albedo (~4× at ρ=0.85) energy over-estimate.
+        // GPU A/B vs a CPU f64 path-trace anchor (2026-06-07, dzn RTX-4090 +
+        // lavapipe; wsl-gpu/captures/queue-2026-06-07/ddgi-white-bounce/
+        // RESULTS.md) sides with this form: 23–34% residual (the octahedral
+        // atlas border confound) vs 244–365% for white-bounce on coloured
+        // walls. Metals are still treated as diffuse reflectors here — DDGI
+        // probes carry a diffuse-only bounce model by construction.
+        var radiance = (direct + indirect) * mat.baseColor * (1.0 / PI);
 
         if ((mat.flags & 1u) != 0u) {
           // Glass: add transmitted environment contribution.
