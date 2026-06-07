@@ -24,6 +24,25 @@ v1 requirement vs documented internal dependency — a maintainer decision.
 
 ---
 
+## 🔴 ORACLE-SURFACED FINDING (2026-06-07, 0-E) — default ReSTIR-GI indirect ~0 [P0-suspect, root-cause pending]
+The Phase 0-E cross-backend oracle, immediately on first run, surfaced a
+radiometric gap NO string-golden or existing test caught (the whole point of the
+oracle suite): on an enclosed Cornell with the DEFAULT config (RC off, `ultra`
+tier), the walkaround **indirect tap (`hdrIndirect`, ReSTIR-GI) reads ~0** while
+the DDGI atlas is fully populated (mean 3.4, 100% coverage). Only the RC path
+(rcEnabled=true, OFF-default) energizes indirect (mean ~1.96, which matches
+pt-webgpu at floor-ratio 1.013). VERIFIED so far: ReSTIR-GI runs by default
+(`RISGIPass.gates()` → true; ultra tier giSpatialPasses=2 — NOT a "GI off"
+artifact); corroborated by an independent lead obs (bisect cornell5 rc=0 indirect
+0.000356); `risGi.wgsl:13` confirms the GI reservoir candidate radiance comes
+from sampling the DDGI atlas — so a populated atlas SHOULD yield non-zero
+reservoirs. NOT YET root-caused: WHY risGi → ~0 (reservoirs empty? the
+DDGI-sample-at-GI-hit returning 0? a normal/visibility reject?). Could relate to
+the open G-P0.1 ReSTIR-DI p̂ class or the 1-A DDGI axis-aligned sampling. **TOP
+next investigation** — gated by oracle 0-E + the bisect indirect tap. If real,
+the default realtime GI relies entirely on an off-default opt-in (RC) — a
+significant P0 the audit's flat-wall tests + string goldens missed.
+
 ## ⚡ REVISED SCOPE (2026-06-07, after the first execution wave)
 **The audit ledger overstates the open work.** 3 of the first 4 agents found their
 target ALREADY FIXED by the 2026-06-06 G-sweep (`178f80d`) — three-bindings
@@ -58,9 +77,9 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
 | **0-A** | DDGI vs CPU f64 path-trace anchor (`ddgi-white-bounce-ab`, diagonal/axis-aligned split) | DDGI bounce + octahedral sampling | ✅ exists |
 | **0-B** | Checkerboard scripted-motion A/B (`checkerboard-motion-ab`, PSNR + parity-comb) | temporal reconstruction quality | ✅ exists |
 | **0-C** | RC emitter-NEE + cRc gate A/B (`tlas-zero-gi-bisect`, rect/sun) + two-scene gate | RC light model | ✅ exists |
-| **0-D** | **ReSTIR-DI/GI vs reference** — RIS-only vs reuse bias + an independent unbiased estimator on a shared scene; p̂-consistency probe across RIS/temporal/spatial passes | the G-P0.1 class | 🔴 build |
-| **0-E** | **Cross-backend ground truth** — pt-webgpu converged (the physical reference) vs walkaround GI on a shared scene, exposure-aligned; relative-L2 on the indirect channel | whole walkaround GI stack | 🔴 build |
-| **0-F** | **Denoiser oracle** — SVGF/BMFR/OIDN: converged-input identity (denoise(converged)≈converged) + variance-reduction-without-bias on a noisy input vs its own converged reference | shared-denoisers | 🔴 build |
+| **0-D** | **ReSTIR-DI/GI vs reference** — reuse-unbiased + p̂-consistency + variance-reduction | the G-P0.1 class | ✅ DONE (`restir-fidelity-oracle.ts`, lead-verified both directions: clean PASS/exit0, --inject-bug FAIL/exit1) |
+| **0-E** | **Cross-backend ground truth** — pt-webgpu converged vs walkaround GI, GI-channel-isolated + exposure-anchored | whole walkaround GI stack | ✅ DONE (`xbackend-groundtruth-ab.ts`, lead-verified: correct 1.013, zero-GI rejected 1038×, wrong-bounce 72.6×). SURFACED the default-indirect-~0 P0-suspect above. |
+| **0-F** | **Denoiser oracle** — identity + variance-reduction-without-bias, discrimination-proven | shared-denoisers | ✅ DONE (`denoiserFidelityOracle.test.ts`, lead-verified: rejects passthrough + biased) |
 | **0-G** | **pt-webgl fork oracle** — WebGL2 capture for the fork's default radiometry (G-P0.3) + caustics + BDPT | the whole fork | 🟡 FEASIBLE + ~90% scaffolded (2026-06-07 spike): headless WebGL2 works in WSL via **Playwright + headless Chrome + ANGLE/SwiftShader** (verified — real WebGL2 ctx, the `webgl2-capture/` prototype renders the fork Cornell non-black/finite: meanRGB 176/176/151, nonBlackFrac 1.0, lumMin 40/max 255; the `gp03-rgb-throughput-ptwebgpu.ts` cross-backend builder already exists). headless-gl ruled out (WebGL1-only; engine rejects at `ptEngineWebGL2.ts:1547`). REMAINING: add the converged cross-backend A/B comparator (fork-vs-pt-webgpu, exposure-aligned relative-L2) + caustic-mode scenes. Residual real-GL gap (just the hardware-GL BDPT eye↔light CONNECTION render — ANGLE disables it) → Windows-Chrome, consistent with 2-B(b). |
 | **0-H** | **In-tree shader-execution harness** — bridge the "npm test never runs shaders" gap: a headless-WebGPU vitest path (lavapipe in CI) that runs the smallest radiometric kernels against analytic references, so a subset of fidelity leaves the external-only harness | systemic test-architecture gap | ⚖️ scope (CI WebGPU availability) |
 
