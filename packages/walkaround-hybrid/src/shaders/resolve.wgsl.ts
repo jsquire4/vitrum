@@ -109,24 +109,43 @@ fn resolveKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
     // ── Shaded pixel: read directly from current-frame radiance ────────────
     radiance = textureLoad(t_current_radiance, vec2<i32>(i32(px), i32(py)), 0);
   } else {
-    // ── Gap pixel: reproject from previous frame ────────────────────────────
+    // ── Gap pixel: hybrid temporal-reproject ⊕ spatial-neighbour fill ────────
     //
-    // 1. Read motion vector (NDC delta).
-    // 2. Convert NDC delta → pixel offset.
-    // 3. Clamp to valid texture bounds.
-    // 4. Read previous-frame radiance at reprojected position.
-    //
-    // Motion-vector convention: mv = (dx_ndc, dy_ndc).
-    // Pixel offset: (round(dx_ndc * W / 2), round(dy_ndc * H / 2)).
-    // NDC x increases right; pixel x increases right. Sign is direct.
-    // NDC y increases up; pixel y increases DOWN. Negate dy for pixel space.
-
+    // TEMPORAL term: reproject the previous frame's radiance through the motion
+    // vector (sharp when reprojection is valid). Motion-vector convention:
+    // mv = (dx_ndc, dy_ndc); pixel offset = (round(dx*W/2), round(-dy*H/2))
+    // (NDC-y up vs pixel-y down → negate dy).
     let mv     = textureLoad(t_motion_vectors, vec2<i32>(i32(px), i32(py)), 0).rg;
     let dxPx   = i32(round(mv.x * f32(W) * 0.5));
-    let dyPx   = i32(round(-mv.y * f32(H) * 0.5));  // negate: NDC-y vs pixel-y
+    let dyPx   = i32(round(-mv.y * f32(H) * 0.5));
     let prevXY = clampCoord(vec2<i32>(i32(px) - dxPx, i32(py) - dyPx), W, H);
+    let temporal = textureLoad(t_prev_radiance, prevXY, 0);
 
-    radiance = textureLoad(t_prev_radiance, prevXY, 0);
+    // SPATIAL term: average the 4 axis neighbours. In the checkerboard pattern
+    // every gap pixel's 4-neighbours have the OPPOSITE parity → they were
+    // SHADED this frame → their current radiance is fresh (no temporal lag, so
+    // no ghosting under motion). This is the disocclusion-safe fallback: a gap
+    // pixel that just appeared (no valid history) reconstructs from current
+    // shaded neighbours rather than stale reprojected history.
+    let xL = clampCoord(vec2<i32>(i32(px) - 1, i32(py)), W, H);
+    let xR = clampCoord(vec2<i32>(i32(px) + 1, i32(py)), W, H);
+    let yU = clampCoord(vec2<i32>(i32(px), i32(py) - 1), W, H);
+    let yD = clampCoord(vec2<i32>(i32(px), i32(py) + 1), W, H);
+    let spatial = (textureLoad(t_current_radiance, xL, 0)
+                 + textureLoad(t_current_radiance, xR, 0)
+                 + textureLoad(t_current_radiance, yU, 0)
+                 + textureLoad(t_current_radiance, yD, 0)) * 0.25;
+
+    // BLEND by motion magnitude: small motion (<~1px) trusts the sharp temporal
+    // reprojection; as motion grows the reprojected history becomes unreliable
+    // (ghosting/disocclusion), so fade to the always-current spatial average.
+    // Full spatial by ~4px of motion. This is the cheap, binding-free analogue
+    // of an SVGF disocclusion reject (Schied 2017) + checkerboard neighbour
+    // fallback (El Mansouri 2016); a depth/normal-gated reject is a future
+    // refinement once this is enabled.
+    let motionPx   = length(vec2<f32>(f32(dxPx), f32(dyPx)));
+    let wTemporal  = clamp(1.0 - motionPx * 0.25, 0.0, 1.0);
+    radiance = mix(spatial, temporal, wTemporal);
   }
 
   // Write resolved radiance to the output texture.
