@@ -109,11 +109,12 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
   feedback); (2) **base-GI size-200 estimator instability** (independent of PPG).
   Fix both; **Oracle: V17 occluded-scene A/B** (`g-p11-ppg-occluded.mjs`) —
   unbiased + variance ratio <1 + stable across refine cycles + scene sizes.
-- **2-B 🔴 WebGL BDPT.** (a) Light-subpath cannot compile: `bdpt_light_subpath.glsl.js:114`
-  reads `lightRec.point`, absent from `LightRecord`. Fix the field. (b) Hardware-GL
-  eye↔light connections are engine-disabled on ANGLE → needs a Windows-Chrome /
-  real-GL connection render. **Oracle 0-G** (fork WebGL2 capture) + a BDPT
-  variance-win A/B vs unidirectional on a hidden-emitter caustic scene.
+- **2-B 🟡 WebGL BDPT.** (a) ✅ ALREADY FIXED — `LightRecord` now HAS `vec3 point`
+  (`light_sampling_functions.glsl.js:37`); `FEATURE_BDPT=1` compiles (verified
+  2026-06-07 + G-sweep G-P1.2). (b) 🔴 Hardware-GL eye↔light connections are
+  engine-disabled on ANGLE → needs a Windows-Chrome / real-GL connection render
+  (environmental — **Oracle 0-G** fork WebGL2 capture) + a BDPT variance-win A/B
+  vs unidirectional on a hidden-emitter caustic scene.
 - **2-C ⚖️ Fork caustic strategies (G-P1.3).** Phenomenological. pt-webgpu
   photon-map already DEMOTED (this session). Decide: demote the fork caustic
   modes to `approximate` (consistent with the pt-webgpu decision — fast) or
