@@ -98,6 +98,37 @@ function rectAreaFromHalfAxes(uAxis: Vec3, vAxis: Vec3): number {
   return 4 * crossLen;
 }
 
+/** Convert the core/lighting toward-light vector into DDGI's sun travel vector. */
+export function primaryLightDirToDdgiSunDirection(
+  dir: readonly [number, number, number],
+): DDGILight['direction'] | null {
+  const len = Math.hypot(dir[0], dir[1], dir[2]);
+  if (len < 1e-12) return null;
+  const inv = 1 / len;
+  return { x: -dir[0] * inv, y: -dir[1] * inv, z: -dir[2] * inv };
+}
+
+/**
+ * Re-orient all DDGI sun lights to the runtime primary-light direction.
+ *
+ * Scene/host lights still supply sun identity, color, and intensity; the
+ * mutable `HybridEngine.updateLighting({ primaryLightDir })` field is the
+ * direction source of truth so shade-side direct lighting and DDGI bounce stay
+ * aligned during time-of-day scrubs.
+ */
+export function orientDdgiSunLights(
+  lights: readonly DDGILight[],
+  primaryLightDir: readonly [number, number, number],
+): DDGILight[] {
+  const direction = primaryLightDirToDdgiSunDirection(primaryLightDir);
+  if (direction == null) return [...lights];
+  return lights.map((light) => (
+    light.kind === 'sun'
+      ? { ...light, direction }
+      : light
+  ));
+}
+
 /** Project a single core emitter onto a DDGILight, or null if the emitter
  *  kind is not represented as an analytic DDGI light (mesh-area) or is
  *  degenerate. A `directional` emitter maps to a `sun` DDGILight (see header). */

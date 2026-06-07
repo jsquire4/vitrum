@@ -95,6 +95,23 @@ describe('convertMaterial: THREE userData.vitrum* → vitrum.Material', () => {
     expect(v.spectralAttenuation).toBeUndefined();
   });
 
+  it('rejects non-contract vitrumSpectralAttenuation shapes', () => {
+    const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    m.userData['vitrumSpectralAttenuation'] = {
+      wavelengthStart: 380,
+      wavelengthEnd: 780,
+      values: [0.1, 0.2, 0.3],
+    };
+    expect(convertMaterial(m).spectralAttenuation).toBeUndefined();
+
+    m.userData['vitrumSpectralAttenuation'] = {
+      wavelengthStart: 780,
+      wavelengthEnd: 380,
+      values: new Float32Array([0.1, 0.2, 0.3]),
+    };
+    expect(convertMaterial(m).spectralAttenuation).toBeUndefined();
+  });
+
   it('reads vitrumThinFilmStack (RFE-08)', () => {
     const stack: ThinFilmStack = { layers: [{ ior: 2.5, thicknessNm: 80 }] };
     const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });

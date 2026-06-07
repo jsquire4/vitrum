@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as THREE from 'three';
 import { HybridEngine } from '../src/HybridEngine.js';
+import type { DDGILight } from '../src/ddgi/types.js';
 import { LIGHTING_OPTION_KEYS, type LightingOptions } from '../src/HybridEngineOptions.js';
 
 // ── Minimal mock GPUDevice (constructor stores the value; never called here) ─
@@ -48,6 +49,7 @@ function makeEngine(opts: {
   primaryLightIntensity?: number;
   skyTint?: [number, number, number];
   skyIrradiance?: number;
+  lights?: DDGILight[];
 } = {}): HybridEngine {
   return new HybridEngine({
     device:                makeMockDevice(),
@@ -58,6 +60,7 @@ function makeEngine(opts: {
     primaryLightIntensity: opts.primaryLightIntensity ?? 1.0,
     skyTint:               opts.skyTint               ?? [0.5, 0.6, 1.0],
     skyIrradiance:         opts.skyIrradiance         ?? 0.8,
+    lights:                opts.lights                ?? [],
   });
 }
 
@@ -75,6 +78,31 @@ describe('HybridEngine.updateLighting — field updates', () => {
     engine.updateLighting({ primaryLightDir: [0.5, -0.866, 0] });
 
     expect(e['_primaryLightDir']).toEqual([0.5, -0.866, 0]);
+  });
+
+  it('re-orients DDGI sun lights when primaryLightDir changes', () => {
+    const engine = makeEngine({
+      primaryLightDir: [0, -1, 0],
+      lights: [{
+        kind: 'sun',
+        intensity: 2,
+        on: true,
+        direction: { x: 0, y: -1, z: 0 },
+      }],
+    });
+    const ddgi = (engine as unknown as Record<string, unknown>)['_ddgi'] as {
+      setLights: (lights: DDGILight[]) => void;
+    };
+    const setLights = vi.spyOn(ddgi, 'setLights');
+
+    engine.updateLighting({ primaryLightDir: [3, 4, 0] });
+
+    expect(setLights).toHaveBeenCalled();
+    const republished = setLights.mock.calls.at(-1)?.[0] as DDGILight[] | undefined;
+    const sun = republished?.find((light) => light.kind === 'sun');
+    expect(sun?.direction?.x).toBeCloseTo(-0.6);
+    expect(sun?.direction?.y).toBeCloseTo(-0.8);
+    expect(sun?.direction?.z).toBeCloseTo(0);
   });
 
   it('updates _primaryLightIntensity when provided', () => {

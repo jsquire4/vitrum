@@ -48,6 +48,20 @@ function isPhysical(m: ThreeStdMat): m is ThreePhysMat {
   return (m as ThreePhysMat).isMeshPhysicalMaterial === true;
 }
 
+function isFiniteNumber(x: unknown): x is number {
+  return typeof x === 'number' && Number.isFinite(x);
+}
+
+function isSpectralCurve(x: unknown): x is SpectralCurve {
+  if (x == null || typeof x !== 'object' || Array.isArray(x)) return false;
+  const curve = x as Partial<SpectralCurve>;
+  if (!isFiniteNumber(curve.wavelengthStart)) return false;
+  if (!isFiniteNumber(curve.wavelengthEnd)) return false;
+  if (curve.wavelengthEnd <= curve.wavelengthStart) return false;
+  if (!(curve.values instanceof Float32Array) || curve.values.length < 3) return false;
+  return Array.from(curve.values).every(Number.isFinite);
+}
+
 /**
  * Wrap a THREE.Texture as a structured `TextureRef`, projecting THREE's
  * `offset`/`repeat`/`rotation` into a `KHR_texture_transform` `UvTransform` and
@@ -197,15 +211,8 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
   // The deprecated bare Float32Array path was removed in the 2026-05-11 sweep
   // (internal compatibility; no external consumers). See Foundations Item #35 / D11.
   const rawSpectral = ud[K.SPECTRAL_ATTEN];
-  if (
-    rawSpectral != null &&
-    typeof rawSpectral === 'object' &&
-    !Array.isArray(rawSpectral) &&
-    'wavelengthStart' in (rawSpectral) &&
-    'wavelengthEnd' in (rawSpectral) &&
-    'values' in (rawSpectral)
-  ) {
-    base.spectralAttenuation = rawSpectral as SpectralCurve;
+  if (isSpectralCurve(rawSpectral)) {
+    base.spectralAttenuation = rawSpectral;
   }
 
   // RFE-08 (Sprint 12 — multi-layer thin-film stack)

@@ -239,6 +239,29 @@ describe('sceneFromThreeJS', () => {
     expect(spotEmitter.direction[2]).toBeCloseTo(3 / spotLen);
   });
 
+  it('preserves light castShadow and directional angular diameter metadata', () => {
+    const s = new THREE.Scene();
+    const dl = new THREE.DirectionalLight(0xffffff, 2);
+    dl.castShadow = false;
+    dl.userData['vitrumLightAngularDiameter'] = 0.0093;
+    s.add(dl);
+
+    const point = new THREE.PointLight(0xff0000, 1);
+    point.castShadow = true;
+    s.add(point);
+
+    const v = sceneFromThreeJS(s);
+    const directional = v.emitters.find((e) => e.kind === 'directional');
+    const pointEmitter = v.emitters.find((e) => e.kind === 'point');
+    expect(directional?.kind).toBe('directional');
+    expect(pointEmitter?.kind).toBe('point');
+    if (directional?.kind !== 'directional' || pointEmitter?.kind !== 'point') return;
+
+    expect(directional.castShadow).toBe(false);
+    expect(directional.angularDiameter).toBeCloseTo(0.0093);
+    expect(pointEmitter.castShadow).toBe(true);
+  });
+
   it('converts RectAreaLight axes from orientation and width/height without baking object scale', () => {
     const s = new THREE.Scene();
     const rect = new THREE.RectAreaLight(0xffffff, 1, 2, 4);

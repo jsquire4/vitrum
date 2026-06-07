@@ -22,7 +22,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC, deriveParamCount } from '../src/neural/unetArchitecture.js';
-import type { LayerSpec } from '../src/neural/unetArchitecture.js';
+import type { LayerSpec, UNetSpec } from '../src/neural/unetArchitecture.js';
 import {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
@@ -355,6 +355,45 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     expect(u32[5]).toBe(3);   // kW = 3
     expect(u32[6]).toBe(1);   // stride = 1
     expect(u32[7]).toBe(1);   // padding = 1
+  });
+
+  it('uses the same implicit conv2d padding for tensor dims and uniforms', async () => {
+    const { computeTensorDims, packLayerUniform } = await import('../src/neural/tensorDimSolver.js');
+    const spec = {
+      name: 'padding-default-regression',
+      layers: [
+        {
+          kind: 'inputPack',
+          name: 'pack',
+          inputs: [],
+          output: 'packed',
+          params: { inC: 9, outC: 9 },
+        },
+        {
+          kind: 'conv2d',
+          name: 'same3',
+          inputs: ['packed'],
+          output: 'same3',
+          params: { inC: 9, outC: 4, kH: 3, kW: 3 },
+        },
+        {
+          kind: 'conv2d',
+          name: 'valid1',
+          inputs: ['same3'],
+          output: 'valid1',
+          params: { inC: 4, outC: 2, kH: 1, kW: 1 },
+        },
+      ],
+    } as unknown as UNetSpec;
+
+    const dims = computeTensorDims(spec, 16, 12);
+    expect(dims.get('same3')).toEqual({ H: 12, W: 16, C: 4 });
+    expect(dims.get('valid1')).toEqual({ H: 12, W: 16, C: 2 });
+
+    const sameUniform = new Uint32Array(packLayerUniform(spec.layers[1]!, dims, 12, 16));
+    const validUniform = new Uint32Array(packLayerUniform(spec.layers[2]!, dims, 12, 16));
+    expect(sameUniform[7]).toBe(1);
+    expect(validUniform[7]).toBe(0);
   });
 
   it('packLayerUniform for transposedConv2d encodes stride=2 and padding=0', async () => {

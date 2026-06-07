@@ -247,6 +247,21 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     emissiveIntensity: 1,
     side: DoubleSide,
   });
+  if (m.opacity !== undefined) {
+    mat.opacity = m.opacity;
+  }
+  if (m.alphaMode === 'mask') {
+    mat.transparent = false;
+    mat.alphaTest = m.alphaCutoff ?? 0.5;
+  } else if (m.alphaMode === 'blend') {
+    mat.transparent = true;
+    mat.alphaTest = 0;
+  } else if (m.alphaMode === 'opaque') {
+    mat.transparent = false;
+    mat.alphaTest = 0;
+  } else if (m.opacity !== undefined && m.opacity < 1) {
+    mat.transparent = true;
+  }
   if (m.transmission != null && m.transmission > 0) {
     mat.transmission = m.transmission;
     if (m.ior != null) mat.ior = m.ior;
@@ -508,7 +523,10 @@ function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area'
   const uVec = t.multiplyScalar(s);
   const vVec = b.multiplyScalar(s);
   const L = buildRectAreaLight(e.position, uVec, vVec, e.color, e.intensity, true);
-  if (L != null) L.name = String(e.id);
+  if (L != null) {
+    L.name = String(e.id);
+    L.castShadow = e.castShadow ?? true;
+  }
   return L;
 }
 
@@ -525,7 +543,11 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.position.copy(_u);
       L.target.position.copy(_u).multiplyScalar(-1);
       L.add(L.target);
+      L.castShadow = e.castShadow ?? true;
       L.userData['cellPower'] = 0;
+      if (e.angularDiameter !== undefined) {
+        L.userData[K.LIGHT_ANGULAR_DIAMETER] = e.angularDiameter;
+      }
       return L;
     }
     case 'rect-area': {
@@ -537,6 +559,7 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
           `@vitrum/three-bindings: rect-area emitter "${e.id}" has degenerate u/v axes; skipping`,
         );
       }
+      if (L != null) L.castShadow = e.castShadow ?? true;
       return L;
     }
     case 'point': {
@@ -548,6 +571,7 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       );
       L.name = String(e.id);
       L.position.set(e.position[0], e.position[1], e.position[2]);
+      L.castShadow = e.castShadow ?? true;
       L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
@@ -569,6 +593,7 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
         -dir[2] * 10,
       );
       L.add(L.target);
+      L.castShadow = e.castShadow ?? true;
       L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }

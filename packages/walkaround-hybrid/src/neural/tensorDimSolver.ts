@@ -23,6 +23,10 @@ export interface TensorDims {
   C: number;
 }
 
+function defaultConv2dPadding(kH: number, kW: number): number {
+  return kH === 3 && kW === 3 ? 1 : 0;
+}
+
 /**
  * Compute tensor dimensions for every named tensor in the graph by simulating
  * the forward pass. Seeds the three input tensors (noisyColor / albedo /
@@ -56,7 +60,7 @@ export function computeTensorDims(spec: UNetSpec, W: number, H: number): Map<str
         const kH = layer.params.kH ?? 3;
         const kW = layer.params.kW ?? 3;
         const s  = layer.params.stride ?? 1;
-        const p  = layer.params.padding ?? 0;
+        const p  = layer.params.padding ?? defaultConv2dPadding(kH, kW);
         outH = Math.floor((outH + 2 * p - kH) / s) + 1;
         outW = Math.floor((outW + 2 * p - kW) / s) + 1;
         break;
@@ -147,7 +151,7 @@ export function packLayerUniform(
       u32[4] = layer.params.kH ?? 3;
       u32[5] = layer.params.kW ?? 3;
       u32[6] = layer.params.stride ?? 1;
-      u32[7] = layer.params.padding ?? 1;
+      u32[7] = layer.params.padding ?? defaultConv2dPadding(u32[4]!, u32[5]!);
       break;
 
     case 'transposedConv2d':

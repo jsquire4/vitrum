@@ -13,4 +13,5 @@ export const VITRUM_USER_DATA_KEYS = {
   BACK_LAYER:                 'vitrumBackLayer',
   DICHROIC_REFLECTANCE_LUT:   'vitrumDichroicReflectanceLUT',
   DICHROIC_TRANSMITTANCE_LUT: 'vitrumDichroicTransmittanceLUT',
+  LIGHT_ANGULAR_DIAMETER:     'vitrumLightAngularDiameter',
 } as const;

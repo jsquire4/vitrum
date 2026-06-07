@@ -170,6 +170,39 @@ describe('vitrumSceneToThree light target transforms', () => {
     const spotTarget = new Vector3().setFromMatrixPosition(spot.target.matrixWorld);
     expect(spotPos.sub(spotTarget).normalize().z).toBeCloseTo(1);
   });
+
+  it('writes light castShadow and directional angular diameter metadata', () => {
+    const scene = vitrumSceneToThree({
+      primitives: [],
+      emitters: [
+        {
+          kind: 'directional',
+          id: 'sun',
+          color: [1, 1, 1],
+          intensity: 1,
+          direction: [0, 1, 0],
+          castShadow: false,
+          angularDiameter: 0.0093,
+        },
+        {
+          kind: 'spot',
+          id: 'spot',
+          color: [1, 1, 1],
+          intensity: 1,
+          position: [4, 5, 6],
+          direction: [0, 0, 1],
+          angle: Math.PI / 5,
+          castShadow: true,
+        },
+      ],
+      environment: { kind: 'none' },
+    });
+    const sun = scene.children.find((x) => x instanceof DirectionalLight) as DirectionalLight | undefined;
+    const spot = scene.children.find((x) => x instanceof SpotLight) as SpotLight | undefined;
+    expect(sun?.castShadow).toBe(false);
+    expect(sun?.userData['vitrumLightAngularDiameter']).toBeCloseTo(0.0093);
+    expect(spot?.castShadow).toBe(true);
+  });
 });
 
 describe('vitrumSceneToThree HDRI environment intensity / rotation (Fix 2)', () => {

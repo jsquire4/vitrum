@@ -9,6 +9,7 @@
 import type * as THREE from 'three';
 import type { SceneEmitter, Vec3, DirectionalEmitter, RectAreaEmitter, PointEmitter, SpotEmitter } from '@vitrum/core';
 import { colorToVec3 } from './material.js';
+import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -115,12 +116,17 @@ export function convertLight(
     const dy = pos[1] - target[1];
     const dz = pos[2] - target[2];
     const direction = normalizeVec3(dx, dy, dz, label);
+    const rawAngularDiameter = dl.userData?.[K.LIGHT_ANGULAR_DIAMETER];
     const emitter: DirectionalEmitter = {
       kind: 'directional',
       id,
       color,
       intensity: dl.intensity,
       direction,
+      castShadow: dl.castShadow,
+      ...(typeof rawAngularDiameter === 'number'
+        ? { angularDiameter: rawAngularDiameter }
+        : {}),
     };
     return emitter;
   }
@@ -144,6 +150,7 @@ export function convertLight(
       position,
       uAxis,
       vAxis,
+      castShadow: rl.castShadow,
     };
     return emitter;
   }
@@ -159,6 +166,7 @@ export function convertLight(
       position,
       distance: pl.distance,
       decay: pl.decay,
+      castShadow: pl.castShadow,
     };
     return emitter;
   }
@@ -182,6 +190,7 @@ export function convertLight(
       penumbra: sl.penumbra,
       distance: sl.distance,
       decay: sl.decay,
+      castShadow: sl.castShadow,
     };
     return emitter;
   }

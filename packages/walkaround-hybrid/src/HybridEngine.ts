@@ -106,7 +106,11 @@ import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
-import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
+import {
+  coreEmittersToDDGILights,
+  directionalSunMultiplier,
+  orientDdgiSunLights,
+} from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
 import {
@@ -845,7 +849,7 @@ export class HybridEngine implements Engine {
     this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);
     this._ctorLights = opts.lights ?? [];
     if (this._ctorLights.length > 0) {
-      this._ddgi.setLights(this._ctorLights as DDGILight[]);
+      this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
     }
 
     // W8 Phase 2 — opt-in RC subsystem. RCSubsystem owns its own BVH +
@@ -1456,7 +1460,12 @@ export class HybridEngine implements Engine {
     this._ddgi.setSunIntensityMultiplier(
       directionalSunMultiplier(sceneForSun, this._primaryLightIntensity),
     );
-    this._ddgi.setLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights));
+    this._ddgi.setLights(
+      orientDdgiSunLights(
+        mergeDDGILightsDedupSun(this._ctorLights, sceneLights),
+        this._primaryLightDir,
+      ),
+    );
     this._ddgi.invalidateProbeCache();
   }
 
@@ -1535,9 +1544,9 @@ export class HybridEngine implements Engine {
     if (opts.primaryLightDir !== undefined) {
       this._primaryLightDir = opts.primaryLightDir;
       changed = true;
-      // Mirror into DDGI's sun-intensity multiplier path on the ProbeUpdatePass.
-      // The pass uses the sun direction implicitly via the light list; updating
-      // the field here ensures renderFrame() passes the new value to the UBO.
+      // Republish DDGI sun lights so the probe-update pass follows the same
+      // runtime direction that renderFrame() passes to the shade UBO.
+      this._syncDdgiLightsFromThreeRoot();
     }
     if (opts.primaryLightIntensity !== undefined) {
       this._primaryLightIntensity = opts.primaryLightIntensity;

@@ -150,4 +150,45 @@ describe('toTextureRef ↔ fromTextureRef round-trip', () => {
     expect(outMat.iridescenceThicknessMap).toBe(src.iridescenceThicknessMap);
     expect(outMat.anisotropyMap).toBe(src.anisotropyMap);
   });
+
+  it('re-applies alpha mask cutoff through THREE to vitrum to THREE', () => {
+    const src = new THREE.MeshStandardMaterial();
+    src.alphaTest = 0.35;
+    const spec = convertMaterial(src);
+    const scene = vitrumSceneToThree({
+      primitives: [{
+        kind: 'mesh',
+        id: 'masked',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: spec,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+    const outMat = (scene.children[0] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
+    expect(outMat.transparent).toBe(false);
+    expect(outMat.alphaTest).toBeCloseTo(0.35);
+  });
+
+  it('re-applies alpha blend opacity through THREE to vitrum to THREE', () => {
+    const src = new THREE.MeshStandardMaterial();
+    src.transparent = true;
+    src.opacity = 0.4;
+    const spec = convertMaterial(src);
+    const scene = vitrumSceneToThree({
+      primitives: [{
+        kind: 'mesh',
+        id: 'blended',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: spec,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+    const outMat = (scene.children[0] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
+    expect(outMat.transparent).toBe(true);
+    expect(outMat.opacity).toBeCloseTo(0.4);
+  });
 });
