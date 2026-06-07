@@ -72,11 +72,12 @@ const PHYSICAL_MATERIAL_TEXTURE_FIELDS = [
 ] as const satisfies readonly (keyof MeshPhysicalMaterial)[];
 
 /**
- * Resolve a structured `TextureRef` back to a THREE.Texture, re-applying the
- * `UvTransform` (offset/scale/rotation) onto the texture's native
- * offset/repeat/rotation and `texCoord` onto `channel`. Inverse of
- * `toTextureRef` in material.ts. Returns null when `.handle` is not a Texture
- * (e.g. an in-memory upload payload a raster backend would consume directly).
+ * Resolve a structured `TextureRef` back to a THREE.Texture. If the ref carries
+ * per-material UV state, clone the shared handle before applying
+ * offset/repeat/rotation/channel so two material specs can safely reuse one
+ * source texture with different transforms. Inverse of `toTextureRef` in
+ * material.ts. Returns null when `.handle` is not a Texture (e.g. an in-memory
+ * upload payload a raster backend would consume directly).
  */
 function fromTextureRef(ref: unknown): Texture | null {
   if (ref == null || typeof ref !== 'object') return null;
@@ -86,8 +87,13 @@ function fromTextureRef(ref: unknown): Texture | null {
     transform?: { offset?: readonly number[]; scale?: readonly number[]; rotation?: number };
   };
   if (!isTexture(r.handle)) return null;
-  const tex = r.handle;
   const t = r.transform;
+  const hasPerRefState =
+    t?.offset != null ||
+    t?.scale != null ||
+    typeof t?.rotation === 'number' ||
+    typeof r.texCoord === 'number';
+  const tex = hasPerRefState ? r.handle.clone() : r.handle;
   if (t?.offset) tex.offset.set(t.offset[0] ?? 0, t.offset[1] ?? 0);
   if (t?.scale) tex.repeat.set(t.scale[0] ?? 1, t.scale[1] ?? 1);
   if (typeof t?.rotation === 'number') tex.rotation = t.rotation;

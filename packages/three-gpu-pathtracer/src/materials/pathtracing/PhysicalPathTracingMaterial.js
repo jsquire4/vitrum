@@ -587,7 +587,7 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 						// Fast path: skipped entirely when u_volumeDensity == 0 (no medium).
 						if ( u_volumeDensity > 0.0 ) {
 							float tSurface7 = hitType == NO_HIT ? 1e20 : surfaceHit.dist;
-							float tScatter = volumeMarch( ray.origin, ray.direction, tSurface7, rand( 20 ) );
+							float tScatter = volumeMarch( tSurface7, rand( 20 ) );
 							if ( tScatter < tSurface7 ) {
 								// Scatter event before the surface — evaluate HG phase,
 								// sample new direction, apply transmittance weight.

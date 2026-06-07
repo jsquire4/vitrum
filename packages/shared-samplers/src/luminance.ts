@@ -8,7 +8,7 @@
  *
  * For the WGSL canonical, see `./wgsl/luminance.wgsl.ts` (`LUMINANCE_WGSL`
  * exported from package index). Most WGSL consumers across walkaround-hybrid
- * (shade, welfordTemporal, ppgUpdate, atrous, spatialFilter), shared-denoisers
+ * (shade, welfordTemporal, ppgUpdate, atrous), shared-denoisers
  * (hdrLuminanceBilateral, atrousVariance, svgfReprojection,
  * svgf7x7SpatialFallback), and pt-webgpu (pathTrace/material) pull the WGSL
  * canonical via the W1-R6 include graph (`LUMINANCE_MODULE`), a direct

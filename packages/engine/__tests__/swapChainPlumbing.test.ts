@@ -13,9 +13,11 @@
 // the tick). Together they pin the FrameInput shape promised by A2.
 
 import { describe, it, expect, vi } from 'vitest';
+import { asMat4 } from '@vitrum/core';
 import {
   detectWebGPUSwapChain,
   acquireSwapChainView,
+  composeAttachVitrumFrameInput,
   toPhysicalViewport,
 } from '../src/lifecycle/vanilla.js';
 
@@ -55,6 +57,30 @@ function makeFakeCanvas(ctx: GPUCanvasContext | null): HTMLCanvasElement {
     getContext: vi.fn((kind: string) => (kind === 'webgpu' ? ctx : null)),
   };
   return fakeCanvas as unknown as HTMLCanvasElement;
+}
+
+function identityMat4() {
+  return asMat4(new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]));
+}
+
+function composeTestFrameInput(opts: {
+  swapChainView?: GPUTextureView;
+  swapChainFormat?: GPUTextureFormat;
+}) {
+  return composeAttachVitrumFrameInput({
+    viewMatrix: identityMat4(),
+    projMatrix: identityMat4(),
+    cameraPosition: [0, 0, 5],
+    viewport: { width: 640, height: 360, devicePixelRatio: 1 },
+    frameIndex: 7,
+    ...(opts.swapChainView != null ? { swapChainView: opts.swapChainView } : {}),
+    ...(opts.swapChainFormat != null ? { swapChainFormat: opts.swapChainFormat } : {}),
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -142,21 +168,22 @@ describe('FrameInput swap-chain plumbing (A2)', () => {
     const canvas = makeFakeCanvas(ctx);
     const { context, format } = detectWebGPUSwapChain(canvas);
     const swapChainView = acquireSwapChainView(context);
-    // Same spread attachVitrum does at the FrameInput construction site.
-    const frameInput = {
-      ...(swapChainView != null ? { swapChainView, swapChainFormat: format } : {}),
-    };
+    const frameInput = composeTestFrameInput({
+      ...(swapChainView != null ? { swapChainView } : {}),
+      ...(format != null ? { swapChainFormat: format } : {}),
+    });
     expect(frameInput.swapChainView).toBeDefined();
     expect(frameInput.swapChainFormat).toBe('bgra8unorm');
+    expect(frameInput.frameSeed).toBe((7 * 1664525 + 1013904223) >>> 0);
   });
 
   it('FrameInput omits swap-chain fields when canvas is WebGL (no webgpu context)', () => {
     const canvas = makeFakeCanvas(null);
-    const { context, format } = detectWebGPUSwapChain(canvas);
+    const { context } = detectWebGPUSwapChain(canvas);
     const swapChainView = acquireSwapChainView(context);
-    const frameInput = {
-      ...(swapChainView != null ? { swapChainView, swapChainFormat: format } : {}),
-    } as { swapChainView?: unknown; swapChainFormat?: unknown };
+    const frameInput = composeTestFrameInput({
+      ...(swapChainView != null ? { swapChainView } : {}),
+    });
     expect(frameInput.swapChainView).toBeUndefined();
     expect(frameInput.swapChainFormat).toBeUndefined();
   });

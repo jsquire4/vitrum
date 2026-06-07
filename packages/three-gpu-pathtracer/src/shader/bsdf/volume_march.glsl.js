@@ -65,10 +65,10 @@ export const volume_march = /* glsl */`
 		return sinTheta * ( cos( phi ) * tangent + sin( phi ) * bitangent ) + cosTheta * wi;
 	}
 
-	// Main volume march: given ray origin/direction and surface hit at tSurface,
-	// return the scatter distance tScatter.
+	// Main volume march: given a surface hit at tSurface, return the scatter
+	// distance tScatter.
 	// If tScatter >= tSurface, no scatter occurred — proceed to surface shading.
-	float volumeMarch( vec3 ro, vec3 rd, float tSurface, float u ) {
+	float volumeMarch( float tSurface, float u ) {
 		return sampleExponential( u, u_volumeDensity, tSurface );
 	}
 

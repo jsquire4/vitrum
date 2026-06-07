@@ -8,9 +8,6 @@
 // What we CAN test here without a browser:
 //   - The module imports without throwing.
 //   - The public type surface is what the README documents.
-//   - The handle.dispose() contract is idempotent (a fake engine
-//     records dispose() calls; calling handle.dispose() twice fires the
-//     underlying engine.dispose() exactly once).
 
 import { describe, it, expect } from 'vitest';
 

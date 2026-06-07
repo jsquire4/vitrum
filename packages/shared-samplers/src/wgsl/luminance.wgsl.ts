@@ -3,7 +3,7 @@
  *
  * The same `0.2126·R + 0.7152·G + 0.0722·B` formula is duplicated across
  * ~14 sites in the workspace (shade.wgsl / atrousVariance.wgsl /
- * spatialFilter.wgsl / svgfReprojection.wgsl / etc.). This module is the
+ * svgfReprojection.wgsl / etc.). This module is the
  * single source of truth for the WGSL form; consumers either prepend
  * `LUMINANCE_WGSL` to their shader string directly (shared-denoisers
  * standalone-compile path) or declare `requires: ['luminance']` in their

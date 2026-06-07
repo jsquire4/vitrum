@@ -44,6 +44,33 @@ export {
 } from './material.js';
 export type { PbrScalars, PbrDefaults } from './material.js';
 
+function firstMaterial(material: THREE.Material | THREE.Material[]): THREE.Material | null {
+  return Array.isArray(material) ? material[0] ?? null : material ?? null;
+}
+
+function assertSupportedRenderableMaterial(rawMat: THREE.Material | null, label: string): void {
+  if (
+    rawMat != null &&
+    ((rawMat as THREE.ShaderMaterial).isShaderMaterial === true ||
+      (rawMat as THREE.RawShaderMaterial).isRawShaderMaterial === true)
+  ) {
+    throw new Error(
+      `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are listed in the backend's EngineCapabilities.`,
+    );
+  }
+}
+
+function shouldSkipRenderableObject(obj: THREE.Object3D, rawMat: THREE.Material | null): boolean {
+  if (obj.visible === false) return true;
+  if (rawMat?.visible === false) return true;
+  return (
+    rawMat != null &&
+    (rawMat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true &&
+    ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
+      ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01)
+  );
+}
+
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.
  *
@@ -74,10 +101,10 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
 
     // ── Unsupported mesh sub-types ──────────────────────────────────────────
     if ((obj as THREE.InstancedMesh).isInstancedMesh === true) {
-      if (obj.visible === false) return;
       const inst = obj as THREE.InstancedMesh;
-      const rawMat = Array.isArray(inst.material) ? inst.material[0] : inst.material;
-      if ((rawMat as THREE.Material | null)?.visible === false) return;
+      const rawMat = firstMaterial(inst.material);
+      assertSupportedRenderableMaterial(rawMat, label);
+      if (shouldSkipRenderableObject(obj, rawMat)) return;
       primitives.push(convertInstancedMesh(inst));
       return;
     }
@@ -88,8 +115,10 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     // don't implement skinning report so via EngineCapabilities and may
     // render the rest pose statically.
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh === true) {
-      if (obj.visible === false) return;
       const skinned = obj as THREE.SkinnedMesh;
+      const rawMat = firstMaterial(skinned.material);
+      assertSupportedRenderableMaterial(rawMat, label);
+      if (shouldSkipRenderableObject(obj, rawMat)) return;
       const prim = convertSkinnedMesh(skinned);
       const meshEmitter = emissiveMeshAreaEmitter(skinned);
       if (meshEmitter != null) {
@@ -107,16 +136,8 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     // ── Meshes ──────────────────────────────────────────────────────────────
     if ((obj as THREE.Mesh).isMesh === true) {
       const mesh = obj as THREE.Mesh;
-      const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      if (
-        rawMat != null &&
-        ((rawMat as THREE.ShaderMaterial).isShaderMaterial === true ||
-          (rawMat as THREE.RawShaderMaterial).isRawShaderMaterial === true)
-      ) {
-        throw new Error(
-          `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are listed in the backend's EngineCapabilities.`,
-        );
-      }
+      const rawMat = firstMaterial(mesh.material);
+      assertSupportedRenderableMaterial(rawMat, label);
       // Skip meshes that aren't visually rendered — these are pointer-
       // capture planes (CanvasEventRouter's 10000×10000 plane with
       // `visible={false}`), edge hot-zones (EdgeHotZone with opacity=0),
@@ -124,14 +145,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
       // path-traced / walkaround scene as opaque flat-emissive surfaces
       // and occlude the actual geometry. PT/walkaround panel-black bug
       // 2026-05-12.
-      if (obj.visible === false) return;
-      if ((rawMat as THREE.Material | null)?.visible === false) return;
-      const isBasicTransparent =
-        rawMat != null &&
-        (rawMat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true &&
-        ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
-         ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
-      if (isBasicTransparent) return;
+      if (shouldSkipRenderableObject(obj, rawMat)) return;
       const splitMaterials = Array.isArray(mesh.material) && mesh.geometry.groups.length > 0
         ? mesh.material
         : null;

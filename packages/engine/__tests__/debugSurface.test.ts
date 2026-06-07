@@ -18,6 +18,7 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
+import { wrapWithIdempotentDispose } from '../src/createEngine.js';
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
@@ -105,9 +106,10 @@ describe('EngineDebugSurface contract', () => {
 
   it('subscribers can call methods through the engine.debug indirection', () => {
     const e = new DebuggableFakeEngine();
-    e.debug.atlasTexture!();
-    e.debug.atlasTexture!();
-    e.debug.bvhNodes!();
+    const proxy = wrapWithIdempotentDispose(e, () => {});
+    proxy.debug!.atlasTexture!();
+    proxy.debug!.atlasTexture!();
+    proxy.debug!.bvhNodes!();
     expect(e.atlasCalls).toBe(2);
     expect(e.bvhCalls).toBe(1);
   });

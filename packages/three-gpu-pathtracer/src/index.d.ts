@@ -116,11 +116,13 @@ export class WebGLPathTracer {
 	readonly tiles: Vector2;
 	readonly camera: Camera | null;
 	readonly scene: Scene | null;
+	readonly isCompiling: boolean;
 
 	multipleImportanceSampling: boolean;
 	bounces: number;
 	transmissiveBounces: number;
 	filterGlossyFactor: number;
+	stableNoise: boolean;
 	tileRepeatFactors: Uint8Array | null;
 	renderDelay: number;
 	minSamples: number;
@@ -158,6 +160,7 @@ export class WebGLPathTracer {
 	updateLights(): void;
 	updateEnvironment(): void;
 	renderSample(): void;
+	renderBdptLightSubpathPass( lightPathTarget: WebGLRenderTarget, maxLightBounces: number, frameSeed?: number ): void;
 	reset(): void;
 	dispose(): void;
 
@@ -274,5 +277,65 @@ export class FogVolumeMaterial extends MeshStandardMaterial {
 	readonly isFogVolumeMaterial: true;
 
 	density: number;
+
+}
+
+/**
+ * @deprecated Exported for compatibility with the absorbed fork surface.
+ * Prefer `WebGLPathTracer` unless you need direct low-level renderer access.
+ */
+export class PhysicalPathTracingMaterial extends MaterialBase {
+
+	constructor( parameters?: ShaderMaterialParameters );
+
+	onBeforeRender(): void;
+
+}
+
+/**
+ * @deprecated Exported for compatibility with the absorbed fork surface.
+ * Prefer `WebGLPathTracer`.
+ */
+export class PathTracingRenderer {
+
+	constructor( renderer: WebGLRenderer );
+
+	material: PhysicalPathTracingMaterial;
+	readonly target: WebGLRenderTarget;
+	alpha: boolean;
+	readonly isCompiling: boolean;
+
+	camera: Camera | null;
+	tiles: Vector2;
+	stableNoise: boolean;
+	stableTiles: boolean;
+	samples: number;
+	additiveAccumulation: boolean;
+	tileRepeatFactors: Uint8Array | null;
+
+	compileMaterial(): Promise<void>;
+	setCamera( camera: Camera ): void;
+	setSize( width: number, height: number ): void;
+	getSize( target: Vector2 ): void;
+	dispose(): void;
+	reset(): void;
+	renderBdptLightSubpathPass( lightPathTarget: WebGLRenderTarget, maxLightBounces: number, frameSeed?: number ): void;
+	update(): void;
+
+}
+
+export interface AmbientOcclusionMaterialParameters extends ShaderMaterialParameters {
+
+	normalMap?: Texture | null;
+	radius?: number;
+
+}
+
+export class AmbientOcclusionMaterial extends MaterialBase {
+
+	constructor( parameters?: AmbientOcclusionMaterialParameters );
+
+	normalMap: Texture | null;
+	normalMapType: number;
 
 }

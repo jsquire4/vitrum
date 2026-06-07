@@ -98,10 +98,64 @@ describe('toTextureRef ↔ fromTextureRef round-trip', () => {
       environment: { kind: 'none' },
     });
     const outMat = (scene.children[0] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
-    expect(outMat.map).toBe(tex);
+    expect(outMat.map).not.toBe(tex);
     expect(outMat.map!.offset.x).toBeCloseTo(0.1);
     expect(outMat.map!.offset.y).toBeCloseTo(0.2);
     expect(outMat.map!.repeat.x).toBeCloseTo(4);
+  });
+
+  it('clones shared texture handles when TextureRefs carry distinct UV transforms', () => {
+    const tex = new THREE.Texture();
+    const base = convertMaterial(new THREE.MeshStandardMaterial());
+    const scene = vitrumSceneToThree({
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'shared-a',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            ...base,
+            baseColorMap: {
+              handle: tex,
+              transform: { offset: [0.1, 0.2], scale: [2, 3], rotation: 0.25 },
+            },
+          },
+        },
+        {
+          kind: 'mesh',
+          id: 'shared-b',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            ...base,
+            baseColorMap: {
+              handle: tex,
+              texCoord: 1,
+              transform: { offset: [0.7, 0.8], scale: [4, 5], rotation: 0.5 },
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+
+    const a = (scene.children[0] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
+    const b = (scene.children[1] as THREE.Mesh).material as THREE.MeshPhysicalMaterial;
+    expect(a.map).not.toBe(tex);
+    expect(b.map).not.toBe(tex);
+    expect(a.map).not.toBe(b.map);
+    expect(tex.offset.x).toBeCloseTo(0);
+    expect(tex.repeat.x).toBeCloseTo(1);
+    expect(tex.rotation).toBeCloseTo(0);
+    expect(a.map!.offset.x).toBeCloseTo(0.1);
+    expect(a.map!.repeat.x).toBeCloseTo(2);
+    expect(a.map!.rotation).toBeCloseTo(0.25);
+    expect(b.map!.offset.x).toBeCloseTo(0.7);
+    expect(b.map!.repeat.x).toBeCloseTo(4);
+    expect(b.map!.rotation).toBeCloseTo(0.5);
+    expect((b.map as { channel?: number }).channel).toBe(1);
   });
 
   it('re-applies physical lobe texture maps through THREE to vitrum to THREE', () => {

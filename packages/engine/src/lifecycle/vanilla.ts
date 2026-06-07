@@ -110,6 +110,46 @@ export function toPhysicalViewport(
   };
 }
 
+export interface ComposeAttachVitrumFrameInputOptions {
+  readonly viewMatrix: Mat4;
+  readonly projMatrix: Mat4;
+  readonly cameraPosition: readonly [number, number, number];
+  readonly prevViewMatrix?: Mat4;
+  readonly prevProjMatrix?: Mat4;
+  readonly viewport: FrameInput['viewport'];
+  readonly frameIndex: number;
+  readonly quality?: NonNullable<FrameInput['quality']>;
+  readonly swapChainView?: GPUTextureView;
+  readonly swapChainFormat?: GPUTextureFormat;
+}
+
+/** Compose the exact FrameInput shape used by attachVitrum's RAF tick. */
+export function composeAttachVitrumFrameInput(opts: ComposeAttachVitrumFrameInputOptions): FrameInput {
+  return {
+    viewMatrix: opts.viewMatrix,
+    projMatrix: opts.projMatrix,
+    cameraPosition: [opts.cameraPosition[0], opts.cameraPosition[1], opts.cameraPosition[2]],
+    ...(opts.prevViewMatrix ? { prevViewMatrix: opts.prevViewMatrix } : {}),
+    ...(opts.prevProjMatrix ? { prevProjMatrix: opts.prevProjMatrix } : {}),
+    viewport: opts.viewport,
+    frameIndex: opts.frameIndex,
+    frameSeed: (opts.frameIndex * 1664525 + 1013904223) >>> 0,
+    ...(opts.quality ? { quality: opts.quality } : {}),
+    ...(opts.swapChainView != null
+      ? {
+          swapChainView: asBackendTexture<'webgpu', GPUTextureView>(opts.swapChainView),
+          ...(opts.swapChainFormat != null
+            ? {
+                swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(
+                  opts.swapChainFormat,
+                ),
+              }
+            : {}),
+        }
+      : {}),
+  };
+}
+
 /** Structural camera contract for the RAF loop.
  *
  * The loop only reads `updateMatrixWorld()`, `matrixWorldInverse.elements`,
@@ -259,7 +299,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     const swapChainView = acquireSwapChainView(webgpuContext);
     const quality = resolveQualityOption(opts.quality);
 
-    const input: FrameInput = {
+    const input = composeAttachVitrumFrameInput({
       viewMatrix: view,
       projMatrix: proj,
       cameraPosition: [opts.camera.position.x, opts.camera.position.y, opts.camera.position.z],
@@ -267,17 +307,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       ...(prevProj ? { prevProjMatrix: prevProj } : {}),
       viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
       frameIndex,
-      frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
       ...(quality ? { quality } : {}),
       ...(swapChainView != null
         ? {
-            swapChainView: asBackendTexture<'webgpu', GPUTextureView>(swapChainView),
-            ...(webgpuFormat != null
-              ? { swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(webgpuFormat) }
-              : {}),
+            swapChainView,
+            ...(webgpuFormat != null ? { swapChainFormat: webgpuFormat } : {}),
           }
         : {}),
-    };
+    });
     try {
       engine.renderFrame(input);
     } catch (err) {

@@ -2,7 +2,7 @@
   "name": "@vitrum/shared-denoisers",
   "version": "0.0.0",
   "private": true,
-  "description": "Denoiser building blocks: a-trous, SVGF-real, BMFR, OIDN bridge, and internal spatial-filter WGSL.",
+  "description": "Denoiser building blocks: a-trous, SVGF-real, BMFR, and OIDN bridge.",
   "keywords": ["denoiser", "svgf", "atrous", "oidn", "vitrum"],
   "author": "jsquire4",
   "license": "MIT",

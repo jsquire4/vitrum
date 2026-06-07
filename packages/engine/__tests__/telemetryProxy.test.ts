@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState, FrameOutput, FrameInput, Scene } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
+import { wrapWithIdempotentDispose } from '../src/createEngine.js';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Smoke: a minimal Engine implementation can declare the optional T3.E
@@ -88,8 +89,9 @@ describe('Engine T3.E contract', () => {
 
   it('subscribe + unsubscribe via onFrame returns a working teardown', () => {
     const e = new FakeEngine();
+    const proxy = wrapWithIdempotentDispose(e, () => {});
     const seen: number[] = [];
-    const off = e.onFrame((s) => seen.push(s.frameTimeMs));
+    const off = proxy.onFrame!((s) => seen.push(s.frameTimeMs));
     expect(e._frameSubs.length).toBe(1);
 
     // Simulate the engine firing a frame.
@@ -104,8 +106,9 @@ describe('Engine T3.E contract', () => {
 
   it('subscribe + unsubscribe via onProgress is symmetric', () => {
     const e = new FakeEngine();
+    const proxy = wrapWithIdempotentDispose(e, () => {});
     const seen: number[] = [];
-    const off = e.onProgress((p) => seen.push(p.fraction));
+    const off = proxy.onProgress!((p) => seen.push(p.fraction));
     e._progressSubs.forEach((cb) => cb({ kind: 'pt-spp', current: 16, target: 64, fraction: 0.25 }));
     off();
     e._progressSubs.forEach((cb) => cb({ kind: 'pt-spp', current: 32, target: 64, fraction: 0.50 }));
@@ -114,9 +117,10 @@ describe('Engine T3.E contract', () => {
 
   it('multiple subscribers each get the callback', () => {
     const e = new FakeEngine();
+    const proxy = wrapWithIdempotentDispose(e, () => {});
     const a: number[] = [], b: number[] = [];
-    e.onFrame((s) => a.push(s.frameTimeMs));
-    e.onFrame((s) => b.push(s.frameTimeMs));
+    proxy.onFrame!((s) => a.push(s.frameTimeMs));
+    proxy.onFrame!((s) => b.push(s.frameTimeMs));
     e._frameSubs.forEach((cb) => cb({ frameTimeMs: 16.7 }));
     expect(a).toEqual([16.7]);
     expect(b).toEqual([16.7]);

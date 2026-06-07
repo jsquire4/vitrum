@@ -157,6 +157,33 @@ describe('sceneFromThreeJS', () => {
     expect(prim.id).toBe(im.uuid);
   });
 
+  it('skips transparent MeshBasicMaterial InstancedMesh overlays like plain meshes', () => {
+    const s = new THREE.Scene();
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }),
+      1,
+    );
+    im.setMatrixAt(0, new THREE.Matrix4());
+    s.add(im);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(0);
+  });
+
+  it('throws for ShaderMaterial InstancedMesh the same way plain meshes do', () => {
+    const s = new THREE.Scene();
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.ShaderMaterial(),
+      1,
+    );
+    im.name = 'instanced-shader';
+    s.add(im);
+
+    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type at "instanced-shader"/);
+  });
+
   it('converts SkinnedMesh into a skinned-mesh primitive (C1 — 2026-05-19)', () => {
     const s = new THREE.Scene();
 
@@ -198,6 +225,30 @@ describe('sceneFromThreeJS', () => {
     // Skeleton: 1 bone, 1 inverse-bind, 16 floats each.
     expect(prim.bones.length).toBe(16);
     expect(prim.boneInverses.length).toBe(16);
+  });
+
+  it('skips transparent MeshBasicMaterial SkinnedMesh overlays before skin attributes are required', () => {
+    const s = new THREE.Scene();
+    const sm = new THREE.SkinnedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }),
+    );
+    s.add(sm);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(0);
+  });
+
+  it('throws for ShaderMaterial SkinnedMesh before converter-specific work', () => {
+    const s = new THREE.Scene();
+    const sm = new THREE.SkinnedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.ShaderMaterial(),
+    );
+    sm.name = 'skinned-shader';
+    s.add(sm);
+
+    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type at "skinned-shader"/);
   });
 
   it('converts directional and spot light directions from world-space target positions', () => {
