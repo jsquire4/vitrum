@@ -34,15 +34,15 @@ v1 requirement vs documented internal dependency — a maintainer decision.
   with floorEnergyRatio 0.580→0.661. **Remaining tail — CHARACTERIZED as inherent-
   approximation (NOT bugs), 2026-06-07:**
   - *Axis-aligned cardinal under-read (~33% on ±x/±y/−Y vs ≤6% on diagonals).* ROOT: the
-    octahedral SEAM. Cardinals map to the diamond vertices = square edge-midpoints (the seam
-    needing border-wrap); diagonals map to the square interior (clean). The border-fill
-    (offset-1, full coverage — both VERIFIED correct) + the half-texel-consistent receiver UV
-    (re-derived, no bug) mitigate but cannot fully erase the sub-texel octahedral fold at the
-    seam. INHERENT to the 8×8-cell / 192-ray budget: an IRR_CELL 8→16 experiment (live tree,
-    dzn) made it WORSE (93.8% err, several directions zero) — 256 texels/probe starve at
-    192 rays (<1 ray/texel). A real fix needs 4× rays (trace cost) + 4× atlas memory, or an
-    equal-area octahedral / SH reparameterization. More rays alone won't help (seam bias is
-    discretization, not variance). Bounded + documented; deferred as a budget/quality tradeoff.
+    octahedral SEAM (cardinals map to the diamond vertices = square edge-midpoints). **FIXED
+    2026-06-07 via the SH reparameterization** (f6fc831 + 6d80641): L2 spherical harmonics
+    for irradiance is seam-free — cardinals 33%→**1.4%** vs an MC ground truth (visibility
+    stays octahedral). Also 4× less irradiance-atlas memory + no border pass. See
+    [[ddgi-sh-irradiance-2026-06-07]]. HONEST nuance: the seam fix is large for single-bounce/
+    directional indirect but MASKED in smooth multi-bounce (where the floor residual is the
+    convergence gap, not the seam); receiver now reads 9 coeffs/probe (perf cost, unmeasurable
+    on dzn). The earlier IRR_CELL 8→16 experiment confirmed more octahedral resolution is NOT
+    free (starves at 192 rays) — SH was the right lever.
   - *Absolute walkaround interior indirect ~3.8× below pt in the 0-E scene.* The rect-area
     emitter IS fed to the probe field as a flux-equivalent `fixture` point approx (via
     `coreEmittersToDDGILights`) — NOT a missing-light gap. The gap is dominated by coarse-DDGI
