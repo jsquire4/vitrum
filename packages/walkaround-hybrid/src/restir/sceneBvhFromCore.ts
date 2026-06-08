@@ -38,18 +38,9 @@ export function resolveReSTIRBvhMode(
   return 'merged';
 }
 
-/** Warm-gray fallback `MaterialSpec` for a THREE material slot whose source
- *  primitive couldn't be located by name in the core scene (defensive — in
- *  production every slot's mesh round-tripped through `vitrumSceneToThree`, so
- *  `obj.name === primitive.id` always resolves). Mirrors the THREE packers' own
- *  warm-gray missing-material default (`resolveTriColor`'s final `?? new
- *  THREE.Color(0.6, 0.58, 0.55)`, and the `WARM_GRAY_DEFAULT_*` bytes) so that
- *  even this fallback slot packs byte-identically to the THREE side. */
-const DEFAULT_CORE_MATERIAL: MaterialSpec = {
-  baseColor: [0.6, 0.58, 0.55],
-  roughness: 1,
-  metallic: 0,
-};
+// (T1 2026-06-07: the warm-gray DEFAULT_CORE_MATERIAL fallback was removed —
+// the core-native resolver iterates core primitives directly, each of which
+// always carries `material`, so the unmatched-mesh defensive case can't occur.)
 
 function buildMaterialResolver(
   scene: Scene,
@@ -59,56 +50,36 @@ function buildMaterialResolver(
   coreMaterials: MaterialSpec[];
   resolveMaterialId: (primitiveId: string) => number;
 } {
-  const materials: THREE.Material[] = [];
-  // Parallel core-material list — populated in LOCKSTEP with `materials` at the
-  // SAME slot index, so it shares `geo.triMaterialIds`'s addressing exactly.
-  // THIS is the load-bearing subtlety (THREE-decouple of the production ReSTIR
-  // MATERIAL path): the per-triangle packers index by `geo.triMaterialIds`, which
-  // is produced by THIS resolver's THREE-object-identity dedup ordering — NOT by
-  // `mergeWorldSpaceFromCore`'s structural dedup (used by the already-decoupled
-  // emitter list, which permutes differently). Building `coreMaterials` here, at
-  // the same index a THREE slot is created, yields BYTE-IDENTICAL per-triangle
-  // packing (not just set-equivalence). See packingHelpers `*FromCore`.
+  // T1 (THREE-decouple, 2026-06-07): the material-slot ordering is built
+  // CORE-NATIVELY — one slot per mesh-like primitive in `scene.primitives`
+  // order. This is byte-identical to the prior THREE-traversal dedup because
+  // `vitrumSceneToThree` creates a FRESH THREE material per primitive (no
+  // sharing — `vitrumSceneToThree.ts:379/396/408`), so the old
+  // `materials.indexOf(mat)` dedup NEVER fired and reduced to exactly this
+  // per-primitive ordering. The per-triangle packers index by
+  // `geo.triMaterialIds`, built from `resolveMaterialId` below, so the
+  // `coreMaterials` slot[i] addresses the same triangles as before.
   const coreMaterials: MaterialSpec[] = [];
-  // Resolve a primitive's core MaterialSpec by name (= primitive id, stamped by
-  // `vitrumSceneToThree`: vitrumSceneToThree.ts:312/329/341). Every primitive
-  // variant (mesh / instanced-mesh / skinned-mesh) carries `material`.
-  const coreByName = new Map<string, MaterialSpec>();
+  const byKey = new Map<string, number>();
   for (const p of scene.primitives) {
     if (p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh') {
-      coreByName.set(String(p.id), p.material);
+      if (!byKey.has(String(p.id))) byKey.set(String(p.id), coreMaterials.length);
+      coreMaterials.push(p.material);
     }
   }
-  const byKey = new Map<string, number>();
-  const registerMaterial = (obj: THREE.Mesh | THREE.InstancedMesh): void => {
-    const raw = obj.material;
-    const mat = (Array.isArray(raw) ? raw[0] : raw) as THREE.Material | undefined;
-    if (mat == null) return;
-    let idx = materials.indexOf(mat);
-    if (idx < 0) {
-      idx = materials.length;
-      materials.push(mat);
-      // First time this THREE material is seen → claim the parallel core slot.
-      // Resolve the core MaterialSpec from the mesh that introduced the slot
-      // (by name == primitive id); on a dedup-hit (idx >= 0) we KEEP the
-      // first-seen core material, exactly as `materials` keeps the first THREE
-      // material. Unmatched mesh → warm-gray default (defensive; never hit in
-      // the production `vitrumSceneToThree` round-trip).
-      coreMaterials.push(coreByName.get(obj.name) ?? DEFAULT_CORE_MATERIAL);
-    }
-    const keys = [obj.uuid, obj.name].filter((k) => k.length > 0);
-    for (const key of keys) {
-      if (!byKey.has(key)) byKey.set(key, idx);
-    }
-  };
+  // Legacy THREE `materials` list (fallback path in `buffersFromScenePack` when
+  // `coreMaterials` is empty — never in the core round-trip). Gathered from the
+  // traversal in the SAME (primitive) add-order, so slot[i] aligns with
+  // `coreMaterials[i]`. The dedup is a no-op (fresh material per primitive). When
+  // `sceneRoots` is empty (pure-core path), this stays empty and the consumers
+  // use `coreMaterials`.
+  const materials: THREE.Material[] = [];
   for (const root of sceneRoots) {
     root.traverseVisible((obj) => {
-      if (obj instanceof THREE.InstancedMesh) {
-        registerMaterial(obj);
-        return;
-      }
-      if (!(obj instanceof THREE.Mesh)) return;
-      registerMaterial(obj);
+      if (!(obj instanceof THREE.Mesh) && !(obj instanceof THREE.InstancedMesh)) return;
+      const raw = (obj as THREE.Mesh | THREE.InstancedMesh).material;
+      const mat = (Array.isArray(raw) ? raw[0] : raw) as THREE.Material | undefined;
+      if (mat != null && materials.indexOf(mat) < 0) materials.push(mat);
     });
   }
   return {
