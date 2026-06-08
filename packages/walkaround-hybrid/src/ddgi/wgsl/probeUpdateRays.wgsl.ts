@@ -468,23 +468,39 @@ fn probeUpdateRays(
         // Direct lighting.
         let direct = evalDirectLighting(hitWorldPos, smoothNormal);
 
-        // Previous-frame indirect: sample the irradiance atlas at the
-        // hit position. Simple atlas UV from probe-grid lookup.
+        // Previous-frame indirect feedback: sample the irradiance atlas at the
+        // hit position so each frame folds in one more diffuse bounce; the
+        // temporal EMA then converges to the multi-bounce equilibrium. TWO
+        // fixes over the pre-2026-06-07 form, BOTH required and BOTH GPU-
+        // validated against a CPU f64 multi-bounce path-trace anchor
+        // (wsl-gpu/scripts/ddgi-indirect-pi-ab.ts, dzn RTX-4090: mean luminance
+        // error vs ground truth 71% [base] -> 63% [clamp only] -> 14% [both]):
+        //  1. CLAMP the cell index to [0, dims-1]. The old guard
+        //     'baseProbeIdx3 + 1 < dims' returned indirect=0 for EVERY hit on
+        //     enclosing geometry (room walls/floor sit on or just past the grid
+        //     boundary), which disabled wall->wall->receiver multi-bounce
+        //     entirely: the field was effectively SINGLE-bounce and the floor
+        //     (lit almost only by wall bounce) came out ~0.58x of reference.
+        //     The receiver ddgiSample already clamps to its available probes;
+        //     this makes the producer feedback consistent with it. After the
+        //     clamp the index is always valid, so the guard is gone.
+        //  2. The atlas stores the cosine-weighted incoming-radiance MEAN = E/PI
+        //     (the blend pass and ddgiSample both reconstruct E by multiplying
+        //     by PI). 'direct' here is irradiance E, so the atlas read must also
+        //     be multiplied by PI to add like-for-like BEFORE the (baseColor/PI)
+        //     bounce factor below. The old code added E/PI to E, making the
+        //     indirect feedback PI-times too weak at every bounce.
         let gridPos  = (hitWorldPos - gridParams.origin) / gridParams.spacing;
-        let baseProbeIdx3 = vec3i(floor(gridPos));
-        var indirect = vec3f(0.0);
-        if (all(baseProbeIdx3 >= vec3i(0)) &&
-            all(baseProbeIdx3 + vec3i(1) < vec3i(gridParams.dims))) {
-          let pi = u32(baseProbeIdx3.x) + u32(baseProbeIdx3.y) * gridParams.dims.x +
-                   u32(baseProbeIdx3.z) * gridParams.dims.x * gridParams.dims.y;
-          let octUv = (octEncode(smoothNormal) * 0.5 + 0.5);
-          let iUv   = irradianceAtlasUv(
-            pi, octUv,
-            gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-            gridParams.dims,
-          );
-          indirect = textureSampleLevel(irradiancePrev, irradianceSamp, iUv, 0.0).rgb;
-        }
+        let baseProbeIdx3 = clamp(vec3i(floor(gridPos)), vec3i(0), vec3i(gridParams.dims) - vec3i(1));
+        let pi = u32(baseProbeIdx3.x) + u32(baseProbeIdx3.y) * gridParams.dims.x +
+                 u32(baseProbeIdx3.z) * gridParams.dims.x * gridParams.dims.y;
+        let octUv = (octEncode(smoothNormal) * 0.5 + 0.5);
+        let iUv   = irradianceAtlasUv(
+          pi, octUv,
+          gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
+          gridParams.dims,
+        );
+        let indirect = textureSampleLevel(irradiancePrev, irradianceSamp, iUv, 0.0).rgb * 3.14159265359;
 
         // Outgoing radiance from the BOUNCE surface toward the probe.
         //
@@ -499,9 +515,12 @@ fn probeUpdateRays(
         // receiver (ρ_recv/π).
         //
         // Post-fix math contract (Majercik 2019 §3 Algorithm 1):
-        //   producer : stores Lo = (baseColor_hit/π) · E_hit
-        //   blend    : cosine-weights rays → atlas holds irradiance E
-        //   receiver : applies (albedo_receiver/π) · E
+        //   producer : stores Lo = (baseColor_hit/PI) * E_hit, with
+        //              E_hit = direct + (atlas read)*PI  [atlas holds E/PI]
+        //   blend    : cosine-weights rays -> atlas holds the MEAN E/PI (NOT E;
+        //              a stale "atlas holds irradiance E" comment HERE is what
+        //              made the feedback skip the *PI for so long, see above)
+        //   receiver : reads atlas, reconstructs E (*PI), applies (albedo/PI)*E
         //
         // History: M7 (e66429d Change 3) removed the producer factor,
         // diagnosing producer·receiver albedo as the "double-albedo error"
