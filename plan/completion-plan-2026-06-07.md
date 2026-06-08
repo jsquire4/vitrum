@@ -141,7 +141,9 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
 > (roadmap §0.5): no deferring/removing fidelity features — implement what's
 > promised.
 
-- **2-A 🔴 PPG production-readiness.** Training writer EXISTS (`PPGCoordinator.ts:266`)
+- **2-A ✅ PPG defects RESOLVED by the DDGI fix (2026-06-07 cascade) — no PPG edit needed.** Both V17 defects (refine-loop runaway + size-200 base-GI instability) were DOWNSTREAM SYMPTOMS of the dead-GI P0: `ddgiSample` returning ~0 at the scene's axis-aligned surfaces gave PPG's dTree a degenerate near-zero, high-relative-variance training signal → dTree positive-feedback runaway + seed-dependent base variance. Post `254c284` the indirect is dense/well-conditioned (~0.13 plateau) → V17 re-run (dzn): refine-loop max 0.146 (was 0.45 ramp — GONE), size-200 base var ratio 1.008× (was 0.485× — GONE), PPG unbiased + ~6–14% variance reduction across all clean regimes. Root cause code-verified (matches the confirmed ddgiSample-zero). RESIDUAL (tracked, NOT a PPG blocker): a size-256×seed-100000 ppg-OFF base-reservoir variance quirk — isolated, research-grade. V17 → PASS. (Agent re-run; lead-corroborated via the shared root cause — a dedicated V17 run can re-confirm PASS if needed.)
+- **B3 🟡 Checkerboard perf-win STILL UNMEASURED → stays off-default.** The vitem harness JSON exposes no wall-clock field and dzn lacks timestamp queries, so the actual shade-pass GPU-time saving isn't measured. The decision (enable medium/low) was gated on confirming the win — until a timestamp-capable host or a wall-clock-instrumented harness measures it, checkerboard stays OFF-default (built + motion-validated comb-free; enabling a perf feature whose win is unmeasured is premature).
+- **2-A (orig) 🔴 PPG production-readiness.** Training writer EXISTS (`PPGCoordinator.ts:266`)
   and PPG is live + unbiased + gives variance reduction on a guiding-favourable
   scene (V17, this session). Two real defects block production: (1) **refine-loop
   runaway** (~7 refine cycles then ramps ~3× via GI-reservoir↔dTree positive
