@@ -75,6 +75,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
       triangleMaterialIds: { cpuData: new Uint32Array([0]).buffer, byteLength: 4, count: 1 },
       buildMaterials: [new THREE.MeshStandardMaterial({ color: 0x99948c })],
+      coreMaterials: [],
       emitterNormals: new Float32Array(16),
       bvhMode: 'merged' as const,
       primitiveTlasBindings: [],
@@ -89,6 +90,12 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
   return {
     buildReSTIRSceneBVH: buildFn,
     buildReSTIRSceneBVHForScene: buildFn,
+    rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
+      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
+      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
+      emitterCount: 1,
+      totalEmissivePower: 2,
+    })),
     rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
@@ -184,7 +191,11 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
 
 import { HybridEngine } from '../src/HybridEngine.js';
 import { asMat4, type Scene } from '@vitrum/core';
-import { buildReSTIRSceneBVH } from '../src/restir/bvhCompute.js';
+import {
+  buildReSTIRSceneBVH,
+  rebuildEmitterBuffersFromCoreScene,
+  rebuildEmitterBuffersFromSceneRoots,
+} from '../src/restir/bvhCompute.js';
 
 function getState(): MatUpdateState {
   const g = globalThis as unknown as { __HYBRID_MAT_STATE__?: MatUpdateState };
@@ -327,5 +338,42 @@ describe('HybridEngine.updatePrimitive — material patch (PR-1)', () => {
     });
 
     expect(ddgi.invalidateProbeCache).toHaveBeenCalled();
+  });
+
+  it('T-1.4: emissive material edits refresh ReSTIR emitter buffers without BVH rebuild', async () => {
+    const engine = new HybridEngine({
+      device: makeMockDevice(),
+      width: 64,
+      height: 64,
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: 1,
+      skyTint: [1, 1, 1],
+      skyIrradiance: 1,
+    });
+    await initEngine(engine);
+    const buildsAfterInit = vi.mocked(buildReSTIRSceneBVH).mock.calls.length;
+    const coreEmitterRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length;
+    const legacyEmitterRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length;
+    const pipeline = getState().pipelineConstructed[0] as {
+      refreshBvhMaterialSlice: ReturnType<typeof vi.fn>;
+      refreshBvhFullRebuild: ReturnType<typeof vi.fn>;
+      updateEmitters: ReturnType<typeof vi.fn>;
+    };
+
+    engine.updatePrimitive!('mesh-a', {
+      material: {
+        baseColor: [0.6, 0.57, 0.55],
+        roughness: 0.8,
+        metallic: 0,
+        emissive: [3, 2, 1],
+      },
+    });
+
+    expect(vi.mocked(buildReSTIRSceneBVH).mock.calls.length).toBe(buildsAfterInit);
+    expect(vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length).toBe(coreEmitterRebuildsBefore + 1);
+    expect(vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length).toBe(legacyEmitterRebuildsBefore);
+    expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalled();
+    expect(pipeline.updateEmitters).toHaveBeenCalled();
+    expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
   });
 });

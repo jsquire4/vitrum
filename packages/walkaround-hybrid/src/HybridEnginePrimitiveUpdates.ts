@@ -44,6 +44,7 @@ import {
   buildReSTIRSceneBVHForScene,
   rebuildReSTIRSceneBVHPrimitive,
   disposeSceneBVH,
+  rebuildEmitterBuffersFromCoreScene,
   rebuildEmitterBuffersFromSceneRoots,
 } from './restir/bvhCompute.js';
 import type { ReSTIRBvhMode } from './restir/bvhCompute.js';
@@ -212,6 +213,10 @@ export interface PrimitiveUpdateContext {
    *  fallbacks here, so TLAS refit / BVH rebuild helpers always see the same
    *  primitive kinds that were packed into {@link PrimitiveTlasBinding}. */
   readonly renderScene: Scene;
+  /** Whether the engine's render scene supplies core mesh/skinned/instanced
+   *  primitive payloads, allowing incremental emitter rebuilds to stay on the
+   *  core-native path instead of round-tripping through THREE. */
+  readonly coreSceneSuppliesMeshes?: boolean;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -929,6 +934,21 @@ function vitrumMaterialTransmission(material: MaterialSpec | undefined): number 
   return material?.transmission ?? 0;
 }
 
+function productionEmissiveRadiance(material: MaterialSpec | undefined): readonly [number, number, number] {
+  const emissive = material?.emissive;
+  if (emissive == null) return [0, 0, 0];
+  return [emissive[0], emissive[1], emissive[2]];
+}
+
+function productionEmissiveRadianceChanged(
+  prev: MaterialSpec | undefined,
+  next: MaterialSpec | undefined,
+): boolean {
+  const a = productionEmissiveRadiance(prev);
+  const b = productionEmissiveRadiance(next);
+  return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2];
+}
+
 /**
  * Material-only fast path — re-pack affected triangle slices in
  * `bvhIndex` / `bvhBeerColors` and partial GPU upload (no SAH rebuild,
@@ -950,6 +970,7 @@ export function materialPatch(
       `HybridEngine.updatePrimitive("${id}"): materialPatch requires patch.material.`,
     );
   }
+  const nextMaterial = patch.material;
 
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
   if (range == null || range.triCount === 0) {
@@ -974,12 +995,14 @@ export function materialPatch(
 
   const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
   const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
-  const prevTransmission = vitrumMaterialTransmission(
-    prevPrim && 'material' in prevPrim ? prevPrim.material : undefined,
-  );
-  const nextTransmission = vitrumMaterialTransmission(patch.material);
+  const prevMaterial =
+    prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
+  const prevTransmission = vitrumMaterialTransmission(prevMaterial);
+  const nextTransmission = vitrumMaterialTransmission(nextMaterial);
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
+  const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
 
-  applyVitrumMaterialToMesh(meshRef, patch.material);
+  applyVitrumMaterialToMesh(meshRef, nextMaterial);
 
   const triMaterialIds = new Uint32Array(bvh.triangleMaterialIds.cpuData);
   const matIds = new Set<number>();
@@ -1007,6 +1030,14 @@ export function materialPatch(
   // now-updated materials (buildMaterials was patched above) so an emissive edit
   // is reflected; the slice path re-uploads the whole emissive texture wholesale.
   const fullEmissive = packBVHEmissiveLe(triMaterialIds, bvh.buildMaterials, bvh.bvhBeerColors.count);
+  const updatedEmissiveLe = {
+    cpuData: fullEmissive.buffer.slice(
+      fullEmissive.byteOffset,
+      fullEmissive.byteOffset + fullEmissive.byteLength,
+    ) as ArrayBuffer,
+    byteLength: fullEmissive.byteLength,
+    count: bvh.bvhBeerColors.count,
+  };
 
   const indexByteOffset = range.triStart * 16;
   ctx.pipeline.refreshBvhMaterialSlice(
@@ -1020,19 +1051,33 @@ export function materialPatch(
     { data: fullEmissive.buffer, triCount: bvh.bvhBeerColors.count },
   );
 
-  const crossedGlassThreshold =
-    (prevTransmission <= TRANSMISSION_GLASS_THRESHOLD && nextTransmission > TRANSMISSION_GLASS_THRESHOLD)
-    || (prevTransmission > TRANSMISSION_GLASS_THRESHOLD && nextTransmission <= TRANSMISSION_GLASS_THRESHOLD);
-
-  let outBvh: SceneBVHBuffers = bvh;
-  if (crossedGlassThreshold) {
+  let outBvh: SceneBVHBuffers =
+    bvh.coreMaterials.length > 0
+      ? {
+        ...bvh,
+        bvhEmissiveLe: updatedEmissiveLe,
+        coreMaterials: bvh.coreMaterials.map((m, matId) =>
+          matIds.has(matId) ? nextMaterial : m,
+        ),
+      }
+      : { ...bvh, bvhEmissiveLe: updatedEmissiveLe };
+  const emitterAffectingMaterialChanged =
+    prevTransmission > TRANSMISSION_GLASS_THRESHOLD
+    || nextTransmission > TRANSMISSION_GLASS_THRESHOLD
+    || productionEmissiveRadianceChanged(prevMaterial, nextMaterial);
+  const useCoreEmitterRebuild = ctx.coreSceneSuppliesMeshes === true;
+  if (emitterAffectingMaterialChanged) {
     ctx.ddgi.invalidateProbeCache();
-    const emitterSlice = rebuildEmitterBuffersFromSceneRoots([root], bvh, {
+    const emitterOptions = {
       primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
       primaryLightIntensity: ctx.primaryLightIntensity,
-    });
+    };
+    const emitterSlice =
+      useCoreEmitterRebuild
+        ? rebuildEmitterBuffersFromCoreScene(updatedRenderScene, emitterOptions)
+        : rebuildEmitterBuffersFromSceneRoots([root], bvh, emitterOptions);
     outBvh = {
-      ...bvh,
+      ...outBvh,
       emitters: emitterSlice.emitters,
       emitterCdf: emitterSlice.emitterCdf,
       emitterCount: emitterSlice.emitterCount,
@@ -1046,7 +1091,6 @@ export function materialPatch(
 
   ctx.pipeline.requestAccumReset();
 
-  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   // Material-only edits re-pack material/emissive slices in place — the BVH
   // geometry that DDGI + RC index off is unchanged, so the GI-subsystem
   // propagation epilogue is intentionally skipped (matches the pre-collapse

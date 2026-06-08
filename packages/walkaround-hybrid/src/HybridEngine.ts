@@ -69,6 +69,7 @@ import {
 } from './HybridEngineFrameOrchestrator.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
+  rebuildEmitterBuffersFromCoreScene,
   rebuildEmitterBuffersFromSceneRoots,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
@@ -1027,6 +1028,9 @@ export class HybridEngine implements Engine {
    * @param inputScene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
    */
   setScene(inputScene: Scene): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.setScene: engine is disposed.');
+    }
     // Capability filter (warn + skip) consumes this engine's OWN declared
     // support sets. The supported authored scene remains the mutation source of
     // truth; `_renderScene` is the mesh-like ingestion view.
@@ -1104,6 +1108,15 @@ export class HybridEngine implements Engine {
   //
   // Implements `Engine.updatePrimitive(id, patch)` from `@vitrum/core`.
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.updatePrimitive: engine is disposed.');
+    }
+    if (this._state === 'initializing') {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): engine is initializing. ` +
+        `Wait for setScene init to finish before applying primitive patches.`,
+      );
+    }
     if (this._lastScene == null) {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): no scene set. ` +
@@ -1204,6 +1217,15 @@ export class HybridEngine implements Engine {
     localPositions?: Float32Array,
     localNormals?: Float32Array,
   ): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.applyGpuSkinnedRefit: engine is disposed.');
+    }
+    if (this._state === 'initializing') {
+      throw new Error(
+        `HybridEngine.applyGpuSkinnedRefit("${id}"): engine is initializing. ` +
+        `Wait for setScene init to finish before applying skinned-mesh refits.`,
+      );
+    }
     let positions = localPositions;
     let normals = localNormals;
     if (positions == null) {
@@ -1288,6 +1310,7 @@ export class HybridEngine implements Engine {
       primaryLightIntensity: this._primaryLightIntensity,
       lastScene:             this._lastScene,
       renderScene:           this._renderScene,
+      coreSceneSuppliesMeshes: this._coreSceneSuppliesMeshes(),
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {
       return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };
@@ -1413,8 +1436,9 @@ export class HybridEngine implements Engine {
         `HybridEngine.updateEmitter("${id}"): BVH not ready. Wait for setScene init to finish.`,
       );
     }
-    const threeRoot = this._ensureThreeSceneRoot();
-    if (threeRoot == null) {
+    const useCoreEmitterRebuild = this._coreSceneSuppliesMeshes();
+    const threeRoot = useCoreEmitterRebuild ? null : this._ensureThreeSceneRoot();
+    if (!useCoreEmitterRebuild && threeRoot == null) {
       throw new Error(
         `HybridEngine.updateEmitter("${id}"): no THREE scene available.`,
       );
@@ -1423,14 +1447,14 @@ export class HybridEngine implements Engine {
     this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
     this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
 
-    const emitterSlice = rebuildEmitterBuffersFromSceneRoots(
-      [threeRoot],
-      this._bvhBuffers,
-      {
-        primaryLightDir: new THREE.Vector3(...this._primaryLightDir),
-        primaryLightIntensity: this._primaryLightIntensity,
-      },
-    );
+    const emitterOptions = {
+      primaryLightDir: new THREE.Vector3(...this._primaryLightDir),
+      primaryLightIntensity: this._primaryLightIntensity,
+    };
+    const emitterSlice =
+      useCoreEmitterRebuild && this._renderScene != null
+        ? rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions)
+        : rebuildEmitterBuffersFromSceneRoots([threeRoot!], this._bvhBuffers, emitterOptions);
 
     this._bvhBuffers = {
       ...this._bvhBuffers,
@@ -1794,6 +1818,9 @@ export class HybridEngine implements Engine {
    * engine teardown + re-init.
    */
   setSize(width: number, height: number): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.setSize: engine is disposed.');
+    }
     if (width === this._width && height === this._height) return;
     if (width <= 0 || height <= 0) {
       // Defensive: WebGPU createTexture rejects zero-sized textures.
@@ -2029,6 +2056,9 @@ export class HybridEngine implements Engine {
    * Hosts call this when the scene changes significantly.
    */
   reset(): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.reset: engine is disposed.');
+    }
     this._teardownPipeline();
     this._initCoordinator.startInit();
   }

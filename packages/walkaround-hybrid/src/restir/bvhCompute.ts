@@ -24,14 +24,15 @@
  *   - Emitter list construction (80-byte EmitterTri struct + power-CDF).
  */
 
-import type { MaterialSpec, Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
-import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
+import { buildSceneBVH as buildSharedBVH, mergeWorldSpaceFromCore } from '@vitrum/shared-bvh';
 import {
   buildReSTIRSceneBVHFromVitrumScene,
   rebuildReSTIRSceneBVHPrimitive,
   resolveReSTIRBvhMode,
+  toProductionEmissiveRadiance,
   type ReSTIRBvhMode,
 } from './sceneBvhFromCore.js';
 
@@ -46,9 +47,10 @@ import {
   packBVHBeerColors,
   packBVHEmissiveLe,
 } from './packingHelpers.js';
-import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
+import { buildEmitterList, buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import {
   collectRectAreaLightEmitterTris,
+  collectRectAreaEmitterTrisFromCore,
   enrichMeshVertexRangesWithMatrix,
 } from './bvhSceneHelpers.js';
 
@@ -218,6 +220,17 @@ export interface SceneBVHBuffers {
 }
 
 export type { ReSTIRBvhMode };
+
+export type RebuiltEmitterBuffers = Pick<
+  SceneBVHBuffers,
+  | 'emitters'
+  | 'emitterCdf'
+  | 'emitterCount'
+  | 'totalEmissivePower'
+  | 'lightTree'
+  | 'lightTreeNodeCount'
+  | 'lightTreeEnabled'
+>;
 
 /** Pick merged vs TLAS CPU pack and build ReSTIR buffers. */
 export function buildReSTIRSceneBVHForScene(
@@ -435,16 +448,7 @@ export function rebuildEmitterBuffersFromSceneRoots(
     primaryLightDir?: THREE.Vector3;
     primaryLightIntensity?: number;
   } = {},
-): Pick<
-  SceneBVHBuffers,
-  | 'emitters'
-  | 'emitterCdf'
-  | 'emitterCount'
-  | 'totalEmissivePower'
-  | 'lightTree'
-  | 'lightTreeNodeCount'
-  | 'lightTreeEnabled'
-> {
+): RebuiltEmitterBuffers {
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterList(
     bvh.bvhIndicesStride3,
@@ -458,6 +462,61 @@ export function rebuildEmitterBuffersFromSceneRoots(
   // Emitters changed → rebuild the selection tree from the same inputs so the
   // tree pmf and emitter array stay aligned (leaf emitterIndex must index the
   // freshly-built emitter list).
+  const lightTreeBuf = buildLightTreeBuffer(treeInput);
+  return {
+    emitters: {
+      cpuData: emitterFloats.buffer as ArrayBuffer,
+      byteLength: emitterFloats.byteLength,
+      count: emitterCount,
+    },
+    emitterCdf: {
+      cpuData: cdfArray.buffer as ArrayBuffer,
+      byteLength: cdfArray.byteLength,
+      count: emitterCount,
+    },
+    emitterCount,
+    totalEmissivePower,
+    lightTree: {
+      cpuData: lightTreeBuf.nodes.buffer as ArrayBuffer,
+      byteLength: lightTreeBuf.nodes.byteLength,
+      count: Math.max(1, lightTreeBuf.nodeCount),
+    },
+    lightTreeNodeCount: lightTreeBuf.nodeCount,
+    lightTreeEnabled: lightTreeBuf.enabled,
+  };
+}
+
+/**
+ * Rebuild only the ReSTIR emitter list + power CDF from a live `@vitrum/core`
+ * scene. This mirrors the core-first TLAS ingestion path in
+ * `sceneBvhFromCore.ts`: bake primitive transforms into a merged world-space
+ * triangle stream, append core scene emitters, and apply the same
+ * `vitrumSceneToThree` emissive-radiance convention before classification.
+ *
+ * Used by incremental emitter/material mutation paths when the live BVH was
+ * built from core scene data. The geometry BVH and GPU pipeline stay intact.
+ */
+export function rebuildEmitterBuffersFromCoreScene(
+  scene: Scene,
+  options: {
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+  } = {},
+): RebuiltEmitterBuffers {
+  const merged = mergeWorldSpaceFromCore(scene, {
+    positionStride: 4,
+    filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
+  });
+  const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
+    merged.indices,
+    merged.positions,
+    merged.normals,
+    merged.triMaterialId,
+    merged.materials.map(toProductionEmissiveRadiance),
+    { ...options, extraEmitters },
+  );
+  const emitterCount = cdfArray.length;
   const lightTreeBuf = buildLightTreeBuffer(treeInput);
   return {
     emitters: {

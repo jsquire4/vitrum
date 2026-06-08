@@ -1,14 +1,13 @@
 /**
- * DDGI Probe Update — Pass 3: Octahedral Atlas Border Fill.
+ * DDGI Probe Update — Pass 3: Visibility Octahedral Atlas Border Fill.
  *
- * Two WGSL modules (one for irradiance, one for visibility) that populate
- * the 1-pixel border ring around each probe's octahedral cell. Both are
- * emitted from a single parameterized factory `makeBorderFillWGSL` — the
- * passes differ ONLY by cell size (8 vs 16), stride (10 vs 18), workgroup
- * size (48 vs 256), and entry-point name. The cell + stride are sourced
- * from `ddgiAtlasLayout.ts` (the single source of truth shared with the
- * producer and samplers), so the border pass cannot silently drift from
- * the atlas layout.
+ * The production WGSL module populates the 1-pixel border ring around each
+ * probe's VISIBILITY octahedral cell. It is emitted from the parameterized
+ * factory `makeBorderFillWGSL`; the historical irradiance 8x8/48-thread case
+ * is now test-only because irradiance migrated to seam-free L2 SH. The cell +
+ * stride are sourced from `ddgiAtlasLayout.ts` (the single source of truth
+ * shared with the producer and samplers), so the border pass cannot silently
+ * drift from the atlas layout.
  *
  * For backward compatibility the previous string exports
  * (`PROBE_UPDATE_BORDER_IRR_WGSL` / `PROBE_UPDATE_BORDER_VIS_WGSL`) remain
@@ -72,9 +71,9 @@ import { VIS_CELL, VIS_STRIDE } from '../ddgiAtlasLayout.js';
 
 /** Parameters that distinguish the irradiance vs visibility border pass. */
 export interface BorderFillParams {
-  /** Interior octahedral cell dimension (N). IRR_CELL=8 / VIS_CELL=16. */
+  /** Interior octahedral cell dimension (N). Production visibility uses VIS_CELL=16. */
   cell: number;
-  /** In-atlas stride = cell + BORDER. IRR_STRIDE=10 / VIS_STRIDE=18. */
+  /** In-atlas stride = cell + BORDER. Production visibility uses VIS_STRIDE=18. */
   stride: number;
   /**
    * Compute workgroup size (threads per probe cell). Any positive value is
@@ -88,9 +87,9 @@ export interface BorderFillParams {
 }
 
 /**
- * Build a DDGI octahedral atlas border-fill WGSL module. Emitted twice —
- * once per atlas (irradiance / visibility) — with cell + stride sourced
- * from {@link ddgiAtlasLayout}.
+ * Build a DDGI octahedral atlas border-fill WGSL module. Production emits this
+ * for visibility; tests also instantiate the historical irradiance-sized cell
+ * to keep the shared strip-coverage regression pinned.
  */
 export function makeBorderFillWGSL(params: BorderFillParams): string {
   const { cell, stride, workgroupSize, entryPoint } = params;
@@ -218,4 +217,3 @@ export function makeProbeUpdateBorderVisWGSL(): string {
     entryPoint: 'probeUpdateBorderVisibility',
   });
 }
-

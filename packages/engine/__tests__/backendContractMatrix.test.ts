@@ -22,6 +22,8 @@ function makeFakeEngine(capabilities: EngineCapabilities): Engine {
     capabilities,
     setScene: vi.fn(),
     updatePrimitive: vi.fn(),
+    addPrimitive: vi.fn(),
+    removePrimitive: vi.fn(),
     updateEmitter: vi.fn(),
     updateEnvironment: vi.fn(),
     setSize: vi.fn(),
@@ -51,6 +53,7 @@ describe('proxy method exposure follows backend promise ledger', () => {
       const engine = makeFakeEngine({
         ...makeBaseCapabilities(),
         supportsIncrementalScene: rec.supportsIncrementalScene,
+        supportsAddRemovePrimitive: rec.supportsAddRemovePrimitive,
         supportsAuxBuffers: rec.supportsAuxBuffers,
         accumulates: rec.accumulates,
         incrementalPatchSupport: rec.incrementalPatchSupport,
@@ -63,6 +66,8 @@ describe('proxy method exposure follows backend promise ledger', () => {
       });
 
       if (!rec.methodPromises.updatePrimitive) delete (engine as Partial<Engine>).updatePrimitive;
+      if (!rec.methodPromises.addPrimitive) delete (engine as Partial<Engine>).addPrimitive;
+      if (!rec.methodPromises.removePrimitive) delete (engine as Partial<Engine>).removePrimitive;
       if (!rec.methodPromises.updateEmitter) delete (engine as Partial<Engine>).updateEmitter;
       if (!rec.methodPromises.updateEnvironment) delete (engine as Partial<Engine>).updateEnvironment;
       if (!rec.methodPromises.setSize) delete (engine as Partial<Engine>).setSize;
@@ -81,6 +86,12 @@ describe('proxy method exposure follows backend promise ledger', () => {
           || rec.incrementalPatchSupport.topology
         ),
       );
+      expect(typeof proxy.addPrimitive === 'function').toBe(
+        rec.methodPromises.addPrimitive && rec.supportsAddRemovePrimitive,
+      );
+      expect(typeof proxy.removePrimitive === 'function').toBe(
+        rec.methodPromises.removePrimitive && rec.supportsAddRemovePrimitive,
+      );
       expect(typeof proxy.updateEmitter === 'function').toBe(
         rec.methodPromises.updateEmitter && rec.incrementalPatchSupport.emitter,
       );
@@ -94,3 +105,35 @@ describe('proxy method exposure follows backend promise ledger', () => {
   }
 });
 
+describe('path-tracer optional method omissions follow unsupported ledger rows', () => {
+  for (const backendId of ['pt-webgl', 'pt-webgpu'] as const) {
+    it(`omits resize and lighting methods for ${backendId}`, () => {
+      const rec = BACKEND_PROMISE_LEDGER[backendId];
+      const engine = makeFakeEngine({
+        ...makeBaseCapabilities(),
+        supportsIncrementalScene: rec.supportsIncrementalScene,
+        supportsAddRemovePrimitive: rec.supportsAddRemovePrimitive,
+        supportsAuxBuffers: rec.supportsAuxBuffers,
+        accumulates: rec.accumulates,
+        incrementalPatchSupport: rec.incrementalPatchSupport,
+        supportedAnalyticShapes: new Set(rec.supportedAnalyticShapes),
+        supportedEmitterKinds: new Set(rec.supportedEmitterKinds),
+        supportedPrimitiveKinds: new Set(rec.supportedPrimitiveKinds),
+        supportedEnvironmentKinds: new Set(rec.supportedEnvironmentKinds),
+        presentationMode: rec.presentationMode,
+      });
+
+      delete (engine as Partial<Engine>).setSize;
+      delete (engine as Partial<Engine>).updateLighting;
+
+      const proxy = wrapWithIdempotentDispose(engine, () => {});
+
+      expect(rec.supportDetails.mutations.resize).toBe('unsupported');
+      expect(rec.supportDetails.mutations.lighting).toBe('unsupported');
+      expect(rec.methodPromises.setSize).toBe(false);
+      expect(rec.methodPromises.updateLighting).toBe(false);
+      expect(proxy.setSize).toBeUndefined();
+      expect(proxy.updateLighting).toBeUndefined();
+    });
+  }
+});

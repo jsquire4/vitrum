@@ -8,8 +8,10 @@ const sharedSamplersRoot = path.resolve(__dirname, '../shared-samplers');
 const stainedGlassRoot = path.resolve(__dirname, '../stained-glass-extensions');
 const threeBindingsRoot = path.resolve(__dirname, '../three-bindings');
 const walkaroundRcRoot = path.resolve(__dirname, '../walkaround-rc');
+const repoRoot = path.resolve(__dirname, '../..');
 
 export default defineConfig({
+  root: repoRoot,
   resolve: {
     alias: {
       '@vitrum/core': path.join(coreRoot, 'src/index.ts'),
@@ -20,5 +22,8 @@ export default defineConfig({
       '@vitrum/three-bindings': path.join(threeBindingsRoot, 'src/index.ts'),
       '@vitrum/walkaround-rc': path.join(walkaroundRcRoot, 'src/index.ts'),
     },
+  },
+  test: {
+    include: ['packages/walkaround-hybrid/**/*.test.ts'],
   },
 });

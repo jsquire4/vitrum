@@ -40,7 +40,7 @@ function makeRestirSection(): RestirGISnapshot {
   };
 }
 
-/** Hand-build a v1 (DDGI-only) buffer to assert v2 deserialize stays back-compatible. */
+/** Hand-build a v1 octahedral-irradiance buffer to assert the v3 SH break rejects it. */
 function makeV1Buffer(s: GIStateSnapshot): ArrayBuffer {
   const irrBytes = s.irrData.byteLength;
   const visBytes = s.visData.byteLength;
@@ -97,7 +97,7 @@ describe('GI state snapshot serialization', () => {
     expect(() => deserializeGIState(truncated)).toThrow(/too small/);
   });
 
-  it('round-trips the ReSTIR-GI reservoir section losslessly (v2)', () => {
+  it('round-trips the ReSTIR-GI reservoir section losslessly (v3)', () => {
     const s = { ...makeSnapshot(), restirGI: makeRestirSection() };
     const back = deserializeGIState(serializeGIState(s));
     // DDGI half unchanged.
@@ -130,7 +130,8 @@ describe('GI state snapshot serialization', () => {
   it('rejects a v1 (octahedral-irradiance) buffer at the SH break', () => {
     // v1/v2 stored an OCTAHEDRAL irradiance atlas; the SH-era sampler would read
     // those bytes as garbage, so the v2->v3 break intentionally drops backward
-    // accept for irradiance — a v1 buffer must now throw, not silently decode.
+    // compatibility for irradiance — a v1 buffer must now throw, not silently
+    // decode.
     const s = makeSnapshot();
     const v1 = makeV1Buffer(s);
     expect(() => deserializeGIState(v1)).toThrow(/unsupported version 1/);

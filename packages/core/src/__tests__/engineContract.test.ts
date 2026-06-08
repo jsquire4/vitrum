@@ -80,6 +80,72 @@ describe('backend promise ledger', () => {
       expect(rec.supportDetails.mutations.lighting !== 'unsupported').toBe(rec.methodPromises.updateLighting);
     }
   });
+
+  it('pins walkaround mutation fidelity rows that differ from the boolean patch surface', () => {
+    const rec = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
+
+    expect(rec.incrementalPatchSupport).toEqual({
+      transform: true,
+      positions: true,
+      material: true,
+      emitter: true,
+      topology: true,
+    });
+    expect(rec.supportDetails.mutations).toEqual({
+      transform: 'native',
+      positions: 'native',
+      material: 'native',
+      emitter: 'native',
+      topology: 'fallback-rebuild',
+      addPrimitive: 'fallback-rebuild',
+      removePrimitive: 'fallback-rebuild',
+      environment: 'approximate',
+      resize: 'native',
+      lighting: 'native',
+    });
+    expect(rec.methodPromises.setSize).toBe(true);
+    expect(rec.methodPromises.updateLighting).toBe(true);
+  });
+
+  it('pins PT backend resize and lighting as per-frame/offscreen concerns, not optional methods', () => {
+    for (const backendId of ['pt-webgl', 'pt-webgpu'] as const) {
+      const rec = BACKEND_PROMISE_LEDGER[backendId];
+
+      expect(rec.presentationMode).toBe('offscreen-texture');
+      expect(rec.frameInputPromises).toEqual({
+        honorsViewportPerFrame: true,
+        requiresSwapChainView: false,
+        honorsPerFrameBounces: true,
+      });
+      expect(rec.supportDetails.mutations.resize).toBe('unsupported');
+      expect(rec.supportDetails.mutations.lighting).toBe('unsupported');
+      expect(rec.methodPromises.setSize).toBe(false);
+      expect(rec.methodPromises.updateLighting).toBe(false);
+    }
+  });
+
+  it('pins environment fidelity rows for DDGI SH walkaround versus path tracers', () => {
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.environments).toEqual({
+      none: 'native',
+      hdri: 'approximate',
+      'procedural-sky': 'unsupported',
+    });
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
+
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails.environments).toEqual({
+      none: 'native',
+      hdri: 'native',
+      'procedural-sky': 'unsupported',
+    });
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
+
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.environments).toEqual({
+      none: 'native',
+      hdri: 'native',
+      'procedural-sky': 'native',
+    });
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportedEnvironmentKinds).toEqual(['none', 'hdri', 'procedural-sky']);
+  });
 });
 
 describe('mat4 branding', () => {

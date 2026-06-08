@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import {
   asMat4,
   type InstancedMeshPrimitive,
+  type MaterialSpec,
   type MeshPrimitive,
   type SkinnedMeshPrimitive,
   type Mat4,
@@ -53,11 +54,13 @@ export function emissiveMaterialAreaEmitter(
 /** Returns a copy of `prim` with the emissive contribution zeroed so the
  *  same surface is not double-counted as both a path-traced emissive
  *  surface and a sampled area-light emitter. */
-export function stripEmissive(prim: MeshPrimitive): MeshPrimitive {
+type MaterialBearingPrimitive = MeshPrimitive | InstancedMeshPrimitive | SkinnedMeshPrimitive;
+
+export function stripEmissive<T extends MaterialBearingPrimitive>(prim: T): T {
   return {
     ...prim,
     material: { ...prim.material, emissive: [0, 0, 0], emissiveIntensity: 0 },
-  };
+  } as T;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -140,10 +143,20 @@ function requireFloatAttribute(
 function convertFirstMaterial(
   rawMatOrArray: THREE.Material | THREE.Material[] | null,
   label: string,
-  meshTypeName: string,
+  meshTypeName: MaterialConversionContext['meshTypeName'],
   errorSubject = '',
+  options: MeshConversionOptions = {},
+  context: Partial<MaterialConversionContext> = {},
 ) {
   const rawMat = Array.isArray(rawMatOrArray) ? rawMatOrArray[0] : rawMatOrArray;
+  if (rawMat != null && options.materialConverter != null) {
+    const converted = options.materialConverter(rawMat, {
+      label,
+      meshTypeName,
+      ...context,
+    });
+    if (converted != null) return converted;
+  }
   const isStd = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
   const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
   // MeshBasicMaterial is the third accepted type. It renders unlit in three.js;
@@ -168,13 +181,42 @@ function convertMaterialAt(
   materialIndex: number,
   label: string,
   groupIndex: number,
+  meshTypeName: MaterialConversionContext['meshTypeName'] = 'Mesh',
+  options: MeshConversionOptions = {},
 ) {
   const rawMat = materials[materialIndex] ?? null;
   return convertFirstMaterial(
     rawMat,
     `${label} group ${groupIndex}`,
-    'Mesh',
+    meshTypeName,
+    '',
+    options,
+    { groupIndex, materialIndex },
   );
+}
+
+export interface MaterialConversionContext {
+  /** Human-readable object/group label used in adapter diagnostics. */
+  readonly label: string;
+  /** THREE renderable kind currently being converted. */
+  readonly meshTypeName: 'Mesh' | 'InstancedMesh' | 'SkinnedMesh';
+  /** Geometry group index when converting grouped multi-material geometry. */
+  readonly groupIndex?: number;
+  /** Material-array slot selected for the current primitive/group. */
+  readonly materialIndex?: number;
+}
+
+export type ThreeMaterialConverter = (
+  material: THREE.Material,
+  context: MaterialConversionContext,
+) => MaterialSpec | null | undefined;
+
+export interface MeshConversionOptions {
+  readonly materialConverter?: ThreeMaterialConverter;
+}
+
+interface InternalMeshConversionOptions extends MeshConversionOptions {
+  readonly suppressMultiMaterialWarning?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -235,7 +277,7 @@ function buildMeshPrimitive(
   };
 }
 
-export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
+export function convertMesh(obj: THREE.Mesh, options: MeshConversionOptions = {}): MeshPrimitive {
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
@@ -251,7 +293,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
     );
   }
 
-  const material = convertFirstMaterial(obj.material, label, 'Mesh');
+  const material = convertFirstMaterial(obj.material, label, 'Mesh', '', options);
 
   return buildMeshPrimitive(obj.uuid, attrs, transform, material);
 }
@@ -330,6 +372,38 @@ function copyAttributeForVertices(attr: FloatAttribute, vertexIndices: Uint32Arr
   return out;
 }
 
+function copyFloat32ComponentsForVertices(
+  src: Float32Array,
+  vertexIndices: Uint32Array,
+  itemSize: number,
+): Float32Array {
+  const out = new Float32Array(vertexIndices.length * itemSize);
+  for (let outVertex = 0; outVertex < vertexIndices.length; outVertex += 1) {
+    const srcOffset = vertexIndices[outVertex]! * itemSize;
+    const dstOffset = outVertex * itemSize;
+    for (let component = 0; component < itemSize; component += 1) {
+      out[dstOffset + component] = src[srcOffset + component] ?? 0;
+    }
+  }
+  return out;
+}
+
+function copyUint32ComponentsForVertices(
+  src: Uint32Array,
+  vertexIndices: Uint32Array,
+  itemSize: number,
+): Uint32Array {
+  const out = new Uint32Array(vertexIndices.length * itemSize);
+  for (let outVertex = 0; outVertex < vertexIndices.length; outVertex += 1) {
+    const srcOffset = vertexIndices[outVertex]! * itemSize;
+    const dstOffset = outVertex * itemSize;
+    for (let component = 0; component < itemSize; component += 1) {
+      out[dstOffset + component] = src[srcOffset + component] ?? 0;
+    }
+  }
+  return out;
+}
+
 function sliceMeshAttributesForGroup(
   attrs: MeshAttributeSet,
   vertexIndices: Uint32Array,
@@ -386,10 +460,10 @@ function sliceMeshAttributesForGroup(
  * new draw-range field in the core contract. convertMesh remains the legacy
  * single-primitive helper for callers/tests that rely on that shape.
  */
-export function convertMeshToPrimitives(obj: THREE.Mesh): MeshPrimitive[] {
+export function convertMeshToPrimitives(obj: THREE.Mesh, options: MeshConversionOptions = {}): MeshPrimitive[] {
   const materials = obj.material;
   if (!Array.isArray(materials) || obj.geometry.groups.length === 0) {
-    return [convertMesh(obj)];
+    return [convertMesh(obj, options)];
   }
 
   const geo = obj.geometry;
@@ -399,7 +473,7 @@ export function convertMeshToPrimitives(obj: THREE.Mesh): MeshPrimitive[] {
 
   return geo.groups.map((group, groupIndex): MeshPrimitive => {
     const materialIndex = materialIndexForGroup(group, groupIndex, materials.length, label);
-    const material = convertMaterialAt(materials, materialIndex, label, groupIndex);
+    const material = convertMaterialAt(materials, materialIndex, label, groupIndex, 'Mesh', options);
     const vertexIndices = vertexIndicesForGroup(group, groupIndex, label, attrs);
     const groupAttrs = sliceMeshAttributesForGroup(attrs, vertexIndices);
     return buildMeshPrimitive(
@@ -415,7 +489,10 @@ export function convertMeshToPrimitives(obj: THREE.Mesh): MeshPrimitive[] {
 // InstancedMesh converter — multi-mesh TLAS production path
 // ────────────────────────────────────────────────────────────────────────────
 
-export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPrimitive {
+export function convertInstancedMesh(
+  obj: THREE.InstancedMesh,
+  options: MeshConversionOptions = {},
+): InstancedMeshPrimitive {
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
@@ -428,8 +505,13 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
     );
   }
 
-  const material = convertFirstMaterial(obj.material, label, 'InstancedMesh');
+  const material = convertFirstMaterial(obj.material, label, 'InstancedMesh', '', options);
+  const instances = extractInstancedTransforms(obj);
 
+  return buildInstancedMeshPrimitive(obj.uuid, attrs, material, instances);
+}
+
+function extractInstancedTransforms(obj: THREE.InstancedMesh): Mat4[] {
   const instances: Mat4[] = [];
   const tmp = new THREE.Matrix4();
   for (let i = 0; i < obj.count; i += 1) {
@@ -437,10 +519,18 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
     tmp.premultiply(obj.matrixWorld);
     instances.push(asMat4(new Float32Array(tmp.elements)));
   }
+  return instances;
+}
 
+function buildInstancedMeshPrimitive(
+  id: string,
+  attrs: MeshAttributeSet,
+  material: InstancedMeshPrimitive['material'],
+  instances: Mat4[],
+): InstancedMeshPrimitive {
   return {
     kind: 'instanced-mesh',
-    id: obj.uuid,
+    id,
     positions: attrs.positions.array,
     normals: attrs.normals.array,
     material,
@@ -451,6 +541,42 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
     ...(attrs.colors != null ? { colors: attrs.colors.array } : {}),
     ...(attrs.indices != null ? { indices: attrs.indices } : {}),
   };
+}
+
+/**
+ * Convert a THREE.InstancedMesh into one or more vitrum InstancedMeshPrimitives.
+ *
+ * Grouped multi-material instanced geometry mirrors the normal mesh expansion:
+ * each material group becomes a compact triangle-list primitive, all sharing
+ * the source instance transforms. Direct `convertInstancedMesh()` remains the
+ * legacy single-primitive helper for callers that rely on that exact shape.
+ */
+export function convertInstancedMeshToPrimitives(
+  obj: THREE.InstancedMesh,
+  options: MeshConversionOptions = {},
+): InstancedMeshPrimitive[] {
+  const materials = obj.material;
+  if (!Array.isArray(materials) || obj.geometry.groups.length === 0) {
+    return [convertInstancedMesh(obj, options)];
+  }
+
+  const geo = obj.geometry;
+  const label = obj.name || obj.uuid;
+  const attrs = extractMeshAttributeSet(geo, label, 'InstancedMesh');
+  const instances = extractInstancedTransforms(obj);
+
+  return geo.groups.map((group, groupIndex): InstancedMeshPrimitive => {
+    const materialIndex = materialIndexForGroup(group, groupIndex, materials.length, label);
+    const material = convertMaterialAt(materials, materialIndex, label, groupIndex, 'InstancedMesh', options);
+    const vertexIndices = vertexIndicesForGroup(group, groupIndex, label, attrs);
+    const groupAttrs = sliceMeshAttributesForGroup(attrs, vertexIndices);
+    return buildInstancedMeshPrimitive(
+      `${obj.uuid}:group:${groupIndex}:material:${materialIndex}`,
+      groupAttrs,
+      material,
+      instances,
+    );
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -466,7 +592,17 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
  * `bones` and submit). See `SkinnedMeshPrimitive` JSDoc in @vitrum/core for
  * the deformation formula.
  */
-export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive {
+export function convertSkinnedMesh(
+  obj: THREE.SkinnedMesh,
+  options: MeshConversionOptions = {},
+): SkinnedMeshPrimitive {
+  return convertSkinnedMeshInternal(obj, options);
+}
+
+function convertSkinnedMeshInternal(
+  obj: THREE.SkinnedMesh,
+  options: InternalMeshConversionOptions = {},
+): SkinnedMeshPrimitive {
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
@@ -581,13 +717,17 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
   }
 
   // Multi-material handling mirrors convertMesh.
-  if (Array.isArray(obj.material) && obj.material.length > 1) {
+  if (
+    Array.isArray(obj.material) &&
+    obj.material.length > 1 &&
+    options.suppressMultiMaterialWarning !== true
+  ) {
     console.warn(
       `@vitrum/three-bindings: unsupported multi-material SkinnedMesh at "${label}" (${obj.material.length} materials). ` +
       `Only the first material will be used.`,
     );
   }
-  const material = convertFirstMaterial(obj.material, label, 'SkinnedMesh', 'SkinnedMesh');
+  const material = convertFirstMaterial(obj.material, label, 'SkinnedMesh', 'SkinnedMesh', options);
 
   return {
     kind: 'skinned-mesh',
@@ -611,4 +751,72 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     ...(bindMatrix != null ? { bindMatrix } : {}),
     ...(bindMatrixInverse != null ? { bindMatrixInverse } : {}),
   };
+}
+
+/**
+ * Convert a THREE.SkinnedMesh into one or more vitrum SkinnedMeshPrimitives.
+ *
+ * Grouped multi-material skinned geometry mirrors the static Mesh expansion:
+ * each group becomes a compact skinned primitive with sliced rest geometry,
+ * skin indices/weights, and morph deltas, while sharing the same skeleton,
+ * bind matrices, morph weights, and world transform.
+ */
+export function convertSkinnedMeshToPrimitives(
+  obj: THREE.SkinnedMesh,
+  options: MeshConversionOptions = {},
+): SkinnedMeshPrimitive[] {
+  const materials = obj.material;
+  if (!Array.isArray(materials) || obj.geometry.groups.length === 0) {
+    return [convertSkinnedMesh(obj, options)];
+  }
+
+  const geo = obj.geometry;
+  const label = obj.name || obj.uuid;
+  const attrs = extractMeshAttributeSet(geo, label, 'SkinnedMesh');
+  const base = convertSkinnedMeshInternal(obj, {
+    ...options,
+    suppressMultiMaterialWarning: true,
+  });
+
+  return geo.groups.map((group, groupIndex): SkinnedMeshPrimitive => {
+    const materialIndex = materialIndexForGroup(group, groupIndex, materials.length, label);
+    const material = convertMaterialAt(materials, materialIndex, label, groupIndex, 'SkinnedMesh', options);
+    const vertexIndices = vertexIndicesForGroup(group, groupIndex, label, attrs);
+    const groupAttrs = sliceMeshAttributesForGroup(attrs, vertexIndices);
+    const {
+      id: _id,
+      positions: _positions,
+      normals: _normals,
+      uvs: _uvs,
+      uv1: _uv1,
+      tangents: _tangents,
+      colors: _colors,
+      indices: _indices,
+      skinIndices: _skinIndices,
+      skinWeights: _skinWeights,
+      morphTargets: _morphTargets,
+      morphTargetNormals: _morphTargetNormals,
+      material: _material,
+      ...shared
+    } = base;
+    return {
+      ...shared,
+      id: `${obj.uuid}:group:${groupIndex}:material:${materialIndex}`,
+      positions: groupAttrs.positions.array,
+      normals: groupAttrs.normals.array,
+      material,
+      skinIndices: copyUint32ComponentsForVertices(base.skinIndices, vertexIndices, 4),
+      skinWeights: copyFloat32ComponentsForVertices(base.skinWeights, vertexIndices, 4),
+      ...(groupAttrs.uvs != null ? { uvs: groupAttrs.uvs.array } : {}),
+      ...(groupAttrs.uv1 != null ? { uv1: groupAttrs.uv1.array } : {}),
+      ...(groupAttrs.tangents != null ? { tangents: groupAttrs.tangents.array } : {}),
+      ...(groupAttrs.colors != null ? { colors: groupAttrs.colors.array } : {}),
+      ...(base.morphTargets != null
+        ? { morphTargets: base.morphTargets.map((target) => copyFloat32ComponentsForVertices(target, vertexIndices, 3)) }
+        : {}),
+      ...(base.morphTargetNormals != null
+        ? { morphTargetNormals: base.morphTargetNormals.map((target) => copyFloat32ComponentsForVertices(target, vertexIndices, 3)) }
+        : {}),
+    };
+  });
 }

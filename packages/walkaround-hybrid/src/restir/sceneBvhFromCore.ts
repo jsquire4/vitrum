@@ -118,7 +118,7 @@ function makeStorageHandle(
  * Forcing `ei = 1` reproduces the production decision in both cases. A material
  * with NO `emissive` is returned unchanged (it's not an emitter either way).
  */
-function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
+export function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;
   if (m.emissiveIntensity === 1) return m; // already the production convention
   return { ...m, emissiveIntensity: 1 };

@@ -157,6 +157,193 @@ describe('sceneFromThreeJS', () => {
     expect(prim.id).toBe(im.uuid);
   });
 
+  it('splits grouped multi-material InstancedMesh geometry into per-group instanced primitives', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = new THREE.Scene();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      1, 1, 0,
+    ]), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]), 3));
+    g.setIndex([0, 1, 2, 2, 1, 3]);
+    g.addGroup(0, 3, 1);
+    g.addGroup(3, 3, 0);
+
+    const im = new THREE.InstancedMesh(g, [
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0) }),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
+    ], 2);
+    im.setMatrixAt(0, new THREE.Matrix4().makeTranslation(2, 0, 0));
+    im.setMatrixAt(1, new THREE.Matrix4().makeTranslation(0, 3, 0));
+    im.instanceMatrix.needsUpdate = true;
+    s.add(im);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(2);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    const first = v.primitives[0]!;
+    const second = v.primitives[1]!;
+    expect(first.kind).toBe('instanced-mesh');
+    expect(second.kind).toBe('instanced-mesh');
+    if (first.kind !== 'instanced-mesh' || second.kind !== 'instanced-mesh') return;
+
+    expect(first.id).toBe(`${im.uuid}:group:0:material:1`);
+    expect(second.id).toBe(`${im.uuid}:group:1:material:0`);
+    expect(first.indices).toBeUndefined();
+    expect(second.indices).toBeUndefined();
+    expect(first.positions).toEqual(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]));
+    expect(second.positions).toEqual(new Float32Array([
+      0, 1, 0,
+      1, 0, 0,
+      1, 1, 0,
+    ]));
+    expect(first.material.baseColor).toEqual([1, 0, 0]);
+    expect(second.material.baseColor).toEqual([0, 1, 0]);
+    expect(first.instances).toHaveLength(2);
+    expect(second.instances).toHaveLength(2);
+    expect(first.instances[0]![12]).toBeCloseTo(2);
+    expect(first.instances[1]![13]).toBeCloseTo(3);
+    expect(second.instances[0]![12]).toBeCloseTo(2);
+    expect(second.instances[1]![13]).toBeCloseTo(3);
+  });
+
+  it('emissive InstancedMesh emits mesh-area and strips duplicate emissive on primitive', () => {
+    const s = new THREE.Scene();
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: new THREE.Color(0.1, 0.2, 0.4),
+        emissiveIntensity: 5,
+      }),
+      2,
+    );
+    s.add(im);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(1);
+    expect(v.emitters).toHaveLength(1);
+    expect(v.emitters[0]).toMatchObject({
+      kind: 'mesh-area',
+      meshId: im.uuid,
+      color: [0.1, 0.2, 0.4],
+      intensity: 5,
+    });
+    const prim = v.primitives[0]!;
+    expect(prim.kind).toBe('instanced-mesh');
+    expect(prim.material.emissive).toEqual([0, 0, 0]);
+    expect(prim.material.emissiveIntensity).toBe(0);
+  });
+
+  it('splits grouped multi-material SkinnedMesh geometry into per-group skinned primitives', () => {
+    const s = new THREE.Scene();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      1, 1, 0,
+    ]), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]), 3));
+    g.setAttribute('skinIndex', new THREE.BufferAttribute(new Uint16Array([
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+    ]), 4));
+    g.setAttribute('skinWeight', new THREE.BufferAttribute(new Float32Array([
+      1, 0, 0, 0,
+      1, 0, 0, 0,
+      1, 0, 0, 0,
+      1, 0, 0, 0,
+    ]), 4));
+    g.setIndex([0, 1, 2, 2, 1, 3]);
+    g.addGroup(0, 3, 1);
+    g.addGroup(3, 3, 0);
+
+    const bone = new THREE.Bone();
+    const sm = new THREE.SkinnedMesh(g, [
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0) }),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
+    ]);
+    sm.add(bone);
+    sm.bind(new THREE.Skeleton([bone]));
+    s.add(sm);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(2);
+    const first = v.primitives[0]!;
+    const second = v.primitives[1]!;
+    expect(first.kind).toBe('skinned-mesh');
+    expect(second.kind).toBe('skinned-mesh');
+    if (first.kind !== 'skinned-mesh' || second.kind !== 'skinned-mesh') return;
+
+    expect(first.id).toBe(`${sm.uuid}:group:0:material:1`);
+    expect(second.id).toBe(`${sm.uuid}:group:1:material:0`);
+    expect(first.positions).toEqual(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]));
+    expect(second.positions).toEqual(new Float32Array([
+      0, 1, 0,
+      1, 0, 0,
+      1, 1, 0,
+    ]));
+    expect(first.skinIndices).toEqual(new Uint32Array([
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+    ]));
+    expect(first.skinWeights).toEqual(new Float32Array([
+      1, 0, 0, 0,
+      1, 0, 0, 0,
+      1, 0, 0, 0,
+    ]));
+    expect(first.material.baseColor).toEqual([1, 0, 0]);
+    expect(second.material.baseColor).toEqual([0, 1, 0]);
+  });
+
+  it('accepts host-provided custom material conversion for ShaderMaterial', () => {
+    const s = new THREE.Scene();
+    const shader = new THREE.ShaderMaterial();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), shader);
+    s.add(mesh);
+    const converter = vi.fn(() => ({
+      baseColor: [0.2, 0.4, 0.8] as [number, number, number],
+      roughness: 0.35,
+      metallic: 0,
+    }));
+
+    const v = sceneFromThreeJS(s, { materialConverter: converter });
+
+    expect(converter).toHaveBeenCalledWith(shader, expect.objectContaining({
+      label: mesh.uuid,
+      meshTypeName: 'Mesh',
+    }));
+    expect(v.primitives).toHaveLength(1);
+    expect(v.primitives[0]!.material.baseColor).toEqual([0.2, 0.4, 0.8]);
+  });
+
   it('preserves rotation + scale + parent-world instance transforms (TLAS)', () => {
     // G-P0.4 / G-P2.7: all prior InstancedMesh fixtures used identity/translation
     // matrices, so the rotation/scale path through convertInstancedMesh

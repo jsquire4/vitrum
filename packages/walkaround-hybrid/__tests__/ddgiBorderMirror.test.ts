@@ -61,10 +61,10 @@ function borderMirror(
   if (onBottomEdge && onRightEdge) return { mirror: [1,     1    ], isBorder: true };
 
   // Edges
-  if (onTopEdge)    return { mirror: [N + 1 - lx, 2        ], isBorder: true };
-  if (onBottomEdge) return { mirror: [N + 1 - lx, N - 1    ], isBorder: true };
-  if (onLeftEdge)   return { mirror: [2,           N + 1 - ly], isBorder: true };
-  if (onRightEdge)  return { mirror: [N - 1,       N + 1 - ly], isBorder: true };
+  if (onTopEdge)    return { mirror: [N + 1 - lx, 1        ], isBorder: true };
+  if (onBottomEdge) return { mirror: [N + 1 - lx, N        ], isBorder: true };
+  if (onLeftEdge)   return { mirror: [1,           N + 1 - ly], isBorder: true };
+  if (onRightEdge)  return { mirror: [N,           N + 1 - ly], isBorder: true };
 
   // Unreachable
   return { mirror: [lx, ly], isBorder: false };
@@ -191,24 +191,24 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
       expect(mirror).toEqual([1, 1]);
     });
 
-    it('top edge (lx=3, ly=0) → interior (N+1-3, 2) = (6, 2)', () => {
+    it('top edge (lx=3, ly=0) → interior (N+1-3, 1) = (6, 1)', () => {
       const { mirror } = borderMirror(N, 3, 0);
-      expect(mirror).toEqual([6, 2]);
+      expect(mirror).toEqual([6, 1]);
     });
 
-    it('bottom edge (lx=5, ly=N+1=9) → interior (N+1-5, N-1) = (4, 7)', () => {
+    it('bottom edge (lx=5, ly=N+1=9) → interior (N+1-5, N) = (4, 8)', () => {
       const { mirror } = borderMirror(N, 5, N + 1);
-      expect(mirror).toEqual([4, 7]);
+      expect(mirror).toEqual([4, 8]);
     });
 
-    it('left edge (lx=0, ly=4) → interior (2, N+1-4) = (2, 5)', () => {
+    it('left edge (lx=0, ly=4) → interior (1, N+1-4) = (1, 5)', () => {
       const { mirror } = borderMirror(N, 0, 4);
-      expect(mirror).toEqual([2, 5]);
+      expect(mirror).toEqual([1, 5]);
     });
 
-    it('right edge (lx=N+1=9, ly=7) → interior (N-1, N+1-7) = (7, 2)', () => {
+    it('right edge (lx=N+1=9, ly=7) → interior (N, N+1-7) = (8, 2)', () => {
       const { mirror } = borderMirror(N, N + 1, 7);
-      expect(mirror).toEqual([7, 2]);
+      expect(mirror).toEqual([8, 2]);
     });
   });
 
@@ -302,7 +302,7 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
       const sampled = bilinear(tl, tr, bl, br, u, v);
 
       const EPS = 1e-5;
-      // Border mirror: right edge (lx=N+1, any ly) → interior (N-1, N+1-ly).
+      // Border mirror: right edge (lx=N+1, any ly) → interior (N, N+1-ly).
       // For a uniform atlas, this is always 0.5.
       expect(Math.abs(sampled[0] - 0.5)).toBeLessThan(EPS);
     });
@@ -362,7 +362,9 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Pass layout tests — border slots must be registered.
+// Pass layout tests — border slots must stay registered.
+// `ddgi-border-vis` is the live compute pass. `ddgi-border-irr` is retained as
+// a pass-order/timestamp slot after irradiance migrated to seam-free SH.
 // ---------------------------------------------------------------------------
 
 import { buildPassLayout, MAX_PASS_COUNT } from '../src/pipeline/timestampQueries.js';
@@ -418,14 +420,15 @@ describe('buildPassLayout — DDGI border fill slots', () => {
 // Test 5 — Non-uniform interior spot-check (catches source-row off-by-one).
 // Audit follow-up: the uniform-interior tests above can't distinguish
 // source row 1 vs row 2 for the top edge (or N vs N-1 for bottom). This
-// suite uses a per-row distinct value so a bad source row would show up.
+// suite uses per-row/per-column distinct values so the current adjacent-row/col
+// convention in probeUpdateBorder.wgsl.ts stays pinned exactly.
 // ---------------------------------------------------------------------------
 describe('non-uniform interior — source-row sanity', () => {
-  it('N=8: top-edge border samples interior row 2 (not row 1)', () => {
+  it('N=8: top-edge border samples adjacent interior row 1 (not row 2)', () => {
     const N = 8;
     const stride = N + 2;
     // Interior row r (1..N) is filled with r=row, g=0, b=0, a=1.
-    // After border fill, top-edge border (ly=0, lx=1..N) should hold row=2.
+    // After border fill, top-edge border (ly=0, lx=1..N) should hold row=1.
     const interior = new Float32Array(N * N * 4);
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
@@ -438,19 +441,19 @@ describe('non-uniform interior — source-row sanity', () => {
     }
     const atlas = runBorderFill(N, interior);
 
-    // For each top-edge border texel (lx ∈ 1..N, ly = 0), the source per
-    // borderMirror is interior (N+1-lx, 2). The atlas y=0 row should hold
-    // value r=2 in every position.
+    // For each top-edge border texel (lx in 1..N, ly = 0), the source per
+    // borderMirror is interior (N+1-lx, 1). The atlas y=0 row should hold
+    // value r=1 in every position.
     for (let lx = 1; lx <= N; lx++) {
       const [r, g, b, a] = readTexel(atlas, stride, lx, 0);
-      expect(r).toBe(2);  // ← source row label is 2 (NOT 1)
+      expect(r).toBe(1);
       expect(g).toBe(0);
       expect(b).toBe(0);
       expect(a).toBe(1);
     }
   });
 
-  it('N=8: bottom-edge border samples interior row N-1 = 7 (not row N = 8)', () => {
+  it('N=8: bottom-edge border samples adjacent interior row N = 8 (not row N-1 = 7)', () => {
     const N = 8;
     const stride = N + 2;
     const interior = new Float32Array(N * N * 4);
@@ -463,15 +466,15 @@ describe('non-uniform interior — source-row sanity', () => {
     }
     const atlas = runBorderFill(N, interior);
 
-    // Bottom-edge border (lx ∈ 1..N, ly = N+1=9). Source: interior (N+1-lx, N-1).
-    // N-1 = 7 → row label 7 (NOT 8).
+    // Bottom-edge border (lx in 1..N, ly = N+1=9). Source: interior (N+1-lx, N).
+    // N = 8 -> row label 8.
     for (let lx = 1; lx <= N; lx++) {
       const [r] = readTexel(atlas, stride, lx, N + 1);
-      expect(r).toBe(7);
+      expect(r).toBe(8);
     }
   });
 
-  it('N=8: left-edge border samples interior column 2 (not column 1)', () => {
+  it('N=8: left-edge border samples adjacent interior column 1 (not column 2)', () => {
     const N = 8;
     const stride = N + 2;
     const interior = new Float32Array(N * N * 4);
@@ -485,11 +488,11 @@ describe('non-uniform interior — source-row sanity', () => {
     }
     const atlas = runBorderFill(N, interior);
 
-    // Left-edge border (lx=0, ly ∈ 1..N). Source: interior (2, N+1-ly).
-    // Column label 2 (NOT 1).
+    // Left-edge border (lx=0, ly in 1..N). Source: interior (1, N+1-ly).
+    // Column label 1.
     for (let ly = 1; ly <= N; ly++) {
       const [r] = readTexel(atlas, stride, 0, ly);
-      expect(r).toBe(2);
+      expect(r).toBe(1);
     }
   });
 

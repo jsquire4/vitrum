@@ -93,6 +93,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
       triangleMaterialIds: { cpuData: new Uint32Array(1).buffer, byteLength: 4, count: 1 },
       buildMaterials: [new THREE.MeshStandardMaterial()],
+      coreMaterials: [],
       emitterNormals: new Float32Array(16),
       bvhMode: 'merged' as const,
       primitiveTlasBindings: [],
@@ -107,6 +108,12 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
   return {
     buildReSTIRSceneBVH: buildFn,
     buildReSTIRSceneBVHForScene: buildFn,
+    rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
+      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
+      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
+      emitterCount: 1,
+      totalEmissivePower: 2,
+    })),
     rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },

@@ -162,6 +162,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
       triangleMaterialIds: { cpuData: new Uint32Array(1).buffer, byteLength: 4, count: 1 },
       buildMaterials: [new THREE.MeshStandardMaterial()],
+      coreMaterials: [],
       emitterNormals: new Float32Array(16),
       bvhMode: 'merged' as const,
       primitiveTlasBindings: [],
@@ -177,6 +178,12 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
   return {
     buildReSTIRSceneBVH: buildFn,
     buildReSTIRSceneBVHForScene: buildFn,
+    rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
+      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
+      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
+      emitterCount: 1,
+      totalEmissivePower: 2,
+    })),
     rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
@@ -241,6 +248,10 @@ vi.mock('../src/HybridEngineGiPropagation.js', async () => {
 
 import { HybridEngine } from '../src/HybridEngine.js';
 import { asMat4, type Scene } from '@vitrum/core';
+import {
+  rebuildEmitterBuffersFromCoreScene,
+  rebuildEmitterBuffersFromSceneRoots,
+} from '../src/restir/bvhCompute.js';
 
 function getGiPropState(): GiPropagationState {
   return (globalThis as unknown as { __HYBRID_GIPROP_STATE__: GiPropagationState }).__HYBRID_GIPROP_STATE__;
@@ -322,6 +333,16 @@ async function drainMicrotasks(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
   await new Promise((r) => setTimeout(r, 50));
   for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+async function bootReadyEngine(): Promise<{ engine: HybridEngine; s: GeoUpdateState }> {
+  const engine = makeEngine();
+  const s = getState();
+  engine.setScene(SCENE_WITH_MESH);
+  await waitForPipelineCount(1);
+  s.pipelineInitDeferreds[0]!.resolve();
+  await drainMicrotasks();
+  return { engine, s };
 }
 
 describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () => {
@@ -540,6 +561,68 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
       transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     })).toThrow(/no scene set/);
   });
+
+  it('call during setScene initialization throws instead of racing BVH/pipeline publish', async () => {
+    const engine = makeEngine();
+    const s = getState();
+
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+    const buildCountBefore = s.buildBVHCalls.length;
+
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1]),
+    })).toThrow(/initializing/);
+    expect(() => engine.applyGpuSkinnedRefit(
+      'mesh-a',
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+      new Float32Array([0, 1, 0, 0, 1, 0, 0, 0, 1]),
+    )).toThrow(/initializing/);
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+  });
+});
+
+describe('HybridEngine lifecycle mutation guards', () => {
+  it('blocks scene and primitive mutations after dispose', async () => {
+    const { engine, s } = await bootReadyEngine();
+    engine.dispose();
+
+    const buildCountBefore = s.buildBVHCalls.length;
+    expect(() => engine.setScene(SCENE_WITH_MESH)).toThrow(/disposed/);
+    expect(() => engine.setSize(128, 128)).toThrow(/disposed/);
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+    })).toThrow(/disposed/);
+    expect(() => engine.applyGpuSkinnedRefit(
+      'mesh-a',
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+      new Float32Array([0, 1, 0, 0, 1, 0, 0, 0, 1]),
+    )).toThrow(/disposed/);
+    expect(() => engine.reset()).toThrow(/disposed/);
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+  });
+
+  it('pause/resume throw after dispose and no-op while initializing', async () => {
+    const engine = makeEngine();
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+
+    expect(() => engine.pause()).not.toThrow();
+    expect(engine.state).toBe('initializing');
+    expect(() => engine.resume()).not.toThrow();
+    expect(engine.state).toBe('initializing');
+
+    getState().pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+    expect(engine.state).toBe('ready');
+
+    engine.dispose();
+    expect(() => engine.pause()).toThrow(/disposed/);
+    expect(() => engine.resume()).toThrow(/disposed/);
+  });
 });
 
 describe('HybridEngine.updateEmitter', () => {
@@ -552,8 +635,12 @@ describe('HybridEngine.updateEmitter', () => {
     await drainMicrotasks();
     const buildCountBefore = s.buildBVHCalls.length;
     const pipeline = s.pipelineConstructed[0]!;
+    const coreRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length;
+    const legacyRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length;
     engine.updateEmitter!('point-a', { intensity: 2 });
     expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+    expect(vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length).toBe(coreRebuildsBefore + 1);
+    expect(vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length).toBe(legacyRebuildsBefore);
     expect(pipeline.updateEmitters).toHaveBeenCalled();
     expect(pipeline.requestAccumReset).toHaveBeenCalled();
   });

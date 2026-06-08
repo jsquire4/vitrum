@@ -14,12 +14,13 @@
 import type * as THREE from 'three';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import {
-  convertInstancedMesh,
+  convertInstancedMeshToPrimitives,
   convertMeshToPrimitives,
-  convertSkinnedMesh,
+  convertSkinnedMeshToPrimitives,
   emissiveMaterialAreaEmitter,
-  emissiveMeshAreaEmitter,
   stripEmissive,
+  type MeshConversionOptions,
+  type ThreeMaterialConverter,
 } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
@@ -48,12 +49,28 @@ function firstMaterial(material: THREE.Material | THREE.Material[]): THREE.Mater
   return Array.isArray(material) ? material[0] ?? null : material ?? null;
 }
 
-function assertSupportedRenderableMaterial(rawMat: THREE.Material | null, label: string): void {
+export interface SceneFromThreeJSOptions {
+  /**
+   * Optional host converter for material classes the default adapter does not
+   * understand, such as ShaderMaterial/RawShaderMaterial.
+   *
+   * Return a complete core MaterialSpec to accept the material; return
+   * null/undefined to fall back to the built-in converter/diagnostic.
+   */
+  readonly materialConverter?: ThreeMaterialConverter;
+}
+
+function assertSupportedRenderableMaterial(
+  rawMat: THREE.Material | null,
+  label: string,
+  options: SceneFromThreeJSOptions,
+): void {
   if (
     rawMat != null &&
     ((rawMat as THREE.ShaderMaterial).isShaderMaterial === true ||
       (rawMat as THREE.RawShaderMaterial).isRawShaderMaterial === true)
   ) {
+    if (options.materialConverter != null) return;
     throw new Error(
       `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are listed in the backend's EngineCapabilities.`,
     );
@@ -84,11 +101,19 @@ function shouldSkipRenderableObject(obj: THREE.Object3D, rawMat: THREE.Material 
  * call. The warning fires again on the next call — it is not suppressed across
  * calls. This ensures scene hot-reloads in dev don't permanently silence warnings.
  */
-export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
+export function sceneFromThreeJS(
+  threeScene: THREE.Scene,
+  options: SceneFromThreeJSOptions = {},
+): Scene {
   threeScene.updateMatrixWorld(true);
 
   const primitives: ScenePrimitive[] = [];
   const emitters: SceneEmitter[] = [];
+  const meshConversionOptions: MeshConversionOptions = {
+    ...(options.materialConverter != null
+      ? { materialConverter: options.materialConverter }
+      : {}),
+  };
 
   // Per-call warning dedup set — scoped to this call, not module-global.
   // Prevents duplicate warnings for the same type within one traversal while
@@ -103,9 +128,25 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     if ((obj as THREE.InstancedMesh).isInstancedMesh === true) {
       const inst = obj as THREE.InstancedMesh;
       const rawMat = firstMaterial(inst.material);
-      assertSupportedRenderableMaterial(rawMat, label);
+      assertSupportedRenderableMaterial(rawMat, label, options);
       if (shouldSkipRenderableObject(obj, rawMat)) return;
-      primitives.push(convertInstancedMesh(inst));
+      const splitMaterials = Array.isArray(inst.material) && inst.geometry.groups.length > 0
+        ? inst.material
+        : null;
+      const instancedPrimitives = convertInstancedMeshToPrimitives(inst, meshConversionOptions);
+      for (let primitiveIndex = 0; primitiveIndex < instancedPrimitives.length; primitiveIndex += 1) {
+        const prim = instancedPrimitives[primitiveIndex]!;
+        const sourceMaterial = splitMaterials != null
+          ? splitMaterials[inst.geometry.groups[primitiveIndex]!.materialIndex ?? 0] ?? null
+          : rawMat ?? null;
+        const meshEmitter = emissiveMaterialAreaEmitter(sourceMaterial, prim.id);
+        if (meshEmitter != null) {
+          emitters.push(meshEmitter);
+          primitives.push(stripEmissive(prim));
+          continue;
+        }
+        primitives.push(prim);
+      }
       return;
     }
 
@@ -117,19 +158,25 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh === true) {
       const skinned = obj as THREE.SkinnedMesh;
       const rawMat = firstMaterial(skinned.material);
-      assertSupportedRenderableMaterial(rawMat, label);
+      assertSupportedRenderableMaterial(rawMat, label, options);
       if (shouldSkipRenderableObject(obj, rawMat)) return;
-      const prim = convertSkinnedMesh(skinned);
-      const meshEmitter = emissiveMeshAreaEmitter(skinned);
-      if (meshEmitter != null) {
-        emitters.push(meshEmitter);
-        primitives.push({
-          ...prim,
-          material: { ...prim.material, emissive: [0, 0, 0], emissiveIntensity: 0 },
-        });
-        return;
+      const splitMaterials = Array.isArray(skinned.material) && skinned.geometry.groups.length > 0
+        ? skinned.material
+        : null;
+      const skinnedPrimitives = convertSkinnedMeshToPrimitives(skinned, meshConversionOptions);
+      for (let primitiveIndex = 0; primitiveIndex < skinnedPrimitives.length; primitiveIndex += 1) {
+        const prim = skinnedPrimitives[primitiveIndex]!;
+        const sourceMaterial = splitMaterials != null
+          ? splitMaterials[skinned.geometry.groups[primitiveIndex]!.materialIndex ?? 0] ?? null
+          : rawMat ?? null;
+        const meshEmitter = emissiveMaterialAreaEmitter(sourceMaterial, prim.id);
+        if (meshEmitter != null) {
+          emitters.push(meshEmitter);
+          primitives.push(stripEmissive(prim));
+          continue;
+        }
+        primitives.push(prim);
       }
-      primitives.push(prim);
       return;
     }
 
@@ -137,7 +184,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     if ((obj as THREE.Mesh).isMesh === true) {
       const mesh = obj as THREE.Mesh;
       const rawMat = firstMaterial(mesh.material);
-      assertSupportedRenderableMaterial(rawMat, label);
+      assertSupportedRenderableMaterial(rawMat, label, options);
       // Skip meshes that aren't visually rendered — these are pointer-
       // capture planes (CanvasEventRouter's 10000×10000 plane with
       // `visible={false}`), edge hot-zones (EdgeHotZone with opacity=0),
@@ -149,7 +196,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
       const splitMaterials = Array.isArray(mesh.material) && mesh.geometry.groups.length > 0
         ? mesh.material
         : null;
-      const meshPrimitives = convertMeshToPrimitives(mesh);
+      const meshPrimitives = convertMeshToPrimitives(mesh, meshConversionOptions);
       for (let primitiveIndex = 0; primitiveIndex < meshPrimitives.length; primitiveIndex += 1) {
         const prim = meshPrimitives[primitiveIndex]!;
         const sourceMaterial = splitMaterials != null
