@@ -64,6 +64,10 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				// light vertex at each indirect bounce (depth > 0).
 				FEATURE_BDPT: 0,
 
+				// Stained-glass shadow-ray normal-map perturbation is intentionally opt-in.
+				// Default 0 avoids depending on undefined-preprocessor-macro behaviour.
+				FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION: 0,
+
 				// 0 = PCG
 				// 1 = Sobol
 				// 2 = Stratified List

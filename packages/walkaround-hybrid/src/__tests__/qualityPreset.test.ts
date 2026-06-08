@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHECKERBOARD_SUPPORT_DETAILS,
   QUALITY_PRESETS,
   resolveQualityPreset,
   type QualityTier,
@@ -94,6 +95,32 @@ describe('resolveQualityPreset — preset → knob table', () => {
     for (const t of TIERS) {
       expect(resolveQualityPreset(t).enableRcPpgNeuralByDefault).toBe(false);
     }
+  });
+
+  it('presets never enable checkerboard until shade-pass perf proof exists', () => {
+    for (const t of TIERS) {
+      const preset = resolveQualityPreset(t);
+      expect(preset.checkerboard).toBe(false);
+      expect(preset.checkerboardPerfProof).toBe(CHECKERBOARD_SUPPORT_DETAILS.perfProof);
+      expect(preset.checkerboardPerfProof.status).toBe('pending');
+      if (preset.checkerboardPerfProof.status !== 'pending') {
+        throw new Error('checkerboard preset unexpectedly has measured perf proof');
+      }
+      expect(preset.checkerboardPerfProof.reason).toContain('shade-pass');
+      expect(preset.checkerboardPerfProof.requiredMetric).toBe('shade-pass-gpu-timestamp-ab');
+    }
+  });
+
+  it('checkerboard support details describe the pending performance proof', () => {
+    expect(CHECKERBOARD_SUPPORT_DETAILS).toMatchObject({
+      feature: 'checkerboardRendering',
+      defaultEnabled: false,
+      presetEnabled: false,
+      perfProof: {
+        status: 'pending',
+        requiredMetric: 'shade-pass-gpu-timestamp-ab',
+      },
+    });
   });
 
   it('resolutionFactor monotonically decreases ultra → low', () => {

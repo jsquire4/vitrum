@@ -72,8 +72,11 @@ describe('BvhBufferHost', () => {
       bvhMode: 'merged',
     } as SceneBVHBuffers);
     const r = host.sceneBindGroupResources();
+    const r2 = host.sceneBindGroupResources();
     expect(r.bvhNodesBuffer).toBeDefined();
     expect(r.tlasNodesBuffer).toBeDefined();
+    expect(r2.bvhBeerTextureView).toBe(r.bvhBeerTextureView);
+    expect(r2.bvhEmissiveTextureView).toBe(r.bvhEmissiveTextureView);
     expect(host.lightTreeBuffer()).toBeDefined();
     const mem = host.gpuMemorySections().staticScene;
     if (mem == null) throw new Error('expected staticScene memory section');

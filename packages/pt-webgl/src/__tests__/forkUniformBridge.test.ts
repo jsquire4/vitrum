@@ -88,12 +88,24 @@ describe('driveForkMaterialUniforms', () => {
     const pathTracer = makeStubPathTracer();
     const uniforms = pathTracer._pathTracer.material.uniforms;
     const cmfX = makeCountingUniform<unknown>(null);
+    const cmfY = makeCountingUniform<unknown>(null);
+    const cmfZ = makeCountingUniform<unknown>(null);
+    const xCdf = makeCountingUniform<unknown>(null);
     const yCdf = makeCountingUniform<unknown>(null);
+    const zCdf = makeCountingUniform<unknown>(null);
+    const xIntegral = makeCountingUniform(0);
     const yIntegral = makeCountingUniform(0);
+    const zIntegral = makeCountingUniform(0);
     const spectralRendering = makeCountingUniform(-1);
     uniforms.uCmfX = cmfX;
+    uniforms.uCmfY = cmfY;
+    uniforms.uCmfZ = cmfZ;
+    uniforms.uXCmfCdf = xCdf;
     uniforms.uYCmfCdf = yCdf;
+    uniforms.uZCmfCdf = zCdf;
+    uniforms.uXCmfIntegral = xIntegral;
     uniforms.uYCmfIntegral = yIntegral;
+    uniforms.uZCmfIntegral = zIntegral;
     uniforms.uSpectralRendering = spectralRendering;
 
     driveForkMaterialUniforms(pathTracer, {
@@ -110,8 +122,14 @@ describe('driveForkMaterialUniforms', () => {
     });
 
     expect(cmfX.writes).toBe(1);
+    expect(cmfY.writes).toBe(1);
+    expect(cmfZ.writes).toBe(1);
+    expect(xCdf.writes).toBe(1);
     expect(yCdf.writes).toBe(1);
+    expect(zCdf.writes).toBe(1);
+    expect(xIntegral.writes).toBe(1);
     expect(yIntegral.writes).toBe(1);
+    expect(zIntegral.writes).toBe(1);
     expect(spectralRendering.writes).toBe(2);
     expect(spectralRendering.value).toBe(1);
   });

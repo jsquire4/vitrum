@@ -17,6 +17,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:rc-behavior": "node ../../tools/benchmark-runner/run-rc-behavior-mechanical.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
   },

@@ -32,6 +32,9 @@
  *   - RC / PPG / neural — presets never force these ON (they need extra GPU
  *     resources / weights). `enableRcPpgNeuralByDefault` is informational for
  *     host UI; the engine default stays OFF regardless of preset.
+ *   - Checkerboard — presets never force this ON. It remains host opt-in only
+ *     until a measured shade-pass timing proof exists; motion A/B alone is not
+ *     enough to promote it into any preset.
  */
 
 /** Coarse quality preset id. */
@@ -40,6 +43,36 @@ export type QualityTier = 'ultra' | 'high' | 'medium' | 'low';
 /** GTAO dispatch mode resolved from a preset. `on` = half-res (today's
  *  behaviour), `quarter` = quarter-res dispatch, `off` = skip GTAO entirely. */
 type GtaoMode = 'on' | 'quarter' | 'off';
+
+/** Checkerboard stays off in presets until this carries measured shade-pass
+ *  timing evidence instead of the pending marker. */
+export type CheckerboardPerfProof =
+  | {
+      readonly status: 'pending';
+      readonly requiredMetric: 'shade-pass-gpu-timestamp-ab';
+      readonly reason: string;
+    }
+  | {
+      readonly status: 'measured';
+      readonly requiredMetric: 'shade-pass-gpu-timestamp-ab';
+      readonly benchmarkId: string;
+      readonly shadePassSpeedupRatio: number;
+      readonly capturedAt: string;
+    };
+
+export const CHECKERBOARD_PENDING_PERF_PROOF: CheckerboardPerfProof = Object.freeze({
+  status: 'pending',
+  requiredMetric: 'shade-pass-gpu-timestamp-ab',
+  reason:
+    'Checkerboard is opt-in only until a benchmark captures shade-pass GPU timestamp A/B with a measurable speedup and acceptable motion quality.',
+});
+
+export const CHECKERBOARD_SUPPORT_DETAILS = Object.freeze({
+  feature: 'checkerboardRendering',
+  defaultEnabled: false,
+  presetEnabled: false,
+  perfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+});
 
 /**
  * Resolved preset knob values. `undefined` means "leave the engine's existing
@@ -84,9 +117,11 @@ export interface QualityPreset {
   readonly enableRcPpgNeuralByDefault: boolean;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  FALSE in EVERY preset — checkerboard ships off-default + inert pending a
-   *  motion A/B (same discipline as RC/PPG/neural: presets never force it on).
-   *  A host opts in explicitly via `opts.checkerboardRendering`. */
+   *  shade-pass perf proof + motion A/B (same discipline as RC/PPG/neural:
+   *  presets never force it on). A host opts in explicitly via
+   *  `opts.checkerboardRendering`. */
   readonly checkerboard: boolean;
+  readonly checkerboardPerfProof: CheckerboardPerfProof;
 }
 
 /**
@@ -106,7 +141,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
     ppgDispatchInterval: 1,                  // every frame — no behaviour change when PPG is on.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (motion A/B pending) — never forced on by a preset.
+    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending) — never forced on by a preset.
+    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
   },
   high: {
     resolutionFactor: 0.85,
@@ -119,7 +155,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
     ppgDispatchInterval: 1,                  // every frame (high keeps full PPG cadence)
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (motion A/B pending).
+    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
+    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
   },
   medium: {
     resolutionFactor: 0.67,
@@ -134,7 +171,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
     ppgDispatchInterval: 2,                  // train every 2nd frame — ~½ the PPG train cost; tree persists between updates so quality drift is negligible.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (motion A/B pending).
+    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
+    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
   },
   low: {
     resolutionFactor: 0.5,
@@ -148,7 +186,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
     ppgDispatchInterval: 4,                  // budget: train every 4th frame — ~¼ the PPG train cost.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (motion A/B pending).
+    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
+    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
   },
 });
 

@@ -107,6 +107,17 @@ describe('pt-webgl capabilities', () => {
     expect(engine.capabilities.experimentalFeatures?.has('pt-webgl-caustic-approximate')).toBe(true);
   });
 
+  it('labels BDPT as opt-in experimental rather than a default hardware-validated feature', async () => {
+    const defaultEngine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
+    expect(defaultEngine.capabilities.experimentalFeatures?.has('bdpt-approximate')).not.toBe(true);
+
+    const bdptEngine = await createPTEngine_WebGL2({
+      device: makeRendererStub() as never,
+      bdpt: true,
+    });
+    expect(bdptEngine.capabilities.experimentalFeatures?.has('bdpt-approximate')).toBe(true);
+  });
+
   it('downscales render targets to the configured memory budget', async () => {
     const renderer = makeRendererStub();
     const engine = await createPTEngine_WebGL2({

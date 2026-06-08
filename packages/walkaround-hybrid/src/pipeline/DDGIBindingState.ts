@@ -25,6 +25,8 @@ import {
 } from './resourceManager.js';
 import type { BGLCache } from './bindGroupLayouts.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
+import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
+import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
 export interface DDGISetInputs {
   irradianceTex: GPUTexture;
@@ -195,25 +197,60 @@ export class DDGIBindingState implements PipelineSubsystem {
     device: GPUDevice,
     bglCache: BGLCache,
     frameResources: FrameResources,
+    resourceCache?: PipelineResourceCache,
   ): GPUBindGroup {
     const rcPh = this._ensureRCPlaceholders();
     // W9 — bind the real PPG tree buffers when PPG is enabled (FrameResources.ppg
     // is populated by allocatePPGResources), else the shared 16-byte placeholder.
     const ppgPh = this._ensurePpgPlaceholder();
     const ppg = frameResources.ppg;
-    return buildHybridLayersBindGroup(device, bglCache, {
+    const rcCascade0Buffer = this._rcCascade0 ?? rcPh.cascade0;
+    const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
+    const ppgSTreeBuffer = ppg.sTreeBuf ?? ppgPh;
+    const ppgDTreeBuffer = ppg.dTreeBuf ?? ppgPh;
+    const ppgDTreeOffsetsBuffer = ppg.dTreeOffsetsBuf ?? ppgPh;
+    const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
+    const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
+    const build = (): GPUBindGroup => buildHybridLayersBindGroup(device, bglCache, {
       ddgiIrrTex:             this._irrTex,
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
       ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
       nearestSampler:         frameResources.common.nearestSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
-      rcCascade0Buffer:       this._rcCascade0 ?? rcPh.cascade0,
-      rcParamsBuffer:         this._rcParamsBuffer ?? rcPh.params,
-      ppgSTreeBuffer:         ppg.sTreeBuf ?? ppgPh,
-      ppgDTreeBuffer:         ppg.dTreeBuf ?? ppgPh,
-      ppgDTreeOffsetsBuffer:  ppg.dTreeOffsetsBuf ?? ppgPh,
-    });
+      rcCascade0Buffer,
+      rcParamsBuffer,
+      ppgSTreeBuffer,
+      ppgDTreeBuffer,
+      ppgDTreeOffsetsBuffer,
+    }, resourceCache);
+    return resourceCache?.bindGroup('per-frame:hybrid-layers', [
+      irrTex,
+      visTex,
+      frameResources.common.nearestSampler,
+      frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer,
+      rcParamsBuffer,
+      ppgSTreeBuffer,
+      ppgDTreeBuffer,
+      ppgDTreeOffsetsBuffer,
+    ], build) ?? build();
+  }
+
+  gpuMemorySections(): GpuMemoryExternalSections {
+    const section: Record<string, unknown> = {};
+    const add = (name: string, resource: unknown): void => {
+      if (resource != null) section[name] = resource;
+    };
+
+    add('rcCascade0Placeholder', this._rcCascade0Placeholder);
+    add('rcParamsPlaceholder', this._rcParamsPlaceholder);
+    add('rcParamsBuffer', this._rcParamsBuffer);
+    add('ppgTreePlaceholder', this._ppgPlaceholder);
+
+    return Object.keys(section).length === 0
+      ? {}
+      : { hybridBindingState: section as GpuMemoryResourceSection };
   }
 
   /** Release held atlas references (the host owns those GPUTextures; we only

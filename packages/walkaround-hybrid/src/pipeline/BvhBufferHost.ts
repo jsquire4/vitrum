@@ -16,6 +16,7 @@ import {
   type EmissiveTexture,
 } from './bvhEmissiveTexture.js';
 import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
+import { PipelineResourceCache } from './PipelineResourceCache.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -45,6 +46,7 @@ export interface SceneBindGroupResources {
 const STORAGE = 0x80;
 
 export class BvhBufferHost {
+  private readonly _resourceCache = new PipelineResourceCache();
   private _bvhNodesBuffer: GPUBuffer | null = null;
   private _bvhIndexBuffer: GPUBuffer | null = null;
   /** WS1 — beer is now a texture; track triCount so refit can re-upload it. */
@@ -140,8 +142,8 @@ export class BvhBufferHost {
       bvhPositionBuffer: this._bvhPositionBuffer!,
       emitterBuffer: this._emitterBuffer!,
       emitterCdfBuffer: this._emitterCdfBuffer!,
-      bvhBeerTextureView: this._bvhBeerTexture!.texture.createView(),
-      bvhEmissiveTextureView: this._bvhEmissiveTexture!.texture.createView(),
+      bvhBeerTextureView: this._resourceCache.textureView(this._bvhBeerTexture!.texture),
+      bvhEmissiveTextureView: this._resourceCache.textureView(this._bvhEmissiveTexture!.texture),
       bvhNormalBuffer: this._bvhNormalBuffer!,
       tlasNodesBuffer: this._tlasNodesBuffer!,
       tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer!,

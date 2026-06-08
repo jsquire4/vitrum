@@ -34,6 +34,14 @@ import {
 } from './bindGroupLayouts.js';
 import { buildBindGroupFromTable } from './bindGroupDescriptors.js';
 
+interface TextureViewCache {
+  textureView(texture: GPUTexture): GPUTextureView;
+}
+
+function textureView(texture: GPUTexture, cache?: TextureViewCache): GPUTextureView {
+  return cache?.textureView(texture) ?? texture.createView();
+}
+
 // ─── W2-C13 follow-up: UBO codegen for builder-managed UBOs ───────────────────
 // AtrousUBO (atrous.wgsl.ts): {stepWidth, sigmaN, sigmaZ, sigmaC} — 4×f32 = 16 B.
 const ATROUS_UBO = defineUbo([
@@ -76,6 +84,7 @@ export function buildFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   r: FrameBindGroupResources,
+  viewCache?: TextureViewCache,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'frame', getFrameBindGroupLayout(device, cache), [
     r.placeholderView,                          // 0 gDepth (placeholder)
@@ -86,13 +95,13 @@ export function buildFrameBindGroup(
     { buffer: r.reservoirCurrentBuffer },       // 5
     { buffer: r.reservoirPreviousBuffer },      // 6
     { buffer: r.reservoirSpatialBuffer },       // 7
-    r.hdrColorTexture.createView(),             // 8
+    textureView(r.hdrColorTexture, viewCache),  // 8
     r.nearestSampler,                           // 9
-    r.gNormalDepthTexture.createView(),         // 10 gNormalDepth (shade-write only)
+    textureView(r.gNormalDepthTexture, viewCache), // 10 gNormalDepth (shade-write only)
     { buffer: r.reservoirGiCurrentBuffer },     // 11 GI reservoir (risGi-write/shade-read)
-    r.hdrIndirectTexture.createView(),          // 12 hdrIndirect (shade-write only)
-    r.hdrTotalTexture.createView(),             // 13 hdrTotal (shade-write only)
-    r.albedoTexture.createView(),               // 14 albedo (shade-write only)
+    textureView(r.hdrIndirectTexture, viewCache), // 12 hdrIndirect (shade-write only)
+    textureView(r.hdrTotalTexture, viewCache),  // 13 hdrTotal (shade-write only)
+    textureView(r.albedoTexture, viewCache),    // 14 albedo (shade-write only)
   ]);
 }
 
@@ -358,6 +367,7 @@ export function buildHybridLayersBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   r: HybridLayersResources,
+  viewCache?: TextureViewCache,
 ): GPUBindGroup {
   const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;
   const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderVisRgba16f;
@@ -365,8 +375,8 @@ export function buildHybridLayersBindGroup(
     label: 'hybrid-layers-bg',
     layout: getHybridLayersBindGroupLayout(device, cache),
     entries: [
-      { binding: 0, resource: irrTex.createView() },
-      { binding: 1, resource: visTex.createView() },
+      { binding: 0, resource: textureView(irrTex, viewCache) },
+      { binding: 1, resource: textureView(visTex, viewCache) },
       { binding: 2, resource: r.nearestSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },

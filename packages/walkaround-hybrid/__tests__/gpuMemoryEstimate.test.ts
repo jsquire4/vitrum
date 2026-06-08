@@ -271,6 +271,17 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
   const W = 1920;
   const H = 1080;
   const MB = 1024 * 1024;
+  const persistentSvgfTextures = [
+    'svgfPrevNormalDepthTexture',
+    'svgfHistoryLengthTextureA',
+    'svgfHistoryLengthTextureB',
+    'svgfMomentsTextureA',
+    'svgfMomentsTextureB',
+    'svgfPrevRadianceTextureA',
+    'svgfPrevRadianceTextureB',
+    'svgfVarianceTexture',
+    'svgfVarianceMomentsIntermedTexture',
+  ] as const;
 
   it('svgf category drops to ~0 when svgfEnabled is false (non-svgf-real denoiser)', () => {
     const device = makeStubDevice();
@@ -301,6 +312,30 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
     for (const cat of ['common', 'restirDI', 'restirGI', 'ddgi', 'gtao', 'ppg', 'neural'] as const) {
       expect(disabled.byCategory[cat], `category '${cat}' must not change`)
         .toBe(enabled.byCategory[cat]);
+    }
+  });
+
+  it('non-svgf denoisers allocate 1x1 SVGF persistent textures; svgf-real allocates full-res', () => {
+    const device = makeStubDevice();
+    const enabled = createFrameResources(device, W, H, { svgfEnabled: true });
+    const disabled = createFrameResources(device, W, H, { svgfEnabled: false });
+
+    for (const field of persistentSvgfTextures) {
+      const full = enabled.svgf[field] as unknown as StubTexture;
+      const placeholder = disabled.svgf[field] as unknown as StubTexture;
+      expect(full.width, `${field} full-res width`).toBe(W);
+      expect(full.height, `${field} full-res height`).toBe(H);
+      expect(placeholder.width, `${field} placeholder width`).toBe(1);
+      expect(placeholder.height, `${field} placeholder height`).toBe(1);
+    }
+
+    for (const field of ['svgfObjIdPlaceholderTexture', 'svgfPrevObjIdPlaceholderTexture'] as const) {
+      const full = enabled.svgf[field] as unknown as StubTexture;
+      const placeholder = disabled.svgf[field] as unknown as StubTexture;
+      expect(full.width, `${field} full-res-mode width`).toBe(1);
+      expect(full.height, `${field} full-res-mode height`).toBe(1);
+      expect(placeholder.width, `${field} placeholder width`).toBe(1);
+      expect(placeholder.height, `${field} placeholder height`).toBe(1);
     }
   });
 });

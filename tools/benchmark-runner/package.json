@@ -28,6 +28,7 @@
     "benchmark:rc-acceptance": "node ./run-rc-acceptance.mjs",
     "benchmark:rc-acceptance-full": "node ./run-rc-acceptance-full.mjs",
     "benchmark:rc-acceptance-mechanical": "node ./run-rc-acceptance-mechanical.mjs",
+    "benchmark:rc-behavior-mechanical": "node ./run-rc-behavior-mechanical.mjs",
     "write-rc-mechanical-fixtures": "node ./write-rc-mechanical-fixtures.mjs",
     "benchmark:bdpt-layered-refs": "node ./run-bdpt-layered-refs.mjs",
     "benchmark:bdpt-layered-mechanical": "node ./run-bdpt-layered-mechanical.mjs",

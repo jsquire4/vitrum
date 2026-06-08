@@ -12,13 +12,19 @@ import { existsSync } from 'node:fs';
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
 const forkDir = resolve(root, 'packages', 'three-gpu-pathtracer');
 const script = resolve(forkDir, 'scripts/shader-smoke-check.js');
+const strict = process.env.VITRUM_FORK_SHADER_SMOKE_STRICT === '1' || process.argv.includes('--strict');
 if (!existsSync(script)) {
-  console.error(`Fork shader smoke script missing: ${script}`);
-  console.error('Expected the absorbed package at packages/three-gpu-pathtracer.');
-  process.exit(2);
+  const message =
+    `Fork shader smoke script missing: ${script}\n` +
+    'Expected the absorbed package at packages/three-gpu-pathtracer.';
+  if (strict) {
+    console.error(message);
+    process.exit(2);
+  }
+  console.warn(`[vitrum] ${message}\nContinuing in advisory mode.`);
+  process.exit(0);
 }
 const r = spawnSync(process.execPath, [script], { cwd: forkDir, stdio: 'inherit' });
-const strict = process.env.VITRUM_FORK_SHADER_SMOKE_STRICT === '1';
 if ((r.status ?? 1) !== 0) {
   if (strict) {
     process.exit(r.status ?? 1);

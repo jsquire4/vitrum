@@ -30,13 +30,24 @@ describe('convertAnimations — THREE clips → vitrum AnimationClip (P3)', () =
     mesh.name = 'N';
     const root = new THREE.Scene();
     root.add(mesh);
-    const q = new THREE.QuaternionKeyframeTrack('N.quaternion', [0], [0, 0, 0, 1]);
+    const q = new THREE.QuaternionKeyframeTrack(
+      'N.quaternion',
+      [0, 0.5],
+      [0, 0, 0, 1, 0, 0.70710678, 0, 0.70710678],
+    );
     const s = new THREE.VectorKeyframeTrack('N.scale', [0], [1, 1, 1]);
     const clip = new THREE.AnimationClip('c', 0, [q, s]);
 
     const [out] = convertAnimations([clip], root);
     const paths = (out?.channels ?? []).map((c) => c.target.path).sort();
     expect(paths).toEqual(['rotation', 'scale']);
+    const rotation = out?.channels.find((c) => c.target.path === 'rotation');
+    expect(rotation?.sampler.times).toEqual(new Float32Array([0, 0.5]));
+    expect(rotation?.sampler.values).toEqual(
+      new Float32Array([0, 0, 0, 1, 0, 0.70710678, 0, 0.70710678]),
+    );
+    expect(rotation?.sampler.times).toHaveLength(2);
+    expect(rotation?.sampler.values).toHaveLength(8);
   });
 
   it('skips tracks whose target node cannot be resolved', () => {
@@ -58,7 +69,11 @@ describe('convertAnimations — THREE clips → vitrum AnimationClip (P3)', () =
     const clip = new THREE.AnimationClip('smooth', 1, [track]);
 
     const [out] = convertAnimations([clip], root);
-    expect(out?.channels[0]?.sampler.interpolation).toBe('LINEAR');
+    const sampler = out?.channels[0]?.sampler;
+    expect(sampler?.interpolation).toBe('LINEAR');
+    expect(sampler?.times).toEqual(new Float32Array([0, 1]));
+    expect(sampler?.values).toEqual(new Float32Array([0, 0, 0, 1, 1, 1]));
+    expect(sampler?.values).toHaveLength(6);
   });
 
   // G-P0.4(e) / G-P2.7: discrete (STEP) interpolation was previously untested.
@@ -100,11 +115,19 @@ describe('convertAnimations — THREE clips → vitrum AnimationClip (P3)', () =
     mesh.name = 'Morpher';
     const root = new THREE.Scene();
     root.add(mesh);
-    const track = new THREE.NumberKeyframeTrack('Morpher.morphTargetInfluences', [0, 1], [0, 1]);
+    const track = new THREE.NumberKeyframeTrack(
+      'Morpher.morphTargetInfluences',
+      [0, 0.25, 0.5],
+      [0, 0.75, 1],
+    );
     const clip = new THREE.AnimationClip('morph', 1, [track]);
 
     const [out] = convertAnimations([clip], root);
     expect(out?.channels).toHaveLength(1);
     expect(out?.channels[0]?.target.path).toBe('weights');
+    expect(out?.channels[0]?.sampler.times).toEqual(new Float32Array([0, 0.25, 0.5]));
+    expect(out?.channels[0]?.sampler.values).toEqual(new Float32Array([0, 0.75, 1]));
+    expect(out?.channels[0]?.sampler.times).toHaveLength(3);
+    expect(out?.channels[0]?.sampler.values).toHaveLength(3);
   });
 });

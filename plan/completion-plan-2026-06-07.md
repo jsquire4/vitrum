@@ -95,7 +95,8 @@ real work is narrower than the audit implied:**
 - **1-A DDGI octahedral solid-angle** — real, confirmed by the oracle this session.
 - **2-A PPG defects** (refine-loop runaway + base-GI instability) — real, V17.
 - **2-B WebGL-BDPT** `lightRec.point` compile — verify vs `178f80d` then fix.
-- **Phase 4 THREE-decouple T1–T5** — real, intricate, byte-identity-gated.
+- **Phase 4 THREE-decouple T1–T5** — real, intricate, byte-identity-gated,
+  and deferred from the current maturity sweep by the 2026-06-08 instruction.
 The hygiene/coverage phases (3) are mostly DONE; treat them as verify-and-add-
 coverage, not implement. Re-scope effort: closer to a defensible v1 than the
 audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
@@ -114,9 +115,16 @@ still removed). What it CLOSED / ADVANCED vs this plan:
 - **3-B ✅ PARTIAL.** New: `hybridEngineGeometryUpdate.test.ts` (the
   `HybridEnginePrimitiveUpdates` "0 tests" gap — transform/positions/topology/
   material fast paths), `engineContract.test.ts`, `backendContractMatrix.test.ts`,
-  `sceneFromThreeJS.test.ts`. REMAINING 3-B: scene-lighting,
-  stained-glass-extensions, `two-engines-one-scene` test script, walkaround-rc
-  kernels, three-bindings STEP/CUBICSPLINE.
+  `sceneFromThreeJS.test.ts`. **RECONCILED 2026-06-08:** the basic package
+  script/suite gaps are now CLOSED for `scene-lighting` (`test` script +
+  `sceneLighting.test.ts`), `stained-glass-extensions` (`test` script +
+  `stainedGlassExtensions.test.ts`, incl. `packCameUBO` layout pins),
+  `walkaround-rc` (`test` script + rc bindings/solid-angle/kernel math/cascade
+  tests), and `examples/two-engines-one-scene` (`test` script + 2 test files).
+  REMAINING 3-B is validation depth, not zero-test plumbing: three-bindings
+  STEP/CUBICSPLINE semantics, deeper two-engines backend smoke, and the RC
+  behavior/acceptance script that proves the kernels under the GPU behavior
+  path.
 - **A3 ✅ CLOSED.** `supportsIncrementalScene` → true; `updatePrimitive` geometry
   fast paths (transform-only no-recompile, positions-only refit, topology
   rebuild, material fast path) + disposed/initializing guards.
@@ -268,12 +276,19 @@ leave them be; this plan edit touches only the plan doc.
   - ✅ GI-state `serialize/deserialize` round-trip (`giStateSnapshot.test.ts`,
     incl. the v3 SH-break rejection) + TLAS rotation/scale transforms
     (`sceneFromThreeJS.test.ts` "preserves rotation+scale+parent-world").
-  - 🔴 `scene-lighting` + `stained-glass-extensions` (zero tests; incl. `packCameUBO`
-    GPU wire contract).
-  - 🔴 `examples/two-engines-one-scene` (2 test files, no `test` script → never run).
-  - 🔴 walkaround-rc kernels (`probeRayCast`/`cascadeMerge` — string pins only;
-    behavior test env-gated off → the numeric oracles from Phase 0-C make these
-    runnable).
+  - ✅ `scene-lighting` basic suite/script closed (`package.json` has
+    `test`; `__tests__/sceneLighting.test.ts` pins the host lighting math).
+  - ✅ `stained-glass-extensions` basic suite/script closed (`package.json` has
+    `test`; `__tests__/stainedGlassExtensions.test.ts` pins
+    `SURFACE_TEXTURE_ID`, userData keys, and `packCameUBO` std140 layout).
+  - ✅ `examples/two-engines-one-scene` basic script gap closed (`package.json`
+    has `test`; `benchmarkScenes.test.ts` + `prBenchHarness.test.ts` run).
+    🔴 Remaining: deeper backend smoke that actually constructs/runs the
+    example backend paths, not just scene builders and harness math.
+  - 🟡 walkaround-rc basic suite/script closed (`package.json` has `test`;
+    rc bindings/solid-angle/kernel-math/cascade tests exist). 🔴 Remaining:
+    the RC behavior/acceptance script that exercises `probeRayCast`/
+    `cascadeMerge` through the GPU behavior path and records objective output.
   - 🔴 three-bindings STEP/CUBICSPLINE animation import.
 - **3-C 🟡 G-P2.1–2.5 finish** (mostly ✅): verify the fork lint gate is green +
   add fork lint to a pre-push hook (so it can't rot again); close remaining
@@ -285,14 +300,17 @@ leave them be; this plan edit touches only the plan doc.
 
 ---
 
-## PHASE 4 — THREE-decouple (T1–T5)  [⚖️ STRATEGIC DECISION FIRST · concurrent with 2/3]
+## PHASE 4 — THREE-decouple (T1–T5)  [DEFERRED from the current maturity sweep]
 
 > The GI-signal DATA paths are decoupled (emitter/DDGI/per-tri-material/RC). The
-> INGESTION / RESOLVER / UPDATE layer is still THREE. **Maintainer decision: is
-> host-agnosticism a v1 requirement, or a documented internal dependency?**
+> INGESTION / RESOLVER / UPDATE layer is still THREE. **Current instruction
+> (2026-06-08): maturity work excludes THREE-decouple. Keep this track open as
+> deferred, not closed and not part of the current "knock out maturity work"
+> execution queue.**
 
-- **4-DECISION ⚖️** — v1 requirement → execute T1–T5; else document the THREE
-  dependency honestly in the contract + capabilities and **skip to Phase 5**.
+- **4-DECISION ⚖️ DEFERRED** — v1 requirement vs documented internal THREE
+  dependency remains a product/architecture call. Do not count T1–T5 as closed;
+  do not execute as part of the current non-THREE-decouple maturity sweep.
 - **T1 🟡 STEP 1 DONE + byte-A/B validated (`aa9a7ac`, 2026-06-07).** `buildMaterialResolver`'s `coreMaterials`/`resolveMaterialId` are now built CORE-NATIVELY from `scene.primitives` (one slot per mesh-like primitive in order) — the THREE traversal no longer drives the material-slot ordering (it only gathers the legacy `materials` fallback). Byte-identical: T1 GPU smoke **999 dB** on both backends + RC/TLAS/DDGI traversal oracles PASS. Removed the dead `DEFAULT_CORE_MATERIAL`. **REMAINING T1:** the returned THREE `materials` list is still consumed by **RC's material packer + the DDGI fallback** (`sceneBvhFromCore.ts:163`), and `sceneRoots` for the world-bake (though `mergeWorldSpaceFromCore` is the THREE-free analogue already used for geometry/emitters). Step 2 = make RC's cascade-material packer + the DDGI fallback read `coreMaterials`, then drop `sceneRoots`/`materials` from `buffersFromScenePack` + `buildMaterialResolver`. Then T2 (setScene synthesis), T3 (findMeshByPrimitiveId).
 - **T1 (orig) 🔴** `buildMaterialResolver` traverses THREE (`sceneBvhFromCore.ts:54-118`). **SCOPED 2026-06-07 (byte-identity-critical):** the `coreMaterials` DATA already comes from the core scene (`coreByName` map, lines 76-97), but the material SLOT ORDERING + dedup is driven by `root.traverseVisible(sceneRoots)` + `materials.indexOf(mat)` (THREE object/material identity). The per-triangle packers index by `geo.triMaterialIds`, produced by THIS ordering — so the decouple must REPRODUCE the exact slot order from `scene.primitives` (matching `vitrumSceneToThree`'s object-creation order, `vitrumSceneToThree.ts:312/329/341`) + dedup by core MaterialSpec identity, NOT a THREE traversal. The ordering used here also DIFFERS from `mergeWorldSpaceFromCore`'s structural dedup (the already-decoupled geometry path) — T1 must either unify them or reproduce the THREE order exactly. **A half-done ordering change silently corrupts per-triangle material assignment** → gate EVERY step with the byte/converged-A/B oracle (`ddgi-white-bounce-ab` set-equivalence pattern + a per-tri material-id A/B vs the THREE path). Step 1: replicate the THREE traversal order over `scene.primitives`, byte-A/B confirm, THEN drop the `sceneRoots` param. **MAPPED 2026-06-07 — the dedup is TRIVIAL:** `vitrumMaterialToThree` creates a FRESH THREE material per primitive (`vitrumSceneToThree.ts:379/396/408` — no sharing), so `materials.indexOf(mat)` NEVER dedups → the slot ordering is just ONE SLOT PER mesh/skinned/instanced PRIMITIVE in `scene.primitives` order (= the order `vitrumSceneToThree` adds them, lines 701-710; `root.traverseVisible` visits flat-added objects in add-order). So core-native `buildMaterialResolver(scene)` = iterate `scene.primitives`, push `p.material`→coreMaterials + `id`→index, `resolveMaterialId(id)=index`. **INTERCONNECTION (the real T1 scope):** `resolveMaterialId` defines the slots (`packSceneFromCore` builds `geo.triMaterialIds` from it), but `materials` (THREE) is ALSO passed to `buffersFromScenePack(scene, sceneRoots, geo, materials, coreMaterials)` as the LEGACY fallback (coreMaterials is preferred per the RestirBvhSnapshot doc). So full T1 = (a) core-native resolver, (b) confirm `buffersFromScenePack` uses coreMaterials not the THREE `materials` when coreMaterials is populated, (c) drop `sceneRoots`/`materials` from all three. SAFEST step: build the core-native ordering ALONGSIDE the THREE one + assert equality in a test, THEN remove the THREE path. Byte-A/B-gated each step (per-tri material-id A/B).
 - **T1 MATERIAL PATHS ✅ (2026-06-07, byte-A/B validated):** the material decouple is essentially complete — `buildMaterialResolver` coreMaterials/resolveMaterialId core-native (`aa9a7ac`), RC RESTIR path → `packCascadeMaterialsFromCore` (`df0d757`), DDGI already core-first (`probeUpdatePass.ts:444-449`). All 999 dB + RC/TLAS/DDGI oracles PASS. The THREE `materials` list now survives ONLY as the snapshot legacy-fallback + the T3 `updatePrimitive` consumer (`HybridEnginePrimitiveUpdates.ts:991` `bvh.buildMaterials`). `sceneRoots` stays until T3. The REMAINING THREE coupling is genuinely T2 (setScene synthesis) + T3 (updatePrimitive findMeshByPrimitiveId) — the ingestion/update layer, not the material packing.
@@ -319,7 +337,9 @@ but each is one focused workstream; can overlap with Phases 2/3.
   `supportDetails`/`experimentalFeatures` honestly reflect every demote decision.
 - **5-C** Examples: at least one example per backend that exercises the full
   stack end-to-end (working test scenes in `examples/`), each with a smoke test
-  that actually runs (fixes the `two-engines-one-scene` no-`test`-script gap).
+  that actually runs. `two-engines-one-scene` now has a `test` script and basic
+  scene/harness tests; the remaining gap is deeper backend smoke that actually
+  constructs/runs the backend paths.
 - **5-D** Docs accuracy: CHANGELOG current; per-package READMEs match shipped
   reality (the audit found descriptions denying shipped features); CREDITS
   complete; the maturity wording consistent ("experimental backend", not
@@ -345,10 +365,10 @@ Phase 1  ──┬─ 1-A DDGI octahedral (the work) ─┐
            ├─ 1-C three-bindings ─────────────┤  (3 concurrent)
            └─ 1-D re-validate P0 sweep ────────┘
                      │
-   ┌─────────────────┼─────────────────┐  (Phases 2/3/4 overlap — file-disjoint)
-Phase 2          Phase 3            Phase 4
- 2-A PPG          3-A perf-hygiene   4-DECISION ⚖️
- 2-B WebGL-BDPT   3-B test-gaps×N    T1→T2→T3→T4/5
+   ┌─────────────────┼─────────────────┐  (Phases 2/3 overlap; Phase 4 deferred)
+Phase 2          Phase 3            Phase 4 (deferred)
+ 2-A PPG          3-A perf-hygiene   4-DECISION ⚖️ deferred
+ 2-B WebGL-BDPT   3-B test-gaps×N    T1→T2→T3→T4/5 deferred
  2-D denoisers    3-C P2 residue
  2-F stained-glass
  (2-C/E/G small)
@@ -356,8 +376,9 @@ Phase 2          Phase 3            Phase 4
 Phase 5  ── 5-A matrix promote · 5-B contract · 5-C examples · 5-D docs · 5-E ⚖️ pkg · 5-F frontier
 ```
 
-## MAINTAINER DECISIONS — RESOLVED 2026-06-07
-1. **Phase 4 — DO IT.** Host-agnosticism (THREE-decouple T1–T5) IS a v1 requirement. Execute.
+## MAINTAINER DECISIONS — RESOLVED 2026-06-07; PHASE 4 UPDATED 2026-06-08
+1. **Phase 4 — DEFERRED for the current maturity sweep.** THREE-decouple T1–T5
+   stays open and explicitly out-of-scope for the current non-THREE-decouple work.
 2. **2-C — DEMOTE.** Fork caustics → `approximate` (honest label; MNEE is the reference). No physical WebGL2 caustic impl.
 3. **2-E — ENABLE on medium/low tiers.** Checkerboard ON in the `medium`+`low` quality presets, OFF for `ultra`+`high`. PRECONDITION: measure the real shade-pass GPU-time saving first (timestamps were unavailable on dzn — must confirm the win is real on a timestamp-capable adapter before flipping the presets; if the saving is marginal, report back).
 4. **5-E — DEFERRED.** Packaging/publish posture parked (maintainer will revisit).

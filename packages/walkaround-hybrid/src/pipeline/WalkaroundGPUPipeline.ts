@@ -57,6 +57,7 @@ import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
 } from './pipelineBindGroupFactory.js';
+import { PipelineResourceCache } from './PipelineResourceCache.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
 import { NrcSubsystem } from '../neural/nrc/nrcSubsystem.js';
 import { ReGIRCoordinator, resolveReGIRConfig, type ReGIRConfig } from './ReGIRCoordinator.js';
@@ -729,6 +730,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
   // Bind group layout memoisation cache
   private _bglCache: BGLCache = {};
+  private _resourceCache = new PipelineResourceCache();
 
   // Per-pass UBO buffers owned by the pipeline (i.e. NOT owned by a
   // denoiser; denoiser-private UBOs are field-owned by each Denoiser
@@ -779,7 +781,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   }
 
   get gpuMemoryExternalSections(): GpuMemoryExternalSections {
-    return this._initialized ? this._bvhHost.gpuMemorySections() : {};
+    return this._initialized
+      ? { ...this._bvhHost.gpuMemorySections(), ...this._ddgi.gpuMemorySections() }
+      : {};
   }
 
   /**
@@ -1383,6 +1387,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // GTAO downscale resolved at initialize() so a resize keeps the AO target
     // at the same quarter/half-res tier the host selected.
     destroyFrameResources(this._res);
+    this._resourceCache.clear();
     this._res = createFrameResources(this._device, width, height, {
       gtaoDownscale: this._gtaoDownscale,
       // Preserve the init-time SVGF gating (G-P2.6) — the active denoiser is
@@ -1440,6 +1445,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._bglCache,
       this._res.common.resolvedTexture,
       this._res.common.compositeSampler,
+      this._resourceCache,
     );
     const compositePass = this._compositePass;
     if (compositePass == null) return;
@@ -1506,7 +1512,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     });
 
     // ── Build placeholder texture view ────────────────────────────────────
-    const placeholderView = this._res.common.placeholderTexture.createView();
+    const placeholderView = this._resourceCache.textureView(this._res.common.placeholderTexture);
 
     const {
       frame: bgFrame,
@@ -1520,15 +1526,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._bvhHost.sceneBindGroupResources(),
       this._ddgi,
       placeholderView,
+      this._resourceCache,
     );
 
     // RIS-only light-tree bind group (group 3). Always built (a 1-node
     // placeholder backs the buffer when the tree is disabled); the RIS kernel
     // dereferences it only when ubo.lightTreeEnabled == 1.
-    const bgLightTree = buildLightTreeBindGroup(
-      d,
-      this._bglCache,
-      this._bvhHost.lightTreeBuffer(),
+    const lightTreeBuffer = this._bvhHost.lightTreeBuffer();
+    const bgLightTree = this._resourceCache.bindGroup(
+      'per-frame:light-tree',
+      [lightTreeBuffer],
+      () => buildLightTreeBindGroup(d, this._bglCache, lightTreeBuffer),
     );
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
@@ -1572,7 +1580,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const writeAccum = this._accumPingPongIndex === 0
       ? this._res.common.accumTextureB : this._res.common.accumTextureA;
 
-    const gNormalDepthView = this._res.common.gNormalDepthTexture.createView();
+    const gNormalDepthView = this._resourceCache.textureView(this._res.common.gNormalDepthTexture);
 
     // alpha=0.01 gives ~99% history weight per frame. Sprint-18-followup
     // tightening: even with the GI W cap + bilinear reservoir blend, the
@@ -1747,6 +1755,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // query buffers; the MLP trainer's buffers go with the device.
     this._nrc?.dispose();
     this._nrc = null;
+    this._resourceCache.clear();
   }
 
   /**

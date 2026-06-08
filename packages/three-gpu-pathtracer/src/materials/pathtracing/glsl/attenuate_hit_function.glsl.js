@@ -162,24 +162,15 @@ export const attenuate_hit_function = /* glsl */`
 
 				}
 
-				// stainedglass fork — Phase 4 caustic-texture patch.
-				// At each transmissive hit, sample the material normalMap and
-				// apply a small perturbation to the shadow ray direction. The
-				// shadow ray continues toward the light via attenuateHit's
-				// loop, gathering Beer-Lambert attenuation as before; the
-				// normalMap-driven tilt imprints surface texture variation
-				// onto NEE caustic projections — flat glass through pure-NEE
-				// produces knife-edge caustics, while perturbed shadow rays
-				// pick up the per-pixel surface relief (waterglass ripple,
-				// hammered mottle, etc.) that the BSDF transmission lobe
-				// already integrates for camera-ray-direct paths.
-				//
-				// Magnitude scales with (IOR - 1) so air (IOR=1) produces no
-				// perturbation, and rises with refractive contrast. For
-				// soda-lime glass (IOR=1.52), perturbStrength ≈ 0.052 — a
-				// small angular tilt that varies with normalMap.xy, keeping
-				// the shadow ray approximately aimed at the light.
-				if ( material.normalMap != - 1 ) {
+				// stainedglass fork — opt-in caustic-texture patch.
+				// Default conservative: FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
+				// is intentionally undefined/false unless a host compiles this fork
+				// path in. When enabled for shadow rays, the material normalMap
+				// applies a small perturbation to the ray direction so NEE caustic
+				// projections can pick up per-pixel surface relief.
+				#if FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
+
+				if ( isShadowRay && material.normalMap != - 1 ) {
 
 					vec4 tangentSample = textureSampleBarycoord(
 						attributesArray,
@@ -207,6 +198,8 @@ export const attenuate_hit_function = /* glsl */`
 					}
 
 				}
+
+				#endif
 
 				bool isTransmissiveRay = dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;
 				if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {

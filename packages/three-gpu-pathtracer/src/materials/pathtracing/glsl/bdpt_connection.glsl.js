@@ -35,8 +35,10 @@
  */
 export const bdpt_connection = /* glsl */`
 
-	// Firefly guard for rare near-singular connection paths. This is not a
-	// transport term; keep it high enough that ordinary BDPT energy is unaffected.
+	// Intentional biased firefly clamp for rare near-singular connection paths.
+	// This is not a Veach transport term, so this WebGL path is a practical
+	// firefly-controlled BDPT variant rather than an unbiased BDPT reference.
+	// Keep it high enough that ordinary BDPT energy is unaffected.
 	#define BDPT_CONTRIBUTION_CLAMP 100.0
 	#define BDPT_MAX_EYE_DEPTH 8
 	#define BDPT_MAX_MERGED 19

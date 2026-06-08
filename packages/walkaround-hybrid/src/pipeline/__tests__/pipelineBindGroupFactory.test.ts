@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../bindGroupBuilders.js', () => ({
   buildFrameBindGroup: vi.fn(() => ({ label: 'frame' })),
@@ -11,6 +11,17 @@ import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
 } from '../pipelineBindGroupFactory.js';
+import { PipelineResourceCache } from '../PipelineResourceCache.js';
+import {
+  buildCompositeBindGroup,
+  buildFrameBindGroup,
+  buildSceneBindGroup,
+  buildUboBindGroup,
+} from '../bindGroupBuilders.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('pipelineBindGroupFactory', () => {
   it('buildPerFrameBindGroups wires frame, scene, ubo, and hybrid layers', () => {
@@ -67,5 +78,154 @@ describe('pipelineBindGroupFactory', () => {
     const bg = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, {} as GPUSampler);
     expect(bg).toEqual({ label: 'composite' });
     expect(tex.createView).toHaveBeenCalled();
+  });
+
+  it('reuses stable per-frame bind groups when resource identities are unchanged', () => {
+    const device = {} as GPUDevice;
+    const cache = {};
+    const resourceCache = new PipelineResourceCache();
+    const placeholderView = {} as GPUTextureView;
+    const scene = {
+      bvhNodesBuffer: {} as GPUBuffer,
+      bvhIndexBuffer: {} as GPUBuffer,
+      bvhPositionBuffer: {} as GPUBuffer,
+      emitterBuffer: {} as GPUBuffer,
+      emitterCdfBuffer: {} as GPUBuffer,
+      bvhBeerTextureView: {} as GPUTextureView,
+      bvhNormalBuffer: {} as GPUBuffer,
+      bvhEmissiveTextureView: {} as GPUTextureView,
+      tlasNodesBuffer: {} as GPUBuffer,
+      tlasInstanceIndicesBuffer: {} as GPUBuffer,
+      tlasBlasRootsBuffer: {} as GPUBuffer,
+      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
+      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+    };
+    const ddgi = {
+      buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+    };
+    const textureView = {} as GPUTextureView;
+    const resources = {
+      common: {
+        hdrColorTexture: { createView: vi.fn(() => textureView) },
+        nearestSampler: {},
+        gNormalDepthTexture: { createView: vi.fn(() => textureView) },
+        uboBuffer: {},
+        tierTexture: { createView: vi.fn(() => textureView) },
+        compositeSampler: {},
+        resolvedTexture: { createView: vi.fn(() => textureView) },
+        hdrIndirectTexture: { createView: vi.fn(() => textureView) },
+        hdrTotalTexture: { createView: vi.fn(() => textureView) },
+        albedoTexture: { createView: vi.fn(() => textureView) },
+      },
+      restirDI: {
+        reservoirCurrentBuffer: {},
+        reservoirPreviousBuffer: {},
+        reservoirSpatialBuffer: {},
+      },
+      restirGI: { reservoirGiCurrentBuffer: {} },
+      gtao: { aoFullTexture: { createView: vi.fn(() => textureView) } },
+    } as never;
+
+    const first = buildPerFrameBindGroups(
+      device,
+      cache,
+      resources,
+      scene,
+      ddgi as never,
+      placeholderView,
+      resourceCache,
+    );
+    const second = buildPerFrameBindGroups(
+      device,
+      cache,
+      resources,
+      scene,
+      ddgi as never,
+      placeholderView,
+      resourceCache,
+    );
+
+    expect(second.frame).toBe(first.frame);
+    expect(second.scene).toBe(first.scene);
+    expect(second.ubo).toBe(first.ubo);
+    expect(buildFrameBindGroup).toHaveBeenCalledTimes(1);
+    expect(buildSceneBindGroup).toHaveBeenCalledTimes(1);
+    expect(buildUboBindGroup).toHaveBeenCalledTimes(1);
+    expect(ddgi.buildBindGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('rebuilds a cached per-frame group after a resource identity changes', () => {
+    const device = {} as GPUDevice;
+    const cache = {};
+    const resourceCache = new PipelineResourceCache();
+    const placeholderView = {} as GPUTextureView;
+    const textureView = {} as GPUTextureView;
+    const scene = {
+      bvhNodesBuffer: {} as GPUBuffer,
+      bvhIndexBuffer: {} as GPUBuffer,
+      bvhPositionBuffer: {} as GPUBuffer,
+      emitterBuffer: {} as GPUBuffer,
+      emitterCdfBuffer: {} as GPUBuffer,
+      bvhBeerTextureView: {} as GPUTextureView,
+      bvhNormalBuffer: {} as GPUBuffer,
+      bvhEmissiveTextureView: {} as GPUTextureView,
+      tlasNodesBuffer: {} as GPUBuffer,
+      tlasInstanceIndicesBuffer: {} as GPUBuffer,
+      tlasBlasRootsBuffer: {} as GPUBuffer,
+      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
+      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+    };
+    const ddgi = {
+      buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+    };
+    const base = {
+      common: {
+        hdrColorTexture: { createView: vi.fn(() => textureView) },
+        nearestSampler: {},
+        gNormalDepthTexture: { createView: vi.fn(() => textureView) },
+        uboBuffer: {},
+        tierTexture: { createView: vi.fn(() => textureView) },
+        compositeSampler: {},
+        resolvedTexture: { createView: vi.fn(() => textureView) },
+        hdrIndirectTexture: { createView: vi.fn(() => textureView) },
+        hdrTotalTexture: { createView: vi.fn(() => textureView) },
+        albedoTexture: { createView: vi.fn(() => textureView) },
+      },
+      restirDI: {
+        reservoirCurrentBuffer: {},
+        reservoirPreviousBuffer: {},
+        reservoirSpatialBuffer: {},
+      },
+      restirGI: { reservoirGiCurrentBuffer: {} },
+      gtao: { aoFullTexture: { createView: vi.fn(() => textureView) } },
+    };
+    const resized = {
+      ...base,
+      common: {
+        ...base.common,
+        hdrColorTexture: { createView: vi.fn(() => textureView) },
+      },
+    };
+
+    const first = buildPerFrameBindGroups(device, cache, base as never, scene, ddgi as never, placeholderView, resourceCache);
+    const second = buildPerFrameBindGroups(device, cache, resized as never, scene, ddgi as never, placeholderView, resourceCache);
+
+    expect(second.frame).not.toBe(first.frame);
+    expect(second.scene).toBe(first.scene);
+    expect(buildFrameBindGroup).toHaveBeenCalledTimes(2);
+    expect(buildSceneBindGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses composite-present bind groups and default texture views', () => {
+    const resourceCache = new PipelineResourceCache();
+    const tex = { createView: vi.fn(() => ({})) } as unknown as GPUTexture;
+    const sampler = {} as GPUSampler;
+
+    const first = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, resourceCache);
+    const second = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, resourceCache);
+
+    expect(second).toBe(first);
+    expect(tex.createView).toHaveBeenCalledTimes(1);
+    expect(buildCompositeBindGroup).toHaveBeenCalledTimes(1);
   });
 });

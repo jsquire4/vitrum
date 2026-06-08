@@ -26,6 +26,7 @@ const materialMain = read('./src/materials/pathtracing/PhysicalPathTracingMateri
 const fogFunctions = read('./src/shader/bsdf/fog_functions.glsl.js');
 const volumeMarch = read('./src/shader/bsdf/volume_march.glsl.js');
 const lightSampling = read('./src/shader/sampling/light_sampling_functions.glsl.js');
+const attenuateHit = read('./src/materials/pathtracing/glsl/attenuate_hit_function.glsl.js');
 const bdptConnection = read('./src/materials/pathtracing/glsl/bdpt_connection.glsl.js');
 const bdptLightSubpath = read('./src/materials/pathtracing/glsl/bdpt_light_subpath.glsl.js');
 const webglPathTracer = read('./src/core/WebGLPathTracer.js');
@@ -185,6 +186,27 @@ expectMatch(
 );
 
 expectMatch(
+	attenuateHit,
+	/#if\s+FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION[\s\S]*if\s*\(\s*isShadowRay\s*&&\s*material\.normalMap\s*!=\s*-\s*1\s*\)/,
+	'stained-glass shadow normal-map perturbation must be behind an explicit opt-in feature gate',
+);
+expectNoMatch(
+	attenuateHit,
+	/\n\s*if\s*\(\s*material\.normalMap\s*!=\s*-\s*1\s*\)\s*\{/,
+	'normal-map shadow-ray perturbation must not run from the default unguarded path',
+);
+expectNoMatch(
+	attenuateHit,
+	/#define\s+FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION\s+1\b/,
+	'FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION must not be enabled by default in the shader chunk',
+);
+expectMatch(
+	materialMain,
+	/FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION:\s*0/,
+	'PhysicalPathTracingMaterial must define shadow normal perturbation as explicit opt-in default 0',
+);
+
+expectMatch(
 	materialMain,
 	/bsdfSample\s*\(\s*-\s*ray\.direction,\s*surf,\s*state\.wavelength\s*\)/,
 	'PhysicalPathTracingMaterial must call bsdfSample with hero wavelength',
@@ -265,6 +287,16 @@ expectNoMatch(
 	materialMain,
 	/scatterRec\.pdf,\s*\/\/ eyePdfFwd/,
 	'eye loop must not pass the old scalar eyePdfFwd=scatterRec.pdf hack to the connection',
+);
+expectMatch(
+	bdptConnection,
+	/Intentional biased firefly clamp[\s\S]*rather than an unbiased BDPT reference[\s\S]*#define BDPT_CONTRIBUTION_CLAMP 100\.0/,
+	'BDPT_CONTRIBUTION_CLAMP must be documented as intentional biased firefly control, not unbiased BDPT',
+);
+expectMatch(
+	bdptConnection,
+	/return clamp\(\s*contribution,\s*vec3\(\s*0\.0\s*\),\s*vec3\(\s*BDPT_CONTRIBUTION_CLAMP\s*\)\s*\)/,
+	'BDPT connection contribution must remain clamped through BDPT_CONTRIBUTION_CLAMP',
 );
 
 // Lifecycle hygiene: generated cube-to-equirect helpers and secondary render
