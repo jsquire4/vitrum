@@ -113,8 +113,10 @@ describe('Tier-G — shade consumes per-channel multi-bounce AO', () => {
   // requires reading the full vec3 from `.rgb` so each colour channel can
   // darken by its own multi-bounce factor.
   it('reads .rgb from aoFullTexture (not .r)', () => {
-    expect(SHADE_WGSL).toContain('textureLoad(aoFullTexture, vec2i(gid.xy), 0).rgb');
-    expect(SHADE_WGSL).not.toMatch(/textureLoad\(aoFullTexture,\s*vec2i\(gid\.xy\),\s*0\)\.r\b/);
+    // `pix` is the decoded pixel coordinate (gid.xy on the OFF path; the
+    // compacted-dispatch-decoded active-parity pixel on the checkerboard path).
+    expect(SHADE_WGSL).toContain('textureLoad(aoFullTexture, vec2i(pix), 0).rgb');
+    expect(SHADE_WGSL).not.toMatch(/textureLoad\(aoFullTexture,\s*vec2i\(pix\),\s*0\)\.r\b/);
   });
 
   it('declares ao as vec3f for per-channel multiplication', () => {

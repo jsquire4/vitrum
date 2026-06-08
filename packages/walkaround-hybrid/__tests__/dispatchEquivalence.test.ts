@@ -516,3 +516,78 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     expect(unpack).toBeLessThan(indTA);
   });
 });
+
+describe('ShadePass — checkerboard compacted dispatch', () => {
+  // OFF (default): full-res dispatch, byte-identical to the pre-checkerboard
+  // path — frame/scene/ubo/hybrid at slots 0..3, full-res workgroup dims
+  // (ceil(W/8) × ceil(H/8)). makeCtx is 64×64 ⇒ [8, 8, 1].
+  it('checkerboard OFF: full-res dispatch [8,8,1], slots 0..3, label=shade', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: false, frameParity: 0 } as PassDispatchContext;
+    new ShadePass(stubPipeline('shade')).dispatch(ctx);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.label).toBe('shade');
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    expect(records[0]!.dims).toEqual([8, 8, 1]);
+  });
+
+  // ON: the X dispatch compacts to the active-parity columns — ceil(W/2)
+  // columns ⇒ ceil(ceil(W/2)/8) workgroups in X — while Y stays full-res. For
+  // 64×64: ceil(64/2)=32 cols ⇒ ceil(32/8)=4 workgroups X, ceil(64/8)=8 Y ⇒
+  // [4, 8, 1]. That is HALF the X workgroups of the OFF path (4 vs 8), i.e. the
+  // dispatched thread count halves — the whole point of the compaction. Same
+  // bind slots, same label.
+  it('checkerboard ON: compacted dispatch [4,8,1] (half the X workgroups), slots 0..3', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 1 } as PassDispatchContext;
+    new ShadePass(stubPipeline('shade')).dispatch(ctx);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.label).toBe('shade');
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    expect(records[0]!.dims).toEqual([4, 8, 1]);
+    // The compacted X count is strictly less than the OFF full-res X count.
+    expect(records[0]!.dims[0]).toBeLessThan(ctx.wgX);
+  });
+
+  // Parity-decode invariant (mirrors the shade.wgsl decode + the resolve.wgsl
+  // shaded-pixel predicate): every compacted thread (cx, cy) maps to a
+  // full-res pixel that is on the ACTIVE parity, and the decoded set exactly
+  // equals the active-parity pixel set the resolve pass copies through (and
+  // the complementary GAP set it reprojects). This is what guarantees the
+  // rendered image is unchanged by the compaction.
+  it('compacted-gid decode covers exactly the active-parity pixel set (resolve agreement)', () => {
+    const decodePix = (cx: number, cy: number, frameParity: number) => {
+      const startCol = (cy + frameParity) & 1;
+      return { x: cx * 2 + startCol, y: cy };
+    };
+    for (const W of [7, 8, 16, 31, 64]) {
+      for (const H of [5, 8, 17]) {
+        for (const parity of [0, 1]) {
+          const compactCols = Math.ceil(W / 2);
+          // The set decoded by the compacted dispatch (bounds-guarded like the
+          // shader's `any(pix >= dims)` early-out).
+          const decoded = new Set<number>();
+          for (let cy = 0; cy < H; cy++) {
+            for (let cx = 0; cx < compactCols; cx++) {
+              const p = decodePix(cx, cy, parity);
+              if (p.x >= W || p.y >= H) continue; // overshoot guard
+              // Every decoded pixel must be on the active parity.
+              expect(((p.x + p.y) & 1)).toBe(parity);
+              decoded.add(p.y * W + p.x);
+            }
+          }
+          // The active-parity pixel set the resolve pass treats as "shaded".
+          const active = new Set<number>();
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              if (((x + y) & 1) === parity) active.add(y * W + x);
+            }
+          }
+          // Exact set equality: no active pixel missed, no extra pixel shaded.
+          expect(decoded.size).toBe(active.size);
+          for (const idx of active) expect(decoded.has(idx)).toBe(true);
+        }
+      }
+    }
+  });
+});

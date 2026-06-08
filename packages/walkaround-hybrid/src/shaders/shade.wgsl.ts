@@ -408,28 +408,35 @@ fn lo_indirect(
 @compute @workgroup_size(8, 8, 1)
 fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
-  if (any(gid.xy >= dims)) { return; }
 
-  // Checkerboard half-res shading (opt-in; OFF by default => this branch is
-  // never taken => bit-identical with the full-shade kernel). When ON, GAP
-  // pixels ((gid.x+gid.y)&1u != frameParity) skip the expensive lighting and
-  // leave their prior-frame output untouched; resolve.wgsl reprojects them.
-  // frameParity here is the SAME frameCount&1 phase ResolvePass writes into
-  // ResolveUniforms.frameParity, so the pixels skipped here are exactly the
-  // pixels resolve gap-fills. Static/converging camera: leaving the prior
-  // frame's stores is correct (resolve does the reprojection); motion +
-  // disocclusion tuning is a deliberate follow-up.
-  if (ubo.checkerboardOn == 1u && ((gid.x + gid.y) & 1u) != (ubo.frameParity & 1u)) {
-    return;
+  // Checkerboard sparse-shade (opt-in; OFF by default). The host COMPACTS the
+  // dispatch when checkerboardOn == 1u to ~half the threads (one per
+  // active-parity pixel), so gid is an index into the active-parity pixel set
+  // rather than the full-res pixel. Decode it back to the true pixel pix:
+  //   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
+  // This lands EXACTLY on the (px+py)&1u == frameParity set the old full-res
+  // dispatch shaded (and the OLD path early-returned the complementary gap
+  // pixels for resolve.wgsl to reproject). frameParity here is the SAME
+  // frameCount&1 phase ResolvePass writes into ResolveUniforms.frameParity, so
+  // the shaded pixels match the resolve gap-fill exactly. The compacted X grid
+  // (ceil(W/2) columns) can overshoot the row's last active pixel on odd
+  // widths; that overshoot lands at px >= W and is caught by the bounds guard.
+  // When OFF, pix == gid.xy and the dispatch is full-res => bit-identical with
+  // the pre-checkerboard kernel.
+  var pix = gid.xy;
+  if (ubo.checkerboardOn == 1u) {
+    let startCol = (gid.y + ubo.frameParity) & 1u;
+    pix = vec2u(gid.x * 2u + startCol, gid.y);
   }
+  if (any(pix >= dims)) { return; }
 
-  let pixelIdx = gid.y * dims.x + gid.x;
-  var rng = pcgInit(gid.x ^ 11111u, gid.y ^ 22222u, ubo.frameSeed ^ 0xDEADu);
+  let pixelIdx = pix.y * dims.x + pix.x;
+  var rng = pcgInit(pix.x ^ 11111u, pix.y ^ 22222u, ubo.frameSeed ^ 0xDEADu);
 
   // Re-trace primary ray to find hit (primary-ray-cast mode).
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
+  let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
   let primaryHit = traceSceneFirstHit(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
@@ -441,16 +448,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     // Sky pixel: output sky color (already written by RIS pass, but keep consistent).
     // Read from UBO so RIS miss + shade miss agree.
     let skyMiss = ubo.skyTint * ubo.skyIrradiance;
-    textureStore(hdrColorOut, gid.xy, vec4f(skyMiss, 1.0));
+    textureStore(hdrColorOut, pix, vec4f(skyMiss, 1.0));
     // G-buffer for sky: encoded "up" normal + depth=0.  The atrous denoiser
     // uses depth=0 as a sentinel that distinguishes sky from non-sky and
     // prevents floor radiance bleeding into sky pixels (or vice versa).
-    textureStore(gNormalDepthOut, gid.xy, vec4f(0.5, 1.0, 0.5, 0.0));
+    textureStore(gNormalDepthOut, pix, vec4f(0.5, 1.0, 0.5, 0.0));
     // Item 24: sky pixels have no surface albedo. Write (1,1,1) so
     // indirectCombine's re-modulation is a no-op for sky pixels.
-    textureStore(hdrAlbedoOut,   gid.xy, vec4f(1.0, 1.0, 1.0, 1.0));
-    textureStore(hdrIndirectOut, gid.xy, vec4f(0.0, 0.0, 0.0, 1.0));
-    textureStore(hdrTotalOut,    gid.xy, vec4f(skyMiss, 1.0));
+    textureStore(hdrAlbedoOut,   pix, vec4f(1.0, 1.0, 1.0, 1.0));
+    textureStore(hdrIndirectOut, pix, vec4f(0.0, 0.0, 0.0, 1.0));
+    textureStore(hdrTotalOut,    pix, vec4f(skyMiss, 1.0));
     return;
   }
 
@@ -490,7 +497,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // discriminator the atrous denoiser uses to gate bleed across the
   // panel-wall boundary.
   let depthSigned = primaryHit.dist * select(1.0, -1.0, isGlass);
-  textureStore(gNormalDepthOut, gid.xy, vec4f(normal * 0.5 + 0.5, depthSigned));
+  textureStore(gNormalDepthOut, pix, vec4f(normal * 0.5 + 0.5, depthSigned));
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let albedo   = matColor.rgb;
@@ -510,9 +517,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
   // ubo.stainedGlassFlags bit is set (default OFF — generic scenes get zero
   // caustic/aperture). Same call args + same summation into directRadiance.
-  let Lo_sunCaustic = lo_sg_caustic(gid.xy, pos, normal, albedo, isGlass, isMetal);
+  let Lo_sunCaustic = lo_sg_caustic(pix, pos, normal, albedo, isGlass, isMetal);
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
-  let Lo_indirect   = lo_indirect(gid.xy, dims, pos, normal, isGlass, isMetal);
+  let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, isMetal);
 
   // Active terms (current pipeline state):
   //   Lo_emit         glass primary hit, deterministic per pixel
@@ -535,7 +542,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // shade read only the .r channel — equivalent to Bavoil-style scalar
   // AO. The upsample now writes the full per-channel multi-bounce vec3
   // into .rgb, so shade darkens each colour channel by its own factor.
-  let aoRaw = textureLoad(aoFullTexture, vec2i(gid.xy), 0).rgb;
+  let aoRaw = textureLoad(aoFullTexture, vec2i(pix), 0).rgb;
   let aoClamped = clamp(aoRaw, vec3f(0.0), vec3f(1.0));
   let ao = vec3f(
     select(1.0, aoClamped.r, aoRaw.r > 0.001),
@@ -603,11 +610,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   hdrAlbedoOut carries the visible-point diffuse albedo for that re-modulation.
   //   hdrTotalOut represents the full radiance (direct + re-modulated indirect)
   //   so the Welford variance estimate reflects the actual signal energy.
-  textureStore(hdrColorOut,    gid.xy, vec4f(clampedDirect,                          1.0));
-  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect,                        1.0));
-  textureStore(hdrAlbedoOut,   gid.xy, vec4f(albedo,                                 1.0));
+  textureStore(hdrColorOut,    pix, vec4f(clampedDirect,                          1.0));
+  textureStore(hdrIndirectOut, pix, vec4f(clampedIndirect,                        1.0));
+  textureStore(hdrAlbedoOut,   pix, vec4f(albedo,                                 1.0));
   // Total = direct + indirect-with-albedo-restored; used only by Welford.
-  textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect * albedo, 1.0));
+  textureStore(hdrTotalOut,    pix, vec4f(clampedDirect + clampedIndirect * albedo, 1.0));
 }
 `;
 

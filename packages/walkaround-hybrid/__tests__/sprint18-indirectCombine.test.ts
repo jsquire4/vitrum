@@ -33,8 +33,11 @@ describe('Sprint 18 — shade.wgsl split output', () => {
   });
 
   it('writes split outputs at the end of shadeMain', () => {
-    expect(SHADE_WGSL).toMatch(/textureStore\(hdrColorOut,\s*gid\.xy,\s*vec4f\(clampedDirect/);
-    expect(SHADE_WGSL).toMatch(/textureStore\(hdrIndirectOut,\s*gid\.xy,\s*vec4f\(clampedIndirect/);
+    // `pix` is the decoded pixel coordinate: gid.xy on the full-res (OFF) path,
+    // or the compacted-dispatch-decoded active-parity pixel on the checkerboard
+    // (ON) path. The split-output stores target `pix` in both cases.
+    expect(SHADE_WGSL).toMatch(/textureStore\(hdrColorOut,\s*pix,\s*vec4f\(clampedDirect/);
+    expect(SHADE_WGSL).toMatch(/textureStore\(hdrIndirectOut,\s*pix,\s*vec4f\(clampedIndirect/);
   });
 
 });
