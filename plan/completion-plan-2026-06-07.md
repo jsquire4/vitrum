@@ -24,7 +24,11 @@ v1 requirement vs documented internal dependency — a maintainer decision.
 
 ---
 
-## 🔴🔴 CONFIRMED P0 (2026-06-07) — default ReSTIR-GI indirect DEAD: `ddgiSample` returns ~0 at GI reconnection points
+## ✅ FIXED P0 (2026-06-07, `254c284`) — default GI was DEAD; DDGI surface/normal bias restores it
+**FIXED + GPU-validated.** Root cause: `ddgiSample` sampled the receiver at the EXACT surface; on a grid-boundary plane (Cornell walls/floors) the trilinear collapses onto in-plane probes (perpendicular probe-dir → cosine weight 0) → `totalWeight<1e-4` → returns 0 → the whole DDGI→ReSTIR-GI handoff zeroed → default GI dead (rode entirely on off-default RC). Fix: the standard Majercik 2019 §4 surface/normal bias (`biasedPos = worldPos + n·(gridSpacing·0.25)`) inside `ddgiSample`, applied to cell-select + cosine + visibility. **Validated on dzn:** default Cornell RC-off indirect **0.0004 → 0.237** (635×); 0-E RC-off **0.000 → 0.495**. Root-caused by elimination (gidiag): visibility-disable=no change (ruled out Chebyshev), force-Lo→0.80 (reservoir/blend proven working), offset-xs→0.25 (the fix). walkaround-hybrid 1210 green, no golden moved.
+- **RESIDUAL (open, ~2× under-energy):** the fixed GI is ~0.5× pt-webgpu's magnitude. Two contributors: (1) the SEPARATE **1-A DDGI axis-aligned octahedral under-read** (0.40–0.60× — the GI bounce hits ARE axis-aligned walls, so 1-A directly suppresses the now-alive GI); (2) the 0-E oracle's exposure anchor is a white interior patch that NOW receives the new GI → the anchor shifted, dropping all ratios (incl. RC-on 1.013→0.505 though RC is untouched). **Follow-ups:** fix 1-A (the octahedral solid-angle/quadrature), and re-anchor 0-E on a fix-INVARIANT (directly-lit) patch + replace its now-invalid "RC-off = zero-GI" discrimination variant (RC-off now HAS GI). The dead-GI P0 itself is resolved.
+
+## ~~CONFIRMED P0 — default GI DEAD~~ → FIXED above (`254c284`)
 **ROOT CAUSE LOCALIZED** via harness shader-patch A/B on dzn (bisect `--gidiag`):
 - Disabling the risGi final-visibility reject → NO change (indirect still 0.0004) → visibility test RULED OUT.
 - Forcing the candidate `Lo`=const on a bounce HIT → indirect jumps **0.0004 → 0.80** → the reservoir/RIS/blend/downstream pipeline ALL WORK, and the GI bounce rays DO hit.
