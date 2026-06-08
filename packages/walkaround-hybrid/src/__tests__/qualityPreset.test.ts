@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHECKERBOARD_MEASURED_PERF_PROOF,
   CHECKERBOARD_SUPPORT_DETAILS,
   QUALITY_PRESETS,
   resolveQualityPreset,
@@ -97,28 +98,43 @@ describe('resolveQualityPreset — preset → knob table', () => {
     }
   });
 
-  it('presets never enable checkerboard until shade-pass perf proof exists', () => {
+  it('degradation tiers (medium/low) enable checkerboard; quality tiers (ultra/high) keep it off', () => {
+    expect(resolveQualityPreset('ultra').checkerboard).toBe(false);
+    expect(resolveQualityPreset('high').checkerboard).toBe(false);
+    expect(resolveQualityPreset('medium').checkerboard).toBe(true);
+    expect(resolveQualityPreset('low').checkerboard).toBe(true);
+  });
+
+  it('every preset carries the MEASURED whole-frame perf proof (the evidence exists for all tiers)', () => {
     for (const t of TIERS) {
-      const preset = resolveQualityPreset(t);
-      expect(preset.checkerboard).toBe(false);
-      expect(preset.checkerboardPerfProof).toBe(CHECKERBOARD_SUPPORT_DETAILS.perfProof);
-      expect(preset.checkerboardPerfProof.status).toBe('pending');
-      if (preset.checkerboardPerfProof.status !== 'pending') {
-        throw new Error('checkerboard preset unexpectedly has measured perf proof');
+      const proof = resolveQualityPreset(t).checkerboardPerfProof;
+      expect(proof).toBe(CHECKERBOARD_MEASURED_PERF_PROOF);
+      expect(proof.status).toBe('measured');
+      if (proof.status !== 'measured') {
+        throw new Error('checkerboard preset unexpectedly has pending perf proof');
       }
-      expect(preset.checkerboardPerfProof.reason).toContain('shade-pass');
-      expect(preset.checkerboardPerfProof.requiredMetric).toBe('shade-pass-gpu-timestamp-ab');
+      expect(proof.requiredMetric).toBe('whole-frame-gpu-timestamp-ab');
+      // Whole-frame win recorded honestly (the verified median, ≈31% saved).
+      expect(proof.wholeFrameSpeedupRatio).toBeCloseTo(1.46, 5);
+      // The ris re-cast pass is the biggest per-pass win.
+      expect(proof.perPassSpeedups.ris).toBeGreaterThan(proof.perPassSpeedups.shade);
+      // Quality summary above the 35 dB bar at the motion-onset worst frame.
+      expect(proof.quality.motionWorstDb).toBeGreaterThan(35);
+      expect(proof.quality.staticDb).toBeGreaterThan(60);
+      expect(proof.adapter).toBe('dzn-rtx-4090');
     }
   });
 
-  it('checkerboard support details describe the pending performance proof', () => {
+  it('checkerboard support details describe the measured proof + per-tier preset enablement', () => {
     expect(CHECKERBOARD_SUPPORT_DETAILS).toMatchObject({
       feature: 'checkerboardRendering',
+      // Bare engine default (no preset ⇒ ultra) renders full-rate.
       defaultEnabled: false,
-      presetEnabled: false,
+      // Enabled on the degradation tiers, off on the quality tiers.
+      presetEnabled: { ultra: false, high: false, medium: true, low: true },
       perfProof: {
-        status: 'pending',
-        requiredMetric: 'shade-pass-gpu-timestamp-ab',
+        status: 'measured',
+        requiredMetric: 'whole-frame-gpu-timestamp-ab',
       },
     });
   });

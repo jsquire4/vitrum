@@ -583,26 +583,39 @@ export interface HybridEngineOptions extends EngineOptions {
    * shade then reads (same parity), so no gap-pixel reservoir passthrough is
    * needed.
    *
+   * The ReSTIR-DI `ris` initial-candidate pass ALSO compacts (it carries forward
+   * the gap-parity reservoir), so the full compacted set is FOUR passes — shade +
+   * the two spatial passes + ris — which is where the whole-frame win comes from
+   * (the BVH re-cast passes dominate).
+   *
    * Default: `false` — OFF shades/refines EVERY pixel and the resolve pass passes
    * through, so the render is BIT-IDENTICAL to the pre-checkerboard pipeline
    * (the OFF-is-bit-identical opt-in pattern shared by `rcEnabled` /
    * `ppgEnabled` / `restirPtReuse` / `nrcEnabled` / `regir`). The flag flips
-   * two already-present UBO fields + the dispatch compaction + the ResolvePass
+   * a few already-present UBO fields + the dispatch compaction + the ResolvePass
    * gate — it adds no bind groups, so it is NOT a compile-time structural decision.
+   * The bare engine default (no quality preset ⇒ `ultra`) leaves this OFF; the
+   * `medium`/`low` presets enable it (see below).
    *
    * Motion fallback: above {@link checkerboardMotionThresholdSq} of per-frame
    * camera motion the sparse path is forced FULL-RATE for that frame (shade +
-   * spatial + resolve all bit-identical to OFF), so a fast pan never exposes the
-   * half-rate reservoir lag. Checkerboard's win is realised at static / slow
-   * motion, where the reconstruction is faithful.
+   * spatial + ris + resolve all bit-identical to OFF), so a fast pan never
+   * exposes the half-rate reservoir lag. Checkerboard's win is realised at static
+   * / slow motion, where the reconstruction is faithful.
    *
-   * VALIDATED (objective A/B, dzn RTX-4090): PERF —
-   * `wsl-gpu/checkerboard-spatial-perf-ab.ts` per-pass GPU timestamps: each
-   * spatial pass ~1.85× (≈47% saved), shade ~1.6×, WHOLE FRAME ~1.28× (≈22%
-   * saved). QUALITY — `wsl-gpu/checkerboard-motion-ab.ts`: static converged
-   * ~64 dB; slow-drag worst-frame ~50 dB + gap error 0.0007 luma
-   * (sub-perceptible); faster motion falls to full-rate ⇒ ON == OFF
-   * bit-identical (999 dB). Kept off-default as a PERFORMANCE opt-in.
+   * VALIDATED + PROMOTED (objective whole-frame A/B, dzn RTX-4090). PERF (768px
+   * Cornell, interleaved-paired, both swap orders agree): per-pass spatial-1
+   * 1.87×, spatial-2 1.88×, ris 1.90×, shade 1.66×; WHOLE FRAME 1.46× (≈31%
+   * GPU-time saved) — the win grows with resolution. QUALITY (384px motion A/B):
+   * static/converged identical (64.34 dB); sustained motion ≈ full-rate; the
+   * motion-ONSET transient worst-frame is 43.6 dB (sub-perceptible 0.00101 luma
+   * gap) and recovers in 2-3 frames; fast motion forces full-rate (bit-identical).
+   * On this evidence checkerboard is now ENABLED in the `medium` + `low` quality
+   * presets (degradation tiers) and OFF in `ultra` + `high` (fidelity tiers); a
+   * host overrides either way with this flag. See
+   * `HybridEngineQualityPreset.ts` (`CHECKERBOARD_MEASURED_PERF_PROOF`). Harnesses
+   * (wsl-gpu): checkerboard-ris-perf-ab.ts, checkerboard-spatial-perf-ab.ts,
+   * checkerboard-motion-ab.ts, checkerboard-ris-isolate-ab.ts.
    */
   readonly checkerboardRendering?: boolean;
 

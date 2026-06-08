@@ -127,7 +127,9 @@ struct WalkaroundUBO {
   // the GAP pixels ((gid.x+gid.y)&1u != frameParity), leaving their prior-frame
   // output for resolve.wgsl to reproject. Host opt-in via
   // HybridEngineOptions.checkerboardRendering - the OFF-is-bit-identical pattern
-  // shared by RC/PPG/ReGIR/NRC. EXPERIMENTAL pending motion A/B (V-item).
+  // shared by RC/PPG/ReGIR/NRC. VALIDATED (whole-frame + motion A/B, dzn) and
+  // enabled in the medium/low quality presets (see HybridEngineQualityPreset.ts
+  // CHECKERBOARD_MEASURED_PERF_PROOF).
   checkerboardOn:             u32,     //  offset 332 - checkerboard sparse-shade gate; was _padEnd
   bvhMode:                    u32,     //  offset 336 — 0 merged world BVH, 1 TLAS+local BLAS
   tlasNodeCount:              u32,     //  offset 340 — TLAS node count (0 → merged path)

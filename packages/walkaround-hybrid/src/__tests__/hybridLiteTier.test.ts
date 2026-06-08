@@ -50,6 +50,7 @@ interface CfgPeek {
   gtaoMode: string;
   ddgiUpdateDivisor: number;
   denoiser: string;
+  checkerboard: boolean;
 }
 const cfg = (e: HybridEngine): CfgPeek => (e as unknown as { _cfg: CfgPeek })._cfg;
 const resolutionFactor = (e: HybridEngine): number =>
@@ -170,5 +171,43 @@ describe('HybridEngine qualityTier — explicit per-knob override beats preset',
     expect(c.ddgiUpdateDivisor).toBe(2);
     expect(resolutionFactor(engine)).toBe(1.0);
     expect(c.denoiser).toBe('atrous-variance');
+  });
+});
+
+describe('HybridEngine checkerboard — preset enablement + host override threading', () => {
+  it('no preset (engine default ⇒ ultra) resolves checkerboard OFF (byte-identical default)', () => {
+    expect(cfg(new HybridEngine(baseOpts({}))).checkerboard).toBe(false);
+  });
+
+  it('quality tiers (ultra/high) render full-rate (checkerboard OFF)', () => {
+    expect(cfg(new HybridEngine(baseOpts({ qualityTier: 'ultra' }))).checkerboard).toBe(false);
+    expect(cfg(new HybridEngine(baseOpts({ qualityTier: 'high' }))).checkerboard).toBe(false);
+  });
+
+  it('degradation tiers (medium/low) enable checkerboard from the preset', () => {
+    expect(cfg(new HybridEngine(baseOpts({ qualityTier: 'medium' }))).checkerboard).toBe(true);
+    expect(cfg(new HybridEngine(baseOpts({ qualityTier: 'low' }))).checkerboard).toBe(true);
+  });
+
+  it('explicit checkerboardRendering:false OVERRIDES medium/low back to OFF', () => {
+    expect(cfg(new HybridEngine(baseOpts({
+      qualityTier: 'medium', checkerboardRendering: false,
+    }))).checkerboard).toBe(false);
+    expect(cfg(new HybridEngine(baseOpts({
+      qualityTier: 'low', checkerboardRendering: false,
+    }))).checkerboard).toBe(false);
+  });
+
+  it('explicit checkerboardRendering:true OVERRIDES ultra/high to ON (host opt-in still wins)', () => {
+    expect(cfg(new HybridEngine(baseOpts({
+      qualityTier: 'ultra', checkerboardRendering: true,
+    }))).checkerboard).toBe(true);
+    expect(cfg(new HybridEngine(baseOpts({
+      qualityTier: 'high', checkerboardRendering: true,
+    }))).checkerboard).toBe(true);
+  });
+
+  it('tier:lite (default ⇒ medium preset) resolves checkerboard ON', () => {
+    expect(cfg(new HybridEngine(baseOpts({ tier: 'lite' }))).checkerboard).toBe(true);
   });
 });

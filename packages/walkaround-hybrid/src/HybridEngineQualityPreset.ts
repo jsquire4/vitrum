@@ -32,9 +32,19 @@
  *   - RC / PPG / neural — presets never force these ON (they need extra GPU
  *     resources / weights). `enableRcPpgNeuralByDefault` is informational for
  *     host UI; the engine default stays OFF regardless of preset.
- *   - Checkerboard — presets never force this ON. It remains host opt-in only
- *     until a measured shade-pass timing proof exists; motion A/B alone is not
- *     enough to promote it into any preset.
+ *   - Checkerboard — ENABLED on the degradation tiers (`medium` + `low`),
+ *     OFF on the quality tiers (`ultra` + `high`). The promotion is backed by a
+ *     measured whole-frame GPU-timestamp perf proof (dzn RTX-4090) PLUS a motion
+ *     A/B (see {@link CHECKERBOARD_MEASURED_PERF_PROOF}): the feature now
+ *     compacts the dispatch of FOUR passes — shade + the two ReSTIR-DI spatial
+ *     passes + the ris initial-candidate pass — to half the pixels per frame and
+ *     reconstructs the rest, saving ≈31% of whole-frame GPU time at 768px. A
+ *     per-frame motion fallback (`checkerboardMotionThresholdSq`) forces
+ *     full-rate under fast camera motion (bit-identical to OFF on those frames);
+ *     the only quality cost is a sub-perceptible motion-ONSET transient that
+ *     recovers within 2-3 frames. Quality/degradation tiers get it; the
+ *     fidelity tiers (ultra/high) render full-rate. A host always overrides
+ *     either way via `opts.checkerboardRendering`.
  */
 
 /** Coarse quality preset id. */
@@ -44,34 +54,133 @@ export type QualityTier = 'ultra' | 'high' | 'medium' | 'low';
  *  behaviour), `quarter` = quarter-res dispatch, `off` = skip GTAO entirely. */
 type GtaoMode = 'on' | 'quarter' | 'off';
 
-/** Checkerboard stays off in presets until this carries measured shade-pass
- *  timing evidence instead of the pending marker. */
+/**
+ * Per-pass GPU-timestamp speedup ratios (ON vs full-rate OFF) for the four
+ * passes checkerboard compacts. Each is `offMedian / onMedian` (>1 ⇒ faster on).
+ * Recorded as verified medians — do not fabricate precision.
+ */
+export interface CheckerboardPerPassSpeedups {
+  /** ReSTIR-DI spatial reuse pass 1 (`spatial-1`). */
+  readonly diSpatial1: number;
+  /** ReSTIR-DI spatial reuse pass 2 (`spatial-2`). */
+  readonly diSpatial2: number;
+  /** ReSTIR-DI ris initial-candidate pass. */
+  readonly ris: number;
+  /** The shade pass. */
+  readonly shade: number;
+}
+
+/**
+ * Motion / quality summary from the Cornell motion A/B (ON vs full-rate OFF).
+ * Records the verified dB medians + the motion-fallback behaviour, so the
+ * promotion's quality trade is honestly captured alongside the perf win.
+ */
+export interface CheckerboardQualitySummary {
+  /** PSNR (dB) on a static / converged frame — identical to full-rate. */
+  readonly staticDb: number;
+  /** Worst-frame PSNR (dB) during the motion-ONSET transient. */
+  readonly motionWorstDb: number;
+  /** Human-readable note on the motion fallback + transient recovery. */
+  readonly note: string;
+}
+
+/**
+ * Checkerboard performance evidence. The `measured` variant now records a
+ * WHOLE-FRAME speedup (the feature is multi-pass — shade + the two DI spatial
+ * passes + ris — not the shade-only era it was first designed for), the
+ * per-pass ratios, and the motion-quality summary. The `pending` variant is
+ * retained for completeness (e.g. a future adapter/scene with no capture yet).
+ */
 export type CheckerboardPerfProof =
   | {
       readonly status: 'pending';
-      readonly requiredMetric: 'shade-pass-gpu-timestamp-ab';
+      readonly requiredMetric: 'whole-frame-gpu-timestamp-ab';
       readonly reason: string;
     }
   | {
       readonly status: 'measured';
-      readonly requiredMetric: 'shade-pass-gpu-timestamp-ab';
+      readonly requiredMetric: 'whole-frame-gpu-timestamp-ab';
       readonly benchmarkId: string;
-      readonly shadePassSpeedupRatio: number;
+      /** Whole-frame GPU-time speedup (`offMedian / onMedian`, >1 ⇒ faster). */
+      readonly wholeFrameSpeedupRatio: number;
+      /** Per-pass GPU-timestamp speedups for the four compacted passes. */
+      readonly perPassSpeedups: CheckerboardPerPassSpeedups;
+      /** Motion / quality A/B summary (static dB, motion-worst dB, fallback). */
+      readonly quality: CheckerboardQualitySummary;
+      /** Capture scene (e.g. `'cornell'`). */
+      readonly scene: string;
+      /** Render resolution the perf medians were captured at (px, square). */
+      readonly resolutionPx: number;
+      /** GPU adapter the capture ran on (e.g. `'dzn-rtx-4090'`). */
+      readonly adapter: string;
       readonly capturedAt: string;
     };
 
 export const CHECKERBOARD_PENDING_PERF_PROOF: CheckerboardPerfProof = Object.freeze({
   status: 'pending',
-  requiredMetric: 'shade-pass-gpu-timestamp-ab',
+  requiredMetric: 'whole-frame-gpu-timestamp-ab',
   reason:
-    'Checkerboard is opt-in only until a benchmark captures shade-pass GPU timestamp A/B with a measurable speedup and acceptable motion quality.',
+    'Checkerboard needs a whole-frame GPU-timestamp A/B with a measurable speedup and acceptable motion quality on this adapter/scene before a preset enables it.',
 });
 
+/**
+ * Frozen measured perf proof — dzn RTX-4090, GPU timestamp + motion A/B.
+ *
+ * PERF (768px Cornell, interleaved-paired, both swap orders agree): the win is
+ * concentrated in the ReSTIR-DI BVH re-cast passes and grows with resolution.
+ * Per-pass medians: spatial-1 1.87×, spatial-2 1.88×, ris 1.90×, shade 1.66×;
+ * WHOLE FRAME 1.46× (≈31% GPU-time saved). (P1-only — shade+spatial without ris
+ * — was 1.26× / ~20%.)
+ *
+ * QUALITY (384px Cornell motion A/B, ON vs full-rate OFF): static/converged
+ * identical (64.34 dB); sustained motion ≈ full-rate; the motion-ONSET transient
+ * worst-frame is 43.6 dB (sub-perceptible gap error 0.00101 luma, comb 1.65),
+ * recovering within 2-3 frames — well above the 35 dB bar. Fast motion forces
+ * full-rate (bit-identical). OFF stays byte-identical (T1 golden unchanged).
+ *
+ * Harnesses (wsl-gpu): checkerboard-ris-perf-ab.ts,
+ * checkerboard-spatial-perf-ab.ts, checkerboard-motion-ab.ts,
+ * checkerboard-ris-isolate-ab.ts.
+ */
+export const CHECKERBOARD_MEASURED_PERF_PROOF: CheckerboardPerfProof = Object.freeze({
+  status: 'measured',
+  requiredMetric: 'whole-frame-gpu-timestamp-ab',
+  benchmarkId: 'checkerboard-whole-frame-ab/dzn-rtx-4090',
+  wholeFrameSpeedupRatio: 1.46,
+  perPassSpeedups: Object.freeze({
+    diSpatial1: 1.87,
+    diSpatial2: 1.88,
+    ris: 1.90,
+    shade: 1.66,
+  }),
+  quality: Object.freeze({
+    staticDb: 64.34,
+    motionWorstDb: 43.6,
+    note:
+      'Static/converged identical to full-rate; sustained motion ≈ full-rate; ' +
+      'motion-ONSET transient worst-frame 43.6 dB (sub-perceptible, 0.00101 luma ' +
+      'gap, comb 1.65) recovers in 2-3 frames; fast motion forces full-rate ' +
+      '(bit-identical via checkerboardMotionThresholdSq).',
+  }),
+  scene: 'cornell',
+  resolutionPx: 768,
+  adapter: 'dzn-rtx-4090',
+  capturedAt: '2026-06-06',
+});
+
+/**
+ * Capability summary for the host. Checkerboard is now VALIDATED + ENABLED on
+ * the degradation tiers (medium + low) and OFF on the quality tiers (ultra +
+ * high). `defaultEnabled` stays false — the bare engine default (no preset =
+ * ultra) renders full-rate and is byte-identical.
+ */
 export const CHECKERBOARD_SUPPORT_DETAILS = Object.freeze({
   feature: 'checkerboardRendering',
+  /** The bare engine default (no preset ⇒ ultra) renders full-rate. */
   defaultEnabled: false,
-  presetEnabled: false,
-  perfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+  /** Enabled on the degradation tiers, off on the quality tiers. */
+  presetEnabled: Object.freeze({ ultra: false, high: false, medium: true, low: true }),
+  perfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
 });
 
 /**
@@ -116,10 +225,10 @@ export interface QualityPreset {
    *  for this tier. The engine NEVER forces these on from a preset. */
   readonly enableRcPpgNeuralByDefault: boolean;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-   *  FALSE in EVERY preset — checkerboard ships off-default + inert pending a
-   *  shade-pass perf proof + motion A/B (same discipline as RC/PPG/neural:
-   *  presets never force it on). A host opts in explicitly via
-   *  `opts.checkerboardRendering`. */
+   *  TRUE on the degradation tiers (medium + low), FALSE on the quality tiers
+   *  (ultra + high) — backed by a measured whole-frame perf proof + motion A/B
+   *  (see {@link CHECKERBOARD_MEASURED_PERF_PROOF}). A host always overrides
+   *  either way via `opts.checkerboardRendering`. */
   readonly checkerboard: boolean;
   readonly checkerboardPerfProof: CheckerboardPerfProof;
 }
@@ -141,8 +250,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
     ppgDispatchInterval: 1,                  // every frame — no behaviour change when PPG is on.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending) — never forced on by a preset.
-    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+    checkerboard: false,                     // QUALITY tier — full-rate (perf proof exists but the fidelity tiers don't trade quality for it).
+    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   high: {
     resolutionFactor: 0.85,
@@ -155,8 +264,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
     ppgDispatchInterval: 1,                  // every frame (high keeps full PPG cadence)
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
-    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+    checkerboard: false,                     // QUALITY tier — full-rate (perf proof exists but high doesn't trade quality for it).
+    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   medium: {
     resolutionFactor: 0.67,
@@ -171,8 +280,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
     ppgDispatchInterval: 2,                  // train every 2nd frame — ~½ the PPG train cost; tree persists between updates so quality drift is negligible.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
-    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+    checkerboard: true,                      // DEGRADATION tier — ON: ≈31% whole-frame GPU-time saved; motion fallback forces full-rate under fast motion (measured, see CHECKERBOARD_MEASURED_PERF_PROOF).
+    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   low: {
     resolutionFactor: 0.5,
@@ -186,8 +295,8 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
     ppgDispatchInterval: 4,                  // budget: train every 4th frame — ~¼ the PPG train cost.
     enableRcPpgNeuralByDefault: false,
-    checkerboard: false,                     // off-default + inert (perf proof + motion A/B pending).
-    checkerboardPerfProof: CHECKERBOARD_PENDING_PERF_PROOF,
+    checkerboard: true,                      // DEGRADATION tier — ON: ≈31% whole-frame GPU-time saved; motion fallback forces full-rate under fast motion (measured, see CHECKERBOARD_MEASURED_PERF_PROOF).
+    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
 });
 

@@ -212,11 +212,12 @@ interface ParsedHybridEngineConfig {
    *  PPG was inert through the public API.) */
   readonly ppgEnabled: number;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-   *  `false` by default (every preset sets it false too). Threaded into
+   *  `false` by default (no preset ⇒ ultra ⇒ off); the `medium`/`low` presets
+   *  enable it, `ultra`/`high` keep it off. Threaded into
    *  `pipeline.initialize({ checkerboard, checkerboardMotionThresholdSq })`; OFF
    *  is bit-identical to the pre-checkerboard pipeline (shade + both spatial
-   *  passes dispatch full-res and ResolvePass passes through). GPU-validated on
-   *  dzn — see WalkaroundGPUPipeline `_checkerboard`. */
+   *  passes + ris dispatch full-res and ResolvePass passes through).
+   *  GPU-validated on dzn — see WalkaroundGPUPipeline `_checkerboard`. */
   readonly checkerboard: boolean;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
@@ -451,9 +452,10 @@ export function deriveHybridEngineConfig(
     // built when a host opts in (tier:'lite' forbids it — validated above).
     ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
     // Checkerboard half-res shading. Explicit opt wins, else the preset value
-    // (FALSE in every preset). Default OFF ⇒ shade + both spatial passes shade
-    // every pixel + ResolvePass passes through = bit-identical to the
-    // pre-checkerboard pipeline. GPU-validated on dzn.
+    // (ON for medium/low degradation tiers, OFF for ultra/high). No preset ⇒
+    // ultra ⇒ OFF ⇒ shade + both spatial passes + ris shade every pixel +
+    // ResolvePass passes through = bit-identical to the pre-checkerboard
+    // pipeline. GPU-validated on dzn (whole-frame 1.46× at medium/low).
     checkerboard: opts.checkerboardRendering ?? preset.checkerboard,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
