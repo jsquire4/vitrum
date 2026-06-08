@@ -384,6 +384,19 @@ The command prints:
 
 - `VITRUM_PTWEBGL_FIDELITY_METRICS=...`
 
+`benchmark:pt-webgl-oracle` is the end-to-end wrapper: it computes strict
+metrics from the paired PNGs and immediately runs the env-gated
+`@vitrum/pt-webgl` acceptance test. By default it uses committed fixtures. Set
+`VITRUM_PTWEBGL_ORACLE_CAPTURE=1` to start the two-engines example, capture
+pt-webgpu baselines plus pt-webgl candidates, and validate that generated
+directory instead.
+
+```bash
+npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner
+VITRUM_PTWEBGL_ORACLE_CAPTURE=1 VITRUM_CAPTURE_SMOKE=1 \
+  npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner
+```
+
 Useful knobs:
 
 - `VITRUM_PTWEBGL_FIDELITY_REQUIRED` (comma-separated scenario IDs; defaults derive from `scenario-presets.mjs` RFE scenarios)

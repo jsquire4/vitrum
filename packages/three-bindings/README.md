@@ -14,6 +14,16 @@ Adapter between `THREE.Scene` and `@vitrum/core`'s `Scene` type. Plus a glTF loa
 - `extractThreePbrScalars(material)` — read PBR scalar fields from a THREE material into a typed record. Used by `walkaround-hybrid` + `pt-webgpu` material packing.
 - `VITRUM_USER_DATA_KEYS` — string-key table for the `userData` round-trip protocol.
 
+## Animation interpolation
+
+`convertAnimations` preserves `THREE.InterpolateDiscrete` as vitrum/glTF `STEP`
+and preserves ordinary linear tracks as `LINEAR`. `THREE.InterpolateSmooth` is
+intentionally exported as `LINEAR`, not `CUBICSPLINE`: THREE keyframe tracks only
+carry one value tuple per key, while glTF `CUBICSPLINE` requires in-tangent,
+value, and out-tangent tuples. Mapping Smooth to CUBICSPLINE would corrupt the
+sampler shape. True glTF CUBICSPLINE evaluation is still supported in
+`@vitrum/core` when a loader provides the tangent-tripled sampler payload.
+
 ## Extending material conversion
 
 Host-app-specific userData round-tripping (e.g., stained-glass dichroic LUTs) flows through three.js's standard `material.userData` slot plus the `Material.extensions` discriminated extension point in `@vitrum/core`. `convertMaterial` reads the well-known keys defined in `VITRUM_USER_DATA_KEYS` and stamps them into the returned `MaterialSpec.extensions`. See `external_requests/IMPLEMENTATION-STATUS.md` for the active extension list.

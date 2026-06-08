@@ -36,6 +36,7 @@
     "benchmark:pr-mechanical": "npm run benchmark:pr-mechanical --workspace @vitrum/benchmark-runner",
     "benchmark:hybrid-lifecycle-soak": "npm run benchmark:hybrid-lifecycle-soak --workspace @vitrum/benchmark-runner",
     "benchmark:pt-webgpu-adapter-probe": "npm run benchmark:pt-webgpu-adapter-probe --workspace @vitrum/benchmark-runner",
+    "benchmark:pt-webgl-oracle": "npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner",
     "benchmark:gpu-windows": "node tools/benchmark-runner/run-gpu-host-windows.mjs",
     "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke:strict && npm run shader-compile-ci && npm run benchmark:rc-acceptance-mechanical && npm run benchmark:bdpt-layered-mechanical",
     "benchmark:gap-closure-mechanical": "npm run benchmark:gap-closure-mechanical --workspace @vitrum/benchmark-runner",

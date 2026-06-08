@@ -142,6 +142,29 @@ still removed). What it CLOSED / ADVANCED vs this plan:
 NOTE: that agent's uncommitted source changes are green but NOT yet committed —
 leave them be; this plan edit touches only the plan doc.
 
+## ✅ RECONCILIATION (2026-06-08) — non-THREE maturity tail closed (`75391f2` + follow-up)
+The current non-THREE-decouple maturity sweep closes the remaining Phase 3 code
+and harness tail:
+- **3-A ✅ CLOSED.** Walkaround bind-group / texture-view memoization,
+  DDGI binding-state cache reuse, BvhBufferHost texture-view reuse, and
+  GPU-memory accounting tests landed in `75391f2`.
+- **3-B ✅ CLOSED for default mechanical coverage.** `examples/two-engines-one-scene`
+  now has backend smoke that instantiates both pt-webgl and walkaround-hybrid
+  against the same core scene with deterministic stubs. `walkaround-rc` has
+  `test:rc-behavior` via `run-rc-behavior-mechanical.mjs`. THREE animation
+  import now has STEP coverage plus an explicit, tested Smooth→LINEAR demotion
+  because THREE tracks do not carry glTF CUBICSPLINE tangent triples.
+- **3-C ✅ CLOSED.** Strict fork shader smoke is wired, the pre-push hook runs
+  it, fork static spectral uploads are regression-pinned, BDPT is honestly
+  labeled opt-in approximate, and stained-glass shadow normal perturbation is
+  feature-gated off by default.
+- **0-G code harness ✅ CLOSED; validation remains opt-in.** The pt-webgl oracle
+  now has `capturePtWebgl.mjs` plus `run-pt-webgl-fidelity-oracle.mjs`, which
+  either validates committed paired PNG fixtures mechanically or, with
+  `VITRUM_PTWEBGL_ORACLE_CAPTURE=1`, captures pt-webgpu baselines and pt-webgl
+  candidates from the two-engines example before running strict acceptance.
+  Formal hardware/browser capture is validation evidence, not more library code.
+
 ## STATUS LEGEND
 - ✅ DONE + oracle-validated · 🟡 partially done / needs verify · 🔴 open · ⚖️ needs maintainer decision
 
@@ -162,7 +185,7 @@ leave them be; this plan edit touches only the plan doc.
 | **0-D** | **ReSTIR-DI/GI vs reference** — reuse-unbiased + p̂-consistency + variance-reduction | the G-P0.1 class | ✅ DONE (`restir-fidelity-oracle.ts`, lead-verified both directions: clean PASS/exit0, --inject-bug FAIL/exit1) |
 | **0-E** | **Cross-backend ground truth** — pt-webgpu converged vs walkaround GI, GI-channel-isolated + exposure-anchored | whole walkaround GI stack | ✅ DONE (`xbackend-groundtruth-ab.ts`, lead-verified: correct 1.013, zero-GI rejected 1038×, wrong-bounce 72.6×). SURFACED the default-indirect-~0 P0-suspect above. |
 | **0-F** | **Denoiser oracle** — identity + variance-reduction-without-bias, discrimination-proven | shared-denoisers | ✅ DONE (`denoiserFidelityOracle.test.ts`, lead-verified: rejects passthrough + biased) |
-| **0-G** | **pt-webgl fork oracle** — WebGL2 capture for the fork's default radiometry (G-P0.3) + caustics + BDPT | the whole fork | 🟡 FEASIBLE + ~90% scaffolded (2026-06-07 spike): headless WebGL2 works in WSL via **Playwright + headless Chrome + ANGLE/SwiftShader** (verified — real WebGL2 ctx, the `webgl2-capture/` prototype renders the fork Cornell non-black/finite: meanRGB 176/176/151, nonBlackFrac 1.0, lumMin 40/max 255; the `gp03-rgb-throughput-ptwebgpu.ts` cross-backend builder already exists). headless-gl ruled out (WebGL1-only; engine rejects at `ptEngineWebGL2.ts:1547`). REMAINING: add the converged cross-backend A/B comparator (fork-vs-pt-webgpu, exposure-aligned relative-L2) + caustic-mode scenes. Residual real-GL gap (just the hardware-GL BDPT eye↔light CONNECTION render — ANGLE disables it) → Windows-Chrome, consistent with 2-B(b). |
+| **0-G** | **pt-webgl fork oracle** — WebGL2 capture for the fork's default radiometry (G-P0.3) + caustics + BDPT | the whole fork | ✅ CODE HARNESS DONE. `capturePtWebgl.mjs` captures the fork through the two-engines pt-webgl page; `run-pt-webgl-fidelity-oracle.mjs` validates committed fixtures mechanically by default and, with `VITRUM_PTWEBGL_ORACLE_CAPTURE=1`, captures pt-webgpu baselines + pt-webgl candidates before strict metrics + env-gated vitest acceptance. Residual hardware-GL BDPT eye↔light connection capture is validation evidence, not a missing code harness. |
 | **0-H** | **In-tree shader-execution harness** — bridge the "npm test never runs shaders" gap: a headless-WebGPU vitest path (lavapipe in CI) that runs the smallest radiometric kernels against analytic references, so a subset of fidelity leaves the external-only harness | systemic test-architecture gap | ⚖️ scope (CI WebGPU availability) |
 
 **Parallelization:** 0-D, 0-E, 0-F, 0-G are independent → 4 concurrent agents.
@@ -235,8 +258,8 @@ leave them be; this plan edit touches only the plan doc.
   (`light_sampling_functions.glsl.js:37`); `FEATURE_BDPT=1` compiles (verified
   2026-06-07 + G-sweep G-P1.2). (b) 🔴 Hardware-GL eye↔light connections are
   engine-disabled on ANGLE → needs a Windows-Chrome / real-GL connection render
-  (environmental — **Oracle 0-G** fork WebGL2 capture) + a BDPT variance-win A/B
-  vs unidirectional on a hidden-emitter caustic scene.
+  (environmental — **Oracle 0-G** fork WebGL2 capture runner now exists) + a
+  BDPT variance-win A/B vs unidirectional on a hidden-emitter caustic scene.
 - **2-C ⚖️ Fork caustic strategies (G-P1.3).** Phenomenological. pt-webgpu
   photon-map already DEMOTED (this session). Decide: demote the fork caustic
   modes to `approximate` (consistent with the pt-webgpu decision — fast) or
@@ -265,12 +288,11 @@ leave them be; this plan edit touches only the plan doc.
 > "One-or-two-day sweep with outsized professionalism return" — but the test
 > gaps are the real risk (they're why P0 bugs sat green).
 
-- **3-A 🟡 G-P2.6 performance hygiene** (the largest P2): bind-group/view
-  memoization (~20-30 createBindGroup + dozens of createView per frame, change
-  only on resize/setScene); SVGF's ~80-90 MB unconditional textures when the
-  denoiser isn't svgf-real; `estimatedGpuMemoryBytes` omits BVH/TLAS/light-tree;
-  fork re-uploads static CIE tables every call; document `BDPT_CONTRIBUTION_CLAMP`.
-- **3-B 🟡 G-P2.7 test gaps** (highly parallel — disjoint packages):
+- **3-A ✅ G-P2.6 performance hygiene CLOSED**: bind-group/view memoization,
+  SVGF allocation/memory-accounting coverage, BVH/DDGI external memory sections,
+  fork static CIE upload caching, and `BDPT_CONTRIBUTION_CLAMP` documentation
+  are in-tree.
+- **3-B ✅ G-P2.7 test gaps CLOSED for default mechanical coverage**:
   - ✅ `HybridEnginePrimitiveUpdates` geometry-update fast paths now tested
     (`hybridEngineGeometryUpdate.test.ts`, `646ead9`).
   - ✅ GI-state `serialize/deserialize` round-trip (`giStateSnapshot.test.ts`,
@@ -281,20 +303,18 @@ leave them be; this plan edit touches only the plan doc.
   - ✅ `stained-glass-extensions` basic suite/script closed (`package.json` has
     `test`; `__tests__/stainedGlassExtensions.test.ts` pins
     `SURFACE_TEXTURE_ID`, userData keys, and `packCameUBO` std140 layout).
-  - ✅ `examples/two-engines-one-scene` basic script gap closed (`package.json`
-    has `test`; `benchmarkScenes.test.ts` + `prBenchHarness.test.ts` run).
-    🔴 Remaining: deeper backend smoke that actually constructs/runs the
-    example backend paths, not just scene builders and harness math.
-  - 🟡 walkaround-rc basic suite/script closed (`package.json` has `test`;
-    rc bindings/solid-angle/kernel-math/cascade tests exist). 🔴 Remaining:
-    the RC behavior/acceptance script that exercises `probeRayCast`/
-    `cascadeMerge` through the GPU behavior path and records objective output.
-  - 🔴 three-bindings STEP/CUBICSPLINE animation import.
-- **3-C 🟡 G-P2.1–2.5 finish** (mostly ✅): verify the fork lint gate is green +
-  add fork lint to a pre-push hook (so it can't rot again); close remaining
-  dispose leaks (`_synthesizedThreeScene` in dispose, fork `_lowResPathTracer` /
-  `_colorBackground` / CubeToEquirect leak); finish the dead-code classification
-  + stale-comment cluster (G-P2.4/2.5 — most marked ✓, sweep the residue).
+  - ✅ `examples/two-engines-one-scene` basic script gap + backend smoke closed
+    (`benchmarkScenes.test.ts`, `prBenchHarness.test.ts`,
+    `sceneContractSmoke.test.ts`, `backendSmoke.test.ts`).
+  - ✅ walkaround-rc basic suite/script + behavior runner closed
+    (`test:rc-behavior` → `run-rc-behavior-mechanical.mjs`).
+  - ✅ three-bindings STEP/Smooth coverage closed. Smooth is intentionally
+    demoted to LINEAR because THREE tracks lack glTF CUBICSPLINE tangent
+    triples; true CUBICSPLINE remains supported in `@vitrum/core` for loaders
+    that provide tangent-tripled sampler values.
+- **3-C ✅ G-P2.1–2.5 finish CLOSED**: strict fork shader smoke + pre-push
+  wiring, fork resource/static-upload tests, BDPT clamp documentation, and
+  feature gates are in-tree.
 
 **Parallelization:** 3-A | each 3-B package | 3-C → many concurrent agents.
 
@@ -337,9 +357,9 @@ but each is one focused workstream; can overlap with Phases 2/3.
   `supportDetails`/`experimentalFeatures` honestly reflect every demote decision.
 - **5-C** Examples: at least one example per backend that exercises the full
   stack end-to-end (working test scenes in `examples/`), each with a smoke test
-  that actually runs. `two-engines-one-scene` now has a `test` script and basic
-  scene/harness tests; the remaining gap is deeper backend smoke that actually
-  constructs/runs the backend paths.
+  that actually runs. `two-engines-one-scene` now has a `test` script plus
+  scene/harness/backend smoke coverage. Full browser/GPU page captures remain
+  validation evidence, not a default `npm test` requirement.
 - **5-D** Docs accuracy: CHANGELOG current; per-package READMEs match shipped
   reality (the audit found descriptions denying shipped features); CREDITS
   complete; the maturity wording consistent ("experimental backend", not
