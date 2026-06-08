@@ -25,18 +25,21 @@ function makeMockRc(refitMergedReturns = true): {
   refitCascadeBounds: ReturnType<typeof vi.fn>;
   syncRestirBvhBuffers: ReturnType<typeof vi.fn>;
   setScene: ReturnType<typeof vi.fn>;
+  setSceneFromCore: ReturnType<typeof vi.fn>;
 } {
   const refitMergedInstance = vi.fn(() => refitMergedReturns) as ReturnType<typeof vi.fn>;
   const refitCascadeBounds = vi.fn();
   const syncRestirBvhBuffers = vi.fn();
   const setScene = vi.fn();
+  const setSceneFromCore = vi.fn();
   const rc = {
     refitMergedInstance,
     refitCascadeBounds,
     syncRestirBvhBuffers,
     setScene,
+    setSceneFromCore,
   } as unknown as RCSubsystem;
-  return { rc, refitMergedInstance, refitCascadeBounds, syncRestirBvhBuffers, setScene };
+  return { rc, refitMergedInstance, refitCascadeBounds, syncRestirBvhBuffers, setScene, setSceneFromCore };
 }
 
 /** Mock DDGI (only `syncRestirBvhBuffers` is reachable from the cascade). */
@@ -116,6 +119,36 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
     expect(setScene).toHaveBeenCalledTimes(1);
     expect(setScene).toHaveBeenCalledWith(root);
     // setScene refits the cascade bounds itself — no separate refitCascadeBounds.
+    expect(refitCascadeBounds).not.toHaveBeenCalled();
+  });
+
+  it('prefers the core-scene RC rebuild fallback over the THREE-root escape hatch', () => {
+    const positions = new Float32Array([0, 0, 0, 0]);
+    const { rc, refitMergedInstance, refitCascadeBounds, setScene, setSceneFromCore } = makeMockRc(false);
+    const root = {} as unknown as ReturnType<GiPropagationDeps['ensureThreeSceneRoot']>;
+    const coreScene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    } as GiPropagationDeps['lastScene'];
+
+    const deps: GiPropagationDeps = {
+      ddgi: makeMockDdgi(),
+      rc,
+      bvhBuffers: mergedBuffers(positions),
+      lastScene: coreScene,
+      syncDdgi: false,
+      allowRcSceneRebuild: true,
+      ensureThreeSceneRoot: () => root,
+      rcRefitBounds: RC_REFIT_BOUNDS,
+    };
+
+    propagateBvhToGiSubsystems(deps);
+
+    expect(refitMergedInstance).toHaveBeenCalledTimes(1);
+    expect(setSceneFromCore).toHaveBeenCalledTimes(1);
+    expect(setSceneFromCore).toHaveBeenCalledWith(coreScene);
+    expect(setScene).not.toHaveBeenCalled();
     expect(refitCascadeBounds).not.toHaveBeenCalled();
   });
 

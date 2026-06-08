@@ -313,6 +313,28 @@ const SCENE_WITH_EMITTER: Scene = {
   ],
 };
 
+const SCENE_WITH_INSTANCED_MESH: Scene = {
+  primitives: [
+    {
+      id: 'inst-a',
+      kind: 'instanced-mesh',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      instances: [
+        asMat4([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          0, 0, 0, 1,
+        ]),
+      ],
+    },
+  ],
+  emitters: [],
+  environment: { kind: 'none' },
+};
+
 beforeEach(() => {
   const s = getState();
   s.pipelineInitDeferreds.length = 0;
@@ -676,10 +698,10 @@ describe('HybridEngine.updateEmitter', () => {
 //     instead of throwing — geometry edits that need a primitive replacement do a
 //     rebuild, not a fast path).
 describe('HybridEngine.updatePrimitive — routing epilogue characterization (Theme B)', () => {
-  async function bootEngine(): Promise<{ engine: HybridEngine; s: GeoUpdateState }> {
+  async function bootEngine(scene: Scene = SCENE_WITH_MESH): Promise<{ engine: HybridEngine; s: GeoUpdateState }> {
     const engine = makeEngine();
     const s = getState();
-    engine.setScene(SCENE_WITH_MESH);
+    engine.setScene(scene);
     await waitForPipelineCount(1);
     s.pipelineInitDeferreds[0]!.resolve();
     await drainMicrotasks();
@@ -734,19 +756,53 @@ describe('HybridEngine.updatePrimitive — routing epilogue characterization (Th
     expect(getGiPropState().calls.length).toBe(1);
   });
 
-  it('patching a wholesale field (`shape`) routes through a full setScene rebuild — no throw (P5)', async () => {
-    const { engine, s } = await bootEngine();
-    // `shape` (like `instances` / `params`) can't be an in-place THREE.Mesh edit,
-    // so updatePrimitive routes it through setScene (full rebuild) instead of
-    // throwing "call setScene()" — honoring incrementalPatchSupport.topology.
-    expect(() => engine.updatePrimitive!('mesh-a', {
-      shape: { kind: 'sphere', radius: 1 },
+  it('valid wholesale instance-count patch routes through a full setScene rebuild — no throw (P5)', async () => {
+    const { engine, s } = await bootEngine(SCENE_WITH_INSTANCED_MESH);
+    // `instances` can't be an in-place THREE.Mesh attribute edit, so
+    // updatePrimitive routes it through the canonical patchScene -> setScene
+    // spine instead of throwing "call setScene()" — honoring
+    // incrementalPatchSupport.topology.
+    const nextInstances = [
+      asMat4([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+      ]),
+      asMat4([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        4, 0, 0, 1,
+      ]),
+    ];
+    expect(() => engine.updatePrimitive!('inst-a', {
+      instances: nextInstances,
     } as unknown as Partial<Scene['primitives'][number]>)).not.toThrow();
     // setScene tore down + rebuilt the pipeline (a fresh construction + init).
     await waitForPipelineCount(2);
     s.pipelineInitDeferreds[1]!.resolve();
     await drainMicrotasks();
     expect(s.pipelineConstructed.length).toBe(2);
+
+    const stored = (engine as unknown as { _lastScene: Scene | null })._lastScene;
+    const primitive = stored?.primitives[0];
+    expect(primitive?.kind).toBe('instanced-mesh');
+    if (primitive?.kind !== 'instanced-mesh') throw new Error('expected instanced-mesh');
+    expect(primitive.instances).toHaveLength(2);
+  });
+
+  it('invalid wholesale fields still use core invariants and do not start a rebuild', async () => {
+    const { engine, s } = await bootEngine();
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      shape: 'sphere',
+    } as never)).toThrow(/cannot accept analytic "shape"/);
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      kind: 'analytic',
+      shape: 'sphere',
+      params: new Float32Array([0, 0, 0, 1]),
+    } as never)).toThrow(/kind cannot change/);
+    expect(s.pipelineConstructed.length).toBe(1);
   });
 
   it('keeps `_bvhBuffers` live after a transform refit (getBvhMode still resolves)', async () => {

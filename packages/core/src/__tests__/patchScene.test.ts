@@ -176,4 +176,22 @@ describe('patchScene helpers', () => {
       } as never),
     ).toThrow(/cannot accept analytic "params"/);
   });
+
+  it('rejects analytic-only shape/fallbackMesh fields on a mesh-like primitive', () => {
+    const scene = makeScene();
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', {
+        shape: 'sphere',
+      } as never),
+    ).toThrow(/cannot accept analytic "shape"/);
+
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', {
+        fallbackMesh: {
+          positions: new Float32Array([0, 0, 0]),
+          normals: new Float32Array([0, 0, 1]),
+        },
+      } as never),
+    ).toThrow(/cannot accept analytic "fallbackMesh"/);
+  });
 });

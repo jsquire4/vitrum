@@ -9,5 +9,18 @@
 #
 # Activated by `core.hooksPath = scripts/githooks` (set by scripts/install-git-hooks.mjs
 # on npm install). To bypass entirely: `git push --no-verify`.
-node scripts/validate-gpu.mjs --smoke --warn-only
+NODE_BIN="${NODE:-}"
+if [ -z "$NODE_BIN" ] || ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+fi
+if [ -z "$NODE_BIN" ] && [ -d "$HOME/.nvm/versions/node" ]; then
+  NODE_BIN="$(find "$HOME/.nvm/versions/node" -path '*/bin/node' -type f 2>/dev/null | sort -V | tail -n 1)"
+fi
+if [ -z "$NODE_BIN" ]; then
+  echo "[vitrum pre-push] node not found; skipping warn-only GPU smoke." >&2
+  exit 0
+fi
+export NODE="$NODE_BIN"
+export PATH="$(dirname "$NODE_BIN"):$PATH"
+"$NODE_BIN" scripts/validate-gpu.mjs --smoke --warn-only
 exit 0

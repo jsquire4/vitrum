@@ -67,9 +67,19 @@ function assertPrimitivePatch(
     validateAnalyticParams(shape, params);
   }
 
+  if (MESH_LIKE_KINDS.has(nextKind) && 'shape' in patch) {
+    throw new Error(
+      `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "shape"`,
+    );
+  }
   if (MESH_LIKE_KINDS.has(nextKind) && 'params' in patch) {
     throw new Error(
       `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "params"`,
+    );
+  }
+  if (MESH_LIKE_KINDS.has(nextKind) && 'fallbackMesh' in patch) {
+    throw new Error(
+      `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "fallbackMesh"`,
     );
   }
 }

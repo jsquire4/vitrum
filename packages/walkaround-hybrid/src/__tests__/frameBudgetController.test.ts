@@ -154,6 +154,47 @@ describe('FrameBudgetController — control law', () => {
     expect(maxed.ddgiStride).toBe(DEFAULT_FRAME_BUDGET_CONFIG.maxDdgiStride);
   });
 
+  it('PPG cadence lever is inactive by default, so legacy two-lever behaviour is unchanged', () => {
+    const c = new FrameBudgetController(FAST, {
+      resolutionFactor: 0.5,
+      ddgiStride: 2,
+      ppgDispatchInterval: 1,
+    });
+
+    const d = c.update(40);
+
+    expect(d.action).toBe('ddgi-stride-up');
+    expect(d.ddgiStride).toBe(3);
+    expect(d.ppgDispatchInterval).toBe(1);
+  });
+
+  it('when enabled, PPG cadence backs off before DDGI stride', () => {
+    const c = new FrameBudgetController({
+      ...FAST,
+      adaptPpgDispatchInterval: true,
+      maxPpgDispatchInterval: 3,
+    }, {
+      resolutionFactor: 0.5,
+      ddgiStride: 2,
+      ppgDispatchInterval: 1,
+    });
+
+    const ppg1 = c.update(40);
+    expect(ppg1.action).toBe('ppg-interval-up');
+    expect(ppg1.ppgDispatchInterval).toBe(2);
+    expect(ppg1.ddgiStride).toBe(2);
+
+    const ppg2 = c.update(40);
+    expect(ppg2.action).toBe('ppg-interval-up');
+    expect(ppg2.ppgDispatchInterval).toBe(3);
+    expect(ppg2.ddgiStride).toBe(2);
+
+    const ddgi = c.update(40);
+    expect(ddgi.action).toBe('ddgi-stride-up');
+    expect(ddgi.ppgDispatchInterval).toBe(3);
+    expect(ddgi.ddgiStride).toBe(3);
+  });
+
   it('stride is restored (lowered) under budget only after resolution is at the ceiling', () => {
     // Start pinned at the cheapest: floor resolution + a raised stride.
     const c = new FrameBudgetController(FAST, { resolutionFactor: 0.5, ddgiStride: 10 });
@@ -166,6 +207,33 @@ describe('FrameBudgetController — control law', () => {
     const snap = c.snapshot();
     expect(snap.resolutionFactor).toBe(1.0);
     expect(snap.ddgiStride).toBe(DEFAULT_FRAME_BUDGET_CONFIG.minDdgiStride);
+  });
+
+  it('when enabled, PPG cadence restores before DDGI stride under budget', () => {
+    const c = new FrameBudgetController({
+      ...FAST,
+      adaptPpgDispatchInterval: true,
+      maxPpgDispatchInterval: 4,
+    }, {
+      resolutionFactor: 1.0,
+      ppgDispatchInterval: 3,
+      ddgiStride: 8,
+    });
+
+    const ppg1 = c.update(4);
+    expect(ppg1.action).toBe('ppg-interval-down');
+    expect(ppg1.ppgDispatchInterval).toBe(2);
+    expect(ppg1.ddgiStride).toBe(8);
+
+    const ppg2 = c.update(4);
+    expect(ppg2.action).toBe('ppg-interval-down');
+    expect(ppg2.ppgDispatchInterval).toBe(1);
+    expect(ppg2.ddgiStride).toBe(8);
+
+    const ddgi = c.update(4);
+    expect(ddgi.action).toBe('ddgi-stride-down');
+    expect(ddgi.ppgDispatchInterval).toBe(1);
+    expect(ddgi.ddgiStride).toBe(7);
   });
 
   it('up-cooldown rate-limits quality restoration', () => {

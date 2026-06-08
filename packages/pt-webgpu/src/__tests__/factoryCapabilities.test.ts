@@ -39,7 +39,7 @@ describe('createPTEngine_WebGPU', () => {
       emitter: true,
       topology: true,
     });
-    expect(engine.capabilities.experimentalFeatures?.has('experimental-backend')).toBe(true);
+    expect(engine.capabilities.experimentalFeatures?.has('experimental-backend')).toBe(false);
   });
 
   it('exposes frame/progress telemetry subscriptions', async () => {

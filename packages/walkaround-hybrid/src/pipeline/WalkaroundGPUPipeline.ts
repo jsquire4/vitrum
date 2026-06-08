@@ -1417,6 +1417,15 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   }
 
   /**
+   * Runtime PPG train-pass cadence. The pass graph and buffers are unchanged;
+   * this only changes the modulo gate checked in {@link renderFrame}. Clamped
+   * to >= 1 so a bad host value cannot disable PPG training forever.
+   */
+  setPpgDispatchInterval(interval: number): void {
+    this._ppgDispatchInterval = Math.max(1, Math.floor(interval));
+  }
+
+  /**
    * Blit the most recent resolvedTexture to the host's swap chain WITHOUT
    * running the compute pipeline. Used when HybridEngine's 60-FPS throttle
    * skips a frame — without this, on >60Hz displays the alternate frames'

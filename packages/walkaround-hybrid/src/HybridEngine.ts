@@ -74,7 +74,7 @@ import {
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from './restir/bvhCompute.js';
-import { applyEmitterPatchToScene } from './scenePatch.js';
+import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import {
   disposeVitrumThreeSceneRoot,
   vitrumSceneToThree,
@@ -651,9 +651,13 @@ export class HybridEngine implements Engine {
    * fps, etc. See {@link FrameBudgetControllerConfig}.
    */
   enableFrameBudget(config: Partial<FrameBudgetControllerConfig> = {}): void {
-    this._frameBudget = new FrameBudgetController(config, {
+    this._frameBudget = new FrameBudgetController({
+      adaptPpgDispatchInterval: this._cfg.ppgEnabled === 1,
+      ...config,
+    }, {
       resolutionFactor: this._resolutionFactor,
       ddgiStride: this._cfg.ddgiUpdateDivisor,
+      ppgDispatchInterval: this._cfg.ppgDispatchInterval,
     });
   }
 
@@ -677,11 +681,11 @@ export class HybridEngine implements Engine {
    *
    * Consistent with "the host owns cadence", this does NOT schedule itself and
    * does NOT read frame time on its own; the host drives it. It applies the
-   * SECONDARY knob (DDGI stride) directly via {@link setDdgiUpdateDivisor} and
-   * returns the decision so the host can feed the PRIMARY knob back as the next
-   * frame's `FrameInput.quality.resolutionFactor` (the resolution lever is a
-   * per-frame host input by contract — `renderFrame` consumes
-   * `quality.resolutionFactor`, debounced).
+   * engine-owned knobs (DDGI stride, and PPG train cadence when PPG is enabled)
+   * directly, and returns the decision so the host can feed the PRIMARY knob
+   * back as the next frame's `FrameInput.quality.resolutionFactor` (the
+   * resolution lever is a per-frame host input by contract — `renderFrame`
+   * consumes `quality.resolutionFactor`, debounced).
    *
    * No-op (returns `null`) when the controller is not enabled — so a host can
    * call it unconditionally in its render loop and pay nothing until it opts in
@@ -693,11 +697,22 @@ export class HybridEngine implements Engine {
   tickFrameBudget(measuredMs: number): FrameBudgetDecision | null {
     if (!this._frameBudget) return null;
     const decision = this._frameBudget.update(measuredMs);
-    // Apply the secondary lever immediately (it's an engine-owned runtime knob);
-    // the primary lever (resolutionFactor) is a host per-frame input by the
-    // FrameInput contract, so the host applies it via the returned decision.
+    // Apply engine-owned runtime knobs immediately; the primary lever
+    // (resolutionFactor) is a host per-frame input by the FrameInput contract,
+    // so the host applies it via the returned decision.
     this.setDdgiUpdateDivisor(decision.ddgiStride);
+    this.setPpgDispatchInterval(decision.ppgDispatchInterval);
     return decision;
+  }
+
+  /**
+   * Runtime PPG train-pass dispatch interval. Meaningful only when the engine
+   * was constructed with `ppgEnabled:true`; otherwise the pipeline has no PPG
+   * update pass to gate, so this is harmless. Exposed mainly for the adaptive
+   * frame-budget controller and host A/B knobs.
+   */
+  setPpgDispatchInterval(interval: number): void {
+    this._pipeline?.setPpgDispatchInterval(interval);
   }
 
   /**
@@ -1140,13 +1155,7 @@ export class HybridEngine implements Engine {
     // pt-webgl/pt-webgpu (which absorb the instance-COUNT case) instead of
     // throwing "call setScene()". P5 contract-honesty.
     if (TOPOLOGY_PATCH_WHOLESALE_FIELDS.some((f) => (patch as Record<string, unknown>)[f] !== undefined)) {
-      const nextScene: Scene = {
-        ...this._lastScene,
-        primitives: this._lastScene.primitives.map((p) =>
-          String(p.id) === id ? ({ ...p, ...patch } as ScenePrimitive) : p,
-        ),
-      };
-      this.setScene(nextScene);
+      this.setScene(applyPrimitivePatchToScene(this._lastScene, id, patch));
       return;
     }
 

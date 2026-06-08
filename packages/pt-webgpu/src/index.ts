@@ -400,7 +400,6 @@ class PTEngineWebGPU implements Engine {
       presentationMode: 'offscreen-texture',
       supportDetails: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
       experimentalFeatures: new Set([
-        'experimental-backend',
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
         ...(this.#postDenoiser instanceof OIDNFinalDispatcher
           ? (['pt-webgpu-oidn-final'] as const)

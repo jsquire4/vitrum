@@ -4,8 +4,9 @@
  *
  * The realtime backend has the quality LEVERS — `resolutionFactor` (internal
  * render scale, honoured per-frame via `FrameInput.quality.resolutionFactor`)
- * and `ddgiUpdateDivisor` (the DDGI probe round-robin stride, runtime-settable
- * via `HybridEngine.setDdgiUpdateDivisor`) — but, before this controller, NO
+ * `ddgiUpdateDivisor` (the DDGI probe round-robin stride, runtime-settable
+ * via `HybridEngine.setDdgiUpdateDivisor`), and, when PPG is enabled, the
+ * PPG update-pass dispatch interval — but, before this controller, NO
  * closed loop drove them from MEASURED frame time. "Runs at 30–60 fps on Class
  * B" was an external claim, not a property the library measured + maintained.
  *
@@ -65,17 +66,17 @@
  *     `ddgiStride ∈ [minDdgiStride, maxDdgiStride]` (integer). The knobs can
  *     never leave their valid ranges however long the loop runs.
  *
- *  6. TWO-LEVER ORDERING (knobs don't fight). Resolution is the PRIMARY lever
- *     (largest, smoothest cost/ms tradeoff). DDGI stride is SECONDARY: it is
- *     only touched once resolution is already pinned — raise the stride
- *     (cheaper GI) only when over budget AND resolution is already at its floor;
- *     lower it (snappier GI) only when under budget AND resolution is already
- *     at its ceiling. So at most one lever moves per tick, and they never push
- *     in opposite directions in the same frame.
+ *  6. ORDERED LEVERS (knobs don't fight). Resolution is the PRIMARY lever
+ *     (largest, smoothest cost/ms tradeoff). Optional PPG cadence is next when
+ *     enabled: the learned tree still feeds guided sampling every frame, so
+ *     widening the train interval is a cheaper freshness trade than degrading
+ *     probe updates. DDGI stride is the final fallback. At most one lever moves
+ *     per tick, and they never push in opposite directions in the same frame.
  *
  * The defaults target ~60 fps (16.6 ms) with a symmetric ±12 % dead-zone, a
  * 0.05 resolution step, a 0.5 floor / 1.0 ceiling on resolution, a 2…32 DDGI
- * stride range (matching the quality-preset 2→32 spread), and a 30-tick
+ * stride range (matching the quality-preset 2→32 spread), a 1…4 PPG train
+ * interval range (inactive unless explicitly enabled), and a 30-tick
  * up-cooldown (~0.5 s at 60 fps). All are overridable.
  */
 
@@ -104,6 +105,13 @@ export interface FrameBudgetControllerConfig {
   readonly minDdgiStride: number;
   /** Maximum DDGI probe-update stride (cheapest GI). Default 32 (preset low). */
   readonly maxDdgiStride: number;
+  /** Whether the controller may adapt PPG train-pass cadence. Defaults false
+   *  so engines without PPG never spend controller ticks on a no-op lever. */
+  readonly adaptPpgDispatchInterval: boolean;
+  /** Minimum PPG train-pass interval. Default 1 (train every frame). */
+  readonly minPpgDispatchInterval: number;
+  /** Maximum PPG train-pass interval. Default 4 (quality-preset low). */
+  readonly maxPpgDispatchInterval: number;
   /** Minimum controller ticks between consecutive UP moves (rate-limits the
    *  speculative quality-restore so it rises slowly). Default 30 (~0.5 s @60fps).
    *  Down moves are never rate-limited. */
@@ -120,6 +128,9 @@ export const DEFAULT_FRAME_BUDGET_CONFIG: FrameBudgetControllerConfig = Object.f
   maxResolutionFactor: 1.0,
   minDdgiStride: 2,
   maxDdgiStride: 32,
+  adaptPpgDispatchInterval: false,
+  minPpgDispatchInterval: 1,
+  maxPpgDispatchInterval: 4,
   upCooldownFrames: 30,
 });
 
@@ -128,6 +139,8 @@ export type FrameBudgetAction =
   | 'none'
   | 'resolution-down'
   | 'resolution-up'
+  | 'ppg-interval-up'
+  | 'ppg-interval-down'
   | 'ddgi-stride-up'
   | 'ddgi-stride-down';
 
@@ -143,6 +156,10 @@ export interface FrameBudgetDecision {
   /** DDGI probe-update divisor to apply via `HybridEngine.setDdgiUpdateDivisor`.
    *  Always an integer in [minDdgiStride, maxDdgiStride]. */
   readonly ddgiStride: number;
+  /** PPG train-pass dispatch interval to apply via
+   *  `HybridEngine.setPpgDispatchInterval`. Always an integer in
+   *  [minPpgDispatchInterval, maxPpgDispatchInterval]. */
+  readonly ppgDispatchInterval: number;
   /** The EMA-smoothed frame time the decision was based on (ms). */
   readonly smoothedMs: number;
   /** Which lever (if any) moved this tick. */
@@ -167,22 +184,24 @@ export class FrameBudgetController {
   private ema: number | null = null;
   private resolutionFactor: number;
   private ddgiStride: number;
+  private ppgDispatchInterval: number;
   /** Tick counter, used only for the up-move cooldown. */
   private tick = 0;
-  /** Tick index of the last UP move (resolution-up OR ddgi-stride-down); the
-   *  cooldown compares against this. `-Infinity` ⇒ no cooldown initially. */
+  /** Tick index of the last UP move (resolution-up, ppg-interval-down, or
+   *  ddgi-stride-down); the cooldown compares against this. `-Infinity` ⇒ no
+   *  cooldown initially. */
   private lastUpMoveTick = Number.NEGATIVE_INFINITY;
 
   /**
    * @param config        Partial override of {@link DEFAULT_FRAME_BUDGET_CONFIG}.
    * @param initial       Starting knob values. Default: full resolution (1.0)
-   *                      and the minimum DDGI stride (snappiest), i.e. start at
-   *                      best quality and let the loop back off under load.
+   *                      and the minimum DDGI/PPG cadence values (snappiest),
+   *                      i.e. start at best quality and let the loop back off under load.
    *                      Clamped into range at construction.
    */
   constructor(
     config: Partial<FrameBudgetControllerConfig> = {},
-    initial?: { resolutionFactor?: number; ddgiStride?: number },
+    initial?: { resolutionFactor?: number; ddgiStride?: number; ppgDispatchInterval?: number },
   ) {
     const cfg = { ...DEFAULT_FRAME_BUDGET_CONFIG, ...config };
 
@@ -218,6 +237,13 @@ export class FrameBudgetController {
           `[${cfg.minDdgiStride}, ${cfg.maxDdgiStride}]`,
       );
     }
+    if (!(cfg.minPpgDispatchInterval >= 1) ||
+        !(cfg.maxPpgDispatchInterval >= cfg.minPpgDispatchInterval)) {
+      throw new RangeError(
+        `[FrameBudgetController] need 1 ≤ minPpgDispatchInterval ≤ maxPpgDispatchInterval; got ` +
+          `[${cfg.minPpgDispatchInterval}, ${cfg.maxPpgDispatchInterval}]`,
+      );
+    }
     this.cfg = Object.freeze(cfg);
 
     this.resolutionFactor = clamp(
@@ -230,6 +256,11 @@ export class FrameBudgetController {
       cfg.minDdgiStride,
       cfg.maxDdgiStride,
     );
+    this.ppgDispatchInterval = clamp(
+      Math.round(initial?.ppgDispatchInterval ?? cfg.minPpgDispatchInterval),
+      cfg.minPpgDispatchInterval,
+      cfg.maxPpgDispatchInterval,
+    );
   }
 
   /** Current knob values + smoothed ms WITHOUT advancing the loop (read-only
@@ -238,6 +269,7 @@ export class FrameBudgetController {
     return {
       resolutionFactor: this.resolutionFactor,
       ddgiStride: this.ddgiStride,
+      ppgDispatchInterval: this.ppgDispatchInterval,
       smoothedMs: this.ema ?? 0,
       action: 'none',
     };
@@ -275,8 +307,8 @@ export class FrameBudgetController {
 
     if (ema > downThresh + EPS) {
       // ── OVER BUDGET → make it cheaper. Primary lever first (resolution),
-      //    then the secondary lever (DDGI stride up) once resolution is pinned
-      //    at its floor. No cooldown: dropping quality is urgent.
+      //    then optional PPG cadence, then DDGI stride. No cooldown: dropping
+      //    quality is urgent.
       if (this.resolutionFactor > this.cfg.minResolutionFactor + EPS) {
         this.resolutionFactor = clamp(
           this.resolutionFactor - this.cfg.resolutionStep,
@@ -284,6 +316,16 @@ export class FrameBudgetController {
           this.cfg.maxResolutionFactor,
         );
         action = 'resolution-down';
+      } else if (
+        this.cfg.adaptPpgDispatchInterval &&
+        this.ppgDispatchInterval < this.cfg.maxPpgDispatchInterval
+      ) {
+        this.ppgDispatchInterval = clamp(
+          this.ppgDispatchInterval + 1,
+          this.cfg.minPpgDispatchInterval,
+          this.cfg.maxPpgDispatchInterval,
+        );
+        action = 'ppg-interval-up';
       } else if (this.ddgiStride < this.cfg.maxDdgiStride) {
         this.ddgiStride = clamp(this.ddgiStride + 1, this.cfg.minDdgiStride, this.cfg.maxDdgiStride);
         action = 'ddgi-stride-up';
@@ -292,8 +334,8 @@ export class FrameBudgetController {
     } else if (ema < upThresh - EPS) {
       // ── UNDER BUDGET → spend the headroom (richer). Rate-limited by the
       //    up-cooldown so quality rises slowly (headroom may be transient).
-      //    Restore the PRIMARY lever first (resolution up to ceiling), then the
-      //    secondary (DDGI stride down toward snappier GI).
+      //    Restore the PRIMARY lever first (resolution up to ceiling), then PPG
+      //    cadence, then DDGI stride toward snappier GI.
       const cooldownElapsed = this.tick - this.lastUpMoveTick >= this.cfg.upCooldownFrames;
       if (cooldownElapsed) {
         if (this.resolutionFactor < this.cfg.maxResolutionFactor - EPS) {
@@ -303,6 +345,17 @@ export class FrameBudgetController {
             this.cfg.maxResolutionFactor,
           );
           action = 'resolution-up';
+          this.lastUpMoveTick = this.tick;
+        } else if (
+          this.cfg.adaptPpgDispatchInterval &&
+          this.ppgDispatchInterval > this.cfg.minPpgDispatchInterval
+        ) {
+          this.ppgDispatchInterval = clamp(
+            this.ppgDispatchInterval - 1,
+            this.cfg.minPpgDispatchInterval,
+            this.cfg.maxPpgDispatchInterval,
+          );
+          action = 'ppg-interval-down';
           this.lastUpMoveTick = this.tick;
         } else if (this.ddgiStride > this.cfg.minDdgiStride) {
           this.ddgiStride = clamp(this.ddgiStride - 1, this.cfg.minDdgiStride, this.cfg.maxDdgiStride);
@@ -319,6 +372,7 @@ export class FrameBudgetController {
     return {
       resolutionFactor: this.resolutionFactor,
       ddgiStride: this.ddgiStride,
+      ppgDispatchInterval: this.ppgDispatchInterval,
       smoothedMs: ema,
       action,
     };
@@ -335,6 +389,7 @@ export class FrameBudgetController {
     if (resetKnobs) {
       this.resolutionFactor = this.cfg.maxResolutionFactor;
       this.ddgiStride = this.cfg.minDdgiStride;
+      this.ppgDispatchInterval = this.cfg.minPpgDispatchInterval;
     }
   }
 }
