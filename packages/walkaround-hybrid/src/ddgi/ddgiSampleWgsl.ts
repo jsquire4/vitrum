@@ -43,7 +43,22 @@ fn ddgiSample(
   let gridOrigin = vec3f(gridOriginX, gridOriginY, gridOriginZ);
   let gridDims   = vec3u(gridDimsX, gridDimsY, gridDimsZ);
 
-  let gridPos  = (worldPos - gridOrigin) / gridSpacing;
+  // Surface/normal bias (Majercik 2019 §4) — offset the receiver OFF the surface
+  // toward the probe interior before sampling. CRITICAL: without it a receiver
+  // sampled at the EXACT surface that lies on a grid-boundary plane (Cornell
+  // walls/floors — gridPos on an integer plane) has its trilinear interpolation
+  // collapse onto the IN-PLANE probes, whose direction to the receiver is
+  // perpendicular to the surface normal → the cosine weight max(0, dot(n, dir))
+  // is 0 for all of them → totalWeight < 1e-4 → this returns vec3f(0). That
+  // zeroed the entire DDGI→ReSTIR-GI handoff (the GI reconnection points are
+  // surface points), so the default realtime GI was DEAD (indirect ~0; only the
+  // off-default RC path produced GI). Root-caused 2026-06-07 via gidiag A/B:
+  // offsetting the sample point lifted indirect 0.0004→0.25. A quarter-spacing
+  // bias clears the boundary plane while staying inside the receiver's cell; the
+  // Chebyshev visibility term still guards against light leak through thin walls.
+  let biasedPos = worldPos + surfaceNormal * (gridSpacing * 0.25);
+
+  let gridPos  = (biasedPos - gridOrigin) / gridSpacing;
   let baseIdx3 = vec3i(floor(gridPos));
   let frac     = fract(gridPos);
 
@@ -75,7 +90,7 @@ fn ddgiSample(
     // not the baseline, and biases the receiver toward off-axis probes with
     // the wrong falloff. Switching to the strict baseline gives a physically
     // consistent receiver↔producer pair (no magic exponent, no +0.2 floor).
-    let toProbe   = probeWorld - worldPos;
+    let toProbe   = probeWorld - biasedPos;
     let probeDist = length(toProbe);
     if (probeDist > 1e-3) {
       let probeDir = toProbe / probeDist;
@@ -84,7 +99,7 @@ fn ddgiSample(
     }
 
     // Octahedral-encode the surface→probe direction (visibility lookup).
-    let probeDirToSurf = normalize(worldPos - probeWorld);
+    let probeDirToSurf = normalize(biasedPos - probeWorld);
     let dirV       = -probeDirToSurf;
     let absV       = abs(dirV);
     let nv         = dirV / (absV.x + absV.y + absV.z);
