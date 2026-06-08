@@ -140,6 +140,21 @@ export interface PassDispatchContext {
   readonly wgY16: number;
   readonly halfWgX: number;
   readonly halfWgY: number;
+  /** Checkerboard half-res shading state (host opt-in; default OFF). When ON
+   *  the {@link ShadePass} compacts its dispatch to ~half the threads — one per
+   *  active-parity pixel — instead of dispatching full-res and early-returning
+   *  the gap-parity threads. The shade shader decodes the compacted
+   *  `global_invocation_id` back into the true full-res active-parity pixel
+   *  using the SAME `frameParity`/`checkerboardOn` it reads from the
+   *  WalkaroundUBO, so the set of shaded pixels (and thus the output) is
+   *  unchanged from the full-res-dispatch-with-early-return path. OFF ⇒ the
+   *  ShadePass dispatches full-res (`wgX/wgY`) exactly as before. */
+  readonly checkerboardOn: boolean;
+  /** Checkerboard active-parity phase (`frameCount & 1`) — the SAME value the
+   *  pipeline packs into the WalkaroundUBO `frameParity` field and ResolvePass
+   *  packs into `ResolveUniforms.frameParity`. Only consumed when
+   *  `checkerboardOn` is true. */
+  readonly frameParity: number;
   /** GTAO AO-compute downscale factor: 2 (`gtaoMode:'on'`, half-res) or 4
    *  (`gtaoMode:'quarter'`, quarter-res). The GTAOPass dispatches at
    *  W/ds × H/ds and packs this into the GTAO UBO so both gtao + gtaoUpsample
@@ -189,6 +204,14 @@ export function dispatchSharedBindGroupPass(
      *  `slot` must match the compiled pipeline layout. Empty/absent ⇒ the
      *  byte-identical pre-extraGroups dispatch. */
     readonly extraGroups?: ReadonlyArray<{ readonly slot: number; readonly group: GPUBindGroup }>;
+    /** Explicit workgroup count override (x, y). When present it supersedes
+     *  both the full-res (`wgX/wgY`) and `halfRes` selection — the dispatch
+     *  uses exactly these counts. Used by the ShadePass checkerboard path,
+     *  which compacts the X dispatch to `ceil(ceil(W/2)/8)` so only the
+     *  active-parity pixels are shaded (the shader decodes the compacted
+     *  global_invocation_id back into the true pixel). Absent ⇒ the
+     *  byte-identical full-res / halfRes dispatch. */
+    readonly dispatchOverride?: { readonly x: number; readonly y: number };
   },
 ): void {
   const {
@@ -205,8 +228,8 @@ export function dispatchSharedBindGroupPass(
   if (opts.extraGroups) {
     for (const { slot, group } of opts.extraGroups) pass.setBindGroup(slot, group);
   }
-  const dx = opts.halfRes ? halfWgX : wgX;
-  const dy = opts.halfRes ? halfWgY : wgY;
+  const dx = opts.dispatchOverride ? opts.dispatchOverride.x : (opts.halfRes ? halfWgX : wgX);
+  const dy = opts.dispatchOverride ? opts.dispatchOverride.y : (opts.halfRes ? halfWgY : wgY);
   pass.dispatchWorkgroups(dx, dy, 1);
   pass.end();
 }

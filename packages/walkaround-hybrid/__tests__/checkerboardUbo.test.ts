@@ -17,10 +17,17 @@
  *      the ResolvePass passes through.
  *   4. Turning the gate ON flips ONLY the two slots (checkerboardOn=1 and
  *      frameParity=frameCount&1); all other bytes are unchanged.
- *   5. Shade + resolve consume the SAME parity source — shade.wgsl's gap
- *      early-out compares `(gid.x+gid.y)&1u != ubo.frameParity`, and
- *      resolve.wgsl's `isShadedPixel` compares `(px+py)&1u == frameParity`, so
- *      the pixels shade skips are exactly the pixels resolve gap-fills.
+ *   5. Shade + resolve consume the SAME parity source — when ON, shade.wgsl's
+ *      dispatch is COMPACTED to ~half the threads (one per active-parity pixel)
+ *      and it decodes the compacted global-invocation id back to the true pixel
+ *      `px = gid.x*2 + ((gid.y + frameParity) & 1u)`, which lands EXACTLY on the
+ *      `(px+py)&1u == frameParity` set, while resolve.wgsl's `isShadedPixel`
+ *      copies through that same `(px+py)&1u == frameParity` set and reprojects
+ *      its complement — so the pixels shade writes are exactly the pixels
+ *      resolve copies through (and the ones shade skips are exactly the ones
+ *      resolve gap-fills). The OLD mechanism (full-res dispatch + per-thread gap
+ *      early-out) shaded the identical set but wasted the gap threads; the
+ *      compaction is a pure GPU-time optimisation with the same output.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -151,11 +158,18 @@ describe('checkerboard-OFF bit-identity', () => {
 });
 
 describe('shade + resolve consume the SAME parity source', () => {
-  it('shade.wgsl gates the gap early-out on ubo.checkerboardOn==1 + parity != frameParity', () => {
-    // The OFF default (checkerboardOn==0) never takes the early-out ⇒ bit-identity.
+  it('shade.wgsl decodes the compacted dispatch to the active-parity pixel when checkerboardOn==1', () => {
+    // The OFF default (checkerboardOn==0) keeps pix == gid.xy ⇒ full-res
+    // dispatch, bit-identity with the pre-checkerboard kernel.
     expect(SHADE_WGSL).toContain('ubo.checkerboardOn == 1u');
-    // Gap pixel = parity NOT equal to frameParity (shade SKIPS those when ON).
-    expect(SHADE_WGSL).toContain('((gid.x + gid.y) & 1u) != (ubo.frameParity & 1u)');
+    // ON ⇒ the compacted gid.x is doubled and offset by the per-row start
+    // column so the decoded pixel lands on the active parity:
+    //   startCol = (gid.y + frameParity) & 1u; px = gid.x*2 + startCol.
+    expect(SHADE_WGSL).toContain('(gid.y + ubo.frameParity) & 1u');
+    expect(SHADE_WGSL).toContain('gid.x * 2u + startCol');
+    // The active-parity invariant: every decoded pixel satisfies
+    // (px+py)&1u == frameParity (proven exhaustively in dispatchEquivalence's
+    // "compacted-gid decode covers exactly the active-parity pixel set" test).
   });
 
   it('resolve.wgsl gap-fills the COMPLEMENT — (px+py)&1 == frameParity is the SHADED half', () => {

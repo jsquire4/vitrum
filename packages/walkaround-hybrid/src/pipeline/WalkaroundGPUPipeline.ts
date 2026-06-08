@@ -1620,6 +1620,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       hybridLayersBindGroup: bgHybrid,
       lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
+      // Checkerboard sparse-shade dispatch state. When ON, ShadePass compacts
+      // its dispatch to ~half the threads (one per active-parity pixel). These
+      // are the SAME frameParity / checkerboardOn values updateUBO packs into
+      // the WalkaroundUBO above, so the shade shader's compacted-gid decode and
+      // its UBO reads agree.
+      checkerboardOn: this._checkerboard,
+      frameParity: this._frameCount & 1,
       gtaoDownscale: this._gtaoDownscale,
       gNormalDepthView,
       computeDesc,
