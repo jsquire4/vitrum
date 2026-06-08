@@ -105,13 +105,22 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
 > are already validated; the open ones are below. Each is days-scale with the
 > right independent-reference A/B.
 
-- **1-A 🔴 DDGI octahedral axis-aligned sampling bias.** Floors/walls under-read
-  DDGI irradiance 23–60% (diagonals 2–4%) — production `ddgiSample` octahedral
-  EDGE sampling (`ddgiSampleWgsl.ts:133-135`), NOT the border-store (that
-  off-by-one hypothesis was ground-truth-rejected + reverted 2026-06-07).
-  Derive the correct seam reflection / sample-position (full Cigolle 2014 oct
-  seam map; the equator/pole folds need more than an edge mirror). **Oracle 0-A**
-  (target: axis-aligned ≤5% like the diagonals).
+- **1-A 🔴 DDGI axis-aligned under-read (PRODUCER-side, research-grade).** Floors/walls
+  under-read DDGI irradiance 23–60% (−Y worst 0.40×; diagonals 2–5%). LOCALIZED 2026-06-07
+  to the PRODUCER (`probeUpdateBlend`), NOT the consumer: `NEARZ-y` (0,−0.95,0.31) reads an
+  INTERIOR octahedral texel (octN.y=0.123, not a boundary) yet is STILL 58% under → rules
+  out the consumer edge/border sampling (and the border-store off-by-one was already
+  ground-truth-rejected + reverted). The producer under-computes E for downward/axis
+  directions specifically. Candidate mechanisms (need careful Monte-Carlo analysis):
+  (a) the `if (ray.hitDistance < 0.05) continue` near-hit skip (`probeUpdateBlend:139`)
+  zeroing surface-adjacent probes' rays toward the nearest surface (floor for floor-row
+  probes → drags −Y down); (b) the non-uniform octahedral ray distribution
+  (`octDecode(uniform grid)`) feeding the cosine-weighted mean `Σ L·cos/Σ cos` without a
+  per-ray solid-angle (1/pdf) weight — though the per-frame SO(3) rotation may already
+  uniformize it. **Oracle 0-A** (`ddgi-white-bounce-ab`, cardinal/diagonal split; target
+  axis-aligned ≤5%). This is the residual ~2× under-energy on the now-alive GI (the
+  dead-GI P0 is FIXED above; A2 sharpens it). Deferred to a dedicated producer-analysis
+  pass — not a coordinate tweak.
 - **1-B ✅ DDGI coloured-bounce.** Validated 2–4% on interior normals (`8aa444a`).
   Re-confirm after 1-A.
 - **1-C 🟡 G-P0.4 three-bindings asymmetries.** Skinned double-transform FIXED;
