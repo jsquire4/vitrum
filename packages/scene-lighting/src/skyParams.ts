@@ -5,7 +5,8 @@
  *
  * Why SkyParams lives in @vitrum/scene-lighting rather than being collapsed into
  * core's ProceduralSkyEnvironment: SkyParams.sunPosition is a RAW non-unit
- * Preetham position vector (~1.12–1.41 magnitude across the day arc), while
+ * Preetham position vector (~1.08–1.16 magnitude across the day arc — minimum
+ * 1.077 at noon, maximum 1.164 at t≈0.14), while
  * ProceduralSkyEnvironment.sunDirection is a unit vector. The IBL baker and
  * lightingState both read the non-unit components directly (to normalize or to
  * pass to THREE.Sky's uniforms). Collapsing would require storing the magnitude
@@ -56,8 +57,8 @@ export const SUN_LIGHT_DISTANCE = 12;
 /** Convert a SkyParams sun direction into a world-space position suitable for
  *  `<directionalLight position>`. Each component of `params.sunPosition` is
  *  multiplied by SUN_LIGHT_DISTANCE. The result is NOT a unit vector scaled to
- *  that magnitude — skyParams's sun vector is itself non-unit (~1.12–1.41
- *  across the arc). The resulting magnitudes (~13.4 at horizons, ~17 at noon)
+ *  that magnitude — skyParams's sun vector is itself non-unit (~1.08–1.16
+ *  across the arc). The resulting magnitudes (~13.4 at horizons, ~12.9 at noon)
  *  sit comfortably inside the default shadow-camera frustum (near=0.5, far=50,
  *  ±15 in xy). */
 export function worldSunPosition(params: SkyParams): [number, number, number] {

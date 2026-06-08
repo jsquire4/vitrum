@@ -46,7 +46,7 @@ export function computeLightingState(opts: LightingStateInputs): LightingState {
   const { timeOfDay, skyParams, isNight, intensityMultiplier = 1.0 } = opts;
 
   // ── Sun direction ──────────────────────────────────────────────────
-  // skyParams.sunPosition is non-unit (~1.12–1.41 across the arc).
+  // skyParams.sunPosition is non-unit (~1.08–1.16 across the arc).
   // Normalize so WGSL dot-products against surface normals are bounded in [-1, 1].
   const [sx, sy, sz] = skyParams.sunPosition;
   const sunLen = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;

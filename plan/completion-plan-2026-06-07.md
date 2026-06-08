@@ -24,7 +24,14 @@ v1 requirement vs documented internal dependency — a maintainer decision.
 
 ---
 
-## 🔴 ORACLE-SURFACED FINDING (2026-06-07, 0-E) — default ReSTIR-GI indirect ~0 [P0-suspect, root-cause pending]
+## 🔴🔴 CONFIRMED P0 (2026-06-07) — default ReSTIR-GI indirect DEAD: `ddgiSample` returns ~0 at GI reconnection points
+**ROOT CAUSE LOCALIZED** via harness shader-patch A/B on dzn (bisect `--gidiag`):
+- Disabling the risGi final-visibility reject → NO change (indirect still 0.0004) → visibility test RULED OUT.
+- Forcing the candidate `Lo`=const on a bounce HIT → indirect jumps **0.0004 → 0.80** → the reservoir/RIS/blend/downstream pipeline ALL WORK, and the GI bounce rays DO hit.
+- ∴ the ONLY failing link is **`Lo = sampleDDGIAtPoint(xs, ns)·albedo·INV_PI` ≈ 0** — i.e. `ddgiSample` (the production DDGI consumer) returns ~0 at the GI reconnection vertices (Cornell-wall surface points), DESPITE the DDGI atlas being populated (mean 3.4).
+This is the WHOLE default realtime GI being dead (relies entirely on off-default RC). It is a SEPARATE, MORE SEVERE issue than 1-A (the DDGI axis-aligned under-read is 0.40×, not ~0) — but likely the same subsystem. **NEXT (top priority):** why does `ddgiSample` return ~0 at wall surface points in the full pipeline when the `ddgi-white-bounce-ab` harness got 0.6–1.3 at the same class of point? Candidates: probe-grid bounds (wall points at/outside the grid extent → trilinear edge/out-of-bounds → 0), the Chebyshev visibility term suppressing, or an atlas-binding/grid-param mismatch in the risGi bind group vs the producer. Gated by the bisect `--gidiag` + a new `ddgiSample`-tap. Harness: `wsl-gpu/scripts/tlas-zero-gi-bisect.ts --gidiag=1 GIDIAG_WHAT=vis|forcelo|hitrate`.
+
+## ~~ORACLE-SURFACED FINDING (0-E) — default ReSTIR-GI indirect ~0 [P0-suspect]~~ → CONFIRMED above
 The Phase 0-E cross-backend oracle, immediately on first run, surfaced a
 radiometric gap NO string-golden or existing test caught (the whole point of the
 oracle suite): on an enclosed Cornell with the DEFAULT config (RC off, `ultra`

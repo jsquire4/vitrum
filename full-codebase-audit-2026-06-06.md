@@ -1,5 +1,50 @@
 # vitrum — full codebase audit (2026-06-06)
 
+---
+
+## STATUS RECONCILIATION (2026-06-07)
+
+> **Read this first. This audit OVERSTATES the open work.** It was filed BEFORE
+> the 2026-06-06 G-sweep close-out (`178f80d`) + GPU capture pass (`daa9716`)
+> + the 2026-06-07 fix wave landed. Most of P0/P1 is now closed. The body below
+> is preserved unedited as the historical record; this block is the current
+> ledger. **Each "CLOSED" claim was re-verified by a code-read of the cited file
+> at the commit noted — not by a changelog.** The grounded current state lives in
+> `plan/completion-plan-2026-06-07.md` ("REVISED SCOPE" + "ORACLE-SURFACED
+> FINDING" blocks); this reconciliation aligns with it.
+
+### VERIFIED CLOSED (do not re-do)
+
+- **G-P0.4 three-bindings asymmetries — ALL FIVE CLOSED.** Verified by code-read 2026-06-07:
+  (a) directional/spot direction now from world space via `worldPositionOf` → `matrixWorld.elements` (`lights.ts:113-114/176-177`);
+  (b) rect-area axes normalized before scaling via `rectHalfAxisFromWorldColumn` (`lights.ts:142-143`);
+  (c) `convertInstancedMesh`/`convertSkinnedMesh` now extract + forward `uv1` + `colors` (`mesh.ts:200-212/449-451`);
+  (d) reverse path `vitrumSceneToThree` now forwards opacity/alphaMode(mask/blend/opaque)/alphaCutoff (`:256-265`), aoMap+intensity (`:121-124`), and clearcoat/sheen/iridescence lobe maps (`PHYSICAL_MATERIAL_TEXTURE_FIELDS` extended, `:55-68/128-143`);
+  (e) `InterpolateSmooth` now maps to `'LINEAR'` with a shape-corruption-avoidance comment (`animationImport.ts:26-31`).
+  Regression coverage added (`d6f7d78`). (Audit's "1-C" / completion-plan 1-C.)
+- **G-P1.1 PPG "training fed zeros" — CLOSED (audit description is now STALE).** The dead `samplesPosBuf`/`samplesDirBuf`/`samplesLiBuf` no longer exist anywhere in the tree (grep: zero hits). `ppgUpdate.wgsl.ts:63` binding(0) reads the LIVE `ppgReservoirGiCurrent` (ReSTIR-GI reservoir — populated), with a header "DEVIATION 3 FIX: no synthetic per-pixel training buffers are used"; the kernel does a real flat-buffer sTree/dTree descent and atomically accumulates flux from the reservoir's `Lo` proxy. PPG is **live + unbiased** (G-sweep `daa9716` capture pass; completion-plan 2-A). NOTE: the **genuinely-open** PPG items are DIFFERENT from what the audit described — they are (1) refine-loop runaway and (2) base-GI estimator instability (completion-plan 2-A, V17), not a missing writer.
+- **G-P1.2(a) WebGL-BDPT compile bug — CLOSED.** `LightRecord` now HAS `vec3 point` (`shader/sampling/light_sampling_functions.glsl.js:37`; note the file moved from the audit's cited path `materials/pathtracing/glsl/`); `FEATURE_BDPT=1` compiles + renders (G-sweep G-P1.2 "PASS on-rig", verified 2026-06-07). Hardware-GL eye↔light *connections* are still engine-disabled on ANGLE → a Windows-Chrome / real-GL connection render remains (completion-plan 2-B(b), the only open BDPT-WebGL tail). Parts (b)/(c)/(d) — CPU-fill degenerate sampling + HalfFloat upload type + connection-pdf — not re-verified this session; treat as still-open until code-read.
+- **G-P2.1 fork lint gate red — CLOSED.** `scripts/shader-smoke-check.js:151` now checks `surf.sssAlbedo` (per-material) instead of the removed `u_sssAlbedo` global; **ran it 2026-06-07: exit 0, "Shader smoke checks passed" + GLSL call-closure OK (201 defs)**. A call-closure gate was added (`daa9716`). The pre-push hook addition is tracked in completion-plan 3-C.
+- **pt-webgpu `photon-map` caustic — formally DEMOTED to `approximate` (`c9d88fa`).** Honest-labeling, zero rendering change; GPU A/B evidence (21% oracle energy vs MNEE 98.7%). Advertised via `experimentalFeatures: pt-webgpu-photon-map-approximate`. (Audit's G-P1.3 pt-webgpu half — fork-caustic half is a DEMOTE decision, completion-plan 2-C.)
+- **G-P2.5 stale-comment cluster — partially swept.** The scene-lighting sun-magnitude comment ("~1.12–1.41") corrected to the verified range (~1.08–1.16; min 1.077 at noon, max 1.164 at t≈0.14) in `skyParams.ts` + `lightingState.ts` (2026-06-07; the old comment also had noon/horizon world magnitudes inverted — noon is the MINIMUM, not "~17"). Many other cluster items were marked ✓ in the body; the residue sweep is completion-plan 3-C.
+- **Zero-test packages — coverage added.** `scene-lighting` + `stained-glass-extensions` now have real suites (`2c0242d`); `denoiserFidelityOracle.test.ts` adds the denoiser oracle (`d583514`). (Audit's G-P2.7 / G-P1.4 acceptance.)
+
+### VALIDATED (GPU capture pass — were green-but-unvalidated; now confirmed)
+
+- **G-P0.1 ReSTIR-DI p̂** — **PASS** (reuse bias 1.1σ; discrimination control 11.7σ — `daa9716` captures). NOTE: the in-tree `0-D` ReSTIR fidelity oracle now guards this class going forward.
+- **G-P0.2 DDGI irradiance convention** — **PASS** (Lo = albedo·L within [0.95,1.05] on 6/6 gated normals, both backends). The DDGI coloured-bounce fix (`8aa444a`) is the corrected form.
+- **G-P0.3 pt-webgl scalar-throughput colour crush** — **PASS** (white-surface bleed gradients on both backends vs ≈0 old-bug expectation).
+
+### GENUINELY OPEN (real remaining work)
+
+- **🔴 ORACLE-SURFACED P0-suspect (NEW, 2026-06-07): default ReSTIR-GI indirect reads ~0.** On an enclosed Cornell with the DEFAULT config (RC off, `ultra` tier), the walkaround indirect tap (`hdrIndirect`) reads ~0 while the DDGI atlas is fully populated; only the off-default RC path energizes indirect. Surfaced by the `0-E` cross-backend oracle. Root-cause pending (could relate to G-P0.1 or the DDGI axis-aligned sampling below). This is the TOP open item — see completion-plan "ORACLE-SURFACED FINDING".
+- **🔴 DDGI octahedral axis-aligned sampling bias (1-A).** Floors/walls under-read DDGI irradiance 23–60% (diagonals 2–4%); production `ddgiSample` octahedral EDGE sampling (`ddgiSampleWgsl.ts:133-135`). Real; confirmed by oracle 0-A this session. Distinct from the closed coloured-bounce fix.
+- **🔴 PPG production defects (2-A / V17):** refine-loop runaway + base-GI estimator instability (NOT the closed "training fed zeros").
+- **🔴/⚖️ THREE-decouple T1–T5.** Re-confirmed at every seam by code-read; the GI-signal DATA is decoupled but the ingestion/resolver/update layer is still THREE. Maintainer decision RESOLVED 2026-06-07: **do it** (host-agnosticism is a v1 requirement). Intricate, byte-identity-gated; T1 scoped in completion-plan.
+- **Still-open tail (verify-or-finish, per completion plan):** G-P0.3 fork colour-crush A/B-vs-independent-reference (mechanism PASS on bleed gradients, but a converged cross-backend magnitude A/B is the 0-G/2-B follow-up); fork caustic DEMOTE to `approximate` (2-C decision made, label-application pending); shared-denoisers G-P1.4 loose ends (b)/(c)/(d); the G-P2.6 performance-hygiene sweep; the G-P2.7 deeper test gaps (`HybridEnginePrimitiveUpdates` real fixtures, TLAS rotation/scale, GI-state round-trip).
+
+---
+
 **Method:** 14 parallel auditors read every source line in all 14 packages + `examples/` (~158k lines incl. tests), each with a per-file coverage attestation cross-checked against measured line counts. The lead personally read 100% of `core` + `engine`, the pt-webgpu engine class, the ReSTIR/DDGI shader seams, and the THREE-decouple seams, and **verified every P0/P1 finding below by opening the cited code** (P2 items: representative sample lead-verified; the rest are agent-reported from auditors whose higher-severity claims all survived verification — unverified-by-lead items are marked). Excluded from scope: the fork's vendored `example/libs` + generated `build/`, and `tools/` (validation harnesses). Mechanical: `npm run typecheck` clean; full vitest green (1,200+ tests); the fork's own `shader-smoke-check.js` **fails** (run during the audit — see P2-1).
 
 **Scope guardrail (per audit brief):** public-distribution posture, release governance, and cross-host GPU-validation evidence were deliberately out of scope. Items below are code-as-truth findings only.
