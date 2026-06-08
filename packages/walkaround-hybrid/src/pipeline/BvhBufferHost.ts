@@ -3,7 +3,7 @@
  * W4b — extracted from the pipeline god-file so upload/refit paths stay testable.
  */
 
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { createDummyStorageBuffer, uploadBuffer, uploadBufferPadded } from './resourceManager.js';
 import {
   uploadBeerTexture,

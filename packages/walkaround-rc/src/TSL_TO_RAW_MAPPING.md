@@ -10,7 +10,7 @@ are checked against this document.
 
 ### `storage(buffer, type, count[, access])`
 
-**Files**: `cascadeDispatch.ts`, `walkaroundDiffuseLighting.ts`, `cascadePyramid.ts`
+**Files**: `cascadeDispatch.ts`, `src/three/walkaroundDiffuseLighting.ts`, `cascadePyramid.ts`
 
 **TSL semantics**: Wraps a `StorageBufferAttribute` as a TSL storage-buffer node.
 The node declares a `var<storage, ...>` binding in the generated WGSL. The optional
@@ -227,22 +227,22 @@ node operations. The closure returns a node tree, not a WGSL string.
 
 ### `StorageBufferAttribute` (from `three/webgpu`)
 
-**Files**: `cascadePyramid.ts`, `bvhCompute.ts` (RC version), `cascadeDispatch.ts`
+**Files**: `src/three/cascadePyramidThree.ts`, `cascadeDispatch.ts`
 
 **TSL semantics**: A Three.js `THREE.BufferAttribute` subclass backed by a storage
 buffer. The GPU allocates a `GPUBuffer` with `STORAGE | COPY_DST | COPY_SRC` usage.
 The `StorageBufferAttribute` is the CPU-side container that TSL's `storage()` node
 wraps.
 
-**In `cascadePyramid.ts`**: `gpuCascades` is an array of `StorageBufferAttribute`.
+**In `src/three/cascadePyramidThree.ts`**: `gpuCascades` is an array of `StorageBufferAttribute`.
 The attribute's `.count` and `.array` are used by the dispatchers. This file is
 **retained as-is** with `StorageBufferAttribute` from `three/webgpu`, because the
-cascade output buffers are consumed by TSL material nodes in `walkaroundDiffuseLighting.ts`
-(which is TSL-preserved). Breaking the `StorageBufferAttribute` out of `cascadePyramid.ts`
-would require `walkaroundDiffuseLighting.ts` to also be converted — which the plan
-explicitly chose against (Option i).
+cascade output buffers are consumed by TSL material nodes in
+`src/three/walkaroundDiffuseLighting.ts` (which is TSL-preserved). Breaking the
+`StorageBufferAttribute` out of the bridge would require that receiver node to
+also be converted, which the plan explicitly chose against (Option i).
 
-**In `bvhCompute.ts` (RC version)**: `SceneBVH` fields are `StorageBufferAttribute`.
+**Historical note**: the removed RC bridge used `StorageBufferAttribute`.
 These are referenced in `cascadeDispatch.ts` which now creates raw WebGPU bind groups.
 The conversion strategy: `cascadeDispatch.ts` reads the `GPUBuffer` backing from the
 `StorageBufferAttribute` via the `__gpuBuffer` internal property (used by Three.js
@@ -254,7 +254,7 @@ the renderer has uploaded the buffers before calling `RCDispatcher.initialize()`
 This matches the original code's `gl.computeAsync()` call, which also required the
 Three.js renderer to have processed the scene first.
 
-**Resolution**: `bvhCompute.ts` and `cascadePyramid.ts` keep `StorageBufferAttribute`.
+**Resolution**: `src/three/cascadePyramidThree.ts` keeps `StorageBufferAttribute`.
 The `RCDispatcher` receives the `WebGPURenderer`'s raw `GPUDevice` and accesses buffer
 GPU handles through the renderer's backend, the same as the pre-conversion code did.
 
@@ -287,11 +287,10 @@ is whitespace-agnostic.
 | File | TSL primitives | Converted? |
 |------|---------------|-----------|
 | `cascadeDispatch.ts` | `storage()`, `compute()`, `instanceIndex`, `texture()`, `sampler()`, `StorageBufferAttribute` refs | YES — converted to raw GPUComputePipeline |
-| `cascadePyramid.ts` | `StorageBufferAttribute` (direct instantiation) | TSL-preserved (retained as-is) |
-| `bvhCompute.ts` (RC) | `StorageBufferAttribute` (direct instantiation) | TSL-preserved (retained as-is) |
-| `useCascadeBuffers.ts` | React hooks only (no TSL) | De-React only → `CascadeBuffers` class |
+| `src/three/cascadePyramidThree.ts` | `StorageBufferAttribute` (direct instantiation) | TSL-preserved behind `/three` bridge |
+| `src/three/cascadeBuffers.ts` | React hooks only (no TSL) | De-React only → `CascadeBufferManager` class |
 | `applyDDGIShading.ts` | `wgslFn`, `texture`, `uniform`, `add`, `vec4`, `mul`, `output`, `materialColor`, `renderOutput`, `positionWorld`, `normalWorld` | TSL-preserved per Option (i) |
-| `giReceiver.ts` | `MeshPhysicalNodeMaterial`, `output`, `renderOutput` | TSL-preserved; React hook stripped |
-| `walkaroundDiffuseLighting.ts` | `Fn`, `vec3`, `float`, `uniform`, `storage`, `positionWorld`, `normalWorld`, `dot`, `max`, `clamp` | TSL-preserved per Option (i) |
+| `src/three/giReceiver.ts` | `MeshPhysicalNodeMaterial`, `output`, `renderOutput` | TSL-preserved; React hook stripped |
+| `src/three/walkaroundDiffuseLighting.ts` | `Fn`, `vec3`, `float`, `uniform`, `storage`, `positionWorld`, `normalWorld`, `dot`, `max`, `clamp` | TSL-preserved per Option (i) |
 | `probeRayCast.wgsl.ts` | `wgslFn`, `wgsl` (inline WGSL strings) | WGSL extracted verbatim into `rc/wgsl/` |
 | `cascadeMerge.wgsl.ts` | `wgslFn`, `wgsl` (inline WGSL strings) | WGSL extracted verbatim into `rc/wgsl/` |

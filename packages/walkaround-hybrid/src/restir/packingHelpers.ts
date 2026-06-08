@@ -7,16 +7,42 @@
  *   - bvhIndex.w slot ← RGBA8 baseColor | (trans4 | texType4)
  *   - bvh_beer    u32 ← Beer-Lambert visible color per triangle
  *
- * Extracted from `bvhCompute.ts` (was ~270 lines of inline packing).
+ * Extracted from the legacy `legacy/three/restirBvhCompute.ts` mixed builder
+ * (was ~270 lines of inline packing).
  */
 
-import * as THREE from 'three';
 import type { MaterialSpec } from '@vitrum/core';
 import {
   materialSpecTriColor,
   materialSpecEmissiveLe,
   materialSpecSurfaceTextureId,
 } from '@vitrum/shared-bvh';
+
+interface ColorLike {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+}
+
+export interface BufferAttributeLike {
+  readonly array: ArrayLike<number>;
+}
+
+export interface LegacyThreeMaterialLike {
+  readonly color?: ColorLike;
+  readonly emissive?: ColorLike;
+  readonly emissiveIntensity?: number;
+  readonly roughness?: number;
+  readonly metalness?: number;
+  readonly transmission?: number;
+  readonly ior?: number;
+  readonly attenuationColor?: ColorLike;
+  readonly attenuationDistance?: number;
+  readonly thickness?: number;
+  readonly userData?: {
+    readonly surfaceTextureId?: number;
+  };
+}
 
 /** Default warm-gray fallback color (sRGB byte values) when a triangle has
  *  no material or unrecognised material type. Matches the old in-file
@@ -34,41 +60,38 @@ const WARM_GRAY_DEFAULT_B = 140;
  * File-local — no external consumers (2026-05-18 dead-code sweep).
  */
 function applyBeerLambert(
-  attCol: THREE.Color,
+  attCol: ColorLike,
   thickness: number | undefined,
   attDist: number | undefined,
-): THREE.Color {
+): ColorLike {
   if (thickness === undefined || attDist === undefined) return attCol;
   if (!Number.isFinite(thickness) || !Number.isFinite(attDist)) return attCol;
   if (thickness <= 0 || attDist <= 0) return attCol;
   const k = thickness / attDist;
-  return new THREE.Color(
-    Math.pow(Math.max(1e-6, attCol.r), k),
-    Math.pow(Math.max(1e-6, attCol.g), k),
-    Math.pow(Math.max(1e-6, attCol.b), k),
-  );
+  return {
+    r: Math.pow(Math.max(1e-6, attCol.r), k),
+    g: Math.pow(Math.max(1e-6, attCol.g), k),
+    b: Math.pow(Math.max(1e-6, attCol.b), k),
+  };
 }
 
 /**
  * Pack UV (16-bit unorm pair) into the .w slot of every vec4f position.
- * See bvhCompute.ts for the rationale (single storage buffer per stage).
+ * See the ReSTIR BVH builders for the rationale (single storage buffer per stage).
  */
 export function packUVIntoPositionW(
   positions: Float32Array,
-  uvAttr: THREE.BufferAttribute | undefined,
+  uvAttr: BufferAttributeLike | undefined,
   vertCount: number,
 ): Float32Array<ArrayBuffer> {
   const out = new Float32Array(positions.length);
   out.set(positions);
   const u32View = new Uint32Array(out.buffer);
-
-  const sourceUvs = uvAttr
-    ? new Float32Array(uvAttr.array)
-    : new Float32Array(vertCount * 2);
+  const sourceUvs = uvAttr?.array;
 
   for (let i = 0; i < vertCount; i++) {
-    let u = sourceUvs[i * 2 + 0]!;
-    let v = sourceUvs[i * 2 + 1]!;
+    let u = sourceUvs?.[i * 2 + 0] ?? 0;
+    let v = sourceUvs?.[i * 2 + 1] ?? 0;
     u = u - Math.floor(u);
     v = v - Math.floor(v);
     const u16 = Math.min(0xFFFF, Math.max(0, Math.round(u * 0xFFFF))) & 0xFFFF;
@@ -82,23 +105,21 @@ export function packUVIntoPositionW(
  * Resolve a triangle's RGB color for packing. Shared between packBVHIndexW
  * (raw attenuation color) and packBVHBeerColors (Beer-Lambert tinted).
  */
-function resolveTriColor(mat: THREE.Material, applyBeer: boolean): THREE.Color {
-  const physMat = mat as THREE.MeshPhysicalMaterial;
-  const stdMat  = mat as THREE.MeshStandardMaterial;
-  const transmission = (physMat.transmission ?? 0);
+function resolveTriColor(mat: LegacyThreeMaterialLike, applyBeer: boolean): ColorLike {
+  const transmission = (mat.transmission ?? 0);
   const isTransmissive = transmission > 0.01;
-  const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
+  const attenColor = mat.attenuationColor;
   if (isTransmissive && attenColor) {
     if (applyBeer) {
       return applyBeerLambert(
         attenColor,
-        (physMat as { thickness?: number }).thickness,
-        (physMat as { attenuationDistance?: number }).attenuationDistance,
+        mat.thickness,
+        mat.attenuationDistance,
       );
     }
     return attenColor;
   }
-  return physMat.color ?? stdMat?.color ?? new THREE.Color(0.6, 0.58, 0.55);
+  return mat.color ?? { r: 0.6, g: 0.58, b: 0.55 };
 }
 
 /** Pack one triangle's index lanes + material byte into an existing vec4u buffer. */
@@ -106,7 +127,7 @@ export function packBVHIndexWTri(
   indexBuf: Uint32Array,
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   tri: number,
 ): void {
   const base4 = tri * 4;
@@ -121,16 +142,14 @@ export function packBVHIndexWTri(
   let texTypeId = 0;
   let isMetal = 0;
   if (mat) {
-    const physMat = mat as THREE.MeshPhysicalMaterial;
-    const stdMat  = mat as THREE.MeshStandardMaterial;
-    transmission = (physMat.transmission ?? 0);
+    transmission = (mat.transmission ?? 0);
     const color = resolveTriColor(mat, /* applyBeer */ false);
     r = Math.round(color.r * 255) & 0xFF;
     g = Math.round(color.g * 255) & 0xFF;
     b = Math.round(color.b * 255) & 0xFF;
-    const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
+    const surfTex = mat.userData?.surfaceTextureId;
     texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
-    const metalness = (stdMat?.metalness ?? 0);
+    const metalness = (mat.metalness ?? 0);
     isMetal = metalness > 1e-4 ? 1 : 0;
   }
   const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
@@ -142,7 +161,7 @@ export function packBVHIndexWTri(
 export function packBVHBeerColorTri(
   beerBuf: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   tri: number,
 ): void {
   const matId = triMaterialId[tri]!;
@@ -166,7 +185,7 @@ export function repackBVHMaterialRange(
   beerBuf: Uint32Array,
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   triStart: number,
   triCount: number,
 ): void {
@@ -184,7 +203,7 @@ export function repackBVHMaterialRange(
 export function packBVHIndexW(
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   triCount: number,
 ): Uint32Array<ArrayBuffer> {
   const indexBuf = new Uint32Array(triCount * 4);
@@ -201,7 +220,7 @@ export function packBVHIndexW(
  */
 export function packBVHBeerColors(
   triMaterialId: Uint32Array,
-  materials: THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   triCount: number,
 ): Uint32Array<ArrayBuffer> {
   const beerBuf = new Uint32Array(triCount);
@@ -220,11 +239,10 @@ export function packBVHBeerColors(
  * emitter" branch: glass self-emission to the camera is already handled by
  * shade.wgsl `lo_emit` (Beer-Lambert), so packing it here would double-count.
  */
-export function materialEmissiveLe(mat: THREE.Material): [number, number, number] | null {
-  const meshMat = mat as THREE.MeshStandardMaterial;
-  const em = meshMat.emissive;
+export function materialEmissiveLe(mat: LegacyThreeMaterialLike): [number, number, number] | null {
+  const em = mat.emissive;
   if (!em) return null;
-  const ei = meshMat.emissiveIntensity;
+  const ei = mat.emissiveIntensity;
   if (!(ei && ei > 0)) return null;
   if (em.r <= 0 && em.g <= 0 && em.b <= 0) return null;
   return [em.r * ei, em.g * ei, em.b * ei];
@@ -239,7 +257,7 @@ export function materialEmissiveLe(mat: THREE.Material): [number, number, number
  */
 export function packBVHEmissiveLe(
   triMaterialId: Uint32Array,
-  materials: readonly THREE.Material[],
+  materials: readonly LegacyThreeMaterialLike[],
   triCount: number,
 ): Float32Array<ArrayBuffer> {
   const out = new Float32Array(triCount * 4);
@@ -281,7 +299,7 @@ export function packBVHEmissiveLe(
  * (the camera-glow packer reads `vitrumSceneToThree`-converted THREE materials,
  * which carry `emissiveIntensity = 1` unconditionally; see
  * vitrumSceneToThree.ts:201-211). This is the SAME ei-collapse fix the ReSTIR-DI
- * emitter decouple (`sceneBvhFromCore.ts:toProductionEmissiveRadiance`, commit
+ * emitter decouple (`restir/bvhCore.ts:toProductionEmissiveRadiance`, commit
  * `46a0078`) and the DDGI material decouple (`probeUpdateMaterials.ts`, commit
  * `15070cd`) needed: a raw `materialSpecEmissiveLe` computes
  * `emissive · emissiveIntensity`, so a core emitter with `ei = 4` would pack 4×

@@ -28,27 +28,24 @@
  * verbatim — no behaviour change.
  */
 
-import * as THREE from 'three';
-import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
+import type { Mat4, MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   computeLocalAabb,
   computeWorldAabbForBindings,
+  invertMat4,
   refitBvhBounds,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
   type TlasGpuSnapshot,
 } from '@vitrum/shared-bvh';
-import { applyVitrumMaterialToMesh, findMeshByPrimitiveId } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
-  buildReSTIRSceneBVHForScene,
-  rebuildReSTIRSceneBVHPrimitive,
+  buildReSTIRSceneBVHForCoreScene,
+  rebuildReSTIRSceneBVHPrimitiveCore,
   disposeSceneBVH,
   rebuildEmitterBuffersFromCoreScene,
-  rebuildEmitterBuffersFromSceneRoots,
-} from './restir/bvhCompute.js';
-import type { ReSTIRBvhMode } from './restir/bvhCompute.js';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+} from './restir/bvhCore.js';
+import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 
 /** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
 function computeWorldAabbFromBvhPositions(
@@ -80,7 +77,11 @@ function computeWorldAabbFromBvhPositions(
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
-import { repackBVHMaterialRange, packBVHEmissiveLe } from './restir/packingHelpers.js';
+import {
+  packBVHIndexWFromCore,
+  packBVHBeerColorsFromCore,
+  packBVHEmissiveLeFromCore,
+} from './restir/packingHelpers.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
@@ -100,17 +101,63 @@ function f32Copy(values: ArrayLike<number>): Float32Array {
   return new Float32Array(values);
 }
 
-function u32Copy(values: ArrayLike<number>): Uint32Array {
-  return new Uint32Array(values);
+const IDENTITY_MAT4 = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+function matrixFromArrayLike(values: ArrayLike<number> | undefined): Float32Array {
+  if (values == null || values.length < 16) return new Float32Array(IDENTITY_MAT4);
+  const out = new Float32Array(16);
+  for (let i = 0; i < 16; i += 1) out[i] = values[i] ?? 0;
+  return out;
 }
 
-function matrix4FromArrayLike(values: ArrayLike<number>): THREE.Matrix4 {
-  const m = new THREE.Matrix4();
-  const e = m.elements;
-  for (let i = 0; i < 16; i += 1) {
-    e[i] = values[i] ?? 0;
-  }
-  return m;
+function mat4Multiply(a: ArrayLike<number>, b: ArrayLike<number>): Float32Array {
+  const ae = a, be = b;
+  const a11 = ae[0]!, a12 = ae[4]!, a13 = ae[8]!, a14 = ae[12]!;
+  const a21 = ae[1]!, a22 = ae[5]!, a23 = ae[9]!, a24 = ae[13]!;
+  const a31 = ae[2]!, a32 = ae[6]!, a33 = ae[10]!, a34 = ae[14]!;
+  const a41 = ae[3]!, a42 = ae[7]!, a43 = ae[11]!, a44 = ae[15]!;
+  const b11 = be[0]!, b12 = be[4]!, b13 = be[8]!, b14 = be[12]!;
+  const b21 = be[1]!, b22 = be[5]!, b23 = be[9]!, b24 = be[13]!;
+  const b31 = be[2]!, b32 = be[6]!, b33 = be[10]!, b34 = be[14]!;
+  const b41 = be[3]!, b42 = be[7]!, b43 = be[11]!, b44 = be[15]!;
+  return new Float32Array([
+    a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41,
+    a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41,
+    a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41,
+    a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41,
+    a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42,
+    a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42,
+    a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42,
+    a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42,
+    a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43,
+    a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43,
+    a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43,
+    a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43,
+    a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44,
+    a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44,
+    a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44,
+    a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44,
+  ]);
+}
+
+function transformPoint(
+  m: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
+  const w = m[3]! * x + m[7]! * y + m[11]! * z + m[15]!;
+  const invW = w !== 0 && Number.isFinite(w) ? 1 / w : 1;
+  return [
+    (m[0]! * x + m[4]! * y + m[8]! * z + m[12]!) * invW,
+    (m[1]! * x + m[5]! * y + m[9]! * z + m[13]!) * invW,
+    (m[2]! * x + m[6]! * y + m[10]! * z + m[14]!) * invW,
+  ];
 }
 
 /**
@@ -128,10 +175,10 @@ export const TOPOLOGY_PATCH_FIELDS = [
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
 
-/** Topology fields that can't be expressed as an in-place THREE.Mesh attribute
- *  edit (unlike positions/normals/uvs/tangents/indices) and so require a full
- *  scene rebuild. `HybridEngine.updatePrimitive` intercepts these and routes them
- *  through `setScene` (instead of `topologyRebuild` throwing). */
+/** Topology fields that require wholesale scene replacement rather than a
+ *  count-preserving packed-buffer update. `HybridEngine.updatePrimitive`
+ *  intercepts these and routes them through `setScene` (instead of
+ *  `topologyRebuild` throwing). */
 export const TOPOLOGY_PATCH_WHOLESALE_FIELDS = [
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
@@ -190,10 +237,6 @@ export interface PrimitiveUpdateContext {
    *  pipeline init has not yet published — callers (transformRefit) MUST
    *  fall back to a topology rebuild in that case. */
   readonly bvhBuffers: SceneBVHBuffers | null;
-  /** The synthesized-or-host THREE.Scene root that owns the meshes we
-   *  patch in place. Null when the engine has no BVH source — caller
-   *  treats as an error. */
-  readonly threeRoot: THREE.Object3D | null;
   /** Live GPU pipeline; may be null during init. The fast paths fall
    *  through to a rebuild when null. Typed as `BvhUpdateSink` to decouple
    *  the update helpers from the full pipeline class (complexity sweep
@@ -214,8 +257,7 @@ export interface PrimitiveUpdateContext {
    *  primitive kinds that were packed into {@link PrimitiveTlasBinding}. */
   readonly renderScene: Scene;
   /** Whether the engine's render scene supplies core mesh/skinned/instanced
-   *  primitive payloads, allowing incremental emitter rebuilds to stay on the
-   *  core-native path instead of round-tripping through THREE. */
+   *  primitive payloads, allowing incremental emitter rebuilds. */
   readonly coreSceneSuppliesMeshes?: boolean;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
@@ -262,18 +304,16 @@ export interface PrimitiveUpdateResult {
  * recompile.
  *
  * Steps:
- *  1. Look up the affected mesh by `name === id` in the synthesized
- *     THREE scene (or `_threeScene` for the host-Three-scene path).
- *  2. Apply the new transform to the THREE.Mesh (`matrix` + `matrixWorld`).
- *  3. Compute the matrix delta `D = matrixWorldNew · matrixWorldAtBuild⁻¹`.
- *  4. For each vertex `v` in `[vertexStart, vertexStart + vertexCount)`,
+ *  1. Read the affected primitive's cached matrix snapshot from the packed BVH.
+ *  2. Compute the matrix delta `D = matrixWorldNew · matrixWorldAtBuild⁻¹`.
+ *  3. For each vertex `v` in `[vertexStart, vertexStart + vertexCount)`,
  *     read the old world-space position from `bvhPositions.cpuData`,
  *     apply `D`, write the new world-space position back. (UV in `.w`
  *     is preserved.)
- *  5. Update `matrixWorldAtBuild` snapshot to the new matrix world.
- *  6. Run `refitBvhBounds` on the BVH node buffer.
- *  7. Upload the refit nodes + position slice via the pipeline.
- *  8. Reset the accumulator (history is invalid — the primitive moved).
+ *  4. Update `matrixWorldAtBuild` snapshot to the new matrix world.
+ *  5. Run `refitBvhBounds` on the BVH node buffer.
+ *  6. Upload the refit nodes + position slice via the pipeline.
+ *  7. Reset the accumulator (history is invalid — the primitive moved).
  *
  * Falls through to {@link topologyRebuild} when the BVH hasn't been
  * published yet or when no vertex range matches the primitive id.
@@ -299,24 +339,6 @@ export function transformRefit(
       meshPatch.tangents === undefined &&
       meshPatch.indices === undefined;
     if (transformOnly && bvh.tlas != null && bvh.primitiveTlasBindings.length > 0) {
-      const root = ctx.threeRoot;
-      if (root == null) {
-        throw new Error(
-          `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS refit.`,
-        );
-      }
-      const meshRef = findMeshByPrimitiveId(root, id);
-      if (meshRef == null) {
-        throw new Error(
-          `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-        );
-      }
-      if (meshPatch.transform && meshPatch.transform.length >= 16) {
-        const m = matrix4FromArrayLike(meshPatch.transform);
-        meshRef.matrix.copy(m);
-        meshRef.matrixWorld.copy(m);
-        meshRef.matrixAutoUpdate = false;
-      }
       const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, {
         transform: meshPatch.transform,
       });
@@ -329,7 +351,7 @@ export function transformRefit(
         applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
         const range = bvh.meshVertexRanges.find((r) => r.name === id);
         if (range != null && meshPatch.transform && meshPatch.transform.length >= 16) {
-          range.matrixWorldAtBuild.set(f32Copy(meshPatch.transform));
+          range.matrixWorldAtBuild.set(matrixFromArrayLike(meshPatch.transform));
         }
         ctx.pipeline?.requestAccumReset();
         ctx.ddgi.markInstancesDirty();
@@ -355,39 +377,21 @@ export function transformRefit(
     return topologyRebuild(id, patch, ctx);
   }
 
-  const root = ctx.threeRoot;
-  if (root == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for refit.`,
-    );
-  }
-  const meshRef = findMeshByPrimitiveId(root, id);
-  if (meshRef == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-    );
-  }
-
   // Apply the new transform. The Scene contract says transform is a
   // 16-element column-major Mat4 (see core/src/scene.ts:MeshPrimitive).
-  const newMat = new THREE.Matrix4();
   const transform = (patch as { transform?: ArrayLike<number> }).transform;
-  if (transform && transform.length >= 16) {
-    newMat.copy(matrix4FromArrayLike(transform));
-  } else {
-    newMat.identity();
-  }
-  meshRef.matrix.copy(newMat);
-  meshRef.matrixWorld.copy(newMat);
-  meshRef.matrixAutoUpdate = false;
+  const newMat = matrixFromArrayLike(transform);
 
   // Compute matrix delta D = newMat · oldMat⁻¹. We transform each
   // already-baked world-space vertex through D to get the new
   // world-space vertex; equivalent to local⁻¹ → new-world round-trip
   // but without storing local-space positions.
-  const oldMatWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
-  const oldMatWorldInv = new THREE.Matrix4().copy(oldMatWorld).invert();
-  const delta = new THREE.Matrix4().multiplyMatrices(newMat, oldMatWorldInv);
+  const oldMatWorld = matrixFromArrayLike(range.matrixWorldAtBuild);
+  const oldMatWorldInv = invertMat4(oldMatWorld as Mat4);
+  if (oldMatWorldInv == null) {
+    return topologyRebuild(id, patch, ctx);
+  }
+  const delta = mat4Multiply(newMat, oldMatWorldInv);
 
   // Rewrite the affected vertex slice of bvhPositions.cpuData. The
   // stride-4 layout packs world-space xyz into [0..2] and UV-as-u32
@@ -397,23 +401,24 @@ export function transformRefit(
   const STRIDE = 4;
   const baseVertex = range.vertexStart;
   const sliceVerts = range.vertexCount;
-  const tmp = new THREE.Vector3();
   for (let v = 0; v < sliceVerts; v++) {
     const off = (baseVertex + v) * STRIDE;
-    tmp.x = positionsF32[off + 0]!;
-    tmp.y = positionsF32[off + 1]!;
-    tmp.z = positionsF32[off + 2]!;
-    tmp.applyMatrix4(delta);
-    positionsF32[off + 0] = tmp.x;
-    positionsF32[off + 1] = tmp.y;
-    positionsF32[off + 2] = tmp.z;
+    const [x, y, z] = transformPoint(
+      delta,
+      positionsF32[off + 0]!,
+      positionsF32[off + 1]!,
+      positionsF32[off + 2]!,
+    );
+    positionsF32[off + 0] = x;
+    positionsF32[off + 1] = y;
+    positionsF32[off + 2] = z;
     // .w (UV pack) preserved.
   }
 
   // Update the matrix snapshot in-place so subsequent transform
   // patches compute their delta against the latest matrix, not the
   // original build-time matrix.
-  range.matrixWorldAtBuild.set(newMat.elements);
+  range.matrixWorldAtBuild.set(newMat);
 
   // Refit BVH bounds in place against the freshly-updated positions (using
   // the cached stride-3 index buffer), then upload the full node buffer +
@@ -482,23 +487,6 @@ export function positionsRefit(
       return topologyRebuild(id, patch, ctx);
     }
 
-    const root = ctx.threeRoot;
-    if (root == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS positions refit.`,
-      );
-    }
-    const meshRef = findMeshByPrimitiveId(root, id);
-    if (meshRef == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-      );
-    }
-    meshRef.geometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(f32Copy(newLocalPositions), 3),
-    );
-
     const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
     const STRIDE = 4;
     const baseVertex = binding.vertexStart;
@@ -565,47 +553,26 @@ export function positionsRefit(
     return topologyRebuild(id, patch, ctx);
   }
 
-  const root = ctx.threeRoot;
-  if (root == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for positions refit.`,
-    );
-  }
-  const meshRef = findMeshByPrimitiveId(root, id);
-  if (meshRef == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-    );
-  }
-
-  // Update the THREE.Mesh's geometry so a later transformRefit picks up
-  // the latest local positions. The BufferAttribute itself owns its
-  // backing Float32Array, so we construct a fresh one from the patch
-  // (no aliasing surprises).
-  meshRef.geometry.setAttribute(
-    'position',
-    new THREE.BufferAttribute(f32Copy(newLocalPositions), 3),
-  );
-
   // The BVH stores WORLD-space positions in a stride-4 layout
   // ([x, y, z, uvPacked] per vertex). Apply the cached matrixWorldAtBuild
   // to lift the new local positions into world space, preserving the .w
   // (UV pack) lane from the existing slice.
-  const matWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
+  const matWorld = matrixFromArrayLike(range.matrixWorldAtBuild);
   const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
   const STRIDE = 4;
   const baseVertex = range.vertexStart;
   const sliceVerts = range.vertexCount;
-  const tmp = new THREE.Vector3();
   for (let v = 0; v < sliceVerts; v++) {
     const off = (baseVertex + v) * STRIDE;
-    tmp.x = newLocalPositions[v * 3] ?? 0;
-    tmp.y = newLocalPositions[v * 3 + 1] ?? 0;
-    tmp.z = newLocalPositions[v * 3 + 2] ?? 0;
-    tmp.applyMatrix4(matWorld);
-    positionsF32[off + 0] = tmp.x;
-    positionsF32[off + 1] = tmp.y;
-    positionsF32[off + 2] = tmp.z;
+    const [x, y, z] = transformPoint(
+      matWorld,
+      newLocalPositions[v * 3] ?? 0,
+      newLocalPositions[v * 3 + 1] ?? 0,
+      newLocalPositions[v * 3 + 2] ?? 0,
+    );
+    positionsF32[off + 0] = x;
+    positionsF32[off + 1] = y;
+    positionsF32[off + 2] = z;
     // .w (UV pack) preserved.
   }
 
@@ -644,26 +611,6 @@ export function refitSkinnedMeshAfterGpuWrite(
   const bvh = ctx.bvhBuffers;
   if (bvh == null) {
     throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): BVH not ready — call setScene first.`);
-  }
-
-  const root = ctx.threeRoot;
-  if (root == null) {
-    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no THREE scene for skin refit.`);
-  }
-  const meshRef = findMeshByPrimitiveId(root, id);
-  if (meshRef == null) {
-    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): mesh not found in THREE scene.`);
-  }
-
-  meshRef.geometry.setAttribute(
-    'position',
-    new THREE.BufferAttribute(new Float32Array(localPositions), 3),
-  );
-  if (localNormals != null) {
-    meshRef.geometry.setAttribute(
-      'normal',
-      new THREE.BufferAttribute(new Float32Array(localNormals), 3),
-    );
   }
 
   const posPatch: Partial<MeshPrimitive> =
@@ -737,21 +684,22 @@ export function refitSkinnedMeshAfterGpuWrite(
     );
   }
 
-  const matWorld = matrix4FromArrayLike(range.matrixWorldAtBuild);
+  const matWorld = matrixFromArrayLike(range.matrixWorldAtBuild);
   const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
   const STRIDE = 4;
   const baseVertex = range.vertexStart;
   const sliceVerts = range.vertexCount;
-  const tmp = new THREE.Vector3();
   for (let v = 0; v < sliceVerts; v += 1) {
     const off = (baseVertex + v) * STRIDE;
-    tmp.x = localPositions[v * 3] ?? 0;
-    tmp.y = localPositions[v * 3 + 1] ?? 0;
-    tmp.z = localPositions[v * 3 + 2] ?? 0;
-    tmp.applyMatrix4(matWorld);
-    positionsF32[off + 0] = tmp.x;
-    positionsF32[off + 1] = tmp.y;
-    positionsF32[off + 2] = tmp.z;
+    const [x, y, z] = transformPoint(
+      matWorld,
+      localPositions[v * 3] ?? 0,
+      localPositions[v * 3 + 1] ?? 0,
+      localPositions[v * 3 + 2] ?? 0,
+    );
+    positionsF32[off + 0] = x;
+    positionsF32[off + 1] = y;
+    positionsF32[off + 2] = z;
   }
 
   const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
@@ -787,15 +735,6 @@ export function topologyRebuild(
   patch: Partial<ScenePrimitive>,
   ctx: PrimitiveUpdateContext,
 ): PrimitiveUpdateResult {
-  const root = ctx.threeRoot;
-  if (root == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for rebuild.`,
-    );
-  }
-
-  // Apply the patch to the affected THREE.Mesh in the synthesized
-  // scene so the BVH build picks up the new geometry / transform.
   // For now we support the most common topology patches:
   //   - transform (16-element Mat4)
   //   - positions, normals, uvs, tangents, indices (typed arrays from
@@ -805,13 +744,6 @@ export function topologyRebuild(
   // updatePrimitive` intercepts these and routes them through setScene
   // BEFORE reaching here, so the throw below is now a defensive backstop
   // for any direct caller — not the host-facing path.
-  const meshRef = findMeshByPrimitiveId(root, id);
-  if (meshRef == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-    );
-  }
-
   const p = patch as {
     transform?: ArrayLike<number>;
     positions?: ArrayLike<number>;
@@ -835,49 +767,17 @@ export function topologyRebuild(
     }
   }
 
-  if (p.transform && p.transform.length >= 16) {
-    const m = matrix4FromArrayLike(p.transform);
-    meshRef.matrix.copy(m);
-    meshRef.matrixWorld.copy(m);
-    meshRef.matrixAutoUpdate = false;
-  }
-  if (p.positions) {
-    meshRef.geometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(f32Copy(p.positions), 3),
-    );
-  }
-  if (p.normals) {
-    meshRef.geometry.setAttribute(
-      'normal',
-      new THREE.BufferAttribute(f32Copy(p.normals), 3),
-    );
-  }
-  if (p.uvs) {
-    meshRef.geometry.setAttribute(
-      'uv',
-      new THREE.BufferAttribute(f32Copy(p.uvs), 2),
-    );
-  }
-  if (p.tangents) {
-    meshRef.geometry.setAttribute(
-      'tangent',
-      new THREE.BufferAttribute(f32Copy(p.tangents), 4),
-    );
-  }
-  if (p.indices) {
-    meshRef.geometry.setIndex(
-      new THREE.BufferAttribute(u32Copy(p.indices), 1),
-    );
-  }
-
-  // Rebuild the BVH from the patched THREE scene. The old buffers are
+  // Rebuild the BVH from the patched core scene. The old buffers are
   // released after the new ones are uploaded.
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
   const oldBuffers = ctx.bvhBuffers;
   const bvhOpts = {
-    primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
+    primaryLightDir: {
+      x: ctx.primaryLightDir[0],
+      y: ctx.primaryLightDir[1],
+      z: ctx.primaryLightDir[2],
+    },
     primaryLightIntensity: ctx.primaryLightIntensity,
     ...(ctx.restirBvhModeOverride !== undefined
       ? { bvhMode: ctx.restirBvhModeOverride }
@@ -889,19 +789,18 @@ export function topologyRebuild(
     oldBuffers.bvhMode === 'tlas' &&
     oldBuffers.scenePack != null
   ) {
-    const rebuilt = rebuildReSTIRSceneBVHPrimitive(
+    const rebuilt = rebuildReSTIRSceneBVHPrimitiveCore(
       updatedRenderScene,
       id,
-      [root],
       oldBuffers,
       bvhOpts,
     );
     newBuffers =
       'ok' in rebuilt && rebuilt.ok === false
-        ? buildReSTIRSceneBVHForScene(updatedRenderScene, [root], bvhOpts)
+        ? buildReSTIRSceneBVHForCoreScene(updatedRenderScene, bvhOpts)
         : (rebuilt as SceneBVHBuffers);
   } else {
-    newBuffers = buildReSTIRSceneBVHForScene(updatedRenderScene, [root], bvhOpts);
+    newBuffers = buildReSTIRSceneBVHForCoreScene(updatedRenderScene, bvhOpts);
   }
   if (oldBuffers) disposeSceneBVH(oldBuffers);
 
@@ -979,17 +878,9 @@ export function materialPatch(
     );
   }
 
-  const root = ctx.threeRoot;
-  if (root == null) {
+  if (ctx.coreSceneSuppliesMeshes !== true || bvh.coreMaterials.length === 0) {
     throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for material patch.`,
-    );
-  }
-
-  const meshRef = findMeshByPrimitiveId(root, id);
-  if (meshRef == null) {
-    throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
+      `HybridEngine.updatePrimitive("${id}"): material patch requires core scene material slots.`,
     );
   }
 
@@ -1002,34 +893,37 @@ export function materialPatch(
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
 
-  applyVitrumMaterialToMesh(meshRef, nextMaterial);
-
   const triMaterialIds = new Uint32Array(bvh.triangleMaterialIds.cpuData);
   const matIds = new Set<number>();
   for (let t = range.triStart; t < range.triStart + range.triCount; t++) {
     matIds.add(triMaterialIds[t]!);
   }
-  const threeMat = meshRef.material as THREE.Material;
-  for (const matId of matIds) {
-    (bvh.buildMaterials as THREE.Material[])[matId] = threeMat;
-  }
 
   const indexView = new Uint32Array(bvh.bvhIndex.cpuData);
   const beerView = new Uint32Array(bvh.bvhBeerColors.cpuData);
-  repackBVHMaterialRange(
-    indexView,
-    beerView,
+  const updatedCoreMaterials = bvh.coreMaterials.map((m, matId) => (matIds.has(matId) ? nextMaterial : m));
+  const fullIndex = packBVHIndexWFromCore(
     bvh.bvhIndicesStride3,
     triMaterialIds,
-    bvh.buildMaterials,
-    range.triStart,
-    range.triCount,
+    updatedCoreMaterials,
+    bvh.bvhBeerColors.count,
+  );
+  const fullBeer = packBVHBeerColorsFromCore(
+    triMaterialIds,
+    updatedCoreMaterials,
+    bvh.bvhBeerColors.count,
+  );
+  indexView.set(fullIndex);
+  beerView.set(fullBeer);
+  const fullEmissive = packBVHEmissiveLeFromCore(
+    triMaterialIds,
+    updatedCoreMaterials,
+    bvh.bvhBeerColors.count,
   );
 
   // Camera-visible emitters — repack the FULL per-tri emissive Le from the
   // now-updated materials (buildMaterials was patched above) so an emissive edit
   // is reflected; the slice path re-uploads the whole emissive texture wholesale.
-  const fullEmissive = packBVHEmissiveLe(triMaterialIds, bvh.buildMaterials, bvh.bvhBeerColors.count);
   const updatedEmissiveLe = {
     cpuData: fullEmissive.buffer.slice(
       fullEmissive.byteOffset,
@@ -1048,34 +942,31 @@ export function materialPatch(
     // WS1 — beer is a texture: re-upload the full beer data (a contiguous tri
     // slice is not a rectangular texture region unless it spans full rows).
     { data: bvh.bvhBeerColors.cpuData, triCount: bvh.bvhBeerColors.count },
-    { data: fullEmissive.buffer, triCount: bvh.bvhBeerColors.count },
+    {
+      data: fullEmissive.buffer.slice(
+        fullEmissive.byteOffset,
+        fullEmissive.byteOffset + fullEmissive.byteLength,
+      ) as ArrayBuffer,
+      triCount: bvh.bvhBeerColors.count,
+    },
   );
 
-  let outBvh: SceneBVHBuffers =
-    bvh.coreMaterials.length > 0
-      ? {
-        ...bvh,
-        bvhEmissiveLe: updatedEmissiveLe,
-        coreMaterials: bvh.coreMaterials.map((m, matId) =>
-          matIds.has(matId) ? nextMaterial : m,
-        ),
-      }
-      : { ...bvh, bvhEmissiveLe: updatedEmissiveLe };
+  let outBvh: SceneBVHBuffers = { ...bvh, bvhEmissiveLe: updatedEmissiveLe, coreMaterials: updatedCoreMaterials };
   const emitterAffectingMaterialChanged =
     prevTransmission > TRANSMISSION_GLASS_THRESHOLD
     || nextTransmission > TRANSMISSION_GLASS_THRESHOLD
     || productionEmissiveRadianceChanged(prevMaterial, nextMaterial);
-  const useCoreEmitterRebuild = ctx.coreSceneSuppliesMeshes === true;
   if (emitterAffectingMaterialChanged) {
     ctx.ddgi.invalidateProbeCache();
     const emitterOptions = {
-      primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
+      primaryLightDir: {
+        x: ctx.primaryLightDir[0],
+        y: ctx.primaryLightDir[1],
+        z: ctx.primaryLightDir[2],
+      },
       primaryLightIntensity: ctx.primaryLightIntensity,
     };
-    const emitterSlice =
-      useCoreEmitterRebuild
-        ? rebuildEmitterBuffersFromCoreScene(updatedRenderScene, emitterOptions)
-        : rebuildEmitterBuffersFromSceneRoots([root], bvh, emitterOptions);
+    const emitterSlice = rebuildEmitterBuffersFromCoreScene(updatedRenderScene, emitterOptions);
     outBvh = {
       ...outBvh,
       emitters: emitterSlice.emitters,

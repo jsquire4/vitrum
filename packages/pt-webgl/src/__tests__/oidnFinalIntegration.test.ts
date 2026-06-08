@@ -29,7 +29,7 @@ import type { WebGLRenderTarget } from 'three';
 import type { FrameInput } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
-import type { OIDNBridgeLike } from '../oidnFinalDispatcher.js';
+import type { OIDNBridgeLike } from '../legacy/three/oidnFinalDispatcher.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 
 vi.mock('three/addons/lights/RectAreaLightUniformsLib.js', () => ({

@@ -90,7 +90,7 @@ vi.mock('../src/ddgi/ddgiSampleWgsl.js', () => ({
 // ---------------------------------------------------------------------------
 // Mock upgradeToNodeMaterial — uses the hoisted upgradeSpy (declared above).
 // ---------------------------------------------------------------------------
-vi.mock('../src/lib/nodeMaterialUpgrade.js', () => ({
+vi.mock('../src/three/nodeMaterialUpgrade.js', () => ({
   upgradeToNodeMaterial: upgradeSpy,
 }));
 
@@ -98,7 +98,7 @@ vi.mock('../src/lib/nodeMaterialUpgrade.js', () => ({
 // Import SUT AFTER mocks are set up (vitest hoists vi.mock calls, but the
 // dynamic import makes the ordering explicit and readable).
 // ---------------------------------------------------------------------------
-import { applyDDGIShading, disposeApplyDDGIShadingCache } from '../src/ddgi/applyDDGIShading.js';
+import { applyDDGIShading, disposeApplyDDGIShadingCache } from '../src/three/applyDDGIShading.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

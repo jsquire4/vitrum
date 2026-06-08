@@ -39,7 +39,7 @@ import {
   expandInstancedMesh,
   expandInstancedMeshesInScene,
   findAllMeshesByPrimitiveId,
-} from '../expandInstancedMeshes.js';
+} from '../legacy/three/expandInstancedMeshes.js';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 

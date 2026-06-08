@@ -27,12 +27,12 @@ import {
   expandInstancedMeshesInScene,
   findAllMeshesByPrimitiveId,
   reexpandInstancedMeshInScene,
-} from '../expandInstancedMeshes.js';
+} from '../legacy/three/expandInstancedMeshes.js';
 import {
   isInstanceCountOnlyPrimitivePatch,
   isGeometryOnlyPrimitivePatch,
   isMaterialOnlyPrimitivePatch,
-} from '../scenePatch.js';
+} from '../legacy/three/scenePatch.js';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 

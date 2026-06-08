@@ -30,8 +30,7 @@ import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { packSceneFromCore } from '@vitrum/shared-bvh';
-import { vitrumSceneToThree } from '@vitrum/three-bindings';
-import { buildReSTIRSceneBVHFromVitrumScene } from '../src/restir/sceneBvhFromCore.js';
+import { buildReSTIRSceneBVHForCoreScene } from '../src/restir/bvhCore.js';
 
 const EMITTER_FLOATS = 20; // 80-byte EmitterTri stride / 4
 
@@ -85,9 +84,7 @@ describe('emitter list is built in world space (driven by core transform)', () =
     // World translation carried by the core transform (the production source of
     // truth — vitrumSceneToThree bakes it into matrixWorld for the round-trip).
     const scene = emissiveTriScene(translation(10, 20, 30));
-    const roots = vitrumSceneToThree(scene); // faithful round-trip (matrixWorld == transform)
-
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
 
     // Exactly one emissive triangle ⇒ exactly one emitter (no synthetic
     // placeholder, no extra rect-area-light tris).
@@ -116,8 +113,7 @@ describe('emitter list is built in world space (driven by core transform)', () =
 
   it('identity transform: emitter vertex matches local (sanity baseline)', () => {
     const scene = emissiveTriScene(); // no transform → identity
-    const roots = vitrumSceneToThree(scene);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     expect(buffers.emitterCount).toBe(1);
     const [ax, ay, az] = firstEmitterVertexA(buffers);
     expect(ax).toBeCloseTo(0, 5);

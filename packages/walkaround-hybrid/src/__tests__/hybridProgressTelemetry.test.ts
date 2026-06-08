@@ -217,7 +217,6 @@ function makeFrameDeps(opts: {
       pipeline: stubPipeline as unknown as HybridEngineFrameDeps['subsystems']['pipeline'],
       bvhBuffers: { totalEmissivePower: 1, emitters: { count: 0 }, bvhMode: 'merged' } as unknown as HybridEngineFrameDeps['subsystems']['bvhBuffers'],
       ddgi: stubDdgi as unknown as HybridEngineFrameDeps['subsystems']['ddgi'],
-      ddgiTraversalScene: null,
       // No traversal scene ⇒ DDGI updateFrame is skipped, but its warmup
       // accessors are still read by the progress path.
       rc: null,
@@ -254,7 +253,6 @@ function makeFrameDeps(opts: {
       setLastFrameTs: (t: number) => { lastTs = t; },
       applyResolutionFactor: () => ({ width: 64, height: 64 }),
       runSkinning: () => undefined,
-      ensureThreeSceneRoot: () => null,
       presentLastFrame: () => undefined,
     },
     flags: {

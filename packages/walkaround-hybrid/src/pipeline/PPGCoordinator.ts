@@ -16,7 +16,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { buildSTree, resetAccumulators, splitOverflowLeaves } from '../ppg/sTree.js';
 import { refineDTree } from '../ppg/dTree.js';
 import { serialiseSTree } from '../ppg/serialise.js';
@@ -31,7 +31,7 @@ import type { PipelineSubsystem } from './PipelineSubsystem.js';
  * Delegates to the canonical {@link deriveSceneAABBFromBvhPositions} (shared with
  * the NRC hash-grid in `WalkaroundGPUPipeline` and the ReGIR grid in
  * `ReGIRCoordinator`): scan the BVH position buffer (which the host always
- * uploads, per `restir/bvhCompute.ts`), pad 1%, fall back to ±10 when empty.
+ * uploads, per `restir/bvhCore.ts`), pad 1%, fall back to ±10 when empty.
  *
  * This AABB is used for the sTree root cell extents so adaptive splits
  * subdivide the actual scene volume.

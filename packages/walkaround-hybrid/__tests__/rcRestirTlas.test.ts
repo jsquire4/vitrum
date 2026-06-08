@@ -3,7 +3,7 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 
 installWebGPUPolyfills();
 import { makeRestirBvhSnapshot } from '../src/restir/restirBvhSnapshot.js';
-import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import * as THREE from 'three';
 
 function tlasBuffers(): SceneBVHBuffers {

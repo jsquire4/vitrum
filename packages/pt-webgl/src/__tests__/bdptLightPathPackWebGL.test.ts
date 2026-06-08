@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { float16BitsToFloat32 } from '@vitrum/shared-denoisers';
 import type { Scene } from '@vitrum/core';
 import { FloatType, HalfFloatType } from 'three';
-import { BDPT_KIND_INVALID, BDPT_KIND_LIGHT, sampleBdptBounce0FromScene } from '../bdpt/bdptSceneEmittersCpu.js';
+import { BDPT_KIND_INVALID, BDPT_KIND_LIGHT, sampleBdptBounce0FromScene } from '../legacy/three/bdpt/bdptSceneEmittersCpu.js';
 import {
   encodeBdptLightPathTextureData,
   packBdptLightPathColumnsWebGL,
-} from '../bdpt/fillBdptLightPathWebGL.js';
+} from '../legacy/three/bdpt/fillBdptLightPathWebGL.js';
 
 const cornellEmitters: Scene = {
   primitives: [],

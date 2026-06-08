@@ -103,7 +103,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
   };
 });
 
-vi.mock('../src/restir/bvhCompute.js', async () => {
+vi.mock('../src/restir/bvhCore.js', async () => {
   const g = globalThis as unknown as { __HYBRID_RESIZE_STATE__?: ResizeState };
   if (!g.__HYBRID_RESIZE_STATE__) {
     g.__HYBRID_RESIZE_STATE__ = {
@@ -137,8 +137,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
     };
   });
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
+    buildReSTIRSceneBVHForCoreScene: buildFn,
     disposeSceneBVH: vi.fn(),
   };
 });

@@ -2,14 +2,19 @@
 // Internal shader/pipeline/PPG/neural symbols are intentionally NOT exported
 // from this package root; consume them from explicit internal paths when needed.
 
-export type {
-  WalkaroundBVHSceneRoot,
-  WalkaroundDDGIScene,
-  WalkaroundThreeHostScene,
-} from './hostScene/types.js';
+import type { Engine } from '@vitrum/core';
+import type { HybridEngineOptions } from './HybridEngineOptions.js';
+import type { HybridEngineGISurface } from './HybridEnginePublic.js';
 
-export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
-export type { HybridEngineOptions, LightingOptions, HybridEngineGISurface } from './HybridEngine.js';
+export type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
+export type { HybridEngine, HybridEngineGISurface } from './HybridEnginePublic.js';
+
+export async function createWalkaroundEngine_Hybrid(
+  opts: HybridEngineOptions,
+): Promise<Engine & HybridEngineGISurface> {
+  const concrete = await import('./HybridEngine.js');
+  return concrete.createWalkaroundEngine_Hybrid(opts);
+}
 export {
   FrameBudgetController,
   DEFAULT_FRAME_BUDGET_CONFIG,
@@ -17,11 +22,7 @@ export {
   type FrameBudgetDecision,
   type FrameBudgetAction,
 } from './FrameBudgetController.js';
-export {
-  serializeGIState,
-  deserializeGIState,
-  type GIStateSnapshot,
-} from './giStateSnapshot.js';
+export { serializeGIState, deserializeGIState, type GIStateSnapshot } from './giStateSnapshot.js';
 
 export {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
@@ -29,8 +30,7 @@ export {
   HYBRID_WEBGPU_REQUIRED_FEATURES,
 } from './pipeline/WalkaroundGPUPipeline.js';
 
-// DDGI shading injection (TSL path).
-export { applyDDGIShading, disposeApplyDDGIShadingCache } from './ddgi/applyDDGIShading.js';
+// Optional THREE/TSL bridge exports live at `@vitrum/walkaround-hybrid/three`.
 
 // Neural-denoiser host wiring surface (kept public for example hosts).
 export {

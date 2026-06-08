@@ -81,7 +81,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
   };
 });
 
-vi.mock('../src/restir/bvhCompute.js', async () => {
+vi.mock('../src/restir/bvhCore.js', async () => {
   const g = globalThis as unknown as { __HYBRID_DISPOSE_STATE__?: RaceState };
   if (!g.__HYBRID_DISPOSE_STATE__) {
     g.__HYBRID_DISPOSE_STATE__ = {
@@ -119,8 +119,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
     };
   });
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
+    buildReSTIRSceneBVHForCoreScene: buildFn,
     disposeSceneBVH: vi.fn((b: unknown) => {
       state.disposeBVHCalls.push(b);
     }),
@@ -271,7 +270,8 @@ describe('HybridEngine — dispose() honours in-flight init (Fix 2)', () => {
     // _pipeline must be null — nothing should have been published.
     expect(e['_pipeline']).toBeNull();
     expect(e['_bvhBuffers']).toBeNull();
-    expect(e['_ddgiTraversalScene']).toBeNull();
+    expect(s.sceneToThreeCalls.length).toBe(0);
+    expect(s.disposeSceneRootCalls.length).toBe(0);
   });
 
   it('dispose() with no in-flight init runs synchronously (no _pendingTeardown)', async () => {
@@ -349,30 +349,5 @@ describe('HybridEngine — dispose() honours in-flight init (Fix 2)', () => {
 
     // Immediately reflects 'disposed' even though teardown is deferred.
     expect(engine.state).toBe('disposed');
-  });
-
-  it('_teardownPipeline disposes a lazily synthesized THREE scene root', () => {
-    const engine = makeEngineWithoutThreeScene();
-    const e = engine as unknown as {
-      _lastScene: Scene | null;
-      _renderScene: Scene | null;
-      _synthesizedThreeScene: THREE.Scene | null;
-      _ensureThreeSceneRoot: () => THREE.Scene | null;
-      _teardownPipeline: () => void;
-    };
-    const s = getState();
-
-    e._lastScene = SCENE_WITH_MESH;
-    e._renderScene = SCENE_WITH_MESH;
-
-    const root = e._ensureThreeSceneRoot();
-    expect(root).toBeInstanceOf(THREE.Scene);
-    expect(e._synthesizedThreeScene).toBe(root);
-
-    e._teardownPipeline();
-
-    expect(s.disposeSceneRootCalls).toContain(root);
-    expect(e._synthesizedThreeScene).toBeNull();
-    engine.dispose();
   });
 });

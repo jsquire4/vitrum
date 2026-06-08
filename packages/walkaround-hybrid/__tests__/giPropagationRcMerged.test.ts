@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { propagateBvhToGiSubsystems, type GiPropagationDeps } from '../src/HybridEngineGiPropagation.js';
 import type { RCSubsystem } from '../src/HybridEngineRC.js';
 import type { DDGI } from '../src/ddgi/DDGI.js';
-import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../src/restir/bvhCore.js';
 
 /** Mock RC subsystem recording every refit/sync/setScene entry point. */
 function makeMockRc(refitMergedReturns = true): {
@@ -79,7 +79,6 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
       lastScene: null,
       syncDdgi: false,
       allowRcSceneRebuild: true,
-      ensureThreeSceneRoot: () => null,
       rcRefitBounds: RC_REFIT_BOUNDS,
     };
 
@@ -97,10 +96,9 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
     expect(refitCascadeBounds).not.toHaveBeenCalled();
   });
 
-  it('falls back to a full setScene rebuild when the merged fast path declines', () => {
+  it('falls back to cascade-bounds refit when the merged fast path declines with no core scene', () => {
     const positions = new Float32Array([0, 0, 0, 0]);
     const { rc, refitMergedInstance, refitCascadeBounds, setScene } = makeMockRc(false);
-    const root = {} as unknown as ReturnType<GiPropagationDeps['ensureThreeSceneRoot']>;
 
     const deps: GiPropagationDeps = {
       ddgi: makeMockDdgi(),
@@ -109,23 +107,19 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
       lastScene: null,
       syncDdgi: false,
       allowRcSceneRebuild: true,
-      ensureThreeSceneRoot: () => root,
       rcRefitBounds: RC_REFIT_BOUNDS,
     };
 
     propagateBvhToGiSubsystems(deps);
 
     expect(refitMergedInstance).toHaveBeenCalledTimes(1);
-    expect(setScene).toHaveBeenCalledTimes(1);
-    expect(setScene).toHaveBeenCalledWith(root);
-    // setScene refits the cascade bounds itself — no separate refitCascadeBounds.
-    expect(refitCascadeBounds).not.toHaveBeenCalled();
+    expect(setScene).not.toHaveBeenCalled();
+    expect(refitCascadeBounds).toHaveBeenCalledWith(RC_REFIT_BOUNDS.min, RC_REFIT_BOUNDS.max);
   });
 
-  it('prefers the core-scene RC rebuild fallback over the THREE-root escape hatch', () => {
+  it('uses the core-scene RC rebuild fallback when the merged fast path declines', () => {
     const positions = new Float32Array([0, 0, 0, 0]);
     const { rc, refitMergedInstance, refitCascadeBounds, setScene, setSceneFromCore } = makeMockRc(false);
-    const root = {} as unknown as ReturnType<GiPropagationDeps['ensureThreeSceneRoot']>;
     const coreScene = {
       primitives: [],
       emitters: [],
@@ -139,7 +133,6 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
       lastScene: coreScene,
       syncDdgi: false,
       allowRcSceneRebuild: true,
-      ensureThreeSceneRoot: () => root,
       rcRefitBounds: RC_REFIT_BOUNDS,
     };
 
@@ -163,7 +156,6 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
       lastScene: null,
       syncDdgi: false,
       allowRcSceneRebuild: false, // per-frame-style: no merged rebuild
-      ensureThreeSceneRoot: () => null,
       rcRefitBounds: RC_REFIT_BOUNDS,
     };
 
@@ -187,7 +179,6 @@ describe('propagateBvhToGiSubsystems — RC merged moving-instance wiring (PR-5.
       lastScene: null,
       syncDdgi: false,
       allowRcSceneRebuild: true,
-      ensureThreeSceneRoot: () => null,
       rcRefitBounds: RC_REFIT_BOUNDS,
     };
 

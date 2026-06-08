@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { linearTileIndexFromVarianceReadPixelsPy } from '../adaptiveTileWeights.js';
+import { linearTileIndexFromVarianceReadPixelsPy } from '../legacy/three/adaptiveTileWeights.js';
 
 describe('linearTileIndexFromVarianceReadPixelsPy', () => {
   it('maps bottom readPixels row py=0 to largest fork ty', () => {

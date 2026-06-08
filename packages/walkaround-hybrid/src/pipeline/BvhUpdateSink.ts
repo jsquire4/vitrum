@@ -10,7 +10,7 @@
  * the pipeline already; the interface just formalises the contract.
  */
 
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 
 /**
  * Sink for BVH-mutation + accumulator-reset calls issued by

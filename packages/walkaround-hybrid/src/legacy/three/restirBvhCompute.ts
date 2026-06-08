@@ -26,15 +26,17 @@
 
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
+import type { SceneBVHBuffers as RuntimeSceneBVHBuffers } from '../../restir/bvhTypes.js';
 import * as THREE from 'three';
-import { buildSceneBVH as buildSharedBVH, mergeWorldSpaceFromCore } from '@vitrum/shared-bvh';
+import { mergeWorldSpaceFromCore } from '@vitrum/shared-bvh';
+import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh/legacy/three';
 import {
   buildReSTIRSceneBVHFromVitrumScene,
   rebuildReSTIRSceneBVHPrimitive,
   resolveReSTIRBvhMode,
   toProductionEmissiveRadiance,
   type ReSTIRBvhMode,
-} from './sceneBvhFromCore.js';
+} from './restirSceneBvhFromCore.js';
 
 export { rebuildReSTIRSceneBVHPrimitive };
 
@@ -46,13 +48,17 @@ import {
   packBVHIndexW,
   packBVHBeerColors,
   packBVHEmissiveLe,
-} from './packingHelpers.js';
-import { buildEmitterList, buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
+  packBVHIndexWFromCore,
+  packBVHBeerColorsFromCore,
+  packBVHEmissiveLeFromCore,
+} from '../../restir/packingHelpers.js';
+import { buildEmitterList, buildEmitterListFromCore, buildLightTreeBuffer } from '../../restir/emitterList.js';
 import {
   collectRectAreaLightEmitterTris,
   collectRectAreaEmitterTrisFromCore,
+  enrichMeshVertexRangesWithCoreMatrix,
   enrichMeshVertexRangesWithMatrix,
-} from './bvhSceneHelpers.js';
+} from '../../restir/bvhSceneHelpers.js';
 
 
 /** A WebGPU storage buffer handle (GPU-side ArrayBuffer wrapper). */
@@ -232,20 +238,150 @@ export type RebuiltEmitterBuffers = Pick<
   | 'lightTreeEnabled'
 >;
 
+function sceneHasCoreMeshes(scene: Scene): boolean {
+  return scene.primitives.some(
+    (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
+  );
+}
+
+function extractXYZFromStride4(stride4: Float32Array, vertexCount: number): Float32Array {
+  const out = new Float32Array(vertexCount * 3);
+  for (let i = 0; i < vertexCount; i += 1) {
+    out[i * 3 + 0] = stride4[i * 4 + 0]!;
+    out[i * 3 + 1] = stride4[i * 4 + 1]!;
+    out[i * 3 + 2] = stride4[i * 4 + 2]!;
+  }
+  return out;
+}
+
+/** Build the merged ReSTIR BVH directly from a core scene. */
+function buildReSTIRSceneBVHFromCoreMerged(
+  scene: Scene,
+  options: {
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+    proxyMeshNames?: Set<string>;
+  } = {},
+): SceneBVHBuffers {
+  const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
+  const triCount = merged.indices.length / 3;
+  const vertCount = merged.positions.length / 4;
+  const positionsWithUV = packUVIntoPositionW(merged.positions, undefined, vertCount);
+  const indexBuf = packBVHIndexWFromCore(
+    merged.indices,
+    merged.triMaterialId,
+    merged.materials,
+    triCount,
+  );
+  const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
+  const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, merged.materials, triCount);
+
+  const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
+    merged.indices,
+    merged.positions,
+    merged.normals,
+    merged.triMaterialId,
+    merged.materials.map(toProductionEmissiveRadiance),
+    { ...options, extraEmitters },
+  );
+  const emitterCount = cdfArray.length;
+  const lightTreeBuf = buildLightTreeBuffer(treeInput);
+
+  const mergedGeometry = new THREE.BufferGeometry();
+  mergedGeometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(extractXYZFromStride4(merged.positions, vertCount), 3),
+  );
+  mergedGeometry.boundingBox = new THREE.Box3(
+    new THREE.Vector3(merged.boundingBox.min[0], merged.boundingBox.min[1], merged.boundingBox.min[2]),
+    new THREE.Vector3(merged.boundingBox.max[0], merged.boundingBox.max[1], merged.boundingBox.max[2]),
+  );
+
+  return {
+    bvhMode: 'merged',
+    bvhNodes: {
+      cpuData: merged.bvhNodes.buffer.slice(
+        merged.bvhNodes.byteOffset,
+        merged.bvhNodes.byteOffset + merged.bvhNodes.byteLength,
+      ) as ArrayBuffer,
+      byteLength: merged.bvhNodes.byteLength,
+      count: merged.bvhNodes.byteLength / 32,
+    },
+    bvhIndex: { cpuData: indexBuf.buffer, byteLength: indexBuf.byteLength, count: triCount },
+    bvhPositions: {
+      cpuData: positionsWithUV.buffer,
+      byteLength: positionsWithUV.byteLength,
+      count: vertCount,
+    },
+    triangleMaterialIds: {
+      cpuData: merged.triMaterialId.buffer.slice(
+        merged.triMaterialId.byteOffset,
+        merged.triMaterialId.byteOffset + merged.triMaterialId.byteLength,
+      ) as ArrayBuffer,
+      byteLength: merged.triMaterialId.byteLength,
+      count: triCount,
+    },
+    bvhBeerColors: { cpuData: beerBuf.buffer, byteLength: beerBuf.byteLength, count: triCount },
+    bvhEmissiveLe: {
+      cpuData: emissiveLeBuf.buffer,
+      byteLength: emissiveLeBuf.byteLength,
+      count: triCount,
+    },
+    bvhNormals: {
+      cpuData: merged.normals.buffer.slice(
+        merged.normals.byteOffset,
+        merged.normals.byteOffset + merged.normals.byteLength,
+      ) as ArrayBuffer,
+      byteLength: merged.normals.byteLength,
+      count: vertCount,
+    },
+    emitters: {
+      cpuData: emitterFloats.buffer as ArrayBuffer,
+      byteLength: emitterFloats.byteLength,
+      count: emitterCount,
+    },
+    emitterCdf: {
+      cpuData: cdfArray.buffer as ArrayBuffer,
+      byteLength: cdfArray.byteLength,
+      count: emitterCount,
+    },
+    emitterCount,
+    totalEmissivePower,
+    lightTree: {
+      cpuData: lightTreeBuf.nodes.buffer as ArrayBuffer,
+      byteLength: lightTreeBuf.nodes.byteLength,
+      count: Math.max(1, lightTreeBuf.nodeCount),
+    },
+    lightTreeNodeCount: lightTreeBuf.nodeCount,
+    lightTreeEnabled: lightTreeBuf.enabled,
+    mergedGeometry,
+    meshVertexRanges: enrichMeshVertexRangesWithCoreMatrix(scene, merged.meshVertexRanges),
+    bvhIndicesStride3: merged.indices,
+    buildMaterials: [],
+    coreMaterials: merged.materials,
+    emitterNormals: merged.normals,
+    primitiveTlasBindings: [],
+  };
+}
+
 /** Pick merged vs TLAS CPU pack and build ReSTIR buffers. */
 export function buildReSTIRSceneBVHForScene(
   scene: Scene,
-  sceneRoots: THREE.Object3D[],
+  sceneRoots: THREE.Object3D[] = [],
   options: {
     bvhMode?: ReSTIRBvhMode;
     primaryLightDir?: THREE.Vector3;
     primaryLightIntensity?: number;
     proxyMeshNames?: Set<string>;
   } = {},
-): SceneBVHBuffers {
+): RuntimeSceneBVHBuffers {
   const mode = resolveReSTIRBvhMode(scene, options.bvhMode);
   if (mode === 'tlas') {
     return buildReSTIRSceneBVHFromVitrumScene(scene, sceneRoots, options);
+  }
+  if (sceneHasCoreMeshes(scene)) {
+    return buildReSTIRSceneBVHFromCoreMerged(scene, options);
   }
   return buildReSTIRSceneBVH(sceneRoots, options);
 }

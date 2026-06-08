@@ -7,7 +7,7 @@
  * library (W2-C2 — see `plan/premium-grade-refactor-20260517.md`).
  * Input is raw typed-array geometry — NO `three` or `three-mesh-bvh`
  * dependency at the import boundary, by construction. Callers that have
- * THREE scenes use `buildSceneBVH` (sibling export in `bvhCommon.ts`),
+ * THREE scenes use `buildSceneBVH` from `@vitrum/shared-bvh/legacy/three`,
  * which adapts THREE objects to the raw arrays this builder accepts.
  *
  * Node layout (32 bytes, 8 × u32) — matches the rest of the vitrum stack

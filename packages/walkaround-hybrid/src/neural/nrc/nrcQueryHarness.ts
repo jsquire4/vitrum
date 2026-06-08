@@ -163,7 +163,7 @@ fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
   const ST = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
   const mk = (data: Float32Array | Uint32Array, usage = ST) => {
     const buf = device.createBuffer({ size: Math.max(16, (data.byteLength + 3) & ~3), usage });
-    device.queue.writeBuffer(buf, 0, data);
+    device.queue.writeBuffer(buf, 0, data as unknown as GPUAllowSharedBufferSource);
     return buf;
   };
   const wBuf = mk(w), bBuf = mk(b), tBuf = mk(tables), lBuf = mk(levelDescs);

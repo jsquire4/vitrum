@@ -35,7 +35,6 @@
  *     orchestration + frame throttle + telemetry mirror.
  */
 
-import * as THREE from 'three';
 import type {
   AnalyticShape,
   Engine,
@@ -67,18 +66,13 @@ import {
   type HybridLightingDeps,
   type HybridDenoiserFilterDeps,
 } from './HybridEngineFrameOrchestrator.js';
-import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
   rebuildEmitterBuffersFromCoreScene,
-  rebuildEmitterBuffersFromSceneRoots,
+  disposeSceneBVH,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
-} from './restir/bvhCompute.js';
+} from './restir/bvhCore.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
-import {
-  disposeVitrumThreeSceneRoot,
-  vitrumSceneToThree,
-} from '@vitrum/three-bindings';
 import { solveSkin } from '@vitrum/core';
 import type { ModelWeights } from './neural/weights.js';
 import {
@@ -94,7 +88,6 @@ import {
 } from './HybridEnginePrimitiveUpdates.js';
 import {
   PipelineInitCoordinator,
-  collectDDGILightsFromThreeRoot,
   mergeDDGILightsDedupSun,
   type PipelineInitHost,
   type HybridInitStaticConfig,
@@ -114,6 +107,7 @@ import {
 } from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
+import type { HybridEngineGISurface } from './HybridEnginePublic.js';
 import {
   resolveHybridEnvironment,
   type HybridEnvironmentResolverExtensions,
@@ -140,27 +134,6 @@ const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 // `HybridEngineOptions` + `LightingOptions` interface bodies live in
 // `HybridEngineOptions.ts` (~340 LOC of pure JSDoc, extracted refactor sweep
 // 2026-05-18). Re-exported above so the package surface is unchanged.
-
-// ────────────────────────────────────────────────────────────────────────────
-// Scene-readiness helper
-// ────────────────────────────────────────────────────────────────────────────
-
-/** Default scene-readiness predicate: counts triangles via THREE.Scene.traverse. */
-function defaultIsSceneReady(scene: THREE.Scene): boolean {
-  let total = 0;
-  scene.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const idx = mesh.geometry.index;
-    total += idx ? idx.count / 3 : (mesh.geometry.attributes['position']?.count ?? 0) / 3;
-  });
-  // Audit M5: was `total >= 200`, calibrated to Cornell-scale scenes.
-  // Procedurally-generated terrain or sparse-geometry scenes may have far
-  // fewer triangles and a perfectly valid BVH; the 200 floor silently
-  // blocked them. Hosts with stricter readiness signals supply their own
-  // `isSceneReady` callback.
-  return total > 0;
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Option parsing + validation
@@ -561,17 +534,11 @@ export class HybridEngine implements Engine {
   /** `performance.now()` of the last accepted resolution-factor resize, for
    *  the debounce that prevents accumulator thrash (Risk R5). */
   private _lastResolutionResizeTs: number = 0;
-  /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
-   *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
-  private readonly _threeScene:           THREE.Scene | null;
   /** Optional host environment resolver extension. Used only by
    *  updateEnvironment() to reduce opaque HDRI handles into the diffuse
    *  sky-dome scalars this backend consumes. */
   private readonly _environmentResolverExtensions: HybridEnvironmentResolverExtensions | null;
-  /** Lazily-synthesized THREE.Scene root from the most recent vitrum
-   *  setScene() — caches `vitrumSceneToThree(_renderScene)` so DDGI updateFrame
-   *  doesn't re-traverse on every frame. Reset on every setScene(). */
-  private _synthesizedThreeScene:         THREE.Scene | null = null;
+  /** Optional host readiness predicate. Core mesh presence remains required. */
   private readonly _isSceneReady:         () => boolean;
   // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
   private _primaryLightDir:               [number, number, number];
@@ -754,10 +721,6 @@ export class HybridEngine implements Engine {
    *  Captured each `renderFrame`; null until the first frame. */
   private _lastFrameCamera: PickCamera | null = null;
 
-  /** Owned `THREE.Scene` from `vitrumSceneToThree` when BVH/DDGI follow the core
-   *  contract; disposed on pipeline teardown. Null when falling back to ctor `threeScene`. */
-  private _ddgiTraversalScene: THREE.Scene | null = null;
-
   // ── DDGI subsystem ─────────────────────────────────────────────────────
   private _ddgi:    DDGI;
   private _ddgiOn:  boolean = true;
@@ -852,21 +815,12 @@ export class HybridEngine implements Engine {
     this._skinning              = opts.gpuSkinning
       ? new GpuSkinningSubsystem(opts.device, true)
       : null;
-    this._threeScene            = opts.threeScene ?? null;
     this._environmentResolverExtensions = opts.extensions ?? null;
     this._primaryLightDir       = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
     this._skyIrradiance         = opts.skyIrradiance;
-    // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
-    // primitive OR the optional escape-hatch THREE.Scene contains triangles.
-    // Hosts override via opts.isSceneReady when they need a scene-specific
-    // signal (e.g. wait for an async asset). Stays inline because it closes
-    // over `this` (`_coreSceneSuppliesMeshes` / `_threeScene`).
-    this._isSceneReady          = opts.isSceneReady ?? (() => {
-      if (this._coreSceneSuppliesMeshes()) return true;
-      return this._threeScene != null && defaultIsSceneReady(this._threeScene);
-    });
+    this._isSceneReady          = opts.isSceneReady ?? (() => true);
 
     // `_rebuildKeyFingerprintSeen` is the one rebuild-key value that MUTATES
     // post-construction (`consumeRebuildKeyChange` rewrites it), so it stays a
@@ -947,8 +901,8 @@ export class HybridEngine implements Engine {
       // vitrumSceneToThree / ReSTIR / DDGI / RC consume them.
       supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic']),
       // Emitter kinds that genuinely reach a renderable state:
-      //   - rect-area / disc-area → THREE.RectAreaLight, harvested as ReSTIR-DI
-      //     direct emitter tris (collectRectAreaLightEmitterTris) AND projected
+      //   - rect-area / disc-area → harvested as ReSTIR-DI direct emitter tris
+      //     from core emitter data AND projected
       //     to DDGI fixture lights (coreEmittersToDDGILights) for indirect bounce.
       //   - mesh-area → folded into the referenced mesh's emissive material by
       //     vitrumSceneToThree, so it reaches both the ReSTIR-DI emissive-triangle
@@ -1027,20 +981,16 @@ export class HybridEngine implements Engine {
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
    *
-   * **BVH + DDGI geometry:** When `setScene` receives a `Scene` with at least
-   * one `mesh` primitive, ReSTIR `buildSceneBVH` and DDGI probe traversal use
-   * `vitrumSceneToThree` (same path as `pt-webgl`). Otherwise the ctor
-   * `threeScene` is the BVH + DDGI source (hosts with only Three.js graphs).
+   * **BVH + DDGI geometry:** ReSTIR, DDGI, and RC consume the core scene's
+   * mesh/skinned/instanced primitives directly.
    *
    * **Host guidance:** For one `Scene` driving both `pt-webgl` and this engine,
-   * pass `setScene(sceneFromThreeJS(yourThreeScene))` and keep ctor `threeScene`
-   * in sync for the non-mesh case and for auxiliary Object3D state you have not
-   * serialized into the core `Scene`.
+   * pass `setScene(sceneFromThreeJS(yourThreeScene))`.
    *
    * **Capability filter + analytic fallback:** the scene is first partitioned
    * against this engine's declared `supported*Kinds` (warn + skip). Supported
    * analytic primitives stay in the authored `_lastScene`, then `_renderScene`
-   * replaces them with generated MeshPrimitive fallbacks before the THREE/BVH/GI
+   * replaces them with generated MeshPrimitive fallbacks before the BVH/GI
    * ingestion path runs.
    *
    * @param inputScene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
@@ -1058,15 +1008,8 @@ export class HybridEngine implements Engine {
     }
     this._lastScene = scene;
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
-    // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
-    // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
-    this._disposeSynthesizedThreeScene();
-
-    // W8 Phase 2 — rebuild the RC BVH + cascade buffers against the new
-    // scene. Synthesise a fresh THREE root if needed (lazy via
-    // `_ensureThreeSceneRoot`). When the host supplied no source, the RC
-    // dispatcher stays idle until the next setScene.
-    // RC BVH is wired after async ReSTIR BVH publish (see publishBvh).
+    // W8 Phase 2: rebuild the RC BVH + cascade buffers after async ReSTIR
+    // BVH publish via the core-native path.
 
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
@@ -1074,30 +1017,13 @@ export class HybridEngine implements Engine {
   }
 
   /** Read back the retained canonical core {@link Scene} (`_lastScene` — the
-   *  capability-filtered `supported` authored scene, NOT the synthesized
-   *  THREE.Scene the BVH/DDGI ingestion derives from it), or null before the
+   *  capability-filtered `supported` authored scene), or null before the
    *  first `setScene`. Implements the optional `Engine.getScene` contract — see
    *  its JSDoc for the no-defensive-copy / frozen-by-contract semantics. The
    *  reference survives {@link dispose}; the facade wrapper gates the
    *  post-dispose read. */
   getScene(): Scene | null {
     return this._lastScene;
-  }
-
-  /** T3.H removal: lazily synthesize a THREE.Scene from the most recent
-   *  vitrum Scene if (a) the host did not pass `threeScene` at construction,
-   *  and (b) the vitrum Scene supplies meshes. Caller is responsible for
-   *  null-checking — if both threeScene and synthesizable are null, the
-   *  pipeline will throw at BVH build with a clear message. */
-  private _ensureThreeSceneRoot(): THREE.Scene | null {
-    if (this._threeScene != null) return this._threeScene;
-    if (this._ddgiTraversalScene != null) return this._ddgiTraversalScene;
-    if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
-    if (this._renderScene != null && this._coreSceneSuppliesMeshes()) {
-      this._synthesizedThreeScene = vitrumSceneToThree(this._renderScene);
-      return this._synthesizedThreeScene;
-    }
-    return null;
   }
 
   // ── updatePrimitive — geometry-change path ─────────────────────────────
@@ -1150,7 +1076,7 @@ export class HybridEngine implements Engine {
 
     // Wholesale-replacement patches — `instances` (instanced-mesh instance-COUNT
     // change), `params` / `shape` (analytic), `fallbackMesh`, `kind` — can't be
-    // expressed as an in-place THREE.Mesh attribute edit, so route them through a
+    // expressed as an in-place packed-buffer edit, so route them through a
     // full setScene rebuild (the same mutate-Scene → setScene spine addPrimitive /
     // removePrimitive use). A geometry/instance change invalidates every cached GI
     // signal anyway, so on this realtime stack the work is a rebuild either way;
@@ -1298,7 +1224,6 @@ export class HybridEngine implements Engine {
       lastScene: this._renderScene,
       syncDdgi: true,
       allowRcSceneRebuild: true,
-      ensureThreeSceneRoot: () => this._ensureThreeSceneRoot(),
       rcRefitBounds: result.rcRefitBounds,
     });
   }
@@ -1315,7 +1240,6 @@ export class HybridEngine implements Engine {
     }
     const ctx: PrimitiveUpdateContext = {
       bvhBuffers:            this._bvhBuffers,
-      threeRoot:             this._ensureThreeSceneRoot(),
       pipeline:              this._pipeline,
       ddgi:                  this._ddgi,
       primaryLightDir:       this._primaryLightDir,
@@ -1448,11 +1372,9 @@ export class HybridEngine implements Engine {
         `HybridEngine.updateEmitter("${id}"): BVH not ready. Wait for setScene init to finish.`,
       );
     }
-    const useCoreEmitterRebuild = this._coreSceneSuppliesMeshes();
-    const threeRoot = useCoreEmitterRebuild ? null : this._ensureThreeSceneRoot();
-    if (!useCoreEmitterRebuild && threeRoot == null) {
+    if (this._renderScene == null || !this._coreSceneSuppliesMeshes()) {
       throw new Error(
-        `HybridEngine.updateEmitter("${id}"): no THREE scene available.`,
+        `HybridEngine.updateEmitter("${id}"): current scene has no core mesh primitives.`,
       );
     }
 
@@ -1460,13 +1382,14 @@ export class HybridEngine implements Engine {
     this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
 
     const emitterOptions = {
-      primaryLightDir: new THREE.Vector3(...this._primaryLightDir),
+      primaryLightDir: {
+        x: this._primaryLightDir[0],
+        y: this._primaryLightDir[1],
+        z: this._primaryLightDir[2],
+      },
       primaryLightIntensity: this._primaryLightIntensity,
     };
-    const emitterSlice =
-      useCoreEmitterRebuild && this._renderScene != null
-        ? rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions)
-        : rebuildEmitterBuffersFromSceneRoots([threeRoot!], this._bvhBuffers, emitterOptions);
+    const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
 
     this._bvhBuffers = {
       ...this._bvhBuffers,
@@ -1480,49 +1403,29 @@ export class HybridEngine implements Engine {
     };
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
-    this._syncDdgiLightsFromThreeRoot();
+    this._syncDdgiLightsFromCoreScene();
     this._pipeline?.requestAccumReset();
   }
 
-  /** Re-upload DDGI point/rect lights from the live THREE scene (no `setScene`). */
+  /** Compatibility alias: re-upload DDGI point/rect lights from the live core scene. */
   refreshDdgiLightsFromThreeScene(): void {
-    this._syncDdgiLightsFromThreeRoot();
+    this._syncDdgiLightsFromCoreScene();
     this._pipeline?.requestAccumReset();
   }
 
-  private _syncDdgiLightsFromThreeRoot(): void {
-    const root = this._ensureThreeSceneRoot();
-    if (root == null) return;
-    // Theme T16 — match the init path's gate (HybridEngineLifecycle): prefer
-    // the lossless core-emitter projection when a core scene supplies meshes,
-    // which preserves chroma, uses the true emissive area `4·|uAxis × vAxis|`
-    // for rect emitters, and carries the source emitter id. Fall back to the
-    // lossy THREE-walk ONLY for the raw-`threeScene` case (no core scene to
-    // read emitters from). Without this, an incremental `updateEmitter` /
-    // `refreshDdgiLightsFromThreeScene` re-derived lights via the lossy walk
-    // and silently dropped chroma / used the wrong area, drifting from the
-    // freshly-built init state.
-    const sceneForSun =
-      this._coreSceneSuppliesMeshes() && this._renderScene != null
-        ? this._renderScene
-        : null;
-    const sceneLights =
-      sceneForSun != null
-        ? coreEmittersToDDGILights(sceneForSun)
-        : collectDDGILightsFromThreeRoot(root);
+  private _syncDdgiLightsFromCoreScene(): void {
+    if (this._renderScene == null || !this._coreSceneSuppliesMeshes()) return;
+    const sceneLights = coreEmittersToDDGILights(this._renderScene);
     // Single-count the sun: a scene directional emits a `sun` DDGILight that
     // already carries its own intensity, so the multiplier must be 1; absent a
     // scene directional, keep the legacy config multiplier. Mirrors the init
     // coordinator's resolution so an incremental emitter edit can't drift the
     // sun magnitude away from the freshly-built init state.
     this._ddgi.setSunIntensityMultiplier(
-      directionalSunMultiplier(sceneForSun, this._primaryLightIntensity),
+      directionalSunMultiplier(this._renderScene, this._primaryLightIntensity),
     );
     this._ddgi.setLights(
-      orientDdgiSunLights(
-        mergeDDGILightsDedupSun(this._ctorLights, sceneLights),
-        this._primaryLightDir,
-      ),
+      orientDdgiSunLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights), this._primaryLightDir),
     );
     this._ddgi.invalidateProbeCache();
   }
@@ -1604,7 +1507,7 @@ export class HybridEngine implements Engine {
       changed = true;
       // Republish DDGI sun lights so the probe-update pass follows the same
       // runtime direction that renderFrame() passes to the shade UBO.
-      this._syncDdgiLightsFromThreeRoot();
+      this._syncDdgiLightsFromCoreScene();
     }
     if (opts.primaryLightIntensity !== undefined) {
       this._primaryLightIntensity = opts.primaryLightIntensity;
@@ -1998,7 +1901,6 @@ export class HybridEngine implements Engine {
         pipeline: self._pipeline,
         bvhBuffers: self._bvhBuffers,
         ddgi: self._ddgi,
-        ddgiTraversalScene: self._ddgiTraversalScene,
         rc: self._rc,
         skinning: self._skinning,
         lastScene: self._renderScene,
@@ -2042,7 +1944,6 @@ export class HybridEngine implements Engine {
             self._skinning.run(self, self._lastScene);
           }
         },
-        ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
         presentLastFrame: (view) => {
           self._pipeline?.presentLastFrame(view);
         },
@@ -2248,8 +2149,8 @@ export class HybridEngine implements Engine {
   /** True when the render-ingestion scene supplies at least one triangle-backed
    *  primitive. Rest-pose skinned meshes count — host pushes deformed positions
    *  via `updatePrimitive`, but the BVH still needs a non-empty scene to build.
-   *  Instanced meshes count as well because `vitrumSceneToThree` creates a real
-   *  THREE.InstancedMesh and the walkaround TLAS path consumes its instances. */
+   *  Instanced meshes count as well because the walkaround TLAS path consumes
+   *  their instance matrices directly. */
   private _coreSceneSuppliesMeshes(): boolean {
     const s = this._renderScene;
     return s != null && s.primitives.some(
@@ -2257,13 +2158,9 @@ export class HybridEngine implements Engine {
     );
   }
 
-  /**
-   * Scene-readiness for BVH build: core mesh payload **or** ctor `isSceneReady`
-   * heuristic on the host `threeScene` (proxy-heavy hosts may rely on the latter).
-   */
+  /** Scene-readiness for BVH build: core mesh payload plus optional host gate. */
   private _sceneReadyForBvh(): boolean {
-    if (this._coreSceneSuppliesMeshes()) return true;
-    return this._isSceneReady();
+    return this._coreSceneSuppliesMeshes() && this._isSceneReady();
   }
 
   private _teardownPipeline(): void {
@@ -2275,23 +2172,9 @@ export class HybridEngine implements Engine {
       disposeSceneBVH(this._bvhBuffers);
       this._bvhBuffers = null;
     }
-    const traversalScene = this._ddgiTraversalScene;
-    if (traversalScene) {
-      disposeVitrumThreeSceneRoot(traversalScene);
-      this._ddgiTraversalScene = null;
-    }
-    this._disposeSynthesizedThreeScene(traversalScene);
     if (this._state !== 'disposed') {
       this._state = 'initializing';
     }
-  }
-
-  private _disposeSynthesizedThreeScene(alreadyDisposed: THREE.Scene | null = null): void {
-    const scene = this._synthesizedThreeScene;
-    if (scene == null) return;
-    this._synthesizedThreeScene = null;
-    if (scene === alreadyDisposed) return;
-    try { disposeVitrumThreeSceneRoot(scene); } catch {}
   }
 
   /** Construction-time immutable config consumed by the init coordinator.
@@ -2305,7 +2188,6 @@ export class HybridEngine implements Engine {
   private _initStaticConfig(): HybridInitStaticConfig {
     return {
       device: this._device,
-      threeScene: this._threeScene,
       restirBvhModeOverride: this._cfg.restirBvhModeOverride,
       denoiser: this._cfg.denoiser,
       neuralWeights: this._cfg.neuralWeights,
@@ -2361,7 +2243,6 @@ export class HybridEngine implements Engine {
       get primaryLightIntensity() { return self._primaryLightIntensity; },
       get preferredSwapChainFormat() { return getPreferredSwapChainFormat(); },
       get currentBvhBuffers() { return self._bvhBuffers; },
-      get currentTraversalScene() { return self._ddgiTraversalScene; },
 
       isSceneReadyForBvh: () => self._sceneReadyForBvh(),
       coreSceneSuppliesMeshes: () => self._coreSceneSuppliesMeshes(),
@@ -2375,13 +2256,10 @@ export class HybridEngine implements Engine {
           lastScene: self._renderScene,
           syncDdgi: true,
           allowRcSceneRebuild: true,
-          ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
         });
       },
-      publishTraversalScene:  (s)   => { self._ddgiTraversalScene = s; },
       publishPipeline:        (p)   => { self._pipeline = p; },
       rollbackBvh:            ()    => { self._bvhBuffers = null; },
-      rollbackTraversalScene: ()    => { self._ddgiTraversalScene = null; },
       setState:               (s)   => { self._state = s; },
       teardownPipeline:       ()    => { self._teardownPipeline(); },
       disposeDdgi:            ()    => { self._ddgi.dispose(); },
@@ -2420,17 +2298,6 @@ export class HybridEngine implements Engine {
  * `createEngine` facade forwards these same methods via its internal
  * `GIStatePersistable` shape; this is the backend-package-level peer of that.)
  */
-export interface HybridEngineGISurface {
-  /** Export the converged DDGI GI state ("cached light field") for host
-   *  persistence, or null if the probe atlases aren't allocated yet. Async
-   *  (atlas readback uses mapAsync). See {@link HybridEngine.exportGIState}. */
-  exportGIState(): Promise<GIStateSnapshot | null>;
-  /** Restore a previously {@link exportGIState}-ed snapshot. Returns false
-   *  (no-op) on a dims mismatch or unallocated atlases. See
-   *  {@link HybridEngine.importGIState}. */
-  importGIState(snapshot: GIStateSnapshot): boolean;
-}
-
 /**
  * Create a HybridEngine instance and begin asynchronous pipeline initialisation.
  *
@@ -2461,19 +2328,11 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<
   const engine = new HybridEngine(opts);
   // Bootstrap setScene with an empty vitrum Scene. Two callers depend on
   // this:
-  //   1. Hosts that pass `threeScene` at construction and never call setScene
-  //      themselves (e.g. examples/two-engines-one-scene). Without the
-  //      bootstrap they'd never trigger _initPipeline → engine stays
-  //      'uninitialized' → renderFrame returns skip output forever.
-  //   2. Hosts that DO call setScene afterwards (e.g. @vitrum/engine.createEngine).
+  //   1. Hosts that DO call setScene afterwards (e.g. @vitrum/engine.createEngine).
   //      The host's setScene fires init-B which races init-A. The init-flight
   //      guard inside PipelineInitCoordinator (mySeq === _initSeq) ensures the
   //      loser bootstrap chain disposes its locals — no GPU resource leak.
   //      The bootstrap is wasted work but safe.
-  //
-  // We could remove the bootstrap and require all hosts to call setScene
-  // explicitly, but that would silently break case 1 and offer no safety
-  // benefit (the init-flight guard already eliminates the race-leak class).
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
 }

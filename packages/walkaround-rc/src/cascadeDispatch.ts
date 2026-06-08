@@ -86,7 +86,7 @@ export interface RCDispatchOptsRaw {
   /** Raw WebGPU device — caller-owned. */
   device:             GPUDevice;
 
-  /** BVH GPU buffers (5 separate SSBOs; layout matches `bvhCompute.SceneBVH`). */
+  /** BVH GPU buffers (5 separate SSBOs; layout matches the raw RC SceneBVH contract). */
   bvhNodesBuf:        GPUBuffer;
   bvhIndicesBuf:      GPUBuffer;
   bvhPositionsBuf:    GPUBuffer;

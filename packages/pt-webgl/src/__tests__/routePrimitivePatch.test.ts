@@ -20,7 +20,7 @@ import type { Scene, MeshPrimitive, InstancedMeshPrimitive } from '@vitrum/core'
 import {
   routePrimitivePatch,
   type PrimitivePatchContext,
-} from '../scenePatch.js';
+} from '../legacy/three/scenePatch.js';
 
 // A minimal fork-tracer stub exposing only what the route's mutators touch:
 // the `_generator` (for refreshPathTracerSceneGeometry via ForkAccess) +

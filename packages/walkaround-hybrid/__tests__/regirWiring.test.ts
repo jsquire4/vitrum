@@ -29,7 +29,7 @@ import {
   ReGIRCoordinator,
   resolveReGIRConfig,
 } from '../src/pipeline/ReGIRCoordinator.js';
-import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
 // ── Minimal frame inputs (only the fields updateUBO reads) ────────────────────

@@ -33,7 +33,7 @@
  *   No `HybridEngineOptions` edit, no constructor edit, no `renderFrame` edit.
  */
 
-import type { HybridEngineOptions } from './HybridEngine.js';
+import type { HybridEngineOptions } from './HybridEngineOptions.js';
 
 // ─── Per-frame tunables (splatted into pipeline.renderFrame each frame) ─────
 

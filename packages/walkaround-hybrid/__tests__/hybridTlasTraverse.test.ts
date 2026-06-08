@@ -9,9 +9,9 @@ import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import { packSceneFromCore, refitTlasTransforms } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
 import {
-  buildReSTIRSceneBVHFromVitrumScene,
+  buildReSTIRSceneBVHForCoreScene,
   resolveReSTIRBvhMode,
-} from '../src/restir/sceneBvhFromCore.js';
+} from '../src/restir/bvhCore.js';
 
 function twoOffsetMeshes(): Scene {
   return {
@@ -42,25 +42,6 @@ function twoOffsetMeshes(): Scene {
   };
 }
 
-function threeRootsFor(scene: Scene): THREE.Scene {
-  const root = new THREE.Scene();
-  for (const prim of scene.primitives) {
-    if (prim.kind === 'instanced-mesh') continue;
-    if (prim.kind !== 'mesh') continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(prim.positions.slice(), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(prim.normals.slice(), 3));
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff }));
-    mesh.uuid = prim.id;
-    mesh.name = prim.id;
-    if (prim.transform) mesh.matrix.fromArray(prim.transform);
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrixWorld(true);
-    root.add(mesh);
-  }
-  return root;
-}
-
 describe('hybrid TLAS production path', () => {
   it('auto-selects TLAS for multi-mesh and instanced scenes', () => {
     expect(resolveReSTIRBvhMode(twoOffsetMeshes())).toBe('tlas');
@@ -82,10 +63,9 @@ describe('hybrid TLAS production path', () => {
     expect(vitrum.primitives.some((p) => p.kind === 'instanced-mesh')).toBe(true);
   });
 
-  it('buildReSTIRSceneBVHFromVitrumScene uploads TLAS buffers for two meshes', () => {
+  it('buildReSTIRSceneBVHForCoreScene uploads TLAS buffers for two meshes', () => {
     const scene = twoOffsetMeshes();
-    const roots = threeRootsFor(scene);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     expect(buffers.bvhMode).toBe('tlas');
     expect(buffers.tlas?.nodeCount).toBeGreaterThan(0);
     expect(buffers.primitiveTlasBindings).toHaveLength(2);
@@ -124,7 +104,7 @@ describe('hybrid TLAS production path', () => {
     const packed = packSceneFromCore(vitrum, { tlas: true, resolveMaterialId: () => 0 });
     expect(packed.triangleCount).toBeGreaterThan(50);
     expect(packed.primitiveTlasBindings.some((b) => b.instanceCount === 10)).toBe(true);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(vitrum, [threeScene]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(vitrum, { bvhMode: 'tlas' });
     expect(buffers.bvhMode).toBe('tlas');
     expect(buffers.tlas?.nodeCount).toBeGreaterThan(0);
   });

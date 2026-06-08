@@ -3,7 +3,7 @@
  *
  * Builds the GPU-side emitter list, power CDF, and per-emitter cell-power
  * buffer from a scene's triangle / material data. Extracted from
- * `bvhCompute.ts` (was ~190 lines inline).
+ * the legacy `legacy/three/restirBvhCompute.ts` mixed builder (was ~190 lines inline).
  *
  * Selection rules (per triangle, priority order):
  *   1. emissive (luminance > 0 AND emissiveIntensity > 0) → direct emitter
@@ -16,7 +16,6 @@
  * (WGSL bind groups can't be size 0).
  */
 
-import * as THREE from 'three';
 import type { MaterialSpec } from '@vitrum/core';
 import {
   luminance,
@@ -25,7 +24,15 @@ import {
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
 import { classifyTriangleEmitterCore } from '@vitrum/shared-bvh';
-import { materialEmissiveLe } from './packingHelpers.js';
+import { materialEmissiveLe, type LegacyThreeMaterialLike } from './packingHelpers.js';
+
+interface Vector3Like {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+const WHITE_COLOR = { r: 1, g: 1, b: 1 };
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -38,7 +45,7 @@ import { materialEmissiveLe } from './packingHelpers.js';
  */
 // EMITTER_STRIDE / EMITTER_FLOATS — file-local (only used inside this
 // module's emitter packer). The matching layout comment in
-// restir/bvhCompute.ts:131 references the names by spelling, not by
+// legacy/three/restirBvhCompute.ts references the names by spelling, not by
 // import. 2026-05-18 dead-code sweep verified zero non-self consumers.
 const EMITTER_STRIDE = 80;
 const EMITTER_FLOATS = EMITTER_STRIDE / 4;
@@ -53,20 +60,19 @@ const EMITTER_FLOATS = EMITTER_STRIDE / 4;
  * `intensity` is the configured primary-light irradiance.
  */
 function classifyTriangleEmitter(
-  mat: THREE.Material,
+  mat: LegacyThreeMaterialLike,
   normal: { x: number; y: number; z: number },
-  lightDir: THREE.Vector3,
+  lightDir: Vector3Like,
   primaryIntensity: number,
 ): { color: [number, number, number]; intensity: number } | null {
-  const meshMat = mat as THREE.MeshStandardMaterial;
   // Emissive surface → direct emitter. Shares `materialEmissiveLe` with the
   // camera-visible-glow packer (packBVHEmissiveLe) so the NEE-sampled radiance
   // and the camera glow Le are GUARANTEED identical (no drift).
   const emissiveLe = materialEmissiveLe(mat);
   if (emissiveLe != null) {
-    return { color: emissiveLe, intensity: meshMat.emissiveIntensity ?? 1 };
+    return { color: emissiveLe, intensity: mat.emissiveIntensity ?? 1 };
   }
-  const physMat = mat as THREE.MeshPhysicalMaterial;
+  const physMat = mat;
   if (!physMat.transmission || physMat.transmission <= 0.1) return null;
 
   const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
@@ -77,8 +83,8 @@ function classifyTriangleEmitter(
   );
   if (sunDot <= 0.05) return null;
 
-  const baseColor = physMat.color ?? new THREE.Color(1, 1, 1);
-  const attenColor = physMat.attenuationColor ?? new THREE.Color(1, 1, 1);
+  const baseColor = physMat.color ?? WHITE_COLOR;
+  const attenColor = physMat.attenuationColor ?? WHITE_COLOR;
   const trans = physMat.transmission;
   return {
     color: [
@@ -91,7 +97,7 @@ function classifyTriangleEmitter(
 }
 
 interface EmitterListOptions {
-  primaryLightDir?: THREE.Vector3;
+  primaryLightDir?: Vector3Like;
   primaryLightIntensity?: number;
   /**
    * Additional emitter triangles from non-mesh sources (e.g. THREE.RectAreaLight
@@ -181,16 +187,18 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
 
 /**
  * Build the ReSTIR-DI emitter list from a merged world-space triangle stream +
- * THREE materials. Thin wrapper over {@link buildEmitterListCore} that supplies
- * the THREE-material classifier ({@link classifyTriangleEmitter}). Used when the
- * geometry is ingested from a THREE scene graph (the historical path).
+ * legacy Three-like materials. Thin wrapper over {@link buildEmitterListCore}
+ * that supplies the material classifier ({@link classifyTriangleEmitter}).
+ * Used when the geometry is ingested from a THREE scene graph (the historical
+ * path), but kept structural so core modules can import this file without
+ * pulling the `three` runtime.
  */
 export function buildEmitterList(
   indices: Uint32Array,
   positions: Float32Array,    // stride-4: read .xyz only
   normals: Float32Array,      // stride-4: read .xyz only
   triMatIdMap: Uint32Array,
-  materials: THREE.Material[],
+  materials: LegacyThreeMaterialLike[],
   options: EmitterListOptions,
 ): {
   emitterFloats: Float32Array;
@@ -199,7 +207,7 @@ export function buildEmitterList(
   /** Light-tree build inputs aligned 1:1 with the emitter list. */
   treeInput: EmitterTreeInput;
 } {
-  const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
+  const lightDir = options.primaryLightDir ?? { x: 0, y: 1, z: 0 };
   const primaryIntensity = options.primaryLightIntensity ?? 3.0;
   return buildEmitterListCore(
     indices,
@@ -314,32 +322,27 @@ function buildEmitterListCore(
     power: number;
   }[] = [];
 
-  const _va = new THREE.Vector3();
-  const _vb = new THREE.Vector3();
-  const _vc = new THREE.Vector3();
-  const _ab = new THREE.Vector3();
-  const _ac = new THREE.Vector3();
-  const _cross = new THREE.Vector3();
-
   for (let t = 0; t < triCount; t++) {
     const i0 = indices[t * 3 + 0]!;
     const i1 = indices[t * 3 + 1]!;
     const i2 = indices[t * 3 + 2]!;
 
-    _va.set(positions[i0 * 4]!, positions[i0 * 4 + 1]!, positions[i0 * 4 + 2]!);
-    _vb.set(positions[i1 * 4]!, positions[i1 * 4 + 1]!, positions[i1 * 4 + 2]!);
-    _vc.set(positions[i2 * 4]!, positions[i2 * 4 + 1]!, positions[i2 * 4 + 2]!);
+    const ax = positions[i0 * 4]!, ay = positions[i0 * 4 + 1]!, az = positions[i0 * 4 + 2]!;
+    const bx = positions[i1 * 4]!, by = positions[i1 * 4 + 1]!, bz = positions[i1 * 4 + 2]!;
+    const cx0 = positions[i2 * 4]!, cy0 = positions[i2 * 4 + 1]!, cz0 = positions[i2 * 4 + 2]!;
 
-    _ab.subVectors(_vb, _va);
-    _ac.subVectors(_vc, _va);
-    _cross.crossVectors(_ab, _ac);
-    const crossLen = _cross.length();
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx0 - ax, acy = cy0 - ay, acz = cz0 - az;
+    const crossX = aby * acz - abz * acy;
+    const crossY = abz * acx - abx * acz;
+    const crossZ = abx * acy - aby * acx;
+    const crossLen = Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
     if (crossLen < 1e-8) continue;
     const area = crossLen * 0.5;
     const invLen = 1.0 / crossLen;
-    let nx = _cross.x * invLen;
-    let ny = _cross.y * invLen;
-    let nz = _cross.z * invLen;
+    let nx = crossX * invLen;
+    let ny = crossY * invLen;
+    let nz = crossZ * invLen;
     const n0x = normals[i0 * 4]!;
     const n0y = normals[i0 * 4 + 1]!;
     const n0z = normals[i0 * 4 + 2]!;
@@ -362,9 +365,9 @@ function buildEmitterListCore(
 
     emitterData.push({
       triIdx: t,
-      vA: [_va.x, _va.y, _va.z],
-      vB: [_vb.x, _vb.y, _vb.z],
-      vC: [_vc.x, _vc.y, _vc.z],
+      vA: [ax, ay, az],
+      vB: [bx, by, bz],
+      vC: [cx0, cy0, cz0],
       normal: [nx, ny, nz],
       area,
       color: [cr, cg, cb],

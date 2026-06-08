@@ -15,13 +15,13 @@
  */
 
 // W8 Phase 1A (2026-05-18) — THREE.Box3 swapped for the plain
-// `CascadeAABB` so this module is THREE-free for HybridEngine integration.
+// `CascadeAABB`; this module now belongs to the optional THREE bridge.
 import {
   allocateCascades,
   disposeCascades,
   type CascadeAABB,
   type CascadeBuffers,
-} from './cascadePyramid.js';
+} from './cascadePyramidThree.js';
 
 /** Squared distance between two `[x,y,z]` tuples (used to detect bounds drift
  *  without pulling in `THREE.Vector3.distanceTo`). */
@@ -37,7 +37,8 @@ function distance3Sq(
 
 export class CascadeBufferManager {
   private _buffers: CascadeBuffers | null = null;
-  private _prevBounds: { min: [number, number, number]; max: [number, number, number] } | null = null;
+  private _prevBounds: { min: [number, number, number]; max: [number, number, number] } | null =
+    null;
 
   /**
    * Allocate (or re-allocate) cascade storage for the given scene bounds.

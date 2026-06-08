@@ -6,20 +6,15 @@
  * override via `HybridEngineOptions.cascadeDims`.
  *
  * These tests pin:
- *   1. `CASCADE_DIMS` still exists as the Cornell default (back-compat).
- *   2. `allocateCascades(bounds)` (no dims arg) matches `allocateCascades(bounds, CASCADE_DIMS)`.
+ *   1. `CASCADE_DIMS` still exists as the Cornell default on the raw root.
+ *   2. THREE-bridge `allocateCascades(bounds)` matches `allocateCascades(bounds, CASCADE_DIMS)`.
  *   3. A custom dims array drives differently-sized cascade buffers.
  *   4. `RCDispatcher` constructor accepts the override.
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  CASCADE_DIMS,
-  CASCADE_COUNT,
-  allocateCascades,
-  RCDispatcher,
-  type CascadeDim,
-} from '../src/index.js';
+import { CASCADE_DIMS, CASCADE_COUNT, RCDispatcher, type CascadeDim } from '../src/index.js';
+import { allocateCascades } from '../src/three.js';
 
 const TINY_BOUNDS = {
   min: [0, 0, 0] as const,
@@ -45,8 +40,8 @@ describe('cascadeDims override (B3b)', () => {
   it('custom dims array drives proportional cascade buffer sizing', () => {
     // 2-cascade pyramid, smaller probe counts → smaller buffers.
     const custom: CascadeDim[] = [
-      { probes: [4, 4, 4] as [number, number, number], rays: 16,  intervalNear: 0,  intervalFar: 5  },
-      { probes: [2, 2, 2] as [number, number, number], rays: 64,  intervalNear: 5,  intervalFar: 50 },
+      { probes: [4, 4, 4] as [number, number, number], rays: 16, intervalNear: 0, intervalFar: 5 },
+      { probes: [2, 2, 2] as [number, number, number], rays: 64, intervalNear: 5, intervalFar: 50 },
     ];
     const alloc = allocateCascades(TINY_BOUNDS, custom);
     expect(alloc.cascades.length).toBe(2);
@@ -58,7 +53,12 @@ describe('cascadeDims override (B3b)', () => {
 
   it('RCDispatcher constructor accepts a custom cascadeDims array', () => {
     const custom: CascadeDim[] = [
-      { probes: [2, 2, 2] as [number, number, number], rays: 16, intervalNear: 0, intervalFar: 1e9 },
+      {
+        probes: [2, 2, 2] as [number, number, number],
+        rays: 16,
+        intervalNear: 0,
+        intervalFar: 1e9,
+      },
     ];
     // Constructed without device init (lazy pipelines) — confirms the
     // constructor doesn't reject the override.

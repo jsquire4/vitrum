@@ -3,14 +3,24 @@
  * the same BLAS/TLAS (DDGI probe update, RC cascades).
  */
 
-import * as THREE from 'three';
 import type { MaterialSpec, Scene } from '@vitrum/core';
 import {
   computeWorldAabbForBindings,
   fingerprintBuffers,
   isTlasOnlyVersionBump,
 } from '@vitrum/shared-bvh';
-import type { SceneBVHBuffers } from './bvhCompute.js';
+import type { SceneBVHBuffers } from './bvhTypes.js';
+
+export interface RestirBvhVector3 {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+export interface RestirBvhAabb {
+  readonly min: RestirBvhVector3;
+  readonly max: RestirBvhVector3;
+}
 
 export interface RestirBvhSnapshot {
   readonly bvhMode: 'merged' | 'tlas';
@@ -21,7 +31,7 @@ export interface RestirBvhSnapshot {
   readonly bvhIndex: ArrayBuffer;
   readonly normals: ArrayBuffer;
   readonly triMaterialIds: ArrayBuffer;
-  readonly materials: readonly THREE.Material[];
+  readonly materials: readonly unknown[];
   /**
    * THREE-DECOUPLE of the production ReSTIR MATERIAL path. The deduped core
    * `MaterialSpec[]`, slot-aligned with {@link materials} (THREE) and
@@ -33,7 +43,7 @@ export interface RestirBvhSnapshot {
    * keeps reading {@link materials} (THREE).
    */
   readonly coreMaterials: readonly MaterialSpec[];
-  readonly boundingBox: THREE.Box3;
+  readonly boundingBox: RestirBvhAabb;
   readonly tlas?: {
     readonly nodes: ArrayBuffer;
     readonly instanceIndices: ArrayBuffer;
@@ -53,7 +63,7 @@ export function makeRestirBvhSnapshot(
   buffers: SceneBVHBuffers,
   scene?: Scene,
 ): RestirBvhSnapshot {
-  const bbox = new THREE.Box3();
+  const bbox = makeEmptyAabb();
   if (
     buffers.bvhMode === 'tlas' &&
     scene != null &&
@@ -61,17 +71,20 @@ export function makeRestirBvhSnapshot(
   ) {
     const world = computeWorldAabbForBindings(scene, buffers.primitiveTlasBindings);
     if (world != null) {
-      bbox.min.set(world.min[0], world.min[1], world.min[2]);
-      bbox.max.set(world.max[0], world.max[1], world.max[2]);
+      setAabb(
+        bbox,
+        world.min[0], world.min[1], world.min[2],
+        world.max[0], world.max[1], world.max[2],
+      );
     }
   }
-  if (bbox.isEmpty()) {
+  if (isAabbEmpty(bbox)) {
     if (buffers.mergedGeometry.boundingBox != null) {
-      bbox.copy(buffers.mergedGeometry.boundingBox);
+      copyBoxLike(bbox, buffers.mergedGeometry.boundingBox);
     } else {
       buffers.mergedGeometry.computeBoundingBox();
       if (buffers.mergedGeometry.boundingBox != null) {
-        bbox.copy(buffers.mergedGeometry.boundingBox);
+        copyBoxLike(bbox, buffers.mergedGeometry.boundingBox);
       }
     }
   }
@@ -133,4 +146,42 @@ export function isRestirTlasOnlyRefit(
     snap.tlas != null &&
     isTlasOnlyVersionBump(snap.blasContentVersion, snap.tlasContentVersion, prev)
   );
+}
+
+function makeEmptyAabb(): {
+  min: { x: number; y: number; z: number };
+  max: { x: number; y: number; z: number };
+} {
+  return {
+    min: { x: Infinity, y: Infinity, z: Infinity },
+    max: { x: -Infinity, y: -Infinity, z: -Infinity },
+  };
+}
+
+function setAabb(
+  out: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } },
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+): void {
+  out.min.x = minX;
+  out.min.y = minY;
+  out.min.z = minZ;
+  out.max.x = maxX;
+  out.max.y = maxY;
+  out.max.z = maxZ;
+}
+
+function copyBoxLike(
+  out: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } },
+  box: RestirBvhAabb,
+): void {
+  setAabb(out, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z);
+}
+
+function isAabbEmpty(box: RestirBvhAabb): boolean {
+  return box.max.x < box.min.x || box.max.y < box.min.y || box.max.z < box.min.z;
 }

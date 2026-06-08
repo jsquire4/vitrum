@@ -2,8 +2,90 @@
  * Shared scene-walk helpers for ReSTIR BVH construction (merged + TLAS paths).
  */
 
-import * as THREE from 'three';
-import type { Scene, Vec3 } from '@vitrum/core';
+import type { Mat4, Scene, Vec3 } from '@vitrum/core';
+
+const IDENTITY_MAT4 = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+type RawMeshVertexRange = {
+  name: string;
+  vertexStart: number;
+  vertexCount: number;
+  triStart: number;
+  triCount: number;
+};
+
+type MeshVertexRangeWithMatrix = RawMeshVertexRange & {
+  matrixWorldAtBuild: Float32Array;
+};
+
+interface MatrixWorldLike {
+  readonly elements: ArrayLike<number>;
+}
+
+interface Object3DLike {
+  readonly name: string;
+  readonly uuid?: string;
+  readonly type?: string;
+  readonly isRectAreaLight?: boolean;
+  readonly matrixWorld: MatrixWorldLike;
+  updateMatrixWorld?: (force?: boolean) => void;
+  traverseVisible: (cb: (obj: Object3DLike) => void) => void;
+}
+
+interface RectAreaLightLike extends Object3DLike {
+  readonly width: number;
+  readonly height: number;
+  readonly color: { readonly r: number; readonly g: number; readonly b: number };
+  readonly intensity: number;
+}
+
+function cloneMat4(m: Mat4 | Float32Array | undefined): Float32Array {
+  return m != null ? new Float32Array(m) : new Float32Array(IDENTITY_MAT4);
+}
+
+function isRectAreaLightLike(obj: Object3DLike): obj is RectAreaLightLike {
+  const candidate = obj as Partial<RectAreaLightLike>;
+  return (
+    (obj.isRectAreaLight === true || obj.type === 'RectAreaLight') &&
+    typeof candidate.width === 'number' &&
+    typeof candidate.height === 'number' &&
+    candidate.color != null &&
+    typeof candidate.intensity === 'number'
+  );
+}
+
+function transformPoint(
+  m: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
+  const w = m[3]! * x + m[7]! * y + m[11]! * z + m[15]!;
+  const invW = w !== 0 && Number.isFinite(w) ? 1 / w : 1;
+  return [
+    (m[0]! * x + m[4]! * y + m[8]! * z + m[12]!) * invW,
+    (m[1]! * x + m[5]! * y + m[9]! * z + m[13]!) * invW,
+    (m[2]! * x + m[6]! * y + m[10]! * z + m[14]!) * invW,
+  ];
+}
+
+function negatedNormalizedColumnZ(m: ArrayLike<number>): [number, number, number] {
+  let x = -(m[8] ?? 0);
+  let y = -(m[9] ?? 0);
+  let z = -(m[10] ?? 1);
+  const len = Math.sqrt(x * x + y * y + z * z);
+  if (len > 1e-8) {
+    x /= len;
+    y /= len;
+    z /= len;
+  }
+  return [x, y, z];
+}
 
 /**
  * Walk `sceneRoots` once to find each named mesh and snapshot its
@@ -11,23 +93,10 @@ import type { Scene, Vec3 } from '@vitrum/core';
  * transform-only refit path.
  */
 export function enrichMeshVertexRangesWithMatrix(
-  sceneRoots: THREE.Object3D[],
-  rawRanges: ReadonlyArray<{
-    name: string;
-    vertexStart: number;
-    vertexCount: number;
-    triStart: number;
-    triCount: number;
-  }>,
-): ReadonlyArray<{
-  name: string;
-  vertexStart: number;
-  vertexCount: number;
-  triStart: number;
-  triCount: number;
-  matrixWorldAtBuild: Float32Array;
-}> {
-  const byName = new Map<string, THREE.Object3D>();
+  sceneRoots: Object3DLike[],
+  rawRanges: ReadonlyArray<RawMeshVertexRange>,
+): ReadonlyArray<MeshVertexRangeWithMatrix> {
+  const byName = new Map<string, Object3DLike>();
   for (const root of sceneRoots) {
     root.traverseVisible((obj) => {
       if (!byName.has(obj.name)) byName.set(obj.name, obj);
@@ -49,9 +118,47 @@ export function enrichMeshVertexRangesWithMatrix(
   });
 }
 
+/**
+ * Core-scene counterpart to {@link enrichMeshVertexRangesWithMatrix}. It
+ * derives the build-time world matrix snapshots from the core primitive
+ * transforms directly, so core BVH/update paths do not need a synthesized
+ * `THREE.Scene` solely to populate `matrixWorldAtBuild`.
+ */
+export function enrichMeshVertexRangesWithCoreMatrix(
+  scene: Scene,
+  rawRanges: ReadonlyArray<RawMeshVertexRange>,
+): ReadonlyArray<MeshVertexRangeWithMatrix> {
+  const primitiveById = new Map<string, Scene['primitives'][number]>();
+  for (const primitive of scene.primitives) {
+    primitiveById.set(String(primitive.id), primitive);
+  }
+  const instancedOccurrences = new Map<string, number>();
+  return rawRanges.map((r) => {
+    const primitive = primitiveById.get(r.name);
+    let matrix: Float32Array;
+    if (primitive?.kind === 'instanced-mesh') {
+      const occurrence = instancedOccurrences.get(r.name) ?? 0;
+      instancedOccurrences.set(r.name, occurrence + 1);
+      matrix = cloneMat4(primitive.instances[occurrence]);
+    } else if (primitive?.kind === 'mesh' || primitive?.kind === 'skinned-mesh') {
+      matrix = cloneMat4(primitive.transform);
+    } else {
+      matrix = cloneMat4(undefined);
+    }
+    return {
+      name: r.name,
+      vertexStart: r.vertexStart,
+      vertexCount: r.vertexCount,
+      triStart: r.triStart,
+      triCount: r.triCount,
+      matrixWorldAtBuild: matrix,
+    };
+  });
+}
+
 /** RectAreaLight → emitter triangles for ReSTIR DI (not in merged BVH). */
 export function collectRectAreaLightEmitterTris(
-  sceneRoots: THREE.Object3D[],
+  sceneRoots: Object3DLike[],
 ): {
   vA: [number, number, number];
   vB: [number, number, number];
@@ -68,53 +175,47 @@ export function collectRectAreaLightEmitterTris(
     area: number;
     Le: [number, number, number];
   }[] = [];
-  const _ll = new THREE.Vector3();
-  const _lr = new THREE.Vector3();
-  const _ur = new THREE.Vector3();
-  const _ul = new THREE.Vector3();
-  const _normal = new THREE.Vector3();
-  const _ab = new THREE.Vector3();
-  const _ac = new THREE.Vector3();
-
   for (const root of sceneRoots) {
-    root.updateMatrixWorld(true);
+    root.updateMatrixWorld?.(true);
     root.traverseVisible((obj) => {
-      if (!(obj instanceof THREE.RectAreaLight)) return;
+      if (!isRectAreaLightLike(obj)) return;
       const light = obj;
       const wHalf = light.width * 0.5;
       const hHalf = light.height * 0.5;
 
-      _ll.set(-wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _lr.set(wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ur.set(wHalf, hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ul.set(-wHalf, hHalf, 0).applyMatrix4(light.matrixWorld);
+      const m = light.matrixWorld.elements;
+      const ll = transformPoint(m, -wHalf, -hHalf, 0);
+      const lr = transformPoint(m, wHalf, -hHalf, 0);
+      const ur = transformPoint(m, wHalf, hHalf, 0);
+      const ul = transformPoint(m, -wHalf, hHalf, 0);
 
-      _ab.subVectors(_lr, _ll);
-      _ac.subVectors(_ur, _ll);
-      _normal.crossVectors(_ab, _ac);
-      const crossLen = _normal.length();
+      const abx = lr[0] - ll[0], aby = lr[1] - ll[1], abz = lr[2] - ll[2];
+      const acx = ur[0] - ll[0], acy = ur[1] - ll[1], acz = ur[2] - ll[2];
+      const cx = aby * acz - abz * acy;
+      const cy = abz * acx - abx * acz;
+      const cz = abx * acy - aby * acx;
+      const crossLen = Math.sqrt(cx * cx + cy * cy + cz * cz);
       if (crossLen < 1e-8) return;
 
-      _normal.setFromMatrixColumn(light.matrixWorld, 2).normalize().negate();
+      const N = negatedNormalizedColumnZ(m);
 
       const triArea = crossLen * 0.5;
       const c = light.color;
       const I = light.intensity;
       const Le: [number, number, number] = [c.r * I, c.g * I, c.b * I];
-      const N: [number, number, number] = [_normal.x, _normal.y, _normal.z];
 
       out.push({
-        vA: [_ll.x, _ll.y, _ll.z],
-        vB: [_lr.x, _lr.y, _lr.z],
-        vC: [_ur.x, _ur.y, _ur.z],
+        vA: ll,
+        vB: lr,
+        vC: ur,
         normal: N,
         area: triArea,
         Le,
       });
       out.push({
-        vA: [_ll.x, _ll.y, _ll.z],
-        vB: [_ur.x, _ur.y, _ur.z],
-        vC: [_ul.x, _ul.y, _ul.z],
+        vA: ll,
+        vB: ur,
+        vC: ul,
         normal: N,
         area: triArea,
         Le,

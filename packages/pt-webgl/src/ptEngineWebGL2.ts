@@ -37,23 +37,23 @@ import type {
   SceneEmitter,
   SceneEnvironment,
 } from '@vitrum/core';
-import { applyFrameToPerspectiveCamera } from './frameCamera.js';
+import { applyFrameToPerspectiveCamera } from './legacy/three/frameCamera.js';
 import {
   vitrumSceneToThree,
   applyEnvironment,
 } from '@vitrum/three-bindings';
 import {
   expandInstancedMeshesInScene,
-} from './expandInstancedMeshes.js';
-import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
-import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
-import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
-import { driveForkMaterialUniforms } from './forkUniformBridge.js';
-import { ForkAccess, type WebGLPathTracerCompat } from './forkAccess.js';
+} from './legacy/three/expandInstancedMeshes.js';
+import type { BdptLightSubpathTracer } from './legacy/three/bdpt/runBdptLightSubpathPass.js';
+import { BdptLightPathBuffer } from './legacy/three/bdptLightPathBuffer.js';
+import { bdptForceGpuBind, isSoftwareGlRenderer } from './legacy/three/bdpt/isSoftwareGlRenderer.js';
+import { driveForkMaterialUniforms } from './legacy/three/forkUniformBridge.js';
+import { ForkAccess, type WebGLPathTracerCompat } from './legacy/three/forkAccess.js';
 import {
   isEmitterOnlyPatch,
   routePrimitivePatch,
-} from './scenePatch.js';
+} from './legacy/three/scenePatch.js';
 import {
   AdaptiveScheduler,
   DEFAULT_TILE_SIZE,
@@ -65,13 +65,13 @@ import {
   MAX_TILE_GRID,
   TileVariancePass,
   computeAdaptiveTileRepeatFactors,
-} from './adaptiveTileWeights.js';
+} from './legacy/three/adaptiveTileWeights.js';
 import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
   type OIDNBridgeLoader,
-} from './oidnFinalDispatcher.js';
-import { IblBakerCache } from './iblBaker.js';
+} from './legacy/three/oidnFinalDispatcher.js';
+import { IblBakerCache } from './legacy/three/iblBaker.js';
 import { auditPtWebglSceneForTlas, type PtWebglTlasAudit } from './sceneTlasAudit.js';
 import type { SkyParams } from '@vitrum/scene-lighting';
 import type { DataTexture, Texture } from 'three';

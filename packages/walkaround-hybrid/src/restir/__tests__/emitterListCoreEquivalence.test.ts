@@ -41,11 +41,11 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import type { MaterialSpec, Scene, MeshPrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { buildSceneBVH } from '@vitrum/shared-bvh';
+import { buildSceneBVH } from '@vitrum/shared-bvh/legacy/three';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
 import { buildEmitterList } from '../emitterList.js';
 import { collectRectAreaLightEmitterTris, collectRectAreaEmitterTrisFromCore } from '../bvhSceneHelpers.js';
-import { buildReSTIRSceneBVHFromVitrumScene } from '../sceneBvhFromCore.js';
+import { buildReSTIRSceneBVHFromVitrumScene } from '../../legacy/three/restirSceneBvhFromCore.js';
 
 const PRIMARY_LIGHT_DIR = new THREE.Vector3(0.3, -0.8, 0.5);
 const PRIMARY_LIGHT_INTENSITY = 0.6;

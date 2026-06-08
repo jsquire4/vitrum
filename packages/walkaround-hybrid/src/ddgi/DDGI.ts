@@ -26,7 +26,6 @@
  * concerns, not library concerns.
  */
 
-import * as THREE from 'three';
 import { SceneBvh } from '@vitrum/shared-bvh';
 import type { Scene } from '@vitrum/core';
 import { ProbeGrid } from './probeGrid.js';
@@ -34,7 +33,7 @@ import type { ProbeGridParams } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
 import type { DDGILight } from './types.js';
 import { makeDdgiRestirBvhSnapshot, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhCore.js';
 
 // Default probe round-robin stride. STRIDE=8 means each probe updates every
 // 8th frame (~133ms at 60fps). This is the cadence the engine has always
@@ -74,20 +73,17 @@ export interface DDGIOptions {
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
 export interface DDGIFrameInputs {
   /**
-   * The THREE.Scene to traverse for the standalone (no-ReSTIR-snapshot) BVH
-   * update via {@link SceneBvh.update}. Required for THREE-only standalone DDGI
-   * consumers. When {@link coreScene} is also supplied, the core-first path
-   * ({@link SceneBvh.updateFromCore}) is preferred and this is unused for the
-   * BVH build (it may still be a host-managed throwaway root).
+   * Legacy adapter field retained for source compatibility. Concrete
+   * walkaround-hybrid no longer builds DDGI traversal data from raw Three
+   * scenes; pass {@link coreScene} instead.
    */
-  scene: THREE.Scene;
+  scene?: unknown | null;
   /**
    * Optional `@vitrum/core` `Scene` — when present (and no ReSTIR snapshot is
    * active), the standalone DDGI BVH is built core-first via
-   * {@link SceneBvh.updateFromCore} (`mergeWorldSpaceFromCore` + THREE-free
-   * materials) instead of the THREE `buildSceneBVH` path. The THREE-decouple of
-   * the DDGI merged-BVH ingestion (mirrors the ReSTIR-DI emitter decouple). When
-   * absent, the THREE {@link scene} path is used (existing behaviour).
+   * {@link SceneBvh.updateFromCore} (`mergeWorldSpaceFromCore` + core
+   * materials). When absent, standalone DDGI skips BVH update until a core scene
+   * or ReSTIR snapshot is available.
    */
   coreScene?: Scene;
   /**
@@ -328,14 +324,10 @@ export class DDGI {
 
     if (this._restirSnapshot == null) {
       try {
-        // Core-first when a @vitrum/core Scene is supplied (the THREE-decoupled
-        // standalone path); else the legacy THREE buildSceneBVH path. Both
-        // populate `_bvh.buffers`; the core path additionally fills
-        // `coreMaterials` so the probe-material packer skips the THREE round-trip.
         if (inputs.coreScene != null) {
           this._bvh.updateFromCore(inputs.coreScene);
         } else {
-          this._bvh.update(inputs.scene);
+          console.warn('[DDGI] updateFrame called without a core scene; skipping BVH update.');
         }
       } catch (e) {
         console.error('[DDGI] BVH update failed:', e);

@@ -23,7 +23,6 @@ import type {
   Engine,
 } from '@vitrum/core';
 import { auditSceneNeedsTlas } from '@vitrum/core';
-import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   type HybridEngineOptions,
@@ -47,13 +46,11 @@ import {
   type ProgressiveHandoffOptions,
 } from './progressiveHandoff.js';
 import type { AdapterProfile } from '@vitrum/core';
-
-// Re-uses the structural THREE.Scene guard from createEngine's contract (the
-// facade only reads `isScene`; it never calls a THREE method).
-interface ThreeSceneLike {
-  readonly isScene: true;
-  readonly [key: string]: unknown;
-}
+import {
+  isThreeScene,
+  sceneFromThreeSceneLike,
+  type ThreeSceneLike,
+} from './threeSceneBridge.js';
 
 export interface CreateProgressiveEngineOptions {
   /** Canvas the REALTIME engine presents into (the converged engine renders
@@ -240,7 +237,7 @@ export async function createProgressiveEngine(
     // scene-authority forwarding).
     const sceneInputIsThree = isThreeScene(opts.scene);
     const vitrumScene: Scene = sceneInputIsThree
-      ? sceneFromThreeJS(opts.scene as unknown as Parameters<typeof sceneFromThreeJS>[0])
+      ? await sceneFromThreeSceneLike(opts.scene)
       : opts.scene;
 
     const aabb = computeSceneAABB(vitrumScene);
@@ -355,10 +352,4 @@ export async function createProgressiveEngine(
     try { device.destroy(); } catch {}
     throw err;
   }
-}
-
-function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
-  return typeof s === 'object'
-    && s != null
-    && (s as { isScene?: unknown }).isScene === true;
 }

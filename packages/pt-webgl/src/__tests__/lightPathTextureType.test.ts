@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FloatType, HalfFloatType } from 'three';
-import { bdptLightPathTextureType } from '../bdpt/lightPathTextureType.js';
+import { bdptLightPathTextureType } from '../legacy/three/bdpt/lightPathTextureType.js';
 
 describe('bdptLightPathTextureType', () => {
   it('uses half float on ANGLE', () => {

@@ -27,9 +27,9 @@ import { StorageTexture } from 'three/webgpu';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
 import { add, vec4, mul, output, materialColor, uniform, texture, positionWorld, normalWorld, wgslFn, renderOutput } from 'three/tsl';
-import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
-import { DDGI_SAMPLE_WGSL } from './ddgiSampleWgsl.js';
-import { upgradeToNodeMaterial } from '../lib/nodeMaterialUpgrade.js';
+import type { ProbeGrid, AtlasTextureSlot } from '../ddgi/probeGrid.js';
+import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
+import { upgradeToNodeMaterial } from './nodeMaterialUpgrade.js';
 
 // TSL binds textures via three.js Texture handles. ProbeGrid exposes
 // backend-agnostic AtlasTextureSlot records (just width/height) so the

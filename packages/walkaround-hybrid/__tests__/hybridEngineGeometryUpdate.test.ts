@@ -116,7 +116,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
   };
 });
 
-vi.mock('../src/restir/bvhCompute.js', async () => {
+vi.mock('../src/restir/bvhCore.js', async () => {
   const g = globalThis as unknown as { __HYBRID_GEO_STATE__?: GeoUpdateState };
   if (!g.__HYBRID_GEO_STATE__) {
     g.__HYBRID_GEO_STATE__ = {
@@ -161,8 +161,8 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       ],
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
       triangleMaterialIds: { cpuData: new Uint32Array(1).buffer, byteLength: 4, count: 1 },
-      buildMaterials: [new THREE.MeshStandardMaterial()],
-      coreMaterials: [],
+      buildMaterials: [],
+      coreMaterials: [{ baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 }],
       emitterNormals: new Float32Array(16),
       bvhMode: 'merged' as const,
       primitiveTlasBindings: [],
@@ -176,15 +176,8 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
   });
 
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
+    buildReSTIRSceneBVHForCoreScene: buildFn,
     rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
-      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
-      emitterCount: 1,
-      totalEmissivePower: 2,
-    })),
-    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
       emitterCount: 1,
@@ -250,8 +243,7 @@ import { HybridEngine } from '../src/HybridEngine.js';
 import { asMat4, type Scene } from '@vitrum/core';
 import {
   rebuildEmitterBuffersFromCoreScene,
-  rebuildEmitterBuffersFromSceneRoots,
-} from '../src/restir/bvhCompute.js';
+} from '../src/restir/bvhCore.js';
 
 function getGiPropState(): GiPropagationState {
   return (globalThis as unknown as { __HYBRID_GIPROP_STATE__: GiPropagationState }).__HYBRID_GIPROP_STATE__;
@@ -658,11 +650,9 @@ describe('HybridEngine.updateEmitter', () => {
     const buildCountBefore = s.buildBVHCalls.length;
     const pipeline = s.pipelineConstructed[0]!;
     const coreRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length;
-    const legacyRebuildsBefore = vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length;
     engine.updateEmitter!('point-a', { intensity: 2 });
     expect(s.buildBVHCalls.length).toBe(buildCountBefore);
     expect(vi.mocked(rebuildEmitterBuffersFromCoreScene).mock.calls.length).toBe(coreRebuildsBefore + 1);
-    expect(vi.mocked(rebuildEmitterBuffersFromSceneRoots).mock.calls.length).toBe(legacyRebuildsBefore);
     expect(pipeline.updateEmitters).toHaveBeenCalled();
     expect(pipeline.requestAccumReset).toHaveBeenCalled();
   });

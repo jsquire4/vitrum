@@ -37,7 +37,7 @@
 
 import * as THREE from 'three';
 import { MeshBVH, StaticGeometryGenerator } from 'three-mesh-bvh';
-import { isLeafSplit } from './buildArrayBvh.js';
+import { isLeafSplit } from '../buildArrayBvh.js';
 
 // MeshBVH exposes `_roots` at runtime but it is not in the published
 // `.d.ts`. We need the field to read the packed BVHNode buffer.

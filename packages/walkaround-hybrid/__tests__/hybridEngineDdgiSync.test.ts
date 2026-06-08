@@ -62,7 +62,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', () => {
   return { WalkaroundGPUPipeline: MockPipeline, HYBRID_WEBGPU_REQUIRED_LIMITS: {}, HYBRID_WEBGPU_REQUIRED_FEATURES: [] };
 });
 
-vi.mock('../src/restir/bvhCompute.js', () => {
+vi.mock('../src/restir/bvhCore.js', () => {
   const g = globalThis as unknown as { __HYBRID_DDGI_SYNC__?: SyncState };
   if (!g.__HYBRID_DDGI_SYNC__) {
     g.__HYBRID_DDGI_SYNC__ = { pipelineInitDeferreds: [], pipelineConstructed: [], buildBVHCalls: [] };
@@ -101,9 +101,8 @@ vi.mock('../src/restir/bvhCompute.js', () => {
     return makeFakeBuffers();
   });
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
-    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
+    buildReSTIRSceneBVHForCoreScene: buildFn,
+    rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 0 },
       emitterCdf: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 0 },
       emitterCount: 0,

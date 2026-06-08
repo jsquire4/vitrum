@@ -67,7 +67,7 @@
 
 **Owns**: implementation of the `Engine` contract via the forked three-gpu-pathtracer. Today: wraps the WebGL2 PT pipeline. Future: deprecated when `@vitrum/pt-webgpu` reaches feature parity.
 
-**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH building blocks used indirectly via the fork and three.js stack (not a direct `@vitrum/shared-bvh` dependency); `@vitrum/shared-denoisers` IS a direct dependency (OIDN-final wire).
+**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/scene-lighting`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), plus `three` and `three-mesh-bvh` as peers. BVH building blocks used indirectly via the fork and three.js stack (not a direct `@vitrum/shared-bvh` dependency); `@vitrum/shared-denoisers` IS a direct dependency (OIDN-final wire).
 
 ### `@vitrum/pt-webgpu` *(experimental backend, evolving toward Phase 7 goals)*
 
@@ -79,13 +79,13 @@
 
 **Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — see `_staging/legacy-source/src/rendering/scene/walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
 
-**Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`.
+**Depends on** (see `packages/walkaround-hybrid/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/walkaround-rc`, plus `three` as an optional peer for the concrete engine and explicit `@vitrum/walkaround-hybrid/three` adapter surface. `@vitrum/three-bindings` is dev/test-only here. The package root keeps the factory lazy and type surface structural so root-only imports do not resolve `three`; TSL/DDGI helpers remain isolated behind `@vitrum/walkaround-hybrid/three`.
 
 ### `@vitrum/walkaround-rc`
 
-**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher`. The only public entry point is the raw-GPU `dispatchFrameRaw(opts: RCDispatchOptsRaw)` path (accepts `GPUDevice` + raw `GPUBuffer`s + plain tuples); the former THREE-coupled `dispatchFrame` entry was dropped. TSL/Node material helpers (`GIReceiver`, `walkaroundDiffuseLighting`) are in `walkaround-hybrid` and remain three/webgpu-coupled. Consumed by `@vitrum/walkaround-hybrid`.
+**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher`. The raw-GPU `dispatchFrameRaw(opts: RCDispatchOptsRaw)` path accepts `GPUDevice` + raw `GPUBuffer`s + plain tuples; the former THREE-coupled `dispatchFrame` entry was dropped. TSL/Node material helpers (`GIReceiver`, `buildWalkaroundLightingNode`) remain in this package for walkaround-style hosts and are intentionally three/webgpu-coupled. Consumed by `@vitrum/walkaround-hybrid`.
 
-**Depends on**: `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. `three` and `three-mesh-bvh` are peer dependencies (required only by the TSL files still in `walkaround-hybrid`).
+**Depends on** (see `packages/walkaround-rc/package.json`): `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. `three` and `three-mesh-bvh` are peer dependencies for the TSL receiver/material helper surface and retained BVH compatibility notes; the raw dispatch path stays plain WebGPU.
 
 ### `@vitrum/scene-lighting`
 

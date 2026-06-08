@@ -4,13 +4,13 @@
  *
  * Owns:
  *   - One {@link RCDispatcher} per `GPUDevice`.
- *   - The 5 raw `GPUBuffer`s for the RC BVH (built from a `THREE.Scene` via
- *     `buildRCSceneBVH`, or shared from ReSTIR when `bvhMode === 'tlas'`).
+ *   - The 5 raw `GPUBuffer`s for the RC BVH (built from a core `Scene`, or
+ *     shared from ReSTIR when `bvhMode === 'tlas'`).
  *   - The N raw cascade output `GPUBuffer`s (sized per `CASCADE_DIMS`).
  *
  * Lifecycle:
  *   1. `new RCSubsystem(device)` once per engine.
- *   2. `setScene(threeScene)` for merged single-root BVH, or
+ *   2. `setSceneFromCore(scene)` for merged single-root BVH, or
  *      `syncRestirBvhBuffers(sceneBVH)` when ReSTIR uses TLAS (C2).
  *   3. On a moving-instance / scene edit (driven by `propagateBvhToGiSubsystems`):
  *        - TLAS mode → `syncRestirBvhBuffers` re-shares ReSTIR's buffers (with
@@ -28,20 +28,17 @@
  * Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).
  */
 
-import type * as THREE from 'three';
 import type { Scene } from '@vitrum/core';
-import type { StorageBufferAttribute } from 'three/webgpu';
 import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
 import {
-  buildRCSceneBVH,
   buildRCSceneBVHFromCore,
-  packCascadeMaterials,
   packCascadeMaterialsFromCore,
+  type StorageAttributeLike,
   type SceneBVH,
-} from './rc/bvhCompute.js';
+} from './rc/bvhCore.js';
 import { padTriangleIndicesToVec4 } from './ddgi/probeUpdateMaterials.js';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import {
   isRestirTlasOnlyRefit,
   makeRestirBvhSnapshot,
@@ -231,41 +228,23 @@ export class RCSubsystem implements PipelineSubsystem {
     }
   }
 
-  setScene(threeScene: THREE.Scene): void {
-    // Filter parity with ReSTIR's merged build (`buildReSTIRSceneBVH`, which
-    // passes `filter: obj instanceof THREE.Mesh`). `buildRCSceneBVH`'s default
-    // filter accepts ONLY MeshStandard/MeshPhysical materials, so absent this
-    // override RC's merged vertex set would diverge from ReSTIR's whenever the
-    // scene carries a non-PBR mesh (came/solder beads, MeshBasic backdrops,
-    // …). That matters because `refitMergedInstance` adopts ReSTIR's
-    // `bvhPositions.cpuData` directly into RC's position mirror and refits
-    // RC's own nodes/indices against it — correct ONLY when both built the
-    // same vertex layout (same meshes, same traverseVisible order). The
-    // build-time length guard in `refitMergedInstance` would *catch* a count
-    // mismatch and decline, but matching the filter makes the layout parity
-    // hold by construction rather than relying on a coincidence-of-counts
-    // never occurring. `isMesh` is THREE's official duck-type marker (used
-    // by `buildSceneBVH`'s own sky-hide walk) — avoids a THREE value import.
-    const allMeshesFilter = (obj: THREE.Object3D): boolean =>
-      (obj as THREE.Mesh).isMesh === true;
-    this._setSceneFromBVH(buildRCSceneBVH(threeScene, { filter: allMeshesFilter }));
+  setScene(_legacyScene: unknown): void {
+    throw new Error(
+      'RCSubsystem.setScene(raw Three scene) is not available on the concrete ' +
+      'walkaround-hybrid runtime. Convert to a core Scene and call setSceneFromCore().',
+    );
   }
 
   /**
-   * THREE-free counterpart of {@link setScene} (items_to_fix F-RC2): build the
+   * Core-scene BVH path (items_to_fix F-RC2): build the
    * merged RC scene BVH DIRECTLY from a `@vitrum/core` `Scene` via
-   * {@link buildRCSceneBVHFromCore} (`mergeWorldSpaceFromCore` + the THREE-free
-   * `packCascadeMaterialsFromCore` packer) — NO `vitrumSceneToThree` round-trip,
-   * NO THREE material reads. Mirrors the ReSTIR-DI emitter decouple (`46a0078`)
-   * + the standalone DDGI decouple (`15070cd`).
+   * {@link buildRCSceneBVHFromCore} (`mergeWorldSpaceFromCore` +
+   * `packCascadeMaterialsFromCore`).
    *
    * Shares the exact same {@link _setSceneFromBVH} tail as {@link setScene}, so
    * the upload (including the F-RC1 stride-4 index pad in {@link _uploadBVH}),
    * CPU-mirror retention, cascade-bounds derivation, and dispatcher setup are
-   * identical — only the BVH SOURCE differs (core merge vs THREE build). The
-   * merged tri SET + world geometry are equivalent; only the BVH topology differs
-   * (`buildArrayBvh` vs three-mesh-bvh), which a correct GPU traversal renders
-   * identically (proven by the RC brute-force oracle post-F-RC1).
+   * identical to the former merged path's upload and dispatch tail.
    */
   setSceneFromCore(scene: Scene): void {
     this._setSceneFromBVH(buildRCSceneBVHFromCore(scene));
@@ -471,13 +450,7 @@ export class RCSubsystem implements PipelineSubsystem {
       buf.unmap();
       return buf;
     };
-    // T1 (THREE-decouple): pack RC's RESTIR-shared cascade materials from the
-    // core MaterialSpec list (byte-identical to the THREE packer — the standalone
-    // RC path already uses FromCore). Falls back to the THREE `materials` only on
-    // the legacy path where coreMaterials is empty.
-    const matFloats = snap.coreMaterials.length > 0
-      ? packCascadeMaterialsFromCore([...snap.coreMaterials])
-      : packCascadeMaterials([...snap.materials]);
+    const matFloats = packCascadeMaterialsFromCore([...snap.coreMaterials]);
     const tlas = snap.tlas;
     return {
       bvhNodesBuf: upload('rc-restir-bvh-nodes', snap.bvhNodes),
@@ -540,7 +513,7 @@ export class RCSubsystem implements PipelineSubsystem {
     return buf;
   }
 
-  private _uploadAttribute(attr: StorageBufferAttribute, label: string): GPUBuffer {
+  private _uploadAttribute(attr: StorageAttributeLike, label: string): GPUBuffer {
     const arr = attr.array as Float32Array | Uint32Array;
     const buf = this._device.createBuffer({
       label,

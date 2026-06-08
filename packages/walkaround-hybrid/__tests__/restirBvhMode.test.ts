@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
-import { resolveReSTIRBvhMode } from '../src/restir/sceneBvhFromCore.js';
+import { resolveReSTIRBvhMode } from '../src/restir/bvhCore.js';
 
 function meshScene(count: number): Scene {
   const primitives = Array.from({ length: count }, (_, i) => ({

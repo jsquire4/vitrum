@@ -11,14 +11,13 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
-import type * as THREE from 'three';
 import type { DDGI } from './ddgi/DDGI.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import type { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
 export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
@@ -83,7 +82,6 @@ export interface HybridEngineFrameSubsystems {
   pipeline: WalkaroundGPUPipeline | null;
   bvhBuffers: SceneBVHBuffers | null;
   ddgi: DDGI;
-  ddgiTraversalScene: THREE.Scene | null;
   rc: RCSubsystem | null;
   skinning: GpuSkinningSubsystem | null;
   lastScene: Scene | null;
@@ -117,7 +115,6 @@ export interface HybridEngineFrameControl {
    *  engine internal-dim bookkeeping, both owned by the engine. */
   applyResolutionFactor: (factor: number | undefined, nowMs: number) => { width: number; height: number };
   runSkinning: () => void;
-  ensureThreeSceneRoot: () => THREE.Scene | null;
   presentLastFrame: (view: GPUTextureView) => void;
 }
 
@@ -312,35 +309,24 @@ export function getPreferredSwapChainFormat(): GPUTextureFormat {
 
 function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   const ddgiLayerOn = deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi');
-  const ddgiScene = ddgiLayerOn
-    ? (deps.subsystems.ddgiTraversalScene ?? deps.control.ensureThreeSceneRoot())
-    : null;
+  const coreScene = deps.subsystems.lastScene;
 
   // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
   // post-publish paths use, but tlas-sync-only (allowRcSceneRebuild=false so
   // merged-mode RC is NOT rebuilt every frame), and the DDGI sync gated on the
-  // resolved ddgi-layer scene exactly as before.
+  // resolved DDGI layer exactly as before.
   propagateBvhToGiSubsystems({
     ddgi: deps.subsystems.ddgi,
     rc: deps.subsystems.rc,
     bvhBuffers: deps.subsystems.bvhBuffers,
-    lastScene: deps.subsystems.lastScene,
-    syncDdgi: ddgiLayerOn && ddgiScene != null,
+    lastScene: coreScene,
+    syncDdgi: ddgiLayerOn,
     allowRcSceneRebuild: false,
-    ensureThreeSceneRoot: deps.control.ensureThreeSceneRoot,
   });
 
-  if (ddgiLayerOn && ddgiScene != null) {
+  if (ddgiLayerOn) {
     void deps.subsystems.ddgi.updateFrame({
-      scene: ddgiScene,
-      // Core-first standalone-fallback BVH: when this engine was fed a core
-      // Scene (the dominant path), hand it to DDGI so the no-ReSTIR-snapshot
-      // fallback builds the merged BVH via `mergeWorldSpaceFromCore` (THREE-free)
-      // instead of `buildSceneBVH(threeRoot)`. When a ReSTIR snapshot is active
-      // (the normal production path) DDGI ignores both scenes and uses the shared
-      // BVH buffers. `lastScene` is null only for the escape-hatch raw-`threeScene`
-      // host, which correctly falls back to the THREE `scene` path.
-      ...(deps.subsystems.lastScene != null ? { coreScene: deps.subsystems.lastScene } : {}),
+      ...(coreScene != null ? { coreScene } : {}),
       device: deps.flags.device,
       enabled: true,
     });

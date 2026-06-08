@@ -35,7 +35,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';

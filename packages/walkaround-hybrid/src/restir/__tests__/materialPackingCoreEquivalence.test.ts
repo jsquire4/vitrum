@@ -15,7 +15,7 @@
  *   `geo.triMaterialIds`, which is produced by `packSceneFromCore` driven by
  *   `buildMaterialResolver`'s THREE-OBJECT-IDENTITY dedup ordering. The core
  *   `coreMaterials[]` is built in LOCKSTEP at the SAME slot index as the THREE
- *   `materials[]` (see `sceneBvhFromCore.ts:buildMaterialResolver`). So both
+ *   `materials[]` (see `legacy/three/restirSceneBvhFromCore.ts:buildMaterialResolver`). So both
  *   producers share ONE triangle order AND ONE materialId→slot mapping → the
  *   packed bytes are EXACTLY equal per triangle, not merely set-equal.
  *
@@ -40,12 +40,13 @@ import { describe, it, expect } from 'vitest';
 import type { MaterialSpec, Scene, MeshPrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
-import { buildReSTIRSceneBVHFromVitrumScene } from '../sceneBvhFromCore.js';
+import { buildReSTIRSceneBVHFromVitrumScene } from '../../legacy/three/restirSceneBvhFromCore.js';
 import { makeRestirBvhSnapshot } from '../restirBvhSnapshot.js';
 import {
   packBVHIndexW,
   packBVHBeerColors,
   packBVHEmissiveLe,
+  type LegacyThreeMaterialLike,
 } from '../packingHelpers.js';
 import {
   packDDGIMaterialsN,
@@ -126,7 +127,7 @@ function packBoth(scene: Scene): PackedPair {
   // "cancelled" — that masked F-TLAS1; it's now fixed + asserted below.)
   const geoIndices4 = buffers.scenePack!.indices;
   const stride3 = buffers.bvhIndicesStride3;
-  const threeMaterials = [...buffers.buildMaterials];
+  const threeMaterials = [...buffers.buildMaterials] as LegacyThreeMaterialLike[];
 
   // THREE reference over the SAME (correct, stride-3) indices the core path packed.
   const threeIndexW = packBVHIndexW(stride3, triMatIds, threeMaterials, triCount);
@@ -286,7 +287,10 @@ describe('DDGI snapshot materials: packDDGIMaterialsFromCoreN(coreMaterials) ≡
     expect(snap.coreMaterials.length).toBe(snap.materials.length);
     expect(snap.coreMaterials.length).toBeGreaterThan(0);
 
-    const threeBuf = new Uint8Array(packDDGIMaterialsN([...snap.materials], DDGI_MAX_MATERIALS));
+    const threeBuf = new Uint8Array(packDDGIMaterialsN(
+      [...snap.materials] as Parameters<typeof packDDGIMaterialsN>[0],
+      DDGI_MAX_MATERIALS,
+    ));
     const coreBuf = new Uint8Array(packDDGIMaterialsFromCoreN(snap.coreMaterials, DDGI_MAX_MATERIALS));
     expect(coreBuf.length).toBe(threeBuf.length);
     for (let i = 0; i < threeBuf.length; i++) {

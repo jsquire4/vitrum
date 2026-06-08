@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
-import { sampleBdptBounce0FromScene } from '../bdpt/bdptSceneEmittersCpu.js';
+import { sampleBdptBounce0FromScene } from '../legacy/three/bdpt/bdptSceneEmittersCpu.js';
 
 const cornellEmitters: Scene = {
   primitives: [],

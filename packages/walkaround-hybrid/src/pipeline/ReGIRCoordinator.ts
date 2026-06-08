@@ -23,7 +23,7 @@
 
 import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
-import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { RegirUboState } from './uboUpdater.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 

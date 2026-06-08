@@ -5,7 +5,7 @@ import {
   isDdgiRestirTlasOnlyRefit,
   makeDdgiRestirBvhSnapshot,
 } from '../src/ddgi/ddgiRestirBvh.js';
-import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 
 function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuffers {
   const geo = new THREE.BufferGeometry();

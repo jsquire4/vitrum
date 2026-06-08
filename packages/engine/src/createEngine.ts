@@ -19,7 +19,6 @@
 
 import type { Scene, Engine, AdapterProfile } from '@vitrum/core';
 import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';
-import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
@@ -31,8 +30,7 @@ import { probeAdapterProfile } from './adapterProfile.js';
 // three-gpu-pathtracer stack + `three`. Import the runtime factory LAZILY (only
 // `constructPathTracer` needs it) so a host taking exclusively the WebGPU path —
 // e.g. `createProgressiveEngine` (walkaround + pt-webgpu, no WebGL2) — never has
-// to resolve that module graph. The TYPE is import-only (erased at runtime).
-import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl';
+// to resolve or typecheck against that module graph.
 import {
   createPTEngine_WebGPU,
   ptWebgpuRequiredLimitsForAdapter,
@@ -53,9 +51,38 @@ import {
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
+import {
+  isThreeScene,
+  sceneFromThreeSceneLike,
+  type ThreeSceneLike,
+} from './threeSceneBridge.js';
 
 export type { EnginePreference, ScaleDefaults };
 export { pickBackend, deriveScaleDefaults };
+export type { ThreeSceneLike } from './threeSceneBridge.js';
+
+type WebGL2PathTracerAdvancedOptions = Record<string, unknown>;
+
+interface ThreeWebGLRendererLike {
+  dispose(): void;
+  forceContextLoss?: () => void;
+}
+
+interface ThreeRuntimeModule {
+  readonly WebGLRenderer: new (opts: {
+    readonly canvas: HTMLCanvasElement;
+    readonly antialias?: boolean;
+    readonly preserveDrawingBuffer?: boolean;
+  }) => ThreeWebGLRendererLike;
+}
+
+type WebGL2PathTracerOptionsLike = WebGL2PathTracerAdvancedOptions & {
+  readonly device: ThreeWebGLRendererLike;
+};
+
+interface PtWebglModuleLike {
+  readonly createPTEngine_WebGL2: (opts: WebGL2PathTracerOptionsLike) => Promise<Engine>;
+}
 
 /** When scene layout needs TLAS, default walkaround `bvhMode` unless host set one. */
 export function mergeWalkaroundTlasExtension(
@@ -78,15 +105,6 @@ export function mergeWalkaroundTlasExtension(
 // @internal — not part of the public `@vitrum/engine` API surface.
 export { wrapWithIdempotentDispose } from './idempotentDispose.js';
 
-// Deliberately structurally-typed to avoid a hard `import * as THREE` here —
-// users may bring their own three.js version. The factory only reads the
-// `isScene` flag (set by every THREE.Scene); it never invokes any methods.
-interface ThreeSceneLike {
-  readonly isScene: true;
-  // remaining fields are passed through to three-bindings / threeScene
-  readonly [key: string]: unknown;
-}
-
 export interface CreateEngineOptions {
   /** Canvas the engine renders into. Used to obtain the GPU context. */
   readonly canvas: HTMLCanvasElement;
@@ -105,7 +123,7 @@ export interface CreateEngineOptions {
 
   /** Backend-specific overrides. Merged on top of the createEngine()-
    *  derived defaults; user-supplied keys win. Most users leave empty. */
-  readonly advanced?: Partial<HybridEngineOptions> | Partial<PTEngineWebGL2Options> | Partial<PTEngineWebGPUOptions>;
+  readonly advanced?: Partial<HybridEngineOptions> | WebGL2PathTracerAdvancedOptions | Partial<PTEngineWebGPUOptions>;
 
   /** Debug overlay opt-in. Forwarded to backend as `debug: true`. */
   readonly debug?: boolean;
@@ -128,7 +146,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
 
   const sceneInputIsThree = isThreeScene(opts.scene);
   const vitrumScene: Scene = sceneInputIsThree
-    ? sceneFromThreeJS(opts.scene as unknown as Parameters<typeof sceneFromThreeJS>[0])
+    ? await sceneFromThreeSceneLike(opts.scene)
     : (opts.scene);
 
   const aabb = computeSceneAABB(vitrumScene);
@@ -385,15 +403,15 @@ async function constructPathTracer(
 ): Promise<Engine> {
   const renderer = await createWebGL2RendererForCanvas(opts.canvas);
 
-  const advancedWebGL2 = opts.advanced as Partial<PTEngineWebGL2Options> | undefined;
-  const merged: PTEngineWebGL2Options = {
+  const advancedWebGL2 = opts.advanced as WebGL2PathTracerAdvancedOptions | undefined;
+  const merged: WebGL2PathTracerOptionsLike = {
     device: renderer,
-    ...advancedWebGL2,
+    ...(advancedWebGL2 ?? {}),
   };
 
   // Lazy runtime import — keeps the WebGL2 path-tracer stack out of the module
   // graph for hosts that only ever take the WebGPU path (see the import note).
-  const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl');
+  const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl') as unknown as PtWebglModuleLike;
   const engine = await createPTEngine_WebGL2(merged);
   engine.setScene(vitrumScene);
 
@@ -409,14 +427,14 @@ async function constructPathTracer(
 
 async function createWebGL2RendererForCanvas(
   canvas: HTMLCanvasElement,
-): Promise<import('three').WebGLRenderer> {
+): Promise<ThreeWebGLRendererLike> {
   // Late dynamic import keeps the @vitrum/engine bundle leaner for users
   // who only ever take the WebGPU path. The peer-dep guarantees `three`
   // resolves; if it doesn't, we surface a friendly error pointing at the
   // peer-dep block in package.json.
-  let three: typeof import('three');
+  let three: ThreeRuntimeModule;
   try {
-    three = await import('three');
+    three = await import('three') as unknown as ThreeRuntimeModule;
   } catch (err) {
     throw new Error(
       'createEngine: failed to load three.js. @vitrum/engine has `three` as a peer dependency; install it in your host. Original error: ' + String(err),
@@ -428,14 +446,4 @@ async function createWebGL2RendererForCanvas(
     preserveDrawingBuffer: false,
   });
   return renderer;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ────────────────────────────────────────────────────────────────────────────
-
-function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
-  return typeof s === 'object'
-    && s != null
-    && (s as { isScene?: unknown }).isScene === true;
 }

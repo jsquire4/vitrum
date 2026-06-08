@@ -53,14 +53,14 @@ import * as THREE from 'three';
 import type { MeshBVH } from 'three-mesh-bvh';
 import type { Scene, MaterialSpec, ScenePrimitive } from '@vitrum/core';
 import {
-  buildSceneBVH as buildSharedBVH,
   mergeWorldSpaceFromCore,
   coreMaterialToMaterialEntry,
   packMaterials,
   MATERIAL_ENTRY_FLOATS,
   type MaterialEntryInput,
 } from '@vitrum/shared-bvh';
-import { extractThreePbrScalars } from '@vitrum/three-bindings';
+import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh/legacy/three';
+import { extractThreePbrScalars } from '../../threePbrScalars.js';
 
 export interface SceneBVH {
   bvh:           MeshBVH;

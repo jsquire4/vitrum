@@ -1,51 +1,52 @@
 # @vitrum/walkaround-rc
 
-Radiance Cascades subsystem — the cascade pyramid layout, BVH compute,
-dispatch state machine, buffer manager, receiver material wrapper, and
-raw WGSL shader strings.
+Radiance Cascades subsystem: cascade pyramid layout, raw WebGPU dispatch, and
+raw WGSL shader strings. Optional THREE/TSL receiver helpers live at
+`@vitrum/walkaround-rc/three`.
 
-Reference: Sannikov 2023, "Radiance Cascades: A Novel Approach to
-Calculating Global Illumination."
+Reference: Sannikov 2023, "Radiance Cascades: A Novel Approach to Calculating
+Global Illumination."
 
 ## Status
 
-Pre-1.0. Hoisted out of `@vitrum/walkaround-hybrid/src/rc/` on
-2026-05-18 (W8 follow-up). Composition with DDGI / ReSTIR-GI (and the
-Track-A balance-heuristic MIS) happens in `@vitrum/walkaround-hybrid`
-via `HybridEngineRC`; this package is the algorithm itself.
+Pre-1.0. Hoisted out of `@vitrum/walkaround-hybrid/src/rc/` on 2026-05-18
+(W8 follow-up). Composition with DDGI / ReSTIR-GI happens in
+`@vitrum/walkaround-hybrid` via `HybridEngineRC`; this package owns the RC
+algorithm itself.
 
-## Public surface
+## Root Surface
 
-- `RCDispatcher` — raw-WebGPU dispatch driver for the cascade compute
-  passes (cast → merge). The `dispatchFrameRaw` entry exposes the
-  pre-compiled pipelines so a host can wire them into a larger compute
-  graph without bringing the TSL-side material wrapper.
-- `CascadeBufferManager` — per-engine cascade ping-pong buffer ownership.
-- `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
-  sizes (Cornell-tuned). Hosts override per-engine via
-  `HybridEngineOptions.cascadeDims: readonly CascadeDim[]` (B3b, 2026-05-19);
-  `RCDispatcher` + `RCSubsystem` accept a custom dims tuple in their
-  constructors so non-Cornell-scale scenes can ship their own pyramid.
-- `GIReceiver` — `NodeMaterial` wrapper that samples cascade-0 from the
-  TSL side. Requires `three/webgpu` + `three/tsl`.
-- `buildWalkaroundLightingNode` — TSL diffuse-lighting node used by
-  walkaround-style hosts that compose the receiver into a larger
-  material graph. Requires `three/tsl`.
-- `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` — raw WGSL strings for
-  host inspection or headless WGSL-compile testing.
-- `computeOctahedralSolidAngles` — pure CPU helper used by the WGSL
-  cascade-merge math.
+- `RCDispatcher` - raw-WebGPU dispatch driver for the cascade compute passes.
+- `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` - default cascade pyramid
+  sizes. Hosts can override per-engine via
+  `HybridEngineOptions.cascadeDims: readonly CascadeDim[]`.
+- `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` - raw WGSL strings for host
+  inspection or headless WGSL-compile testing.
+- `computeOctahedralSolidAngles` - pure CPU helper used by cascade-merge math.
 
-## Design principles
+## THREE Bridge Surface
 
-The package is pure RC; it doesn't know about DDGI, ReSTIR, or SVGF.
-Composition with those subsystems is the consumer's responsibility:
-`@vitrum/walkaround-hybrid` does it via `HybridEngineRC.ts` (raw-WebGPU
-path) and `applyDDGIShading` (TSL path).
+Import these from `@vitrum/walkaround-rc/three`:
+
+- `allocateCascades` / `disposeCascades` / `fillCascadeDebug` - cascade
+  allocation helpers backed by `StorageBufferAttribute`.
+- `CascadeBufferManager` - per-engine cascade buffer ownership for TSL hosts.
+- `GIReceiver` - `NodeMaterial` wrapper that samples cascade-0 from the TSL side.
+- `buildWalkaroundLightingNode` - TSL diffuse-lighting node for hosts composing
+  the receiver into a larger material graph.
+
+The bridge requires `three/webgpu` and `three/tsl`; the package root does not.
+
+## Design Principles
+
+The package is pure RC; it does not know about DDGI, ReSTIR, or SVGF.
+Composition with those subsystems is the consumer's responsibility. The
+`@vitrum/walkaround-hybrid` package does that through `HybridEngineRC.ts` on the
+raw-WebGPU path.
 
 ## Testing
 
-- `__tests__/rcSolidAngles.test.ts` — CPU-only unit tests for the
-  octahedral solid-angle table.
-- `__tests__/rc-bindings.test.ts` — host-side dispatcher + buffer
-  manager structural smoke tests with a fake GPU device.
+- `__tests__/rcSolidAngles.test.ts` - CPU-only unit tests for the octahedral
+  solid-angle table.
+- `__tests__/rc-bindings.test.ts` - host-side dispatcher and bridge structural
+  smoke tests with a fake GPU device.

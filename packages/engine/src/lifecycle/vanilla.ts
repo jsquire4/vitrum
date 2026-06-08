@@ -13,8 +13,7 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type * as THREE from 'three';
-import type { Engine, Scene, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import type { Engine, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 
@@ -165,8 +164,8 @@ export interface CameraLike {
 }
 
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
-  /** Scene description. Either a vitrum Scene or a THREE.Scene. */
-  readonly scene: Scene | THREE.Scene;
+  /** Scene description. Either a vitrum Scene or a structural THREE.Scene. */
+  readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
    *  frame. The host mutates this camera (orbit controls, scripted animation)
    *  and the helper pushes the latest matrices into renderFrame. A real

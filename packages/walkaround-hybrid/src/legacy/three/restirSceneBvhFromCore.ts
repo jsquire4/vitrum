@@ -15,13 +15,14 @@ import {
   packBVHIndexWFromCore,
   packBVHBeerColorsFromCore,
   packBVHEmissiveLeFromCore,
-} from './packingHelpers.js';
-import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
-import type { SceneBVHBuffers } from './bvhCompute.js';
+} from '../../restir/packingHelpers.js';
+import { buildEmitterListFromCore, buildLightTreeBuffer } from '../../restir/emitterList.js';
+import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
 import {
   collectRectAreaEmitterTrisFromCore,
+  enrichMeshVertexRangesWithCoreMatrix,
   enrichMeshVertexRangesWithMatrix,
-} from './bvhSceneHelpers.js';
+} from '../../restir/bvhSceneHelpers.js';
 
 export type ReSTIRBvhMode = 'merged' | 'tlas';
 
@@ -256,16 +257,17 @@ function buffersFromScenePack(
     new THREE.Vector3(merged.boundingBox.max[0], merged.boundingBox.max[1], merged.boundingBox.max[2]),
   );
 
-  const meshVertexRanges = enrichMeshVertexRangesWithMatrix(
-    sceneRoots as THREE.Object3D[],
-    geo.primitiveTlasBindings.map((b) => ({
+  const rawMeshVertexRanges = geo.primitiveTlasBindings.map((b) => ({
       name: b.primitiveId,
       vertexStart: b.vertexStart,
       vertexCount: b.vertexCount,
       triStart: b.triStart,
       triCount: b.triCount,
-    })),
-  );
+    }));
+  const meshVertexRanges =
+    sceneRoots.length > 0
+      ? enrichMeshVertexRangesWithMatrix(sceneRoots as THREE.Object3D[], rawMeshVertexRanges)
+      : enrichMeshVertexRangesWithCoreMatrix(scene, rawMeshVertexRanges);
 
   const bvhIndicesStride3 = new Uint32Array(triCount * 3);
   for (let t = 0; t < triCount; t += 1) {

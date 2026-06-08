@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSoftwareGlRenderer } from '../bdpt/isSoftwareGlRenderer.js';
+import { isSoftwareGlRenderer } from '../legacy/three/bdpt/isSoftwareGlRenderer.js';
 
 describe('isSoftwareGlRenderer', () => {
   it('detects SwiftShader ANGLE strings', () => {

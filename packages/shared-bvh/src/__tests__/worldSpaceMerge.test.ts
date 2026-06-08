@@ -50,7 +50,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { buildSceneBVH } from '../bvhCommon.js';
+import { buildSceneBVH } from '../legacy/bvhCommon.js';
 import { mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
 // ──────────────────────────────────────────────────────────────────────────

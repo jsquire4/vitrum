@@ -67,7 +67,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
   };
 });
 
-vi.mock('../src/restir/bvhCompute.js', async () => {
+vi.mock('../src/restir/bvhCore.js', async () => {
   const g = globalThis as unknown as { __HYBRID_INC_STATE__?: IncState };
   if (!g.__HYBRID_INC_STATE__) {
     g.__HYBRID_INC_STATE__ = { pipelineInitDeferreds: [], pipelineConstructed: 0, buildBVHCalls: 0 };
@@ -93,7 +93,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
       triangleMaterialIds: { cpuData: new Uint32Array(1).buffer, byteLength: 4, count: 1 },
       buildMaterials: [new THREE.MeshStandardMaterial()],
-      coreMaterials: [],
+      coreMaterials: [{ baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 }],
       emitterNormals: new Float32Array(16),
       bvhMode: 'merged' as const,
       primitiveTlasBindings: [],
@@ -106,15 +106,8 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
   });
 
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
+    buildReSTIRSceneBVHForCoreScene: buildFn,
     rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
-      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
-      emitterCount: 1,
-      totalEmissivePower: 2,
-    })),
-    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
       emitterCount: 1,
@@ -195,12 +188,11 @@ const SCENE_WITH_RECT: Scene = {
     {
       id: 'mesh-a',
       kind: 'mesh',
-      mesh: {
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        indices:   new Uint32Array([0, 1, 2]),
-      },
-      material: { kind: 'lambertian', albedo: [1, 1, 1] },
-    } as unknown as Scene['primitives'][number],
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    },
   ],
   emitters: [GREEN_RECT_SHEARED],
   environment: { kind: 'none' },

@@ -15,6 +15,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@vitrum/core': path.join(coreRoot, 'src/index.ts'),
+      '@vitrum/shared-bvh/legacy/three': path.join(sharedBvhRoot, 'src/legacy/three.ts'),
       '@vitrum/shared-bvh': path.join(sharedBvhRoot, 'src/index.ts'),
       '@vitrum/shared-denoisers': path.join(sharedDenoisersRoot, 'src/index.ts'),
       '@vitrum/shared-samplers': path.join(sharedSamplersRoot, 'src/index.ts'),

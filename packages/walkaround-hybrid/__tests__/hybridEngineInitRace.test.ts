@@ -18,7 +18,7 @@
  * These tests exercise the guard by:
  *   - Mocking `WalkaroundGPUPipeline` so `initialize()` resolves on a
  *     test-controlled deferred — that's how we hold one chain mid-flight.
- *   - Mocking `buildReSTIRSceneBVH` / `disposeSceneBVH` /
+ *   - Mocking `buildReSTIRSceneBVHForCoreScene` / `disposeSceneBVH` /
  *     `vitrumSceneToThree` / `disposeVitrumThreeSceneRoot` so we can spy on
  *     dispose calls without needing a real GPU device.
  *   - Firing N concurrent setScene() / reset() calls and asserting only the
@@ -95,7 +95,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
   };
 });
 
-vi.mock('../src/restir/bvhCompute.js', async () => {
+vi.mock('../src/restir/bvhCore.js', async () => {
   const g = globalThis as unknown as { __HYBRID_RACE_STATE__?: RaceState };
   if (!g.__HYBRID_RACE_STATE__) {
     g.__HYBRID_RACE_STATE__ = {
@@ -133,8 +133,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
     };
   });
   return {
-    buildReSTIRSceneBVH: buildFn,
-    buildReSTIRSceneBVHForScene: buildFn,
+    buildReSTIRSceneBVHForCoreScene: buildFn,
     disposeSceneBVH: vi.fn((b: unknown) => {
       state.disposeBVHCalls.push(b);
     }),
@@ -303,11 +302,10 @@ describe('HybridEngine — in-flight init guard (Fix 1)', () => {
     expect(s.disposeBVHCalls.length).toBeGreaterThan(0);
   });
 
-  it('losers dispose their synthesized THREE.Scene (no leaked traversal-scene root)', async () => {
+  it('core-scene init races do not synthesize a THREE traversal scene', async () => {
     const engine = makeEngine();
     const s = getState();
-    // Use vitrum-mesh path so vitrumSceneToThree is invoked → synthesized
-    // scene roots are owned by the engine and must be disposed on race.
+    // Core-scene init stays on bvhCore and never creates an owned THREE root.
     engine.setScene(SCENE_WITH_MESH);
     await waitForPipelineCount(1);
     engine.setScene(SCENE_WITH_MESH);
@@ -317,8 +315,8 @@ describe('HybridEngine — in-flight init guard (Fix 1)', () => {
     s.pipelineInitDeferreds[1]!.resolve();
     await drainMicrotasks();
 
-    // The loser's synthesized scene should be disposed (or replaced).
-    expect(s.disposeSceneRootCalls.length).toBeGreaterThan(0);
+    expect(s.sceneToThreeCalls.length).toBe(0);
+    expect(s.disposeSceneRootCalls.length).toBe(0);
   });
 
   it('reset() during in-flight init invalidates the in-flight chain', async () => {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
-import { isEmitterOnlyPatch } from '../scenePatch.js';
+import { isEmitterOnlyPatch } from '../legacy/three/scenePatch.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 
 const updateLights = vi.fn();

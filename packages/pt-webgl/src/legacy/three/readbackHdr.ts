@@ -2,7 +2,7 @@
  * Float HDR readback helpers for offline denoisers (OIDN) and tooling.
  */
 
-import { ZERO_SAMPLE_COUNT_EPSILON } from './accumulationSampleEpsilon.js';
+import { ZERO_SAMPLE_COUNT_EPSILON } from '../../accumulationSampleEpsilon.js';
 import type { WebGLRenderer } from 'three';
 import type { WebGLRenderTarget } from 'three';
 

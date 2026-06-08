@@ -16,9 +16,9 @@ import { CASCADE_DIMS, CASCADE_COUNT } from '../src/cascadePyramid.js';
 import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from '../src/wgsl/cascadeMerge.wgsl.js';
 import { RCDispatcher } from '../src/cascadeDispatch.js';
-import { CascadeBufferManager } from '../src/cascadeBuffers.js';
-import { GIReceiver } from '../src/giReceiver.js';
-import { buildWalkaroundLightingNode } from '../src/walkaroundDiffuseLighting.js';
+import { CascadeBufferManager } from '../src/three/cascadeBuffers.js';
+import { GIReceiver } from '../src/three/giReceiver.js';
+import { buildWalkaroundLightingNode } from '../src/three/walkaroundDiffuseLighting.js';
 
 // ─── CASCADE_DIMS invariants ─────────────────────────────────────────────────
 
@@ -355,7 +355,7 @@ describe('E2 — CascadeUniforms triIntersectEpsilon UBO-plumb', () => {
 
 // Sprint 2 "cellPower buffer export / shape" describe block removed during
 // the 2026-05-18 walkaround-rc extraction (W8 follow-up): the block tested
-// `restir/bvhCompute` exports (lives in `@vitrum/walkaround-hybrid`, not
+    // `restir/bvhTypes` exports (lives in `@vitrum/walkaround-hybrid`, not
 // here) and a literal-vs-literal BGL count. The TypeScript surface check
 // is already covered by the typechecker; the BGL-count pin had no real
 // expectation against. If RESTIR-side smoke coverage is wanted, add it to

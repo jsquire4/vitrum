@@ -17,7 +17,7 @@ import {
   Vector2,
   WebGLRenderTarget,
 } from 'three';
-import { ZERO_SAMPLE_COUNT_EPSILON } from './accumulationSampleEpsilon.js';
+import { ZERO_SAMPLE_COUNT_EPSILON } from '../../accumulationSampleEpsilon.js';
 
 const TILE_VARIANCE_VS = /* glsl */ `
 varying vec2 vUv;

@@ -83,7 +83,11 @@ async function main() {
   const plan = trainer.layerPlan;
   const w = new Float32Array(plan.totalW), b = new Float32Array(plan.totalB);
   let sd = 4242 >>> 0; const rng = () => { sd = (Math.imul(sd, 1664525) + 1013904223) >>> 0; return sd / 0x100000000; };
-  for (let l = 0; l < plan.wlayers; l++) { const sc = Math.sqrt(2 / plan.inW[l]); for (let k = 0; k < plan.inW[l] * plan.outW[l]; k++) w[plan.wOff[l] + k] = (rng() * 2 - 1) * sc; }
+  for (let l = 0; l < plan.wlayers; l++) {
+    const inWidth = plan.inW[l]!, outWidth = plan.outW[l]!, wOff = plan.wOff[l]!;
+    const sc = Math.sqrt(2 / inWidth);
+    for (let k = 0; k < inWidth * outWidth; k++) w[wOff + k] = (rng() * 2 - 1) * sc;
+  }
   b.fill(0.1);
   trainer.setWeights(w, b);
 
@@ -164,7 +168,7 @@ async function main() {
   for (let s = 0; s < B; s++) {
     const dFeat = gpuDX.slice(s * inW, s * inW + LF);
     const grads = hashGridBackward(grid, positions[s]!, dFeat);
-    let o2 = 0; for (let l = 0; l < L; l++) { for (let k = 0; k < grads[l]!.length; k++) cpuGrad[o2 + k] += grads[l]![k]!; o2 += grads[l]!.length; }
+    let o2 = 0; for (let l = 0; l < L; l++) { const grad = grads[l]!; for (let k = 0; k < grad.length; k++) cpuGrad[o2 + k] = cpuGrad[o2 + k]! + grad[k]!; o2 += grad.length; }
   }
   let maxAbs = 0, maxMag = 0;
   for (let i = 0; i < tableScalars; i++) { maxAbs = Math.max(maxAbs, Math.abs(gpuTableGrad[i]! - cpuGrad[i]!)); maxMag = Math.max(maxMag, Math.abs(cpuGrad[i]!)); }

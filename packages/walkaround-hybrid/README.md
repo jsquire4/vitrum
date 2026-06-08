@@ -70,11 +70,18 @@ URL toggle (`?denoiser=atrous-variance|svgf-real|neural`); `npm run dev
 
 ## Peer dependencies
 
-- `three >= 0.160.0`
-- `three/webgpu` — required for DDGI path (`StorageTexture`, `MeshPhysicalNodeMaterial`)
-- `three/tsl` — required for the RC material-wrapper path (`applyDDGIShading`, `giReceiver`, `walkaroundDiffuseLighting`)
+`three >=0.167.0 <0.190` is an optional peer. The package root is safe to import
+for Three-free constants, types, GI-state helpers, and neural-weight utilities;
+calling `createWalkaroundEngine_Hybrid()` dynamically loads the concrete engine,
+which still requires Three for its legacy raw-`threeScene` fallback. The
+`@vitrum/walkaround-hybrid/three` subpath contains the explicit TSL/Node-material
+bridge exports (`applyDDGIShading`, `upgradeToNodeMaterial`) for hosts that
+already use `three/webgpu` and `three/tsl`.
 
-ReSTIR-only usage does not trigger the DDGI or RC-material-wrapper paths.
+`@vitrum/three-bindings` is not a production dependency of this package; it is
+kept as a dev/test dependency for core-vs-Three equivalence tests and host
+adapter checks. `three` and `@types/three` remain in devDependencies for tests
+and typecheck.
 
 ## Architecture
 
@@ -138,12 +145,12 @@ extraction plan's RD-12.
   complete modules in `rc/wgsl/`.
 - Resource binding layouts derived from the TSL declarations and unit-tested for
   structural conformance.
-- Material-wrapping files (`applyDDGIShading.ts`, `giReceiver.ts`,
-  `walkaroundDiffuseLighting.ts`) preserved as TSL — these are not compute
-  kernels, they're Three.js NodeMaterial customization hooks.
-- `cascadePyramid.ts` and `bvhCompute.ts` retain `StorageBufferAttribute` from
-  `three/webgpu` because the C0 cascade buffer is consumed by the TSL
-  `walkaroundDiffuseLighting.ts` node.
+- Material-wrapping files under explicit `/three` bridge subpaths
+  (`applyDDGIShading.ts`, `giReceiver.ts`, `walkaroundDiffuseLighting.ts`) are
+  preserved as TSL hooks; package roots stay raw-runtime safe.
+- RC cascade storage that needs `StorageBufferAttribute` lives in
+  `@vitrum/walkaround-rc/three`; the raw RC runtime and walkaround-hybrid BVH
+  ingestion paths use host-neutral typed-array/GPU-buffer contracts.
 
 **Residual risk**:
 - Workgroup sizing, dispatch dimensions, cascade indexing, and merge-pass color

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { analyticPrimitiveToMesh, asMat4, type Scene, type ScenePrimitive } from '@vitrum/core';
-import * as THREE from 'three';
-import { buildReSTIRSceneBVHFromVitrumScene } from '../src/restir/sceneBvhFromCore.js';
+import { buildReSTIRSceneBVHForCoreScene } from '../src/restir/bvhCore.js';
 import { transformRefit } from '../src/HybridEnginePrimitiveUpdates.js';
 import type { PrimitiveUpdateContext } from '../src/HybridEnginePrimitiveUpdates.js';
 
@@ -56,28 +55,10 @@ function analyticSphereScenes(): { authored: Scene; render: Scene } {
   };
 }
 
-function threeRootsFor(scene: Scene): THREE.Scene {
-  const root = new THREE.Scene();
-  for (const prim of scene.primitives) {
-    if (prim.kind !== 'mesh') continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(prim.positions.slice(), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(prim.normals.slice(), 3));
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff }));
-    mesh.name = prim.id;
-    if (prim.transform) mesh.matrix.fromArray(Array.from(prim.transform));
-    mesh.matrixAutoUpdate = false;
-    mesh.matrixWorld.copy(mesh.matrix);
-    root.add(mesh);
-  }
-  return root;
-}
-
 describe('transformRefit TLAS (C2)', () => {
   it('TLAS-only path: refreshTlasRefit + markInstancesDirty + rcRefitBounds', () => {
     const scene = twoOffsetMeshes();
-    const roots = threeRootsFor(scene);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     expect(buffers.bvhMode).toBe('tlas');
 
     const pipeline = {
@@ -88,7 +69,6 @@ describe('transformRefit TLAS (C2)', () => {
 
     const ctx: PrimitiveUpdateContext = {
       bvhBuffers: buffers,
-      threeRoot: roots,
       pipeline: pipeline as never,
       ddgi: ddgi as never,
       primaryLightDir: [0, -1, 0],
@@ -111,8 +91,7 @@ describe('transformRefit TLAS (C2)', () => {
 
   it('uses render-scene mesh fallbacks for authored analytic transform refits', () => {
     const { authored, render } = analyticSphereScenes();
-    const roots = threeRootsFor(render);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(render, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(render, { bvhMode: 'tlas' });
     expect(buffers.bvhMode).toBe('tlas');
 
     const pipeline = {
@@ -122,7 +101,6 @@ describe('transformRefit TLAS (C2)', () => {
     const ddgi = { invalidateProbeCache: vi.fn(), markInstancesDirty: vi.fn() };
     const ctx: PrimitiveUpdateContext = {
       bvhBuffers: buffers,
-      threeRoot: roots,
       pipeline: pipeline as never,
       ddgi: ddgi as never,
       primaryLightDir: [0, -1, 0],

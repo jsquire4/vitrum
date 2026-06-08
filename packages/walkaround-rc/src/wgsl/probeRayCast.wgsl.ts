@@ -13,7 +13,7 @@
  *   3. three-mesh-bvh functions (intersectsBounds, intersectsTriangle, intersectTriangles,
  *      bvhIntersectFirstHit)
  *   4. CascadeUniforms struct (40 floats = 160 bytes; must match cascadeDispatch.ts layout)
- *   5. MaterialEntry struct (16 f32 fields = 64 bytes; must match bvhCompute.ts layout)
+ *   5. MaterialEntry struct (16 f32 fields = 64 bytes; must match @vitrum/shared-bvh layout)
  *   6. Octahedral helpers (octEncode, octDecode) — body stripped of file header
  *   7. PCG hash utilities (pcgHashToF32 from @vitrum/shared-samplers PCG_HASH_TO_F32_WGSL)
  *   8. Probe-ray helpers (dirToEquirectUV)

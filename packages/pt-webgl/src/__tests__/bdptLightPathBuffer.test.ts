@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { BdptLightPathBuffer } from '../bdptLightPathBuffer.js';
+import { BdptLightPathBuffer } from '../legacy/three/bdptLightPathBuffer.js';
 
 describe('BdptLightPathBuffer (C3)', () => {
   it('allocates a width × 3 RGBA32F WebGLRenderTarget with the requested maxLightBounces', () => {

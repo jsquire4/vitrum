@@ -41,9 +41,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type * as THREE from 'three';
 import type { MaterialSpec, Scene, MeshPrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { SceneBvh, type SceneBvhBuffers } from '@vitrum/shared-bvh';
+import { LegacyThreeSceneBvh } from '@vitrum/shared-bvh/legacy/three';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
 import { packDDGIMaterialsN, packDDGIMaterialsFromCoreN, DDGI_MAX_MATERIALS } from '../probeUpdateMaterials.js';
 
@@ -127,7 +129,7 @@ function buildBoth(scene: Scene): {
   threeBuffers: SceneBvhBuffers;
   coreBuffers: SceneBvhBuffers;
 } {
-  const threeBvh = new SceneBvh();
+  const threeBvh = new LegacyThreeSceneBvh();
   threeBvh.update(vitrumSceneToThree(scene));
   const coreBvh = new SceneBvh();
   coreBvh.updateFromCore(scene);
@@ -179,19 +181,20 @@ function assertGeometrySetsEqual(scene: Scene): {
   // World AABB (DDGI probe grid sizing) is float-close.
   const tb = threeBuffers.boundingBox;
   const cb = coreBuffers.boundingBox;
-  expect(cb.min.x).toBeCloseTo(tb.min.x, 4);
-  expect(cb.min.y).toBeCloseTo(tb.min.y, 4);
-  expect(cb.min.z).toBeCloseTo(tb.min.z, 4);
-  expect(cb.max.x).toBeCloseTo(tb.max.x, 4);
-  expect(cb.max.y).toBeCloseTo(tb.max.y, 4);
-  expect(cb.max.z).toBeCloseTo(tb.max.z, 4);
+  expect(cb.min[0]).toBeCloseTo(tb.min[0], 4);
+  expect(cb.min[1]).toBeCloseTo(tb.min[1], 4);
+  expect(cb.min[2]).toBeCloseTo(tb.min[2], 4);
+  expect(cb.max[0]).toBeCloseTo(tb.max[0], 4);
+  expect(cb.max[1]).toBeCloseTo(tb.max[1], 4);
+  expect(cb.max[2]).toBeCloseTo(tb.max[2], 4);
 
-  // The core path fills `coreMaterials` (MaterialSpec[]) and leaves `materials`
-  // (THREE) empty; the THREE path is the opposite.
+  // The core path fills core-native `materials`; the THREE path is quarantined
+  // behind the neutral `sourceMaterials` field.
   expect(coreBuffers.coreMaterials).not.toBeUndefined();
-  expect(coreBuffers.materials.length).toBe(0);
+  expect(coreBuffers.materials.length).toBeGreaterThan(0);
   expect(threeBuffers.coreMaterials).toBeUndefined();
-  expect(threeBuffers.materials.length).toBeGreaterThan(0);
+  expect(threeBuffers.materials.length).toBe(0);
+  expect(threeBuffers.sourceMaterials?.length).toBeGreaterThan(0);
 
   return { coreSlotToThreeSlot };
 }
@@ -250,11 +253,12 @@ function matKey(m: DecodedMatEntry): string {
  *  default on both sides, so we only compare the real entries. */
 function assertMaterialSetsEqual(scene: Scene, usedCount: number): void {
   const { threeBuffers, coreBuffers } = buildBoth(scene);
-  const threeBuf = packDDGIMaterialsN([...threeBuffers.materials], DDGI_MAX_MATERIALS);
-  const coreBuf = packDDGIMaterialsFromCoreN(coreBuffers.coreMaterials!, DDGI_MAX_MATERIALS);
+  const threeMaterials = [...(threeBuffers.sourceMaterials ?? [])] as THREE.Material[];
+  const threeBuf = packDDGIMaterialsN(threeMaterials, DDGI_MAX_MATERIALS);
+  const coreBuf = packDDGIMaterialsFromCoreN(coreBuffers.materials, DDGI_MAX_MATERIALS);
 
-  expect(threeBuffers.materials.length).toBe(usedCount);
-  expect(coreBuffers.coreMaterials!.length).toBe(usedCount);
+  expect(threeMaterials.length).toBe(usedCount);
+  expect(coreBuffers.materials.length).toBe(usedCount);
 
   const threeEntries = decodeMatEntries(threeBuf, usedCount).map(matKey).sort();
   const coreEntries = decodeMatEntries(coreBuf, usedCount).map(matKey).sort();
@@ -332,8 +336,8 @@ describe('DDGI merged-BVH core materials ≡ THREE materials — packed Material
 
     // Explicit pin: decode the core lamp slot and assert emissive·1.
     const { coreBuffers } = buildBoth(scene);
-    const coreBuf = packDDGIMaterialsFromCoreN(coreBuffers.coreMaterials!, DDGI_MAX_MATERIALS);
-    const entries = decodeMatEntries(coreBuf, coreBuffers.coreMaterials!.length);
+    const coreBuf = packDDGIMaterialsFromCoreN(coreBuffers.materials, DDGI_MAX_MATERIALS);
+    const entries = decodeMatEntries(coreBuf, coreBuffers.materials.length);
     const lamp = entries.find((e) => e.emissive[0] > 0.5)!;
     expect(lamp.emissive[0]).toBeCloseTo(1.0, 4); // emissive·1, NOT 4.0
     expect(lamp.emissive[1]).toBeCloseTo(0.45, 4); // NOT 1.8

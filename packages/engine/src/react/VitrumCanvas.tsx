@@ -20,19 +20,18 @@
 // hosts never pay the cost.
 
 import * as React from 'react';
-import * as THREE from 'three';
 import type { Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
-import type { AttachVitrumHandle } from '../lifecycle/vanilla.js';
+import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
-import type { EnginePreference, CreateEngineOptions } from '../createEngine.js';
+import type { EnginePreference, CreateEngineOptions, ThreeSceneLike } from '../createEngine.js';
 
 export interface VitrumCanvasProps {
   /** Scene description (vitrum or THREE). */
-  scene: Scene | THREE.Scene;
+  scene: Scene | ThreeSceneLike;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
    *  renderFrame on every RAF tick. */
-  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  camera: CameraLike;
   /** Quality vs speed hint. See CreateEngineOptions.prefer. */
   prefer?: EnginePreference;
   /** Per-frame quality dials. Prop changes propagate live: the latest

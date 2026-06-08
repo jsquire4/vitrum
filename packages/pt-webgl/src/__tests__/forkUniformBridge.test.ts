@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BoxGeometry, Mesh, MeshPhysicalMaterial, Scene, Vector3 } from 'three';
-import { driveForkMaterialUniforms } from '../forkUniformBridge.js';
+import { driveForkMaterialUniforms } from '../legacy/three/forkUniformBridge.js';
 import { rgbToSpectralCoefficients, spectralCoefficientsToRGB } from '@vitrum/shared-samplers';
 
 function makeStubPathTracer() {

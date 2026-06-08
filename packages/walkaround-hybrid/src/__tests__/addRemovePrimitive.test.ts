@@ -15,7 +15,7 @@
  *   - `@vitrum/three-bindings` is stubbed so `vitrumSceneToThree` returns a
  *     real empty THREE.Scene (valid for the CPU BVH builder) without pulling in
  *     real texture disposal on the background chain / dispose().
- *   - `./restir/bvhCompute.js` is wrapped so `buildReSTIRSceneBVHForScene`
+ *   - `./restir/bvhCore.js` is wrapped so `buildReSTIRSceneBVHForCoreScene`
  *     RECORDS the vitrum `Scene` it was handed. The async init chain hands the
  *     BVH builder exactly the mutated primitive list (the new primitive on add,
  *     the survivors-only list on remove) — that same scene is what DDGI's probe
@@ -45,18 +45,18 @@ vi.mock('@vitrum/three-bindings', () => ({
   findMeshByPrimitiveId: () => null,
 }));
 
-/** The vitrum scenes handed to `buildReSTIRSceneBVHForScene`, in call order.
+/** The vitrum scenes handed to `buildReSTIRSceneBVHForCoreScene`, in call order.
  *  Each entry is the scene a (re)build saw — proving WHICH primitive list
  *  reached the ReSTIR BVH + DDGI traversal scene. */
 const bvhBuildScenes: Scene[] = [];
 
-vi.mock('../restir/bvhCompute.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../restir/bvhCompute.js')>();
+vi.mock('../restir/bvhCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../restir/bvhCore.js')>();
   return {
     ...actual,
-    buildReSTIRSceneBVHForScene: vi.fn((scene: Scene, ...rest: unknown[]) => {
+    buildReSTIRSceneBVHForCoreScene: vi.fn((scene: Scene, ...rest: unknown[]) => {
       bvhBuildScenes.push(scene);
-      return (actual.buildReSTIRSceneBVHForScene as unknown as (...a: unknown[]) => unknown)(
+      return (actual.buildReSTIRSceneBVHForCoreScene as unknown as (...a: unknown[]) => unknown)(
         scene,
         ...rest,
       );

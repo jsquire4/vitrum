@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WebGLRenderer } from 'three';
 import type { WebGLRenderTarget } from 'three';
-import { accumulationFloatRgbaToRgb, readAccumulationRgbFloat } from '../readbackHdr.js';
+import { accumulationFloatRgbaToRgb, readAccumulationRgbFloat } from '../legacy/three/readbackHdr.js';
 import { ZERO_SAMPLE_COUNT_EPSILON } from '../accumulationSampleEpsilon.js';
 
 describe('accumulationFloatRgbaToRgb', () => {

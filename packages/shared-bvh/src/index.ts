@@ -1,8 +1,5 @@
-// Re-apply of W7-G5 (lost in May-17 merge race per items_to_fix.md E7):
-// list each bvhCommon export explicitly so internal helpers like
-// `validateBvhEncoding` (test-only) don't leak onto the public surface.
-export { buildSceneBVH, refitBvhBounds } from './bvhCommon.js';
-export type { SceneBVHCommonResult, SceneBVHCommonOpts } from './bvhCommon.js';
+export * from './aabb.js';
+export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
@@ -57,10 +54,9 @@ export {
  *       Used by pt-webgpu (`.w = 0`, zero-fill contract) and by ReSTIR
  *       (`.w` packs packed-RGBA material color + texType).
  *
- * `buildSceneBVH` always returns stride 3 (`indices` is a raw `Uint32Array`
- * with 3 u32 per triangle).  Callers that need stride 4 must post-process
- * the output (expand each triple to a four-element group, zeroing `.w`, or
- * pack caller-specific payload into `.w`).
+ * The legacy THREE builder at `@vitrum/shared-bvh/legacy/three` returns stride
+ * 3 (`indices` is a raw `Uint32Array` with 3 u32 per triangle). Callers that
+ * need stride 4 must post-process the output.
  *
  * Upload-time assertion (recommended for all callers):
  * ```ts
@@ -74,7 +70,7 @@ export type BvhIndexStride = 3 | 4;
  * Expand a stride-3 index buffer (`array<vec3u>` form: three u32 per triangle)
  * into a stride-4 buffer (`array<vec4u>` form: three u32 + one payload u32 per
  * triangle), the post-processing step every stride-4 consumer must apply to
- * `buildSceneBVH`'s stride-3 output (see {@link BvhIndexStride}).
+ * the legacy THREE builder's stride-3 output (see {@link BvhIndexStride}).
  *
  * The `.w` lane defaults to `0` (the pt-webgpu zero-fill contract). A caller
  * that packs its own payload into `.w` (e.g. ReSTIR packing RGBA material color

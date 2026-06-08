@@ -57,31 +57,38 @@ function cpuGrads(
     // forward; a[nl][n], z[nl][n] padded to W
     const a: number[][] = [], z: number[][] = [];
     for (let nl = 0; nl < node; nl++) { a.push(new Array(W).fill(0)); z.push(new Array(W).fill(0)); }
-    for (let i = 0; i < W; i++) a[0][i] = (i < rawInW) ? x[S * rawInW + i] : 0;
+    const inputA = a[0]!;
+    for (let i = 0; i < W; i++) inputA[i] = (i < rawInW) ? x[S * rawInW + i]! : 0;
     for (let l = 0; l < wl; l++) {
-      const iN = plan.inW[l], oN = plan.outW[l], isOut = l === wl - 1;
+      const iN = plan.inW[l]!, oN = plan.outW[l]!, isOut = l === wl - 1;
+      const wOff = plan.wOff[l]!, bOff = plan.bOff[l]!;
+      const aPrev = a[l]!, zNext = z[l + 1]!, aNext = a[l + 1]!;
       for (let o = 0; o < oN; o++) {
-        let acc = b[plan.bOff[l] + o];
-        for (let i = 0; i < iN; i++) acc += w[plan.wOff[l] + o * iN + i] * a[l][i];
-        z[l + 1][o] = acc;
-        a[l + 1][o] = isOut ? acc : Math.max(0, acc);
+        let acc = b[bOff + o]!;
+        for (let i = 0; i < iN; i++) acc += w[wOff + o * iN + i]! * aPrev[i]!;
+        zNext[o] = acc;
+        aNext[o] = isOut ? acc : Math.max(0, acc);
       }
     }
     // backward
     const delta: number[][] = [];
     for (let nl = 0; nl < node; nl++) delta.push(new Array(W).fill(0));
-    for (let o = 0; o < outW; o++) delta[node - 1][o] = (a[node - 1][o] - y[S * outW + o]) / B;
+    const outA = a[node - 1]!, outDelta = delta[node - 1]!;
+    for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
     for (let l = wl - 1; l >= 0; l--) {
-      const iN = plan.inW[l], oN = plan.outW[l];
+      const iN = plan.inW[l]!, oN = plan.outW[l]!;
+      const wOff = plan.wOff[l]!, bOff = plan.bOff[l]!;
+      const aPrev = a[l]!, deltaNext = delta[l + 1]!;
       for (let o = 0; o < oN; o++) {
-        gb[plan.bOff[l] + o] += delta[l + 1][o];
-        for (let i = 0; i < iN; i++) gw[plan.wOff[l] + o * iN + i] += delta[l + 1][o] * a[l][i];
+        gb[bOff + o] = gb[bOff + o]! + deltaNext[o]!;
+        for (let i = 0; i < iN; i++) gw[wOff + o * iN + i] = gw[wOff + o * iN + i]! + deltaNext[o]! * aPrev[i]!;
       }
       if (l > 0) {
+        const deltaCur = delta[l]!, zCur = z[l]!;
         for (let i = 0; i < iN; i++) {
           let acc = 0;
-          for (let o = 0; o < oN; o++) acc += w[plan.wOff[l] + o * iN + i] * delta[l + 1][o];
-          delta[l][i] = acc * (z[l][i] > 0 ? 1 : 0);
+          for (let o = 0; o < oN; o++) acc += w[wOff + o * iN + i]! * deltaNext[o]!;
+          deltaCur[i] = acc * (zCur[i]! > 0 ? 1 : 0);
         }
       }
     }
@@ -105,32 +112,39 @@ function cpuInputGrads(
   for (let S = 0; S < B; S++) {
     const a: number[][] = [], z: number[][] = [];
     for (let nl = 0; nl < node; nl++) { a.push(new Array(W).fill(0)); z.push(new Array(W).fill(0)); }
-    for (let i = 0; i < W; i++) a[0][i] = (i < rawInW) ? x[S * rawInW + i] : 0;
+    const inputA = a[0]!;
+    for (let i = 0; i < W; i++) inputA[i] = (i < rawInW) ? x[S * rawInW + i]! : 0;
     for (let l = 0; l < wl; l++) {
-      const iN = plan.inW[l], oN = plan.outW[l], isOut = l === wl - 1;
+      const iN = plan.inW[l]!, oN = plan.outW[l]!, isOut = l === wl - 1;
+      const wOff = plan.wOff[l]!, bOff = plan.bOff[l]!;
+      const aPrev = a[l]!, zNext = z[l + 1]!, aNext = a[l + 1]!;
       for (let o = 0; o < oN; o++) {
-        let acc = b[plan.bOff[l] + o];
-        for (let i = 0; i < iN; i++) acc += w[plan.wOff[l] + o * iN + i] * a[l][i];
-        z[l + 1][o] = acc;
-        a[l + 1][o] = isOut ? acc : Math.max(0, acc);
+        let acc = b[bOff + o]!;
+        for (let i = 0; i < iN; i++) acc += w[wOff + o * iN + i]! * aPrev[i]!;
+        zNext[o] = acc;
+        aNext[o] = isOut ? acc : Math.max(0, acc);
       }
     }
     const delta: number[][] = [];
     for (let nl = 0; nl < node; nl++) delta.push(new Array(W).fill(0));
-    for (let o = 0; o < outW; o++) delta[node - 1][o] = (a[node - 1][o] - y[S * outW + o]) / B;
+    const outA = a[node - 1]!, outDelta = delta[node - 1]!;
+    for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
     for (let l = wl - 1; l >= 1; l--) {
-      const iN = plan.inW[l], oN = plan.outW[l];
+      const iN = plan.inW[l]!, oN = plan.outW[l]!;
+      const wOff = plan.wOff[l]!;
+      const deltaCur = delta[l]!, deltaNext = delta[l + 1]!, zCur = z[l]!;
       for (let i = 0; i < iN; i++) {
         let acc = 0;
-        for (let o = 0; o < oN; o++) acc += w[plan.wOff[l] + o * iN + i] * delta[l + 1][o];
-        delta[l][i] = acc * (z[l][i] > 0 ? 1 : 0);
+        for (let o = 0; o < oN; o++) acc += w[wOff + o * iN + i]! * deltaNext[o]!;
+        deltaCur[i] = acc * (zCur[i]! > 0 ? 1 : 0);
       }
     }
     // l==0: LINEAR input → dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[o].
-    const iN = plan.inW[0], oN = plan.outW[0];
+    const iN = plan.inW[0]!, oN = plan.outW[0]!, wOff0 = plan.wOff[0]!;
+    const delta1 = delta[1]!;
     for (let i = 0; i < Math.min(iN, rawInW); i++) {
       let acc = 0;
-      for (let o = 0; o < oN; o++) acc += w[plan.wOff[0] + o * iN + i] * delta[1][o];
+      for (let o = 0; o < oN; o++) acc += w[wOff0 + o * iN + i]! * delta1[o]!;
       dXall[S * rawInW + i] = acc;
     }
   }
@@ -145,12 +159,12 @@ function relErr(a: Float32Array, b: Float32Array) {
   // relErr denominator with a floor and ALSO track the worst meaningful cell
   // (one whose magnitude is above a small fraction of the max gradient).
   let maxMag = 0;
-  for (let i = 0; i < a.length; i++) maxMag = Math.max(maxMag, Math.abs(a[i]), Math.abs(b[i]));
+  for (let i = 0; i < a.length; i++) maxMag = Math.max(maxMag, Math.abs(a[i]!), Math.abs(b[i]!));
   const floor = Math.max(1e-4, maxMag * 1e-3); // ignore cells below 0.1% of peak
   let maxRelMeaningful = 0;
   for (let i = 0; i < a.length; i++) {
-    const abs = Math.abs(a[i] - b[i]);
-    const denom = Math.max(Math.abs(a[i]), Math.abs(b[i])) + 1e-6;
+    const abs = Math.abs(a[i]! - b[i]!);
+    const denom = Math.max(Math.abs(a[i]!), Math.abs(b[i]!)) + 1e-6;
     const rel = abs / denom;
     if (abs > maxAbs) { maxAbs = abs; worstAbsIdx = i; }
     if (rel > maxRel) { maxRel = rel; worstRelIdx = i; }
@@ -243,20 +257,20 @@ async function main() {
   const h = useF16 ? 5e-3 : 1e-3;
   const fdGW = new Float32Array(plan.totalW);
   for (let k = 0; k < plan.totalW; k++) {
-    const wp = init.w.slice(); wp[k] += h; tiny.setWeights(wp, init.b);
+    const wp = init.w.slice(); wp[k] = wp[k]! + h; tiny.setWeights(wp, init.b);
     tiny.setBatch(batch.x, batch.y);
     const lp = await tinyProbe.computeLoss();
-    const wm = init.w.slice(); wm[k] -= h; tiny.setWeights(wm, init.b);
+    const wm = init.w.slice(); wm[k] = wm[k]! - h; tiny.setWeights(wm, init.b);
     tiny.setBatch(batch.x, batch.y);
     const lm = await tinyProbe.computeLoss();
     fdGW[k] = (lp - lm) / (2 * h);
   }
   const fdGB = new Float32Array(plan.totalB);
   for (let k = 0; k < plan.totalB; k++) {
-    const bp = init.b.slice(); bp[k] += h; tiny.setWeights(init.w, bp);
+    const bp = init.b.slice(); bp[k] = bp[k]! + h; tiny.setWeights(init.w, bp);
     tiny.setBatch(batch.x, batch.y);
     const lp = await tinyProbe.computeLoss();
-    const bm = init.b.slice(); bm[k] -= h; tiny.setWeights(init.w, bm);
+    const bm = init.b.slice(); bm[k] = bm[k]! - h; tiny.setWeights(init.w, bm);
     tiny.setBatch(batch.x, batch.y);
     const lm = await tinyProbe.computeLoss();
     fdGB[k] = (lp - lm) / (2 * h);
@@ -265,14 +279,17 @@ async function main() {
 
   const ew = relErr(gw, fdGW);
   const eb = relErr(gb, fdGB);
+  const worstRelWeight = ew.worstRelIdx >= 0 ? gw[ew.worstRelIdx]! : 0;
+  const worstAbsWeight = ew.worstAbsIdx >= 0 ? gw[ew.worstAbsIdx]! : 0;
+  const worstAbsFdWeight = ew.worstAbsIdx >= 0 ? fdGW[ew.worstAbsIdx]! : 0;
   console.log("weight grad: maxRelErr(meaningful cells)=", ew.maxRelMeaningful.toExponential(3),
     " maxAbsErr=", ew.maxAbs.toExponential(3), " (raw maxRel=", ew.maxRel.toExponential(2),
-    "at idx", ew.worstRelIdx, "where |g|=", Math.abs(gw[ew.worstRelIdx]).toExponential(2), ")");
+    "at idx", ew.worstRelIdx, "where |g|=", Math.abs(worstRelWeight).toExponential(2), ")");
   console.log("bias   grad: maxRelErr(meaningful cells)=", eb.maxRelMeaningful.toExponential(3),
     " maxAbsErr=", eb.maxAbs.toExponential(3));
   console.log("sample analytic gW[0..4]:", Array.from(gw.slice(0, 5)).map((v) => v.toFixed(5)));
   console.log("sample FD       gW[0..4]:", Array.from(fdGW.slice(0, 5)).map((v) => v.toFixed(5)));
-  console.log(`worst-abs cell idx=${ew.worstAbsIdx}: analytic=${gw[ew.worstAbsIdx].toExponential(4)} FD=${fdGW[ew.worstAbsIdx].toExponential(4)} (peak |g|=${ew.maxMag.toExponential(3)}, floor=${ew.floor.toExponential(2)})`);
+  console.log(`worst-abs cell idx=${ew.worstAbsIdx}: analytic=${worstAbsWeight.toExponential(4)} FD=${worstAbsFdWeight.toExponential(4)} (peak |g|=${ew.maxMag.toExponential(3)}, floor=${ew.floor.toExponential(2)})`);
   // FD is a SECONDARY sanity check. It carries two error sources the CPU-analytic
   // oracle does not: (1) central-difference truncation/round-off on near-zero
   // cells, and (2) ReLU-KINK error — when the FD step h crosses a ReLU activation
@@ -314,9 +331,9 @@ async function main() {
   const t1 = performance.now();
   console.log("loss trajectory (MSE):");
   for (const k of Object.keys(lossesAt).map(Number).sort((a, b) => a - b)) {
-    console.log(`  step ${k.toString().padStart(4)}: ${lossesAt[k].toExponential(4)}`);
+    console.log(`  step ${k.toString().padStart(4)}: ${lossesAt[k]!.toExponential(4)}`);
   }
-  const first = lossesAt[0], last = lossesAt[steps - 1];
+  const first = lossesAt[0]!, last = lossesAt[steps - 1]!;
   const learned = last < first * 0.25;
   console.log("LEARNING CHECK:", learned ? `PASS (loss fell ${(first / last).toFixed(1)}x)` : "FAIL (loss did not drop)");
   console.log(`wall time ${steps} steps (lavapipe=CPU, NOT perf-representative): ${(t1 - t0).toFixed(0)} ms`);
@@ -350,7 +367,7 @@ function trafficModel(useF16: boolean) {
   for (let i = 0; i < HIDDEN; i++) widths.push(W);
   widths.push(OUT_W);
   let totalW = 0, totalB = 0;
-  for (let l = 0; l < wlayers; l++) { totalW += widths[l + 1] * widths[l]; totalB += widths[l + 1]; }
+  for (let l = 0; l < wlayers; l++) { totalW += widths[l + 1]! * widths[l]!; totalB += widths[l + 1]!; }
   const paramBytes = (totalW + totalB) * sc;
 
   for (const B of [4096, 16384, 65536]) {
@@ -364,7 +381,7 @@ function trafficModel(useF16: boolean) {
     // Grad: per layer             read delta(B*outW) + read a_prev(B*inW)
     let spikeActFloats = 0;
     for (let l = 0; l < wlayers; l++) {
-      const inW = widths[l], outW = widths[l + 1];
+      const inW = widths[l]!, outW = widths[l + 1]!;
       spikeActFloats += B * outW + B * outW + B * inW;        // forward
       if (l > 0) spikeActFloats += B * outW + B * inW + B * inW; // backward delta
       spikeActFloats += B * outW + B * inW;                  // grad reads

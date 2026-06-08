@@ -20,7 +20,7 @@ import {
   resolveReGIRConfig,
   type ReGIRConfig,
 } from '../ReGIRCoordinator.js';
-import type { SceneBVHBuffers } from '../../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

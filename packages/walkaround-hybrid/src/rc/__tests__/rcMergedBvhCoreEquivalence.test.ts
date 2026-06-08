@@ -50,11 +50,23 @@ import { vitrumSceneToThree } from '@vitrum/three-bindings';
 import type * as THREE from 'three';
 import {
   buildRCSceneBVH,
-  buildRCSceneBVHFromCore,
   packCascadeMaterials,
+} from '../../legacy/three/rcBvhCompute.js';
+import {
+  buildRCSceneBVHFromCore,
   packCascadeMaterialsFromCore,
-  type SceneBVH,
-} from '../bvhCompute.js';
+} from '../bvhCore.js';
+
+interface ComparableSceneBVH {
+  readonly positions: { readonly array: unknown };
+  readonly indices: { readonly array: unknown };
+  readonly triMaterialId: { readonly array: unknown };
+  readonly materials: { readonly array: unknown };
+  readonly bounds: {
+    readonly min: { readonly x: number; readonly y: number; readonly z: number };
+    readonly max: { readonly x: number; readonly y: number; readonly z: number };
+  };
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Core-Scene mesh helpers (a 4-vertex quad as two tris).
@@ -102,7 +114,7 @@ function glassMat(base: [number, number, number], transmission: number, atten: [
 // (obj.isMesh === true); the core filter defaults to RC_CORE_MESH_FILTER.
 // ──────────────────────────────────────────────────────────────────────────
 
-function buildBoth(scene: Scene): { threeBvh: SceneBVH; coreBvh: SceneBVH } {
+function buildBoth(scene: Scene): { threeBvh: ComparableSceneBVH; coreBvh: ComparableSceneBVH } {
   const allMeshesFilter = (obj: THREE.Object3D): boolean =>
     (obj as THREE.Mesh).isMesh === true;
   const threeRoot = vitrumSceneToThree(scene);

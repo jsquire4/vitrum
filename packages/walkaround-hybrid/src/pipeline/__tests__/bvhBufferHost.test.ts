@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SceneBVHBuffers } from '../../restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
 
 vi.mock('../resourceManager.js', () => ({
   uploadBuffer: vi.fn((_device, data: ArrayBuffer, usage: number) => ({

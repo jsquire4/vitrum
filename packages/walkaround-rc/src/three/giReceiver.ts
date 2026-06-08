@@ -19,7 +19,7 @@
 import * as THREE from 'three';
 import { MeshPhysicalNodeMaterial } from 'three/webgpu';
 import { output, renderOutput, mul, uniform, materialColor } from 'three/tsl';
-import type { CascadeBuffers } from './cascadePyramid.js';
+import type { CascadeBuffers } from './cascadePyramidThree.js';
 import { buildWalkaroundLightingNode } from './walkaroundDiffuseLighting.js';
 
 // WebGPU is pinned to NoToneMapping + LinearSRGBColorSpace at the renderer level
@@ -30,7 +30,7 @@ import { buildWalkaroundLightingNode } from './walkaroundDiffuseLighting.js';
 // TSL's `renderOutput()`. Cross-port from DDGI (applyDDGIShading.ts) and ReSTIR
 // (composite.wgsl.ts acesFilm fit). Same Narkowicz 2015 ACES fit all three engines use.
 const OUTPUT_TONE_MAPPING = THREE.ACESFilmicToneMapping;
-const OUTPUT_COLOR_SPACE  = THREE.SRGBColorSpace;
+const OUTPUT_COLOR_SPACE = THREE.SRGBColorSpace;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
@@ -58,10 +58,7 @@ function isGIReceiver(
   if (isExcluded(obj)) return false;
   const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
   if (!mat) return false;
-  return (
-    mat instanceof THREE.MeshStandardMaterial ||
-    mat instanceof THREE.MeshPhysicalMaterial
-  );
+  return mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial;
 }
 
 /**
@@ -74,29 +71,29 @@ function makeGIReceiverMaterial(
 ): MeshPhysicalNodeMaterial {
   const nm = new MeshPhysicalNodeMaterial();
 
-  nm.color       = srcMat.color.clone();
-  nm.roughness   = srcMat.roughness;
-  nm.metalness   = srcMat.metalness;
-  nm.emissive    = srcMat.emissive.clone();
+  nm.color = srcMat.color.clone();
+  nm.roughness = srcMat.roughness;
+  nm.metalness = srcMat.metalness;
+  nm.emissive = srcMat.emissive.clone();
   nm.emissiveIntensity = srcMat.emissiveIntensity;
-  nm.opacity     = srcMat.opacity;
+  nm.opacity = srcMat.opacity;
   nm.transparent = srcMat.transparent;
-  nm.side        = srcMat.side;
-  if (srcMat.map)           nm.map           = srcMat.map;
-  if (srcMat.normalMap)     nm.normalMap     = srcMat.normalMap;
-  if (srcMat.roughnessMap)  nm.roughnessMap  = srcMat.roughnessMap;
-  if (srcMat.metalnessMap)  nm.metalnessMap  = srcMat.metalnessMap;
+  nm.side = srcMat.side;
+  if (srcMat.map) nm.map = srcMat.map;
+  if (srcMat.normalMap) nm.normalMap = srcMat.normalMap;
+  if (srcMat.roughnessMap) nm.roughnessMap = srcMat.roughnessMap;
+  if (srcMat.metalnessMap) nm.metalnessMap = srcMat.metalnessMap;
 
   if (srcMat instanceof THREE.MeshPhysicalMaterial) {
-    nm.transmission    = srcMat.transmission;
-    nm.ior             = srcMat.ior;
-    nm.thickness       = srcMat.thickness;
-    nm.attenuationColor    = srcMat.attenuationColor.clone();
+    nm.transmission = srcMat.transmission;
+    nm.ior = srcMat.ior;
+    nm.thickness = srcMat.thickness;
+    nm.attenuationColor = srcMat.attenuationColor.clone();
     nm.attenuationDistance = srcMat.attenuationDistance;
-    nm.clearcoat       = srcMat.clearcoat;
+    nm.clearcoat = srcMat.clearcoat;
     nm.clearcoatRoughness = srcMat.clearcoatRoughness;
-    nm.iridescence     = srcMat.iridescence;
-    nm.iridescenceIOR  = srcMat.iridescenceIOR;
+    nm.iridescence = srcMat.iridescence;
+    nm.iridescenceIOR = srcMat.iridescenceIOR;
   }
 
   // GI signal is integrated irradiance E; multiply by albedo/π to convert
@@ -110,8 +107,11 @@ function makeGIReceiverMaterial(
   nm.emissiveNode = giDiffuse;
 
   // Tone-map + sRGB-encode the linear PBR + GI output.
-  (nm as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode =
-    renderOutput(output, OUTPUT_TONE_MAPPING, OUTPUT_COLOR_SPACE);
+  (nm as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode = renderOutput(
+    output,
+    OUTPUT_TONE_MAPPING,
+    OUTPUT_COLOR_SPACE,
+  );
 
   nm.userData[GI_TAG_USERDATA_KEY] = true;
   return nm;
@@ -166,7 +166,8 @@ export class GIReceiver {
     scene.traverse((obj) => {
       if (!isGIReceiver(obj, this._isExcluded)) return;
       const mat = (Array.isArray(obj.material) ? obj.material[0] : obj.material) as
-        THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial;
+        | THREE.MeshStandardMaterial
+        | THREE.MeshPhysicalMaterial;
 
       // Don't double-wrap.
       if (isGIWrapped(mat)) return;

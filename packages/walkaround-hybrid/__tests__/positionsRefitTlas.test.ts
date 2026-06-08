@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
-import * as THREE from 'three';
-import { buildReSTIRSceneBVHFromVitrumScene } from '../src/restir/sceneBvhFromCore.js';
+import { buildReSTIRSceneBVHForCoreScene } from '../src/restir/bvhCore.js';
 import { positionsRefit } from '../src/HybridEnginePrimitiveUpdates.js';
 import type { PrimitiveUpdateContext } from '../src/HybridEnginePrimitiveUpdates.js';
 
@@ -27,29 +26,10 @@ function twoBoxScene(): Scene {
   };
 }
 
-function threeRootsFor(scene: Scene): THREE.Scene {
-  const root = new THREE.Scene();
-  for (const prim of scene.primitives) {
-    if (prim.kind !== 'mesh') continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(prim.positions.slice(), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(prim.normals.slice(), 3));
-    if (prim.indices) geo.setIndex(Array.from(prim.indices));
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff }));
-    mesh.name = prim.id;
-    if (prim.transform) mesh.matrix.fromArray(Array.from(prim.transform));
-    mesh.matrixAutoUpdate = false;
-    mesh.matrixWorld.copy(mesh.matrix);
-    root.add(mesh);
-  }
-  return root;
-}
-
 describe('positionsRefit TLAS (C2)', () => {
   it('refits BLAS positions + TLAS bounds without full rebuild', () => {
     const scene = twoBoxScene();
-    const roots = threeRootsFor(scene);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     expect(buffers.bvhMode).toBe('tlas');
 
     const meshA = scene.primitives[0];
@@ -66,7 +46,6 @@ describe('positionsRefit TLAS (C2)', () => {
 
     const ctx: PrimitiveUpdateContext = {
       bvhBuffers: buffers,
-      threeRoot: roots,
       pipeline: pipeline as never,
       ddgi: ddgi as never,
       primaryLightDir: [0, -1, 0],

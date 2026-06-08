@@ -11,6 +11,9 @@
       "@vitrum/shared-bvh": [
         "../shared-bvh/src/index.ts"
       ],
+      "@vitrum/shared-bvh/*": [
+        "../shared-bvh/src/*"
+      ],
       "@vitrum/shared-samplers": [
         "../shared-samplers/src/index.ts"
       ],

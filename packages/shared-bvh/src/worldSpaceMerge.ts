@@ -4,17 +4,17 @@
  *
  * The keystone of the geometry-ingestion THREE-decouple (increment 3 of
  * `plan/three-decouple-analysis-2026-06-03.md` §3/§4). Today the ONLY
- * world-space-merge ingestion path is `buildSceneBVH` (`bvhCommon.ts`, THREE-
- * only): it bakes every mesh's `matrixWorld` into one merged vertex stream via
+ * world-space-merge ingestion path is `buildSceneBVH` (`legacy/bvhCommon.ts`,
+ * THREE-only): it bakes every mesh's `matrixWorld` into one merged vertex stream via
  * three-mesh-bvh's `StaticGeometryGenerator`, then builds one unified SAH BVH
  * over it. That merged build feeds three consumers that need WORLD-space
  * geometry (not the local-space BLAS + separate TLAS matrices that
  * `packSceneFromCore` emits):
  *
  *   1. the ReSTIR emitter list (triangle area / world face-normal / centroid /
- *      AABB — `restir/sceneBvhFromCore.ts:buffersFromScenePack`),
+ *      AABB — `walkaround-hybrid/restir/bvhCore.ts`),
  *   2. the DDGI merged BVH (`SceneBvh.update` → `buildSceneBVH`), and
- *   3. the RC merged BVH (`rc/bvhCompute.ts:buildRCSceneBVH` → `buildSceneBVH`).
+ *   3. the RC merged BVH (`walkaround-hybrid/rc/bvhCore.ts` → `buildSceneBVH`).
  *
  * `mergeWorldSpaceFromCore` is the THREE-free analogue: it iterates
  * `scene.primitives`, transforms each (instance's) local `positions`/`normals`
@@ -62,6 +62,7 @@
  */
 
 import type { Mat4, MaterialSpec, Scene, ScenePrimitive, Vec3 } from '@vitrum/core';
+import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
 
 const IDENTITY_MAT4: readonly number[] = [
@@ -144,10 +145,7 @@ export interface WorldSpaceMergeResult {
   /** World-space AABB of the merged geometry (THREE-free `{min,max}` in place of
    *  `THREE.Box3`). Float-identical to `buildSceneBVH`'s `boundingBox` for an
    *  equivalent scene. */
-  readonly boundingBox: {
-    readonly min: readonly [number, number, number];
-    readonly max: readonly [number, number, number];
-  };
+  readonly boundingBox: PlainAabb;
 
   /** Per-source-primitive vertex ranges (mirrors the THREE path). */
   readonly meshVertexRanges: readonly MergedMeshVertexRange[];
@@ -327,7 +325,7 @@ function determinant4(m: ArrayLike<number>): number {
 
 /**
  * Structural material signature — the core `MaterialSpec` counterpart to
- * `bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes only the fields
+ * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes only the fields
  * the GI/PT consumers read (baseColor, emissive, emissiveIntensity, roughness,
  * metallic, transmission, ior, and base/normal map handle identity), with the
  * SAME `toFixed(4)` quantisation, so two primitives carrying structurally-equal

@@ -25,10 +25,10 @@
  *
  *   a. awaitSceneReady   — poll engine.isSceneReady() (with 5s cap),
  *                          aborting on dispose or sequence-drift.
- *   b. buildBvh          — synthesize / pick the THREE root, call
- *                          buildReSTIRSceneBVH(); race-checkpoint at exit.
- *   c. publishBvh        — write `_bvhBuffers` / `_ddgiTraversalScene`
- *                          to the engine.
+ *   b. buildBvh          — build from the core scene or pick the host THREE
+ *                          root, then call buildReSTIRSceneBVH();
+ *                          race-checkpoint at exit.
+ *   c. publishBvh        — write `_bvhBuffers` to the engine.
  *   d. initializePipeline — instantiate WalkaroundGPUPipeline, optionally
  *                          load neural InferenceGraph, await
  *                          pipeline.initialize(); race-checkpoint at exit.
@@ -43,11 +43,9 @@
  * coordinator does not alter race semantics, only shape.
  */
 
-import * as THREE from 'three';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { buildReSTIRSceneBVHForScene, disposeSceneBVH } from './restir/bvhCompute.js';
-import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCompute.js';
-import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import { buildReSTIRSceneBVHForCoreScene, disposeSceneBVH } from './restir/bvhCore.js';
+import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -65,8 +63,6 @@ export interface PipelineInitHost {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
-  /** Optional escape-hatch host-supplied THREE.Scene. */
-  readonly threeScene: THREE.Scene | null;
   /** Latest render-ingestion scene; analytic primitives have already been
    * converted to generated MeshPrimitive fallbacks. May be null pre-bootstrap. */
   readonly lastScene: Scene | null;
@@ -129,18 +125,14 @@ export interface PipelineInitHost {
   /** Scene-readiness predicate (engine combines the core-scene mesh
    *  count + optional ctor `isSceneReady` heuristic). */
   isSceneReadyForBvh(): boolean;
-  /** True when the vitrum scene supplies at least one mesh primitive
-   *  (drives the `vitrumSceneToThree` vs ctor `threeScene` branch). */
+  /** True when the vitrum scene supplies at least one mesh primitive. */
   coreSceneSuppliesMeshes(): boolean;
 
   // ── outputs (written by coordinator) ────────────────────────────────
   publishBvh(bvh: SceneBVHBuffers): void;
-  publishTraversalScene(traversalScene: THREE.Scene): void;
   publishPipeline(pipeline: WalkaroundGPUPipeline): void;
   /** Clear `_bvhBuffers` back to null (post-init-race rollback). */
   rollbackBvh(): void;
-  /** Clear `_ddgiTraversalScene` back to null (post-init-race rollback). */
-  rollbackTraversalScene(): void;
   setState(state: 'initializing' | 'ready' | 'error' | 'disposed'): void;
   /** Engine's synchronous teardown — releases pipeline + BVH + traversal
    *  scene currently held on the engine. Called from the deferred
@@ -157,8 +149,6 @@ export interface PipelineInitHost {
   /** Currently-held BVH buffers — coordinator's finalize step checks
    *  whether a locally-built one still matches before tearing it down. */
   readonly currentBvhBuffers: SceneBVHBuffers | null;
-  /** Currently-held traversal scene — same race-check role as above. */
-  readonly currentTraversalScene: THREE.Scene | null;
 }
 
 /**
@@ -172,7 +162,6 @@ export interface PipelineInitHost {
 export type HybridInitStaticConfig = Pick<
   PipelineInitHost,
   | 'device'
-  | 'threeScene'
   | 'restirBvhModeOverride'
   | 'denoiser'
   | 'neuralWeights'
@@ -326,53 +315,33 @@ export class PipelineInitCoordinator {
 
     // Locals — must be disposed if we lose the race before publishing
     // to shared state.
-    let bvhRoot: THREE.Object3D | null = null;
-    let bvhOwnedSynthesized = false;
     let bvh: SceneBVHBuffers | null = null;
     let pipeline: WalkaroundGPUPipeline | null = null;
     let bvhPublished: SceneBVHBuffers | null = null;
-    let publishedTraversalScene: THREE.Scene | null = null;
     let pipelineMs = 0;
 
     try {
       // ── Phase: buildBvh ──────────────────────────────────────────────
       const bvhStart = performance.now();
-      if (host.coreSceneSuppliesMeshes()) {
-        bvhRoot = vitrumSceneToThree(host.lastScene!);
-        bvhOwnedSynthesized = true;
-      } else if (host.threeScene != null) {
-        bvhRoot = host.threeScene;
-        bvhOwnedSynthesized = false;
-      } else {
-        // T3.H removal: no vitrum mesh primitives AND no escape-hatch
-        // threeScene. The host hasn't given us anything to render against.
+      if (host.lastScene == null || !host.coreSceneSuppliesMeshes()) {
         throw new Error(
-          '[HybridEngine] BVH source unavailable: setScene(vitrumScene) ' +
-          'supplied no mesh primitives and no `threeScene` was passed at ' +
-          'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
-          'or pass `threeScene` directly to the engine constructor.',
+          '[HybridEngine] BVH source unavailable: concrete walkaround-hybrid ' +
+          'requires a core Scene with mesh primitives. Convert Three scenes with ' +
+          'sceneFromThreeJS(...) before calling setScene().',
         );
       }
       const bvhBuildOpts = {
-        primaryLightDir:       new THREE.Vector3(...host.primaryLightDir),
+        primaryLightDir: {
+          x: host.primaryLightDir[0],
+          y: host.primaryLightDir[1],
+          z: host.primaryLightDir[2],
+        },
         primaryLightIntensity: host.primaryLightIntensity,
         ...(host.restirBvhModeOverride !== undefined
           ? { bvhMode: host.restirBvhModeOverride }
           : {}),
       };
-      if (host.coreSceneSuppliesMeshes() && host.lastScene != null) {
-        bvh = buildReSTIRSceneBVHForScene(host.lastScene, [bvhRoot], bvhBuildOpts);
-      } else {
-        bvh = buildReSTIRSceneBVHForScene(
-          host.lastScene ?? {
-            primitives: [],
-            emitters: [],
-            environment: { kind: 'none' },
-          },
-          [bvhRoot],
-          { ...bvhBuildOpts, bvhMode: 'merged' },
-        );
-      }
+      bvh = buildReSTIRSceneBVHForCoreScene(host.lastScene, bvhBuildOpts);
       const bvhMs = performance.now() - bvhStart;
 
       // ── Phase: publishBvh (first shared-state checkpoint) ────────────
@@ -388,11 +357,6 @@ export class PipelineInitCoordinator {
         }
         // Locals will be disposed by the finally block.
         return;
-      }
-      if (bvhOwnedSynthesized) {
-        publishedTraversalScene = bvhRoot as THREE.Scene;
-        host.publishTraversalScene(publishedTraversalScene);
-        bvhOwnedSynthesized = false; // ownership transferred to engine
       }
       host.publishBvh(bvh);
       bvhPublished = bvh;
@@ -501,13 +465,6 @@ export class PipelineInitCoordinator {
           disposeSceneBVH(bvhPublished);
           host.rollbackBvh();
         }
-        // And the traversal scene we published if it's still ours.
-        if (publishedTraversalScene !== null
-            && host.currentTraversalScene === publishedTraversalScene
-            && publishedTraversalScene !== host.threeScene) {
-          disposeVitrumThreeSceneRoot(publishedTraversalScene);
-          host.rollbackTraversalScene();
-        }
         // pipeline disposed by the finally block.
         return;
       }
@@ -543,16 +500,10 @@ export class PipelineInitCoordinator {
       // emitting a `sun` DDGILight with the emitter's REAL direction/colour
       // (replacing the packer's old hardcoded straight-down warm-white sun).
       //
-      // The THREE-walk `collectDDGILightsFromThreeRoot(bvhRoot)` remains the
-      // escape hatch ONLY when the host supplied a raw `threeScene` (no core
-      // scene): in that case `bvhRoot === host.threeScene` and there is no
-      // core emitter list to read, so we fall back to re-deriving from the
-      // THREE light objects. The gate matches the BVH-source branch above
-      // (`coreSceneSuppliesMeshes()` ⇒ `bvhRoot` came from `vitrumSceneToThree`).
-      const ddgiSceneLights =
-        sceneForSun != null
-          ? coreEmittersToDDGILights(sceneForSun)
-          : collectDDGILightsFromThreeRoot(bvhRoot);
+      // Concrete walkaround-hybrid now reads DDGI lights from the retained core
+      // emitter list only. Raw Three light walking lives outside this runtime
+      // path.
+      const ddgiSceneLights = sceneForSun != null ? coreEmittersToDDGILights(sceneForSun) : [];
       if (ddgiSceneLights.length > 0) {
         // De-dup the sun: if the scene contributes a directional→sun AND the
         // host passed an `opts.lights` sun, drop the host sun (scene wins) so
@@ -587,9 +538,6 @@ export class PipelineInitCoordinator {
       }
       if (bvh) {
         try { disposeSceneBVH(bvh); } catch {}
-      }
-      if (bvhRoot && bvhOwnedSynthesized) {
-        try { disposeVitrumThreeSceneRoot(bvhRoot); } catch {}
       }
       // If requestTeardown() raced and left _pendingTeardown set,
       // finalise the teardown now. The newest writer (us, if we
@@ -679,62 +627,58 @@ function warnHostSunOverriddenOnce(): void {
   );
 }
 
-/** Project `THREE.PointLight` instances to DDGI point-light fixtures. */
-function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
-  const out: DDGILight[] = [];
-  root.updateMatrixWorld(true);
-  root.traverseVisible((obj) => {
-    if (!(obj instanceof THREE.PointLight)) return;
-    const pl = obj;
-    out.push({
-      kind: 'fixture',
-      intensity: pl.intensity,
-      on: true,
-      position: { x: pl.position.x, y: pl.position.y, z: pl.position.z },
-      color: { r: pl.color.r, g: pl.color.g, b: pl.color.b },
-    });
-  });
-  return out;
+interface ThreeObjectLike {
+  readonly type?: string;
+  readonly isPointLight?: boolean;
+  readonly isRectAreaLight?: boolean;
+  readonly position?: { readonly x: number; readonly y: number; readonly z: number };
+  readonly color?: { readonly r: number; readonly g: number; readonly b: number };
+  readonly intensity?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly matrixWorld?: { readonly elements: ArrayLike<number> };
+  updateMatrixWorld?: (force?: boolean) => void;
+  traverseVisible: (cb: (obj: ThreeObjectLike) => void) => void;
 }
 
-/**
- * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
- * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
- * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
- * evaluate direct lighting at probe-ray hit points.
- *
- * Approximation rationale: DDGI provides low-frequency indirect bounce — the
- * actual rect geometry only matters for the high-frequency direct term, which
- * ReSTIR DI handles separately from the actual emitter triangles. A point at
- * the rect centroid carrying flux ≈ `color × intensity × area` gives a
- * qualitatively-correct downward irradiance for probes; colour bleed onto
- * surrounding walls (the visible signature of Cornell-style scenes) reaches
- * the irradiance atlas correctly. The remaining factor-of-π errors in
- * total-flux conversion are negligible against the multiple-of-10 dynamic
- * range that distinguishes "lit colour bleed" from "atlas reads zero".
- */
-export function collectDDGILightsFromThreeRoot(root: THREE.Object3D): DDGILight[] {
-  return [
-    ...collectDDGILightsFromRectAreaLights(root),
-    ...collectDDGIPointLightsFromRoot(root),
-  ];
+function matrixPosition(m: ArrayLike<number> | undefined): { x: number; y: number; z: number } {
+  return { x: m?.[12] ?? 0, y: m?.[13] ?? 0, z: m?.[14] ?? 0 };
 }
 
-function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] {
+function isPointLightLike(obj: ThreeObjectLike): boolean {
+  return obj.isPointLight === true || obj.type === 'PointLight';
+}
+
+function isRectAreaLightLike(obj: ThreeObjectLike): boolean {
+  return obj.isRectAreaLight === true || obj.type === 'RectAreaLight';
+}
+
+/** Compatibility helper for tests/legacy adapters; structural and Three-free. */
+export function collectDDGILightsFromThreeRoot(root: ThreeObjectLike): DDGILight[] {
   const out: DDGILight[] = [];
-  const _wp = new THREE.Vector3();
-  root.updateMatrixWorld(true);
+  root.updateMatrixWorld?.(true);
   root.traverseVisible((obj) => {
-    if (!(obj instanceof THREE.RectAreaLight)) return;
-    const light = obj;
-    const area = light.width * light.height;
-    _wp.setFromMatrixPosition(light.matrixWorld);
-    out.push({
-      kind: 'fixture',
-      intensity: light.intensity * area,
-      on: true,
-      position: { x: _wp.x, y: _wp.y, z: _wp.z },
-    });
+    if (isPointLightLike(obj) && obj.position != null && obj.color != null) {
+      out.push({
+        kind: 'fixture',
+        intensity: obj.intensity ?? 1,
+        on: true,
+        position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+        color: { r: obj.color.r, g: obj.color.g, b: obj.color.b },
+      });
+      return;
+    }
+    if (isRectAreaLightLike(obj) && obj.color != null) {
+      const width = obj.width ?? 0;
+      const height = obj.height ?? 0;
+      const p = matrixPosition(obj.matrixWorld?.elements);
+      out.push({
+        kind: 'fixture',
+        intensity: (obj.intensity ?? 1) * width * height,
+        on: true,
+        position: p,
+      });
+    }
   });
   return out;
 }

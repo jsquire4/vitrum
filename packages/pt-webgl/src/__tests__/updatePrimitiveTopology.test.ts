@@ -4,7 +4,7 @@ import {
   isGeometryOnlyPrimitivePatch,
   isMaterialOnlyPrimitivePatch,
   applyGeometryPatchToMesh,
-} from '../scenePatch.js';
+} from '../legacy/three/scenePatch.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 
 const setScene = vi.fn();

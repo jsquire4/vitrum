@@ -16,10 +16,53 @@
  * coupling to the TSL site and lets the compute path be pure raw WebGPU.
  */
 
-import * as THREE from 'three';
+import type { PlainAabb } from '@vitrum/shared-bvh';
 // Atlas-layout constants imported from the canonical source so producer
 // and consumers (ddgiSampleWgsl.ts + shade.wgsl.ts) stay in lockstep.
 import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
+
+export interface ProbeGridVector3 {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+export class ProbeGridVector3Value implements ProbeGridVector3 {
+  constructor(
+    public x = 0,
+    public y = 0,
+    public z = 0,
+  ) {}
+
+  set(x: number, y: number, z: number): this {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    return this;
+  }
+
+  copy(v: ProbeGridVector3): this {
+    this.x = v.x;
+    this.y = v.y;
+    this.z = v.z;
+    return this;
+  }
+
+  equals(v: ProbeGridVector3): boolean {
+    return this.x === v.x && this.y === v.y && this.z === v.z;
+  }
+
+  clone(): ProbeGridVector3Value {
+    return new ProbeGridVector3Value(this.x, this.y, this.z);
+  }
+}
+
+export interface ProbeGridBoxLike {
+  readonly min: ProbeGridVector3;
+  readonly max: ProbeGridVector3;
+}
+
+export type ProbeGridBounds = ProbeGridBoxLike | PlainAabb;
 
 export interface ProbeGridDims {
   x: number;
@@ -28,7 +71,7 @@ export interface ProbeGridDims {
 }
 
 export interface ProbeGridParams {
-  origin: THREE.Vector3;
+  origin: ProbeGridVector3;
   spacing: number;
   dims: ProbeGridDims;
   irradianceAtlasW: number;
@@ -49,7 +92,7 @@ export interface AtlasTextureSlot {
 
 export class ProbeGrid {
   dims: ProbeGridDims = { x: 2, y: 2, z: 2 };
-  worldOrigin: THREE.Vector3 = new THREE.Vector3();
+  worldOrigin: ProbeGridVector3Value = new ProbeGridVector3Value();
   worldSpacing: number = 24;
 
   /** Ping-pong irradiance atlases (A read / B write, swap each frame). */
@@ -100,12 +143,27 @@ export class ProbeGrid {
    *                        M11 audit remediation — was previously hardcoded.
    */
   computeFromBounds(
-    boundingBox: THREE.Box3,
+    boundingBox: ProbeGridBounds,
     spacingInches?: number,
     maxProbesPerAxis = 16,
   ): boolean {
-    const size = new THREE.Vector3();
-    boundingBox.getSize(size);
+    const size = new ProbeGridVector3Value();
+    const min = new ProbeGridVector3Value();
+    if (isBoxLike(boundingBox)) {
+      size.set(
+        boundingBox.max.x - boundingBox.min.x,
+        boundingBox.max.y - boundingBox.min.y,
+        boundingBox.max.z - boundingBox.min.z,
+      );
+      min.copy(boundingBox.min);
+    } else {
+      size.set(
+        boundingBox.max[0] - boundingBox.min[0],
+        boundingBox.max[1] - boundingBox.min[1],
+        boundingBox.max[2] - boundingBox.min[2],
+      );
+      min.set(boundingBox.min[0], boundingBox.min[1], boundingBox.min[2]);
+    }
     // Target ~13 probes along the longest axis (`/ 12`). The denser the
     // grid, the smaller the trilinear-interp blocks visible at shadow
     // boundaries. At 5×5×5 the 0.5-unit cells produce screen-visible
@@ -126,11 +184,11 @@ export class ProbeGrid {
 
     const changed =
       cx !== this.dims.x || cy !== this.dims.y || cz !== this.dims.z ||
-      !this.worldOrigin.equals(boundingBox.min) ||
+      !this.worldOrigin.equals(min) ||
       this.worldSpacing !== PROBE_SPACING;
 
     this.dims = { x: cx, y: cy, z: cz };
-    this.worldOrigin.copy(boundingBox.min);
+    this.worldOrigin.copy(min);
     this.worldSpacing = PROBE_SPACING;
     this.dirty = changed;
     return changed;
@@ -195,4 +253,19 @@ export class ProbeGrid {
   dispose(): void {
     this._disposeAtlases();
   }
+}
+
+function isBoxLike(bounds: ProbeGridBounds): bounds is ProbeGridBoxLike {
+  const min = (bounds as ProbeGridBoxLike).min as Partial<ProbeGridVector3> | undefined;
+  const max = (bounds as ProbeGridBoxLike).max as Partial<ProbeGridVector3> | undefined;
+  return (
+    min != null &&
+    max != null &&
+    typeof min.x === 'number' &&
+    typeof min.y === 'number' &&
+    typeof min.z === 'number' &&
+    typeof max.x === 'number' &&
+    typeof max.y === 'number' &&
+    typeof max.z === 'number'
+  );
 }

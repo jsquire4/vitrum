@@ -38,7 +38,7 @@ import * as THREE from 'three';
 import {
   buildSceneBVH,
   type SceneBVHCommonResult,
-} from '../bvhCommon.js';
+} from '../legacy/bvhCommon.js';
 
 // MeshBVH exposes _roots at runtime but it's not in the .d.ts. We need
 // the runtime field to assert the root count.

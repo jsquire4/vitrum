@@ -2,9 +2,7 @@
  * DDGI probe material packing (W4c — extracted from probeUpdatePass.ts).
  */
 
-import * as THREE from 'three';
 import type { MaterialSpec } from '@vitrum/core';
-import { extractThreePbrScalars } from '@vitrum/three-bindings';
 import {
   coreMaterialToMaterialEntry,
   packMaterials,
@@ -12,6 +10,8 @@ import {
   MATERIAL_ENTRY_STRIDE_BYTES,
   type MaterialEntryInput,
 } from '@vitrum/shared-bvh';
+import { extractThreePbrScalars } from '../threePbrScalars.js';
+import type { ThreePbrScalarSource } from '../threePbrScalars.js';
 
 /** Maximum number of distinct materials the DDGI probe pass supports. */
 export const DDGI_MAX_MATERIALS = 64;
@@ -20,7 +20,7 @@ export const DDGI_MATERIAL_STRIDE_BYTES = MATERIAL_ENTRY_STRIDE_BYTES;
 /** Float stride of one MaterialEntry (64 bytes = 16 × f32). */
 export const DDGI_MATERIAL_ENTRY_FLOATS = MATERIAL_ENTRY_FLOATS;
 
-function threeToMaterialEntryInput(mat: THREE.Material): MaterialEntryInput {
+function threeToMaterialEntryInput(mat: ThreePbrScalarSource): MaterialEntryInput {
   const pbr = extractThreePbrScalars(mat);
   return {
     baseColor: pbr.baseColor,
@@ -35,13 +35,13 @@ function threeToMaterialEntryInput(mat: THREE.Material): MaterialEntryInput {
   };
 }
 
-/** Pack THREE materials into canonical MaterialEntry bytes (default cap 64). */
-export function packDDGIMaterials(mats: readonly THREE.Material[]): ArrayBuffer {
+/** Pack legacy Three-like materials into canonical MaterialEntry bytes (default cap 64). */
+export function packDDGIMaterials(mats: readonly ThreePbrScalarSource[]): ArrayBuffer {
   return packDDGIMaterialsN(mats, DDGI_MAX_MATERIALS);
 }
 
 /** Pack with an explicit max slot count (matches WGSL compile-time array size). */
-export function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: number): ArrayBuffer {
+export function packDDGIMaterialsN(mats: readonly ThreePbrScalarSource[], maxMaterials: number): ArrayBuffer {
   const inputs = mats.map(threeToMaterialEntryInput);
   const out = packMaterials(inputs, maxMaterials);
   return out.buffer as ArrayBuffer;
@@ -57,7 +57,7 @@ export function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials
  * round-trip"), and therefore what the THREE-path DDGI materials carry.
  *
  * This is the SAME ei-collapse fix the ReSTIR-DI emitter decouple needed
- * (`sceneBvhFromCore.ts:toProductionEmissiveRadiance`, commit `46a0078`): a raw
+ * (`restir/bvhCore.ts:toProductionEmissiveRadiance`, commit `46a0078`): a raw
  * `coreMaterialToMaterialEntry` computes `emissive · emissiveIntensity`, so a
  * core emitter with `ei = 4` would pack 4× the radiance the THREE path packs —
  * the exact divergence that emitter-decouple GPU A/B caught.

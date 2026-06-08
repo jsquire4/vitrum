@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { packSceneFromCore, rebuildPrimitiveBlas } from '@vitrum/shared-bvh';
-import * as THREE from 'three';
-import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
+import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import {
-  buildReSTIRSceneBVHFromVitrumScene,
-  rebuildReSTIRSceneBVHPrimitive,
-} from '../src/restir/sceneBvhFromCore.js';
+  buildReSTIRSceneBVHForCoreScene,
+  rebuildReSTIRSceneBVHPrimitiveCore,
+} from '../src/restir/bvhCore.js';
 
 function twoBoxScene(offsetB = 0): Scene {
   const positionsB = new Float32Array([
@@ -47,30 +46,14 @@ function twoBoxScene(offsetB = 0): Scene {
   };
 }
 
-function threeRootsFor(scene: Scene): THREE.Scene {
-  const root = new THREE.Scene();
-  for (const prim of scene.primitives) {
-    if (prim.kind !== 'mesh') continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(prim.positions.slice(), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(prim.normals.slice(), 3));
-    if (prim.indices) geo.setIndex(Array.from(prim.indices));
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff }));
-    mesh.name = prim.id;
-    root.add(mesh);
-  }
-  return root;
-}
-
-describe('rebuildReSTIRSceneBVHPrimitive', () => {
+describe('rebuildReSTIRSceneBVHPrimitiveCore', () => {
   it('preserves buffer sizes when BLAS splice applies', () => {
     const scene = twoBoxScene();
-    const roots = threeRootsFor(scene);
-    const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     expect(buffers.scenePack).toBeDefined();
 
     const moved = twoBoxScene(0.05);
-    const rebuilt = rebuildReSTIRSceneBVHPrimitive(moved, 'box-b', [roots], buffers);
+    const rebuilt = rebuildReSTIRSceneBVHPrimitiveCore(moved, 'box-b', buffers);
     if ('ok' in rebuilt && rebuilt.ok === false) {
       throw new Error(rebuilt.reason);
     }

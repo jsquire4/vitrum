@@ -29,10 +29,9 @@
  *               neither the in-place refit nor the rebuild can run.
  *        b. else if BVH is in `tlas` mode → sync the shared ReSTIR BVH buffers;
  *        c. else (merged mode) and `allowRcSceneRebuild` → rebuild the RC scene
- *           BVH from the CORE `Scene` (`lastScene`) when present — the THREE-free
+ *           BVH from the CORE `Scene` (`lastScene`) when present — the
  *           `setSceneFromCore` path (items_to_fix F-RC2, mirroring the DDGI
- *           orchestrator's coreScene-when-present routing); else fall back to the
- *           THREE root (the raw-`threeScene` escape hatch).
+ *           orchestrator's coreScene routing).
  *
  * The two flags capture the only axes the three sites differed on:
  *   - `rcRefitBounds`        — present only on the post-update path.
@@ -44,10 +43,9 @@
  */
 
 import type { Scene } from '@vitrum/core';
-import type * as THREE from 'three';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import type { SceneBVHBuffers } from './restir/bvhCore.js';
 
 export interface GiPropagationDeps {
   ddgi: DDGI;
@@ -58,10 +56,8 @@ export interface GiPropagationDeps {
   /** When true, re-point DDGI probe rays at the live BVH buffers. */
   syncDdgi: boolean;
   /** When true, the merged-mode RC fallback may rebuild the RC scene BVH from
-   *  the THREE root. False on the per-frame path (would rebuild every frame). */
+   *  the core scene. False on the per-frame path (would rebuild every frame). */
   allowRcSceneRebuild: boolean;
-  /** Lazy THREE-root accessor for the merged-mode RC `setScene` fallback. */
-  ensureThreeSceneRoot: () => THREE.Scene | null;
   /** Cheap cascade-bounds refit bounds (post primitive-update path only). */
   rcRefitBounds?: {
     readonly min: readonly [number, number, number];
@@ -70,11 +66,7 @@ export interface GiPropagationDeps {
 }
 
 /**
- * Rebuild the merged-mode RC scene BVH, CORE-FIRST. When a `@vitrum/core` `Scene`
- * is available (`lastScene` — the dominant path; null only for the escape-hatch
- * raw-`threeScene` host), build via the THREE-free `rc.setSceneFromCore(scene)`
- * (`mergeWorldSpaceFromCore` + the core material packer — items_to_fix F-RC2).
- * Otherwise fall back to `rc.setScene(threeRoot)` (the THREE build).
+ * Rebuild the merged-mode RC scene BVH from the retained core scene.
  *
  * Mirrors the DDGI orchestrator's coreScene-when-present routing
  * (`HybridEngineFrameOrchestrator.runDdgiAndRc` passes `coreScene: lastScene`
@@ -83,17 +75,12 @@ export interface GiPropagationDeps {
  * index pad), CPU mirrors, cascade bounds, and dispatcher are identical — only
  * the BVH source differs.
  *
- * @returns `true` if a rebuild ran (core OR THREE); `false` if neither a core
- *   Scene nor a THREE root was available (caller keeps the cascade-bounds floor).
+ * @returns `true` if a rebuild ran; `false` if no core scene was available
+ *   (caller keeps the cascade-bounds floor).
  */
 function rebuildRcMergedSceneCoreFirst(deps: GiPropagationDeps, rc: RCSubsystem): boolean {
   if (deps.lastScene != null) {
     rc.setSceneFromCore(deps.lastScene);
-    return true;
-  }
-  const rcRoot = deps.ensureThreeSceneRoot();
-  if (rcRoot != null) {
-    rc.setScene(rcRoot);
     return true;
   }
   return false;

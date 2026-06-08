@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { accumulationFloatRgbaToRgb } from '../readbackHdr.js';
+import { accumulationFloatRgbaToRgb } from '../legacy/three/readbackHdr.js';
 import {
   HDR_ACCUM_GOLDEN_BASE64,
   HDR_ACCUM_GOLDEN_BYTE_LENGTH,
