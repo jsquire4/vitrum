@@ -36,6 +36,7 @@ import {
   buildRCSceneBVH,
   buildRCSceneBVHFromCore,
   packCascadeMaterials,
+  packCascadeMaterialsFromCore,
   type SceneBVH,
 } from './rc/bvhCompute.js';
 import { padTriangleIndicesToVec4 } from './ddgi/probeUpdateMaterials.js';
@@ -470,7 +471,13 @@ export class RCSubsystem implements PipelineSubsystem {
       buf.unmap();
       return buf;
     };
-    const matFloats = packCascadeMaterials([...snap.materials]);
+    // T1 (THREE-decouple): pack RC's RESTIR-shared cascade materials from the
+    // core MaterialSpec list (byte-identical to the THREE packer — the standalone
+    // RC path already uses FromCore). Falls back to the THREE `materials` only on
+    // the legacy path where coreMaterials is empty.
+    const matFloats = snap.coreMaterials.length > 0
+      ? packCascadeMaterialsFromCore([...snap.coreMaterials])
+      : packCascadeMaterials([...snap.materials]);
     const tlas = snap.tlas;
     return {
       bvhNodesBuf: upload('rc-restir-bvh-nodes', snap.bvhNodes),
