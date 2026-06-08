@@ -105,7 +105,15 @@ export {
   packSVGFReprojUniforms,
 } from './svgfRealBindings.js';
 export type { SVGFReprojUniforms } from './svgfRealBindings.js';
-// One-shot WebGPU host pipeline (CPU-backed, allocates transient textures):
+// One-shot WebGPU host pipeline (CPU-backed, allocates transient textures).
+// STANDALONE BUILDING BLOCK — intentionally has no in-engine consumer. The
+// walkaround-hybrid 'svgf-real' denoiser mode (HybridEngine.ts:156) does NOT call
+// this wrapper; it composes the SVGF_* WGSL fragments exported above into its own
+// persistent-texture pass graph (pipeline/wgslModules.ts), which is the right shape
+// for a realtime engine (no per-frame transient texture alloc/free). This one-shot
+// entry point exists for host/offline denoising and GPU-execution coverage
+// (__tests__/webgpuDenoiserExecution.gpu.test.ts). So "zero engine consumers" is by
+// design, not a gap: the algorithm is wired, the convenience wrapper is standalone.
 export { runSVGFRealWebGPU } from './svgfRealWebGPU.js';
 export type { SVGFRealWebGPUOptions } from './svgfRealWebGPU.js';
 // CPU emulation oracles (test helpers; live in svgfRealCpu.ts but also re-exported
@@ -152,6 +160,11 @@ export {
   packBmfrUniforms,
 } from './bmfrBindings.js';
 export type { BmfrUniforms } from './bmfrBindings.js';
+// One-shot WebGPU host pipeline — STANDALONE BUILDING BLOCK, same contract as
+// runSVGFRealWebGPU above. The walkaround-hybrid 'bmfr' denoiser mode consumes
+// BMFR_WGSL via its own pipeline (pipeline/denoisers/bmfr.ts + wgslModules.ts), not
+// this transient-texture wrapper. This entry point is for host/offline use +
+// GPU-execution tests; no in-engine consumer by design.
 export { runBmfrWebGPU } from './bmfrWebGPU.js';
 export type { BmfrWebGPUOptions } from './bmfrWebGPU.js';
 
