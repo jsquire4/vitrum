@@ -534,9 +534,8 @@ async function main(): Promise<void> {
   setStatus('Uploading scene to path tracer...');
   engine.setScene(vitrumScene);
 
-  // C3 — BDPT light-path texture: CPU bounce-0 fill from vitrumScene each frame
-  // (`BdptLightPathBuffer.fillFromScene`) until the fork's dedicated light-subpath
-  // draw pass lands; extension bounces remain stubbed (cols 1..N invalid).
+  // C3 — BDPT light-path texture: hardware GL fills this through the fork GPU
+  // light-subpath pass; software / forced fallback uploads CPU bounce-0 data.
   const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
     ? new BdptLightPathBuffer({
         maxLightBounces: config.bdptMaxLightBounces,

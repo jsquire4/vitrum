@@ -24,10 +24,9 @@
  * const bdpt = new BdptLightPathBuffer({ maxLightBounces: 3 });
  *
  * function frame() {
- *   // 1. Run the host's light-subpath draw pass into bdpt.renderTarget
- *   //    (the host owns this draw call; it uses the fork's light-subpath
- *   //    GLSL kernel via whatever mechanism the host already has in place).
- *   //    See plan/sprint-10c-pt-fork-patch.md for the kernel signature.
+ *   // 1. Fill the light-subpath cache. Hardware GL uses the fork GPU
+ *   //    subpath pass; software / forced fallback uploads CPU bounce-0 data.
+ *   engine.fillBdptLightPath(bdpt, frameSeed);
  *   //
  *   // 2. Hand the texture to the engine so the next renderFrame's
  *   //    connection pass reads it.
@@ -85,8 +84,8 @@ export class BdptLightPathBuffer {
   /** Cached width = maxLightBounces. Texture dimensions are `width × 3`. */
   readonly maxLightBounces: number;
 
-  /** RGBA32F WebGLRenderTarget. The host writes into `.texture` via its
-   *  own light-subpath draw pass; the fork's connect pass reads from it. */
+  /** RGBA32F WebGLRenderTarget. `fillFromScene` writes into `.texture`;
+   *  the fork's connect pass reads from it. */
   readonly renderTarget: THREE.WebGLRenderTarget;
 
   /** Direct handle to the underlying THREE.Texture for use as

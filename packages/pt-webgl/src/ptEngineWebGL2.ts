@@ -352,8 +352,7 @@ export function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
  *  renders; `'vitrum.ptWebgl.bdptMaxLightBounces'` (1–3) controls light-subpath
  *  depth; `'vitrum.ptWebgl.bdptCpuFill'` forces CPU bounce-0 fill. The
  *  `lightPathTex` is NOT parsed here (it requires a live WebGL texture object);
- *  hosts that need BDPT call `driveForkMaterialUniforms()` directly with their
- *  `ForkBridgeBdptOptions` including the ping-pong texture reference. */
+ *  hosts provide it per frame through `bdptAdvanceFrame()`. */
 interface BdptConfig {
   readonly enabled: boolean;
   readonly maxLightBounces: number;
