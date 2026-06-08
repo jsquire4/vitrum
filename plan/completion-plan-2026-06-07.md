@@ -26,7 +26,18 @@ v1 requirement vs documented internal dependency — a maintainer decision.
 
 ## ✅ FIXED P0 (2026-06-07, `254c284`) — default GI was DEAD; DDGI surface/normal bias restores it
 **FIXED + GPU-validated.** Root cause: `ddgiSample` sampled the receiver at the EXACT surface; on a grid-boundary plane (Cornell walls/floors) the trilinear collapses onto in-plane probes (perpendicular probe-dir → cosine weight 0) → `totalWeight<1e-4` → returns 0 → the whole DDGI→ReSTIR-GI handoff zeroed → default GI dead (rode entirely on off-default RC). Fix: the standard Majercik 2019 §4 surface/normal bias (`biasedPos = worldPos + n·(gridSpacing·0.25)`) inside `ddgiSample`, applied to cell-select + cosine + visibility. **Validated on dzn:** default Cornell RC-off indirect **0.0004 → 0.237** (635×); 0-E RC-off **0.000 → 0.495**. Root-caused by elimination (gidiag): visibility-disable=no change (ruled out Chebyshev), force-Lo→0.80 (reservoir/blend proven working), offset-xs→0.25 (the fix). walkaround-hybrid 1210 green, no golden moved.
-- **RESIDUAL (open, ~2× under-energy):** the fixed GI is ~0.5× pt-webgpu's magnitude. Two contributors: (1) the SEPARATE **1-A DDGI axis-aligned octahedral under-read** (0.40–0.60× — the GI bounce hits ARE axis-aligned walls, so 1-A directly suppresses the now-alive GI); (2) the 0-E oracle's exposure anchor is a white interior patch that NOW receives the new GI → the anchor shifted, dropping all ratios (incl. RC-on 1.013→0.505 though RC is untouched). **Follow-ups:** fix 1-A (the octahedral solid-angle/quadrature), and re-anchor 0-E on a fix-INVARIANT (directly-lit) patch + replace its now-invalid "RC-off = zero-GI" discrimination variant (RC-off now HAS GI). The dead-GI P0 itself is resolved.
+- **RESIDUAL (LARGELY RESOLVED 2026-06-07):** the dominant contributor was NOT octahedral
+  quadrature — it was the producer MULTI-BOUNCE FEEDBACK (clamp + ×π), root-caused + FIXED
+  in `c098c8e` and GPU-validated 71%→14% vs a CPU f64 anchor (see 1-A below). 0-E re-anchored
+  (fix-invariant same-channel interior mean, no-GI + wrong-bounce discrimination — the old
+  "RC-off=zero-GI" variant was correctly retired) and the post-fix re-run is ORACLE_SOUND
+  with floorEnergyRatio 0.580→0.661. **Remaining (research-grade, orthogonal):** the
+  axis-aligned floor −Y octahedral-atlas confound (~33% after the feedback fix, V27-tracked);
+  and the absolute walkaround interior indirect is still ~3.8× below pt in this scene — cause
+  UNDETERMINED (the rect-area emitter IS fed to the probe field as a flux-equivalent `fixture`
+  point approximation via `coreEmittersToDDGILights`, so it is NOT a missing-light gap;
+  candidates are the point-vs-area `intensity·area/(d²+1)` falloff approximation and the
+  coarse single-probe producer feedback) — a separate energy item, needs its own anchored A/B.
 
 ## ~~CONFIRMED P0 — default GI DEAD~~ → FIXED above (`254c284`)
 **ROOT CAUSE LOCALIZED** via harness shader-patch A/B on dzn (bisect `--gidiag`):
@@ -105,22 +116,31 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
 > are already validated; the open ones are below. Each is days-scale with the
 > right independent-reference A/B.
 
-- **1-A 🔴 DDGI axis-aligned under-read (PRODUCER-side, research-grade).** Floors/walls
-  under-read DDGI irradiance 23–60% (−Y worst 0.40×; diagonals 2–5%). LOCALIZED 2026-06-07
-  to the PRODUCER (`probeUpdateBlend`), NOT the consumer: `NEARZ-y` (0,−0.95,0.31) reads an
-  INTERIOR octahedral texel (octN.y=0.123, not a boundary) yet is STILL 58% under → rules
-  out the consumer edge/border sampling (and the border-store off-by-one was already
-  ground-truth-rejected + reverted). The producer under-computes E for downward/axis
-  directions specifically. Candidate mechanisms (need careful Monte-Carlo analysis):
-  (a) the `if (ray.hitDistance < 0.05) continue` near-hit skip (`probeUpdateBlend:139`)
-  zeroing surface-adjacent probes' rays toward the nearest surface (floor for floor-row
-  probes → drags −Y down); (b) the non-uniform octahedral ray distribution
-  (`octDecode(uniform grid)`) feeding the cosine-weighted mean `Σ L·cos/Σ cos` without a
-  per-ray solid-angle (1/pdf) weight — though the per-frame SO(3) rotation may already
-  uniformize it. **Oracle 0-A** (`ddgi-white-bounce-ab`, cardinal/diagonal split; target
-  axis-aligned ≤5%). This is the residual ~2× under-energy on the now-alive GI (the
-  dead-GI P0 is FIXED above; A2 sharpens it). Deferred to a dedicated producer-analysis
-  pass — not a coordinate tweak.
+- **1-A ✅ DDGI under-read — DOMINANT cause ROOT-CAUSED + FIXED (`c098c8e`, 2026-06-07).**
+  The ~2× under-energy was NOT primarily octahedral quadrature (the earlier producer
+  hypothesis) — it was the PRODUCER MULTI-BOUNCE FEEDBACK (`probeUpdateRays`), two defects
+  that together starved every bounce past the first:
+  (1) the feedback cell guard `baseProbeIdx3 + 1 < dims` returned `indirect=0` for EVERY
+      hit on enclosing geometry (room walls/floor lie on/just past the grid boundary), so
+      wall→wall→receiver multi-bounce was DISABLED — the field was effectively single-bounce
+      and the floor (lit almost only by wall bounce) was the worst-hit surface;
+  (2) the atlas stores E/π (cosine-weighted MEAN; the blend pass + `ddgiSample` both ×π to
+      reconstruct E) but the feedback added that raw E/π to `direct`=E without ×π → the
+      indirect was π× too weak per bounce. A stale "atlas holds irradiance E" comment masked
+      it. Fix = clamp the cell index to [0,dims-1] (consistent with the receiver) + ×π.
+  **GPU-validated** vs a CPU f64 multi-bounce anchor (`wsl-gpu/scripts/ddgi-indirect-pi-ab.ts`,
+  dzn RTX-4090, 400 ticks): mean luminance error vs ground truth **71% [base] → 63% [clamp
+  only] → 13.7% [clamp+×π]**, 6/6 normals; both fixes required (clamp alone barely helps,
+  ×π alone inert); CLAMPPI sits just below the anchor (not over-correcting). Post-fix re-pin
+  + no-patch re-run reproduced the numbers exactly; T1 smoke PASS; 53 DDGI vitest green.
+  **RESIDUAL (research-grade, sharply isolated):** after the fix the axis-aligned floor −Y
+  is still ~33% under (vs ≤6% on diagonals/ceiling) — the known octahedral-atlas
+  border-wrap + cosine-MEAN-vs-INTEGRAL confound (orthogonal to the feedback; tracked with
+  V27). 0-E cross-backend re-run (post-fix, dzn) CONFIRMS: ORACLE_SOUND (no-GI rejected 33×,
+  wrong-bounce 3.3×), floorEnergyRatio **0.580 → 0.661** (floor/interior balance moved toward
+  1.0), exposure scale 4.57 → 3.81 (walkaround interior indirect brightened ~1.2× from the
+  restored multi-bounce — more modest than the empty-box harness's 3× because the 0-E scene's
+  multi-bounce structure differs; the empty-box CPU-anchored harness shows the full 71%→14%).
 - **1-B ✅ DDGI coloured-bounce.** Validated 2–4% on interior normals (`8aa444a`).
   Re-confirm after 1-A.
 - **1-C 🟡 G-P0.4 three-bindings asymmetries.** Skinned double-transform FIXED;
