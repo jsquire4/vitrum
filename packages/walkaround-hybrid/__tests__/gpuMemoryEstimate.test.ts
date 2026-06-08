@@ -265,6 +265,46 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
   });
 });
 
+// ─── G-P2.6 — SVGF full-res textures are gated on svgf-real being active ─────
+
+describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', () => {
+  const W = 1920;
+  const H = 1080;
+  const MB = 1024 * 1024;
+
+  it('svgf category drops to ~0 when svgfEnabled is false (non-svgf-real denoiser)', () => {
+    const device = makeStubDevice();
+    const enabled  = estimateFrameResourcesMemory(
+      createFrameResources(device, W, H, { svgfEnabled: true }));
+    const disabled = estimateFrameResourcesMemory(
+      createFrameResources(device, W, H, { svgfEnabled: false }));
+
+    // Full-res SVGF persistent textures account for tens of MB; gating them off
+    // must reclaim essentially all of the svgf category (only the two 1×1
+    // object-id placeholders remain — kilobytes).
+    expect(enabled.byCategory.svgf!).toBeGreaterThan(40 * MB);
+    expect(disabled.byCategory.svgf!).toBeLessThan(1 * MB);
+    // The reclaimed bytes show up 1:1 in the total — nothing else moved.
+    expect(enabled.total - disabled.total).toBe(
+      enabled.byCategory.svgf! - disabled.byCategory.svgf!);
+    // The default (omitted flag) keeps the legacy full allocation.
+    const dflt = estimateFrameResourcesMemory(createFrameResources(device, W, H));
+    expect(dflt.byCategory.svgf!).toBe(enabled.byCategory.svgf!);
+  });
+
+  it('only the svgf category changes — every other category is byte-identical', () => {
+    const device = makeStubDevice();
+    const enabled  = estimateFrameResourcesMemory(
+      createFrameResources(device, W, H, { svgfEnabled: true }));
+    const disabled = estimateFrameResourcesMemory(
+      createFrameResources(device, W, H, { svgfEnabled: false }));
+    for (const cat of ['common', 'restirDI', 'restirGI', 'ddgi', 'gtao', 'ppg', 'neural'] as const) {
+      expect(disabled.byCategory[cat], `category '${cat}' must not change`)
+        .toBe(enabled.byCategory[cat]);
+    }
+  });
+});
+
 // ─── Smaller deterministic check at a known size ────────────────────────────
 
 describe('estimateFrameResourcesMemory — 64×64 (deterministic check)', () => {

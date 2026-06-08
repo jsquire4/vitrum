@@ -1056,8 +1056,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._gtaoEnabled = gtaoMode !== 'off';
     this._gtaoDownscale = gtaoMode === 'quarter' ? 4 : 2;
 
+    // Resolve the active denoiser mode BEFORE allocating frame resources so the
+    // SVGF-real ~80-90 MB @1080p persistent-texture fleet is only allocated when
+    // svgf-real is actually the active denoiser (G-P2.6). The id is fixed for the
+    // pipeline's lifetime; resize() reuses the stored `_denoiserMode`.
+    this._denoiserMode = options?.denoiser ?? 'atrous-variance';
+
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this._res = createFrameResources(d, W, H, { gtaoDownscale: this._gtaoDownscale });
+    this._res = createFrameResources(d, W, H, {
+      gtaoDownscale: this._gtaoDownscale,
+      svgfEnabled: this._denoiserMode === 'svgf-real',
+    });
 
     // ── Resolve the GRIS structural gate BEFORE compiling pipelines ────────
     // restirPtReuse is a COMPILE-TIME decision: it selects the GI spatial +
@@ -1107,7 +1116,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
     // the always-on AtrousIndirectPass.
     this._atrousPipeline = compiled.atrousPipeline;
-    this._denoiserMode = options?.denoiser ?? 'atrous-variance';
+    // `_denoiserMode` was already resolved before createFrameResources (so the
+    // SVGF allocation could be gated on it) — no need to re-derive it here.
     this._diSpatialPasses = options?.diSpatialPasses ?? 2;
     this._giSpatialPasses = options?.giSpatialPasses ?? 2;
     // PPG train-pass cadence. Clamp to ≥ 1 (a 0/negative interval would make
@@ -1375,6 +1385,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     destroyFrameResources(this._res);
     this._res = createFrameResources(this._device, width, height, {
       gtaoDownscale: this._gtaoDownscale,
+      // Preserve the init-time SVGF gating (G-P2.6) — the active denoiser is
+      // fixed for the pipeline's lifetime, so a resize keeps the same policy.
+      svgfEnabled: this._denoiserMode === 'svgf-real',
     });
     // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
     // (unchanged) sTree topology so the new bind groups have valid GPU

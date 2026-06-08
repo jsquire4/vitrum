@@ -428,6 +428,13 @@ export interface FrameResourceOptions {
    *  default); `4` ⇒ quarter-res AO target (`gtaoMode:'quarter'`). Sizes the
    *  `gtao.aoHalfTexture` at `W/factor × H/factor`. Defaults to `2`. */
   readonly gtaoDownscale?: number;
+  /** Allocate SVGF-real's ~80-90 MB @1080p of full-res persistent textures.
+   *  `true` only when the active denoiser is `svgf-real` (the sole reader —
+   *  `SVGFRealDenoiser.dispatch`). When `false` (the default `atrous-variance`
+   *  and every other denoiser) the SVGF struct collapses to 1×1 placeholders:
+   *  byte-identical render, full-res footprint reclaimed (G-P2.6). Defaults to
+   *  `true` so callers that omit it keep the legacy full-allocation behavior. */
+  readonly svgfEnabled?: boolean;
 }
 
 /**
@@ -451,7 +458,7 @@ export function createFrameResources(
   const restirGI = createRestirGIFrameResources(device, W, H);
   const gtao = createGtaoFrameResources(device, W, H, options?.gtaoDownscale ?? 2);
   const ddgi = createDdgiFrameResources(device);
-  const svgf = createSvgfFrameResources(device, W, H);
+  const svgf = createSvgfFrameResources(device, W, H, options?.svgfEnabled ?? true);
 
   // ── Assemble per-algorithm sub-structs ────────────────────────────────────
   // Allocation above is unchanged from the legacy flat layout; the bucketing

@@ -143,6 +143,19 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     expect(Object.keys(res.neural)).toEqual([]);
   });
 
+  it('svgf gating (svgfEnabled:false, G-P2.6) preserves the exact 11-field svgf shape', () => {
+    // The full-res SVGF textures are gated off when the active denoiser is not
+    // svgf-real. The struct shape MUST stay identical (every field non-null) so
+    // nothing off the svgf-real dispatch path observes a missing field — the
+    // textures simply collapse to 1×1 placeholders.
+    const res = createFrameResources(makeMockDevice(), 64, 64, { svgfEnabled: false }) as unknown as Record<string, Record<string, unknown>>;
+    const svgfFields = FIELD_MIGRATION_TABLE.filter(([, sub]) => sub === 'svgf').map(([f]) => f);
+    expect(Object.keys(res.svgf!).sort()).toEqual(svgfFields.slice().sort());
+    for (const f of svgfFields) {
+      expect(res.svgf![f], `svgf.${f} must be non-null even when gated`).not.toBeUndefined();
+    }
+  });
+
   it('field-set under each sub-struct exactly matches the migration table', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64) as unknown as Record<string, Record<string, unknown>>;
     const buckets: Record<string, string[]> = {};
