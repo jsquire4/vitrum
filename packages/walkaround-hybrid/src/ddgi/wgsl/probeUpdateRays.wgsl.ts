@@ -14,6 +14,8 @@ import {
   TLAS_TRAVERSAL_WGSL,
 } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
+import { IRR_STRIDE } from '../ddgiAtlasLayout.js';
+import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 
 const WG_SIZE = 32;
 const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
@@ -48,6 +50,7 @@ ${OCTAHEDRAL_WGSL}
 ${MATERIAL_ENTRY_WGSL}
 ${BVH_INTERSECT_WGSL}
 ${TLAS_TRAVERSAL_WGSL}
+${DDGI_SH_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -494,13 +497,22 @@ fn probeUpdateRays(
         let baseProbeIdx3 = clamp(vec3i(floor(gridPos)), vec3i(0), vec3i(gridParams.dims) - vec3i(1));
         let pi = u32(baseProbeIdx3.x) + u32(baseProbeIdx3.y) * gridParams.dims.x +
                  u32(baseProbeIdx3.z) * gridParams.dims.x * gridParams.dims.y;
-        let octUv = (octEncode(smoothNormal) * 0.5 + 0.5);
-        let iUv   = irradianceAtlasUv(
-          pi, octUv,
+        // L2 SH irradiance eval at the bounce normal (seam-free; replaces the
+        // octahedral lookup + *PI). irradiancePrev holds the 9 cosine-convolved
+        // SH coeffs per probe in the first 3x3 interior texels, so the eval
+        // returns irradiance E directly.
+        let shStride = ${IRR_STRIDE}u;
+        let fpx = pi % gridParams.dims.x;
+        let ftmp = pi / gridParams.dims.x;
+        let fpy = ftmp % gridParams.dims.y;
+        let fpz = ftmp / gridParams.dims.y;
+        let fix = fpx * shStride + 1u;
+        let fiy = (fpy + fpz * gridParams.dims.y) * shStride + 1u;
+        let indirect = ddgiSampleSHProbe(
+          irradiancePrev, irradianceSamp,
           gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-          gridParams.dims,
+          fix, fiy, smoothNormal,
         );
-        let indirect = textureSampleLevel(irradiancePrev, irradianceSamp, iUv, 0.0).rgb * 3.14159265359;
 
         // Outgoing radiance from the BOUNCE surface toward the probe.
         //

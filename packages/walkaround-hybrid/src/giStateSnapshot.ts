@@ -38,8 +38,13 @@ const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
  * v2 — adds the optional ReSTIR-GI reservoir section (gated by SECTION_RESTIR_GI
  *      in the header section-flags word). v2 readers still accept v1 buffers
  *      (which simply carry no reservoir section).
+ * v3 — the irradiance atlas now stores L2 SH coefficients (9 RGB E_lm in the
+ *      first 3x3 interior texels of each probe cell) instead of an octahedral
+ *      cosine-mean map. Same byte container, INCOMPATIBLE contents — a v2 (or
+ *      earlier) octahedral irradiance atlas decoded by SH-era code is garbage,
+ *      so the version gate must reject it (no backward accept for irradiance).
  */
-const GI_SNAPSHOT_VERSION = 2;
+const GI_SNAPSHOT_VERSION = 3;
 const HEADER_BYTES = 64; // fixed header, data blocks follow
 
 /** Header section-flags bitfield (header offset 52, u32). Bit 0 = ReSTIR-GI present. */
@@ -172,10 +177,11 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     throw new Error(`deserializeGIState: bad magic 0x${magic.toString(16)} (not a GI snapshot).`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  // v1 (DDGI-only) and v2 (DDGI + optional ReSTIR-GI) are both accepted; v2
-  // is a strict superset (v1 buffers carry no reservoir section / flag).
-  if (version !== 1 && version !== GI_SNAPSHOT_VERSION) {
-    throw new Error(`deserializeGIState: unsupported version ${version} (expected 1 or ${GI_SNAPSHOT_VERSION}).`);
+  // Only v3 (SH irradiance) is accepted. v1/v2 carried an OCTAHEDRAL irradiance
+  // atlas whose bytes are meaningless to the SH-era sampler (a silent garbage
+  // GI field), so backward-accept is intentionally dropped at the v2->v3 break.
+  if (version !== GI_SNAPSHOT_VERSION) {
+    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}; v1/v2 octahedral irradiance is incompatible with SH).`);
   }
   const dx = dv.getUint32(o, true); o += 4;
   const dy = dv.getUint32(o, true); o += 4;

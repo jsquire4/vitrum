@@ -127,14 +127,13 @@ describe('GI state snapshot serialization', () => {
     expect(deserializeGIState(buf).restirGI).toBeUndefined();
   });
 
-  it('back-compat: deserializes a v1 (DDGI-only) buffer with restirGI undefined', () => {
+  it('rejects a v1 (octahedral-irradiance) buffer at the SH break', () => {
+    // v1/v2 stored an OCTAHEDRAL irradiance atlas; the SH-era sampler would read
+    // those bytes as garbage, so the v2->v3 break intentionally drops backward
+    // accept for irradiance — a v1 buffer must now throw, not silently decode.
     const s = makeSnapshot();
     const v1 = makeV1Buffer(s);
-    const back = deserializeGIState(v1);
-    expect(back.dims).toEqual(s.dims);
-    expect(Array.from(back.irrData)).toEqual(Array.from(s.irrData));
-    expect(Array.from(back.visData)).toEqual(Array.from(s.visData));
-    expect(back.restirGI).toBeUndefined();
+    expect(() => deserializeGIState(v1)).toThrow(/unsupported version 1/);
   });
 
   it('rejects an unsupported version', () => {

@@ -233,15 +233,19 @@ describe('ddgiOctahedral sign()→select() fix', () => {
       expect(DDGI_SAMPLE_WGSL).not.toMatch(/sign\(n[vN]\.[xy]\)/);
     });
 
-    it('source contains the select(-1.0, 1.0, ...) form for both octV and octN', async () => {
+    it('source contains the select(-1.0, 1.0, ...) form for the octV (visibility) fold', async () => {
       const { DDGI_SAMPLE_WGSL } = await import('../ddgiSampleWgsl.js');
       // Count occurrences of the fixed pattern — must appear at least twice
-      // (once for octV fold, once for octN fold).
+      // (2 for the octV visibility fold). The octN IRRADIANCE octahedral fold
+      // was removed when irradiance migrated to L2 spherical harmonics (seam-
+      // free; ddgiSH.wgsl.ts) — there is no octahedral irradiance lookup any
+      // more, so only the visibility octahedral fold remains and must keep the
+      // sign()->select() fix (the axis-aligned collapse this test guards).
       const matches = (DDGI_SAMPLE_WGSL.match(/select\(-1\.0, 1\.0,/g) ?? []).length;
       expect(
         matches,
-        `Expected at least 4 select(-1.0, 1.0, ...) occurrences (2 per fold × 2 folds), found ${matches}`,
-      ).toBeGreaterThanOrEqual(4);
+        `Expected at least 2 select(-1.0, 1.0, ...) occurrences (the octV visibility fold), found ${matches}`,
+      ).toBeGreaterThanOrEqual(2);
     });
   });
 

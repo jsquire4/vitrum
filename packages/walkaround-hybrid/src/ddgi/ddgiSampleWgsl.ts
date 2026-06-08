@@ -129,26 +129,29 @@ fn ddgiSample(
     );
     w = w * max(chebyshev, 0.0);
 
-    // Octahedral-encode the surface normal (irradiance lookup).
-    let absN = abs(surfaceNormal);
-    let nN   = surfaceNormal / (absN.x + absN.y + absN.z);
-    var octN: vec2f;
-    if (nN.z >= 0.0) { octN = nN.xy; }
-    else { octN = vec2f((1.0 - abs(nN.y)) * select(-1.0, 1.0, nN.x >= 0.0), (1.0 - abs(nN.x)) * select(-1.0, 1.0, nN.y >= 0.0)); }
-    octN = octN * 0.5 + 0.5;
-
-    // Irradiance atlas UV (cell + 2px border, 1px each side). Strides
-    // come from ddgiAtlasLayout.ts via template substitution.
+    // L2 SH irradiance eval (seam-free; replaces the octahedral cosine-mean
+    // lookup that under-read ~33% at axis-aligned normals — the octahedral
+    // seam). This probe's 9 cosine-convolved coefficients are stored in the
+    // first 3x3 interior texels (coeff k at (k%3, k/3)); dot them with the SH
+    // basis at the surface normal to get irradiance E directly (no *PI — the
+    // cosine convolution is baked into the stored coeffs at blend time).
     let irrStride = ${IRR_STRIDE}u;
-    let irrCell   = ${IRR_CELL}u;
-    let irrPx     = probeFlatIdx % gridDims.x;
-    let irrTmpY   = probeFlatIdx / gridDims.x;
-    let irrPy     = irrTmpY % gridDims.y;
-    let irrPz     = irrTmpY / gridDims.y;
-    let irrCx     = f32(irrPx * irrStride) + 1.0 + octN.x * f32(irrCell);
-    let irrCy     = f32((irrPy + irrPz * gridDims.y) * irrStride) + 1.0 + octN.y * f32(irrCell);
-    let irrUv     = vec2f(irrCx / irrW, irrCy / irrH);
-    let irr       = textureSampleLevel(irradianceAtlas, samp, irrUv, 0.0).rgb;
+    let shPx      = probeFlatIdx % gridDims.x;
+    let shTmpY    = probeFlatIdx / gridDims.x;
+    let shPy      = shTmpY % gridDims.y;
+    let shPz      = shTmpY / gridDims.y;
+    let ix        = shPx * irrStride + 1u;
+    let iy        = (shPy + shPz * gridDims.y) * irrStride + 1u;
+    let irr =
+        textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 0u), 0).rgb * 0.282095
+      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 0u), 0).rgb * (0.488603 * surfaceNormal.y)
+      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 0u), 0).rgb * (0.488603 * surfaceNormal.z)
+      + textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 1u), 0).rgb * (0.488603 * surfaceNormal.x)
+      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 1u), 0).rgb * (1.092548 * surfaceNormal.x * surfaceNormal.y)
+      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 1u), 0).rgb * (1.092548 * surfaceNormal.y * surfaceNormal.z)
+      + textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 2u), 0).rgb * (0.315392 * (3.0 * surfaceNormal.z * surfaceNormal.z - 1.0))
+      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 2u), 0).rgb * (1.092548 * surfaceNormal.x * surfaceNormal.z)
+      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 2u), 0).rgb * (0.546274 * (surfaceNormal.x * surfaceNormal.x - surfaceNormal.y * surfaceNormal.y));
 
     sum         = sum + irr * w;
     totalWeight = totalWeight + w;
@@ -159,11 +162,10 @@ fn ddgiSample(
     // shade.wgsl ddgiSampleFromBindings; was vec3f(0.05) prior to consolidation).
     return vec3f(0.0);
   }
-  let meanIncomingRadiance = sum / totalWeight;
-  // The atlas stores a cosine-weighted incoming-radiance mean (E / PI).
-  // Reconstruct true irradiance here so every receiver consumes the same
-  // physical quantity and applies Lambertian albedo / PI exactly once.
-  return meanIncomingRadiance * 3.141592653589793;
+  // Each probe's SH eval already returns irradiance E (the cosine convolution
+  // is baked into the stored coefficients at blend time), so the trilinear-
+  // weighted average across probes IS the irradiance — no *PI reconstruction.
+  return sum / totalWeight;
 }
 `;
 

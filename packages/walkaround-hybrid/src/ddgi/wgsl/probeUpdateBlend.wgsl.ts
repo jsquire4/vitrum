@@ -22,6 +22,7 @@
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 import { IRR_CELL, VIS_CELL } from '../ddgiAtlasLayout.js';
+import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 
 // Common header shared by both shaders. IRR_CELL / VIS_CELL are interpolated
 // from ddgiAtlasLayout.ts so the blend pass cannot drift from the producer.
@@ -84,6 +85,8 @@ export function makeProbeUpdateBlendIrrWGSL(): string {
 
 ${makeCommonHeader()}
 
+${DDGI_SH_WGSL}
+
 @group(1) @binding(0) var irrPrev:   texture_2d<f32>;
 @group(1) @binding(1) var irrSamp:   sampler;
 @group(1) @binding(2) var irrOut:    texture_storage_2d<rgba16float, write>;
@@ -100,66 +103,54 @@ fn irrAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
   );
 }
 
+// L2 SH irradiance blend (seam-free, replaces the octahedral cosine-mean atlas).
+// Each probe's 9 RGB coefficients are projected from its RAYS_PER_PROBE rays and
+// written into the first 3x3 interior texels (coeff k at (k%3, k/3)). Only those
+// 9 threads do work; the rest of the 8x8 workgroup early-outs. The octahedral
+// dir/octDecode is gone — SH needs the raw ray direction, not a per-texel bin.
 @compute @workgroup_size(8, 8, 1)
 fn probeUpdateBlendIrradiance(
   @builtin(global_invocation_id) gid: vec3u,
 ) {
-  // Each workgroup covers one probe's 8×8 irradiance map.
-  // global x: column = probe_x_in_atlas * 8 + pixel_x
-  //           group_x = probe_idx, local_x = pixel.x (via built-in subgroup)
-  let pixel    = vec2u(gid.x % IRR_CELL, gid.y % IRR_CELL);
+  let lx       = gid.x % IRR_CELL;
+  let ly       = gid.y % IRR_CELL;
   let groupIdx = gid.x / IRR_CELL;
   if (groupIdx >= arrayLength(&activeProbes)) { return; }
   let probeIdx = activeProbes[groupIdx];
   let totalProbes = gridParams.dims.x * gridParams.dims.y * gridParams.dims.z;
   if (probeIdx >= totalProbes) { return; }
 
-  let octUv = (vec2f(pixel) + vec2f(0.5)) / vec2f(f32(IRR_CELL));
-  let dir   = octDecode(octUv * 2.0 - 1.0);
+  // Only the first 3x3 interior texels carry the 9 SH coefficients.
+  if (lx >= 3u || ly >= 3u) { return; }
+  let k = ly * 3u + lx;   // SH coefficient index 0..8
 
-  var newColor    = vec3f(0.0);
-  var totalWeight = 0.0;
+  // Project incoming radiance onto SH coeff k: c_k = (4PI/N) * sum_i L_i * Y_k(w_i)
+  // over the uniform-sphere rays. Backface (negative dist) + self-intersection
+  // (< 0.05) rays carry hitRadiance = occluded -> contribute 0 but still count
+  // in N (= RAYS_PER_PROBE), which is the correct integral estimator.
+  var accum = vec3f(0.0);
   let baseIdx = probeIdx * RAYS_PER_PROBE;
   let numRays = arrayLength(&rayResults);
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
-    // Skip backface hits (encoded as negative distance per DDGI paper).
-    if (ray.hitDistance < 0.0) { continue; }
-    // Skip self-intersection hits — a probe positioned inside an opaque
-    // mesh (e.g. one of the Cornell inner boxes) sees every outgoing ray
-    // hit the surrounding inner-wall surface at distance ≈ 0, contaminating
-    // the atlas with gray near-zero-light surfaces and washing out the
-    // actual wall colour bleed from outside-geometry probes. When all
-    // valid rays for this direction get filtered, totalWeight stays 0 →
-    // newColor=0 → blended decays via hysteresis to 0, and the trilinear
-    // interpolation in shade.wgsl correctly drops these probes from the
-    // 8-probe stencil.
-    if (ray.hitDistance < 0.05) { continue; }
-    // Paper Lambertian cosine kernel - Majercik 2019 section 3 Algorithm 1.
-    // Weight = max(0, n.d) where n is the atlas-texel outgoing direction and
-    // d is the probe ray direction. This pass stores the cosine-weighted
-    // incoming-radiance mean, E / PI; ddgiSample reconstructs true irradiance
-    // at the sampling boundary before receivers apply albedo / PI.
-    // Per-frame SO(3) rotation (Change 1 / Item 6) decorrelates ray samples
-    // across frames so the temporal EMA can average the higher per-frame
-    // variance produced by a true cosine kernel vs the narrower pow(8) lobe.
-    let w = max(0.0, dot(dir, ray.direction));
-    if (w < 1e-3) { continue; }
-    let weight = w;
-    newColor    = newColor + ray.hitRadiance * weight;
-    totalWeight = totalWeight + weight;
+    if (ray.hitDistance < 0.05) { continue; }   // occluded direction -> 0
+    let Y = ddgiShBasis(ray.direction);
+    accum = accum + ray.hitRadiance * Y[k];
   }
-  if (totalWeight > 1e-5) {
-    newColor = newColor / totalWeight;
-  }
+  // Store the COSINE-CONVOLVED coefficient E_lm = A_l * c_k so the receiver eval
+  // (sum_k E_lm * Y_k(n)) yields irradiance E directly. 4PI = 12.56637061436.
+  let coeff = accum * (12.56637061436 / f32(RAYS_PER_PROBE)) * ddgiShCosineA(k);
 
-  let atlasCoord = irrAtlasCoord(probeIdx, pixel);
-  let iUv    = (vec2f(atlasCoord) + vec2f(0.5)) /
-               vec2f(gridParams.irradianceAtlasW, gridParams.irradianceAtlasH);
-  let prev   = textureSampleLevel(irrPrev, irrSamp, iUv, 0.0).rgb;
-  let blended = mix(newColor, prev, blendParams.hysteresis);
+  let atlasCoord = irrAtlasCoord(probeIdx, vec2u(lx, ly));
+  // EMA read at the EXACT texel centre (bilinear collapses to the exact coeff)
+  // so the sampler binding stays USED and the layout:"auto" blend pipeline does
+  // not prune it (a pruned sampler desyncs the host bind group).
+  let iUv = (vec2f(atlasCoord) + vec2f(0.5)) /
+            vec2f(gridParams.irradianceAtlasW, gridParams.irradianceAtlasH);
+  let prev = textureSampleLevel(irrPrev, irrSamp, iUv, 0.0).rgb;
+  let blended = mix(coeff, prev, blendParams.hysteresis);
   textureStore(irrOut, atlasCoord, vec4f(blended, 1.0));
 }
 
