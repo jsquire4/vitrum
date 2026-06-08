@@ -44,7 +44,9 @@ export function uploadProbeUpdateBorderUbo(
     gridDimY: grid.params.dims.y,
     gridDimZ: grid.params.dims.z,
   });
-  const buf = which === 'irr' ? gpu.borderIrrUboBuf : gpu.borderVisUboBuf;
+  // Irradiance is SH (seam-free, no border pass), so only the visibility border
+  // UBO exists; `which` is retained for call-site clarity but is always 'vis'.
+  const buf = gpu.borderVisUboBuf;
   device.queue.writeBuffer(buf, 0, data);
 }
 
@@ -161,28 +163,6 @@ export function dispatchProbeUpdateBlendVisPass(
   pass.setBindGroup(0, bg0);
   pass.setBindGroup(1, bg1);
   pass.dispatchWorkgroups(activeCount, 1, 1);
-  pass.end();
-}
-
-export function dispatchProbeUpdateBorderIrrPass(
-  encoder: GPUCommandEncoder,
-  gpu: ProbeUpdateGpuState,
-  probeCount: number,
-  scratchTex: GPUTexture,
-  writeAtlas: GPUTexture,
-): void {
-  const bg = gpu.device.createBindGroup({
-    layout: gpu.borderIrrPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: scratchTex.createView() },
-      { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-      { binding: 2, resource: { buffer: gpu.borderIrrUboBuf } },
-    ],
-  });
-  const pass = encoder.beginComputePass({ label: 'ddgi-border-irr' });
-  pass.setPipeline(gpu.borderIrrPipeline);
-  pass.setBindGroup(0, bg);
-  pass.dispatchWorkgroups(probeCount, 1, 1);
   pass.end();
 }
 

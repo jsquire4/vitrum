@@ -39,7 +39,7 @@ import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { makeProbeUpdateBlendIrrWGSL, makeProbeUpdateBlendVisWGSL } from './wgsl/probeUpdateBlend.wgsl.js';
-import { makeProbeUpdateBorderIrrWGSL, makeProbeUpdateBorderVisWGSL } from './wgsl/probeUpdateBorder.wgsl.js';
+import { makeProbeUpdateBorderVisWGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from './ddgiGridUbo.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
@@ -52,7 +52,6 @@ import { ProbeUpdateAtlasTextureCache } from './probeUpdateAtlasCache.js';
 import {
   dispatchProbeUpdateBlendIrrPass,
   dispatchProbeUpdateBlendVisPass,
-  dispatchProbeUpdateBorderIrrPass,
   dispatchProbeUpdateBorderVisPass,
   dispatchProbeUpdateRaysPass,
   uploadProbeUpdateBorderUbo,
@@ -254,8 +253,7 @@ export class ProbeUpdatePass {
     let raysPipeline: GPUComputePipeline;
     let blendIrrPipeline: GPUComputePipeline;
     let blendVisPipeline: GPUComputePipeline;
-    let borderIrrPipeline: GPUComputePipeline;
-    let borderVisPipeline: GPUComputePipeline;
+    let borderVisPipeline: GPUComputePipeline;   // irradiance is SH (seam-free) — no border pass
     try {
       // M9: compile with the host-specified material array size so scenes with
       // more than 64 materials don't overflow the uniform buffer.
@@ -275,11 +273,7 @@ export class ProbeUpdatePass {
         layout: 'auto',
         compute: { module: blendVisModule, entryPoint: 'probeUpdateBlendVisibility' },
       });
-      const borderIrrModule = device.createShaderModule({ code: makeProbeUpdateBorderIrrWGSL() });
-      borderIrrPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: borderIrrModule, entryPoint: 'probeUpdateBorderIrradiance' },
-      });
+      // No irradiance border pipeline — SH irradiance is seam-free.
       const borderVisModule = device.createShaderModule({ code: makeProbeUpdateBorderVisWGSL() });
       borderVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
@@ -310,7 +304,6 @@ export class ProbeUpdatePass {
       raysPipeline,
       blendIrrPipeline,
       blendVisPipeline,
-      borderIrrPipeline,
       borderVisPipeline,
       irrScratchTex:  null,
       visScratchTex:  null,
@@ -330,7 +323,6 @@ export class ProbeUpdatePass {
       gridParamsBuf:   makeBuffer(64, UB),
       frameParamsBuf:  makeBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
       blendParamsBuf:  makeBuffer(16, UB),
-      borderIrrUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
       borderVisUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
       rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf: makeBuffer(4, RO),
@@ -497,32 +489,25 @@ export class ProbeUpdatePass {
     dispatchProbeUpdateBlendIrrPass(encoder, gpu, activeProbes.length, irrReadTex, irrWriteTex);
     dispatchProbeUpdateBlendVisPass(encoder, gpu, activeProbes.length, visReadTex, visWriteTex);
 
-    // Border fill pass (Item 3 — Majercik 2019 §3.2).
+    // Border fill pass (Item 3 — Majercik 2019 §3.2) — VISIBILITY ONLY.
     //
-    // After blend, `irrWriteTex` and `visWriteTex` have correct interior pixels
-    // but zeroed border pixels. We can't bind the same texture as both
-    // `texture_2d` (read) and `texture_storage_2d` (write) in a single pipeline
-    // pass, so we use a scratch ping-pong:
-    //   1. copy write → scratch (so border pass reads complete interior from scratch)
-    //   2. border pass reads from scratch, writes border pixels into write
+    // The irradiance atlas now stores L2 SH coefficients (seam-free); receivers
+    // sample it at exact texel centres (bilinear collapses to the exact coeff),
+    // never across a cell edge, so it needs no octahedral border ring and the
+    // irradiance border pass is skipped entirely.
     //
-    // The scratch textures are allocated lazily and cached in `_gpu.irrScratchTex`
-    // / `_gpu.visScratchTex`, reused every frame as long as atlas size is stable.
-    const irrScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, irrWriteTex, 'irr');
+    // The visibility atlas IS still octahedral (sharp depth), so its bordered
+    // bilinear reads need the seam-mirror ring. We can't bind the same texture
+    // as both `texture_2d` (read) and `texture_storage_2d` (write) in one pass,
+    // so use a scratch ping-pong: copy write → scratch, then the border pass
+    // reads scratch and writes the border pixels into write.
     const visScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, visWriteTex, 'vis');
-    encoder.copyTextureToTexture(
-      { texture: irrWriteTex },
-      { texture: irrScratch },
-      { width: irrWriteTex.width, height: irrWriteTex.height, depthOrArrayLayers: 1 },
-    );
     encoder.copyTextureToTexture(
       { texture: visWriteTex },
       { texture: visScratch },
       { width: visWriteTex.width, height: visWriteTex.height, depthOrArrayLayers: 1 },
     );
-    uploadProbeUpdateBorderUbo(device, gpu, this._grid, irrWriteTex, 'irr');
     uploadProbeUpdateBorderUbo(device, gpu, this._grid, visWriteTex, 'vis');
-    dispatchProbeUpdateBorderIrrPass(encoder, gpu, probeCount, irrScratch, irrWriteTex);
     dispatchProbeUpdateBorderVisPass(encoder, gpu, probeCount, visScratch, visWriteTex);
 
     device.queue.submit([encoder.finish()]);
@@ -729,7 +714,6 @@ export class ProbeUpdatePass {
     g.gridParamsBuf.destroy();
     g.frameParamsBuf.destroy();
     g.blendParamsBuf.destroy();
-    g.borderIrrUboBuf.destroy();
     g.borderVisUboBuf.destroy();
     g.irrScratchTex?.destroy();
     g.visScratchTex?.destroy();

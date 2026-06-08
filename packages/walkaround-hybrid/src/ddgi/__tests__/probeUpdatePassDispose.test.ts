@@ -151,10 +151,11 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     // Buffers known to be allocated by init(): bvhBuf, posBuf, idxBuf, normBuf,
     // matIdBuf, tlasNodesBuf, tlasInstIdxBuf, tlasBlasRootsBuf, tlasW2lBuf,
     // tlasL2wBuf, traceParamsBuf, materialsBuf, lightsBuf, gridParamsBuf,
-    // frameParamsBuf, blendParamsBuf, borderIrrUboBuf, borderVisUboBuf,
-    // rayResultsBuf, activeProbesBuf = 20 buffers.
+    // frameParamsBuf, blendParamsBuf, borderVisUboBuf, rayResultsBuf,
+    // activeProbesBuf = 19 buffers (borderIrrUboBuf removed with the SH
+    // irradiance migration — no irradiance border pass).
     const buffersAfterInit = tracking.createdBuffers.length;
-    expect(buffersAfterInit).toBeGreaterThanOrEqual(20); // at least 20 buffers from init
+    expect(buffersAfterInit).toBeGreaterThanOrEqual(19); // at least 19 buffers from init
 
     pass.dispose();
 

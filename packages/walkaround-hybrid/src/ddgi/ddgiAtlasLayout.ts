@@ -21,7 +21,14 @@
  * sampler-string consumers must change in lockstep.
  */
 
-export const IRR_CELL = 8;
+// Irradiance migrated to L2 SH (ddgiSH.wgsl.ts): each probe stores 9 RGB
+// coefficients in a 3x3 interior block, so the cell shrank 8x8 -> 3x3 (4x less
+// irradiance-atlas memory). SH has no octahedral seam, so the irradiance cell
+// needs no border — the 2px ring is kept only so the shared (CELL + BORDER)
+// stride arithmetic and the texel-centre sampler reads stay uniform with the
+// visibility atlas; nothing writes or reads the irradiance border (the border
+// pass is skipped for irradiance, see probeUpdatePass).
+export const IRR_CELL = 3;
 export const VIS_CELL = 16;
 export const BORDER = 2;
 

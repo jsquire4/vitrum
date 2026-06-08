@@ -33,7 +33,6 @@ import {
 } from '../src/ddgi/wgsl/probeUpdateBlend.wgsl.js';
 import {
   makeBorderFillWGSL,
-  makeProbeUpdateBorderIrrWGSL,
   makeProbeUpdateBorderVisWGSL,
 } from '../src/ddgi/wgsl/probeUpdateBorder.wgsl.js';
 
@@ -48,18 +47,19 @@ describe('T10-DDGI — blend WGSL reflects ddgiAtlasLayout', () => {
     }
   });
 
-  it('the entry-point + workgroup-size are unchanged (8×8 irr, 16×16 vis)', () => {
-    expect(makeProbeUpdateBlendIrrWGSL()).toContain('@compute @workgroup_size(8, 8, 1)\nfn probeUpdateBlendIrradiance');
+  it('blend workgroup-size: irr is IRR_CELL×IRR_CELL (3×3 SH coeffs), vis is 16×16', () => {
+    // Irradiance migrated to L2 SH: one workgroup per probe, sized to the cell so
+    // the 3×3 workgroup maps onto the 9 SH coeff texels (was 8×8 octahedral).
+    expect(makeProbeUpdateBlendIrrWGSL()).toContain(`@compute @workgroup_size(${IRR_CELL}, ${IRR_CELL}, 1)\nfn probeUpdateBlendIrradiance`);
     expect(makeProbeUpdateBlendVisWGSL()).toContain('@compute @workgroup_size(16, 16, 1)\nfn probeUpdateBlendVisibility');
   });
 });
 
 describe('T10-DDGI — border WGSL reflects ddgiAtlasLayout', () => {
-  it('IRR_CELL/IRR_STRIDE and VIS_CELL/VIS_STRIDE are interpolated into the border WGSL', () => {
-    const irr = makeProbeUpdateBorderIrrWGSL();
+  // Only the VISIBILITY atlas still has a border pass (octahedral, sharp depth).
+  // Irradiance is SH (seam-free) — no irradiance border builder any more.
+  it('VIS_CELL/VIS_STRIDE are interpolated into the visibility border WGSL', () => {
     const vis = makeProbeUpdateBorderVisWGSL();
-    expect(irr).toContain(`const CELL:   u32 = ${IRR_CELL}u;`);
-    expect(irr).toContain(`const STRIDE: u32 = ${IRR_STRIDE}u;`);
     expect(vis).toContain(`const CELL:   u32 = ${VIS_CELL}u;`);
     expect(vis).toContain(`const STRIDE: u32 = ${VIS_STRIDE}u;`);
   });
@@ -69,8 +69,7 @@ describe('T10-DDGI — border WGSL reflects ddgiAtlasLayout', () => {
     expect(VIS_STRIDE).toBe(VIS_CELL + BORDER);
   });
 
-  it('entry-point names + workgroup sizes are preserved per atlas', () => {
-    expect(makeProbeUpdateBorderIrrWGSL()).toContain('@compute @workgroup_size(48, 1, 1)\nfn probeUpdateBorderIrradiance');
+  it('the visibility border entry-point + workgroup size are preserved', () => {
     expect(makeProbeUpdateBorderVisWGSL()).toContain('@compute @workgroup_size(256, 1, 1)\nfn probeUpdateBorderVisibility');
   });
 });
@@ -97,6 +96,6 @@ describe('T10-DDGI — constants are genuinely interpolated (not coincidentally 
     expect(probe).toContain('const STRIDE: u32 = 101u;');
     expect(probe).toContain('@compute @workgroup_size(64, 1, 1)\nfn probeUpdateBorderProbe');
     // And the layout-driven factory must NOT match the probe values.
-    expect(makeProbeUpdateBorderIrrWGSL()).not.toContain('const CELL:   u32 = 99u;');
+    expect(makeProbeUpdateBorderVisWGSL()).not.toContain('const CELL:   u32 = 99u;');
   });
 });

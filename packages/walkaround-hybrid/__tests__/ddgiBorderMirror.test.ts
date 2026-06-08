@@ -24,7 +24,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   makeBorderFillWGSL,
-  makeProbeUpdateBorderIrrWGSL,
   makeProbeUpdateBorderVisWGSL,
 } from '../src/ddgi/wgsl/probeUpdateBorder.wgsl.js';
 import { IRR_CELL, IRR_STRIDE, VIS_CELL, VIS_STRIDE } from '../src/ddgi/ddgiAtlasLayout.js';
@@ -579,19 +578,26 @@ describe('border-fill WGSL covers every border texel of the cell (V5 regression)
     return all;
   }
 
-  it('irradiance pass (48 threads, 10×10 cell) emits ⌈100/48⌉ = 3 strips', () => {
-    const wgsl = makeProbeUpdateBorderIrrWGSL();
+  // The V5 strip-coverage regression lives in the SHARED makeBorderFillWGSL
+  // factory (still used by the visibility border). It used to be exercised via
+  // the irradiance border at 8×8/stride-10/48-threads; irradiance migrated to SH
+  // (no border), so these tests now call the factory directly at that historical
+  // 8×8/48-thread case (decoupled from the production IRR_CELL, now 3).
+  const fill8x8 = () => makeBorderFillWGSL({ cell: 8, stride: 10, workgroupSize: 48, entryPoint: 'probeUpdateBorderIrradiance' });
+
+  it('border-fill (48 threads, 10×10 cell) emits ⌈100/48⌉ = 3 strips', () => {
+    const wgsl = fill8x8();
     const strips = loopStripCount(wgsl);
-    expect(strips).toBe(Math.ceil((IRR_STRIDE * IRR_STRIDE) / 48)); // 3
+    expect(strips).toBe(Math.ceil((10 * 10) / 48)); // 3
     // 48 threads × strips must reach at least all 100 positions.
-    expect(48 * strips).toBeGreaterThanOrEqual(IRR_STRIDE * IRR_STRIDE);
+    expect(48 * strips).toBeGreaterThanOrEqual(10 * 10);
   });
 
-  it('irradiance pass writes ALL border texels — incl. the four bottom-edge texels the old 2-strip loop missed', () => {
-    const wgsl = makeProbeUpdateBorderIrrWGSL();
+  it('border-fill writes ALL border texels — incl. the four bottom-edge texels the old 2-strip loop missed', () => {
+    const wgsl = fill8x8();
     const strips = loopStripCount(wgsl);
-    const covered = coveredBorderTexels(IRR_CELL, IRR_STRIDE, 48, strips);
-    const all = allBorderTexels(IRR_CELL, IRR_STRIDE);
+    const covered = coveredBorderTexels(8, 10, 48, strips);
+    const all = allBorderTexels(8, 10);
 
     // Every border texel of the 10×10 cell is now covered.
     for (const texel of all) expect(covered.has(texel)).toBe(true);
@@ -600,15 +606,15 @@ describe('border-fill WGSL covers every border texel of the cell (V5 regression)
     // Explicitly assert the previously-unfilled bottom-edge texels (ly = N+1 = 9,
     // lx ∈ {6,7,8,9}) — these are positions t = 96..99, missed by the old [0,96) loop.
     for (const lx of [6, 7, 8, 9]) {
-      expect(covered.has(`${lx},${IRR_CELL + 1}`)).toBe(true);
+      expect(covered.has(`${lx},9`)).toBe(true);   // ly = N+1 = 9 for the 8×8 cell
     }
   });
 
   it('the old fixed 2-strip loop would NOT have covered the four bottom-edge texels (documents the bug)', () => {
     // Re-run coverage with the buggy strip count of 2 to confirm the gap was real.
-    const buggy = coveredBorderTexels(IRR_CELL, IRR_STRIDE, 48, 2);
+    const buggy = coveredBorderTexels(8, 10, 48, 2);
     for (const lx of [6, 7, 8, 9]) {
-      expect(buggy.has(`${lx},${IRR_CELL + 1}`)).toBe(false);
+      expect(buggy.has(`${lx},9`)).toBe(false);
     }
   });
 

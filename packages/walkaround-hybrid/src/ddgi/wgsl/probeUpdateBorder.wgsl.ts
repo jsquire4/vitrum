@@ -68,7 +68,7 @@
  *   Unit Vectors", JCGT §A.1 (octahedral seam border mirror derivation).
  */
 
-import { IRR_CELL, VIS_CELL, IRR_STRIDE, VIS_STRIDE } from '../ddgiAtlasLayout.js';
+import { VIS_CELL, VIS_STRIDE } from '../ddgiAtlasLayout.js';
 
 /** Parameters that distinguish the irradiance vs visibility border pass. */
 export interface BorderFillParams {
@@ -202,27 +202,13 @@ fn ${entryPoint}(
 }
 
 // -----------------------------------------------------------------
-// Irradiance border pass (IRR_CELL = 8, stride 10). Workgroup 48: the
-// derived ⌈100/48⌉ = 3-strip loop covers local positions
-// [0,48) ∪ [48,96) ∪ [96,144) ⊇ [0,100), so ALL 100 cell positions (every
-// border texel) are written. The historical hand-written shader used a fixed
-// 2-strip loop ([0,96)) which left the four bottom-edge texels lx∈{6,7,8,9},
-// ly=9 unfilled → a zero border and seam darkening at the bottom octahedral
-// edge; the strip count is now derived from stride²/workgroupSize so the
-// pass cannot under-cover. The visibility pass (stride 18, 324 positions)
-// uses 256 threads: ⌈324/256⌉ = 2 strips, covering [0,256) ∪ [256,512) ⊇
-// [0,324) (behavior unchanged).
+// VISIBILITY border pass only. (The IRRADIANCE atlas migrated to L2 SH —
+// seam-free — so it has no octahedral border ring and no border pass; the old
+// makeProbeUpdateBorderIrrWGSL was removed. The shared makeBorderFillWGSL strip-
+// coverage logic below is still exercised at the historical 8×8/48-thread case
+// by ddgiBorderMirror.test.ts.) The visibility pass (stride 18, 324 positions)
+// uses 256 threads: ⌈324/256⌉ = 2 strips, covering [0,256) ∪ [256,512) ⊇ [0,324).
 // -----------------------------------------------------------------
-/** Build the irradiance-atlas border-fill WGSL (IRR_CELL/IRR_STRIDE). */
-export function makeProbeUpdateBorderIrrWGSL(): string {
-  return makeBorderFillWGSL({
-    cell: IRR_CELL,
-    stride: IRR_STRIDE,
-    workgroupSize: 48,
-    entryPoint: 'probeUpdateBorderIrradiance',
-  });
-}
-
 /** Build the visibility-atlas border-fill WGSL (VIS_CELL/VIS_STRIDE). */
 export function makeProbeUpdateBorderVisWGSL(): string {
   return makeBorderFillWGSL({

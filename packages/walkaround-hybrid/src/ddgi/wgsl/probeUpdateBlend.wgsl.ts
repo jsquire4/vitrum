@@ -108,10 +108,13 @@ fn irrAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
 // written into the first 3x3 interior texels (coeff k at (k%3, k/3)). Only those
 // 9 threads do work; the rest of the 8x8 workgroup early-outs. The octahedral
 // dir/octDecode is gone — SH needs the raw ray direction, not a per-texel bin.
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(${IRR_CELL}, ${IRR_CELL}, 1)
 fn probeUpdateBlendIrradiance(
   @builtin(global_invocation_id) gid: vec3u,
 ) {
+  // One workgroup per probe; workgroup size == IRR_CELL so gid.x/IRR_CELL is the
+  // probe index and (gid.x%IRR_CELL, gid.y%IRR_CELL) is the cell-local texel.
+  // With IRR_CELL=3 the 3x3 workgroup maps exactly onto the 9 SH coeff texels.
   let lx       = gid.x % IRR_CELL;
   let ly       = gid.y % IRR_CELL;
   let groupIdx = gid.x / IRR_CELL;

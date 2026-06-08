@@ -8,8 +8,7 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   raysPipeline: GPUComputePipeline;
   blendIrrPipeline: GPUComputePipeline;
   blendVisPipeline: GPUComputePipeline;
-  borderIrrPipeline: GPUComputePipeline;
-  borderVisPipeline: GPUComputePipeline;
+  borderVisPipeline: GPUComputePipeline;   // irradiance is SH (seam-free) — no irr border pass
   irrScratchTex: GPUTexture | null;
   visScratchTex: GPUTexture | null;
   traceParamsBuf: GPUBuffer;
@@ -18,7 +17,6 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   gridParamsBuf: GPUBuffer;
   frameParamsBuf: GPUBuffer;
   blendParamsBuf: GPUBuffer;
-  borderIrrUboBuf: GPUBuffer;
   borderVisUboBuf: GPUBuffer;
   rayResultsBuf: GPUBuffer;
   activeProbesBuf: GPUBuffer;
