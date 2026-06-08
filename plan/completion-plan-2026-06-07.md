@@ -100,6 +100,40 @@ The hygiene/coverage phases (3) are mostly DONE; treat them as verify-and-add-
 coverage, not implement. Re-scope effort: closer to a defensible v1 than the
 audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
 
+## ⚡ RECONCILIATION (2026-06-08) — concurrent agent's "harden THREE ingestion" pass (`646ead9` + green uncommitted)
+A second agent landed a hardening sweep (19 files, +969; verified by code-read +
+combined typecheck/vitest all green: core 73, three-bindings 130, engine 142,
+walkaround-hybrid 1221). It built ON the SH migration cleanly (SH integrity
+re-verified: IRR_CELL=3, 9-site receiver eval, blend projects coeffs, irr border
+still removed). What it CLOSED / ADVANCED vs this plan:
+- **1-C ✅ CLOSED.** `three-bindings/mesh.ts` (+238) comprehensively hardens the
+  THREE→core ingestion: grouped multi-material geometry → stable per-group
+  primitives, `stripEmissive` (no emissive double-count), InstancedMesh/
+  SkinnedMesh + rotation/scale/parent-world transforms, host ShaderMaterial
+  conversion — all pinned by `sceneFromThreeJS.test.ts` (11 cases).
+- **3-B ✅ PARTIAL.** New: `hybridEngineGeometryUpdate.test.ts` (the
+  `HybridEnginePrimitiveUpdates` "0 tests" gap — transform/positions/topology/
+  material fast paths), `engineContract.test.ts`, `backendContractMatrix.test.ts`,
+  `sceneFromThreeJS.test.ts`. REMAINING 3-B: scene-lighting,
+  stained-glass-extensions, `two-engines-one-scene` test script, walkaround-rc
+  kernels, three-bindings STEP/CUBICSPLINE.
+- **A3 ✅ CLOSED.** `supportsIncrementalScene` → true; `updatePrimitive` geometry
+  fast paths (transform-only no-recompile, positions-only refit, topology
+  rebuild, material fast path) + disposed/initializing guards.
+- **5-B ✅ ADVANCED.** Backend promise ledger + `supportDetails` + per-backend
+  add/remove + walkaround mutation-fidelity + "DDGI SH vs path-tracer"
+  environment rows are now test-pinned.
+- **5-A/5-D 🟡 IN PROGRESS (uncommitted).** pt-webgpu drops `'experimental-backend'`
+  from its `experimentalFeatures` (maturity promotion); `patchScene` rejects
+  analytic shape/params/fallbackMesh on mesh-like primitives (input hardening);
+  pre-push hook made node-path robust (NOT the 0-H analytic-oracle extension).
+- **T3-adjacent ADVANCE (not closed):** `rebuildEmitterBuffersFromCoreScene`
+  (core-first incremental emitter/material rebuild). BUT **T2 `vitrumSceneToThree`
+  (`HybridEngineLifecycle.ts:337`) + T3 `findMeshByPrimitiveId` (8×) are STILL
+  PRESENT** — the deep internal core→THREE-synthesis decouple is UNCHANGED.
+NOTE: that agent's uncommitted source changes are green but NOT yet committed —
+leave them be; this plan edit touches only the plan doc.
+
 ## STATUS LEGEND
 - ✅ DONE + oracle-validated · 🟡 partially done / needs verify · 🔴 open · ⚖️ needs maintainer decision
 
@@ -161,9 +195,10 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
   multi-bounce structure differs; the empty-box CPU-anchored harness shows the full 71%→14%).
 - **1-B ✅ DDGI coloured-bounce.** Validated 2–4% on interior normals (`8aa444a`).
   Re-confirm after 1-A.
-- **1-C 🟡 G-P0.4 three-bindings asymmetries.** Skinned double-transform FIXED;
-  ShaderMaterial guards added (Codex). Verify the remaining "silent data drops /
-  wrong-space conversions" the audit cited are closed; add round-trip tests.
+- **1-C ✅ CLOSED (2026-06-08, `646ead9`).** `three-bindings/mesh.ts` rework +
+  `sceneFromThreeJS.test.ts` (11 cases) close the asymmetries: grouped
+  multi-material→per-group primitives, `stripEmissive`, InstancedMesh/SkinnedMesh
+  + rotation/scale/parent-world transforms, ShaderMaterial host conversion.
 - **1-D 🟡 Re-validate G-P0.1 / G-P0.2 / G-P0.3 on current main** with the
   oracles (they passed in the 2026-06-06 G-sweep; re-run post-bounce-fix so the
   default-path correctness ledger is current, not historical).
@@ -227,18 +262,19 @@ audit's "weeks" implied, MINUS the genuinely-deep items (DDGI math, T1–T5).
   only on resize/setScene); SVGF's ~80-90 MB unconditional textures when the
   denoiser isn't svgf-real; `estimatedGpuMemoryBytes` omits BVH/TLAS/light-tree;
   fork re-uploads static CIE tables every call; document `BDPT_CONTRIBUTION_CLAMP`.
-- **3-B 🔴 G-P2.7 test gaps** (highly parallel — disjoint packages):
-  - `HybridEnginePrimitiveUpdates` (~1,055 lines, zero tests; mocks return null
-    so refit bodies are unreachable — needs real fixtures).
-  - `scene-lighting` + `stained-glass-extensions` (zero tests; incl. `packCameUBO`
+- **3-B 🟡 G-P2.7 test gaps** (highly parallel — disjoint packages):
+  - ✅ `HybridEnginePrimitiveUpdates` geometry-update fast paths now tested
+    (`hybridEngineGeometryUpdate.test.ts`, `646ead9`).
+  - ✅ GI-state `serialize/deserialize` round-trip (`giStateSnapshot.test.ts`,
+    incl. the v3 SH-break rejection) + TLAS rotation/scale transforms
+    (`sceneFromThreeJS.test.ts` "preserves rotation+scale+parent-world").
+  - 🔴 `scene-lighting` + `stained-glass-extensions` (zero tests; incl. `packCameUBO`
     GPU wire contract).
-  - `examples/two-engines-one-scene` (2 test files, no `test` script → never run).
-  - walkaround-rc kernels (`probeRayCast`/`cascadeMerge` — string pins only;
+  - 🔴 `examples/two-engines-one-scene` (2 test files, no `test` script → never run).
+  - 🔴 walkaround-rc kernels (`probeRayCast`/`cascadeMerge` — string pins only;
     behavior test env-gated off → the numeric oracles from Phase 0-C make these
     runnable).
-  - GI-state `serialize/deserialize` round-trip; TLAS rotation/scale instance
-    transforms (fixtures are identity/translation only); three-bindings
-    STEP/CUBICSPLINE animation import.
+  - 🔴 three-bindings STEP/CUBICSPLINE animation import.
 - **3-C 🟡 G-P2.1–2.5 finish** (mostly ✅): verify the fork lint gate is green +
   add fork lint to a pre-push hook (so it can't rot again); close remaining
   dispose leaks (`_synthesizedThreeScene` in dispose, fork `_lowResPathTracer` /
