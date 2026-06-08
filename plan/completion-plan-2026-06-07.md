@@ -31,13 +31,25 @@ v1 requirement vs documented internal dependency — a maintainer decision.
   in `c098c8e` and GPU-validated 71%→14% vs a CPU f64 anchor (see 1-A below). 0-E re-anchored
   (fix-invariant same-channel interior mean, no-GI + wrong-bounce discrimination — the old
   "RC-off=zero-GI" variant was correctly retired) and the post-fix re-run is ORACLE_SOUND
-  with floorEnergyRatio 0.580→0.661. **Remaining (research-grade, orthogonal):** the
-  axis-aligned floor −Y octahedral-atlas confound (~33% after the feedback fix, V27-tracked);
-  and the absolute walkaround interior indirect is still ~3.8× below pt in this scene — cause
-  UNDETERMINED (the rect-area emitter IS fed to the probe field as a flux-equivalent `fixture`
-  point approximation via `coreEmittersToDDGILights`, so it is NOT a missing-light gap;
-  candidates are the point-vs-area `intensity·area/(d²+1)` falloff approximation and the
-  coarse single-probe producer feedback) — a separate energy item, needs its own anchored A/B.
+  with floorEnergyRatio 0.580→0.661. **Remaining tail — CHARACTERIZED as inherent-
+  approximation (NOT bugs), 2026-06-07:**
+  - *Axis-aligned cardinal under-read (~33% on ±x/±y/−Y vs ≤6% on diagonals).* ROOT: the
+    octahedral SEAM. Cardinals map to the diamond vertices = square edge-midpoints (the seam
+    needing border-wrap); diagonals map to the square interior (clean). The border-fill
+    (offset-1, full coverage — both VERIFIED correct) + the half-texel-consistent receiver UV
+    (re-derived, no bug) mitigate but cannot fully erase the sub-texel octahedral fold at the
+    seam. INHERENT to the 8×8-cell / 192-ray budget: an IRR_CELL 8→16 experiment (live tree,
+    dzn) made it WORSE (93.8% err, several directions zero) — 256 texels/probe starve at
+    192 rays (<1 ray/texel). A real fix needs 4× rays (trace cost) + 4× atlas memory, or an
+    equal-area octahedral / SH reparameterization. More rays alone won't help (seam bias is
+    discretization, not variance). Bounded + documented; deferred as a budget/quality tradeoff.
+  - *Absolute walkaround interior indirect ~3.8× below pt in the 0-E scene.* The rect-area
+    emitter IS fed to the probe field as a flux-equivalent `fixture` point approx (via
+    `coreEmittersToDDGILights`) — NOT a missing-light gap. The gap is dominated by coarse-DDGI
+    convergence vs fully-converged pt (5³ probes, single-probe crude feedback, hysteresis EMA
+    not reaching the high-order bounce tail a path tracer does) — INHERENT to a realtime probe
+    GI, which the contract treats as a fast preview with pt as the hero. The 0-E oracle
+    correctly gates on GI DISTRIBUTION (floor/interior balance), not absolute magnitude.
 
 ## ~~CONFIRMED P0 — default GI DEAD~~ → FIXED above (`254c284`)
 **ROOT CAUSE LOCALIZED** via harness shader-patch A/B on dzn (bisect `--gidiag`):
