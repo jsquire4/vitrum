@@ -35,6 +35,7 @@ import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
+import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -186,6 +187,21 @@ describe('shade + resolve consume the SAME parity source', () => {
     expect(SPATIAL_WGSL).toContain('gid.x * 2u + startCol');
     // OFF default keeps pix == gid.xy ⇒ full-res dispatch, bit-identity.
     expect(SPATIAL_WGSL).toContain('var pix = gid.xy;');
+  });
+
+  it('ris.wgsl decodes the compacted dispatch with the SAME parity decode as shade/spatial', () => {
+    // RIS SEEDS the per-pixel reservoir (primary BVH cast + the M_LIGHT=64
+    // emitter-candidate loop) — the most expensive initial-candidate stage.
+    // Compacting it to the active-parity pixels genuinely skips the gap-parity
+    // candidate generation; the gap slots keep the carried-forward reservoir the
+    // FULL-RATE temporal pass refines. RIS reuses shade's EXACT decode so it
+    // re-seeds precisely the reservoirs shade reads this frame:
+    //   startCol = (gid.y + frameParity) & 1u; px = gid.x*2 + startCol.
+    expect(RIS_WGSL).toContain('ubo.checkerboardOn == 1u');
+    expect(RIS_WGSL).toContain('(gid.y + ubo.frameParity) & 1u');
+    expect(RIS_WGSL).toContain('gid.x * 2u + startCol');
+    // OFF default keeps pix == gid.xy ⇒ full-res dispatch, bit-identity.
+    expect(RIS_WGSL).toContain('var pix = gid.xy;');
   });
 
   it('resolve.wgsl gap-fills the COMPLEMENT — (px+py)&1 == frameParity is the SHADED half', () => {

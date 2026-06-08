@@ -696,14 +696,19 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  initialize() from the host flag — NOT a per-frame UBO decision. */
   private _restirPtReuseStructural = false;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-   *  OFF by default ⇒ shade.wgsl + the two DI spatial passes shade every pixel +
-   *  ResolvePass passes through (byte-identity); ON ⇒ shade AND both spatial
-   *  passes compact their dispatch to the active-parity half (genuinely skipping
-   *  the gap-parity BVH casts) and ResolvePass reprojects the gap. Resolved once
-   *  in initialize() from the host flag; consumed per-frame as the motion-gated
-   *  `cbActiveThisFrame` (forced full-rate above `_checkerboardMotionThresholdSq`)
-   *  threaded into the UBO (frameParity / checkerboardOn), the shade/spatial
-   *  dispatch compaction, and the ResolvePass gap-fill. GPU-validated (dzn):
+   *  OFF by default ⇒ the RIS pass, the two DI spatial passes, and shade.wgsl all
+   *  run full-res + ResolvePass passes through (byte-identity); ON ⇒ RIS, both
+   *  spatial passes, AND shade compact their dispatch to the active-parity half
+   *  (genuinely skipping the gap-parity BVH casts + candidate sampling) and
+   *  ResolvePass reprojects the gap. The FULL-RATE temporal pass stays full-res:
+   *  it reads each gap pixel's carried-forward reservoir (RIS seeds it on the
+   *  frame that pixel is active; the parity flips each frame) and keeps refining
+   *  it against the reprojected history, so every pixel always has a VALID
+   *  reservoir for spatial/shade to consume. Resolved once in initialize() from
+   *  the host flag; consumed per-frame as the motion-gated `cbActiveThisFrame`
+   *  (forced full-rate above `_checkerboardMotionThresholdSq`) threaded into the
+   *  UBO (frameParity / checkerboardOn), the ris/spatial/shade dispatch
+   *  compaction, and the ResolvePass gap-fill. GPU-validated (dzn):
    *  spatial+shade ~1.28× whole-frame speedup at static/slow-motion, bit-identical
    *  to full-rate under faster motion. */
   private _checkerboard = false;

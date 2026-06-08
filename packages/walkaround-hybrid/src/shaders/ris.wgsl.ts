@@ -81,10 +81,37 @@ const M_BRDF  = 1u;
 @compute @workgroup_size(8, 8, 1)
 fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
-  if (any(gid.xy >= dims)) { return; }
 
-  let pixelIdx = gid.y * dims.x + gid.x;
-  var rng = pcgInit(gid.x ^ (ubo.frameSeed * 73856093u), gid.y ^ (ubo.frameSeed * 19349663u), ubo.frameSeed);
+  // Checkerboard sparse-RIS (opt-in; OFF by default). RIS SEEDS the per-pixel
+  // reservoir (primary BVH cast + M_LIGHT emitter candidates) — the single most
+  // expensive initial-candidate stage. When checkerboardOn == 1u the host
+  // COMPACTS the dispatch to ~half the threads (one per active-parity pixel), so
+  // gid indexes the active-parity pixel set rather than the full-res grid.
+  // Decode it back to the true pixel, the SAME decode shade/spatial use:
+  //   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
+  // This lands EXACTLY on the (px+py)&1u == frameParity set ShadePass shades +
+  // SpatialReservoirPass refines this frame (all three read the SAME
+  // frameParity/checkerboardOn from the UBO), so RIS re-seeds precisely the
+  // reservoirs shade consumes this frame. The complementary GAP-parity reservoir
+  // slots are NOT written here — they retain the carried-forward reservoir RIS
+  // wrote when they were last active-parity (the parity flips each frame), which
+  // the FULL-RATE temporal pass then reads as its cur reservoir and keeps refining against
+  // the reprojected history. So gap pixels keep a VALID reservoir for
+  // temporal/spatial; they just miss ONE fresh candidate that frame
+  // (effectively a half-rate candidate cadence reconstructed by temporal + the
+  // denoiser). The compacted X grid (ceil(W/2) columns) can overshoot the row's
+  // last active pixel on odd widths; that overshoot lands at px >= W and is
+  // caught by the bounds guard. When OFF, pix == gid.xy and the dispatch is
+  // full-res ⇒ bit-identical with the pre-checkerboard kernel.
+  var pix = gid.xy;
+  if (ubo.checkerboardOn == 1u) {
+    let startCol = (gid.y + ubo.frameParity) & 1u;
+    pix = vec2u(gid.x * 2u + startCol, gid.y);
+  }
+  if (any(pix >= dims)) { return; }
+
+  let pixelIdx = pix.y * dims.x + pix.x;
+  var rng = pcgInit(pix.x ^ (ubo.frameSeed * 73856093u), pix.y ^ (ubo.frameSeed * 19349663u), ubo.frameSeed);
 
   // --- Primary ray cast to find the surface hit ---
   // Compute inverse view-projection matrix for ray generation.
@@ -92,7 +119,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
 
-  let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
+  let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
   let hit = traceSceneFirstHit(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
@@ -106,7 +133,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // hardcoded sky color.
     storeReservoirDI_rw(&currentReservoir, pixelIdx, emptyReservoirDI());
     let skyColor = ubo.skyTint * ubo.skyIrradiance;
-    textureStore(hdrColorOut, gid.xy, vec4f(skyColor, 1.0));
+    textureStore(hdrColorOut, pix, vec4f(skyColor, 1.0));
     return;
   }
 

@@ -587,14 +587,44 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
     expect(records[0]!.dims).toEqual([4, 8, 1]);
   });
 
+  // RISPass compacts EXACTLY like ShadePass/SpatialReservoirPass when
+  // checkerboard is ON: the initial-candidate dispatch (primary BVH cast +
+  // M_LIGHT emitter loop) drops to ceil(ceil(W/2)/8) X workgroups — one thread
+  // per active-parity pixel — so RIS re-seeds only the reservoirs shade consumes
+  // this frame; the gap-parity slots keep their carried-forward reservoir for
+  // the FULL-RATE temporal pass. RIS binds the RIS-only light-tree group at
+  // slot 3 (slots 0..3). OFF ⇒ full-res, byte-identical.
+  it('RISPass checkerboard OFF: full-res dispatch [8,8,1], slots 0..3, label=ris', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: false, frameParity: 0 } as PassDispatchContext;
+    new RISPass(stubPipeline('ris')).dispatch(ctx);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.label).toBe('ris');
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    expect(records[0]!.dims).toEqual([8, 8, 1]);
+  });
+
+  it('RISPass checkerboard ON: compacted [4,8,1] (half the X workgroups), slots 0..3', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 1 } as PassDispatchContext;
+    new RISPass(stubPipeline('ris')).dispatch(ctx);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.label).toBe('ris');
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    // 64×64 ⇒ ceil(64/2)=32 cols ⇒ ceil(32/8)=4 X workgroups, ceil(64/8)=8 Y.
+    expect(records[0]!.dims).toEqual([4, 8, 1]);
+    // Strictly fewer X workgroups than the OFF full-res count.
+    expect(records[0]!.dims[0]).toBeLessThan(ctx.wgX);
+  });
+
   // Parity-decode invariant (mirrors the shade.wgsl decode + the resolve.wgsl
   // shaded-pixel predicate): every compacted thread (cx, cy) maps to a
   // full-res pixel that is on the ACTIVE parity, and the decoded set exactly
   // equals the active-parity pixel set the resolve pass copies through (and
   // the complementary GAP set it reprojects). This is what guarantees the
   // rendered image is unchanged by the compaction. The SAME decode is shared by
-  // shade + spatial (both use `px = gid.x*2 + ((gid.y + frameParity)&1)`), so
-  // this invariant covers both passes.
+  // ris + spatial + shade (all use `px = gid.x*2 + ((gid.y + frameParity)&1)`),
+  // so this invariant covers all three compacted passes.
   it('compacted-gid decode covers exactly the active-parity pixel set (resolve agreement)', () => {
     const decodePix = (cx: number, cy: number, frameParity: number) => {
       const startCol = (cy + frameParity) & 1;
