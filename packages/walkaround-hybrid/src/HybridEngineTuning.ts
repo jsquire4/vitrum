@@ -99,6 +99,12 @@ export interface InitTunables {
   /** Audit M3 — per-frame temporal-accumulator EMA weight. Default 0.01
    *  (~60 FPS Cornell convergence). */
   readonly temporalAccumAlpha: number;
+  /** Checkerboard motion fallback — squared world-space camera move above which
+   *  the checkerboard sparse path is forced FULL-RATE for that frame (only used
+   *  when checkerboardRendering is on). Default 0.004 (= 0.063²; Cornell-scale),
+   *  much finer than cameraMoveResetThresholdSq because half-rate reservoir lag
+   *  shows at much smaller motion than a full history discard. */
+  readonly checkerboardMotionThresholdSq: number;
 }
 
 /** Internal definition row — declares one tunable's wiring metadata. */
@@ -211,7 +217,10 @@ export function readTunables(opts: HybridEngineOptions): Tunables {
  */
 export function readInitTunables(opts: HybridEngineOptions): InitTunables {
   return Object.freeze({
-    cameraMoveResetThresholdSq: opts.cameraMoveResetThresholdSq ?? 1.0,
-    temporalAccumAlpha:         opts.temporalAccumAlpha ?? 0.01,
+    cameraMoveResetThresholdSq:    opts.cameraMoveResetThresholdSq ?? 1.0,
+    temporalAccumAlpha:            opts.temporalAccumAlpha ?? 0.01,
+    // 0.063² — checkerboard forces full-rate once the camera moves >~0.063
+    // units/frame, much finer than the temporal reset (see HybridEngineOptions).
+    checkerboardMotionThresholdSq: opts.checkerboardMotionThresholdSq ?? 0.004,
   });
 }

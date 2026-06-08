@@ -363,6 +363,21 @@ export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [];
 const DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
 
 /**
+ * Default squared world-space camera move above which the checkerboard sparse
+ * path is forced FULL-RATE for that frame. 0.004 = 0.063² — much finer than the
+ * temporal-accumulator reset above (1.0), because the checkerboard's half-rate
+ * reservoir/radiance lag becomes visible at much smaller motion than a full
+ * history discard. GPU-tuned (dzn motion A/B): checkerboard stays sparse through
+ * a SLOW drag (~0.04 units/frame, where the reconstruction held ~50 dB) and
+ * flips to full-rate by a faster pan (~0.07 units/frame, where it had fallen to
+ * ~29 dB) — full-rate frames are then bit-identical to checkerboard-off.
+ * Cornell-scale; hosts override via
+ * `HybridEngineOptions.checkerboardMotionThresholdSq`. Only consulted when
+ * checkerboard rendering is on.
+ */
+const DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ = 0.004;
+
+/**
  * Default per-frame temporal-accumulator EMA weight. 0.01 = 99% history
  * retain, tuned for Cornell convergence at ~60 FPS. Framerate-dependent;
  * see audit M3.
@@ -681,11 +696,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  initialize() from the host flag — NOT a per-frame UBO decision. */
   private _restirPtReuseStructural = false;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-   *  OFF by default ⇒ shade.wgsl shades every pixel + ResolvePass passes through
-   *  (byte-identity); ON ⇒ shade skips the gap half of the checkerboard and
-   *  ResolvePass reprojects it. Resolved once in initialize() from the host
-   *  flag; consumed by the ResolvePass construction AND the per-frame shade UBO
-   *  (frameParity / checkerboardOn). EXPERIMENTAL — pending motion A/B. */
+   *  OFF by default ⇒ shade.wgsl + the two DI spatial passes shade every pixel +
+   *  ResolvePass passes through (byte-identity); ON ⇒ shade AND both spatial
+   *  passes compact their dispatch to the active-parity half (genuinely skipping
+   *  the gap-parity BVH casts) and ResolvePass reprojects the gap. Resolved once
+   *  in initialize() from the host flag; consumed per-frame as the motion-gated
+   *  `cbActiveThisFrame` (forced full-rate above `_checkerboardMotionThresholdSq`)
+   *  threaded into the UBO (frameParity / checkerboardOn), the shade/spatial
+   *  dispatch compaction, and the ResolvePass gap-fill. GPU-validated (dzn):
+   *  spatial+shade ~1.28× whole-frame speedup at static/slow-motion, bit-identical
+   *  to full-rate under faster motion. */
   private _checkerboard = false;
   /** NRC (Müller et al. 2021) live cache subsystem. Non-null ONLY when the
    *  engine was created with `nrcEnabled` (full-tier). When null (default) the
@@ -722,6 +742,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
   private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
+  /** Checkerboard motion fallback threshold (squared world-space camera move
+   *  above which checkerboard is forced full-rate for the frame). Populated at
+   *  initialize() time; only consulted when `_checkerboard` is true. */
+  private _checkerboardMotionThresholdSq = DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ;
   /** Sprint 18 follow-up — ping-pong index for the indirect temporal
    *  accumulator. Lives on the pipeline because the value persists across
    *  frames; the {@link IndirectTemporalAccumPass} reads + advances it
@@ -967,6 +991,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
       temporalAccumAlpha?: number;
+      /** Checkerboard motion fallback — squared world-space camera-move above
+       *  which the checkerboard sparse path is forced full-rate for that frame
+       *  (only consulted when `checkerboard` is on). Default 0.0009 (0.03²). */
+      checkerboardMotionThresholdSq?: number;
       /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural').
        *  Kept on the options surface for forward compatibility with W10. */
       inferenceGraph?: InferenceGraph;
@@ -1003,12 +1031,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  `HybridEngineOptions.restirPtReuse`. */
       restirPtReuse?: boolean;
       /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-       *  OFF (default) ⇒ shade.wgsl shades every pixel and ResolvePass passes
-       *  through (byte-identical to the pre-checkerboard pipeline). ON ⇒ shade
-       *  skips the gap half of the checkerboard and ResolvePass reprojects those
-       *  pixels from the previous frame. Stored on `_checkerboard`; consumed by
-       *  the ResolvePass ctor + the per-frame shade UBO (frameParity /
-       *  checkerboardOn). EXPERIMENTAL — pending motion A/B. */
+       *  OFF (default) ⇒ shade.wgsl + both DI spatial passes shade every pixel and
+       *  ResolvePass passes through (byte-identical to the pre-checkerboard
+       *  pipeline). ON ⇒ shade AND the two spatial passes compact their dispatch to
+       *  the active-parity half and ResolvePass reprojects the gap. Stored on
+       *  `_checkerboard`; consumed per-frame as the motion-gated `cbActiveThisFrame`
+       *  (frameParity / checkerboardOn) across the UBO, the dispatch compaction, and
+       *  the ResolvePass gap-fill. GPU-validated on dzn. */
       checkerboard?: boolean;
       /** NRC (Müller et al. 2021) live cache — COMPILE-TIME structural gate.
        *  When true, the gi-ris pipeline is built with a 5th `@group(4)` NRC bind
@@ -1132,6 +1161,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
       ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
+    this._checkerboardMotionThresholdSq = options?.checkerboardMotionThresholdSq
+      ?? DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ;
 
     // T2.H3 — PPG is enabled iff host opted-in AND both pipelines compiled.
     // The flag itself is computed here; `_ppg.initialize()` below acts on it
@@ -1491,23 +1522,51 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const d = this._device;
     const { _width: W, _height: H } = this;
 
+    // ── Camera motion (computed up-front for the checkerboard motion fallback) ─
+    // The checkerboard sparse path (shade + spatial compaction + resolve
+    // gap-fill) reuses last-frame reservoirs/radiance for the gap-parity half.
+    // Under camera motion that lag is exposed as softening, so we force
+    // FULL-RATE shading on a moving frame: the per-frame `cbActiveThisFrame` flag
+    // is `_checkerboard && !cbMotionExceeded`, threaded identically into the UBO
+    // (shade/spatial read checkerboardOn/frameParity), the ShadePass/
+    // SpatialReservoirPass dispatch compaction (passCtx.checkerboardOn), and the
+    // ResolvePass gap-fill — so all three agree every frame.
+    //
+    // The checkerboard fallback uses its OWN, finer threshold
+    // (`_checkerboardMotionThresholdSq`, default 0.004 = 0.063²) — NOT the much
+    // coarser temporal-accumulator reset (`_cameraMoveResetThresholdSq`, 1.0):
+    // half-rate reservoir lag shows at far smaller motion than a full history
+    // discard, so checkerboard must drop to full-rate earlier (GPU-validated on
+    // dzn — at the coarse 1.0 threshold the motion A/B fell to ~24 dB; the 0.004
+    // threshold keeps checkerboard sparse through a slow drag (~50 dB) and flips
+    // a faster pan to full-rate, where ON==OFF bit-identically). `_lastCameraPos`
+    // is written only at end-of-frame, so reading it here matches the post-UBO
+    // motion calc exactly.
+    const mdx = inputs.camera.cameraPos[0] - this._lastCameraPos[0];
+    const mdy = inputs.camera.cameraPos[1] - this._lastCameraPos[1];
+    const mdz = inputs.camera.cameraPos[2] - this._lastCameraPos[2];
+    const camMoveSqUpfront = mdx * mdx + mdy * mdy + mdz * mdz;
+    const cbMotionExceeded = camMoveSqUpfront > this._checkerboardMotionThresholdSq;
+    const cbActiveThisFrame = this._checkerboard && !cbMotionExceeded;
+
     // ── Update UBO ────────────────────────────────────────────────────────
     // Inject the LIVE PPG gate (PPGCoordinator.enabled is true only when the
     // host opted in AND both PPG compute pipelines compiled) + the MIS mixing
     // weight α. gi-ris reads ppgEnabled/ppgMixAlpha from the UBO to decide
     // whether to guide candidate sampling; when off, α collapses to 0 and the
     // gi-ris RIS source pdf reduces to cosθ/π exactly (ppg-OFF bit-identity).
-    // Checkerboard half-res shading state (host opt-in; default OFF). When OFF
-    // both UBO fields pack as 0 ⇒ byte-identical layout and shadeMain shades
-    // every pixel. frameParity is `_frameCount & 1` — the SAME phase ResolvePass
-    // packs into ResolveUniforms within this frame (it reads `passCtx.frameCount
-    // = this._frameCount`, set below before the end-of-frame increment), so the
-    // shade gap-out pixels match the resolve gap-fill pixels exactly.
+    // Checkerboard half-res shading state (host opt-in; default OFF, AND forced
+    // OFF on a fast-motion frame via cbActiveThisFrame). When OFF both UBO fields
+    // pack as 0 ⇒ byte-identical layout and shadeMain/spatialMain shade every
+    // pixel. frameParity is `_frameCount & 1` — the SAME phase ResolvePass packs
+    // into ResolveUniforms within this frame (it reads `passCtx.checkerboardOn`
+    // set below), so the shade/spatial gap-out pixels match the resolve gap-fill
+    // pixels exactly.
     updateUBO(d, this._res.common.uboBuffer, inputs, {
       enabled: this._ppg.enabled,
       mixAlpha: this._ppg.mixAlpha,
     }, this._regir.uboState(), {
-      enabled: this._checkerboard,
+      enabled: cbActiveThisFrame,
       frameParity: this._frameCount & 1,
     });
 
@@ -1565,11 +1624,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     };
 
     // ── Camera motion: reset temporal index before denoise / accum ────────
-    const dx = inputs.camera.cameraPos[0] - this._lastCameraPos[0];
-    const dy = inputs.camera.cameraPos[1] - this._lastCameraPos[1];
-    const dz = inputs.camera.cameraPos[2] - this._lastCameraPos[2];
-    const camMoveSq = dx * dx + dy * dy + dz * dz;
-    const isMoving = camMoveSq > this._cameraMoveResetThresholdSq;
+    // The temporal-accumulator reset keeps its OWN (coarser) threshold
+    // `_cameraMoveResetThresholdSq` (default 1.0) — a full history discard is a
+    // bigger event than the checkerboard full-rate fallback (which trips at the
+    // finer `_checkerboardMotionThresholdSq` computed above). Reuses the same
+    // `camMoveSqUpfront` delta so there is one motion magnitude, two thresholds.
+    const isMoving = camMoveSqUpfront > this._cameraMoveResetThresholdSq;
     if (isMoving) {
       this._accumFrameIndex = 0;
     }
@@ -1620,12 +1680,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       hybridLayersBindGroup: bgHybrid,
       lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
-      // Checkerboard sparse-shade dispatch state. When ON, ShadePass compacts
-      // its dispatch to ~half the threads (one per active-parity pixel). These
-      // are the SAME frameParity / checkerboardOn values updateUBO packs into
-      // the WalkaroundUBO above, so the shade shader's compacted-gid decode and
-      // its UBO reads agree.
-      checkerboardOn: this._checkerboard,
+      // Checkerboard sparse dispatch state. When ON, ShadePass + SpatialReservoirPass
+      // each compact their dispatch to ~half the threads (one per active-parity
+      // pixel), and ResolvePass gap-fills the complementary half. This is the
+      // SAME `cbActiveThisFrame` (= `_checkerboard && !isMoving` — fast-motion
+      // forces full-rate) / frameParity (`frameCount & 1`) updateUBO packs into
+      // the WalkaroundUBO above, so the shade/spatial shaders' compacted-gid
+      // decode, their UBO reads, and the resolve gap-fill all agree this frame.
+      checkerboardOn: cbActiveThisFrame,
       frameParity: this._frameCount & 1,
       gtaoDownscale: this._gtaoDownscale,
       gNormalDepthView,

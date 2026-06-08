@@ -517,7 +517,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
   });
 });
 
-describe('ShadePass — checkerboard compacted dispatch', () => {
+describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch', () => {
   // OFF (default): full-res dispatch, byte-identical to the pre-checkerboard
   // path — frame/scene/ubo/hybrid at slots 0..3, full-res workgroup dims
   // (ceil(W/8) × ceil(H/8)). makeCtx is 64×64 ⇒ [8, 8, 1].
@@ -549,12 +549,52 @@ describe('ShadePass — checkerboard compacted dispatch', () => {
     expect(records[0]!.dims[0]).toBeLessThan(ctx.wgX);
   });
 
+  // SpatialReservoirPass compacts EXACTLY like ShadePass when checkerboard is
+  // ON: every spatial dispatch (1 or 2 passes) drops to ceil(ceil(W/2)/8) X
+  // workgroups. The spatial reuse is the pipeline's dominant cost (6 BVH casts
+  // per pixel × passCount), so the compaction is where the frame-time saving
+  // comes from. OFF ⇒ full-res per label, byte-identical to before.
+  it('SpatialReservoirPass checkerboard OFF: full-res [8,8,1] per label (spatial-1, spatial-2)', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: false, frameParity: 0 } as PassDispatchContext;
+    new SpatialReservoirPass(stubPipeline('spatial'), 2).dispatch(ctx);
+    expect(records.map((r) => r.label)).toEqual(['spatial-1', 'spatial-2']);
+    for (const r of records) {
+      expect(r.binds.map((b) => b.slot)).toEqual([0, 1, 2]);
+      expect(r.dims).toEqual([8, 8, 1]);
+    }
+  });
+
+  it('SpatialReservoirPass checkerboard ON: compacted [4,8,1] per label (half the X workgroups)', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 1 } as PassDispatchContext;
+    new SpatialReservoirPass(stubPipeline('spatial'), 2).dispatch(ctx);
+    expect(records.map((r) => r.label)).toEqual(['spatial-1', 'spatial-2']);
+    for (const r of records) {
+      expect(r.binds.map((b) => b.slot)).toEqual([0, 1, 2]);
+      // 64×64 ⇒ ceil(64/2)=32 cols ⇒ ceil(32/8)=4 X workgroups, ceil(64/8)=8 Y.
+      expect(r.dims).toEqual([4, 8, 1]);
+      // Strictly fewer X workgroups than the OFF full-res count.
+      expect(r.dims[0]).toBeLessThan(ctx.wgX);
+    }
+  });
+
+  it('SpatialReservoirPass checkerboard ON (1-pass): single compacted spatial-2 dispatch', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 0 } as PassDispatchContext;
+    new SpatialReservoirPass(stubPipeline('spatial'), 1).dispatch(ctx);
+    expect(records.map((r) => r.label)).toEqual(['spatial-2']);
+    expect(records[0]!.dims).toEqual([4, 8, 1]);
+  });
+
   // Parity-decode invariant (mirrors the shade.wgsl decode + the resolve.wgsl
   // shaded-pixel predicate): every compacted thread (cx, cy) maps to a
   // full-res pixel that is on the ACTIVE parity, and the decoded set exactly
   // equals the active-parity pixel set the resolve pass copies through (and
   // the complementary GAP set it reprojects). This is what guarantees the
-  // rendered image is unchanged by the compaction.
+  // rendered image is unchanged by the compaction. The SAME decode is shared by
+  // shade + spatial (both use `px = gid.x*2 + ((gid.y + frameParity)&1)`), so
+  // this invariant covers both passes.
   it('compacted-gid decode covers exactly the active-parity pixel set (resolve agreement)', () => {
     const decodePix = (cx: number, cy: number, frameParity: number) => {
       const startCol = (cy + frameParity) & 1;

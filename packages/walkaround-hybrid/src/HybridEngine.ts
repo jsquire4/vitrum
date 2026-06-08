@@ -213,9 +213,10 @@ interface ParsedHybridEngineConfig {
   readonly ppgEnabled: number;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  `false` by default (every preset sets it false too). Threaded into
-   *  `pipeline.initialize({ checkerboard })`; OFF is bit-identical to the
-   *  pre-checkerboard pipeline (the gap early-out is never taken and the
-   *  ResolvePass passes through). EXPERIMENTAL — pending motion A/B. */
+   *  `pipeline.initialize({ checkerboard, checkerboardMotionThresholdSq })`; OFF
+   *  is bit-identical to the pre-checkerboard pipeline (shade + both spatial
+   *  passes dispatch full-res and ResolvePass passes through). GPU-validated on
+   *  dzn — see WalkaroundGPUPipeline `_checkerboard`. */
   readonly checkerboard: boolean;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
@@ -450,9 +451,9 @@ export function deriveHybridEngineConfig(
     // built when a host opts in (tier:'lite' forbids it — validated above).
     ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
     // Checkerboard half-res shading. Explicit opt wins, else the preset value
-    // (FALSE in every preset). Default OFF ⇒ shade shades every pixel +
-    // ResolvePass passes through = bit-identical to the pre-checkerboard
-    // pipeline. EXPERIMENTAL — pending motion A/B.
+    // (FALSE in every preset). Default OFF ⇒ shade + both spatial passes shade
+    // every pixel + ResolvePass passes through = bit-identical to the
+    // pre-checkerboard pipeline. GPU-validated on dzn.
     checkerboard: opts.checkerboardRendering ?? preset.checkerboard,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
@@ -2312,6 +2313,7 @@ export class HybridEngine implements Engine {
       debug: this._cfg.debug,
       cameraMoveResetThresholdSq: this._cfg.initTunables.cameraMoveResetThresholdSq,
       temporalAccumAlpha: this._cfg.initTunables.temporalAccumAlpha,
+      checkerboardMotionThresholdSq: this._cfg.initTunables.checkerboardMotionThresholdSq,
       ctorLights: this._ctorLights,
       ddgi: this._ddgi,
       gtaoMode: this._cfg.gtaoMode,

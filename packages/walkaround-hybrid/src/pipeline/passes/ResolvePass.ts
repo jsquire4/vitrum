@@ -1,15 +1,26 @@
 /**
  * ResolvePass — sparse-shade gap-fill pass.
  *
- * `checkerboardOn` is driven by the pipeline's `_checkerboard` flag (host
- * opt-in via HybridEngineOptions.checkerboardRendering; default OFF). When OFF
- * the pass is passthrough — every pixel copies through from `writeAccum` to
+ * `checkerboardOn` is driven PER FRAME by `ctx.checkerboardOn` — the pipeline's
+ * `cbActiveThisFrame` (= host opt-in `_checkerboard` via
+ * HybridEngineOptions.checkerboardRendering AND the camera-move being below
+ * `checkerboardMotionThresholdSq`; default OFF, and forced OFF on a fast-motion
+ * frame). This is the SAME per-frame flag the shade + spatial passes read for
+ * their compacted dispatch, so resolve gap-fills EXACTLY the frames (and pixels)
+ * shade/spatial left sparse — including the motion fallback, where all four go
+ * full-rate together. When OFF the pass is passthrough — every pixel copies
+ * through from `writeAccum` to
  * `common.resolvedTexture` (byte-identical to the pre-checkerboard wire-in).
  * When ON, shade.wgsl writes only the SHADED half of the checkerboard and this
  * pass reprojects the GAP pixels from the previous frame's radiance via the
  * motion-vector G-buffer slot. The `frameParity` (frameCount & 1) it packs is
  * the SAME phase shade.wgsl reads from the WalkaroundUBO, so the gap pixels
  * shade skips are exactly the pixels reprojected here.
+ *
+ * The constructor still takes the host opt-in flag, but it is only a fast
+ * disable for the default-OFF case (when the host never opts in, ctx.checkerboardOn
+ * is always false too); the per-frame `ctx.checkerboardOn` is the authoritative
+ * gate so the motion fallback stays consistent across passes.
  *
  * Layout note: resolve uses `@workgroup_size(8, 8, 1)` —
  * dispatch with `wgX/wgY` (`ceil(W/8)`), NOT the 16×16-sized counts.
@@ -58,12 +69,21 @@ export class ResolvePass implements Pass {
     // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
     // W2-C13 follow-up: byte-identical to the prior Uint32Array write —
     // defineUbo packs four u32 fields contiguously at offsets 0/4/8/12.
+    //
+    // The gate is the PER-FRAME `ctx.checkerboardOn` (`cbActiveThisFrame`), not
+    // the constructor `_checkerboard`: on a fast-motion frame the pipeline forces
+    // checkerboard off for shade + spatial, and resolve must passthrough that
+    // frame too (otherwise it would gap-fill pixels shade rendered full-rate).
+    // `_checkerboard` is ANDed in as a defensive fast-path: when the host never
+    // opted in, ctx.checkerboardOn is always false anyway, so this stays
+    // byte-identical to the prior `_checkerboard ? 1 : 0` for the default path.
+    const checkerboardOn = this._checkerboard && ctx.checkerboardOn;
     const resolveUboBytes = new ArrayBuffer(RESOLVE_UBO.sizeBytes);
     RESOLVE_UBO.pack(new DataView(resolveUboBytes), 0, {
       screenW:        width,
       screenH:        height,
       frameParity:    frameCount & 1,
-      checkerboardOn: this._checkerboard ? 1 : 0,
+      checkerboardOn: checkerboardOn ? 1 : 0,
     });
     device.queue.writeBuffer(this._uboRef.buf!, 0, resolveUboBytes);
     const bg = buildResolveBindGroup(

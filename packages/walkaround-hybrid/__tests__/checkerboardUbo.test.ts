@@ -34,6 +34,7 @@ import { describe, expect, it } from 'vitest';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
+import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -170,6 +171,21 @@ describe('shade + resolve consume the SAME parity source', () => {
     // The active-parity invariant: every decoded pixel satisfies
     // (px+py)&1u == frameParity (proven exhaustively in dispatchEquivalence's
     // "compacted-gid decode covers exactly the active-parity pixel set" test).
+  });
+
+  it('spatial.wgsl decodes the compacted dispatch with the SAME parity decode as shade', () => {
+    // The two DI spatial passes (spatial-1/spatial-2) dominate the walkaround
+    // frame — each thread does castPrimary(center) + 5× castPrimary(neighbor) =
+    // 6 BVH traversals. Compacting the dispatch to the active-parity pixels
+    // genuinely skips the gap-parity 6-cast work (vs a shader early-return that
+    // still occupies the warp). spatial reuses shade's EXACT decode so the
+    // refined spatialReservoir slots are precisely the ones shade reads:
+    //   startCol = (gid.y + frameParity) & 1u; px = gid.x*2 + startCol.
+    expect(SPATIAL_WGSL).toContain('ubo.checkerboardOn == 1u');
+    expect(SPATIAL_WGSL).toContain('(gid.y + ubo.frameParity) & 1u');
+    expect(SPATIAL_WGSL).toContain('gid.x * 2u + startCol');
+    // OFF default keeps pix == gid.xy ⇒ full-res dispatch, bit-identity.
+    expect(SPATIAL_WGSL).toContain('var pix = gid.xy;');
   });
 
   it('resolve.wgsl gap-fills the COMPLEMENT — (px+py)&1 == frameParity is the SHADED half', () => {

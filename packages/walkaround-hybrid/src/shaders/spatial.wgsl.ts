@@ -8,6 +8,25 @@
  * Primary-ray-cast mode: no G-buffer rasterization.  We re-cast primary
  * rays here for the center pixel + each neighbor so the target function p̂ is
  * evaluated at the CORRECT surface, not at the world origin.
+ *
+ * Checkerboard sparse-spatial (host opt-in; default OFF). The spatial reuse is
+ * the pipeline's dominant cost — each thread does castPrimary(center) + 5×
+ * castPrimary(neighbor) = 6 BVH traversals, ×2 separable passes ≈ 42% of the
+ * walkaround frame (profiled, dzn RTX-4090). When checkerboardOn == 1u the host
+ * COMPACTS this dispatch to ~half the threads — `ceil(ceil(W/2)/8) × ceil(H/8)`
+ * workgroups — so the 6 BVH re-casts run for ONE pixel per active-parity slot
+ * instead of every pixel. The decode maps the compacted global_invocation_id
+ * back into the true full-res active-parity pixel
+ *   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
+ * — EXACTLY the (px+py)&1u == frameParity set ShadePass (which uses the SAME
+ * frameParity/checkerboardOn) shades this frame. So shade reads the
+ * spatialReservoir slots spatial just refined; the complementary gap-parity
+ * reservoir slots are NOT consumed this frame (shade is compacted to the same
+ * active-parity set) and get refreshed next frame when the parity flips. The
+ * few odd-width overshoot threads (px >= W) are caught by the existing bounds
+ * guard. When the host gates checkerboardOn off (default, OR a fast-motion
+ * frame — see WalkaroundGPUPipeline motion fallback) the dispatch is full-res
+ * `wgX/wgY` and pix == gid.xy, byte-identical to the pre-checkerboard kernel.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -71,10 +90,29 @@ fn poissonDisk(i: u32, rotation: f32) -> vec2f {
 @compute @workgroup_size(8, 8, 1)
 fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
-  if (any(gid.xy >= dims)) { return; }
 
-  let pixelIdx = gid.y * dims.x + gid.x;
-  var rng = pcgInit(gid.x ^ 54321u, gid.y ^ 98765u, ubo.frameSeed ^ 0xCAFEu);
+  // Checkerboard sparse-spatial (opt-in; OFF by default). When checkerboardOn
+  // == 1u the host COMPACTS the dispatch to ~half the threads (one per
+  // active-parity pixel), so gid indexes the active-parity pixel set rather than
+  // the full-res grid. Decode it back to the true pixel:
+  //   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
+  // This lands EXACTLY on the (px+py)&1u == frameParity set ShadePass shades
+  // this frame (it reads the SAME frameParity/checkerboardOn from the UBO), so
+  // shade consumes the spatialReservoir slots refined here; the gap-parity slots
+  // are not read this frame and refresh next frame when the parity flips. The
+  // compacted X grid (ceil(W/2) columns) can overshoot the row's last active
+  // pixel on odd widths; that lands at px >= W and is caught by the bounds
+  // guard. When OFF, pix == gid.xy and the dispatch is full-res ⇒ bit-identical
+  // with the pre-checkerboard kernel.
+  var pix = gid.xy;
+  if (ubo.checkerboardOn == 1u) {
+    let startCol = (gid.y + ubo.frameParity) & 1u;
+    pix = vec2u(gid.x * 2u + startCol, gid.y);
+  }
+  if (any(pix >= dims)) { return; }
+
+  let pixelIdx = pix.y * dims.x + pix.x;
+  var rng = pcgInit(pix.x ^ 54321u, pix.y ^ 98765u, ubo.frameSeed ^ 0xCAFEu);
 
   var r = loadReservoirDI_rw(&currentReservoir, pixelIdx);
 
@@ -89,7 +127,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   // against placeholder textures) and for evaluating p̂ at the right pos/normal.
   let vp    = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let center = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
+  let center = castPrimary(pix, dims, ubo.cameraPos, invVP);
   if (!center.hit) {
     // Sky pixel — no reservoir to combine; pass current through unchanged.
     storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
@@ -100,7 +138,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
 
   for (var i = 0u; i < NEIGHBORS; i++) {
     let offset = poissonDisk(i, rotation);
-    let nbrPx  = vec2i(gid.xy) + vec2i(vec2f(offset.x * ubo.spatialReuseRadiusPx, offset.y * ubo.spatialReuseRadiusPx));
+    let nbrPx  = vec2i(pix) + vec2i(vec2f(offset.x * ubo.spatialReuseRadiusPx, offset.y * ubo.spatialReuseRadiusPx));
     if (any(nbrPx < vec2i(0)) || any(nbrPx >= vec2i(dims))) { continue; }
     let nbrIdx = u32(nbrPx.y) * dims.x + u32(nbrPx.x);
 

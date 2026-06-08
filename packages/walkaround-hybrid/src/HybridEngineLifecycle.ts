@@ -82,6 +82,7 @@ export interface PipelineInitHost {
   readonly debug: boolean;
   readonly cameraMoveResetThresholdSq: number;
   readonly temporalAccumAlpha: number;
+  readonly checkerboardMotionThresholdSq: number;
   readonly ctorLights: readonly DDGILight[];
   readonly ddgi: DDGI;
   readonly preferredSwapChainFormat: GPUTextureFormat;
@@ -109,11 +110,13 @@ export interface PipelineInitHost {
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
   readonly ppgEnabled: boolean;
-  /** Checkerboard half-res shading — when true shade.wgsl shades only one
-   *  checkerboard phase per frame and ResolvePass reprojects the gap; false
-   *  (default) shades every pixel + passes through (bit-identical). Threaded
-   *  into `pipeline.initialize({ checkerboard })`. EXPERIMENTAL — motion A/B
-   *  pending. */
+  /** Checkerboard half-res shading — when true shade.wgsl AND the two DI spatial
+   *  passes compact their dispatch to one checkerboard phase per frame and
+   *  ResolvePass reprojects the gap; false (default) shades every pixel + passes
+   *  through (bit-identical). Threaded into
+   *  `pipeline.initialize({ checkerboard, checkerboardMotionThresholdSq })`.
+   *  GPU-validated on dzn (~1.28× whole-frame at static/slow-motion; full-rate
+   *  fallback under faster motion). */
   readonly checkerboard: boolean;
   /** PPG train-pass dispatch cadence (>= 1). The ppg-update pass dispatches
    *  on `frameCount % ppgDispatchInterval === 0`. */
@@ -179,6 +182,7 @@ export type HybridInitStaticConfig = Pick<
   | 'debug'
   | 'cameraMoveResetThresholdSq'
   | 'temporalAccumAlpha'
+  | 'checkerboardMotionThresholdSq'
   | 'ctorLights'
   | 'ddgi'
   | 'gtaoMode'
@@ -445,8 +449,12 @@ export class PipelineInitCoordinator {
           ppgEnabled: host.ppgEnabled,
           // Checkerboard half-res shading. OFF (default) ⇒ shade shades every
           // pixel + ResolvePass passes through = bit-identical to the
-          // pre-checkerboard pipeline. EXPERIMENTAL — motion A/B pending.
+          // pre-checkerboard pipeline.
           checkerboard: host.checkerboard,
+          // Checkerboard motion fallback threshold — camera move²/frame above
+          // which checkerboard is forced full-rate (finer than the temporal
+          // reset). Only consulted when checkerboard is on.
+          checkerboardMotionThresholdSq: host.checkerboardMotionThresholdSq,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.

@@ -570,33 +570,71 @@ export interface HybridEngineOptions extends EngineOptions {
   /**
    * Enable half-res CHECKERBOARD shading + temporal-resolve reconstruction.
    *
-   * When `true`, `shade.wgsl` shades only one checkerboard phase per frame
-   * (the SHADED half, `(px+py)&1 == frameCount&1`) and skips the GAP half;
-   * `resolve.wgsl` reconstructs the gap pixels by reprojecting the previous
-   * frame's radiance through the motion-vector G-buffer. This roughly halves
-   * the per-frame shading cost on a static / converging camera.
+   * When `true`, the THREE expensive per-pixel passes — the shade pass and BOTH
+   * ReSTIR-DI spatial-reuse passes — COMPACT their compute dispatch to one
+   * checkerboard phase per frame (the active half, `(px+py)&1 == frameCount&1`),
+   * genuinely skipping the gap-parity work rather than early-returning it (an
+   * early-return still occupies the warp and saves nothing). The two spatial
+   * passes are the pipeline's dominant cost — each thread casts 6 BVH rays
+   * (centre + 5 Poisson neighbours), ×2 passes — so compacting them is where the
+   * frame-time win comes from; `resolve.wgsl` reconstructs the gap pixels by
+   * reprojecting the previous frame's radiance through the motion-vector
+   * G-buffer. The spatial passes refine only the active-parity reservoir slots
+   * shade then reads (same parity), so no gap-pixel reservoir passthrough is
+   * needed.
    *
-   * Default: `false` — OFF shades EVERY pixel and the resolve pass passes
+   * Default: `false` — OFF shades/refines EVERY pixel and the resolve pass passes
    * through, so the render is BIT-IDENTICAL to the pre-checkerboard pipeline
    * (the OFF-is-bit-identical opt-in pattern shared by `rcEnabled` /
    * `ppgEnabled` / `restirPtReuse` / `nrcEnabled` / `regir`). The flag flips
-   * two already-present UBO fields + the ResolvePass gate — it adds no bind
-   * groups, so it is NOT a compile-time structural decision.
+   * two already-present UBO fields + the dispatch compaction + the ResolvePass
+   * gate — it adds no bind groups, so it is NOT a compile-time structural decision.
    *
-   * Gap reconstruction is a hybrid temporal⊕spatial fill: the motion-vector
-   * reprojection of the previous frame, blended by motion magnitude with the
-   * average of the 4 axis neighbours (opposite checkerboard parity → shaded
-   * THIS frame → current, no temporal lag), so disoccluded/fast-motion gaps
-   * fall back to current spatial data instead of stale history.
+   * Motion fallback: above {@link checkerboardMotionThresholdSq} of per-frame
+   * camera motion the sparse path is forced FULL-RATE for that frame (shade +
+   * spatial + resolve all bit-identical to OFF), so a fast pan never exposes the
+   * half-rate reservoir lag. Checkerboard's win is realised at static / slow
+   * motion, where the reconstruction is faithful.
    *
-   * VALIDATED comb-free (objective motion A/B, `wsl-gpu/checkerboard-motion-ab.ts`,
-   * dzn): typical motion worst-frame PSNR 49.7 dB + gap error 0.0007 luma
-   * (sub-perceptible), combRatio ~1.1 even under an aggressive pan. Kept
-   * off-default as a PERFORMANCE opt-in (not a fidelity default); the residual
-   * aggressive-pan softening is uniform accumulator-history divergence inherent
-   * to half-rate shading and converges on settle.
+   * VALIDATED (objective A/B, dzn RTX-4090): PERF —
+   * `wsl-gpu/checkerboard-spatial-perf-ab.ts` per-pass GPU timestamps: each
+   * spatial pass ~1.85× (≈47% saved), shade ~1.6×, WHOLE FRAME ~1.28× (≈22%
+   * saved). QUALITY — `wsl-gpu/checkerboard-motion-ab.ts`: static converged
+   * ~64 dB; slow-drag worst-frame ~50 dB + gap error 0.0007 luma
+   * (sub-perceptible); faster motion falls to full-rate ⇒ ON == OFF
+   * bit-identical (999 dB). Kept off-default as a PERFORMANCE opt-in.
    */
   readonly checkerboardRendering?: boolean;
+
+  /**
+   * Camera squared-distance threshold (**world-space units²**) above which the
+   * checkerboard sparse path (shade + the two ReSTIR-DI spatial passes) is
+   * forced FULL-RATE for that frame. Only consulted when
+   * {@link checkerboardRendering} is on.
+   *
+   * Checkerboard reuses last-frame reservoirs/radiance for the gap-parity half;
+   * under perceptible camera motion that lag would show as softening, so when
+   * the per-frame camera move exceeds `sqrt(threshold)` units the pipeline
+   * shades every pixel that frame (and the resolve pass passes through), exactly
+   * as if checkerboard were off — then resumes sparse shading once the camera
+   * slows. The render stays a strict subset of the full-rate output.
+   *
+   * This is DELIBERATELY a separate, finer threshold than
+   * {@link cameraMoveResetThresholdSq} (the temporal-accumulator reset): the
+   * checkerboard reservoir lag becomes visible at MUCH smaller motion than a
+   * full history discard, so the checkerboard fallback must trip earlier.
+   *
+   * **Scene-scale-sensitive** (same scaling rule as `cameraMoveResetThresholdSq`,
+   * but much smaller). Default `0.004` (= `0.063²`) is tuned to Cornell's
+   * ~2-unit room and GPU-validated on the dzn motion A/B: checkerboard stays
+   * sparse through a SLOW drag (~0.04 units/frame, where the reconstruction held
+   * ~50 dB vs full-rate) and flips to full-rate by a faster pan (~0.07
+   * units/frame, where it had fallen to ~29 dB). Hosts on a different scene
+   * scale should override (recommended `(sceneDiagonal × 3e-4)²`).
+   *
+   * @default 0.004
+   */
+  readonly checkerboardMotionThresholdSq?: number;
 
   // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
 
