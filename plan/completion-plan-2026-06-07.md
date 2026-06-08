@@ -40,9 +40,15 @@ v1 requirement vs documented internal dependency — a maintainer decision.
     stays octahedral). Also 4× less irradiance-atlas memory + no border pass. See
     [[ddgi-sh-irradiance-2026-06-07]]. HONEST nuance: the seam fix is large for single-bounce/
     directional indirect but MASKED in smooth multi-bounce (where the floor residual is the
-    convergence gap, not the seam); receiver now reads 9 coeffs/probe (perf cost, unmeasurable
-    on dzn). The earlier IRR_CELL 8→16 experiment confirmed more octahedral resolution is NOT
-    free (starves at 192 rays) — SH was the right lever.
+    convergence gap, not the seam). Receiver perf MEASURED (dzn timestamp-query): SH 0.385
+    ns/call vs octahedral 0.463 → SH ~17% FASTER (cache-local 3x3 block in a 4x-smaller atlas
+    + branchless eval beat octahedral's 1 sample + branchy encode) — the 9-read "cost" was a
+    false fear, so SH wins on quality + storage + receiver perf. The earlier IRR_CELL 8→16
+    experiment confirmed more octahedral resolution is NOT free (starves at 192 rays) — SH was
+    the right lever. Also: the VISIBILITY octahedral atlas was measured for the same cardinal
+    seam and has NONE (cardinals≈diagonals; VIS_CELL=16 resolves the equator) → cube-map
+    visibility skipped. GPU timestamp-query works on dzn (`wsl-gpu/scripts/gpu-timestamp.ts`) —
+    perf is no longer a blind spot.
   - *Absolute walkaround interior indirect ~3.8× below pt in the 0-E scene.* The rect-area
     emitter IS fed to the probe field as a flux-equivalent `fixture` point approx (via
     `coreEmittersToDDGILights`) — NOT a missing-light gap. The gap is dominated by coarse-DDGI
