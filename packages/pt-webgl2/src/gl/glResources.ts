@@ -177,7 +177,19 @@ export class GlResources {
 
     bindRenderTarget(gl, this.#accum);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    setBlendForRegime(gl, regime, this.#samples);
+    // The MRT g-buffer (gNormalDepth@1, gAlbedo@2) holds primary-hit data that is
+    // sample-invariant. It must NOT go through the colour accumulation blend — WebGL2
+    // weights each draw buffer by its OWN output alpha, and gNormalDepth packs linear
+    // depth (>1) in alpha, so the running-average recurrence diverges → NaN. Instead:
+    // write the g-buffer EXACTLY on sample 0 (blend off; dst is cleared so the colour
+    // is also exact), then FREEZE it — samples 1+ accumulate colour only by masking the
+    // aux attachments out of drawBuffers. (bindRenderTarget restored [0,1,2] above.)
+    if (this.#samples === 0) {
+      gl.disable(gl.BLEND);
+    } else {
+      setBlendForRegime(gl, regime, this.#samples);
+      if (this.#auxBuffers) gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.NONE, gl.NONE]);
+    }
 
     prog.use();
     // The copied fork GLSL reads INDIVIDUAL uniforms (no FrameParams UBO).
