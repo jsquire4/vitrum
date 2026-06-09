@@ -27,14 +27,24 @@ export function buildPreamble(defines: ReadonlyMap<string, number>): string {
 const FRAG_HEADER =
   'precision highp float;\nprecision highp int;\nlayout(location = 0) out vec4 pc_fragColor;\n';
 
-/** Compose the full vertex source (preamble + body). */
+// THREE-compat GLSL1→GLSL3 keyword bridges. THREE's WebGLProgram silently rewrites the
+// fork's `varying`/`attribute`/`texture2D`/`gl_FragColor` for GLSL3 via these #defines;
+// our raw `#version 300 es` must emit them or the (verbatim-copied) fork kernels won't
+// compile. Verified against a real GL driver (llvmpipe) — string/mock tests can't catch this.
+const VERT_COMPAT = '#define attribute in\n#define varying out\n#define texture2D texture\n';
+const FRAG_COMPAT =
+  '#define varying in\n#define texture2D texture\n#define textureCube texture\n' +
+  '#define texture2DLodEXT textureLod\n#define textureCubeLodEXT textureLod\n' +
+  '#define gl_FragColor pc_fragColor\n';
+
+/** Compose the full vertex source (preamble + GLSL3-compat defines + body). */
 export function buildVertexSource(defines: ReadonlyMap<string, number>, vertBody: string): string {
-  return `${buildPreamble(defines)}${vertBody}`;
+  return `${buildPreamble(defines)}${VERT_COMPAT}${vertBody}`;
 }
 
-/** Compose the full fragment source (preamble + frag header + body). */
+/** Compose the full fragment source (preamble + frag header + GLSL3-compat defines + body). */
 export function buildFragmentSource(defines: ReadonlyMap<string, number>, fragBody: string): string {
-  return `${buildPreamble(defines)}${FRAG_HEADER}${fragBody}`;
+  return `${buildPreamble(defines)}${FRAG_HEADER}${FRAG_COMPAT}${fragBody}`;
 }
 
 // GLSL sampler keywords whose declared uniforms consume a texture unit.
