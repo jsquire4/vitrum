@@ -53,11 +53,27 @@ export const PPG_PDF_WGSL = /* wgsl */ `
 // STREE_HEADER_F32, STREE_NODE_STRIDE — shared with ppgUpdate).
 const PPG_FOUR_PI: f32 = 12.566370614359172; // 4π — uniform-fallback pdf = 1/4π
 
-// ── World direction → dTree [0,1]² octahedral UV ────────────────────────────
-// octEncode (octahedralCore) returns [-1,1]²; remap to [0,1]² to match the
-// producer's dirToOct convention. Inverse of octDecode(uv * 2 - 1).
-fn ppgDirToOctUv(dir: vec3<f32>) -> vec2<f32> {
-  return octEncode(dir) * 0.5 + 0.5;
+// ── World direction ↔ dTree [0,1]² UV (cylindrical EQUAL-AREA, Müller 2017 §3.2) ──
+// FIX 2026-06-09: this used octEncode (Cigolle 2014, a NON-equal-area octahedral
+// map) while dTree.ts stores solidAngle = 4π·uvArea ASSUMING equal-area. So the
+// guide pdf (leafFlux/totalFlux)/solidAngle did NOT equal the uniform-in-UV
+// sampling density (it dropped the octahedral Jacobian) → the gi-ris MIS source
+// pdf was biased → guided GI GAINED energy, growing as the dTree refined into the
+// distorted diagonal regions (g-p11: PPG-on 2.36× over-bright, Δ grows with frames).
+// The cylindrical map (u = (1-z)/2 uniform in z — Archimedes' hat-box) IS equal-area,
+// so solidAngle = 4π·uvArea is exact and uniform-in-UV = uniform-in-solid-angle.
+// This is the parametrisation Müller's paper actually uses. Train (ppgUpdate.wgsl),
+// pdf, and the sampler below MUST all use this SAME map — keep them in lock-step.
+fn ppgDirToUv(dir: vec3<f32>) -> vec2<f32> {
+  let u = (1.0 - clamp(dir.z, -1.0, 1.0)) * 0.5;            // z∈[+1,−1] → u∈[0,1]
+  let v = atan2(dir.y, dir.x) * 0.15915494309189535 + 0.5; // azimuth/(2π) + 0.5 → [0,1]
+  return vec2<f32>(u, clamp(v, 0.0, 1.0));
+}
+fn ppgUvToDir(uv: vec2<f32>) -> vec3<f32> {
+  let z = 1.0 - 2.0 * uv.x;
+  let r = sqrt(max(0.0, 1.0 - z * z));
+  let phi = 6.283185307179586 * (uv.y - 0.5);              // inverse of ppgDirToUv azimuth
+  return vec3<f32>(r * cos(phi), r * sin(phi), z);
 }
 
 // ── sTree descent (mirror of serialise.gpuTraverseSTreeLeaf) ────────────────
@@ -125,7 +141,7 @@ fn ppgEvalPdf(pos: vec3<f32>, wi: vec3<f32>) -> f32 {
   let dOff = ppgDTreeOffsets_gi[dTreeIndex];
   let totalFlux = ppgDTreeBuf_gi[dOff + 2u];
   if (totalFlux <= 0.0) { return 1.0 / PPG_FOUR_PI; }
-  let octUV = ppgDirToOctUv(wi);
+  let octUV = ppgDirToUv(wi);
   let leafBase = ppgDTreeFindLeafBase(dOff, octUV);
   let leafFlux = ppgDTreeBuf_gi[leafBase + 4u];
   let solidAng = ppgDTreeBuf_gi[leafBase + 5u];
@@ -195,8 +211,8 @@ fn ppgSampleGuidedDir(pos: vec3<f32>, rng: ptr<function, u32>) -> vec3<f32> {
   let r0 = rand_f32(rng);
   let r1 = rand_f32(rng);
   let uv = vec2<f32>(u0 + r0 * (u1 - u0), v0 + r1 * (v1 - v0));
-  // [0,1]² UV → [-1,1]² → world dir (inverse of ppgDirToOctUv; == octToDir).
-  return octDecode(uv * 2.0 - 1.0);
+  // [0,1]² UV → world dir via the cylindrical equal-area map (inverse of ppgDirToUv).
+  return ppgUvToDir(uv);
 }
 `;
 

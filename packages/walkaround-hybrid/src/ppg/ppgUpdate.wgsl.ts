@@ -169,10 +169,15 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let lum = luminance(Li);
   if (lum <= 0.0) { return; }
 
-  // Octahedral UV of the incoming direction in WORLD space (deviation 4 fix).
-  // Equivalent to the removed dirToOct: octEncode returns [-1,1]², remapped
-  // to [0,1]² by *0.5+0.5, matching the producer's dirToOct convention.
-  let uv = octEncode(dir) * 0.5 + 0.5;
+  // Cylindrical EQUAL-AREA UV of the incoming WORLD direction (Müller 2017 §3.2).
+  // MUST be byte-identical to ppgPdf.wgsl's ppgDirToUv (train↔pdf↔sample lock-step).
+  // FIX 2026-06-09: was octEncode (Cigolle 2014, NON-equal-area) — that made the
+  // guide pdf (which assumes solidAngle = 4π·uvArea) mismatch the uniform-in-UV
+  // sampling density → biased MIS source pdf → guided GI gained energy. The
+  // cylindrical map is equal-area, so the dTree solidAngle is exact. See ppgPdf.wgsl.
+  let uvU = (1.0 - clamp(dir.z, -1.0, 1.0)) * 0.5;
+  let uvV = atan2(dir.y, dir.x) * 0.15915494309189535 + 0.5;
+  let uv = vec2<f32>(uvU, clamp(uvV, 0.0, 1.0));
 
   // Walk the sTree to the spatial cell for this sample.
   let sBase = sTreeFindLeafBase(pos);
