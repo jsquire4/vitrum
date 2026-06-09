@@ -1,6 +1,6 @@
 {
 	"root": true,
-	"extends": "./node_modules/eslint-config-mdcs/index.js",
+	"extends": "mdcs",
 	"rules": {
 		"no-throw-literal": [
 			"error"
