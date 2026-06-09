@@ -63,6 +63,7 @@ export interface FrameUniforms {
   readonly causticStrategy: number; // 0=none, 1=manifold-nee, 2=photon-map
   readonly mneeMaxIterations: number;
   readonly mneeMaxChainLength: number;
+  readonly backgroundAlpha: number; // 1 = opaque visible env (default); <1 = transparent (alpha-composite)
 }
 
 /**
@@ -222,6 +223,14 @@ export class GlResources {
     prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
     prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
     prog.setFloat('environmentIntensity', frame.environmentIntensity);
+    // H3 FIX (2026-06-09): upload backgroundAlpha. Directly-visible background
+    // (NO_HIT first ray) sets `pc_fragColor.a = backgroundAlpha`, then the running
+    // average multiplies by `opacity`; in the 'normal' regime the SRC_ALPHA blend
+    // weights the fragment by that alpha. Never uploaded → defaulted to 0 → the
+    // background contributed `src*0 + dst*1` every frame and NEVER accumulated
+    // (directly-visible sky/HDRI rendered black). 1 = opaque (accumulates like
+    // geometry); <1 routes to the alpha-composite regime (see #regime).
+    prog.setFloat('backgroundAlpha', frame.backgroundAlpha);
     prog.setMat4('environmentRotation', frame.environmentRotation);
     prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
     if (frame.spectralEnabled) {

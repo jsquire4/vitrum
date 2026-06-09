@@ -60,6 +60,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #bdpt: boolean;
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
+  readonly #backgroundAlpha: number;
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
   readonly #regime: AccumRegime;
@@ -82,11 +83,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#bdpt = opts.bdpt ?? false;
     this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
     this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
+    this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));
     this.#traceTier = traceTier;
     this.#supportsAuxBuffers = traceTier === 'full';
     // Additive HDR accumulation needs EXT_float_blend; otherwise the alpha-composite
-    // ping-pong regime is the unbiased fallback (plan 02 §3).
-    this.#regime = probeGlCaps(opts.device).floatBlend ? 'normal' : 'alpha-composite';
+    // ping-pong regime is the unbiased fallback (plan 02 §3). A transparent
+    // background (backgroundAlpha < 1) ALSO forces alpha-composite — the 'normal'
+    // SRC_ALPHA running-average blend cannot composite partial background coverage
+    // (mirrors the fork's `needsAlphaComposite = bgAlpha !== 1 || !floatBlend`).
+    this.#regime =
+      probeGlCaps(opts.device).floatBlend && this.#backgroundAlpha === 1
+        ? 'normal'
+        : 'alpha-composite';
     this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
   }
 
@@ -301,6 +309,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       causticStrategy: caustic,
       mneeMaxIterations: this.#mneeMaxIterations,
       mneeMaxChainLength: this.#mneeMaxChainLength,
+      backgroundAlpha: this.#backgroundAlpha,
     };
   }
 

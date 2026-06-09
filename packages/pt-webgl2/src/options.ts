@@ -20,4 +20,13 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   readonly spectral?: boolean;
   /** Bidirectional path tracing (S3). Default false. */
   readonly bdpt?: boolean;
+  /**
+   * Opacity of directly-visible background (sky/HDRI) pixels, in [0, 1].
+   * Default 1 (opaque — the environment is visible behind the scene). Values < 1
+   * make the background partially/fully transparent (alpha coverage), which forces
+   * the alpha-composite accumulation regime so the transparency composites
+   * correctly. Before this existed the uniform defaulted to 0 and directly-visible
+   * env never accumulated (rendered black) — see items_to_fix §H3.
+   */
+  readonly backgroundAlpha?: number;
 }
