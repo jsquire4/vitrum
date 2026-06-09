@@ -26,6 +26,28 @@ import {
 import { setBlendForRegime } from './blend.js';
 import { probeGlCaps, type GlCaps } from './glCaps.js';
 
+/**
+ * Per-frame INDIVIDUAL uniforms the (verbatim-copied) fork GLSL reads — it declares
+ * `uniform vec2 resolution; uniform int bounces; uniform mat4 cameraWorldMatrix; ...`,
+ * NOT a FrameParams UBO. Verified on a real driver: a UBO bind alone renders black
+ * (camera matrices read as zero). The engine computes these each frame.
+ */
+export interface FrameUniforms {
+  readonly resolution: readonly [number, number];
+  readonly bounces: number;
+  readonly transmissiveBounces: number;
+  readonly filterGlossyFactor: number;
+  readonly radianceClamp: number;
+  readonly cameraWorldMatrix: Float32Array; // inverse(viewMatrix)
+  readonly invProjectionMatrix: Float32Array; // inverse(projMatrix)
+  readonly environmentIntensity: number;
+  readonly environmentRotation: Float32Array; // mat4
+  readonly spectralEnabled: boolean;
+  readonly causticStrategy: number; // 0=none, 1=manifold-nee, 2=photon-map
+  readonly mneeMaxIterations: number;
+  readonly mneeMaxChainLength: number;
+}
+
 /** The std140 FrameParams UBO binding point — must match the GLSL `layout(binding = 0)`. */
 const FRAME_PARAMS_BINDING = 0;
 /** FrameParams std140 block size in bytes (placeholder until WS5 freezes the layout). */
@@ -142,7 +164,12 @@ export class GlResources {
    * the params UBO, and draws the fullscreen triangle. For the alpha-composite regime it then
    * runs the BlendMaterial composite into the ping-pong pair.
    */
-  drawAccumStep(scene: UploadedSceneTextures, regime: AccumRegime, seed: number): void {
+  drawAccumStep(
+    scene: UploadedSceneTextures,
+    regime: AccumRegime,
+    seed: number,
+    frame: FrameUniforms,
+  ): void {
     const gl = this.#gl;
     if (this.#accum == null) throw new Error('pt-webgl2: drawAccumStep before ensureAccumResources');
     if (this.#ptProgram == null) throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
@@ -153,10 +180,23 @@ export class GlResources {
     setBlendForRegime(gl, regime, this.#samples);
 
     prog.use();
+    // The copied fork GLSL reads INDIVIDUAL uniforms (no FrameParams UBO).
     prog.setInt('seed', seed);
     prog.setFloat('opacity', 1 / (this.#samples + 1));
+    prog.setVec2('resolution', frame.resolution[0], frame.resolution[1]);
+    prog.setInt('bounces', frame.bounces);
+    prog.setInt('transmissiveBounces', frame.transmissiveBounces);
+    prog.setFloat('filterGlossyFactor', frame.filterGlossyFactor);
+    prog.setFloat('uRadianceClamp', frame.radianceClamp);
+    prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
+    prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
+    prog.setFloat('environmentIntensity', frame.environmentIntensity);
+    prog.setMat4('environmentRotation', frame.environmentRotation);
+    prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
+    prog.setInt('uCausticStrategy', frame.causticStrategy);
+    prog.setFloat('uMneeMaxIterations', frame.mneeMaxIterations);
+    prog.setFloat('uMneeMaxChainLength', frame.mneeMaxChainLength);
     this.#bindSceneTextures(prog, scene);
-    this.#bindParamsUbo(prog);
     this.#quad.draw(gl);
 
     if (regime === 'alpha-composite') this.#compositeBlendStep();
@@ -256,11 +296,52 @@ export class GlResources {
     prog.bindTexture('materials', scene.materials);
     prog.bindTexture('attributesArray', scene.attributesArray, gl.TEXTURE_2D_ARRAY);
     prog.bindTexture('lights', scene.lights);
-    if (scene.iesProfiles != null) prog.bindTexture('iesProfiles', scene.iesProfiles, gl.TEXTURE_2D_ARRAY);
-    if (scene.textures2DArray != null) prog.bindTexture('textures', scene.textures2DArray, gl.TEXTURE_2D_ARRAY);
-    if (scene.envMap != null) prog.bindTexture('envMapInfo.map', scene.envMap);
-    if (scene.envMarginal != null) prog.bindTexture('envMapInfo.marginal', scene.envMarginal);
-    if (scene.envConditional != null) prog.bindTexture('envMapInfo.conditional', scene.envConditional);
+    // Every OPTIONAL sampler the fork GLSL declares must reference a valid texture of
+    // the matching type — an unbound sampler defaults to unit 0 and collides with a
+    // different-typed sampler there (GL_INVALID_OPERATION → black). bindTexture no-ops
+    // for inactive samplers, so binding a dummy where there's no scene data is safe.
+    const d2d = this.#dummyTex2D();
+    const d2a = this.#dummyTex2DArray();
+    prog.bindTexture('iesProfiles', scene.iesProfiles ?? d2a, gl.TEXTURE_2D_ARRAY);
+    prog.bindTexture('textures', scene.textures2DArray ?? d2a, gl.TEXTURE_2D_ARRAY);
+    prog.bindTexture('backgroundMap', d2d);
+    prog.bindTexture('sobolTexture', d2d);
+    prog.bindTexture('stratifiedTexture', d2d);
+    prog.bindTexture('stratifiedOffsetTexture', d2d);
+    prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
+    prog.bindTexture('envMapInfo.marginal', scene.envMarginal ?? d2d);
+    prog.bindTexture('envMapInfo.conditional', scene.envConditional ?? d2d);
+  }
+
+  #dummy2dTex: WebGLTexture | null = null;
+  #dummy2dArrTex: WebGLTexture | null = null;
+
+  #dummyTex2D(): WebGLTexture {
+    const gl = this.#gl;
+    if (this.#dummy2dTex == null) {
+      const t = gl.createTexture();
+      if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D texture');
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.#dummy2dTex = t;
+    }
+    return this.#dummy2dTex;
+  }
+
+  #dummyTex2DArray(): WebGLTexture {
+    const gl = this.#gl;
+    if (this.#dummy2dArrTex == null) {
+      const t = gl.createTexture();
+      if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D-array texture');
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
+      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.#dummy2dArrTex = t;
+    }
+    return this.#dummy2dArrTex;
   }
 
   /**

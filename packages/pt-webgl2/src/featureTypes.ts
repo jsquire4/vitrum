@@ -31,7 +31,9 @@ export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
   bdpt: false,
   stainedGlassPerturbation: false,
   additiveAccum: false,
-  randomType: 2,
+  // PCG (0) is the default RNG: pure-compute, no sobol/stratified texture packers
+  // needed (the fork's stratified path is RANDOM_TYPE 2; we can add it later).
+  randomType: 0,
   cameraType: 0,
   debugMode: 0,
 };

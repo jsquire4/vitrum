@@ -20,12 +20,11 @@ import { GlResources } from './gl/glResources.js';
 import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
-import {
-  packFrameParams,
-  type FrameParamsConfig,
-  type FrameParamsScene,
-} from './frameParamsPacker.js';
+import { invertMat4 } from './frameParamsPacker.js';
+import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
+
+const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
@@ -144,9 +143,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       return this.#frameRendered(tex, this.#samplesAccumulated, true, targetSpp);
     }
 
-    const params = packFrameParams(this.#frameConfig(activeBounces), this.#frameSceneInfo(), input, w, h);
-    this.#gpu.uploadFrameParams(params);
-    this.#gpu.drawAccumStep(this.#sceneTextures, this.#regime, input.frameSeed);
+    const frameUniforms = this.#frameUniforms(input, activeBounces, w, h);
+    this.#gpu.drawAccumStep(this.#sceneTextures, this.#regime, input.frameSeed, frameUniforms);
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
 
     const tex = this.#gpu.resultTexture();
@@ -197,27 +195,28 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return { ...DEFAULT_TRACE_FEATURES, bdpt: this.#bdpt, additiveAccum: this.#regime === 'additive' };
   }
 
-  #frameConfig(maxBounces: number): FrameParamsConfig {
+  #frameUniforms(input: FrameInput, bounces: number, w: number, h: number): FrameUniforms {
+    const cameraWorldMatrix = invertMat4(input.viewMatrix);
+    const invProjectionMatrix = invertMat4(input.projMatrix);
+    if (cameraWorldMatrix == null || invProjectionMatrix == null) {
+      throw new Error('renderFrame: singular view/projection matrix');
+    }
+    const caustic =
+      this.#causticStrategy === 'manifold-nee' ? 1 : this.#causticStrategy === 'photon-map' ? 2 : 0;
     return {
-      maxBounces,
-      spectral: this.#spectralEnabled,
-      causticStrategy: this.#causticStrategy,
+      resolution: [w, h],
+      bounces,
+      transmissiveBounces: bounces,
+      filterGlossyFactor: input.quality?.filteredGlossyFactor ?? 0,
+      radianceClamp: 0,
+      cameraWorldMatrix,
+      invProjectionMatrix,
+      environmentIntensity: this.#sceneTextures?.envMap != null ? 1 : 0,
+      environmentRotation: IDENTITY_MAT4,
+      spectralEnabled: this.#spectralEnabled,
+      causticStrategy: caustic,
       mneeMaxIterations: this.#mneeMaxIterations,
       mneeMaxChainLength: this.#mneeMaxChainLength,
-      bdpt: this.#bdpt,
-    };
-  }
-
-  #frameSceneInfo(): FrameParamsScene {
-    const tex = this.#sceneTextures!;
-    const geo = this.#geoPack!;
-    return {
-      triangleCount: geo.triangleCount,
-      bvhNodeCount: geo.bvhNodes.length / 8,
-      lightCount: tex.lightCount,
-      hasEnvironmentMap: tex.envMap != null,
-      environmentMapWidth: tex.envWidth,
-      environmentMapHeight: tex.envHeight,
     };
   }
 
