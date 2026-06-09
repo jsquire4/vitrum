@@ -23,7 +23,7 @@ import {
   type ThreeMaterialConverter,
 } from './mesh.js';
 import { convertLight } from './lights.js';
-import { resolveEnvironment } from './environment.js';
+import { resolveEnvironment, type EnvironmentPayloadMode } from './environment.js';
 
 export {
   vitrumSceneToThree,
@@ -58,6 +58,17 @@ export interface SceneFromThreeJSOptions {
    * null/undefined to fall back to the built-in converter/diagnostic.
    */
   readonly materialConverter?: ThreeMaterialConverter;
+
+  /**
+   * How the resolved `environment.hdri` handle is represented:
+   *  - `'texture'` (default) — a `THREE.Texture`, for the fork-wrapping
+   *    `@vitrum/pt-webgl` (its `vitrumSceneToThree` reads the texture back).
+   *  - `'raw'` — a backend-neutral `{ width, height, data }` equirect payload, so
+   *    the THREE-free path tracers (`@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) can
+   *    sample the IBL. Falls back to the texture when CPU pixels aren't readable.
+   * Set `'raw'` when the target backend is a THREE-free engine.
+   */
+  readonly environmentPayload?: EnvironmentPayloadMode;
 }
 
 function assertSupportedRenderableMaterial(
@@ -222,7 +233,7 @@ export function sceneFromThreeJS(
     }
   });
 
-  const environment = resolveEnvironment(threeScene);
+  const environment = resolveEnvironment(threeScene, options.environmentPayload);
 
   return { primitives, emitters, environment };
 }
