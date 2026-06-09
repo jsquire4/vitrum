@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolvePtWebgpuTraceTier, selectPtWebgpuTraceTier } from '../traceTier.js';
 import {
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from '../webgpuLimits.js';
 
@@ -23,7 +23,7 @@ describe('selectPtWebgpuTraceTier', () => {
     expect(
       selectPtWebgpuTraceTier(
         deviceWithLimits(
-          PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+          PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
           PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
         ),
       ),
@@ -47,7 +47,7 @@ describe('selectPtWebgpuTraceTier', () => {
   it('resolvePtWebgpuTraceTier honors force lite on a full-capable stub', () => {
     expect(
       resolvePtWebgpuTraceTier(
-        deviceWithLimits(PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP, 8),
+        deviceWithLimits(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8),
         'lite',
       ),
     ).toBe('lite');

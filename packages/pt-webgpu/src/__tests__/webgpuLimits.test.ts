@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -8,9 +9,13 @@ import {
 } from '../webgpuLimits.js';
 
 describe('webgpuLimits', () => {
-  it('PT limits request storage buffers only (no storage texture bump)', () => {
-    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageTexturesPerShaderStage).toBeUndefined();
-    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage).toBe(10);
+  it('PT full limits request the stage-level buffer and texture floors', () => {
+    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageTexturesPerShaderStage).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
   });
 
   it('mergeAdapterRequiredLimits clamps to adapter caps', () => {

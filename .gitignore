@@ -35,3 +35,4 @@ tools/benchmark-runner/results/acceptance/
 
 # Local GPU capture scratch (not committed baselines)
 tools/reference-renders/tmp/
+.gitnexus

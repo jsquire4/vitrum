@@ -84,6 +84,23 @@ interface PtWebglModuleLike {
   readonly createPTEngine_WebGL2: (opts: WebGL2PathTracerOptionsLike) => Promise<Engine>;
 }
 
+export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl';
+
+export type CreateEngineErrorPhase =
+  | 'create:walkaround-hybrid'
+  | 'create:pt-webgpu'
+  | 'create:pt-webgl'
+  | 'canvas-configure'
+  | 'attach:resize'
+  | 'attach:swapchain'
+  | 'attach:renderFrame';
+
+export interface CreateEngineErrorEvent {
+  readonly phase: CreateEngineErrorPhase;
+  readonly backend?: CreateEngineBackendId;
+  readonly recoverable: boolean;
+}
+
 /** When scene layout needs TLAS, default walkaround `bvhMode` unless host set one. */
 export function mergeWalkaroundTlasExtension(
   advanced: Partial<HybridEngineOptions> | undefined,
@@ -134,6 +151,11 @@ export interface CreateEngineOptions {
    *  / CI artifact (§4.1 / §10.3). Not called for the pt-webgl / pt-webgpu
    *  backends (they have their own tier selection). */
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
+
+  /** Host-visible error report for recoverable fallback and canvas plumbing
+   *  failures. Recoverable events are still handled internally; unrecoverable
+   *  events are reported immediately before the original error is re-thrown. */
+  readonly onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
 }
 
 export async function createEngine(opts: CreateEngineOptions): Promise<Engine & Partial<GIStatePersistable>> {
@@ -163,12 +185,84 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
   }
 
   if (backend === 'walkaround-hybrid') {
-    return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree, tlasAudit.needsTlas);
+    try {
+      return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree, tlasAudit.needsTlas);
+    } catch (err) {
+      reportCreateEngineError(opts, err, {
+        phase: 'create:walkaround-hybrid',
+        backend: 'walkaround-hybrid',
+        recoverable: true,
+      });
+      console.warn(
+        `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ` +
+        `${gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl'}.`,
+        err,
+      );
+      return await constructPathTracerFallback(opts, vitrumScene, sceneInputIsThree, gpu.isWebGPU);
+    }
   }
   if (backend === 'pt-webgpu') {
-    return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
+    try {
+      return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
+    } catch (err) {
+      reportCreateEngineError(opts, err, {
+        phase: 'create:pt-webgpu',
+        backend: 'pt-webgpu',
+        recoverable: true,
+      });
+      console.warn('[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl.', err);
+      return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+    }
   }
-  return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
+  return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+}
+
+function reportCreateEngineError(
+  opts: CreateEngineOptions,
+  error: unknown,
+  event: CreateEngineErrorEvent,
+): void {
+  try {
+    opts.onError?.(error, event);
+  } catch {}
+}
+
+async function constructPathTracerFallback(
+  opts: CreateEngineOptions,
+  vitrumScene: Scene,
+  sceneInputIsThree: boolean,
+  tryWebGpuFirst: boolean,
+): Promise<Engine> {
+  if (tryWebGpuFirst) {
+    try {
+      return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
+    } catch (err) {
+      reportCreateEngineError(opts, err, {
+        phase: 'create:pt-webgpu',
+        backend: 'pt-webgpu',
+        recoverable: true,
+      });
+      console.warn('[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl.', err);
+    }
+  }
+  return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+}
+
+async function constructPathTracerWebGLFallback(
+  opts: CreateEngineOptions,
+  vitrumScene: Scene,
+  sceneInputIsThree: boolean,
+): Promise<Engine> {
+  try {
+    return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
+  } catch (err) {
+    reportCreateEngineError(opts, err, {
+      phase: 'create:pt-webgl',
+      backend: 'pt-webgl',
+      recoverable: false,
+    });
+    throw err;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -338,7 +432,13 @@ export async function constructWalkaround(
   // this configure step, a host using attachVitrum() against a WebGPU
   // backend gets a black canvas. We configure here (not in attachVitrum)
   // because createEngine owns the GPUDevice handle.
-  configureWebGpuCanvas(opts.canvas, device);
+  configureWebGpuCanvas(opts.canvas, device, (err) => {
+    reportCreateEngineError(opts, err, {
+      phase: 'canvas-configure',
+      backend: 'walkaround-hybrid',
+      recoverable: true,
+    });
+  });
 
   return wrapWithIdempotentDispose(engine, () => {
     // Don't destroy a device we don't own — the shared-device owner (the
@@ -369,7 +469,7 @@ export async function constructPathTracerWebGPU(
   const merged: PTEngineWebGPUOptions = {
     device,
     // A shared device is built with the limit UNION (≥ the full pt-webgpu
-    // floor of 10 buffers / 5 textures), so force the full trace tier here —
+    // per-stage buffer/texture floor), so force the full trace tier here —
     // the union exists precisely so both engines run at full fidelity, and the
     // auto-resolver would also pick 'full' from these limits. Explicit is safer
     // (it surfaces a clear throw if a caller ever passes an under-spec device).
@@ -386,7 +486,13 @@ export async function constructPathTracerWebGPU(
   // shared device the realtime engine owns the canvas, so skip it here to avoid
   // re-configuring the same context twice.
   if (shared == null) {
-    configureWebGpuCanvas(opts.canvas, device);
+    configureWebGpuCanvas(opts.canvas, device, (err) => {
+      reportCreateEngineError(opts, err, {
+        phase: 'canvas-configure',
+        backend: 'pt-webgpu',
+        recoverable: true,
+      });
+    });
   }
 
   return wrapWithIdempotentDispose(engine, () => {

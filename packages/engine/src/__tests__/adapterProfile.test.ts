@@ -4,6 +4,8 @@ import {
   HYBRID_LITE_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from '@vitrum/pt-webgpu';
@@ -32,31 +34,43 @@ const LITE_BUF = HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!;
 const LITE_TEX = HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!;
 
 describe('probeAdapterProfile — verdict logic (no GPU)', () => {
-  it('16/8 hardware → full hybrid, pt-webgpu full, ultra ceiling', async () => {
+  it('16/8 hardware is full hybrid and pt-webgpu lite', async () => {
     const p = await probeAdapterProfile(
       fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' }),
     );
     expect(p.hasWebGPU).toBe(true);
     expect(p.hybridCapable).toBe(true);
     expect(p.hybridLiteCapable).toBe(true);
-    expect(p.ptWebgpuTier).toBe('full');
+    expect(p.ptWebgpuTier).toBe('lite');
     expect(p.isSoftwareAdapter).toBe(false);
     expect(p.recommendedRealtimeTier).toBe('ultra');
-    expect(p.recommendedHeroBackend).toBe('pt-webgpu-full');
+    expect(p.recommendedHeroBackend).toBe('pt-webgpu-lite');
     expect(p.maxStorageBuffersPerStage).toBe(16);
     expect(p.maxStorageTexturesPerStage).toBe(8);
   });
 
-  it('10/6 → not full hybrid but lite-capable, pt-webgpu full, medium ceiling', async () => {
+  it('10/6 is not full hybrid but is lite-capable for both realtime and pt-webgpu', async () => {
     // 10 buffers / 6 textures: below hybrid full (16/8), at/above hybrid lite
-    // (10/6), and at/above pt-webgpu full (10 buf / 5 tex).
+    // (10/6), and at/above pt-webgpu lite (8 buf / 4 tex).
     const p = await probeAdapterProfile(
       fakeAdapter(10, 6, { vendor: 'intel', architecture: 'gen12' }),
     );
     expect(p.hybridCapable).toBe(false);
     expect(p.hybridLiteCapable).toBe(true);
-    expect(p.ptWebgpuTier).toBe('full');
+    expect(p.ptWebgpuTier).toBe('lite');
     expect(p.recommendedRealtimeTier).toBe('medium');
+    expect(p.recommendedHeroBackend).toBe('pt-webgpu-lite');
+  });
+
+  it('full pt-webgpu tier flips at the stage-level full floor', async () => {
+    const p = await probeAdapterProfile(
+      fakeAdapter(
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+        { vendor: 'nvidia', architecture: 'ampere' },
+      ),
+    );
+    expect(p.ptWebgpuTier).toBe('full');
     expect(p.recommendedHeroBackend).toBe('pt-webgpu-full');
   });
 

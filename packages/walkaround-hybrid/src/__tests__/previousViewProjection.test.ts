@@ -49,6 +49,7 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
     ready: false,
     updateFrame: () => Promise.resolve(),
     setSunIntensityMultiplier: () => undefined,
+    setSkyParams: () => undefined,
     setGlassMixScale: () => undefined,
     getReadAtlasGPUTextures: () => null,
     syncRestirBvhBuffers: () => undefined,

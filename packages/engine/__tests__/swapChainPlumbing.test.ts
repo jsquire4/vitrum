@@ -149,6 +149,15 @@ describe('acquireSwapChainView', () => {
     expect(view).toBeUndefined();
   });
 
+  it('reports getCurrentTexture failures through the optional callback', () => {
+    const ctx = makeFakeWebGPUContext({ getCurrentTextureThrows: true });
+    const onError = vi.fn();
+    const view = acquireSwapChainView(ctx, onError);
+    expect(view).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
   it('re-acquires on each call (no caching across frames per WebGPU spec)', () => {
     const ctx = makeFakeWebGPUContext();
     acquireSwapChainView(ctx);

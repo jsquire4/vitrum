@@ -15,7 +15,7 @@
 
 import type { Engine, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
-import { createEngine, type CreateEngineOptions } from '../createEngine.js';
+import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // A2 — WebGPU swap-chain detection + per-frame view acquisition.
@@ -86,11 +86,15 @@ export function resolveQualityOption(
  *  `FrameInput.swapChainView` undefined so HybridEngine skips the frame.
  *
  *  @internal Exported for unit-test access. */
-export function acquireSwapChainView(ctx: GPUCanvasContext | null): GPUTextureView | undefined {
+export function acquireSwapChainView(
+  ctx: GPUCanvasContext | null,
+  onError?: (error: unknown) => void,
+): GPUTextureView | undefined {
   if (ctx == null) return undefined;
   try {
     return ctx.getCurrentTexture().createView();
-  } catch {
+  } catch (err) {
+    onError?.(err);
     return undefined;
   }
 }
@@ -205,6 +209,12 @@ export interface AttachVitrumHandle {
 }
 
 export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVitrumHandle> {
+  const reportError = (error: unknown, event: CreateEngineErrorEvent): void => {
+    try {
+      opts.onError?.(error, event);
+    } catch {}
+  };
+
   const engine = await createEngine({
     canvas: opts.canvas,
     scene: opts.scene as Parameters<typeof createEngine>[0]['scene'],
@@ -212,6 +222,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.debug != null ? { debug: opts.debug } : {}),
     ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
+    ...(opts.onError != null ? { onError: opts.onError } : {}),
   });
 
   // Telemetry forwarders. We use the engine's own subscription API rather
@@ -252,7 +263,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         viewportH = viewport.height;
       }
       if (needsExplicitSetSize) {
-        try { engine.setSize?.(viewportW, viewportH); } catch {}
+        try {
+          engine.setSize?.(viewportW, viewportH);
+        } catch (err) {
+          reportError(err, { phase: 'attach:resize', recoverable: true });
+        }
       }
     });
     resizeObserver.observe(opts.canvas);
@@ -295,7 +310,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     const view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
     const proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
     // A2 — acquire the per-frame swap-chain view for WebGPU backends.
-    const swapChainView = acquireSwapChainView(webgpuContext);
+    const swapChainView = acquireSwapChainView(webgpuContext, (err) => {
+      reportError(err, { phase: 'attach:swapchain', recoverable: true });
+    });
     const quality = resolveQualityOption(opts.quality);
 
     const input = composeAttachVitrumFrameInput({
@@ -319,6 +336,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     } catch (err) {
       // Surface engine errors but don't kill the loop — the engine has its
       // own error state that the host can observe via engine.state.
+      reportError(err, { phase: 'attach:renderFrame', recoverable: true });
       console.error('[attachVitrum] renderFrame threw:', err);
     }
     prevView = view;

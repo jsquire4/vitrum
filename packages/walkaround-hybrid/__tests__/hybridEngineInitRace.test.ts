@@ -246,6 +246,24 @@ async function drainMicrotasks(): Promise<void> {
 }
 
 describe('HybridEngine — in-flight init guard (Fix 1)', () => {
+  it('treats an empty core scene as ready without building BVH or pipeline resources', async () => {
+    const engine = makeEngine();
+    const s = getState();
+    const emptyScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    engine.setScene(emptyScene);
+    await drainMicrotasks();
+
+    expect(engine.state).toBe('ready');
+    expect(s.buildBVHCalls).toHaveLength(0);
+    expect(s.pipelineInitDeferreds).toHaveLength(0);
+    expect(s.pipelineConstructed).toHaveLength(0);
+  });
+
   it('three concurrent setScene() calls — only the last one wins; first two dispose their locals', async () => {
     const engine = makeEngine();
     const e = engine as unknown as Record<string, unknown>;

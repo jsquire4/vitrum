@@ -169,6 +169,20 @@ export function solveSkin(
       `solveSkin: boneInverses length ${prim.boneInverses.length} != bones length ${prim.bones.length}.`,
     );
   }
+  for (let i = 0; i < prim.skinIndices.length; i += 1) {
+    const boneIndex = prim.skinIndices[i]!;
+    if (boneIndex >= boneCount) {
+      throw new Error(
+        `solveSkin: skinIndices[${i}] references bone ${boneIndex}, but only ${boneCount} bones exist.`,
+      );
+    }
+  }
+  for (let i = 0; i < prim.skinWeights.length; i += 1) {
+    const weight = prim.skinWeights[i]!;
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new Error(`solveSkin: skinWeights[${i}] is invalid (${weight}).`);
+    }
+  }
 
   const positions = outPositions ?? new Float32Array(vertCount * 3);
   const normals = outNormals ?? new Float32Array(vertCount * 3);

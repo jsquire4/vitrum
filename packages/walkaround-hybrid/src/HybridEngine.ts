@@ -829,6 +829,7 @@ export class HybridEngine implements Engine {
     this._rebuildKeyFingerprintSeen = cfg.rebuildKeyFingerprintSeen;
 
     this._ddgi = new DDGI({ debug: this._cfg.debug });
+    this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
     this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);
     this._ctorLights = opts.lights ?? [];
@@ -1141,6 +1142,9 @@ export class HybridEngine implements Engine {
     this._bvhBuffers = result.bvhBuffers;
     this._lastScene = result.updatedScene;
     this._renderScene = sceneWithAnalyticMeshFallback(result.updatedScene);
+    if (result.refreshRcMaterials === true) {
+      this._rc?.refreshMaterialsFromCore(result.bvhBuffers.coreMaterials);
+    }
     if (result.applySubsystems !== false) {
       this._applyPrimitiveUpdateSubsystems(result);
     }
@@ -1403,6 +1407,7 @@ export class HybridEngine implements Engine {
     };
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
+    this._rc?.invalidateBindings();
     this._syncDdgiLightsFromCoreScene();
     this._pipeline?.requestAccumReset();
   }
@@ -1546,6 +1551,8 @@ export class HybridEngine implements Engine {
 
     if (!changed) return;
 
+    this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
+
     // Invalidate the DDGI probe atlas — re-converges from scratch over the
     // next STRIDE frames (~8 frames, ~133 ms at 60 FPS).
     this._ddgi.invalidateProbeCache();
@@ -1636,6 +1643,7 @@ export class HybridEngine implements Engine {
     const sky = this._skyScalarsFromEnvironment(nextEnv);
     if (sky.skyTint !== undefined) this._skyTint = sky.skyTint;
     if (sky.skyIrradiance !== undefined) this._skyIrradiance = sky.skyIrradiance;
+    this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
 
     // Re-converge the world-space DDGI irradiance atlas (the sky-dome term feeds
     // the probe rays) and discard temporal history so the new sky energy shows

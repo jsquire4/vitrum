@@ -4,7 +4,7 @@ import {
   HYBRID_LITE_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -77,7 +77,7 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it('reuses a host-supplied adapter and never requests a new one', async () => {
-    const { adapter } = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const { adapter } = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     const requestAdapter = vi.fn(() => Promise.resolve(null as GPUAdapter | null));
     restore = installNavigatorGpu(requestAdapter);
 
@@ -87,7 +87,7 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it('returns the host-owned device, preferred format, and profile', async () => {
-    const { adapter, device } = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const { adapter, device } = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     const result = await negotiateWebGPUDevice({ adapter, target: 'pt-webgpu' });
     expect(result.device).toBe(device);
@@ -99,12 +99,12 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it("target 'pt-webgpu' requests the adapter-aware full tier limits", async () => {
-    const fa = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'pt-webgpu' });
     const limits = fa.lastDescriptor()?.requiredLimits;
     expect(limits?.maxStorageBuffersPerShaderStage).toBe(
-      PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
     expect(limits?.maxStorageTexturesPerShaderStage).toBe(
       PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -162,12 +162,11 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it("target 'progressive' requests the limit union on a capable adapter", async () => {
-    const fa = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive' });
     const limits = fa.lastDescriptor()?.requiredLimits;
-    // Union of hybrid-full (16/8) and pt-webgpu-full (10/5) → 16/8 dominates.
-    expect(limits?.maxStorageBuffersPerShaderStage).toBe(16);
+    expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
     expect(limits?.maxStorageTexturesPerShaderStage).toBe(8);
   });
 
@@ -188,7 +187,7 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it('explicit requiredLimits override the target and are clamped to the adapter', async () => {
-    const fa = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     // Over-ask 999 buffers — must clamp down to the adapter's 16.
     await negotiateWebGPUDevice({
@@ -197,11 +196,11 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
       requiredLimits: { maxStorageBuffersPerShaderStage: 999 },
     });
     const limits = fa.lastDescriptor()?.requiredLimits;
-    expect(limits?.maxStorageBuffersPerShaderStage).toBe(16);
+    expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
   });
 
   it('forwards requiredFeatures and label verbatim to requestDevice', async () => {
-    const fa = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     await negotiateWebGPUDevice({
       adapter: fa.adapter,
@@ -215,7 +214,7 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   });
 
   it('does not destroy or track the returned device (host owns it)', async () => {
-    const fa = fakeAdapter(16, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     const result = await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'pt-webgpu' });
     // The helper holds no reference and registers no teardown — the device is

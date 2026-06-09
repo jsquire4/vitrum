@@ -182,6 +182,10 @@ export class DDGI {
     this._pass.setSunIntensityMultiplier(m);
   }
 
+  setSkyParams(tint: [number, number, number], irradiance: number): void {
+    this._pass.setSkyParams(tint, irradiance);
+  }
+
   /**
    * Set the glass mix scale on the underlying ProbeUpdatePass.
    * Forwarded from `HybridEngineFrameOrchestrator` so it doesn't reach

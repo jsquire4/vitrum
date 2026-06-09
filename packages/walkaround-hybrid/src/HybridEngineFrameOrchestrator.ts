@@ -340,6 +340,7 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   });
 
   if (ddgiLayerOn) {
+    deps.subsystems.ddgi.setSkyParams?.(deps.lighting.skyTint, deps.lighting.skyIrradiance);
     void deps.subsystems.ddgi.updateFrame({
       ...(coreScene != null ? { coreScene } : {}),
       device: deps.flags.device,

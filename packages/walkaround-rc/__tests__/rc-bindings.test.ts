@@ -243,12 +243,18 @@ describe('RCDispatcher', () => {
   it('has dispatchFrameRaw and dispose methods', () => {
     const dispatcher = new RCDispatcher();
     expect(typeof dispatcher.dispatchFrameRaw).toBe('function');
+    expect(typeof dispatcher.invalidateBindings).toBe('function');
     expect(typeof dispatcher.dispose).toBe('function');
   });
 
   it('dispose is safe to call before init', () => {
     const dispatcher = new RCDispatcher();
     expect(() => dispatcher.dispose()).not.toThrow();
+  });
+
+  it('invalidateBindings is safe to call before init', () => {
+    const dispatcher = new RCDispatcher();
+    expect(() => dispatcher.invalidateBindings()).not.toThrow();
   });
 });
 

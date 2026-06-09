@@ -208,6 +208,7 @@ function makeFrameDeps(opts: {
     updateFrame: () => Promise.resolve(),
     // Forwarding-façade methods (interface-hygiene refactor 2026-06-02)
     setSunIntensityMultiplier: () => undefined,
+    setSkyParams: () => undefined,
     setGlassMixScale: () => undefined,
     getReadAtlasGPUTextures: () => null,
     // Live BVH propagation (THREE-decouple): propagateBvhToGiSubsystems syncs the

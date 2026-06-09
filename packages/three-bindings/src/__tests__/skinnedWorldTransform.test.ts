@@ -124,4 +124,44 @@ describe('skinned-mesh world transform round trip', () => {
     expect(prim.bindMatrix).toBeUndefined();
     expect(prim.bindMatrixInverse).toBeUndefined();
   });
+
+  it('throws when skinIndex/skinWeight attributes are not four-wide', () => {
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0]), 3));
+    geo.setAttribute('normal', new BufferAttribute(new Float32Array([0, 0, 1]), 3));
+    geo.setAttribute('skinIndex', new BufferAttribute(new Uint16Array([0, 0, 0]), 3));
+    geo.setAttribute('skinWeight', new BufferAttribute(new Float32Array([1, 0, 0, 0]), 4));
+    const bone = new Bone();
+    const mesh = new SkinnedMesh(geo, new MeshStandardMaterial());
+    mesh.name = 'bad-skin-width';
+    mesh.add(bone);
+    mesh.bind(new Skeleton([bone]));
+    const scene = new Scene();
+    scene.add(mesh);
+    scene.updateMatrixWorld(true);
+
+    expect(() => sceneFromThreeJS(scene)).toThrow(
+      /SkinnedMesh "bad-skin-width" skinIndex attribute itemSize 3; expected 4/,
+    );
+  });
+
+  it('throws when skinIndex references a bone outside the skeleton', () => {
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0]), 3));
+    geo.setAttribute('normal', new BufferAttribute(new Float32Array([0, 0, 1]), 3));
+    geo.setAttribute('skinIndex', new BufferAttribute(new Uint16Array([1, 0, 0, 0]), 4));
+    geo.setAttribute('skinWeight', new BufferAttribute(new Float32Array([1, 0, 0, 0]), 4));
+    const bone = new Bone();
+    const mesh = new SkinnedMesh(geo, new MeshStandardMaterial());
+    mesh.name = 'bad-skin-bone';
+    mesh.add(bone);
+    mesh.bind(new Skeleton([bone]));
+    const scene = new Scene();
+    scene.add(mesh);
+    scene.updateMatrixWorld(true);
+
+    expect(() => sceneFromThreeJS(scene)).toThrow(
+      /SkinnedMesh "bad-skin-bone" skinIndex\[0\] references bone 1; skeleton has 1 bones/,
+    );
+  });
 });

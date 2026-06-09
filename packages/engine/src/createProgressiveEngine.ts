@@ -28,7 +28,7 @@ import {
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import {
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   type PTEngineWebGPUOptions,
 } from '@vitrum/pt-webgpu';
@@ -133,17 +133,14 @@ export interface ProgressiveEngineHandle {
  *
  * Pure + exported so a host can preflight an adapter (`computeProgressiveLimitUnion`
  * + compare to `adapter.limits`) before committing, and so the union is unit-
- * testable without a GPU. Today the walkaround floor (16 buffers / 8 textures)
- * dominates pt-webgpu's (10 / 5) on both axes, but taking the explicit max keeps
- * this correct if either floor moves.
+  * testable without a GPU. The pt-webgpu full trace layout currently dominates
+  * the buffer floor, while walkaround-hybrid dominates the texture floor.
  */
 export function computeProgressiveLimitUnion(): Record<string, number> {
-  // The two FULL-tier requiredLimits sets. pt-webgpu's full tier is keyed by the
-  // per-GROUP buffer peak + the per-stage texture peak (see webgpuLimits.ts); the
-  // device-level limit it must request is the same maxStorageBuffersPerShaderStage.
+  // The two FULL-tier requiredLimits sets.
   const hybridFull = HYBRID_WEBGPU_REQUIRED_LIMITS;
   const ptWebgpuFull: Record<string, number> = {
-    maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+    maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   };
   const union: Record<string, number> = {};

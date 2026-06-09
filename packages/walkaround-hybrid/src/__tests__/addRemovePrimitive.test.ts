@@ -194,8 +194,9 @@ describe('walkaround-hybrid HybridEngine.addPrimitive / removePrimitive', () => 
       });
       expect(() => engine.removePrimitive('only')).not.toThrow();
       expect(storedIds(engine)).toEqual([]);
-      // The engine is mid-(re)init for the empty scene, not errored/disposed.
-      expect(engine.state).toBe('initializing');
+      // Empty / sky-only scenes are valid: no BVH/pipeline is built, but the
+      // engine is ready to render skipped frames and accept later geometry.
+      expect(engine.state).toBe('ready');
     } finally {
       engine.dispose();
     }

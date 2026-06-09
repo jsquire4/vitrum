@@ -22,6 +22,50 @@ function triScene(): Scene {
   return { primitives: [prim], emitters: [], environment: { kind: 'none' } } as Scene;
 }
 
+function tri(id: string, x: number): MeshPrimitive {
+  return {
+    kind: 'mesh',
+    id,
+    positions: new Float32Array([x, -1, 0, x + 1, -1, 0, x + 1, 1, 0, x, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
+    material: GREY,
+  };
+}
+
+function sceneWithEmitter(): Scene {
+  return {
+    primitives: [tri('tri', 0)],
+    emitters: [
+      {
+        kind: 'point',
+        id: 'point-a',
+        position: [1, 2, 3],
+        color: [1, 1, 1],
+        intensity: 2,
+      },
+    ],
+    environment: { kind: 'none' },
+  };
+}
+
+function hdriScene(): Scene {
+  return {
+    primitives: [tri('tri', 0)],
+    emitters: [],
+    environment: {
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([0.25, 0.5, 1]),
+      },
+      intensity: 1,
+    },
+  };
+}
+
 function opts(): PTEngineWebGL2Options {
   return { device: createMockGl() };
 }
@@ -54,16 +98,26 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.accumulates).toBe(true);
     expect(c.causticStrategy).toBe('none');
     expect(c.supportedPrimitiveKinds?.has('mesh')).toBe(true);
-    expect(c.supportsIncrementalScene).toBe(false);
+    expect(c.supportsIncrementalScene).toBe(true);
     expect(c.incrementalPatchSupport).toEqual({
-      transform: false,
-      positions: false,
-      material: false,
-      emitter: false,
-      topology: false,
+      transform: true,
+      positions: true,
+      material: true,
+      emitter: true,
+      topology: true,
     });
-    expect(c.supportDetails?.mutations.material).toBe('unsupported');
-    expect(c.supportDetails?.mutations.environment).toBe('unsupported');
+    expect(c.supportsAddRemovePrimitive).toBe(true);
+    expect(c.supportDetails?.mutations.material).toBe('fallback-rebuild');
+    expect(c.supportDetails?.mutations.environment).toBe('fallback-rebuild');
+  });
+
+  it('exposes fallback-rebuild scene mutation methods', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    expect(typeof e.updatePrimitive).toBe('function');
+    expect(typeof e.updateEmitter).toBe('function');
+    expect(typeof e.updateEnvironment).toBe('function');
+    expect(typeof e.addPrimitive).toBe('function');
+    expect(typeof e.removePrimitive).toBe('function');
   });
 
   it('setScene ingests via shared-bvh; getScene returns the filtered scene', async () => {
@@ -118,5 +172,52 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e.state).toBe('disposed');
     expect(() => e.setScene(triScene())).toThrow(/disposed/);
     e.dispose(); // idempotent
+  });
+
+  it('updatePrimitive rebuilds from the patched retained scene and resets accumulation', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene(triScene());
+    e.renderFrame(frame(16));
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
+
+    e.updatePrimitive?.('tri', { material: { roughness: 0.25 } } as never);
+    const scene = e.getScene?.();
+    const prim = scene?.primitives[0];
+    expect(prim?.kind).toBe('mesh');
+    if (prim?.kind === 'mesh') {
+      expect(prim.material.roughness).toBe(0.25);
+      expect(prim.material.baseColor).toEqual(GREY.baseColor);
+    }
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(1);
+  });
+
+  it('updateEmitter and updateEnvironment rebuild from patched scene snapshots', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene(sceneWithEmitter());
+
+    e.updateEmitter?.('point-a', { intensity: 4 });
+    expect(e.getScene?.()?.emitters[0]?.intensity).toBe(4);
+
+    e.updateEnvironment?.(hdriScene().environment);
+    const scene = e.getScene?.();
+    expect(scene?.environment.kind).toBe('hdri');
+    expect(e._debugSceneTex?.envMap).toBe(true);
+  });
+
+  it('addPrimitive and removePrimitive rebuild, validate ids, and allow an empty scene', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene({ primitives: [tri('a', 0)], emitters: [], environment: { kind: 'none' } });
+
+    e.addPrimitive?.(tri('b', 2));
+    expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['a', 'b']);
+    expect(() => e.addPrimitive?.(tri('b', 4))).toThrow(/already exists/);
+
+    e.removePrimitive?.('a');
+    expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['b']);
+    expect(() => e.removePrimitive?.('missing')).toThrow(/not found/);
+
+    e.removePrimitive?.('b');
+    expect(e.getScene?.()?.primitives).toEqual([]);
+    expect(e.renderFrame(frame(16)).kind).toBe('rendered');
   });
 });

@@ -286,12 +286,15 @@ export class PipelineInitCoordinator {
     const host = this.host;
     const initStart = host.debug ? performance.now() : 0;
 
-    // Poll until scene has enough geometry (or 5s timeout).
+    // Poll until scene has enough geometry (or 5s timeout). A concrete empty
+    // scene is valid: it gives hosts a clean sky-only / pre-geometry mount state
+    // without turning a zero-mesh scene into a delayed init error.
     const pollStart = Date.now();
     let pollIters = 0;
     while (!this._disposed && mySeq === this._initSeq) {
       const elapsed = Date.now() - pollStart;
       if (elapsed >= 5_000) break;
+      if (host.lastScene != null && !host.coreSceneSuppliesMeshes()) break;
       if (host.isSceneReadyForBvh()) break;
       await new Promise<void>((r) => setTimeout(r, 50));
       pollIters++;
@@ -311,6 +314,16 @@ export class PipelineInitCoordinator {
 
     if (host.debug) {
       console.log('[hybrid:debug] scene-ready', { pollIters, elapsed: Date.now() - pollStart, seq: mySeq });
+    }
+
+    if (host.lastScene != null && !host.coreSceneSuppliesMeshes()) {
+      if (host.debug) {
+        console.log('[hybrid:debug] empty scene; ready without BVH/pipeline', { seq: mySeq });
+      }
+      host.rollbackBvh();
+      host.setState('ready');
+      if (mySeq === this._initSeq) this._initRunning = false;
+      return;
     }
 
     // Locals — must be disposed if we lose the race before publishing

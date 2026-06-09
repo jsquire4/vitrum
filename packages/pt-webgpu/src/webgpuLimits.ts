@@ -1,8 +1,7 @@
 /**
- * Device limits for {@link createPTEngine_WebGPU}. Does not raise
- * `maxStorageTexturesPerShaderStage` — the trace pass is buffer-heavy only.
- * Host pages that also run walkaround-hybrid must use
- * `HYBRID_WEBGPU_REQUIRED_LIMITS` from `@vitrum/walkaround-hybrid` instead.
+ * Device limits for {@link createPTEngine_WebGPU}. Host pages that also run
+ * walkaround-hybrid must request the per-key union of these limits and
+ * `HYBRID_WEBGPU_REQUIRED_LIMITS` from `@vitrum/walkaround-hybrid`.
  */
 /**
  * Full tier uses 4 bind groups (WS2 added group 3); peak storage buffers in any
@@ -12,15 +11,17 @@
  * storage TEXTURE but core WebGPU rejects that format for read_write storage
  * (gpuweb #4651), so it is a storage buffer — one fewer storage texture, one more
  * storage buffer. Group 3 carries ONE read-only storage buffer (the WS2
- * many-light importance-sampling tree). This per-GROUP peak is the tier gate; the
- * actual per-STAGE storage-buffer count (~26) is far below any full-tier-capable
- * adapter's `maxStorageBuffersPerShaderStage` (desktop GPUs report ≥ 64).
+ * many-light importance-sampling tree). The WebGPU device-request contract is
+ * per-STAGE, so the exported full-tier request uses the aggregate storage-buffer
+ * count below; this per-group peak remains useful for layout audits.
  */
 export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 10;
 
-/** @deprecated Use {@link PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP}. */
+/** Full-tier storage-buffer bindings visible to the compute stage. */
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 28;
+
 export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP;
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
 
 /** Lite trace pass: bindings 2–8 (7) + read_write accum at 2 → 8 storage buffers. */
 export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
@@ -38,6 +39,7 @@ export const PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE = 4;
 
 export const PT_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBuffersPerShaderStage: PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 };
 
 /** Request the highest tier the adapter can satisfy (used by host device acquisition). */
@@ -47,11 +49,11 @@ export function ptWebgpuRequiredLimitsForAdapter(
   const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
   const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
   if (
-    maxBuffers >= PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP &&
+    maxBuffers >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
     maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE
   ) {
     return {
-      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     };
   }

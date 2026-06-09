@@ -406,6 +406,64 @@ function copyUint32ComponentsForVertices(
   return out;
 }
 
+function validateSkinAttributeShapes(
+  label: string,
+  positions: FloatAttribute,
+  normals: FloatAttribute,
+  skinIndexAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  skinWeightAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+): number {
+  if (positions.itemSize !== 3) {
+    throw new Error(`SkinnedMesh "${label}" position attribute itemSize ${positions.itemSize}; expected 3.`);
+  }
+  if (normals.itemSize !== 3) {
+    throw new Error(`SkinnedMesh "${label}" normal attribute itemSize ${normals.itemSize}; expected 3.`);
+  }
+  const vertexCount = positions.array.length / 3;
+  if (!Number.isInteger(vertexCount)) {
+    throw new Error(`SkinnedMesh "${label}" position attribute length ${positions.array.length} is not divisible by 3.`);
+  }
+  if (skinIndexAttr.itemSize !== 4) {
+    throw new Error(`SkinnedMesh "${label}" skinIndex attribute itemSize ${skinIndexAttr.itemSize}; expected 4.`);
+  }
+  if (skinWeightAttr.itemSize !== 4) {
+    throw new Error(`SkinnedMesh "${label}" skinWeight attribute itemSize ${skinWeightAttr.itemSize}; expected 4.`);
+  }
+  if (skinIndexAttr.array.length !== vertexCount * 4) {
+    throw new Error(
+      `SkinnedMesh "${label}" skinIndex length ${skinIndexAttr.array.length}; expected ${vertexCount * 4}.`,
+    );
+  }
+  if (skinWeightAttr.array.length !== vertexCount * 4) {
+    throw new Error(
+      `SkinnedMesh "${label}" skinWeight length ${skinWeightAttr.array.length}; expected ${vertexCount * 4}.`,
+    );
+  }
+  return vertexCount;
+}
+
+function validateSkinPayloadValues(
+  label: string,
+  skinIndexArray: ArrayLike<number>,
+  skinWeightArray: ArrayLike<number>,
+  boneCount: number,
+): void {
+  for (let i = 0; i < skinIndexArray.length; i += 1) {
+    const idx = skinIndexArray[i]!;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= boneCount) {
+      throw new Error(
+        `SkinnedMesh "${label}" skinIndex[${i}] references bone ${idx}; skeleton has ${boneCount} bones.`,
+      );
+    }
+  }
+  for (let i = 0; i < skinWeightArray.length; i += 1) {
+    const weight = skinWeightArray[i]!;
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new Error(`SkinnedMesh "${label}" skinWeight[${i}] is invalid (${weight}).`);
+    }
+  }
+}
+
 function sliceMeshAttributesForGroup(
   attrs: MeshAttributeSet,
   vertexIndices: Uint32Array,
@@ -621,6 +679,7 @@ function convertSkinnedMeshInternal(
   if (skinWeightAttr == null) {
     throw new Error(`SkinnedMesh "${label}" has no skinWeight attribute.`);
   }
+  validateSkinAttributeShapes(label, attrs.positions, attrs.normals, skinIndexAttr, skinWeightAttr);
   // Widen skinIndex (typically Uint16Array) to Uint32Array for the contract.
   // The narrower-typed array is upcasted without loss; downstream skinning
   // solvers index a Float32Array bones buffer with these values.
@@ -644,6 +703,7 @@ function convertSkinnedMeshInternal(
       `SkinnedMesh "${label}" skeleton has ${boneCount} bones but ${skel.boneInverses.length} inverse-bind matrices.`,
     );
   }
+  validateSkinPayloadValues(label, skinIndexAttr.array, skinWeightAttr.array, boneCount);
   // Ensure the bone matrices reflect the current scene hierarchy.
   for (const bone of skel.bones) {
     bone.updateMatrixWorld(true);

@@ -444,4 +444,28 @@ describe('solveSkin', () => {
     };
     expect(() => solveSkin(bad)).toThrow(/normals length/);
   });
+
+  it('throws when a skin index references a missing bone', () => {
+    const bad = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      skinIndices: new Uint32Array([1, 0, 0, 0]),
+    };
+    expect(() => solveSkin(bad)).toThrow(/skinIndices\[0\] references bone 1/);
+  });
+
+  it('throws when skin weights are non-finite or negative', () => {
+    const bad = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      skinWeights: new Float32Array([Number.NaN, 0, 0, 0]),
+    };
+    expect(() => solveSkin(bad)).toThrow(/skinWeights\[0\] is invalid/);
+  });
 });

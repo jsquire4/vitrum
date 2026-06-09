@@ -28,7 +28,7 @@
  * Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).
  */
 
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
 import {
   buildRCSceneBVHFromCore,
@@ -170,6 +170,20 @@ export class RCSubsystem implements PipelineSubsystem {
       Math.max(boundsMax[1] - boundsMin[1], 1e-6),
       Math.max(boundsMax[2] - boundsMin[2], 1e-6),
     ];
+  }
+
+  invalidateBindings(): void {
+    this._dispatcher?.invalidateBindings();
+  }
+
+  refreshMaterialsFromCore(materials: readonly MaterialSpec[]): void {
+    const bvh = this._bvhBuffers;
+    if (bvh == null || materials.length === 0) return;
+    const matFloats = packCascadeMaterialsFromCore([...materials]);
+    const next = this._uploadTypedArray(matFloats, 'rc-bvh-materials-refresh');
+    bvh.materialsBuf.destroy();
+    this._bvhBuffers = { ...bvh, materialsBuf: next };
+    this.invalidateBindings();
   }
 
   /**

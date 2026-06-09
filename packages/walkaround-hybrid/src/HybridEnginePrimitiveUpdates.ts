@@ -292,6 +292,8 @@ export interface PrimitiveUpdateResult {
    * (the geometry-path default).
    */
   readonly applySubsystems?: boolean;
+  /** Material-only paths changed RC-visible material/emitter data without moving geometry. */
+  readonly refreshRcMaterials?: boolean;
 }
 
 /**
@@ -986,5 +988,5 @@ export function materialPatch(
   // geometry that DDGI + RC index off is unchanged, so the GI-subsystem
   // propagation epilogue is intentionally skipped (matches the pre-collapse
   // dispatcher, where the materialPatch branch omitted that call).
-  return { bvhBuffers: outBvh, updatedScene, applySubsystems: false };
+  return { bvhBuffers: outBvh, updatedScene, applySubsystems: false, refreshRcMaterials: true };
 }

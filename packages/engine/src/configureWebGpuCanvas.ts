@@ -22,6 +22,7 @@
 export function configureWebGpuCanvas(
   canvas: HTMLCanvasElement,
   device: GPUDevice,
+  onError?: (error: unknown) => void,
 ): void {
   try {
     const ctx = canvas.getContext('webgpu');
@@ -36,7 +37,8 @@ export function configureWebGpuCanvas(
         alphaMode: 'opaque',
       });
     }
-  } catch {
+  } catch (err) {
     // Best-effort canvas configure for attachVitrum swap-chain plumbing.
+    onError?.(err);
   }
 }

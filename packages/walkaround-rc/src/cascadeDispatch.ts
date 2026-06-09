@@ -325,22 +325,15 @@ export class RCDispatcher {
     device.queue.submit([commandEncoder.finish()]);
   }
 
+  /** Drop cached bind groups so the next dispatch captures fresh caller buffers. */
+  invalidateBindings(): void {
+    this._releaseHandles();
+    this._lastError = null;
+  }
+
   /** Release all GPU resources. Next `dispatchFrame()` will re-initialize. */
   dispose(): void {
-    if (this._handles) {
-      for (const pass of this._handles.castPasses) {
-        pass.cascadeParamsBuf.destroy();
-      }
-      for (const pass of this._handles.mergePasses) {
-        pass.cascadeParamsBuf.destroy();
-      }
-      this._handles.placeholderEnvTexture?.destroy();
-      this._handles = null;
-    }
-    for (const buf of this._dummyTlasBuffers) {
-      buf.destroy();
-    }
-    this._dummyTlasBuffers = [];
+    this._releaseHandles();
     this._lastError = null;
     this._castShaderModule  = null;
     this._mergeShaderModule = null;
@@ -392,6 +385,23 @@ export class RCDispatcher {
     });
     this._dummyTlasBuffers.push(buf);
     return buf;
+  }
+
+  private _releaseHandles(): void {
+    if (this._handles) {
+      for (const pass of this._handles.castPasses) {
+        pass.cascadeParamsBuf.destroy();
+      }
+      for (const pass of this._handles.mergePasses) {
+        pass.cascadeParamsBuf.destroy();
+      }
+      this._handles.placeholderEnvTexture?.destroy();
+      this._handles = null;
+    }
+    for (const buf of this._dummyTlasBuffers) {
+      buf.destroy();
+    }
+    this._dummyTlasBuffers = [];
   }
 
   /** Build bind group layout for a merge pass (3 entries: upper + lower cascades + uniforms). */

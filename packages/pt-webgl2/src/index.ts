@@ -9,8 +9,16 @@ import type {
   FrameStats,
   ProgressStats,
   Scene,
+  SceneEmitter,
+  SceneEnvironment,
+  ScenePrimitive,
 } from '@vitrum/core';
-import { asBackendTexture, partitionSceneBySupport } from '@vitrum/core';
+import {
+  asBackendTexture,
+  partitionSceneBySupport,
+  patchEmitterInScene,
+  patchPrimitiveInScene,
+} from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
@@ -33,6 +41,8 @@ const DEFAULT_SPP_TARGET = 16;
 export interface PTEngineWebGL2Surface {
   /** @internal The retained single-root merged BVH pack (for tests/inspection). */
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
+  /** @internal The retained scene texture summary (for tests/inspection). */
+  readonly _debugSceneTex: { envMap: boolean; envTotalSum: number; envWidth: number; envHeight: number; lightCount: number } | null;
 }
 
 /**
@@ -124,6 +134,67 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   getScene(): Scene | null {
     return this.#scene;
+  }
+
+  addPrimitive(primitive: ScenePrimitive): void {
+    this.#guardLive('addPrimitive');
+    if (this.#scene == null) {
+      throw new Error('addPrimitive: call setScene() before addPrimitive()');
+    }
+    if (this.#scene.primitives.some((p) => String(p.id) === String(primitive.id))) {
+      throw new Error(`addPrimitive: primitive "${primitive.id}" already exists in current scene`);
+    }
+    this.setScene({
+      ...this.#scene,
+      primitives: [...this.#scene.primitives, primitive],
+    });
+  }
+
+  removePrimitive(id: ScenePrimitive['id']): void {
+    this.#guardLive('removePrimitive');
+    if (this.#scene == null) {
+      throw new Error('removePrimitive: call setScene() before removePrimitive()');
+    }
+    let matched = false;
+    const primitives = this.#scene.primitives.filter((p) => {
+      const keep = String(p.id) !== String(id);
+      if (!keep) matched = true;
+      return keep;
+    });
+    if (!matched) {
+      throw new Error(`removePrimitive: primitive "${id}" not found in current scene`);
+    }
+    this.setScene({
+      ...this.#scene,
+      primitives,
+    });
+  }
+
+  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+    this.#guardLive('updatePrimitive');
+    if (this.#scene == null) {
+      throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
+    }
+    this.setScene(patchPrimitiveInScene(this.#scene, id, patch));
+  }
+
+  updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
+    this.#guardLive('updateEmitter');
+    if (this.#scene == null) {
+      throw new Error('updateEmitter: call setScene() before updateEmitter()');
+    }
+    this.setScene(patchEmitterInScene(this.#scene, id, patch));
+  }
+
+  updateEnvironment(env: SceneEnvironment | null): void {
+    this.#guardLive('updateEnvironment');
+    if (this.#scene == null) {
+      throw new Error('updateEnvironment: call setScene() before updateEnvironment()');
+    }
+    this.setScene({
+      ...this.#scene,
+      environment: env ?? { kind: 'none' },
+    });
   }
 
   renderFrame(input: FrameInput): FrameOutput {

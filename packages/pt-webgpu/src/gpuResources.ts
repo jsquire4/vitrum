@@ -254,14 +254,14 @@ export class GpuResources {
       label: 'vitrum.pt-webgpu.normalDepth',
       size: { width, height, depthOrArrayLayers: 1 },
       format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     this.normalDepthView = this.normalDepthTexture.createView();
     this.albedoTexture = this.#device.createTexture({
       label: 'vitrum.pt-webgpu.albedo',
       size: { width, height, depthOrArrayLayers: 1 },
       format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     this.albedoView = this.albedoTexture.createView();
     this.varianceTexture = this.#device.createTexture({

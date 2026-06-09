@@ -3,7 +3,7 @@ import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from '@vitrum/pt-webgpu';
 import { computeProgressiveLimitUnion } from '../createProgressiveEngine.js';
@@ -19,7 +19,7 @@ describe('computeProgressiveLimitUnion', () => {
     expect(union['maxStorageBuffersPerShaderStage']).toBe(
       Math.max(
         HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!,
-        PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       ),
     );
     expect(union['maxStorageTexturesPerShaderStage']).toBe(
@@ -33,7 +33,7 @@ describe('computeProgressiveLimitUnion', () => {
   it('dominates BOTH backend floors on every key (a union device satisfies each)', () => {
     const union = computeProgressiveLimitUnion();
     const ptFull: Record<string, number> = {
-      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     };
     for (const floor of [HYBRID_WEBGPU_REQUIRED_LIMITS, ptFull]) {
@@ -43,12 +43,9 @@ describe('computeProgressiveLimitUnion', () => {
     }
   });
 
-  it('today resolves to the walkaround floor (16 buffers / 8 textures) on both axes', () => {
-    // The walkaround-hybrid full floor currently dominates pt-webgpu's on BOTH
-    // axes. Pin the concrete values so a floor change that breaks this assumption
-    // is caught (the union math stays correct either way — this guards intent).
+  it('combines the pt-webgpu buffer floor with the walkaround texture floor', () => {
     const union = computeProgressiveLimitUnion();
-    expect(union['maxStorageBuffersPerShaderStage']).toBe(16);
+    expect(union['maxStorageBuffersPerShaderStage']).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
     expect(union['maxStorageTexturesPerShaderStage']).toBe(8);
   });
 });

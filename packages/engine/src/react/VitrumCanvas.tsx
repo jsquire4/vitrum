@@ -23,7 +23,12 @@ import * as React from 'react';
 import type { Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
-import type { EnginePreference, CreateEngineOptions, ThreeSceneLike } from '../createEngine.js';
+import type {
+  CreateEngineErrorEvent,
+  EnginePreference,
+  CreateEngineOptions,
+  ThreeSceneLike,
+} from '../createEngine.js';
 
 export interface VitrumCanvasProps {
   /** Scene description (vitrum or THREE). */
@@ -49,6 +54,8 @@ export interface VitrumCanvasProps {
   advanced?: CreateEngineOptions['advanced'];
   /** Enable backend debug surfaces. */
   debug?: boolean;
+  /** Called for recoverable create/attach/runtime engine errors. */
+  onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
   /** Called when attachVitrum fails. */
   onAttachError?: (error: unknown) => void;
   /** Forwarded to the underlying canvas element. */
@@ -64,12 +71,14 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const qualityRef = React.useRef<VitrumCanvasProps['quality']>(props.quality);
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
+    const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
 
     // Keep the latest dynamic props in refs so the engine sees them
     // without having to be torn down + recreated when they change.
     React.useEffect(() => { qualityRef.current = props.quality; },     [props.quality]);
     React.useEffect(() => { onFrameRef.current = props.onFrame; },     [props.onFrame]);
     React.useEffect(() => { onProgressRef.current = props.onProgress; }, [props.onProgress]);
+    React.useEffect(() => { onErrorRef.current = props.onError; },     [props.onError]);
 
     // Effect dependency captures the structural inputs only. Mutable refs
     // bypass the dep array for dynamic props.
@@ -93,6 +102,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         quality: () => qualityRef.current,
         onFrame: (stats) => { onFrameRef.current?.(stats); },
         onProgress: (progress) => { onProgressRef.current?.(progress); },
+        onError: (error, event) => { onErrorRef.current?.(error, event); },
       })
         .then((h) => {
           if (cancelled) {

@@ -72,6 +72,7 @@ export {
   // progressive-engine facade can compute the cross-backend limit UNION
   // (max of the hybrid + pt-webgpu full floors) for a shared device.
   PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -105,8 +106,9 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
   /**
    * Override adapter-based tier selection. Omit to auto-pick: `full` when the device
-   * supports ≥10 storage buffers per bind group and ≥5 storage textures (split
-   * full layout: TLAS, HDRI, area lights, caustics, etc.); `lite` on 8/4 adapters.
+   * supports at least 28 storage buffers per shader stage and 5 storage textures
+   * per shader stage (split full layout: TLAS, HDRI, area lights, caustics, etc.);
+   * `lite` on 8/4 adapters.
    */
   readonly traceTier?: PtWebgpuTraceTier;
   /**
@@ -1386,7 +1388,7 @@ export const createPTEngine_WebGPU: EngineFactory<
     console.warn(
       '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional + procedural sky only. ' +
         'Analytic shapes, TLAS, HDRI, area lights, and caustics are disabled. ' +
-        'On a discrete GPU host, request a device with ≥10 storage buffers per group and ≥5 storage textures, or pass traceTier: "full" after verifying limits.',
+        'On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= 28 and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.',
     );
   }
   const slot = makeStateSlot();

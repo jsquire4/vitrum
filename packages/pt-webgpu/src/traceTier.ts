@@ -1,5 +1,5 @@
 import {
-  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -8,18 +8,18 @@ import {
 export type PtWebgpuTraceTier = 'full' | 'lite';
 
 /**
- * Pick full vs lite from adapter limits. Full tier (3 bind groups, ≤10 buffers
- * each) enables TLAS, analytics, HDRI, all emitter buffers, motion/variance aux,
- * and caustics on Chrome-class GPUs (16 buffers/stage).
- * Lite is only for software adapters (e.g. SwiftShader 10/4).
+ * Pick full vs lite from adapter limits. Full tier enables TLAS, analytics,
+ * HDRI, all emitter buffers, motion/variance aux, and caustics when the adapter
+ * can satisfy the aggregate per-stage storage-buffer/texture floor. Lite is
+ * only for constrained adapters (for example SwiftShader-class CI devices).
  */
 export function selectPtWebgpuTraceTier(device: GPUDevice): PtWebgpuTraceTier {
   const maxBuffers =
     device.limits?.maxStorageBuffersPerShaderStage ??
-    PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP;
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
   const maxTextures = device.limits?.maxStorageTexturesPerShaderStage ?? 8;
   if (
-    maxBuffers >= PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP &&
+    maxBuffers >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
     maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE
   ) {
     return 'full';
@@ -54,7 +54,7 @@ export function resolvePtWebgpuTraceTier(
       throw new Error(
         `pt-webgpu: traceTier=full requested but adapter reports ` +
           `maxStorageBuffersPerShaderStage=${maxBuffers}, ` +
-          `maxStorageTexturesPerShaderStage=${maxTextures} (need ≥${PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP} buffers/group and ≥${PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE} textures). ` +
+          `maxStorageTexturesPerShaderStage=${maxTextures} (need >=${PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE} buffers/stage and >=${PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE} textures). ` +
           'Use a discrete GPU / native browser WebGPU, not SwiftShader-only CI.',
       );
     }
