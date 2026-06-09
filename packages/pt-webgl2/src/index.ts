@@ -295,6 +295,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     }
     const caustic =
       this.#causticStrategy === 'manifold-nee' ? 1 : this.#causticStrategy === 'photon-map' ? 2 : 0;
+    // H6 FIX (2026-06-09): honour the HDRI environment's `intensity` contract field
+    // (was hardcoded to 1, so `environment.intensity` was silently ignored).
+    // Mirrors pt-webgpu (environmentPacking.ts:54: `env.intensity ?? 1`).
+    const env = this.#scene?.environment;
+    const envIntensity = env != null && env.kind === 'hdri' ? env.intensity ?? 1 : 1;
     return {
       resolution: [w, h],
       bounces,
@@ -303,7 +308,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       radianceClamp: 0,
       cameraWorldMatrix,
       invProjectionMatrix,
-      environmentIntensity: this.#sceneTextures?.envMap != null ? 1 : 0,
+      environmentIntensity: this.#sceneTextures?.envMap != null ? envIntensity : 0,
+      // environment.rotationY is NOT yet honoured here — and it is ignored by EVERY
+      // current backend (no rotationY→matrix convention is wired in pt-webgpu either,
+      // verified 2026-06-09). That is a cross-backend contract gap (a convention must
+      // be chosen + applied consistently), tracked separately, not a pt-webgl2 fix.
       environmentRotation: IDENTITY_MAT4,
       spectralEnabled: this.#spectralEnabled,
       causticStrategy: caustic,
