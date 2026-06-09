@@ -299,12 +299,14 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
   // composition is pinned below (focused-module sources concatenated in the
   // pass's declared `requires` order, deps-first, deduped).
-  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+octahedralCore+ppgTreeLayout) + RIS_GI', () => {
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+ppgTreeLayout) + RIS_GI', () => {
     // W9 guided sampling — risGi now requires `ppgPdf` (the gi-ris dTree
-    // pdf-eval + guided sampler). ppgPdf requires `octahedralCore` then
-    // `ppgTreeLayout`, so the composer emits OCTAHEDRAL_CORE_WGSL then
-    // PPG_TREE_LAYOUT_WGSL then PPG_PDF_WGSL after DDGI_SAMPLE, before
-    // the RIS_GI root source.
+    // pdf-eval + guided sampler). ppgPdf requires only `ppgTreeLayout` (the
+    // 2026-06-09 equal-area fix dropped its octahedralCore dependency — it now
+    // uses an inline cylindrical map), so the composer emits PPG_TREE_LAYOUT_WGSL
+    // then PPG_PDF_WGSL after DDGI_SAMPLE, before the RIS_GI root source. No
+    // module in this unit calls the shared octEncode/octDecode (ddgiSample
+    // inlines its own), so OCTAHEDRAL_CORE_WGSL is correctly absent here.
     expect(composeWgsl(RIS_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -313,7 +315,6 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       MATERIAL_DECODE_WGSL +
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
-      OCTAHEDRAL_CORE_WGSL +
       PPG_TREE_LAYOUT_WGSL +
       PPG_PDF_WGSL +
       RIS_GI_WGSL,
@@ -448,9 +449,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // PPG (Müller 2017) — ppgUpdate requires canonical luminance (W8
   // follow-up cleanup). Guided sampling is inlined in gi-ris via ppgPdf.
 
-  it('ppgUpdate: LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL', () => {
+  it('ppgUpdate: LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL', () => {
+    // 2026-06-09 equal-area fix: ppgUpdate dropped its octahedralCore require
+    // (the octEncode training-direction call became the inline cylindrical map),
+    // so OCTAHEDRAL_CORE_WGSL is no longer composed into this standalone kernel.
     const composed = composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES);
-    expect(composed).toBe(LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL);
+    expect(composed).toBe(LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL);
   });
 
 });

@@ -14,9 +14,9 @@
  * accepted edge `xv -> xs`; no synthetic per-pixel training buffers are used.
  *
  * === DEVIATION 4 FIX (coordinate frame) ===
- * Both reservoir endpoints are in WORLD space. The octahedral encoding
- * `dirToOct(dir)` is applied to the WORLD-FRAME direction; no per-surface
- * ONB transform is performed.
+ * Both reservoir endpoints are in WORLD space. The cylindrical equal-area UV
+ * map (`ppgDirToUv`, inline below) is applied to the WORLD-FRAME direction; no
+ * per-surface ONB transform is performed.
  *
  * === W9 — REAL FLAT-BUFFER LEAF LOCATION ===
  * The pre-W9 kernel approximated the dTree leaf by `uIdx = uv.x * leafCount`,
@@ -198,11 +198,12 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 /** W1-R6 — declarative include-graph entry. Requires the canonical
- *  Rec.709 luminance helper, ppgTreeLayout for the shared layout constants,
- *  and octahedralCore for octEncode (replaces removed inline dirToOct —
- *  byte-equivalent: octEncode(n)*0.5+0.5). */
+ *  Rec.709 luminance helper and ppgTreeLayout for the shared layout constants.
+ *  No octahedralCore require: the 2026-06-09 equal-area fix replaced the
+ *  octEncode call with the inline cylindrical map (`ppgDirToUv`), so the
+ *  shared octahedral helpers are no longer referenced by this kernel. */
 export const PPG_UPDATE_MODULE: WgslModule = {
   name: 'ppgUpdate',
   source: PPG_UPDATE_WGSL,
-  requires: ['luminance', 'ppgTreeLayout', 'octahedralCore'],
+  requires: ['luminance', 'ppgTreeLayout'],
 };

@@ -22,13 +22,16 @@
  * training kernel (`ppgUpdate.wgsl`) use — if the layout constants change there,
  * they must change here in lock-step.
  *
- * === Octahedral convention ===
- * The dTree stores oct UV in [0,1]². A world direction maps to that UV via
- *   uv = octEncode(dir) * 0.5 + 0.5          (octEncode → [-1,1]²)
- * which is byte-identical to the producer's `dirToOct` (ppgUpdate.wgsl) and the
- * inverse of `octDecode(uv * 2 - 1)`. Reusing the
- * canonical `octEncode`/`octDecode` from @vitrum/shared-samplers
- * (requires: ['octahedralCore']) keeps the encode/decode in one place.
+ * === Directional parametrisation (cylindrical equal-area) ===
+ * The dTree stores UV in [0,1]². A world direction maps to that UV via the
+ * cylindrical EQUAL-AREA map `ppgDirToUv` (inline below; u = (1−z)/2 uniform in
+ * z, v = azimuth/2π) — the parametrisation Müller 2017 §3.2 actually uses, so
+ * the dTree's `solidAngle = 4π·uvArea` is exact and the guide pdf equals the
+ * uniform-in-UV sampling density (unbiased). The 2026-06-09 fix replaced the
+ * earlier non-equal-area Cigolle octahedral map (which dropped a varying
+ * Jacobian → biased MIS source pdf). Train (`ppgUpdate.wgsl`), pdf, and the
+ * sampler (`ppgUvToDir`) all share this SAME map in lock-step. No octahedralCore
+ * dependency: the shared octEncode/octDecode are no longer referenced here.
  *
  * === Bindings (group 3 = hybridLayers — see bindGroupLayouts.ts) ===
  *   @group(3) @binding(6) ppgSTreeBuf_gi     : array<f32>  (serialised sTree)
@@ -217,13 +220,15 @@ fn ppgSampleGuidedDir(pos: vec3<f32>, rng: ptr<function, u32>) -> vec3<f32> {
 `;
 
 /** W1-R6 — declarative include-graph entry.
- *  Requires `octahedralCore` for octEncode/octDecode, and `ppgTreeLayout`
- *  for the shared DTREE_/STREE_ layout constants. The `rand_f32` RNG +
- *  the group(3) PPG bindings are provided by the gi-ris compilation unit
- *  (sharedPrimitives supplies `rand_f32`; risGi declares it requires this
- *  module). The bindings live here because only gi-ris consumes them. */
+ *  Requires `ppgTreeLayout` for the shared DTREE_/STREE_ layout constants.
+ *  No octahedralCore require: the 2026-06-09 equal-area fix replaced
+ *  octEncode/octDecode with the inline cylindrical map (`ppgDirToUv`/
+ *  `ppgUvToDir`), so the shared octahedral helpers are no longer referenced.
+ *  The `rand_f32` RNG + the group(3) PPG bindings are provided by the gi-ris
+ *  compilation unit (sharedPrimitives supplies `rand_f32`; risGi declares it
+ *  requires this module). The bindings live here because only gi-ris consumes them. */
 export const PPG_PDF_MODULE: WgslModule = {
   name: 'ppgPdf',
   source: PPG_PDF_WGSL,
-  requires: ['octahedralCore', 'ppgTreeLayout'],
+  requires: ['ppgTreeLayout'],
 };
