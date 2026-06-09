@@ -1572,10 +1572,13 @@ export const createPTEngine_WebGL2: EngineFactory<
     const modelUrl = opts.oidn?.modelUrl;
     if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
       throw new Error(
-        "createPTEngine_WebGL2: denoiser: 'oidn-final' requires " +
-          'oidn: { modelUrl } (a URL or path to the OIDN ONNX model file). ' +
-          'See packages/shared-denoisers/src/oidnBridge.ts for model variants ' +
-          '(oidn_rt_hdr.onnx for color-only, oidn_rt_hdr_alb_nrm.onnx for the aux-input variant).',
+        "createPTEngine_WebGL2: denoiser: 'oidn-final' is not turnkey — it " +
+          'requires TWO host-provided assets that vitrum does not ship: ' +
+          '(1) oidn: { modelUrl } — a URL/path to an OIDN ONNX model ' +
+          '(oidn_rt_hdr.onnx for the color-only pt-webgl path); and (2) the ' +
+          "'onnxruntime-web' optional peer dependency installed in the host " +
+          '(a missing runtime otherwise throws at the first converged frame). ' +
+          'Omit the `denoiser` option to render without a final denoise.',
       );
     }
   }

@@ -76,7 +76,7 @@ working feature out of the box.
 
 | ID | Item | Where | State now | Done = | Effort |
 |----|------|-------|-----------|--------|--------|
-| **C1** | ◻ **OIDN is not turnkey** | `shared-denoisers/src/oidnBridge.ts:25-28,305` | Real ONNX-Runtime inference, but requires a host-supplied `.onnx` model **and** an `onnxruntime-web` peer dep; with neither, every `denoiseFinal` throws. | Vendor/host a canonical OIDN model + make the peer dep managed (or surface "asset required" in capabilities so it's not a silent throw). | M |
+| **C1** | ✅ DONE (capabilities/error approach) | `pt-webgpu/index.ts`, `pt-webgl/ptEngineWebGL2.ts`, `oidnBridge.ts` | Real ONNX inference; needs a host-supplied `.onnx` model **and** the `onnxruntime-web` peer dep. | Both backend factories now throw a clear **two-asset** error naming the model URL AND the `onnxruntime-web` peer dep up front (was modelUrl-only + a late first-frame runtime throw); the `oidn` option JSDoc states it is NOT turnkey + lists both assets; the bridge's missing-runtime error already says `npm install onnxruntime-web`. No binary vendored (per "set aside distribution"). | done |
 | **C2** | — **Neural denoiser checkpoint** | (see A10) | Overlaps A10. | — | XL |
 | **C3** | ◻ **pt-webgl OIDN color-only** | `pt-webgl/.../oidnFinalDispatcher.ts:46-58`; fork RT not MRT | The fork's primary target isn't MRT, so albedo/normal aux can't be captured → only the color-only OIDN model is usable. | MRT fork render target → enable the `hdr_alb_nrm` model variant. | M |
 
@@ -89,8 +89,10 @@ or silently drop user data — exactly the rot that has made the maturity pictur
 
 > **Status 2026-06-09:** D1 (dead code), D2 (silent drops), D4 (memory accounting), D5
 > (stale comments), D9 (traceTier dedup) are DONE on branch `road-to-100/hygiene-provisioning`
-> — behavior-preserving, typecheck clean, tests green. D7 verified mostly-stale. D3 + C1 +
-> D8-approach remain (decision-gated — see below). D6 (bind-group churn) is a perf item, deferred.
+> — behavior-preserving, typecheck clean, tests green. D7 verified mostly-stale. D3 (contract +
+> ingestion) and C1 (OIDN clear-error/capabilities) now DONE too. Remaining: D8-approach
+> (fork eslint dep — decision-gated), D3 per-backend BSDF consumption (B-bucket fidelity), and
+> D6 (bind-group churn — perf, deferred).
 
 - **D1 — Dead code removal** ◻: pt-webgl2 `frameParamsPacker.ts` std140 UBO (~280 LOC) + `glResources` `uploadFrameParams`/`#paramsUbo`/`#bindParamsUbo` (no callers, `FRAME_PARAMS_SIZE=256` placeholder); pt-webgl2 `'additive'` accumulation regime + `blend.ts:37` case (unreachable); pt-webgl `debounceMsForEditRate` + `PT_DEBOUNCE_MS_*` (zero consumers); `PPGCoordinator.resetTrainingAccumulators` (no callers); stained-glass `packCameUBO` (no runtime consumer, no shader reads came data); `sTreeAccumulate` (dead — resolve with **A2**, don't just delete); audit P2 dead surface to verify+remove (`heroStrategy` UBO slot, `probesPerFrame` UBO field, `GPU_SKIN_BVH_WGSL`, `expandIndicesToStride4`, `RESTIR_PT_HYBRID_SHIFT` harness, `ownsEnvSampler`, `cleanupAfterSubmit` hook, walkaround-rc TSL path). **Effort: M total.**
 - **D2 — Silent data drops** ◻: `three-bindings/src/index.ts:270` drops `THREE.Points/Line/LineSegments/Sprite/BatchedMesh/LOD` with **no warning** (lights get `warnOnce`, geometry types get nothing); pt-webgpu `uploadSceneBuffers.ts:1086,1088` discards `MaterialTextureArray.warnings`; heterogeneous texture sizes copy into a max-size layer with **wrong UVs** and no warning. **Fix: warn-or-handle. Effort: S–M.**
