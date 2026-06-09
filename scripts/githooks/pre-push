@@ -22,9 +22,9 @@ if [ -z "$NODE_BIN" ]; then
 fi
 export NODE="$NODE_BIN"
 export PATH="$(dirname "$NODE_BIN"):$PATH"
-"$NODE_BIN" scripts/run-fork-shader-smoke.mjs || {
-  echo "[vitrum pre-push] fork shader smoke wrapper failed; continuing warn-only." >&2
-}
+# (The three-gpu-pathtracer fork was removed 2026-06-09; its shader-smoke wrapper
+#  is gone. The native pt-webgl2 GLSL is covered by its own package tests + the
+#  GPU smoke below.)
 "$NODE_BIN" scripts/validate-gpu.mjs --smoke --warn-only || {
   echo "[vitrum pre-push] GPU smoke wrapper failed; continuing warn-only." >&2
 }
