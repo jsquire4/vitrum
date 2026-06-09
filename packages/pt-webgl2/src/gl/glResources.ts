@@ -83,6 +83,10 @@ export class GlResources {
   readonly #caps: GlCaps;
   /** Whether MRT aux g-buffers (gNormalDepth/gAlbedo) are allocated + written. */
   readonly #auxBuffers: boolean;
+  /** OES_draw_buffers_indexed — per-draw-buffer blend state, so the colour blend runs
+   *  on attachment 0 while the aux g-buffer attachments overwrite (no blend). null when
+   *  unavailable (the g-buffer is then best-effort; the colour path is always correct). */
+  readonly #drawBuffersIndexed: { disableiOES(target: number, index: number): void } | null;
   readonly #quad: FullscreenQuad;
 
   /** The PT accumulation target (RGBA32F primary + optional MRT aux). */
@@ -109,6 +113,11 @@ export class GlResources {
     this.#gl = gl;
     this.#caps = probeGlCaps(gl);
     this.#auxBuffers = supportsAuxBuffers && this.#caps.maxDrawBuffers >= 3;
+    const dbi = gl.getExtension('OES_draw_buffers_indexed') as { disableiOES?: unknown } | null;
+    this.#drawBuffersIndexed =
+      dbi != null && typeof dbi.disableiOES === 'function'
+        ? (dbi as { disableiOES(target: number, index: number): void })
+        : null;
     this.#quad = new FullscreenQuad(gl);
   }
 
@@ -177,18 +186,17 @@ export class GlResources {
 
     bindRenderTarget(gl, this.#accum);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    // The MRT g-buffer (gNormalDepth@1, gAlbedo@2) holds primary-hit data that is
-    // sample-invariant. It must NOT go through the colour accumulation blend — WebGL2
-    // weights each draw buffer by its OWN output alpha, and gNormalDepth packs linear
-    // depth (>1) in alpha, so the running-average recurrence diverges → NaN. Instead:
-    // write the g-buffer EXACTLY on sample 0 (blend off; dst is cleared so the colour
-    // is also exact), then FREEZE it — samples 1+ accumulate colour only by masking the
-    // aux attachments out of drawBuffers. (bindRenderTarget restored [0,1,2] above.)
-    if (this.#samples === 0) {
-      gl.disable(gl.BLEND);
-    } else {
-      setBlendForRegime(gl, regime, this.#samples);
-      if (this.#auxBuffers) gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.NONE, gl.NONE]);
+    setBlendForRegime(gl, regime, this.#samples);
+    // The MRT g-buffer (gNormalDepth@1, gAlbedo@2) holds sample-invariant primary-hit
+    // data and must NOT accumulate: WebGL2 weights each draw buffer by its OWN output
+    // alpha, and gNormalDepth packs linear depth (>1) in alpha, so the colour-blend
+    // recurrence diverges → NaN. Disable blend on JUST the aux attachments (per-draw-buffer
+    // state) so they overwrite (latest sample = correct, primary-hit is deterministic)
+    // while the colour attachment keeps its EXACT running-average blend untouched. No
+    // extension → the g-buffer is best-effort (the colour path is always correct).
+    if (this.#auxBuffers && this.#drawBuffersIndexed != null) {
+      this.#drawBuffersIndexed.disableiOES(gl.BLEND, 1);
+      this.#drawBuffersIndexed.disableiOES(gl.BLEND, 2);
     }
 
     prog.use();
