@@ -24,6 +24,7 @@ import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
+import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
@@ -63,10 +64,16 @@ export function buildSceneTextures(
   const bvhData = packBvhTextureData(merged);
   const bvh = uploadBvhTextures(gl, bvhData);
 
-  // (4) materials — the merged result already dedups the scene's unique
-  //     MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
-  //     IS the unique-material list the materials texture packs.
-  const materialsData = packMaterialsTexture(merged.materials);
+  // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
+  //      and a handle→layer map (null when the scene has no usable textures).
+  const atlas = packTextureAtlas(merged.materials);
+  const textures2DArray = atlas != null ? uploadTextureAtlas(gl, atlas) : null;
+
+  // (4b) materials — the merged result already dedups the scene's unique
+  //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
+  //      IS the unique-material list the materials texture packs. The atlas layer
+  //      map turns each material's `<map>` ref into the GLSL's layer index.
+  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOf);
   const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim);
 
   // (5) lights (6px/light) — driven from the original scene's emitters.
@@ -105,7 +112,7 @@ export function buildSceneTextures(
     envTotalSum: env.totalSum,
     envWidth: env.map?.width ?? 0,
     envHeight: env.map?.height ?? 0,
-    textures2DArray: null,
+    textures2DArray,
     iesProfiles: null,
     triangleCount: merged.triangleCount,
     destroy(): void {
@@ -119,6 +126,7 @@ export function buildSceneTextures(
         envMap,
         envMarginal,
         envConditional,
+        textures2DArray,
       ]) {
         if (t != null) gl.deleteTexture(t);
       }

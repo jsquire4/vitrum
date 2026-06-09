@@ -46,13 +46,12 @@ export const ATTR_LAYER_COLOR = 3;
 export const ATTR_LAYER_COUNT = 4;
 
 /**
- * A `WorldSpaceMergeResult` that additionally carries optional per-vertex `uvs`
- * and `colors` arrays — neither is produced by `mergeWorldSpaceFromCore` today,
- * but if a future shared-bvh enhancement threads them through, this packer reads
- * them with no other change. Both are read at the same stride as positions.
+ * A `WorldSpaceMergeResult` that additionally carries an optional per-vertex
+ * `colors` array (not produced by `mergeWorldSpaceFromCore` today). `uvs` is now a
+ * required member of the base result (stride 2); `colors` is read at the position
+ * stride if a future enhancement threads it through.
  */
 interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
-  readonly uvs?: Float32Array;
   readonly colors?: Float32Array;
 }
 
@@ -83,6 +82,7 @@ function vComp(
  */
 export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexelGrid {
   const stride = merged.positionStrideFloats;
+  const uvStride = 2; // merged.uvs is stride-2 (2D texture coords), NOT the position stride
   const vertexCount = merged.vertexCount;
   const positions = merged.positions;
   const normals = merged.normals;
@@ -114,8 +114,8 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     data[normalBase + o + 2] = vComp(normals, v, 2, stride, 0);
     data[normalBase + o + 3] = 0;
 
-    data[uvBase + o] = vComp(uvs, v, 0, stride, 0);
-    data[uvBase + o + 1] = vComp(uvs, v, 1, stride, 0);
+    data[uvBase + o] = vComp(uvs, v, 0, uvStride, 0);
+    data[uvBase + o + 1] = vComp(uvs, v, 1, uvStride, 0);
     data[uvBase + o + 2] = 0;
     data[uvBase + o + 3] = 0;
 
@@ -147,12 +147,12 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
       const e2y = (positions[i2 * stride + 1] ?? 0) - p0y;
       const e2z = (positions[i2 * stride + 2] ?? 0) - p0z;
 
-      const u0 = uvs[i0 * stride] ?? 0;
-      const w0 = uvs[i0 * stride + 1] ?? 0;
-      const du1 = (uvs[i1 * stride] ?? 0) - u0;
-      const dw1 = (uvs[i1 * stride + 1] ?? 0) - w0;
-      const du2 = (uvs[i2 * stride] ?? 0) - u0;
-      const dw2 = (uvs[i2 * stride + 1] ?? 0) - w0;
+      const u0 = uvs[i0 * uvStride] ?? 0;
+      const w0 = uvs[i0 * uvStride + 1] ?? 0;
+      const du1 = (uvs[i1 * uvStride] ?? 0) - u0;
+      const dw1 = (uvs[i1 * uvStride + 1] ?? 0) - w0;
+      const du2 = (uvs[i2 * uvStride] ?? 0) - u0;
+      const dw2 = (uvs[i2 * uvStride + 1] ?? 0) - w0;
 
       const denom = du1 * dw2 - du2 * dw1;
       if (Math.abs(denom) < 1e-12) continue;

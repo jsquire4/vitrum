@@ -97,7 +97,45 @@ const DEFAULT_SPECULAR_COLOR: Vec3 = [1.0, 1.0, 1.0];
  *
  * Square sizing: `dim = ceil(sqrt(materials.length * 85))` (matches the fork).
  */
-export function packMaterialsTexture(materials: readonly MaterialSpec[]): MaterialsTextureData {
+/** Resolve a TextureRef → its atlas layer index (-1 = none / unmapped). */
+function mapLayer(
+  ref: { handle?: unknown } | undefined,
+  layerOf: Map<unknown, number> | undefined,
+): number {
+  if (ref?.handle == null || layerOf == null) return -1;
+  return layerOf.get(ref.handle) ?? -1;
+}
+
+/**
+ * Write the 2-texel UV-transform encoding the GLSL `readTextureTransform` reads
+ * (row1 = (m00,m01,m02) at material texel `texelIdx`; row2 = (m10,m11,m12) at
+ * `texelIdx+1`), reproducing THREE's `Matrix3.setUvTransform` (center 0):
+ *   row1 = (sx·cos, sx·sin, offsetX),  row2 = (−sy·sin, sy·cos, offsetY).
+ * Identity (no transform) → row1=(1,0,0), row2=(0,1,0).
+ */
+function writeTransform(
+  data: Float32Array,
+  base: number,
+  texelIdx: number,
+  ref: { transform?: { offset?: readonly number[]; scale?: readonly number[]; rotation?: number } } | undefined,
+): void {
+  const t = ref?.transform;
+  const sx = t?.scale?.[0] ?? 1;
+  const sy = t?.scale?.[1] ?? 1;
+  const ox = t?.offset?.[0] ?? 0;
+  const oy = t?.offset?.[1] ?? 0;
+  const r = t?.rotation ?? 0;
+  const c = Math.cos(r);
+  const s = Math.sin(r);
+  const o = base + texelIdx * 4;
+  data[o] = sx * c; data[o + 1] = sx * s; data[o + 2] = ox; data[o + 3] = 0;
+  data[o + 4] = -sy * s; data[o + 5] = sy * c; data[o + 6] = oy; data[o + 7] = 0;
+}
+
+export function packMaterialsTexture(
+  materials: readonly MaterialSpec[],
+  layerOf?: Map<unknown, number>,
+): MaterialsTextureData {
   const materialCount = materials.length;
   const pixelCount = materialCount * MATERIAL_PIXELS;
   const dim = squareDim(pixelCount);
@@ -138,32 +176,41 @@ export function packMaterialsTexture(materials: readonly MaterialSpec[]): Materi
     // isThinFilm — fork: thickness===0 && attenuationDistance===Infinity.
     const isThinFilm = thickness === 0.0 && attenuationDistance === Infinity;
 
+    // Atlas layer indices for the maps the GLSL samples (-1 = none).
+    const baseColorLayer = mapLayer(m.baseColorMap, layerOf);
+    const metalLayer = mapLayer(m.metallicMap, layerOf);
+    const roughLayer = mapLayer(m.roughnessMap, layerOf);
+    const transmissionLayer = mapLayer(m.transmissionMap, layerOf);
+    const emissiveLayer = mapLayer(m.emissiveMap, layerOf);
+    const normalLayer = mapLayer(m.normalMap, layerOf);
+    const alphaLayer = mapLayer(m.alphaMap, layerOf);
+
     // sample 0 — color.rgb / map
     data[index++] = color[0];
     data[index++] = color[1];
     data[index++] = color[2];
-    data[index++] = NO_TEXTURE;
+    data[index++] = baseColorLayer;
 
     // sample 1 — metalness / metalnessMap / roughness / roughnessMap
     data[index++] = metalness;
-    data[index++] = NO_TEXTURE;
+    data[index++] = metalLayer;
     data[index++] = roughness;
-    data[index++] = NO_TEXTURE;
+    data[index++] = roughLayer;
 
     // sample 2 — ior / transmission / transmissionMap / emissiveIntensity
     data[index++] = ior;
     data[index++] = transmission;
-    data[index++] = NO_TEXTURE;
+    data[index++] = transmissionLayer;
     data[index++] = emissiveIntensity;
 
     // sample 3 — emissive.rgb / emissiveMap
     data[index++] = emissive[0];
     data[index++] = emissive[1];
     data[index++] = emissive[2];
-    data[index++] = NO_TEXTURE;
+    data[index++] = emissiveLayer;
 
     // sample 4 — normalMap / normalScale.xy / clearcoat
-    data[index++] = NO_TEXTURE;
+    data[index++] = normalLayer;
     data[index++] = normalScale;
     data[index++] = normalScale;
     data[index++] = clearcoat;
@@ -217,7 +264,7 @@ export function packMaterialsTexture(materials: readonly MaterialSpec[]): Materi
     data[index++] = attenuationDistance;
 
     // sample 13 — alphaMap / opacity / alphaTest / side
-    data[index++] = NO_TEXTURE;
+    data[index++] = alphaLayer;
     data[index++] = opacity;
     data[index++] = alphaTest;
     // side: 0 when (!isThinFilm && transmission>0); else FrontSide=1 (core has no
@@ -330,11 +377,19 @@ export function packMaterialsTexture(materials: readonly MaterialSpec[]): Materi
     data[index++] = 0.0;
     data[index++] = 0.0;
 
-    // samples 55..84 (30 texels): 15 texture-transform mat3s, 2 texels each.
-    // All texture ids are -1 (no atlas yet), so the GLSL substitutes identity and
-    // never reads these — the fork's `writeTextureMatrixToArray` likewise leaves
-    // them zero when the texture is absent. We just advance the cursor by the
-    // 15×8 = 120 floats they occupy (already zero-initialised).
+    // samples 55..84 (30 texels): 15 texture-transform mat3s, 2 texels each, at
+    // `texel 55 + 2k` (k per the GLSL `readTextureTransform` order in material_struct).
+    // The GLSL only READS a transform when the map id != -1, so write one per mapped
+    // texture (others stay zero / unread → identity). Maps without a transform slot
+    // (alphaMap) sample with raw uv. The fork's `writeTextureMatrixToArray` is the
+    // analogue.
+    if (baseColorLayer >= 0) writeTransform(data, base, 55, m.baseColorMap);
+    if (metalLayer >= 0) writeTransform(data, base, 57, m.metallicMap);
+    if (roughLayer >= 0) writeTransform(data, base, 59, m.roughnessMap);
+    if (transmissionLayer >= 0) writeTransform(data, base, 61, m.transmissionMap);
+    if (emissiveLayer >= 0) writeTransform(data, base, 63, m.emissiveMap);
+    if (normalLayer >= 0) writeTransform(data, base, 65, m.normalMap);
+
     index = base + MATERIAL_STRIDE;
   }
 
