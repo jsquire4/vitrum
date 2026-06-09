@@ -510,6 +510,17 @@ const RENDER_MAIN = /* glsl */ `
 
 								LightRecord lightRec;
 								float lightDist = hitType == NO_HIT ? INFINITY : surfaceHit.dist;
+								// H4 FIX (2026-06-09): the forward-hit MIS light pdf must MATCH the
+								// power-weighted discrete selection NEE actually performs in
+								// randomLightSample:  p_light = lightRec.pdf / lightsDenom * count *
+								// (power_i / sumPower). The previous  lightRec.pdf / lightsDenom
+								// silently assumed UNIFORM selection (count * discretePdf == 1) — exact
+								// only for a single light or equal powers; with >=2 unequal-power area
+								// lights it biased the MIS weight. Latent until H1 uploaded lights.count.
+								float sumLightPower = 0.0;
+								for ( uint pi = 0u; pi < lights.count; pi ++ ) {
+									sumLightPower += max( readLightInfo( lights.tex, pi ).power, 1e-20 );
+								}
 								for ( uint i = 0u; i < lights.count; i ++ ) {
 
 									if (
@@ -521,7 +532,11 @@ const RENDER_MAIN = /* glsl */ `
 
 										// weight the contribution
 										// NOTE: Only area lights are supported for forward sampling and can be hit
-										float misWeight = misHeuristic( scatterRec.pdf, lightRec.pdf / lightsDenom );
+										float discreteSelectPdf = sumLightPower > 1e-30
+											? max( readLightInfo( lights.tex, i ).power, 1e-20 ) / sumLightPower
+											: 1.0 / max( float( lights.count ), 1.0 );
+										float lightSamplePdf = lightRec.pdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
+										float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
 										pc_fragColor.rgb += lightRec.emission * throughputRgb * misWeight;
 
 										#else

@@ -306,6 +306,14 @@ export class GlResources {
     prog.bindTexture('materials', scene.materials);
     prog.bindTexture('attributesArray', scene.attributesArray, gl.TEXTURE_2D_ARRAY);
     prog.bindTexture('lights.tex', scene.lights); // LightsInfo { sampler2D tex; uint count; }
+    // H1 FIX (2026-06-09): upload the `lights.count` uint — without it the field
+    // defaults to 0u and the ENTIRE analytic-light system is inert (the NEE gate
+    // `rand(5) < count/lightsDenom`, the forward light-hit loop `i < lights.count`,
+    // and the BDPT light-subpath all see zero lights). Only `mesh-area` emitters
+    // lit anything, via the emissive fold. This restores point/spot/rect-area/
+    // circ-area/directional NEE. The packed lights texture was already uploaded;
+    // only its count uniform was missing.
+    prog.setUint('lights.count', scene.lightCount);
     // Every OPTIONAL sampler the fork GLSL declares must reference a valid texture of
     // the matching type — an unbound sampler defaults to unit 0 and collides with a
     // different-typed sampler there (GL_INVALID_OPERATION → black). bindTexture no-ops

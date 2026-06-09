@@ -180,6 +180,17 @@ export class GlProgram {
     if (l != null) this.#gl.uniform1i(l, v);
   }
 
+  /**
+   * Set a `uint` uniform (e.g. `lights.count`). WebGL2 requires `uniform1ui`
+   * for unsigned-int uniforms — `uniform1i` on a `uint` location is a GL type
+   * error, so before this setter existed the fork GLSL's `uint` uniforms could
+   * not be driven at all (the `lights.count` analytic-light gate stayed `0u`).
+   */
+  setUint(name: string, v: number): void {
+    const l = this.#loc(name);
+    if (l != null) this.#gl.uniform1ui(l, v >>> 0);
+  }
+
   setVec2(name: string, x: number, y: number): void {
     const l = this.#loc(name);
     if (l != null) this.#gl.uniform2f(l, x, y);
