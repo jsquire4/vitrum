@@ -97,6 +97,19 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#geoPack;
   }
 
+  /** Debug-only: presence/summary of the uploaded scene textures (env + lights). */
+  get _debugSceneTex(): { envMap: boolean; envTotalSum: number; envWidth: number; envHeight: number; lightCount: number } | null {
+    const t = this.#sceneTextures;
+    if (t == null) return null;
+    return {
+      envMap: t.envMap != null,
+      envTotalSum: t.envTotalSum,
+      envWidth: t.envWidth,
+      envHeight: t.envHeight,
+      lightCount: t.lightCount,
+    };
+  }
+
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
     const { supported, warnings } = partitionSceneBySupport(scene, this.capabilities);

@@ -308,10 +308,14 @@ export class GlResources {
     prog.bindTexture('sobolTexture', d2d);
     prog.bindTexture('stratifiedTexture', d2d);
     prog.bindTexture('stratifiedOffsetTexture', d2d);
-    // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; }
+    // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; float totalSum; }
     prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
     prog.bindTexture('envMapInfo.marginalWeights', scene.envMarginal ?? d2d);
     prog.bindTexture('envMapInfo.conditionalWeights', scene.envConditional ?? d2d);
+    // The env-sampling GLSL early-outs on `envMapInfo.totalSum == 0.0`; bind the
+    // scalar so a present environment is actually sampled (0 when absent → correct
+    // no-env early-out). Without this the env textures upload but never light.
+    prog.setFloat('envMapInfo.totalSum', scene.envTotalSum);
   }
 
   #dummy2dTex: WebGLTexture | null = null;
