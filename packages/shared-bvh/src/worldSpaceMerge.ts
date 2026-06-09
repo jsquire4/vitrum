@@ -120,6 +120,11 @@ export interface WorldSpaceMergeResult {
    *  {@link positionStrideFloats}. */
   readonly normals: Float32Array;
 
+  /** Merged per-vertex texture coords (stride 2, merge/vertex order — same order as
+   *  {@link positions}/{@link normals}; the BVH reorders triangles not vertices).
+   *  (0,0) for vertices whose source primitive carries no UVs. */
+  readonly uvs: Float32Array;
+
   /**
    * Pre-BVH-reorder merged triangle indices (3 u32 / triangle, MERGE order —
    * the order `StaticGeometryGenerator` concatenates, before any SAH permute).
@@ -395,6 +400,7 @@ export function mergeWorldSpaceFromCore(
   // BVH-reordered). `mergedIndices` is stride-3 (3 u32 / triangle).
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = []; // per-vertex texture coords (stride 2, merge order, untransformed)
   const mergedIndices: number[] = [];
   const mergedTriMaterialId: number[] = [];
   const meshVertexRanges: MergedMeshVertexRange[] = [];
@@ -435,6 +441,7 @@ export function mergeWorldSpaceFromCore(
 
     const basePositions = primitive.positions;
     const baseNormals = primitive.normals;
+    const baseUvs = primitive.uvs; // optional; (0,0) per vertex when absent
     const localVertexCount = Math.floor(basePositions.length / 3);
     if (localVertexCount < 3) continue;
 
@@ -473,6 +480,9 @@ export function mergeWorldSpaceFromCore(
         const [nx, ny, nz] = applyNormalMatrix(normalMatrix, lnx, lny, lnz);
         normals.push(nx, ny, nz);
         if (stride === 4) normals.push(0);
+
+        // UVs are 2D texture coords — transform-invariant (no world-matrix applied).
+        uvs.push(baseUvs?.[i * 2] ?? 0, baseUvs?.[i * 2 + 1] ?? 0);
 
         if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
         if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
@@ -519,6 +529,7 @@ export function mergeWorldSpaceFromCore(
       bvhIndexStride: 3,
       triMaterialId: new Uint32Array(1),
       normals: new Float32Array(stride === 4 ? 12 : 9),
+      uvs: new Float32Array(6),
       mergedIndices: new Uint32Array([0, 1, 2]),
       mergedTriMaterialId: new Uint32Array(1),
       materials,
@@ -531,6 +542,7 @@ export function mergeWorldSpaceFromCore(
 
   const packedPositions = new Float32Array(positions);
   const packedNormals = new Float32Array(normals);
+  const packedUvs = new Float32Array(uvs);
   const packedMergedIndices = new Uint32Array(mergedIndices);
   const packedMergedTriMaterialId = new Uint32Array(mergedTriMaterialId);
 
@@ -550,6 +562,7 @@ export function mergeWorldSpaceFromCore(
     bvhIndexStride: 3,
     triMaterialId: bvh.reorderedTriMaterialIds,
     normals: packedNormals,
+    uvs: packedUvs,
     mergedIndices: packedMergedIndices,
     mergedTriMaterialId: packedMergedTriMaterialId,
     materials,
