@@ -1,0 +1,33 @@
+{
+  "name": "@vitrum/pt-webgl2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "THREE-free native WebGL2 path-tracing backend for @vitrum/core (Path B; Slice 0 spine).",
+  "keywords": ["webgl2", "path-tracing", "vitrum"],
+  "author": "jsquire4",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": ["src", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsquire4/vitrum.git",
+    "directory": "packages/pt-webgl2"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@vitrum/core": "file:../core",
+    "@vitrum/shared-bvh": "file:../shared-bvh",
+    "@vitrum/shared-denoisers": "file:../shared-denoisers",
+    "@vitrum/shared-samplers": "file:../shared-samplers"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.1"
+  }
+}
