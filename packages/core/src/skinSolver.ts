@@ -183,6 +183,17 @@ export function solveSkin(
       throw new Error(`solveSkin: skinWeights[${i}] is invalid (${weight}).`);
     }
   }
+  for (let vertex = 0; vertex < vertCount; vertex += 1) {
+    const offset = vertex * 4;
+    const sum =
+      prim.skinWeights[offset]! +
+      prim.skinWeights[offset + 1]! +
+      prim.skinWeights[offset + 2]! +
+      prim.skinWeights[offset + 3]!;
+    if (Math.abs(sum - 1) > 1e-4) {
+      throw new Error(`solveSkin: skinWeights for vertex ${vertex} sum to ${sum}; expected 1.`);
+    }
+  }
 
   const positions = outPositions ?? new Float32Array(vertCount * 3);
   const normals = outNormals ?? new Float32Array(vertCount * 3);

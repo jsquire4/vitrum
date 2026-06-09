@@ -257,20 +257,26 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.dispose();
   });
 
-  it('ON: lite-tier render does NOT activate reuse (full-tier only)', async () => {
+  it('ON: lite-tier request throws instead of silently disabling reuse', async () => {
     const rec = emptyRecorder();
-    const engine = await createPTEngine_WebGPU({
+    await expect(createPTEngine_WebGPU({
       // Force the lite tier explicitly; reuse must stay inert.
       device: makeFullTierDevice(rec),
       traceTier: 'lite',
       restirPtReuse: true,
-    });
-    engine.setScene(makeScene());
-    engine.renderFrame(frameInput(16));
-    expect(rec.pipelineEntryPoints).not.toContain('restirPtProduce');
-    expect(rec.bufferLabels.some((l) => l.includes('restirPt'))).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(false);
-    engine.dispose();
+    })).rejects.toThrow(/restirPtReuse requires traceTier "full"/);
+  });
+
+  it('ON: full-tier request throws if the device was not acquired with the reuse buffer floor', async () => {
+    const rec = emptyRecorder();
+    const device = {
+      ...makeFullTierDevice(rec),
+      limits: { maxStorageBuffersPerShaderStage: 28, maxStorageTexturesPerShaderStage: 8 },
+    } as unknown as GPUDevice;
+    await expect(createPTEngine_WebGPU({
+      device,
+      restirPtReuse: true,
+    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 32/);
   });
 });
 

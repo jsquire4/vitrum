@@ -71,7 +71,10 @@ export function stripEmissive<T extends MaterialBearingPrimitive>(prim: T): T {
 interface FloatAttribute {
   readonly array: Float32Array;
   readonly itemSize: number;
+  readonly count: number;
 }
+
+type NumericAttribute = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 
 /** Exact identity check for a 16-element column-major matrix. */
 function isIdentityMat16(m: ArrayLike<number>): boolean {
@@ -91,10 +94,58 @@ function extractFloatAttribute(
   const attr = geo.getAttribute(name);
   if (attr == null) return undefined;
   const arr = attr.array;
+  if (isTightlyPackedBufferAttribute(attr) && arr instanceof Float32Array) {
+    return {
+      array: arr,
+      itemSize: attr.itemSize,
+      count: attr.count,
+    };
+  }
   return {
-    array: arr instanceof Float32Array ? arr : new Float32Array(arr),
+    array: copyNumericAttributeToFloat32(attr),
     itemSize: attr.itemSize,
+    count: attr.count,
   };
+}
+
+function isTightlyPackedBufferAttribute(attr: NumericAttribute): boolean {
+  return (
+    (attr as { isInterleavedBufferAttribute?: boolean }).isInterleavedBufferAttribute !== true &&
+    attr.array.length === attr.count * attr.itemSize
+  );
+}
+
+function numericAttributeComponent(attr: NumericAttribute, vertex: number, component: number): number {
+  switch (component) {
+    case 0: return attr.getX(vertex);
+    case 1: return attr.getY(vertex);
+    case 2: return attr.getZ(vertex);
+    case 3: return attr.getW(vertex);
+    default:
+      throw new RangeError(`Unsupported attribute component ${component}.`);
+  }
+}
+
+function copyNumericAttributeToFloat32(attr: NumericAttribute): Float32Array {
+  const out = new Float32Array(attr.count * attr.itemSize);
+  for (let vertex = 0; vertex < attr.count; vertex += 1) {
+    const dst = vertex * attr.itemSize;
+    for (let component = 0; component < attr.itemSize; component += 1) {
+      out[dst + component] = numericAttributeComponent(attr, vertex, component);
+    }
+  }
+  return out;
+}
+
+function copyNumericAttributeToUint32(attr: NumericAttribute): Uint32Array {
+  const out = new Uint32Array(attr.count * attr.itemSize);
+  for (let vertex = 0; vertex < attr.count; vertex += 1) {
+    const dst = vertex * attr.itemSize;
+    for (let component = 0; component < attr.itemSize; component += 1) {
+      out[dst + component] = numericAttributeComponent(attr, vertex, component);
+    }
+  }
+  return out;
 }
 
 function extractIndex(
@@ -419,24 +470,24 @@ function validateSkinAttributeShapes(
   if (normals.itemSize !== 3) {
     throw new Error(`SkinnedMesh "${label}" normal attribute itemSize ${normals.itemSize}; expected 3.`);
   }
-  const vertexCount = positions.array.length / 3;
-  if (!Number.isInteger(vertexCount)) {
-    throw new Error(`SkinnedMesh "${label}" position attribute length ${positions.array.length} is not divisible by 3.`);
-  }
+  const vertexCount = positions.count;
   if (skinIndexAttr.itemSize !== 4) {
     throw new Error(`SkinnedMesh "${label}" skinIndex attribute itemSize ${skinIndexAttr.itemSize}; expected 4.`);
   }
   if (skinWeightAttr.itemSize !== 4) {
     throw new Error(`SkinnedMesh "${label}" skinWeight attribute itemSize ${skinWeightAttr.itemSize}; expected 4.`);
   }
-  if (skinIndexAttr.array.length !== vertexCount * 4) {
+  if (normals.count !== vertexCount) {
+    throw new Error(`SkinnedMesh "${label}" normal vertex count ${normals.count}; expected ${vertexCount}.`);
+  }
+  if (skinIndexAttr.count !== vertexCount) {
     throw new Error(
-      `SkinnedMesh "${label}" skinIndex length ${skinIndexAttr.array.length}; expected ${vertexCount * 4}.`,
+      `SkinnedMesh "${label}" skinIndex vertex count ${skinIndexAttr.count}; expected ${vertexCount}.`,
     );
   }
-  if (skinWeightAttr.array.length !== vertexCount * 4) {
+  if (skinWeightAttr.count !== vertexCount) {
     throw new Error(
-      `SkinnedMesh "${label}" skinWeight length ${skinWeightAttr.array.length}; expected ${vertexCount * 4}.`,
+      `SkinnedMesh "${label}" skinWeight vertex count ${skinWeightAttr.count}; expected ${vertexCount}.`,
     );
   }
   return vertexCount;
@@ -462,6 +513,17 @@ function validateSkinPayloadValues(
       throw new Error(`SkinnedMesh "${label}" skinWeight[${i}] is invalid (${weight}).`);
     }
   }
+  for (let vertex = 0; vertex < skinWeightArray.length / 4; vertex += 1) {
+    const offset = vertex * 4;
+    const sum =
+      skinWeightArray[offset]! +
+      skinWeightArray[offset + 1]! +
+      skinWeightArray[offset + 2]! +
+      skinWeightArray[offset + 3]!;
+    if (Math.abs(sum - 1) > 1e-4) {
+      throw new Error(`SkinnedMesh "${label}" skinWeights for vertex ${vertex} sum to ${sum}; expected 1.`);
+    }
+  }
 }
 
 function sliceMeshAttributesForGroup(
@@ -472,16 +534,19 @@ function sliceMeshAttributesForGroup(
     positions: {
       array: copyAttributeForVertices(attrs.positions, vertexIndices),
       itemSize: attrs.positions.itemSize,
+      count: vertexIndices.length,
     },
     normals: {
       array: copyAttributeForVertices(attrs.normals, vertexIndices),
       itemSize: attrs.normals.itemSize,
+      count: vertexIndices.length,
     },
     ...(attrs.uvs != null
       ? {
           uvs: {
             array: copyAttributeForVertices(attrs.uvs, vertexIndices),
             itemSize: attrs.uvs.itemSize,
+            count: vertexIndices.length,
           },
         }
       : {}),
@@ -490,6 +555,7 @@ function sliceMeshAttributesForGroup(
           uv1: {
             array: copyAttributeForVertices(attrs.uv1, vertexIndices),
             itemSize: attrs.uv1.itemSize,
+            count: vertexIndices.length,
           },
         }
       : {}),
@@ -498,6 +564,7 @@ function sliceMeshAttributesForGroup(
           tangents: {
             array: copyAttributeForVertices(attrs.tangents, vertexIndices),
             itemSize: attrs.tangents.itemSize,
+            count: vertexIndices.length,
           },
         }
       : {}),
@@ -506,6 +573,7 @@ function sliceMeshAttributesForGroup(
           colors: {
             array: copyAttributeForVertices(attrs.colors, vertexIndices),
             itemSize: attrs.colors.itemSize,
+            count: vertexIndices.length,
           },
         }
       : {}),
@@ -683,11 +751,11 @@ function convertSkinnedMeshInternal(
   // Widen skinIndex (typically Uint16Array) to Uint32Array for the contract.
   // The narrower-typed array is upcasted without loss; downstream skinning
   // solvers index a Float32Array bones buffer with these values.
-  const skinIndices = new Uint32Array(skinIndexAttr.array);
+  const skinIndices = copyNumericAttributeToUint32(skinIndexAttr);
   // skinWeight may be Float32Array already; coerce if not.
-  const skinWeights = skinWeightAttr.array instanceof Float32Array
+  const skinWeights = isTightlyPackedBufferAttribute(skinWeightAttr) && skinWeightAttr.array instanceof Float32Array
     ? skinWeightAttr.array
-    : new Float32Array(skinWeightAttr.array);
+    : copyNumericAttributeToFloat32(skinWeightAttr);
 
   // Skeleton: flatten per-bone matrices into single Float32Arrays.
   const skel = obj.skeleton;
@@ -703,7 +771,7 @@ function convertSkinnedMeshInternal(
       `SkinnedMesh "${label}" skeleton has ${boneCount} bones but ${skel.boneInverses.length} inverse-bind matrices.`,
     );
   }
-  validateSkinPayloadValues(label, skinIndexAttr.array, skinWeightAttr.array, boneCount);
+  validateSkinPayloadValues(label, skinIndices, skinWeights, boneCount);
   // Ensure the bone matrices reflect the current scene hierarchy.
   for (const bone of skel.bones) {
     bone.updateMatrixWorld(true);

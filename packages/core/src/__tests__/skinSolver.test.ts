@@ -268,6 +268,18 @@ describe('solveSkin', () => {
     expect(() => solveSkin(prim)).toThrow(/bindMatrix/);
   });
 
+  it('throws when per-vertex skin weights do not sum to one', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      skinWeights: new Float32Array([0.5, 0, 0, 0]),
+    };
+    expect(() => solveSkin(prim)).toThrow(/skinWeights for vertex 0 sum to 0.5; expected 1/);
+  });
+
   // ── Theme 2 — scaled-bone inverse-transpose normals ─────────────────────
   // The C1 baseline transformed normals by the plain upper-3×3 of the skin
   // matrix, which is correct only for rigid bones. For a non-uniformly-scaled

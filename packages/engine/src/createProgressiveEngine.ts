@@ -29,6 +29,7 @@ import {
 } from '@vitrum/walkaround-hybrid';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   type PTEngineWebGPUOptions,
 } from '@vitrum/pt-webgpu';
@@ -133,14 +134,24 @@ export interface ProgressiveEngineHandle {
  *
  * Pure + exported so a host can preflight an adapter (`computeProgressiveLimitUnion`
  * + compare to `adapter.limits`) before committing, and so the union is unit-
-  * testable without a GPU. The pt-webgpu full trace layout currently dominates
-  * the buffer floor, while walkaround-hybrid dominates the texture floor.
+ * testable without a GPU. The pt-webgpu full trace layout currently dominates
+ * the buffer floor, while walkaround-hybrid dominates the texture floor.
  */
-export function computeProgressiveLimitUnion(): Record<string, number> {
+export interface ProgressiveLimitUnionOptions {
+  /** Include converged-engine ReSTIR-PT reuse reservoirs in the shared-device floor. */
+  readonly restirPtReuse?: boolean;
+}
+
+export function computeProgressiveLimitUnion(
+  options: ProgressiveLimitUnionOptions = {},
+): Record<string, number> {
   // The two FULL-tier requiredLimits sets.
   const hybridFull = HYBRID_WEBGPU_REQUIRED_LIMITS;
+  const ptBufferFloor = options.restirPtReuse === true
+    ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+    : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
   const ptWebgpuFull: Record<string, number> = {
-    maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    maxStorageBuffersPerShaderStage: ptBufferFloor,
     maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   };
   const union: Record<string, number> = {};
@@ -186,7 +197,9 @@ export async function createProgressiveEngine(
   // The shared device must satisfy BOTH backends' FULL floors. Compute the union
   // and check the adapter BEFORE requesting the device, so we can throw a clear,
   // gap-naming error instead of letting requestDevice reject opaquely.
-  const union = computeProgressiveLimitUnion();
+  const union = computeProgressiveLimitUnion({
+    restirPtReuse: opts.convergedOptions?.restirPtReuse === true,
+  });
   const unmet: string[] = [];
   for (const [key, wanted] of Object.entries(union) as [string, number][]) {
     const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];

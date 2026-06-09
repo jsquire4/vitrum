@@ -227,6 +227,20 @@ function reportCreateEngineError(
   } catch {}
 }
 
+function destroyOwnedWebGpuDevice(shared: SharedDeviceCtx | undefined, device: GPUDevice): void {
+  if (shared == null) {
+    try { device.destroy(); } catch {}
+  }
+}
+
+function disposeWebGL2Renderer(renderer: ThreeWebGLRendererLike): void {
+  try { renderer.dispose(); } catch {}
+  const ext = (renderer as unknown as { forceContextLoss?: () => void }).forceContextLoss;
+  if (typeof ext === 'function') {
+    try { ext.call(renderer); } catch {}
+  }
+}
+
 async function constructPathTracerFallback(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
@@ -385,68 +399,77 @@ export async function constructWalkaround(
       ? profile.recommendedRealtimeTier
       : undefined;
 
-  const advancedHybrid = opts.advanced as Partial<HybridEngineOptions> | undefined;
-  const merged: HybridEngineOptions = {
-    device,
-    width: Math.max(1, opts.canvas.width),
-    height: Math.max(1, opts.canvas.height),
-    primaryLightDir,
-    primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
-    skyTint,
-    skyIrradiance: DEFAULT_SKY_IRRADIANCE,
-    ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
-    cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
-    temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
-    debug: opts.debug ?? false,
-    // Phase-0 — resource tier + default quality preset. The lite-aware TLAS
-    // merge below + the advanced spread both run AFTER these, so a host's
-    // explicit `advanced.tier` / `advanced.qualityTier` still win.
-    tier: useLite ? 'lite' : 'full',
-    ...(recommendedTier !== undefined ? { qualityTier: recommendedTier } : {}),
-    ...mergeWalkaroundTlasExtension(
-      advancedHybrid,
-      // Lite forces merged BVH inside HybridEngine regardless; don't auto-set
-      // the TLAS extension when lite, so a needs-TLAS scene still runs merged
-      // on a weak adapter (the engine warns about reduced instanced fidelity).
-      needsTlas && !useLite,
-    ),
-    // Theme-H — the audit tuning knobs moved to the nested `tuning` namespace
-    // (`Partial<Tunables>`). Placed LAST (after the `advanced` spread) and
-    // deep-merged so the host's `advanced.tuning` overrides PER-KEY on top of
-    // the scale-derived floors — matching the pre-Theme-H per-key flat override
-    // (a wholesale `tuning` replace would drop scale floors the host omitted).
-    tuning: {
-      emitterDist2Floor: scaleDefaults.emitterDist2Floor,
-      triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
-      ...(advancedHybrid?.tuning ?? {}),
-    },
-  };
+  let engine: (Engine & Partial<GIStatePersistable>) | null = null;
+  try {
+    const advancedHybrid = opts.advanced as Partial<HybridEngineOptions> | undefined;
+    const merged: HybridEngineOptions = {
+      device,
+      width: Math.max(1, opts.canvas.width),
+      height: Math.max(1, opts.canvas.height),
+      primaryLightDir,
+      primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
+      skyTint,
+      skyIrradiance: DEFAULT_SKY_IRRADIANCE,
+      ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
+      cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
+      temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
+      debug: opts.debug ?? false,
+      // Phase-0 — resource tier + default quality preset. The lite-aware TLAS
+      // merge below + the advanced spread both run AFTER these, so a host's
+      // explicit `advanced.tier` / `advanced.qualityTier` still win on normal
+      // createEngine builds. Shared progressive builds re-force full below.
+      tier: useLite ? 'lite' : 'full',
+      ...(recommendedTier !== undefined ? { qualityTier: recommendedTier } : {}),
+      ...mergeWalkaroundTlasExtension(
+        advancedHybrid,
+        // Lite forces merged BVH inside HybridEngine regardless; don't auto-set
+        // the TLAS extension when lite, so a needs-TLAS scene still runs merged
+        // on a weak adapter (the engine warns about reduced instanced fidelity).
+        needsTlas && !useLite,
+      ),
+      ...(shared != null ? { tier: 'full' as const } : {}),
+      // Theme-H — the audit tuning knobs moved to the nested `tuning` namespace
+      // (`Partial<Tunables>`). Placed LAST (after the `advanced` spread) and
+      // deep-merged so the host's `advanced.tuning` overrides PER-KEY on top of
+      // the scale-derived floors — matching the pre-Theme-H per-key flat override
+      // (a wholesale `tuning` replace would drop scale floors the host omitted).
+      tuning: {
+        emitterDist2Floor: scaleDefaults.emitterDist2Floor,
+        triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
+        ...(advancedHybrid?.tuning ?? {}),
+      },
+    };
 
-  const engine = await createWalkaroundEngine_Hybrid(merged);
-  engine.setScene(vitrumScene);
+    engine = await createWalkaroundEngine_Hybrid(merged);
+    engine.setScene(vitrumScene);
 
-  // A2 — configure the canvas's WebGPU context so the attachVitrum RAF tick
-  // can acquire a fresh GPUTextureView per frame and pass it as
-  // FrameInput.swapChainView. HybridEngine.renderFrame skips the WebGPU path
-  // when input.swapChainView is undefined (HybridEngine.ts:979). Without
-  // this configure step, a host using attachVitrum() against a WebGPU
-  // backend gets a black canvas. We configure here (not in attachVitrum)
-  // because createEngine owns the GPUDevice handle.
-  configureWebGpuCanvas(opts.canvas, device, (err) => {
-    reportCreateEngineError(opts, err, {
-      phase: 'canvas-configure',
-      backend: 'walkaround-hybrid',
-      recoverable: true,
+    // A2 — configure the canvas's WebGPU context so the attachVitrum RAF tick
+    // can acquire a fresh GPUTextureView per frame and pass it as
+    // FrameInput.swapChainView. HybridEngine.renderFrame skips the WebGPU path
+    // when input.swapChainView is undefined (HybridEngine.ts:979). Without
+    // this configure step, a host using attachVitrum() against a WebGPU
+    // backend gets a black canvas. We configure here (not in attachVitrum)
+    // because createEngine owns the GPUDevice handle.
+    configureWebGpuCanvas(opts.canvas, device, (err) => {
+      reportCreateEngineError(opts, err, {
+        phase: 'canvas-configure',
+        backend: 'walkaround-hybrid',
+        recoverable: true,
+      });
     });
-  });
 
-  return wrapWithIdempotentDispose(engine, () => {
-    // Don't destroy a device we don't own — the shared-device owner (the
-    // progressive facade) destroys it once after disposing both sub-engines.
-    if (shared == null) {
-      try { device.destroy(); } catch {}
-    }
-  });
+    const built = engine;
+    engine = null;
+    return wrapWithIdempotentDispose(built, () => {
+      // Don't destroy a device we don't own — the shared-device owner (the
+      // progressive facade) destroys it once after disposing both sub-engines.
+      destroyOwnedWebGpuDevice(shared, device);
+    });
+  } catch (err) {
+    try { engine?.dispose(); } catch {}
+    destroyOwnedWebGpuDevice(shared, device);
+    throw err;
+  }
 }
 
 /** @internal — reused by `createProgressiveEngine` to build the converged
@@ -461,45 +484,54 @@ export async function constructPathTracerWebGPU(
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const device = shared?.device ?? await adapter.requestDevice({
-    requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter),
-  });
-
   const advancedWebGPU = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
-  const merged: PTEngineWebGPUOptions = {
-    device,
-    // A shared device is built with the limit UNION (≥ the full pt-webgpu
-    // per-stage buffer/texture floor), so force the full trace tier here —
-    // the union exists precisely so both engines run at full fidelity, and the
-    // auto-resolver would also pick 'full' from these limits. Explicit is safer
-    // (it surfaces a clear throw if a caller ever passes an under-spec device).
-    ...(shared != null ? { traceTier: 'full' as const } : {}),
-    ...advancedWebGPU,
-  };
-
-  const engine = await createPTEngine_WebGPU(merged);
-  engine.setScene(vitrumScene);
-
-  // The converged engine renders offscreen (presentationMode:'offscreen-texture');
-  // it does not present to the canvas. When standing alone (createEngine) we keep
-  // the historical canvas-configure for attachVitrum swap-chain plumbing. Under a
-  // shared device the realtime engine owns the canvas, so skip it here to avoid
-  // re-configuring the same context twice.
-  if (shared == null) {
-    configureWebGpuCanvas(opts.canvas, device, (err) => {
-      reportCreateEngineError(opts, err, {
-        phase: 'canvas-configure',
-        backend: 'pt-webgpu',
-        recoverable: true,
-      });
-    });
-  }
-
-  return wrapWithIdempotentDispose(engine, () => {
-    if (shared == null) {
-      try { device.destroy(); } catch {}
-    }
+  const device = shared?.device ?? await adapter.requestDevice({
+    requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
+      restirPtReuse: advancedWebGPU?.restirPtReuse === true,
+    }),
   });
+
+  let engine: Engine | null = null;
+  try {
+    const merged: PTEngineWebGPUOptions = {
+      device,
+      ...advancedWebGPU,
+      // A shared device is built with the limit UNION (≥ the full pt-webgpu
+      // per-stage buffer/texture floor), so force the full trace tier here —
+      // the union exists precisely so both engines run at full fidelity, and the
+      // auto-resolver would also pick 'full' from these limits. Explicit is safer
+      // (it surfaces a clear throw if a caller ever passes an under-spec device).
+      ...(shared != null ? { traceTier: 'full' as const } : {}),
+    };
+
+    engine = await createPTEngine_WebGPU(merged);
+    engine.setScene(vitrumScene);
+
+    // The converged engine renders offscreen (presentationMode:'offscreen-texture');
+    // it does not present to the canvas. When standing alone (createEngine) we keep
+    // the historical canvas-configure for attachVitrum swap-chain plumbing. Under a
+    // shared device the realtime engine owns the canvas, so skip it here to avoid
+    // re-configuring the same context twice.
+    if (shared == null) {
+      configureWebGpuCanvas(opts.canvas, device, (err) => {
+        reportCreateEngineError(opts, err, {
+          phase: 'canvas-configure',
+          backend: 'pt-webgpu',
+          recoverable: true,
+        });
+      });
+    }
+
+    const built = engine;
+    engine = null;
+    return wrapWithIdempotentDispose(built, () => {
+      destroyOwnedWebGpuDevice(shared, device);
+    });
+  } catch (err) {
+    try { engine?.dispose(); } catch {}
+    destroyOwnedWebGpuDevice(shared, device);
+    throw err;
+  }
 }
 
 async function constructPathTracer(
@@ -509,26 +541,30 @@ async function constructPathTracer(
 ): Promise<Engine> {
   const renderer = await createWebGL2RendererForCanvas(opts.canvas);
 
-  const advancedWebGL2 = opts.advanced as WebGL2PathTracerAdvancedOptions | undefined;
-  const merged: WebGL2PathTracerOptionsLike = {
-    device: renderer,
-    ...(advancedWebGL2 ?? {}),
-  };
+  let engine: Engine | null = null;
+  try {
+    const advancedWebGL2 = opts.advanced as WebGL2PathTracerAdvancedOptions | undefined;
+    const merged: WebGL2PathTracerOptionsLike = {
+      device: renderer,
+      ...(advancedWebGL2 ?? {}),
+    };
 
-  // Lazy runtime import — keeps the WebGL2 path-tracer stack out of the module
-  // graph for hosts that only ever take the WebGPU path (see the import note).
-  const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl') as unknown as PtWebglModuleLike;
-  const engine = await createPTEngine_WebGL2(merged);
-  engine.setScene(vitrumScene);
+    // Lazy runtime import — keeps the WebGL2 path-tracer stack out of the module
+    // graph for hosts that only ever take the WebGPU path (see the import note).
+    const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl') as unknown as PtWebglModuleLike;
+    engine = await createPTEngine_WebGL2(merged);
+    engine.setScene(vitrumScene);
 
-  return wrapWithIdempotentDispose(engine, () => {
-    try { renderer.dispose(); } catch {}
-    // Some pt-webgl test paths hand back a renderer with forceContextLoss.
-    const ext = (renderer as unknown as { forceContextLoss?: () => void }).forceContextLoss;
-    if (typeof ext === 'function') {
-      try { ext.call(renderer); } catch {}
-    }
-  });
+    const built = engine;
+    engine = null;
+    return wrapWithIdempotentDispose(built, () => {
+      disposeWebGL2Renderer(renderer);
+    });
+  } catch (err) {
+    try { engine?.dispose(); } catch {}
+    disposeWebGL2Renderer(renderer);
+    throw err;
+  }
 }
 
 async function createWebGL2RendererForCanvas(

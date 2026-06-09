@@ -63,6 +63,7 @@ import {
   HAMMERSLEY_WGSL,
   OCTAHEDRAL_CORE_WGSL,
 } from '@vitrum/shared-samplers';
+import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export {
@@ -73,6 +74,7 @@ export {
   // (max of the hybrid + pt-webgpu full floors) for a shared device.
   PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -1380,6 +1382,9 @@ export const createPTEngine_WebGPU: EngineFactory<
     );
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
+  if (opts.restirPtReuse === true) {
+    assertRestirPtReuseSupported(opts.device, traceTier);
+  }
   if (traceTier === 'full') {
     console.info(
       '[vitrum/pt-webgpu] Full trace tier: TLAS, analytic shapes, HDRI, area lights, motion/variance aux, caustics.',
@@ -1396,3 +1401,19 @@ export const createPTEngine_WebGPU: EngineFactory<
   slot.set('ready');
   return engine;
 };
+
+function assertRestirPtReuseSupported(device: GPUDevice, traceTier: PtWebgpuTraceTier): void {
+  if (traceTier !== 'full') {
+    throw new Error(
+      'createPTEngine_WebGPU: restirPtReuse requires traceTier "full"; the selected lite tier cannot bind the ReSTIR-PT reuse reservoirs.',
+    );
+  }
+  const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
+  if (maxBuffers < PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
+    throw new Error(
+      `createPTEngine_WebGPU: restirPtReuse requires maxStorageBuffersPerShaderStage >= ` +
+      `${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}; device exposes ${maxBuffers}. ` +
+      'Request the ReSTIR-PT reuse limit floor when acquiring the GPUDevice.',
+    );
+  }
+}

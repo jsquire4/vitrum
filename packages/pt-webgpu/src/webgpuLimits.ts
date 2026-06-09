@@ -10,15 +10,20 @@
  * eye-stack scratch buffer); the light-path was an `rgba32float` read_write
  * storage TEXTURE but core WebGPU rejects that format for read_write storage
  * (gpuweb #4651), so it is a storage buffer — one fewer storage texture, one more
- * storage buffer. Group 3 carries ONE read-only storage buffer (the WS2
- * many-light importance-sampling tree). The WebGPU device-request contract is
- * per-STAGE, so the exported full-tier request uses the aggregate storage-buffer
- * count below; this per-group peak remains useful for layout audits.
+ * storage buffer. Group 3 carries three read-only storage buffers (the WS2
+ * many-light importance-sampling tree, mesh UVs, and material texture
+ * descriptors). The WebGPU device-request contract is per-STAGE, so the
+ * exported full-tier request uses the aggregate storage-buffer count below; this
+ * per-group peak remains useful for layout audits.
  */
 export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 10;
 
 /** Full-tier storage-buffer bindings visible to the compute stage. */
 export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 28;
+
+/** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
+export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
 
 export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
@@ -42,18 +47,27 @@ export const PT_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 };
 
+export interface PtWebgpuRequiredLimitOptions {
+  /** Include the opt-in ReSTIR-PT reuse reservoir/result storage buffers. */
+  readonly restirPtReuse?: boolean;
+}
+
 /** Request the highest tier the adapter can satisfy (used by host device acquisition). */
 export function ptWebgpuRequiredLimitsForAdapter(
   adapter: GPUAdapter,
+  options: PtWebgpuRequiredLimitOptions = {},
 ): Record<string, number> {
   const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
   const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
+  const fullBufferFloor = options.restirPtReuse === true
+    ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+    : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
   if (
-    maxBuffers >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
+    maxBuffers >= fullBufferFloor &&
     maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE
   ) {
     return {
-      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageBuffersPerShaderStage: fullBufferFloor,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     };
   }

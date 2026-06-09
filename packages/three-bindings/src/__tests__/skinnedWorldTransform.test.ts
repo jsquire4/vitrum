@@ -15,6 +15,8 @@ import {
   BufferAttribute,
   BufferGeometry,
   Group,
+  InterleavedBuffer,
+  InterleavedBufferAttribute,
   Matrix4,
   MeshStandardMaterial,
   Scene,
@@ -162,6 +164,70 @@ describe('skinned-mesh world transform round trip', () => {
 
     expect(() => sceneFromThreeJS(scene)).toThrow(
       /SkinnedMesh "bad-skin-bone" skinIndex\[0\] references bone 1; skeleton has 1 bones/,
+    );
+  });
+
+  it('compacts interleaved skin attributes instead of reading unrelated stride data', () => {
+    const geo = new BufferGeometry();
+    geo.setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3),
+    );
+    geo.setAttribute(
+      'normal',
+      new BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+    );
+    const skinIndexBuffer = new InterleavedBuffer(
+      new Uint16Array([
+        99, 0, 0, 0, 0,
+        99, 0, 0, 0, 0,
+        99, 0, 0, 0, 0,
+      ]),
+      5,
+    );
+    const skinWeightBuffer = new InterleavedBuffer(
+      new Float32Array([
+        42, 1, 0, 0, 0,
+        42, 1, 0, 0, 0,
+        42, 1, 0, 0, 0,
+      ]),
+      5,
+    );
+    geo.setAttribute('skinIndex', new InterleavedBufferAttribute(skinIndexBuffer, 4, 1));
+    geo.setAttribute('skinWeight', new InterleavedBufferAttribute(skinWeightBuffer, 4, 1));
+
+    const bone = new Bone();
+    const mesh = new SkinnedMesh(geo, new MeshStandardMaterial());
+    mesh.add(bone);
+    mesh.bind(new Skeleton([bone]));
+    const scene = new Scene();
+    scene.add(mesh);
+    scene.updateMatrixWorld(true);
+
+    const prim = sceneFromThreeJS(scene).primitives.find((p) => p.kind === 'skinned-mesh');
+    expect(prim).toBeDefined();
+    if (prim == null || prim.kind !== 'skinned-mesh') return;
+    expect(Array.from(prim.skinIndices)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(Array.from(prim.skinWeights)).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+  });
+
+  it('throws when skinned mesh weights are not normalized per vertex', () => {
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0]), 3));
+    geo.setAttribute('normal', new BufferAttribute(new Float32Array([0, 0, 1]), 3));
+    geo.setAttribute('skinIndex', new BufferAttribute(new Uint16Array([0, 0, 0, 0]), 4));
+    geo.setAttribute('skinWeight', new BufferAttribute(new Float32Array([0, 0, 0, 0]), 4));
+    const bone = new Bone();
+    const mesh = new SkinnedMesh(geo, new MeshStandardMaterial());
+    mesh.name = 'bad-skin-weights';
+    mesh.add(bone);
+    mesh.bind(new Skeleton([bone]));
+    const scene = new Scene();
+    scene.add(mesh);
+    scene.updateMatrixWorld(true);
+
+    expect(() => sceneFromThreeJS(scene)).toThrow(
+      /SkinnedMesh "bad-skin-weights" skinWeights for vertex 0 sum to 0; expected 1/,
     );
   });
 });
