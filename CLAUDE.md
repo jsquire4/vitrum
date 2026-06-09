@@ -19,17 +19,17 @@
 - `core` — the locked-in host-agnostic contract: scene/frame/engine types, `EngineCapabilities` (+ fine-grained `BackendSupportDetails`), backend promise ledger, `solveSkin`, `analyticPrimitiveToMesh`, `createInverseSession`
 - `engine` — `createEngine` / `attachVitrum` facade + `createProgressiveEngine` (shared-device walkaround→PT handoff)
 - `walkaround-hybrid` — realtime GI (release-candidate track): DDGI + ReSTIR-DI/GI + GTAO + SVGF + opt-in RC/PPG/neural; GI-state export/import; analytic primitives via generated-mesh fallback
-- `pt-webgl` — WebGL2 converged PT on the absorbed `three-gpu-pathtracer` fork (release-candidate track)
+- `pt-webgl2` — native WebGL2 converged PT (release-candidate track)
 - `pt-webgpu` — WebGPU-native converged PT peer: spectral, BDPT, SSS random walk, MNEE manifold caustics, light-tree NEE, ReSTIR-PT (off-default), path-replay adjoint
 - `walkaround-rc` — Radiance Cascades subsystem (cascade pyramid + dispatch + receiver)
-- `three-bindings`, `shared-bvh`, `shared-samplers`, `shared-denoisers`, `scene-lighting`, `stained-glass-extensions`, `dev` (debug overlays)
+- `shared-bvh`, `shared-samplers`, `shared-denoisers`, `scene-lighting`, `stained-glass-extensions`, `dev` (debug overlays)
 
 ## Where things stand (2026-06-05)
 
-- **Maturity (do not call the library "pre-alpha"):** release-candidate track for `engine` / `walkaround-hybrid` / `pt-webgl`. `pt-webgpu` is a peer PT backend — all 9 of its fidelity-matrix rendering rows are `supported` (dzn RTX-4090 A/Bs, 2026-06-04, `3c58f39`). The pt-webgl FORK rows stay `experimental` (they need a WebGL2 capture path; lavapipe is WebGPU-only). SVGF-real is intentionally `unsupported` on both converged backends (regime mismatch — they use `oidn-final`).
+- **Maturity (do not call the library "pre-alpha"):** release-candidate track for `engine` / `walkaround-hybrid` / `pt-webgl2`. `pt-webgpu` is a peer PT backend — all 9 of its fidelity-matrix rendering rows are `supported` (dzn RTX-4090 A/Bs, 2026-06-04, `3c58f39`). SVGF-real is intentionally `unsupported` on both converged backends (regime mismatch — they use `oidn-final`).
 - **Authoritative sources:** open bugs → `items_to_fix.md` (repo root); pending GPU validation → `HARDWARE-VALIDATION-NEEDS.md` (V1–V27); priorities → `plan/roadmap.md` §0.5; per-session state → the memory dir's `MEMORY.md`.
 - **Remaining work is THREE-fold (verified 2026-06-09 deep re-audit):** (1) **feature completion** — several headline frontier features are wired-but-inert/partial (pt-webgpu ReSTIR-PT computed but never composited into the beauty image; PPG spatial sTree never splits — single global cell; pt-webgpu "spectral" is a hero-λ tint over RGB, not spectral transport; photon-map caustics are a ~21%-energy approximation; pt-webgl BDPT is ANGLE-disabled, i.e. off on all prod desktop drivers); (2) **fidelity ceilings in the default path** (no glossy/metal GI — `risGi.wgsl.ts:164` punts glass/metal to PT; Lambertian-only GI target `risGi.wgsl.ts:261`; diffuse-only DDGI bounce; walkaround HDRI reduced to scalar tint, no directional IBL; pt-webgl2 mesh-area lights have no NEE); (3) **provisioning + hygiene** (OIDN/neural ship no model weights; silent geometry/texture drops; dead code). The road-to-100 punch list lives in `plan/road-to-100.md`. Radiometric *validation* (real-GPU A/B) is a separate, still-real tail (`HARDWARE-VALIDATION-NEEDS.md`).
-- **THREE-decouple: COMPLETE (verified 2026-06-09 by code-read + grep).** walkaround-hybrid's ingestion/resolver/update layer is core-native. `setScene` (`HybridEngine.ts:999`) runs `partitionSceneBySupport → sceneWithAnalyticMeshFallback → _initCoordinator.startInit()` — NO `vitrumSceneToThree`. The BVH/material path is `restir/bvhCore.ts` (header: "deliberately free of runtime `three` imports"); its `materialResolver` iterates `scene.primitives`, not a THREE graph. `findMeshByPrimitiveId` no longer exists anywhere in the package; there are ZERO runtime `three` imports in engine/restir/rc/ddgi (grep-confirmed). THREE survives ONLY in the opt-in `@vitrum/walkaround-hybrid/three` bridge subpath + test-only `legacy/three` oracles, and the decoupling is pinned by `threeDecoupleSeams.test.ts` (makes `@vitrum/three-bindings` throw if touched). The prior "T1–T5 remain" / "still THREE in ingestion" framing is OBSOLETE — do not re-open it.
+- **THREE removal: COMPLETE in the runtime/package graph (2026-06-09).** `packages/pt-webgl`, `packages/three-bindings`, `packages/three-gpu-pathtracer`, legacy Three examples, Three bridge subpaths, and Three package metadata were deleted. Runtime engines consume `@vitrum/core` scenes; any host scene-graph adapter now belongs outside the core runtime graph. Provenance comments for ported algorithms remain intentional.
 - Recent headline landings (full ledger: `plan/archive/claude-md-history-archived-2026-06-05.md` + git log): MNEE manifold caustics COMPLETE (reflect + refract + 2-vertex glass chain, all GPU-validated); V24 GPU path-replay adjoint complete (inverse fit converges on real GPU); progressive walkaround→PT handoff complete; ReSTIR-PT reservoir/reuse pass wired (OFF-default, inert — compositing/spatial-reuse follow-ups tracked); DDGI GI-state cache (byte-identity round-trip); `BackendSupportDetails` capability granularity + analytic-primitive mesh fallback (2026-06-05).
 
 Treat open items as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms.
@@ -42,13 +42,13 @@ Treat open items as real, prioritise honestly. Don't paper over with band-aids t
 - **Merge races have silently dropped landed commits before** (2026-05-17). Verify presence by code-read, not by changelog.
 - **The wsl-gpu T1 oracles import vitrum production files by HARDCODED ABSOLUTE PATH** (e.g. `…/walkaround-hybrid/src/restir/bvhCore.ts`). Renaming/moving a production module silently breaks them: deno throws "module not found" → the script exits 1 → the smoke mislabels it as a "<subsystem> traversal regression" (it's a stale import, NOT a real assertion failure — tell them apart by the error line being an `await import(...)`, not a match-rate). **When you rename/move a walkaround-hybrid/rc/restir/ddgi production module, grep `~/projects/wsl-gpu/scripts` for its path and repoint the oracles.** Verified 2026-06-09: the THREE-decouple (`restir/sceneBvhFromCore.ts` → `restir/bvhCore.ts` + `legacy/three/`) broke all 3 GI brute-force oracles + the render worker this way; production traversal was correct all along (oracles now 100% vs ground truth after repointing).
 
-## Absorbed path-tracer package
+## Former path-tracer fork
 
-`packages/three-gpu-pathtracer/` is the absorbed fork of `gkjohnson/three-gpu-pathtracer` — part of the monorepo, changed on the active vitrum branch like any other package. The old sibling-checkout workflow is retired (archived sprint docs may still mention it). Keep the package boundary intact unless the user explicitly asks to collapse it into `@vitrum/pt-webgl`. `@vitrum/pt-webgl` depends on it via `file:../three-gpu-pathtracer`.
+`packages/three-gpu-pathtracer/` and `@vitrum/pt-webgl` were removed in favor of the native `@vitrum/pt-webgl2` backend. Do not recreate sibling checkouts or package aliases for the old fork; use source provenance comments and `CREDITS.md` for attribution when touching ported kernels.
 
 ## Conventions
 
-- **No upstream PRs yet.** The fork stays local until vitrum is prime-time-ready. Do not create upstream PRs to `gkjohnson/three-gpu-pathtracer` without explicit user instruction.
+- **No upstream PRs yet.** Do not create upstream PRs to provenance projects without explicit user instruction.
 - **No npm publish yet.** Local-only via npm workspaces (`file:./packages/*`). Do not publish without explicit user instruction.
 - **No remote pushes without instruction.** Do not push `~/projects/vitrum` without the user saying so.
 
@@ -61,7 +61,7 @@ Treat open items as real, prioritise honestly. Don't paper over with band-aids t
 
 ## Testing protocol
 
-For any algorithmic change to a backend or shared package: capture a "before" reference render of the relevant test scene, make the change, capture an "after" reference render, A/B them. Numerical regression is acceptable only if visually justified. Reference renders live in `tools/reference-renders/`. Working test scenes go in `examples/`.
+For any algorithmic change to a backend or shared package: capture a "before" reference render of the relevant test scene, make the change, capture an "after" reference render, A/B them. Numerical regression is acceptable only if visually justified. Reference renders live in `tools/reference-renders/`; any new example should target the core `Scene` contract.
 
 Mechanical checks: **`npm run typecheck`** (TypeScript, all packages with a `typecheck` script), **`npm test`** (Vitest in packages that define tests). The pre-push hook runs the T1 GPU smoke automatically. Release notes: **[CHANGELOG.md](./CHANGELOG.md)**.
 

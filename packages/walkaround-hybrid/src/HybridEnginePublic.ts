@@ -13,8 +13,8 @@ import type { GIStateSnapshot } from './giStateSnapshot.js';
  * Stable public surface for the walkaround-hybrid backend beyond the generic
  * {@link Engine} contract.
  *
- * Kept in a Three-free module so package-root type imports do not pull the
- * concrete legacy host adapter into host-agnostic consumers.
+ * Kept in a small module so package-root type imports do not pull the concrete
+ * engine implementation into host-agnostic consumers.
  */
 export interface HybridEngineGISurface {
   /** Export the converged DDGI GI state ("cached light field") for host persistence. */
@@ -26,9 +26,8 @@ export interface HybridEngineGISurface {
 /**
  * Public, structural HybridEngine type exposed from the package root.
  *
- * The concrete class still lives behind `@vitrum/walkaround-hybrid/three`,
- * where importing it is allowed to resolve Three.js. Root consumers get the
- * same callable engine surface without a root-level Three dependency.
+ * The concrete class implements the same callable engine surface; this
+ * interface lets facade packages type against it without importing internals.
  */
 export interface HybridEngine extends Engine, HybridEngineGISurface {
   readonly debug: EngineDebugSurface;
@@ -61,7 +60,6 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
   getMeshVertexRanges(): readonly unknown[] | null;
   getBvhMode(): string | null;
   getPrimitiveTlasBindings(): readonly unknown[] | null;
-  refreshDdgiLightsFromThreeScene(): void;
 
   getProgressiveSeedTexture(): {
     readonly texture: BackendTexture;

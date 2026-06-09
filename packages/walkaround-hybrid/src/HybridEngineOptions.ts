@@ -16,9 +16,6 @@ import type { CascadeDim } from '@vitrum/walkaround-rc';
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
 
-// Keep the legacy host-scene escape hatch opaque without importing three at the root.
-export type LegacyThreeSceneOption = unknown;
-
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
  * All fields are optional; omitting a field leaves the corresponding engine
@@ -137,31 +134,6 @@ export interface HybridEngineOptions extends EngineOptions {
 
   /** Sky-dome irradiance scalar paired with skyTint. */
   readonly skyIrradiance: number;
-
-  /**
-   * Optional escape hatch for hosts that need to provide a host scene as the
-   * BVH / DDGI source directly (e.g. when the host's authoritative scene graph
-   * is Three-only and they intentionally omit `setScene(vitrumScene)`).
-   *
-   * **Most callers leave this undefined.** When `setScene` provides a vitrum
-   * Scene with at least one mesh primitive, the engine builds its BVH/DDGI/RC
-   * inputs from core-native scene buffers and the `threeScene` field is never
-   * read. The @vitrum/engine `createEngine()` facade always takes the latter path.
-   *
-   * The package root keeps this field compatibility-typed so
-   * `@vitrum/walkaround-hybrid` type imports do not resolve `three`. Hosts that
-   * want the precise Three.js scene type should import
-   * `HybridEngineThreeOptions` / `WalkaroundThreeHostScene` from the explicit
-   * `@vitrum/walkaround-hybrid/three` subpath.
-   *
-   * Was REQUIRED pre-T3.H; the requirement was dropped 2026-05-12 (the
-   * field itself stays as an escape hatch). Hosts that previously passed
-   * `threeScene: someScene` can drop it if they also call
-   * `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
-   * neither (no mesh primitives in setScene + no threeScene), the engine
-   * throws on pipeline init with a clear error.
-   */
-  readonly threeScene?: LegacyThreeSceneOption;
 
   /** Light list for DDGI probe update pass. */
   readonly lights?: DDGILight[];

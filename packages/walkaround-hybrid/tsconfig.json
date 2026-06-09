@@ -23,9 +23,6 @@
       "@vitrum/stained-glass-extensions": [
         "../stained-glass-extensions/src/index.ts"
       ],
-      "@vitrum/three-bindings": [
-        "../three-bindings/src/index.ts"
-      ],
       "@vitrum/walkaround-rc": [
         "../walkaround-rc/src/index.ts"
       ]

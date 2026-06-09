@@ -28,7 +28,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { validateBvhEncoding } from '../legacy/bvhCommon.js';
+import { validateBvhEncoding } from '../validateBvhEncoding.js';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Inline port of buildCpuBvh (pt-webgpu)

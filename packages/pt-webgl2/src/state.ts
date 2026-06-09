@@ -1,7 +1,7 @@
 import type { EngineState } from '@vitrum/core';
 
 /**
- * Backend-local state token (NOT a core type — copied from the pt-webgl/pt-webgpu
+ * Backend-local state token (NOT a core type — copied from the PT backend
  * pattern). Keeps the `set('ready')` transition private to the factory: the engine
  * exposes only `get state()` reading `slot.get()`.
  */

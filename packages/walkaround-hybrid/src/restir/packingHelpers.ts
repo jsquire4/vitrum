@@ -28,7 +28,7 @@ export interface BufferAttributeLike {
   readonly array: ArrayLike<number>;
 }
 
-export interface LegacyThreeMaterialLike {
+export interface PbrMaterialLike {
   readonly color?: ColorLike;
   readonly emissive?: ColorLike;
   readonly emissiveIntensity?: number;
@@ -105,7 +105,7 @@ export function packUVIntoPositionW(
  * Resolve a triangle's RGB color for packing. Shared between packBVHIndexW
  * (raw attenuation color) and packBVHBeerColors (Beer-Lambert tinted).
  */
-function resolveTriColor(mat: LegacyThreeMaterialLike, applyBeer: boolean): ColorLike {
+function resolveTriColor(mat: PbrMaterialLike, applyBeer: boolean): ColorLike {
   const transmission = (mat.transmission ?? 0);
   const isTransmissive = transmission > 0.01;
   const attenColor = mat.attenuationColor;
@@ -127,7 +127,7 @@ export function packBVHIndexWTri(
   indexBuf: Uint32Array,
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   tri: number,
 ): void {
   const base4 = tri * 4;
@@ -161,7 +161,7 @@ export function packBVHIndexWTri(
 export function packBVHBeerColorTri(
   beerBuf: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   tri: number,
 ): void {
   const matId = triMaterialId[tri]!;
@@ -185,7 +185,7 @@ export function repackBVHMaterialRange(
   beerBuf: Uint32Array,
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   triStart: number,
   triCount: number,
 ): void {
@@ -203,7 +203,7 @@ export function repackBVHMaterialRange(
 export function packBVHIndexW(
   indices: Uint32Array,
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   triCount: number,
 ): Uint32Array<ArrayBuffer> {
   const indexBuf = new Uint32Array(triCount * 4);
@@ -220,7 +220,7 @@ export function packBVHIndexW(
  */
 export function packBVHBeerColors(
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   triCount: number,
 ): Uint32Array<ArrayBuffer> {
   const beerBuf = new Uint32Array(triCount);
@@ -231,15 +231,15 @@ export function packBVHBeerColors(
 }
 
 /**
- * Emissive radiance Le (HDR, `emissive.rgb · emissiveIntensity`) of a THREE
- * material, or `null` when the material is not a self-emissive surface. This
+ * Emissive radiance Le (HDR, `emissive.rgb * emissiveIntensity`) of a material,
+ * or `null` when the material is not a self-emissive surface. This
  * mirrors the EMISSIVE branch of `classifyTriangleEmitter` (emitterList.ts) EXACTLY
  * — so the camera-visible glow Le equals the radiance ReSTIR-DI samples for that
  * emitter — but deliberately EXCLUDES the transmissive "sun-attenuated secondary
  * emitter" branch: glass self-emission to the camera is already handled by
  * shade.wgsl `lo_emit` (Beer-Lambert), so packing it here would double-count.
  */
-export function materialEmissiveLe(mat: LegacyThreeMaterialLike): [number, number, number] | null {
+export function materialEmissiveLe(mat: PbrMaterialLike): [number, number, number] | null {
   const em = mat.emissive;
   if (!em) return null;
   const ei = mat.emissiveIntensity;
@@ -257,7 +257,7 @@ export function materialEmissiveLe(mat: LegacyThreeMaterialLike): [number, numbe
  */
 export function packBVHEmissiveLe(
   triMaterialId: Uint32Array,
-  materials: readonly LegacyThreeMaterialLike[],
+  materials: readonly PbrMaterialLike[],
   triCount: number,
 ): Float32Array<ArrayBuffer> {
   const out = new Float32Array(triCount * 4);
@@ -274,8 +274,7 @@ export function packBVHEmissiveLe(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// THREE-FREE per-triangle packers (THREE-decouple of the production ReSTIR
-// MATERIAL path — increment of `plan/three-decouple-analysis-2026-06-03.md`).
+// Core-material per-triangle packers.
 //
 // These are the core-`MaterialSpec` counterparts to the three `*Tri` packers
 // above. They delegate the per-material RGB resolution to the canonical
@@ -283,27 +282,22 @@ export function packBVHEmissiveLe(
 // (`materialSpecTriColor` / `materialSpecEmissiveLe` /
 // `materialSpecSurfaceTextureId`) — the same functions the DDGI/emitter
 // decouples already use — and reproduce the EXACT RGBA8 / trans4 / isMetal
-// bit-packing + warm-gray missing-material default of the THREE `*Tri` packers
-// BYTE-FOR-BYTE. Because the caller drives them with a parallel `coreMaterials[]`
-// built in `buildMaterialResolver`'s THREE-identity dedup ordering — the SAME
-// index the THREE `materials[]` (hence `geo.triMaterialIds`) uses — the output
-// is per-triangle byte-identical to the THREE packers (pinned by
-// __tests__/materialPackingCoreEquivalence.test.ts), not merely set-equivalent.
+// bit-packing + warm-gray missing-material default of the structural PBR packers
+// byte-for-byte. The caller drives them with a parallel `coreMaterials[]` built
+// in material-slot order, so output is per-triangle stable with the production
+// packers, not merely set-equivalent.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Apply the `vitrumSceneToThree` emissive convention to a core material before
- * reading its emissive Le: treat `emissive` as the FINAL radiance-space colour
- * and force `emissiveIntensity = 1`, so `materialSpecEmissiveLe` yields
- * `Le = emissive · 1` — exactly what the THREE `packBVHEmissiveLe` produces
- * (the camera-glow packer reads `vitrumSceneToThree`-converted THREE materials,
- * which carry `emissiveIntensity = 1` unconditionally; see
- * vitrumSceneToThree.ts:201-211). This is the SAME ei-collapse fix the ReSTIR-DI
+ * Apply the production emissive convention to a core material before reading
+ * its emissive Le: treat `emissive` as the FINAL radiance-space colour and force
+ * `emissiveIntensity = 1`, so `materialSpecEmissiveLe` yields
+ * `Le = emissive * 1`. This is the SAME ei-collapse fix the ReSTIR-DI
  * emitter decouple (`restir/bvhCore.ts:toProductionEmissiveRadiance`, commit
  * `46a0078`) and the DDGI material decouple (`probeUpdateMaterials.ts`, commit
  * `15070cd`) needed: a raw `materialSpecEmissiveLe` computes
- * `emissive · emissiveIntensity`, so a core emitter with `ei = 4` would pack 4×
- * the radiance the THREE path packs — the exact divergence those GPU A/Bs caught.
+ * `emissive * emissiveIntensity`, so a core emitter with `ei = 4` would pack 4x
+ * the intended radiance — the exact divergence those GPU A/Bs caught.
  * A material with no `emissive` is returned unchanged (not an emitter either way).
  */
 function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
@@ -313,7 +307,7 @@ function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
 }
 
 /**
- * THREE-free counterpart to {@link packBVHIndexW}: pack vertex indices + RGBA8
+ * Core-material counterpart to {@link packBVHIndexW}: pack vertex indices + RGBA8
  * baseColor + (trans4 | isMetal | texType) per triangle from a parallel
  * `MaterialSpec[]`. Mirrors {@link packBVHIndexWTri} field-for-field:
  *  - RGB ← `materialSpecTriColor(mat, /*applyBeer*\/ false)` × 255 & 0xFF
@@ -323,7 +317,7 @@ function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
  *  - texType ← `materialSpecSurfaceTextureId(mat) & 0x7`.
  *  - low byte ← `((trans4 << 4) | (isMetal << 3) | (texType & 0x7)) & 0xFF`.
  * A missing material slot falls back to the warm-gray default + zero
- * transmission/texType/metal — identical to the THREE packer's `if (mat)` guard.
+ * transmission/texType/metal.
  */
 export function packBVHIndexWFromCore(
   indices: Uint32Array,
@@ -388,13 +382,10 @@ export function packBVHBeerColorsFromCore(
 }
 
 /**
- * THREE-free counterpart to {@link packBVHEmissiveLe}: pack per-triangle HDR
- * emissive radiance Le (stride-4 f32, rgb + 0 pad) from a `MaterialSpec[]`.
- * Mirrors the THREE packer: non-emissive / missing triangles stay zero;
- * emissive triangles get `materialSpecEmissiveLe(toProductionEmissiveRadiance(mat))`
- * — the `emissiveIntensity = 1` collapse so the Le is `emissive · 1`, identical
- * to the THREE camera-glow packer reading `vitrumSceneToThree`-converted
- * materials. See {@link toProductionEmissiveRadiance}.
+ * Pack per-triangle HDR emissive radiance Le (stride-4 f32, rgb + 0 pad) from
+ * a `MaterialSpec[]`. Non-emissive / missing triangles stay zero; emissive
+ * triangles get `materialSpecEmissiveLe(toProductionEmissiveRadiance(mat))`.
+ * See {@link toProductionEmissiveRadiance}.
  */
 export function packBVHEmissiveLeFromCore(
   triMaterialId: Uint32Array,

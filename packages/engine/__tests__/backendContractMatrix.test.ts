@@ -45,7 +45,7 @@ function makeFakeEngine(capabilities: EngineCapabilities): Engine {
 }
 
 describe('proxy method exposure follows backend promise ledger', () => {
-  const ids = ['walkaround-hybrid', 'pt-webgl', 'pt-webgpu'] as const;
+  const ids = ['walkaround-hybrid', 'pt-webgl2', 'pt-webgpu'] as const;
 
   for (const backendId of ids) {
     it(`matches ${backendId} incremental/optional-method promises`, () => {
@@ -106,7 +106,7 @@ describe('proxy method exposure follows backend promise ledger', () => {
 });
 
 describe('path-tracer optional method omissions follow unsupported ledger rows', () => {
-  for (const backendId of ['pt-webgl', 'pt-webgpu'] as const) {
+  for (const backendId of ['pt-webgl2', 'pt-webgpu'] as const) {
     it(`omits resize and lighting methods for ${backendId}`, () => {
       const rec = BACKEND_PROMISE_LEDGER[backendId];
       const engine = makeFakeEngine({

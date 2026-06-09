@@ -10,9 +10,8 @@ import type { Engine } from './index.js';
 
 /** All engine-creation factories follow this shape. The `device` is opaque at
  *  the core level; each backend narrows `device` to its own concrete type.
- *  Examples: `@vitrum/pt-webgl` narrows to `THREE.WebGLRenderer` (the backend
- *  wraps three-gpu-pathtracer and bakes IBL); `@vitrum/pt-webgpu` narrows to
- *  `GPUDevice` (the backend uses compute shaders with no Three.js coupling).
+ *  Examples: `@vitrum/pt-webgl2` narrows to `WebGL2RenderingContext`;
+ *  `@vitrum/pt-webgpu` narrows to `GPUDevice` (the backend uses compute shaders).
  *  Each backend's package documents its concrete device type via the options
  *  interface that extends `EngineOptions`.
  *
@@ -52,13 +51,13 @@ export interface EngineOptions {
   /** Structural cap on per-path bounce count. Backends may use this to size
    *  path-state buffers or accumulator array dimensions. Per-frame
    *  `FrameInput.quality.bounces` is clamped to this value.
-   *  Default: backend-specific (e.g., pt-webgl defaults to 12). */
+   *  Default: backend-specific (e.g., pt-webgl2 defaults to 32). */
   readonly maxBounces?: number;
 
   /** Structural cap on samples-per-pixel. Backends may use this to choose
    *  accumulator precision (e.g., FP16 vs FP32) or size sample-counter
    *  types. Per-frame `FrameInput.quality.samplesTarget` is clamped to this
-   *  value. Default: backend-specific (e.g., pt-webgl defaults to 4096). */
+   *  value. Default: backend-specific (e.g., pt-webgl2 defaults to 4096). */
   readonly maxSamplesPerPixel?: number;
 
   // ── Denoiser composition ────────────────────────────────────────────────
@@ -110,7 +109,7 @@ export interface EngineOptions {
    *
    * Backend note: `pt-webgpu`'s `manifold-nee` path is the VALIDATED REFERENCE
    * caustic (~98.7% oracle energy, scale-invariant) — prefer it for fidelity.
-   * `pt-webgl`'s fork caustic modes and `pt-webgpu`'s `photon-map` mode are
+   * `pt-webgl2`'s caustic modes and `pt-webgpu`'s `photon-map` mode are
    * approximate/experimental capability rows. Evidence for the pt-webgpu numbers:
    * GPU A/B dzn RTX-4090, 2026-06-07,
    * `wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.

@@ -175,12 +175,13 @@ describe('buildPackedScene emitter + environment packing', () => {
   });
 
   it('cameraVisibleEmitters re-attaches mesh-area emitter radiance onto the primitive material (color·intensity)', () => {
-    // `sceneFromThreeJS` zeroes a converted emissive mesh's material emissive (it
-    // becomes a sampled mesh-area emitter). With cameraVisibleEmitters the packer
-    // re-attaches the emitter radiance so the primitive glows to the camera. The
-    // re-attached emissive (packed floats 4..6 of material slot 0, pre-multiplied
-    // by emissiveIntensity) must EXACTLY equal the mesh-area NEE radiance
-    // color·intensity = [0.5,0.25,1]·6 — so camera glow matches the lit appearance.
+    // This scene models an emissive mesh as a sampled mesh-area emitter while the
+    // primitive material remains non-emissive. With cameraVisibleEmitters the
+    // packer re-attaches the emitter radiance so the primitive glows to the
+    // camera. The re-attached emissive (packed floats 4..6 of material slot 0,
+    // pre-multiplied by emissiveIntensity) must EXACTLY equal the mesh-area NEE
+    // radiance color·intensity = [0.5,0.25,1]·6 — so camera glow matches the
+    // lit appearance.
     const scene: Scene = {
       ...baseScene(),
       emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'tri', color: [0.5, 0.25, 1], intensity: 6 }],

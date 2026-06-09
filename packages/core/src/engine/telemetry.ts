@@ -26,9 +26,8 @@ export interface FrameStats {
    * Approximate engine-owned GPU memory in bytes (sum of texture + buffer
    * bytes). Scalar form, intended as the lowest common denominator: every
    * backend can produce SOME estimate even when it can't break the bytes
-   * down by category (e.g. `pt-webgl` wraps three-gpu-pathtracer whose
-   * render targets are opaque to vitrum, so a structured split would be
-   * invented or stale).
+   * down by category (e.g. a backend may own resources through an opaque host
+   * API, so a structured split would be invented or stale).
    *
    * When a backend can produce a meaningful structured split, it emits
    * {@link FrameStats.gpuMemoryBytes} alongside this scalar. Hosts that

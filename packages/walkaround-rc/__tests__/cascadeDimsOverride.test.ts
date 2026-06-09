@@ -7,14 +7,19 @@
  *
  * These tests pin:
  *   1. `CASCADE_DIMS` still exists as the Cornell default on the raw root.
- *   2. THREE-bridge `allocateCascades(bounds)` matches `allocateCascades(bounds, CASCADE_DIMS)`.
+ *   2. package-root `allocateCascades(bounds)` matches `allocateCascades(bounds, CASCADE_DIMS)`.
  *   3. A custom dims array drives differently-sized cascade buffers.
  *   4. `RCDispatcher` constructor accepts the override.
  */
 
 import { describe, it, expect } from 'vitest';
-import { CASCADE_DIMS, CASCADE_COUNT, RCDispatcher, type CascadeDim } from '../src/index.js';
-import { allocateCascades } from '../src/three.js';
+import {
+  CASCADE_DIMS,
+  CASCADE_COUNT,
+  RCDispatcher,
+  allocateCascades,
+  type CascadeDim,
+} from '../src/index.js';
 
 const TINY_BOUNDS = {
   min: [0, 0, 0] as const,

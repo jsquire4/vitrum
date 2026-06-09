@@ -168,7 +168,7 @@ export type { BmfrUniforms } from './bmfrBindings.js';
 export { runBmfrWebGPU } from './bmfrWebGPU.js';
 export type { BmfrWebGPUOptions } from './bmfrWebGPU.js';
 
-// ── OIDNDispatcherCore — shared cohort state machine (pt-webgl + pt-webgpu) ──
+// ── OIDNDispatcherCore — shared cohort state machine for converged backends ──
 export {
   OIDNDispatcherCore,
   _defaultLoader as oidnDefaultLoader,

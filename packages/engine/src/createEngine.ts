@@ -1,14 +1,14 @@
 // Top-level drop-in factory.
 //
-// Given a canvas + scene (THREE.Scene or vitrum Scene), createEngine()
+// Given a canvas + vitrum Scene, createEngine()
 //   - probes WebGPU vs WebGL2,
-//   - picks the walkaround-hybrid backend (real-time GI) or pt-webgl
+//   - picks the walkaround-hybrid backend (real-time GI) or pt-webgl2
 //     backend (converged path tracer),
 //   - derives scale-sensitive defaults (Möller-Trumbore epsilon, camera-
 //     move-reset threshold, emitter dist² floor, GTAO sigma) from the
 //     scene's AABB diagonal D,
 //   - constructs and owns the backend's device handle (GPUDevice for
-//     walkaround, THREE.WebGLRenderer for pt-webgl) so the host doesn't
+//     walkaround, WebGL2RenderingContext for pt-webgl2) so the host doesn't
 //     have to plumb GPU primitives,
 //   - returns the @vitrum/core Engine contract with an idempotent dispose.
 //
@@ -26,16 +26,12 @@ import {
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import { probeAdapterProfile } from './adapterProfile.js';
-// pt-webgl is the WebGL2 path-tracer backend; it (transitively) pulls the whole
-// three-gpu-pathtracer stack + `three`. Import the runtime factory LAZILY (only
-// `constructPathTracer` needs it) so a host taking exclusively the WebGPU path —
-// e.g. `createProgressiveEngine` (walkaround + pt-webgpu, no WebGL2) — never has
-// to resolve or typecheck against that module graph.
 import {
   createPTEngine_WebGPU,
   ptWebgpuRequiredLimitsForAdapter,
   type PTEngineWebGPUOptions,
 } from '@vitrum/pt-webgpu';
+import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 import { wrapWithIdempotentDispose } from './idempotentDispose.js';
@@ -51,45 +47,22 @@ import {
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
-import {
-  isThreeScene,
-  sceneFromThreeSceneLike,
-  type ThreeSceneLike,
-} from './threeSceneBridge.js';
 
 export type { EnginePreference, ScaleDefaults };
 export { pickBackend, deriveScaleDefaults };
-export type { ThreeSceneLike } from './threeSceneBridge.js';
 
-type WebGL2PathTracerAdvancedOptions = Record<string, unknown>;
+type WebGL2PathTracerAdvancedOptions = Partial<Omit<PTEngineWebGL2Options, 'device'>>;
 
-interface ThreeWebGLRendererLike {
-  dispose(): void;
-  forceContextLoss?: () => void;
+interface PtWebgl2ModuleLike {
+  readonly createPTEngine_WebGL2: (opts: PTEngineWebGL2Options) => Promise<Engine>;
 }
 
-interface ThreeRuntimeModule {
-  readonly WebGLRenderer: new (opts: {
-    readonly canvas: HTMLCanvasElement;
-    readonly antialias?: boolean;
-    readonly preserveDrawingBuffer?: boolean;
-  }) => ThreeWebGLRendererLike;
-}
-
-type WebGL2PathTracerOptionsLike = WebGL2PathTracerAdvancedOptions & {
-  readonly device: ThreeWebGLRendererLike;
-};
-
-interface PtWebglModuleLike {
-  readonly createPTEngine_WebGL2: (opts: WebGL2PathTracerOptionsLike) => Promise<Engine>;
-}
-
-export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl';
+export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
 
 export type CreateEngineErrorPhase =
   | 'create:walkaround-hybrid'
   | 'create:pt-webgpu'
-  | 'create:pt-webgl'
+  | 'create:pt-webgl2'
   | 'canvas-configure'
   | 'attach:resize'
   | 'attach:swapchain'
@@ -126,16 +99,15 @@ export interface CreateEngineOptions {
   /** Canvas the engine renders into. Used to obtain the GPU context. */
   readonly canvas: HTMLCanvasElement;
 
-  /** Scene description. Either a vitrum Scene or a THREE.Scene; THREE
-   *  scenes are auto-converted via @vitrum/three-bindings. */
-  readonly scene: Scene | ThreeSceneLike;
+  /** Scene description in the host-agnostic @vitrum/core contract. */
+  readonly scene: Scene;
 
   /** Quality vs speed hint:
    *    'realtime' — prefer walkaround-hybrid (WebGPU; ~60fps target).
-   *    'quality'  — prefer pt-webgl (WebGL2 path tracer; converged).
-   *    'quality-webgpu' — prefer pt-webgpu when WebGPU is available, else pt-webgl.
+   *    'quality'  — prefer pt-webgl2 (WebGL2 path tracer; converged).
+   *    'quality-webgpu' — prefer pt-webgpu when WebGPU is available, else pt-webgl2.
    *    'auto'     — pick walkaround-hybrid if WebGPU + tris < 500k,
-   *                 else pt-webgl. Default. */
+   *                 else a path-tracer backend. Default. */
   readonly prefer?: EnginePreference;
 
   /** Backend-specific overrides. Merged on top of the createEngine()-
@@ -148,7 +120,7 @@ export interface CreateEngineOptions {
   /** Phase-0 productization — callback invoked once with the graceful-
    *  degradation {@link AdapterProfile} when the walkaround-hybrid backend is
    *  selected (before device acquisition). Lets hosts read the JSON for a HUD
-   *  / CI artifact (§4.1 / §10.3). Not called for the pt-webgl / pt-webgpu
+   *  / CI artifact (§4.1 / §10.3). Not called for the pt-webgl2 / pt-webgpu
    *  backends (they have their own tier selection). */
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
 
@@ -166,10 +138,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
     throw new TypeError('createEngine: opts.scene is required');
   }
 
-  const sceneInputIsThree = isThreeScene(opts.scene);
-  const vitrumScene: Scene = sceneInputIsThree
-    ? await sceneFromThreeSceneLike(opts.scene)
-    : (opts.scene);
+  const vitrumScene: Scene = opts.scene;
 
   const aabb = computeSceneAABB(vitrumScene);
   const tlasAudit = auditSceneNeedsTlas(vitrumScene);
@@ -180,13 +149,13 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
     aabb.triangleCount,
     tlasAudit.needsTlas,
   );
-  if (tlasAudit.needsTlas && backend === 'pt-webgl') {
+  if (tlasAudit.needsTlas && backend === 'pt-webgl2') {
     console.warn(`[vitrum/createEngine] ${tlasAudit.detail}`);
   }
 
   if (backend === 'walkaround-hybrid') {
     try {
-      return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree, tlasAudit.needsTlas);
+      return await constructWalkaround(opts, vitrumScene, aabb, tlasAudit.needsTlas);
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:walkaround-hybrid',
@@ -195,26 +164,26 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
       });
       console.warn(
         `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ` +
-        `${gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl'}.`,
+        `${gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl2'}.`,
         err,
       );
-      return await constructPathTracerFallback(opts, vitrumScene, sceneInputIsThree, gpu.isWebGPU);
+      return await constructPathTracerFallback(opts, vitrumScene, gpu.isWebGPU);
     }
   }
   if (backend === 'pt-webgpu') {
     try {
-      return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
+      return await constructPathTracerWebGPU(opts, vitrumScene);
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
         backend: 'pt-webgpu',
         recoverable: true,
       });
-      console.warn('[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl.', err);
-      return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+      console.warn('[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.', err);
+      return await constructPathTracerWebGLFallback(opts, vitrumScene);
     }
   }
-  return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+  return await constructPathTracerWebGLFallback(opts, vitrumScene);
 }
 
 function reportCreateEngineError(
@@ -233,46 +202,40 @@ function destroyOwnedWebGpuDevice(shared: SharedDeviceCtx | undefined, device: G
   }
 }
 
-function disposeWebGL2Renderer(renderer: ThreeWebGLRendererLike): void {
-  try { renderer.dispose(); } catch {}
-  const ext = (renderer as unknown as { forceContextLoss?: () => void }).forceContextLoss;
-  if (typeof ext === 'function') {
-    try { ext.call(renderer); } catch {}
-  }
+function disposeOwnedWebGL2Context(gl: WebGL2RenderingContext): void {
+  try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {}
 }
 
 async function constructPathTracerFallback(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
-  sceneInputIsThree: boolean,
   tryWebGpuFirst: boolean,
 ): Promise<Engine> {
   if (tryWebGpuFirst) {
     try {
-      return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
+      return await constructPathTracerWebGPU(opts, vitrumScene);
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
         backend: 'pt-webgpu',
         recoverable: true,
       });
-      console.warn('[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl.', err);
+      console.warn('[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl2.', err);
     }
   }
-  return await constructPathTracerWebGLFallback(opts, vitrumScene, sceneInputIsThree);
+  return await constructPathTracerWebGLFallback(opts, vitrumScene);
 }
 
 async function constructPathTracerWebGLFallback(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
-  sceneInputIsThree: boolean,
 ): Promise<Engine> {
   try {
-    return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
+    return await constructPathTracer(opts, vitrumScene);
   } catch (err) {
     reportCreateEngineError(opts, err, {
-      phase: 'create:pt-webgl',
-      backend: 'pt-webgl',
+      phase: 'create:pt-webgl2',
+      backend: 'pt-webgl2',
       recoverable: false,
     });
     throw err;
@@ -315,7 +278,6 @@ export async function constructWalkaround(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
   aabb: SceneAABB,
-  sceneInputIsThree: boolean,
   needsTlas: boolean,
   shared?: SharedDeviceCtx,
 ): Promise<Engine & Partial<GIStatePersistable>> {
@@ -348,7 +310,7 @@ export async function constructWalkaround(
       `isSoftwareAdapter=${profile.isSoftwareAdapter}, ` +
       `maxStorageBuffersPerStage=${profile.maxStorageBuffersPerStage}, ` +
       `maxStorageTexturesPerStage=${profile.maxStorageTexturesPerStage}). ` +
-      `Pass prefer:'quality' (pt-webgl) or prefer:'quality-webgpu' (pt-webgpu) ` +
+      `Pass prefer:'quality' (pt-webgl2) or prefer:'quality-webgpu' (pt-webgpu) ` +
       `to use a path-tracer backend on this hardware.`,
     );
   }
@@ -378,14 +340,6 @@ export async function constructWalkaround(
     DEFAULT_SKY_TINT[0], DEFAULT_SKY_TINT[1], DEFAULT_SKY_TINT[2],
   ];
 
-  // T3.H removal: pass `threeScene` ONLY when the user gave us one — when
-  // they passed a vitrum Scene the engine's setScene() path synthesizes the
-  // THREE.Scene internally on first BVH build. Removes the round-trip
-  // through vitrumSceneToThree() that we previously did at the facade.
-  const threeSceneForCtor = sceneInputIsThree
-    ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
-    : undefined;
-
   // Phase-0 — the recommended realtime tier becomes the DEFAULT qualityTier
   // (a preset ceiling). Only applied when it is a concrete preset id — at this
   // point the profile already passed the hybridLiteCapable gate, so it is
@@ -410,7 +364,6 @@ export async function constructWalkaround(
       primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
       skyTint,
       skyIrradiance: DEFAULT_SKY_IRRADIANCE,
-      ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
       cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
       temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
       debug: opts.debug ?? false,
@@ -477,7 +430,6 @@ export async function constructWalkaround(
 export async function constructPathTracerWebGPU(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
-  _sceneInputIsThree: boolean,
   shared?: SharedDeviceCtx,
 ): Promise<Engine> {
   const adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
@@ -537,55 +489,44 @@ export async function constructPathTracerWebGPU(
 async function constructPathTracer(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
-  _sceneInputIsThree: boolean,
 ): Promise<Engine> {
-  const renderer = await createWebGL2RendererForCanvas(opts.canvas);
+  const gl = createWebGL2ContextForCanvas(opts.canvas);
 
   let engine: Engine | null = null;
   try {
     const advancedWebGL2 = opts.advanced as WebGL2PathTracerAdvancedOptions | undefined;
-    const merged: WebGL2PathTracerOptionsLike = {
-      device: renderer,
+    const merged: PTEngineWebGL2Options = {
+      device: gl,
       ...(advancedWebGL2 ?? {}),
     };
 
-    // Lazy runtime import — keeps the WebGL2 path-tracer stack out of the module
-    // graph for hosts that only ever take the WebGPU path (see the import note).
-    const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl') as unknown as PtWebglModuleLike;
+    // Lazy runtime import keeps the WebGL2 path-tracer stack out of the module
+    // graph for hosts that only ever take the WebGPU path.
+    const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl2') as unknown as PtWebgl2ModuleLike;
     engine = await createPTEngine_WebGL2(merged);
     engine.setScene(vitrumScene);
 
     const built = engine;
     engine = null;
     return wrapWithIdempotentDispose(built, () => {
-      disposeWebGL2Renderer(renderer);
+      disposeOwnedWebGL2Context(gl);
     });
   } catch (err) {
     try { engine?.dispose(); } catch {}
-    disposeWebGL2Renderer(renderer);
+    disposeOwnedWebGL2Context(gl);
     throw err;
   }
 }
 
-async function createWebGL2RendererForCanvas(
+function createWebGL2ContextForCanvas(
   canvas: HTMLCanvasElement,
-): Promise<ThreeWebGLRendererLike> {
-  // Late dynamic import keeps the @vitrum/engine bundle leaner for users
-  // who only ever take the WebGPU path. The peer-dep guarantees `three`
-  // resolves; if it doesn't, we surface a friendly error pointing at the
-  // peer-dep block in package.json.
-  let three: ThreeRuntimeModule;
-  try {
-    three = await import('three') as unknown as ThreeRuntimeModule;
-  } catch (err) {
-    throw new Error(
-      'createEngine: failed to load three.js. @vitrum/engine has `three` as a peer dependency; install it in your host. Original error: ' + String(err),
-    );
-  }
-  const renderer = new three.WebGLRenderer({
-    canvas,
+): WebGL2RenderingContext {
+  const gl = canvas.getContext('webgl2', {
     antialias: false,
     preserveDrawingBuffer: false,
   });
-  return renderer;
+  if (gl == null) {
+    throw new Error('createEngine: WebGL2 is unavailable; canvas.getContext("webgl2") returned null.');
+  }
+  return gl;
 }

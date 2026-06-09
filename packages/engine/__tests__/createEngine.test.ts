@@ -2,27 +2,27 @@ import { describe, it, expect } from 'vitest';
 import { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension } from '../src/createEngine.js';
 
 describe('pickBackend', () => {
-  it('returns pt-webgl for quality on single-mesh scenes', () => {
-    expect(pickBackend('quality', true, 10_000, false)).toBe('pt-webgl');
-    expect(pickBackend('quality', false, 10_000, false)).toBe('pt-webgl');
+  it('returns pt-webgl2 for quality on single-mesh scenes', () => {
+    expect(pickBackend('quality', true, 10_000, false)).toBe('pt-webgl2');
+    expect(pickBackend('quality', false, 10_000, false)).toBe('pt-webgl2');
   });
 
   it('returns pt-webgpu for quality when scene needs TLAS and WebGPU is available', () => {
     expect(pickBackend('quality', true, 10_000, true)).toBe('pt-webgpu');
-    expect(pickBackend('quality', false, 10_000, true)).toBe('pt-webgl');
+    expect(pickBackend('quality', false, 10_000, true)).toBe('pt-webgl2');
   });
 
   it('returns pt-webgpu for quality-webgpu when WebGPU is available', () => {
     expect(pickBackend('quality-webgpu', true, 10_000)).toBe('pt-webgpu');
-    expect(pickBackend('quality-webgpu', false, 10_000)).toBe('pt-webgl');
+    expect(pickBackend('quality-webgpu', false, 10_000)).toBe('pt-webgl2');
   });
 
   it('returns walkaround-hybrid when prefer is realtime + WebGPU available', () => {
     expect(pickBackend('realtime', true,  10_000_000)).toBe('walkaround-hybrid');
   });
 
-  it('falls back to pt-webgl when prefer is realtime but WebGPU absent', () => {
-    expect(pickBackend('realtime', false, 1_000)).toBe('pt-webgl');
+  it('falls back to pt-webgl2 when prefer is realtime but WebGPU absent', () => {
+    expect(pickBackend('realtime', false, 1_000)).toBe('pt-webgl2');
   });
 
   it('auto picks walkaround-hybrid for small scenes on WebGPU', () => {
@@ -35,8 +35,8 @@ describe('pickBackend', () => {
     expect(pickBackend('auto', true, 5_000_000)).toBe('pt-webgpu');
   });
 
-  it('auto picks pt-webgl when WebGPU is unavailable', () => {
-    expect(pickBackend('auto', false, 100)).toBe('pt-webgl');
+  it('auto picks pt-webgl2 when WebGPU is unavailable', () => {
+    expect(pickBackend('auto', false, 100)).toBe('pt-webgl2');
   });
 
   it('auto selects pt-webgpu only above the realtime triangle budget', () => {

@@ -162,11 +162,10 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
    * Camera-visible emitters: emissive meshes glow when seen DIRECTLY by the
    * camera and THROUGH refractive surfaces (the stained-glass case), not only via
-   * NEE on receiving surfaces. ON by default. `sceneFromThreeJS` converts an
-   * emissive mesh into a mesh-area light emitter and zeroes the primitive's
-   * emissive (so it is sampled, not double-counted); this re-attaches that
-   * emitter radiance onto the primitive's material at pack time so the path
-   * tracer's emissive-on-hit term fires. The existing BSDF↔light MIS
+   * NEE on receiving surfaces. ON by default. When a scene represents an emissive
+   * mesh as a mesh-area light and keeps the primitive material non-emissive, this
+   * re-attaches that emitter radiance onto the primitive's material at pack time
+   * so the path tracer's emissive-on-hit term fires. The existing BSDF↔light MIS
    * (`bsdfAreaLightConnectionContribution`) already covers diffuse/glossy bounces;
    * the emissive-on-hit term is gated to the camera + refraction paths the
    * analytic connection cannot reach, so there is NO double-count. Set `false` to

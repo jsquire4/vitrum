@@ -62,7 +62,7 @@ describe('createEngine proxy — GI-state (cached light field) forwarding', () =
     expect(importFn).toHaveBeenCalledWith(SNAPSHOT);
   });
 
-  it('omits the methods when the backend does not implement them (e.g. pt-webgl/pt-webgpu)', () => {
+  it('omits the methods when the backend does not implement them (e.g. pt-webgl2/pt-webgpu)', () => {
     const { engine } = makeEngine(false);
     const proxy = wrapWithIdempotentDispose(engine, () => {});
     expect(proxy.exportGIState).toBeUndefined();

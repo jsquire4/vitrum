@@ -4,9 +4,8 @@
 // layout that the kept GLSL decoder (`structs/lights_struct.glsl.js`,
 // `readLightInfo`) reads via `texelFetch1D`.
 //
-// Provenance: gkjohnson/three-gpu-pathtracer LightsInfoUniformStruct.js (MIT),
-// absorbed at packages/three-gpu-pathtracer/. Layout spec: plan/three-removal/
-// 03-scene-bvh-packers.md §5.
+// Provenance: gkjohnson/three-gpu-pathtracer LightsInfoUniformStruct.js (MIT);
+// see CREDITS.md. Layout spec: plan/three-removal/03-scene-bvh-packers.md §5.
 //
 // Per-light texel layout (24 floats):
 //   s0 = (worldPos.xyz, type)

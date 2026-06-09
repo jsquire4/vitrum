@@ -1,11 +1,11 @@
 // foldEmissiveEmitters — re-attach `mesh-area` emitter radiance onto the emissive
 // surface materials the fork integrator samples.
 //
-// `@vitrum/three-bindings` follows a NEE-first convention: an emissive surface is
+// Core-scene importers follow a NEE-first convention: an emissive surface is
 // extracted into a `mesh-area` SceneEmitter and the source primitive's material
-// emissive is zeroed (`stripEmissive`) so NEE-based backends (walkaround, the
-// light-tree NEE in pt-webgpu) don't double-count it as both a sampled light and a
-// path-traced emissive surface.
+// emissive is zeroed so NEE-based backends (walkaround, the light-tree NEE in
+// pt-webgpu) don't double-count it as both a sampled light and a path-traced
+// emissive surface.
 //
 // The pt-webgl2 fork integrator lights area sources the OTHER way — by tracing a
 // path ray that HITS the emissive surface and accumulating `surf.emission` (MIS).

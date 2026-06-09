@@ -8,7 +8,7 @@
       "@vitrum/core": ["packages/core/src/index.ts"],
       "@vitrum/dev": ["packages/dev/src/index.ts"],
       "@vitrum/engine": ["packages/engine/src/index.ts"],
-      "@vitrum/pt-webgl": ["packages/pt-webgl/src/index.ts"],
+      "@vitrum/pt-webgl2": ["packages/pt-webgl2/src/index.ts"],
       "@vitrum/pt-webgpu": ["packages/pt-webgpu/src/index.ts"],
       "@vitrum/shared-bvh": ["packages/shared-bvh/src/index.ts"],
       "@vitrum/shared-bvh/*": ["packages/shared-bvh/src/*"],
@@ -16,10 +16,8 @@
       "@vitrum/shared-samplers": ["packages/shared-samplers/src/index.ts"],
       "@vitrum/scene-lighting": ["packages/scene-lighting/src/index.ts"],
       "@vitrum/stained-glass-extensions": ["packages/stained-glass-extensions/src/index.ts"],
-      "@vitrum/three-bindings": ["packages/three-bindings/src/index.ts"],
       "@vitrum/walkaround-rc": ["packages/walkaround-rc/src/index.ts"],
-      "@vitrum/walkaround-hybrid": ["packages/walkaround-hybrid/src/index.ts"],
-      "three-gpu-pathtracer": ["packages/three-gpu-pathtracer/src/index.d.ts"]
+      "@vitrum/walkaround-hybrid": ["packages/walkaround-hybrid/src/index.ts"]
     }
   },
   "include": ["packages/*/src"]

@@ -24,9 +24,7 @@ const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
 const captureCommandOverride = process.env.VITRUM_CAPTURE_CMD?.trim() ?? '';
 
 function defaultCaptureCommand(scenario) {
-  if (scenario.backend === 'pt-webgpu') {
-    return 'node ./tools/benchmark-runner/capturePtWebgpu.mjs';
-  }
+  void scenario;
   return '';
 }
 

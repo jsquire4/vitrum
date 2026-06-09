@@ -6,10 +6,16 @@
     "jsx": "react-jsx",
     "paths": {
       "@vitrum/core": ["../core/src/index.ts"],
-      "@vitrum/three-bindings": ["../three-bindings/src/index.ts"],
       "@vitrum/walkaround-hybrid": ["../walkaround-hybrid/src/index.ts"],
-      "@vitrum/pt-webgl": ["../pt-webgl/src/index.ts"]
+      "@vitrum/pt-webgpu": ["../pt-webgpu/src/index.ts"],
+      "@vitrum/pt-webgl2": ["../pt-webgl2/src/index.ts"],
+      "@vitrum/shared-bvh": ["../shared-bvh/src/index.ts"],
+      "@vitrum/shared-bvh/*": ["../shared-bvh/src/*"],
+      "@vitrum/shared-denoisers": ["../shared-denoisers/src/index.ts"],
+      "@vitrum/shared-samplers": ["../shared-samplers/src/index.ts"],
+      "@vitrum/stained-glass-extensions": ["../stained-glass-extensions/src/index.ts"],
+      "@vitrum/walkaround-rc": ["../walkaround-rc/src/index.ts"]
     }
   },
-  "include": ["src", "__tests__"]
+  "include": ["src", "__tests__", "../pt-webgl2/src/glsl/glsl-modules.d.ts"]
 }

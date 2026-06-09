@@ -8,7 +8,7 @@ import type {
   IncrementalPatchSupport,
 } from './capabilities.js';
 
-export type BackendId = 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu';
+export type BackendId = 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu';
 
 export interface BackendMethodPromises {
   readonly updatePrimitive: boolean;
@@ -107,14 +107,12 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  *     wholesale-replacement fields and routes them through a full setScene rebuild
  *     (mutate-Scene → setScene spine, like addPrimitive) — no longer a throw. So
  *     instance-COUNT changes work here too; the rebuild is the cost (GI is
- *     invalidated either way on a realtime stack), matching pt-webgl/pt-webgpu's
+ *     invalidated either way on a realtime stack), matching pt-webgl2/pt-webgpu's
  *     contract surface.
- *   • pt-webgl — mesh/skinned vertex/index-COUNT change rebuilds that one mesh's
- *     THREE BufferGeometry in place (applyGeometryPatchToMesh) + the fork's
- *     targeted geometry+BVH regen (StaticGeometryGenerator force-rebuild on
- *     changed attribute lengths). instanced-mesh instance-COUNT change re-expands
- *     ONLY that primitive's baked THREE.Mesh children. Co-present `material`
- *     routes to a full setScene (MaterialsTexture re-pack).
+ *   • pt-webgl2 — mesh/skinned vertex/index-COUNT changes and instanced-mesh
+ *     instance-COUNT changes route through the retained core scene and rebuild
+ *     the backend's scene textures/BVH pack. Co-present `material` routes through
+ *     the same setScene repack, so material/light indices cannot drift.
  *   • pt-webgpu — instanced-mesh instance-COUNT change → TLAS-only rebuild, BLAS
  *     reused (rebuildTlasReuseBlas + uploadScenePackTlasRealloc); mesh/skinned
  *     vertex/index-COUNT change → rebuild only the changed primitive's BLAS,
@@ -133,7 +131,7 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  * fresh mutated `Scene` copy through the engine's existing setScene packing path
  * (convert→expand→repack). A new primitive almost always brings a NEW material,
  * and the targeted geometry-only regen SKIPS material re-pack; reusing the
- * shared setScene path re-packs the MaterialsTexture + light arrays correctly by
+ * shared setScene path re-packs the material + light arrays correctly by
  * construction — no fragile per-array index remap. Distinct from
  * incrementalPatchSupport.topology (count-change patches on an EXISTING primitive).
  */
@@ -195,10 +193,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // Welford buffer, not the contract's RGBA32F, so it's not exposed.)
     supportsAuxBuffers: true,
     accumulates: false,
-    // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh; analytic
-    // primitives are accepted in the authored scene and converted to generated
-    // MeshPrimitive fallbacks before the THREE/BVH/GI ingestion path consumes
-    // them.
+    // The render-scene path ingests mesh / skinned-mesh / instanced-mesh;
+    // analytic primitives are accepted in the authored scene and converted to
+    // generated MeshPrimitive fallbacks before BVH/GI ingestion consumes them.
     // instanced-mesh IS genuine here — walkaround renders instances via the
     // TLAS per-instance traversal path.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
@@ -269,23 +266,18 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       honorsPerFrameBounces: false,
     },
   },
-  'pt-webgl': {
+  'pt-webgl2': {
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
     supportsAuxBuffers: false,
     accumulates: true,
-    // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh;
-    // analytic is accepted by pt-webgl through a generated MeshPrimitive
-    // fallback immediately before THREE conversion. The authored analytic
+    // The native WebGL2 packer ingests mesh / skinned-mesh / instanced-mesh;
+    // analytic is accepted through a generated MeshPrimitive
+    // fallback immediately before scene packing. The authored analytic
     // scene remains cached so params/shape patches can full-rebuild.
-    // instanced-mesh IS supported — vitrumSceneToThree builds a single
-    // THREE.InstancedMesh (shared with walkaround's TLAS path), and pt-webgl's
-    // setScene expands it into N baked THREE.Mesh instances
-    // (`expandInstancedMeshesInScene`) BEFORE the fork's geometry generator
-    // runs, so each instance renders at its real per-instance world transform.
-    // (The fork's convertToStaticGeometry bakes only mesh.matrixWorld and
-    // ignores instanceMatrix, hence the pt-webgl-side pre-bake.)
+    // instanced-mesh IS supported: the backend-side scene pack preserves each
+    // instance at its real per-instance world transform.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],

@@ -92,7 +92,7 @@ describe('createEngine proxy — progressive seed source/sink forwarding', () =>
     expect(proxy.seedAccumulator).toBeUndefined();
   });
 
-  it('omits the methods when the backend does not implement them (e.g. pt-webgl)', () => {
+  it('omits the methods when the backend does not implement them (e.g. pt-webgl2)', () => {
     const { engine } = makeEngine({
       caps: { supportsProgressiveSeedSource: true, supportsAccumulatorSeed: true },
       withSource: false,

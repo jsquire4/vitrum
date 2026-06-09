@@ -1,6 +1,7 @@
 export * from './aabb.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
+export { validateBvhEncoding } from './validateBvhEncoding.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export {
@@ -54,9 +55,8 @@ export {
  *       Used by pt-webgpu (`.w = 0`, zero-fill contract) and by ReSTIR
  *       (`.w` packs packed-RGBA material color + texType).
  *
- * The legacy THREE builder at `@vitrum/shared-bvh/legacy/three` returns stride
- * 3 (`indices` is a raw `Uint32Array` with 3 u32 per triangle). Callers that
- * need stride 4 must post-process the output.
+ * Callers that need stride 4 can expand a stride-3 source with
+ * `expandIndicesToStride4`.
  *
  * Upload-time assertion (recommended for all callers):
  * ```ts
@@ -69,8 +69,7 @@ export type BvhIndexStride = 3 | 4;
 /**
  * Expand a stride-3 index buffer (`array<vec3u>` form: three u32 per triangle)
  * into a stride-4 buffer (`array<vec4u>` form: three u32 + one payload u32 per
- * triangle), the post-processing step every stride-4 consumer must apply to
- * the legacy THREE builder's stride-3 output (see {@link BvhIndexStride}).
+ * triangle).
  *
  * The `.w` lane defaults to `0` (the pt-webgpu zero-fill contract). A caller
  * that packs its own payload into `.w` (e.g. ReSTIR packing RGBA material color

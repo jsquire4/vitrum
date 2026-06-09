@@ -40,8 +40,7 @@ export interface LightingStateInputs {
   intensityMultiplier?: number;
 }
 
-/** Pure compute. Consumed by `@vitrum/pt-webgl` (re-exported from its index).
- *  Returns backend-agnostic numeric types so this package carries no THREE dep. */
+/** Pure compute. Returns backend-agnostic numeric types. */
 export function computeLightingState(opts: LightingStateInputs): LightingState {
   const { timeOfDay, skyParams, isNight, intensityMultiplier = 1.0 } = opts;
 

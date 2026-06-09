@@ -3,12 +3,20 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 
 installWebGPUPolyfills();
 import { makeRestirBvhSnapshot } from '../src/restir/restirBvhSnapshot.js';
-import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
-import * as THREE from 'three';
+import type { RestirMergedGeometryLike, SceneBVHBuffers } from '../src/restir/bvhTypes.js';
+
+function boundsGeometry(): RestirMergedGeometryLike {
+  return {
+    boundingBox: {
+      min: { x: 0, y: 0, z: 0 },
+      max: { x: 1, y: 1, z: 1 },
+    },
+    computeBoundingBox: () => undefined,
+    dispose: () => undefined,
+  };
+}
 
 function tlasBuffers(): SceneBVHBuffers {
-  const geo = new THREE.BufferGeometry();
-  geo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 1));
   return {
     bvhMode: 'tlas',
     bvhNodes: { cpuData: new ArrayBuffer(32), byteLength: 32, count: 1 },
@@ -25,10 +33,10 @@ function tlasBuffers(): SceneBVHBuffers {
     lightTree: { cpuData: new ArrayBuffer(48), byteLength: 48, count: 1 },
     lightTreeNodeCount: 0,
     lightTreeEnabled: false,
-    mergedGeometry: geo,
+    mergedGeometry: boundsGeometry(),
     meshVertexRanges: [],
     bvhIndicesStride3: new Uint32Array(3),
-    buildMaterials: [new THREE.MeshStandardMaterial()],
+    buildMaterials: [{ color: { r: 1, g: 1, b: 1 } }],
     coreMaterials: [],
     emitterNormals: new Float32Array(12),
     primitiveTlasBindings: [],

@@ -4,10 +4,10 @@
 // WebGL2 path tracer uploads (the GL format conversion to RedFormat-HalfFloat is
 // the integrator's concern — this module only produces the float data + dims).
 //
-// Provenance: gkjohnson/three-gpu-pathtracer EquirectHdrInfoUniform.js (MIT),
-// absorbed at packages/three-gpu-pathtracer/. Algorithm: PBRT InfiniteAreaLight
-// 2D distribution (marginal row CDF + per-row conditional column CDF). Layout
-// spec: plan/three-removal/03-scene-bvh-packers.md §6.
+// Provenance: gkjohnson/three-gpu-pathtracer EquirectHdrInfoUniform.js (MIT);
+// see CREDITS.md. Algorithm: PBRT InfiniteAreaLight 2D distribution (marginal
+// row CDF + per-row conditional column CDF). Layout spec:
+// plan/three-removal/03-scene-bvh-packers.md §6.
 //
 // Outputs (mapping a uniform random number → a centred equirect texel):
 //   marginal     1×height : random → row-centre v  (which row to sample)

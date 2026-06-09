@@ -365,45 +365,6 @@ The command prints ready-to-export paths:
 - `VITRUM_NEURAL_ACCEPTANCE_METRICS=...`
 - `VITRUM_PTWGPU_TLAS_METRICS=...`
 
-### PT-WebGL fidelity acceptance artifact
-
-`benchmark:pt-webgl-fidelity` scans paired PNGs under
-`tools/reference-renders/pt-webgl-fidelity/`:
-
-- `<scenario>.baseline.png`
-- `<scenario>.candidate.png`
-
-It computes RGB PSNR + mean absolute delta and writes a JSON artifact consumed by
-`packages/pt-webgl/src/__tests__/fidelityAcceptance.test.ts`.
-
-```bash
-npm run benchmark:pt-webgl-fidelity --workspace @vitrum/benchmark-runner
-```
-
-The command prints:
-
-- `VITRUM_PTWEBGL_FIDELITY_METRICS=...`
-
-`benchmark:pt-webgl-oracle` is the end-to-end wrapper: it computes strict
-metrics from the paired PNGs and immediately runs the env-gated
-`@vitrum/pt-webgl` acceptance test. By default it uses committed fixtures. Set
-`VITRUM_PTWEBGL_ORACLE_CAPTURE=1` to start the two-engines example, capture
-pt-webgpu baselines plus pt-webgl candidates, and validate that generated
-directory instead.
-
-```bash
-npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner
-VITRUM_PTWEBGL_ORACLE_CAPTURE=1 VITRUM_CAPTURE_SMOKE=1 \
-  npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner
-```
-
-Useful knobs:
-
-- `VITRUM_PTWEBGL_FIDELITY_REQUIRED` (comma-separated scenario IDs; defaults derive from `scenario-presets.mjs` RFE scenarios)
-- `VITRUM_PTWEBGL_FIDELITY_MIN_PSNR` (global threshold, default `28`)
-- `VITRUM_PTWEBGL_FIDELITY_MIN_PSNR_BY_SCENARIO` (JSON object, e.g. `{"rfe05-caustic-strategy":26}`)
-- `VITRUM_PTWEBGL_FIDELITY_STRICT=1` (exit non-zero when required scenarios are missing or any row fails threshold)
-
 Example (Playwright adapter in this folder):
 
 ```bash

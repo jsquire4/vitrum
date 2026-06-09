@@ -288,13 +288,11 @@ function discPoint(
 }
 
 /**
- * THREE-free counterpart to {@link collectRectAreaLightEmitterTris}: derive the
+ * Core-scene counterpart to {@link collectRectAreaLightEmitterTris}: derive the
  * extra ReSTIR emitter triangles for every `kind: 'rect-area'` emitter DIRECTLY
- * from a `@vitrum/core` `Scene`, with NO `vitrumSceneToThree` round-trip and no
- * `THREE.RectAreaLight`.
+ * from a `@vitrum/core` `Scene`.
  *
- * Geometry parity with the THREE path (verified algebraically against
- * `vitrumSceneToThree.buildRectAreaLight` + `collectRectAreaLightEmitterTris`):
+ * Geometry parity with the historical bridge path:
  *
  *  - `buildRectAreaLight` builds an orthonormal basis X=normalize(uAxis),
  *    Y=normalize(vAxis), Z=X×Y, with full width `2|uAxis|` / height `2|vAxis|`,

@@ -1,12 +1,10 @@
 /**
- * oidnDispatcherCore.ts — shared cohort state machine for the `denoiser:
- * 'oidn-final'` mode, consumed by both {@link @vitrum/pt-webgl} and
- * {@link @vitrum/pt-webgpu}.
+ * oidnDispatcherCore.ts — shared cohort state machine for converged-backend
+ * `denoiser: 'oidn-final'` dispatchers.
  *
  * ## Motivation
  *
  * Two near-identical dispatchers previously lived in separate packages:
- *   - `packages/pt-webgl/src/oidnFinalDispatcher.ts`
  *   - `packages/pt-webgpu/src/denoise/oidnFinalDispatcher.ts`
  *
  * They shared the interfaces, the `_defaultLoader` body, the cohort/async

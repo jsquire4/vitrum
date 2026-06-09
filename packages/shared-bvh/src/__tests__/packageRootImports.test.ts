@@ -68,7 +68,7 @@ describe('package root import boundaries', () => {
     expect(source).not.toContain('legacyThreeMaterials');
   });
 
-  it('publishes THREE ingestion only through the legacy subpath', () => {
+  it('does not publish any legacy THREE ingestion subpath', () => {
     const pkg = JSON.parse(readSource('../../package.json')) as {
       exports?: Record<string, unknown>;
     };
@@ -77,18 +77,13 @@ describe('package root import boundaries', () => {
       types: './src/index.ts',
       import: './src/index.ts',
     });
-    expect(pkg.exports?.['./legacy/three']).toEqual({
-      types: './src/legacy/three.ts',
-      import: './src/legacy/three.ts',
-    });
+    expect(pkg.exports).not.toHaveProperty('./legacy/three');
     expect(pkg.exports).not.toHaveProperty('./bvhCommon');
     expect(pkg.exports).not.toHaveProperty('./sceneBvh');
   });
 
-  it('quarantines direct three imports to legacy and tests', () => {
+  it('has no direct three imports in source', () => {
     const offenders = tsFiles('..')
-      .filter((path) => !path.includes('/src/legacy/'))
-      .filter((path) => !path.includes('/src/__tests__/'))
       .filter((path) => {
         const source = readFileSync(path, 'utf8');
         return /from ['"]three(?:\/webgpu)?['"]|import \* as THREE from ['"]three['"]/.test(source);

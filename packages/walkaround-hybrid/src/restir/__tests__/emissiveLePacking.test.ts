@@ -8,14 +8,15 @@
  * already handles — packing it here would double-count).
  */
 import { describe, it, expect } from 'vitest';
-import * as THREE from 'three';
-import { materialEmissiveLe, packBVHEmissiveLe } from '../packingHelpers.js';
+import { materialEmissiveLe, packBVHEmissiveLe, type PbrMaterialLike } from '../packingHelpers.js';
 
-function emissiveMat(rgb: [number, number, number], intensity: number): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial();
-  m.emissive = new THREE.Color(rgb[0], rgb[1], rgb[2]);
-  m.emissiveIntensity = intensity;
-  return m;
+const color = (r: number, g: number, b: number) => ({ r, g, b });
+
+function emissiveMat(rgb: [number, number, number], intensity: number): PbrMaterialLike {
+  return {
+    emissive: color(rgb[0], rgb[1], rgb[2]),
+    emissiveIntensity: intensity,
+  };
 }
 
 describe('materialEmissiveLe — shared emissive classifier', () => {
@@ -38,9 +39,10 @@ describe('materialEmissiveLe — shared emissive classifier', () => {
   it('EXCLUDES a pure-transmissive glass material (no emissive) — lo_emit handles glass', () => {
     // A transmissive material with NO emissive must NOT produce a camera glow Le
     // here (that would double-count against shade.wgsl lo_emit's Beer-Lambert).
-    const glass = new THREE.MeshPhysicalMaterial();
-    glass.transmission = 0.9;
-    glass.color = new THREE.Color(1, 0.2, 0.2);
+    const glass: PbrMaterialLike = {
+      transmission: 0.9,
+      color: color(1, 0.2, 0.2),
+    };
     expect(materialEmissiveLe(glass)).toBeNull();
   });
 });

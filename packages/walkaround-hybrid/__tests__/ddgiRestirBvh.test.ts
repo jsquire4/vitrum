@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import * as THREE from 'three';
 import { asMat4, type Scene } from '@vitrum/core';
 import {
   isDdgiRestirTlasOnlyRefit,
   makeDdgiRestirBvhSnapshot,
 } from '../src/ddgi/ddgiRestirBvh.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
+import type { RestirMergedGeometryLike } from '../src/restir/bvhTypes.js';
+
+function boundsGeometry(max = 2): RestirMergedGeometryLike {
+  return {
+    boundingBox: {
+      min: { x: 0, y: 0, z: 0 },
+      max: { x: max, y: max, z: max },
+    },
+    computeBoundingBox: () => undefined,
+    dispose: () => undefined,
+  };
+}
 
 function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuffers {
-  const geo = new THREE.BufferGeometry();
-  geo.boundingBox = new THREE.Box3(
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(2, 2, 2),
-  );
   return {
     bvhMode: 'merged',
     bvhNodes: { cpuData: new ArrayBuffer(32), byteLength: 32, count: 1 },
@@ -29,7 +35,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     lightTree: { cpuData: new ArrayBuffer(48), byteLength: 48, count: 1 },
     lightTreeNodeCount: 0,
     lightTreeEnabled: false,
-    mergedGeometry: geo,
+    mergedGeometry: boundsGeometry(),
     meshVertexRanges: [],
     bvhIndicesStride3: new Uint32Array(3),
     buildMaterials: [],

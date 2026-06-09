@@ -73,12 +73,6 @@ export interface DDGIOptions {
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
 export interface DDGIFrameInputs {
   /**
-   * Legacy adapter field retained for source compatibility. Concrete
-   * walkaround-hybrid no longer builds DDGI traversal data from raw Three
-   * scenes; pass {@link coreScene} instead.
-   */
-  scene?: unknown | null;
-  /**
    * Optional `@vitrum/core` `Scene` — when present (and no ReSTIR snapshot is
    * active), the standalone DDGI BVH is built core-first via
    * {@link SceneBvh.updateFromCore} (`mergeWorldSpaceFromCore` + core
@@ -86,18 +80,8 @@ export interface DDGIFrameInputs {
    * or ReSTIR snapshot is available.
    */
   coreScene?: Scene;
-  /**
-   * Raw WebGPU device. Supply this when the host owns the device directly
-   * (e.g. HybridEngine). Either `device` or `renderer` must be present.
-   */
+  /** Raw WebGPU device. Supply this when the host owns the device directly. */
   device?: GPUDevice;
-  /**
-   * Legacy Three.js WebGPURenderer-shaped object. Supported for standalone
-   * DDGI consumers that wrap a Three.js renderer. Either `device` or
-   * `renderer` must be present — when both are supplied, `renderer.backend.
-   * device` takes precedence (matches the original behaviour).
-   */
-  renderer?: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } };
   /**
    * Whether DDGI compute is enabled this frame. When false, updateFrame
    * returns immediately without dispatching any GPU work.
@@ -302,15 +286,11 @@ export class DDGI {
 
     const t0 = now;
 
-    // Resolve renderer-adapter shape from either `device` or `renderer`.
-    // Existing renderer wins for back-compat with three.js standalone hosts.
-    const rendererAdapter =
-      inputs.renderer ??
-      (inputs.device
-        ? { backend: { device: inputs.device, isWebGPUBackend: true as const } }
-        : undefined);
+    const rendererAdapter = inputs.device
+      ? { backend: { device: inputs.device, isWebGPUBackend: true as const } }
+      : undefined;
     if (!rendererAdapter) {
-      console.warn('[DDGI] updateFrame called without device or renderer; skipping.');
+      console.warn('[DDGI] updateFrame called without device; skipping.');
       return;
     }
 

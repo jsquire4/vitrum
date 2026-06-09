@@ -394,7 +394,6 @@ describe('HybridEngine — W11 OIDN model URL validation', () => {
       primaryLightIntensity: 1,
       skyTint: [0.2, 0.4, 0.8],
       skyIrradiance: 0.5,
-      threeScene: {} as unknown as import('three').Scene,
       denoiser: 'oidn-final',
       // extensions intentionally omitted
     })).toThrow(/oidn-final.*oidnModelUrl/i);
@@ -410,7 +409,6 @@ describe('HybridEngine — W11 OIDN model URL validation', () => {
       primaryLightIntensity: 1,
       skyTint: [0.2, 0.4, 0.8],
       skyIrradiance: 0.5,
-      threeScene: {} as unknown as import('three').Scene,
       denoiser: 'oidn-final',
       extensions: {
         'walkaround-hybrid': { oidnModelUrl: '/models/oidn.onnx' },

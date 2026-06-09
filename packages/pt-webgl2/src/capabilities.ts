@@ -8,7 +8,7 @@ import type {
 } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
 
-const PT_WEBGL2_BASE_SUPPORT_DETAILS = BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails;
+const PT_WEBGL2_BASE_SUPPORT_DETAILS = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails;
 
 /**
  * The single source of truth for what this backend ingests. `buildCapabilities`
@@ -38,10 +38,7 @@ export const PT_WEBGL2_SUPPORT: Required<SupportSets> = {
 };
 
 /**
- * Build the capabilities object. Slice 0 reuses the `pt-webgl` promise-ledger row's
- * `supportDetails` to avoid editing the closed core `BackendId` union before the
- * capability surface is final (master plan §5). A dedicated `'pt-webgl2'` ledger row
- * lands at cutover.
+ * Build the capabilities object from the explicit `pt-webgl2` promise-ledger row.
  */
 export function buildCapabilities(
   causticStrategy: EngineCapabilities['causticStrategy'],

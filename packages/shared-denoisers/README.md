@@ -1,6 +1,6 @@
 # @vitrum/shared-denoisers
 
-Denoiser building blocks consumed by the walkaround-hybrid pipeline (and, via the OIDN bridge, by pt-webgl).
+Denoiser building blocks consumed by the walkaround-hybrid, pt-webgpu, and other core-scene render backends.
 
 ## What's here
 
@@ -10,7 +10,7 @@ Denoiser building blocks consumed by the walkaround-hybrid pipeline (and, via th
 - **Welford temporal variance** — `WELFORD_VARIANCE_WGSL`. Foundational primitive shared by atrous-variance and SVGF.
 - **Temporal accumulator** — `TEMPORAL_ACCUM_WGSL`. EMA blend with optional TCBB clip.
 - **HDR luminance bilateral** — `HDR_LUMINANCE_BILATERAL_WGSL`. Edge-stop bilateral preview filter.
-- **OIDN bridge** — `denoiseFinal()` calls Intel Open Image Denoise via `onnxruntime-web` (optional peer dep). `OIDNDispatcherCore` is the shared cohort state machine that both `@vitrum/walkaround-hybrid` and `@vitrum/pt-webgl` use to drive the OIDN pipeline. Used by HybridEngine's `'oidn-final'` denoiser mode and pt-webgl's converged-frame path.
+- **OIDN bridge** — `denoiseFinal()` calls Intel Open Image Denoise via `onnxruntime-web` (optional peer dep). `OIDNDispatcherCore` is the shared cohort state machine for converged-backend OIDN dispatchers; walkaround-hybrid uses the same bridge primitives for its `'oidn-final'` denoiser mode.
 
 ## Texture helpers
 

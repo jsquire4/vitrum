@@ -33,7 +33,7 @@ import {
   packDDGIMaterialsN,
 } from './probeUpdateMaterials.js';
 import type { MaterialSpec } from '@vitrum/core';
-import type { ThreePbrScalarSource } from '../threePbrScalars.js';
+import type { PbrScalarSource } from '../pbrScalars.js';
 import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
@@ -423,16 +423,13 @@ export class ProbeUpdatePass {
     //   1. PRODUCTION ReSTIR snapshot, core path — `snap.coreMaterials` (deduped
     //      MaterialSpec[], slot-aligned with `snap.materials`/`triMaterialIds`),
     //      filled by the core TLAS build `buildReSTIRSceneBVHForCoreScene`. Pack via
-    //      the THREE-free `coreMaterialToMaterialEntry` (no THREE.Material
-    //      round-trip). THIS is the production-path THREE-decouple of the ReSTIR
-    //      MATERIAL list (mirrors the ReSTIR-DI emitter `46a0078` + standalone
-    //      DDGI `15070cd` decouples). NON-EMPTY only in the core-first TLAS build;
-    //      the legacy THREE-only merged build leaves it `[]` → falls through.
+    //      `coreMaterialToMaterialEntry`. This is the production material list
+    //      path that mirrors the ReSTIR-DI emitter `46a0078` + standalone DDGI
+    //      `15070cd` decouples.
     //   2. core-first STANDALONE path — `SceneBvh.updateFromCore` filled
     //      `legacyBuffers.coreMaterials` (no ReSTIR snapshot present).
-    //   3. ReSTIR snapshot path (legacy THREE merged) — `snap.materials` are THREE
-    //      materials produced by `vitrumSceneToThree`.
-    //   4. legacy THREE `SceneBvh.update` path — `legacyBuffers.sourceMaterials`.
+    //   3. ReSTIR snapshot structural-material path — `snap.materials`.
+    //   4. standalone SceneBvh structural-material path — `legacyBuffers.sourceMaterials`.
     const snapCoreMats = snap?.coreMaterials;
     const legacyCoreMats = legacyBuffers?.materials ?? legacyBuffers?.coreMaterials;
     if (snapCoreMats != null && snapCoreMats.length > 0) {
@@ -441,7 +438,7 @@ export class ProbeUpdatePass {
       this._uploadCoreMaterials(device, legacyCoreMats);
     } else {
       const materials = snap?.materials ?? legacyBuffers?.sourceMaterials;
-      this._uploadMaterials(device, [...(materials ?? [])] as ThreePbrScalarSource[]);
+      this._uploadMaterials(device, [...(materials ?? [])] as PbrScalarSource[]);
     }
     this._uploadLights(device);
     this._uploadGridParams(device);
@@ -539,7 +536,7 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(this._gpu!.traceParamsBuf, 0, u);
   }
 
-  private _uploadMaterials(device: GPUDevice, mats: ThreePbrScalarSource[]): void {
+  private _uploadMaterials(device: GPUDevice, mats: PbrScalarSource[]): void {
     // M9: runtime warning when scene exceeds the compiled-in cap.
     if (mats.length > this._ddgiMaxMaterials) {
       console.warn(

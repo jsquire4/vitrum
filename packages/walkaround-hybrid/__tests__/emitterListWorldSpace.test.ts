@@ -1,20 +1,6 @@
 /**
- * Pins that the ReSTIR emitter list is built in WORLD space — and (post
- * THREE-decouple, 2026-06-03) that the world transform now flows through the
- * `@vitrum/core` `MeshPrimitive.transform`, NOT a baked THREE `matrixWorld`.
- *
- * History: `buffersFromScenePack` used to run a SECOND `buildSceneBVH`
- * (`sharedWorld`, a `StaticGeometryGenerator` world-bake over the THREE roots)
- * purely to feed `buildEmitterList`. That meant the emitter world transform came
- * from the THREE mesh's `matrixWorld`. The THREE-decouple replaced that with
- * `mergeWorldSpaceFromCore(scene)` + `buildEmitterListFromCore`, so the emitter
- * world transform now comes from the core `primitive.transform` (a THREE-free
- * world bake). In PRODUCTION these coincide exactly: the THREE roots are
- * reconstructed from the core scene via `vitrumSceneToThree`, whose
- * `applyTransform` copies `primitive.transform` straight into `matrixWorld`
- * (vitrumSceneToThree.ts:299-305), so the round-trip is identity. The emitter
- * SET / world geometry is therefore unchanged in production (CPU-pinned by
- * restir/__tests__/emitterListCoreEquivalence.test.ts).
+ * Pins that the ReSTIR emitter list is built in WORLD space from the canonical
+ * `@vitrum/core` `MeshPrimitive.transform`.
  *
  * Why the invariant still matters: `packSceneFromCore` (`geo`) stores per-
  * primitive BLAS positions in LOCAL/object space (the world transform lives in
@@ -82,7 +68,7 @@ function firstEmitterVertexA(buffers: { emitters: { cpuData: ArrayBuffer } }): [
 describe('emitter list is built in world space (driven by core transform)', () => {
   it('emitter triangle vertex follows the core primitive transform, not local space', () => {
     // World translation carried by the core transform (the production source of
-    // truth — vitrumSceneToThree bakes it into matrixWorld for the round-trip).
+    // truth for emitter-list world geometry).
     const scene = emissiveTriScene(translation(10, 20, 30));
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
 

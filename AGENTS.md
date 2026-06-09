@@ -23,7 +23,7 @@ Read in this order to onboard:
   Treat any older "NOT IN HEAD" caveats below as historical audit notes.
 
 - **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; **all** vitest tests pass across workspaces — the 2–3 previously-skipped GPU-only paths were enabled via happy-dom / vitest browser mode; GPU-browser tests are opt-in via env flag so default `npm test` no longer requires Playwright.
-- **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl` (WebGL2 converged PT — release-candidate track), `pt-webgpu` (WebGPU-native PT peer — feature-complete for contract surface; fidelity rows still `experimental` until promoted in `plan/renderer-fidelity-matrix.md`), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch + receiver), `walkaround-hybrid` (realtime GI — release-candidate track: DDGI + ReSTIR-DI/GI + GTAO + SVGF + opt-in RC/PPG/neural), `engine` (`createEngine` / `attachVitrum` facade), `stained-glass-extensions` (stained-glass-specific contracts), `dev` (debug overlays).
+- **Packages**: `core`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl2` (native WebGL2 converged PT — release-candidate track), `pt-webgpu` (WebGPU-native PT peer), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch), `walkaround-hybrid` (realtime GI — release-candidate track: DDGI + ReSTIR-DI/GI + GTAO + SVGF + opt-in RC/PPG/neural), `engine` (`createEngine` / `attachVitrum` facade), `stained-glass-extensions` (stained-glass-specific contracts), `dev` (debug overlays).
 - **Extraction**: `_staging/legacy-source/` contains only host-app React/Redux files intentionally not extracted (see `_staging/README.md`).
 - **External RFEs**: 01–05 (contract-layer) plus 06/07/08/09/10/12/14 fork patches applied per `external_requests/IMPLEMENTATION-STATUS.md`.
 - **M7 — DDGI Coherent Physical Model shipped** (sweep 2026-05-11 Items 2, 4, 6, 20): producer no longer pre-multiplies `albedo/π`; Lambertian cosine blend kernel (`w` for irradiance, `w²` for visibility) replaces `pow(w,8)` / `pow(w,50)`; per-frame Halton-Shoemake SO(3) `randomRotation`; RC GI receiver applies `materialColor · PI_INV` before injecting via `emissiveNode`. Cited at `probeUpdateFrameParams.ts:19-60` (Halton-{2,3,5} sequence) and `applyDDGIShading.ts:172-175` (receiver applies `albedo · PI_INV` exactly once).
@@ -126,7 +126,7 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 
 ## What's next
 
-**Maturity label (do not call the library "pre-alpha"):** root `README.md` places vitrum on the **release-candidate track** for `@vitrum/engine`, `walkaround-hybrid`, and `pt-webgl`. `@vitrum/pt-webgpu` is a **peer PT backend** with closed deep-audit findings; treat "experimental" as per-feature fidelity tier (`plan/renderer-fidelity-matrix.md`), not as "the whole repo is a prototype."
+**Maturity label (do not call the library "pre-alpha"):** root `README.md` places vitrum on the **release-candidate track** for `@vitrum/engine`, `walkaround-hybrid`, and `pt-webgl2`. `@vitrum/pt-webgpu` is a **peer PT backend** with closed deep-audit findings; treat "experimental" as per-feature fidelity tier (`plan/renderer-fidelity-matrix.md`), not as "the whole repo is a prototype."
 
 **Programs PR + WG (2026-05-26 signoffs):** primary-release and WebGPU-PT-parity implementation waves are landed in code; see `plan/archive/PR-signoff-2026-05-26-archived-2026-05-28.md`, `plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`, and `plan/archive/backend-maturity-matrix-2026-05-26-archived-2026-05-30.md`.
 
@@ -141,15 +141,13 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 
 Older active docs: `plan/renderer-fidelity-matrix.md`. (Archived under `plan/archive/`: `primary-release-and-webgpu-pt-parity-2026-05-26` and `d2-e6-pt-webgpu-ppg-performance` — their items shipped.)
 
-## Absorbed path-tracer package
+## Former path-tracer fork
 
-`packages/three-gpu-pathtracer/` is the absorbed fork of `gkjohnson/three-gpu-pathtracer`. It is now part of the vitrum monorepo and should be changed on the active vitrum branch like any other package. Do **not** rely on or create sibling checkout branches for vitrum work; older archived sprint docs may mention the pre-absorption sibling-checkout workflow, but that workflow has been retired. Keep the package boundary intact unless the user explicitly asks to collapse it further into `@vitrum/pt-webgl`.
-
-`@vitrum/pt-webgl` depends on it via `file:../three-gpu-pathtracer`. For npm release, decide whether to publish this renderer package under a vitrum-owned scope or keep `pt-webgl` private.
+`packages/three-gpu-pathtracer/` and `@vitrum/pt-webgl` were removed in favor of the native `@vitrum/pt-webgl2` backend. Do **not** rely on or create sibling checkout branches for vitrum work; older archived sprint docs may mention that retired workflow. Ported kernels keep provenance in source comments and `CREDITS.md`.
 
 ## Conventions
 
-- **No upstream PRs yet.** The fork stays local until vitrum is prime-time-ready. Do not create upstream PRs to `gkjohnson/three-gpu-pathtracer` without explicit user instruction.
+- **No upstream PRs yet.** Do not create upstream PRs to provenance projects without explicit user instruction.
 - **No npm publish yet.** Local-only via npm workspaces (`file:./packages/*`). Do not publish without explicit user instruction.
 - **No remote pushes without instruction.** Do not push `~/projects/vitrum` without the user saying so.
 
@@ -162,7 +160,7 @@ Older active docs: `plan/renderer-fidelity-matrix.md`. (Archived under `plan/arc
 
 ## Testing protocol
 
-For any algorithmic change to a backend or shared package: capture a "before" reference render of the relevant test scene, make the change, capture an "after" reference render, A/B them. Numerical regression is acceptable only if visually justified. Reference renders live in `tools/reference-renders/`. Working test scenes go in `examples/`.
+For any algorithmic change to a backend or shared package: capture a "before" reference render of the relevant test scene, make the change, capture an "after" reference render, A/B them. Numerical regression is acceptable only if visually justified. Reference renders live in `tools/reference-renders/`; any new example should target the core `Scene` contract.
 
 Mechanical checks: **`npm run typecheck`** (TypeScript, all packages with a `typecheck` script), **`npm test`** (Vitest in packages that define tests). Release notes: **[CHANGELOG.md](./CHANGELOG.md)**.
 

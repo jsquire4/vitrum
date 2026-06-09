@@ -24,12 +24,11 @@ describe('@vitrum/walkaround-rc package boundary', () => {
   it('keeps the raw RC root free of direct three imports', () => {
     const root = readFileSync(fileURLToPath(new URL('../src/index.ts', import.meta.url)), 'utf8');
     expect(root).not.toMatch(/from ['"]three(?:\/webgpu|\/tsl)?['"]|import \* as THREE/);
-    expect(root).toMatch(/Optional THREE\/TSL bridge exports live/);
+    expect(root).not.toMatch(/THREE|TSL|\/three/);
   });
 
-  it('quarantines direct three imports to the explicit bridge folder', () => {
+  it('has no direct three imports in source', () => {
     const offenders = tsFiles('../src')
-      .filter((path) => !path.includes('/src/three/'))
       .filter((path) => {
         const source = readFileSync(path, 'utf8');
         return /from ['"]three(?:\/webgpu|\/tsl)?['"]|import \* as THREE from ['"]three['"]/.test(source);
@@ -45,8 +44,12 @@ describe('@vitrum/walkaround-rc package boundary', () => {
       devDependencies?: Record<string, string>;
     };
 
-    expect(pkg.peerDependencies).not.toHaveProperty('three-mesh-bvh');
-    expect(pkg.peerDependenciesMeta).not.toHaveProperty('three-mesh-bvh');
+    expect(pkg.peerDependencies ?? {}).not.toHaveProperty('three');
+    expect(pkg.peerDependencies ?? {}).not.toHaveProperty('three-mesh-bvh');
+    expect(pkg.peerDependenciesMeta ?? {}).not.toHaveProperty('three');
+    expect(pkg.peerDependenciesMeta ?? {}).not.toHaveProperty('three-mesh-bvh');
+    expect(pkg.devDependencies ?? {}).not.toHaveProperty('three');
+    expect(pkg.devDependencies ?? {}).not.toHaveProperty('@types/three');
     expect(pkg.devDependencies).not.toHaveProperty('three-mesh-bvh');
   });
 });

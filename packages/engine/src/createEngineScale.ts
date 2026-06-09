@@ -4,7 +4,7 @@ import type { Vec3 } from '@vitrum/core';
 
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 
-/** Threshold above which 'auto' falls back from walkaround-hybrid to pt-webgl. */
+/** Threshold above which 'auto' falls back from walkaround-hybrid to a PT backend. */
 export const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
 
 export const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]);
@@ -33,14 +33,14 @@ export function pickBackend(
   hasWebGPU: boolean,
   triangleCount: number,
   needsTlas = false,
-): 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu' {
-  if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl';
+): 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu' {
+  if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl2';
   if (prefer === 'quality') {
     if (needsTlas && hasWebGPU) return 'pt-webgpu';
-    return 'pt-webgl';
+    return 'pt-webgl2';
   }
   if (prefer === 'realtime') {
-    if (!hasWebGPU) return 'pt-webgl';
+    if (!hasWebGPU) return 'pt-webgl2';
     return 'walkaround-hybrid';
   }
   if (hasWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
@@ -50,8 +50,8 @@ export function pickBackend(
     return 'pt-webgpu';
   }
   if (needsTlas) {
-    // WebGL-only host: merged BVH is the only pt-webgl path; caller should warn.
-    return 'pt-webgl';
+    // WebGL-only host: merged BVH is the only pt-webgl2 path; caller should warn.
+    return 'pt-webgl2';
   }
-  return 'pt-webgl';
+  return 'pt-webgl2';
 }

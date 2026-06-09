@@ -17,7 +17,7 @@ This is the **load-bearing** type surface every other vitrum package compiles ag
 - `FrameOutput` is a discriminated union: `FrameRendered | FrameSkipped` via `kind`.
 - `EngineOptions.denoiser` — string union (`'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural'`) selecting the denoiser pipeline at engine creation. Backend-specific construction-time config (e.g. neural weights, OIDN model URL) flows through `extensions`.
 - `GpuDetection`, `probeWebGPU()` — adapter capability inspection.
-- `solveSkin` / `combineSkinMatrices` / `mat3InverseTranspose` — CPU linear-blend skinning solver (THREE-free; operates on `SkinnedMeshPrimitive`). Re-exported from `@vitrum/three-bindings` for convenience.
+- `solveSkin` / `combineSkinMatrices` / `mat3InverseTranspose` — CPU linear-blend skinning solver (THREE-free; operates on `SkinnedMeshPrimitive`).
 
 ## Design principles
 

@@ -7,8 +7,8 @@ import type { Vec3 } from './math.js';
 /**
  * Opaque environment-map handle. Unlike a material `TextureRef`, an env map is
  * NOT UV-transformed / texCoord-indexed — its representation is backend-specific
- * (a `THREE.Texture` for the pt-webgl path; a raw `{ width, height, data }`
- * equirect payload for pt-webgpu). The binding layer / host supplies it; the
+ * (for example, a raw `{ width, height, data }` equirect payload for pt-webgl2
+ * or pt-webgpu). The binding layer / host supplies it; the
  * backend interprets it. Core never inspects it.
  */
 export type EnvironmentMapRef = unknown;

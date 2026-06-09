@@ -5,12 +5,10 @@
  * refresh the RC BVH geometry via writeBuffer + in-place node refit, NOT via
  * a full SAH rebuild + buffer realloc + dispatcher recreation.
  *
- * THREE-decouple (2026-06-08): `RCSubsystem.setScene(rawThreeScene)` was removed
- * (it now throws — see HybridEngineRC.ts). The merged BVH is built from a
- * `@vitrum/core` `Scene` via `setSceneFromCore()`, so these fixtures are core
- * `MeshPrimitive`s instead of `THREE.Mesh`es. The refit logic under test
- * (`refitMergedInstance`) is unchanged — it operates on the merged
- * positions/nodes regardless of how they were built.
+ * The merged BVH is built from a `@vitrum/core` `Scene` via
+ * `setSceneFromCore()`, so these fixtures are core `MeshPrimitive`s. The refit
+ * logic under test (`refitMergedInstance`) operates on the merged
+ * positions/nodes after scene packing.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -62,10 +60,9 @@ function quad(
   };
 }
 
-/** Six faces of a unit cube spanning [-0.5, 0.5]^3 (the core analogue of the old
- *  `THREE.BoxGeometry(1, 1, 1)`) — 12 tris ⇒ a real multi-node merged BVH so
- *  refit has nodes to recompute. `off` shifts the whole cube so two cubes can
- *  coexist with distinct world positions. */
+/** Six faces of a unit cube spanning [-0.5, 0.5]^3 — 12 tris ⇒ a real multi-node
+ *  merged BVH so refit has nodes to recompute. `off` shifts the whole cube so
+ *  two cubes can coexist with distinct world positions. */
 function unitCubePrimitives(
   idPrefix: string,
   off: [number, number, number] = [0, 0, 0],

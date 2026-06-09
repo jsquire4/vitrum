@@ -10,11 +10,7 @@
  * GI signal, so the value is API consistency with pt-webgl / pt-webgpu, not a
  * perf win.
  *
- * Test seams (same shape as the pt-webgl add/remove test + the existing
- * capabilitiesPartition test):
- *   - `@vitrum/three-bindings` is stubbed so `vitrumSceneToThree` returns a
- *     real empty THREE.Scene (valid for the CPU BVH builder) without pulling in
- *     real texture disposal on the background chain / dispose().
+ * Test seam:
  *   - `./restir/bvhCore.js` is wrapped so `buildReSTIRSceneBVHForCoreScene`
  *     RECORDS the vitrum `Scene` it was handed. The async init chain hands the
  *     BVH builder exactly the mutated primitive list (the new primitive on add,
@@ -32,18 +28,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import * as THREE from 'three';
 import type { Scene, ScenePrimitive } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
-
-vi.mock('@vitrum/three-bindings', () => ({
-  vitrumSceneToThree: () => new THREE.Scene(),
-  disposeVitrumThreeSceneRoot: () => undefined,
-  solveSkin: () => ({ positions: new Float32Array(0), normals: new Float32Array(0) }),
-  applyVitrumMaterialToMesh: () => undefined,
-  findMeshByPrimitiveId: () => null,
-}));
 
 /** The vitrum scenes handed to `buildReSTIRSceneBVHForCoreScene`, in call order.
  *  Each entry is the scene a (re)build saw — proving WHICH primitive list

@@ -54,7 +54,7 @@
  *   https://github.com/mitsuba-renderer/rgb2spec
  *
  *   Phase 6 Sprint 8 spec: plan/archive/phase-6-roadmap.md §Sprint 8.
- *   GLSL mirror: packages/three-gpu-pathtracer/src/shader/bsdf/bsdf_functions.glsl.js::evalSpectrum.
+ *   GLSL mirror: the native WebGL2 BSDF port's `evalSpectrum` implementation.
  */
 
 import {

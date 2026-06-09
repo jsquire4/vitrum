@@ -5,7 +5,7 @@
 1. **The contract is the thing that's fixed.** Backends are swappable; scene bindings are swappable; denoisers are composable. The public types in `@vitrum/core` are the load-bearing interface.
 2. **The host owns lifecycle.** Engine accepts a device handle but does not own the device. Engine accepts frame inputs but does not own the cadence. This is the design choice that makes `@vitrum/*` survive Canvas remounts and other host-level lifecycle churn.
 3. **Generalize over time.** Today's contract handles the most pressing concrete needs. Each Phase 6 sprint generalizes one more dimension. The `Material.extensions`, `EngineOptions.extensions`, and `AnalyticShape` discriminated union are the explicit extension points where generalization happens without breaking the contract.
-4. **No upstream PRs (yet).** While vitrum is pre-prime-time, `@vitrum/pt-webgl` consumes the absorbed `packages/three-gpu-pathtracer` renderer package via `file:` (see `packages/pt-webgl/package.json`). Upstream contribution is a v1+ concern.
+4. **Own the runtime graph.** Runtime backends are vitrum-owned packages. Copied/ported algorithms keep source-level provenance and `CREDITS.md` attribution, but the library no longer depends on the old Three.js/fork packages.
 
 ## Package responsibilities
 
@@ -17,14 +17,6 @@
 
 **Why separate**: every other package imports from core. Core's stability is everyone's stability.
 
-### `@vitrum/three-bindings`
-
-**Owns**: adapter from a `THREE.Scene` to `@vitrum/core`'s `Scene`. Material translation (Three.js `MeshPhysicalMaterial` → `@vitrum/core`'s `Material`). Texture handle wrapping. Light translation. Also re-exports `solveSkin` (CPU LBS solver lives in `@vitrum/core/skinSolver.ts`; three-bindings re-exports it for convenience since it is most commonly called from the THREE adapter layer).
-
-**Depends on**: `@vitrum/core`, `@vitrum/stained-glass-extensions`, `three` (peer).
-
-**Why separate**: `@vitrum/core` doesn't know about three.js. A future babylon binding, glTF binding, or raw-buffer binding implements the same `Scene`-construction contract.
-
 ### `@vitrum/stained-glass-extensions`
 
 **Owns**: stained-glass host-domain seams extracted from generic packages: `SURFACE_TEXTURE_ID`, stained-glass `userData` key constants, and analytic came UBO packing helpers.
@@ -35,9 +27,9 @@
 
 ### `@vitrum/shared-bvh`
 
-**Owns**: software BVH compute. Two implementations: WebGPU compute pipeline (used by walkaround engines) and WebGL2 fragment-shader-readable texture (used by the WebGL2 PT backend, wrapping three-mesh-bvh's BVH but exposed via vitrum's contract).
+**Owns**: software BVH compute. The package exposes raw typed-array BVH builders/traversal helpers used by WebGPU and WebGL2 backends.
 
-**Depends on**: `@vitrum/core`, optionally `three-mesh-bvh` for the WebGL2 path.
+**Depends on**: `@vitrum/core`.
 
 ### `@vitrum/shared-samplers`
 
@@ -57,35 +49,35 @@
 
 **Owns**:
 - À-trous wavelet (current walkaround denoiser, Phase 6 baseline)
-- SVGF — **SHIPPED** (`svgf-real`, Schied 2017; `svgfRealWebGPU.ts` in `shared-denoisers`; available on `walkaround-hybrid` only — `unsupported` on BOTH converged backends, pt-webgl and pt-webgpu, which use `oidn-final`: SVGF is a real-time 1-spp filter, a regime mismatch for converged tracers)
+- SVGF — **SHIPPED** (`svgf-real`, Schied 2017; `svgfRealWebGPU.ts` in `shared-denoisers`; available on `walkaround-hybrid` only — `unsupported` on BOTH converged backends, pt-webgl2 and pt-webgpu, which use `oidn-final`: SVGF is a real-time 1-spp filter, a regime mismatch for converged tracers)
 - BMFR — **SHIPPED** (real Koskela-2019 Householder-QR feature regression in `@vitrum/shared-denoisers`; `BmfrDenoiser` in walkaround-hybrid, `denoiser: 'bmfr'`)
 - OIDN final-pass via ONNX Runtime Web + WebNN execution provider (Phase 6 Sprint 10b)
 
 **Depends on**: `@vitrum/core`.
 
-### `@vitrum/pt-webgl`
+### `@vitrum/pt-webgl2`
 
-**Owns**: implementation of the `Engine` contract via the forked three-gpu-pathtracer. Today: wraps the WebGL2 PT pipeline. Future: deprecated when `@vitrum/pt-webgpu` reaches feature parity.
+**Owns**: implementation of the `Engine` contract via the native WebGL2 path-tracing pipeline.
 
-**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/scene-lighting`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), plus `three` and `three-mesh-bvh` as peers. BVH building blocks used indirectly via the fork and three.js stack (not a direct `@vitrum/shared-bvh` dependency); `@vitrum/shared-denoisers` IS a direct dependency (OIDN-final wire).
+**Depends on** (see `packages/pt-webgl2/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, and `@vitrum/shared-denoisers`.
 
 ### `@vitrum/pt-webgpu` *(experimental backend, evolving toward Phase 7 goals)*
 
 **Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active experimental backend (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
-**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`. Notably **not** `three-gpu-pathtracer`.
+**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`.
 
 ### `@vitrum/walkaround-hybrid`
 
 **Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — see `_staging/legacy-source/src/rendering/scene/walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
 
-**Depends on** (see `packages/walkaround-hybrid/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/walkaround-rc`, plus `three` as an optional peer for the concrete engine and explicit `@vitrum/walkaround-hybrid/three` adapter surface. `@vitrum/three-bindings` is dev/test-only here. The package root keeps the factory lazy and type surface structural so root-only imports do not resolve `three`; TSL/DDGI helpers remain isolated behind `@vitrum/walkaround-hybrid/three`.
+**Depends on** (see `packages/walkaround-hybrid/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/walkaround-rc`.
 
 ### `@vitrum/walkaround-rc`
 
-**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher`. The raw-GPU `dispatchFrameRaw(opts: RCDispatchOptsRaw)` path accepts `GPUDevice` + raw `GPUBuffer`s + plain tuples; the former THREE-coupled `dispatchFrame` entry was dropped. TSL/Node material helpers (`GIReceiver`, `buildWalkaroundLightingNode`) remain in this package for walkaround-style hosts and are intentionally three/webgpu-coupled. Consumed by `@vitrum/walkaround-hybrid`.
+**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher`. The raw-GPU `dispatchFrameRaw(opts: RCDispatchOptsRaw)` path accepts `GPUDevice` + raw `GPUBuffer`s + plain tuples. Consumed by `@vitrum/walkaround-hybrid`.
 
-**Depends on** (see `packages/walkaround-rc/package.json`): `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. `three` and `three-mesh-bvh` are peer dependencies for the TSL receiver/material helper surface and retained BVH compatibility notes; the raw dispatch path stays plain WebGPU.
+**Depends on** (see `packages/walkaround-rc/package.json`): `@vitrum/shared-bvh`, `@vitrum/shared-samplers`.
 
 ### `@vitrum/scene-lighting`
 
@@ -98,13 +90,13 @@
 After extraction, a host app's rendering layer looks like:
 
 ```typescript
-import { sceneFromThreeJS } from '@vitrum/three-bindings';
-import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
+import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl2';
 import { createWalkaroundEngine_Hybrid } from '@vitrum/walkaround-hybrid';
+import type { Scene } from '@vitrum/core';
 
 // In a React effect:
 const ptEngine = await createPTEngine_WebGL2({ device: glContext, samplesPerPixel: 192 });
-const scene = sceneFromThreeJS(threeScene);
+const scene: Scene = buildCoreSceneFromHostData();
 ptEngine.setScene(scene);
 
 // In useFrame:
@@ -116,7 +108,7 @@ const output = ptEngine.renderFrame({
 
 The host application retains:
 - Domain composition logic (panel cell layout, came/solder generation, glass material profiles)
-- Three.js scene assembly
+- Host scene assembly into the `@vitrum/core` contract
 - React lifecycle wrapping (`PathTracingLayer`, `WalkaroundStage`, etc. become thin host wrappers around `@vitrum/*` engines)
 - UI controls
 
@@ -131,20 +123,20 @@ Subsequent sprints land their deliverables in vitrum packages, not the host app'
 | Sprint | Work | Lands in |
 |---|---|---|
 | 0 (this one) | Contract + package skeletons | `@vitrum/core` |
-| 1 | PT preview perf wins | `@vitrum/pt-webgl` config options |
+| 1 | PT preview perf wins | `@vitrum/pt-webgl2` config options |
 | 2 | Per-cell luminance precompute | `@vitrum/shared-samplers` |
 | 3 | Mixture PDF + light tree + back-face NEE | `@vitrum/shared-samplers` |
-| 4 | BSDF cost reduction (lobeMask + lite BSDF + material LOD) | `@vitrum/pt-webgl` (fork-internal patches) |
-| 5 | Analytic CSG came + MRT G-buffer | `@vitrum/pt-webgl` engine internals; CSG primitive type in `@vitrum/core` |
-| 6 | Rough refraction + spatial denoiser | BSDF in `@vitrum/pt-webgl`; denoiser in `@vitrum/shared-denoisers` |
-| 7 | Volume + SSS + equi-angular | `@vitrum/pt-webgl` (fork) + HG phase in `@vitrum/shared-samplers` |
-| 8 | RGB-as-3λ + Jakob+Hanika | `@vitrum/pt-webgl` + spectral utility in `@vitrum/shared-samplers` |
+| 4 | BSDF cost reduction (lobeMask + lite BSDF + material LOD) | native PT backends |
+| 5 | Analytic CSG came + MRT G-buffer | `@vitrum/pt-webgl2` engine internals; CSG primitive type in `@vitrum/core` |
+| 6 | Rough refraction + spatial denoiser | BSDF in native PT backends; denoiser in `@vitrum/shared-denoisers` |
+| 7 | Volume + SSS + equi-angular | native PT backends + HG phase in `@vitrum/shared-samplers` |
+| 8 | RGB-as-3λ + Jakob+Hanika | native PT backends + spectral utility in `@vitrum/shared-samplers` |
 | 9 | Adaptive sampling + checkerboard | `@vitrum/walkaround-hybrid` + Welford struct in `@vitrum/shared-samplers` |
 | 10a | SVGF / BMFR — **SHIPPED** | `@vitrum/shared-denoisers` |
 | 10b | OIDN ONNX final pass | `@vitrum/shared-denoisers/oidn-bridge` |
-| 10c | Vanilla BDPT | `@vitrum/pt-webgl` |
+| 10c | Vanilla BDPT | native PT backends |
 | 11 | PPG — **SHIPPED** (W9) | `@vitrum/walkaround-hybrid` (`src/ppg/`; opt-in via `HybridEngineOptions.ppgEnabled`) |
-| 12 | Hero spectral | `@vitrum/pt-webgl` AND/OR `@vitrum/pt-webgpu` |
+| 12 | Hero spectral | `@vitrum/pt-webgl2` AND/OR `@vitrum/pt-webgpu` |
 | 13 | Custom WebGPU neural denoiser — **SHIPPED** | `@vitrum/walkaround-hybrid` (`src/neural/InferenceGraph.ts`; opt-in via `denoiser: 'neural'` + `neuralWeights`) |
 | 6.5 | ReSTIR BDPT in walkaround | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
 

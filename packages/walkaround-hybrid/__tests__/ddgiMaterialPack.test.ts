@@ -20,24 +20,24 @@
  *
  * The test still pins:
  *   - field ordering against the canonical layout,
- *   - default values for missing fields (THREE constructor defaults still
- *     dominate when present; the canonical packer's fallback only fires
- *     for fields THREE leaves undefined),
+ *   - default values for missing fields from the canonical structural PBR
+ *     scalar extractor,
  *   - the u32 flags slot encoding (isGlass = transmission > 0),
  *   - bounded slot count (DDGI_MAX_MATERIALS = 64 — beyond that, materials
  *     drop and the trailing slots zero-pad).
  */
 
 import { describe, expect, it } from 'vitest';
-import * as THREE from 'three';
 import {
   packDDGIMaterials,
   DDGI_MAX_MATERIALS,
   DDGI_MATERIAL_STRIDE_BYTES,
   DDGI_MATERIAL_ENTRY_FLOATS,
 } from '../src/ddgi/probeUpdateMaterials.js';
+import type { PbrScalarSource } from '../src/pbrScalars.js';
 
 const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
+const color = (r: number, g: number, b: number) => ({ r, g, b });
 
 function f32(buf: ArrayBuffer): Float32Array {
   return new Float32Array(buf);
@@ -60,11 +60,11 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
   });
 
   it('packs a single opaque diffuse material at slot 0 with canonical layout', () => {
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(0.5, 0.6, 0.7),
+    const mat: PbrScalarSource = {
+      color: color(0.5, 0.6, 0.7),
       roughness: 0.4,
       metalness: 0.1,
-    });
+    };
     const buf = packDDGIMaterials([mat]);
     const F = f32(buf);
     const U = u32(buf);
@@ -96,12 +96,12 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
   });
 
   it('encodes isGlass=1 in u32 flags slot when transmission > 0', () => {
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(0.9, 0.95, 1),
+    const mat: PbrScalarSource = {
+      color: color(0.9, 0.95, 1),
       transmission: 0.8,
       ior: 1.52,
-      attenuationColor: new THREE.Color(0.8, 0.85, 0.9),
-    });
+      attenuationColor: color(0.8, 0.85, 0.9),
+    };
     const buf = packDDGIMaterials([mat]);
     const F = f32(buf);
     const U = u32(buf);
@@ -115,7 +115,7 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
   });
 
   it('flags slot is a TRUE u32, not the IEEE-754 bit pattern of float 1.0', () => {
-    const glass = new THREE.MeshPhysicalMaterial({ transmission: 1 });
+    const glass: PbrScalarSource = { transmission: 1 };
     const buf = packDDGIMaterials([glass]);
     const U = u32(buf);
     // Float 1.0 in IEEE-754 is 0x3F800000. We must write integer 1.
@@ -124,9 +124,9 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
   });
 
   it('packs multiple materials at consecutive slots without bleeding', () => {
-    const a = new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0), roughness: 0.2 });
-    const b = new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0), roughness: 0.5 });
-    const c = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0, 0, 1), transmission: 0.5 });
+    const a: PbrScalarSource = { color: color(1, 0, 0), roughness: 0.2 };
+    const b: PbrScalarSource = { color: color(0, 1, 0), roughness: 0.5 };
+    const c: PbrScalarSource = { color: color(0, 0, 1), transmission: 0.5 };
     const buf = packDDGIMaterials([a, b, c]);
     const F = f32(buf);
     const U = u32(buf);
@@ -154,9 +154,9 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
 
   it('drops materials beyond DDGI_MAX_MATERIALS without error', () => {
     const N = DDGI_MAX_MATERIALS + 5;
-    const mats = Array.from({ length: N }, (_, i) =>
-      new THREE.MeshStandardMaterial({ color: new THREE.Color(i / N, 0, 0) })
-    );
+    const mats = Array.from({ length: N }, (_, i): PbrScalarSource => ({
+      color: color(i / N, 0, 0),
+    }));
     const buf = packDDGIMaterials(mats);
     const F = f32(buf);
 
@@ -169,21 +169,21 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
   });
 
   it('golden hash — locks the byte output of a known-good fixture scene', () => {
-    const mats = [
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0.25, 0.5, 0.75),
+    const mats: PbrScalarSource[] = [
+      {
+        color: color(0.25, 0.5, 0.75),
         roughness: 0.4,
         metalness: 0.2,
-        emissive: new THREE.Color(0.1, 0.1, 0),
-      }),
-      new THREE.MeshPhysicalMaterial({
-        color: new THREE.Color(0.9, 0.95, 1),
+        emissive: color(0.1, 0.1, 0),
+      },
+      {
+        color: color(0.9, 0.95, 1),
         roughness: 0.05,
         transmission: 1,
         ior: 1.52,
-        attenuationColor: new THREE.Color(0.85, 0.9, 1),
-      }),
-      new THREE.MeshStandardMaterial({}),  // all defaults
+        attenuationColor: color(0.85, 0.9, 1),
+      },
+      {},  // all defaults
     ];
     const buf = packDDGIMaterials(mats);
 
@@ -193,7 +193,7 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
     // Slot 0: baseColor + roughness at slot 3 (was _pad0).
     expect([F[0], F[1], F[2]]).toEqual([0.25, 0.5, 0.75]);
     expect(F[3]).toBeCloseTo(0.4);
-    // Slot 0: emissive (note: extractThreePbrScalars does NOT pre-multiply
+    // Slot 0: emissive (note: extractPbrScalars does NOT pre-multiply
     // by emissiveIntensity for DDGI; the DDGI adapter doesn't either).
     expect([F[4], F[5], F[6]]).toEqual([
       0.10000000149011612, 0.10000000149011612, 0,
@@ -209,9 +209,9 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
     expect(F[ENTRY + 12]).toBeCloseTo(0.85);   // attenuationColor.r
     expect(U[ENTRY + 15]).toBe(1);
 
-    // Default-everything mat at slot 2 — THREE constructor defaults dominate.
+    // Default-everything mat at slot 2.
     expect(F[2 * ENTRY + 0]).toBe(1);          // color default = white
-    expect(F[2 * ENTRY + 3]).toBe(1);          // THREE roughness default = 1 at slot 3
+    expect(F[2 * ENTRY + 3]).toBeCloseTo(0.5); // structural roughness default at slot 3
     expect(F[2 * ENTRY + 8]).toBeCloseTo(1.5); // ior fallback from helper at slot 8
   });
 });

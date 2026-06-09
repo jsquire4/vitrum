@@ -1,6 +1,6 @@
 /**
  * C2 — classify whether a scene structurally needs TLAS (multi-mesh / instancing).
- * Used by createEngine() backend selection and pt-webgl setScene warnings.
+ * Used by createEngine() backend selection and pt-webgl2 setScene warnings.
  */
 
 import type { ScenePrimitive } from './primitives.js';
@@ -41,7 +41,7 @@ export function auditSceneNeedsTlas(scene: {
   const recommendation = needsTlas ? 'prefer-tlas-backend' : 'merged-bvh-ok';
   const detail = needsTlas
     ? `Scene has ${meshLike} mesh-like primitive(s) and ${instances} TLAS instance(s); ` +
-      'prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl.'
+      'prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.'
     : 'Single merged BVH is sufficient for this scene layout.';
   return {
     needsTlas,

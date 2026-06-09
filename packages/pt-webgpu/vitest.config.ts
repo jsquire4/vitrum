@@ -1,8 +1,6 @@
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
-/** Vitest resolves the fork via Vite; point at the ESM entry explicitly. */
-const pathtracerRoot = path.resolve(__dirname, '../three-gpu-pathtracer');
 const coreRoot = path.resolve(__dirname, '../core');
 const sharedBvhRoot = path.resolve(__dirname, '../shared-bvh');
 const sharedDenoisersRoot = path.resolve(__dirname, '../shared-denoisers');
@@ -22,7 +20,6 @@ export default defineConfig({
       '@vitrum/shared-bvh': path.join(sharedBvhRoot, 'src/index.ts'),
       '@vitrum/shared-denoisers': path.join(sharedDenoisersRoot, 'src/index.ts'),
       '@vitrum/shared-samplers': path.join(sharedSamplersRoot, 'src/index.ts'),
-      'three-gpu-pathtracer': path.join(pathtracerRoot, 'src/index.js'),
     },
   },
 });

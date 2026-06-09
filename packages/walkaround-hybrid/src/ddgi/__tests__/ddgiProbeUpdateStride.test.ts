@@ -14,21 +14,36 @@
  * marked active per frame (`ceil(probeCount / stride)` for the first stratum).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as THREE from 'three';
+import type { Scene } from '@vitrum/core';
 import { DDGI } from '../DDGI.js';
 import { ProbeUpdatePass } from '../probeUpdatePass.js';
 
-/** A minimal real THREE scene with one box so SceneBvh.update() yields a
- *  non-degenerate boundingBox and ProbeGrid.computeFromBounds() allocates the
+/** A minimal core scene with one cube-ish mesh so SceneBvh.updateFromCore()
+ *  yields a non-degenerate boundingBox and ProbeGrid.computeFromBounds() allocates the
  *  3×3×3-minimum probe grid (27 probes) — enough to observe stratum sizes. */
-function makeBoxScene(): THREE.Scene {
-  const scene = new THREE.Scene();
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(2, 2, 2),
-    new THREE.MeshStandardMaterial(),
-  );
-  scene.add(mesh);
-  return scene;
+function makeBoxScene(): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'box',
+      positions: new Float32Array([
+        -1, -1, -1,
+         1, -1, -1,
+        -1,  1, -1,
+         1,  1,  1,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
 }
 
 /** The active-probe stratum the round-robin builds for (offset, stride):
@@ -65,7 +80,7 @@ describe('H1 — probe-update divisor drives the round-robin stride', () => {
     const scene = makeBoxScene();
     // A fake device object is enough — init() is stubbed, so the device is
     // never touched; DDGI only needs a truthy `device` to build its adapter.
-    await ddgi.updateFrame({ scene, device: {} as unknown as GPUDevice, enabled: true });
+    await ddgi.updateFrame({ coreScene: scene, device: {} as unknown as GPUDevice, enabled: true });
     const probeCount = ddgi.probeCount;
     ddgi.dispose();
     return { calls, probeCount };

@@ -19,7 +19,7 @@ import type { WgpuAdapterKind } from './wgpuSupport.js';
 export type RealtimeTier = 'ultra' | 'high' | 'medium' | 'low' | 'unavailable';
 
 /** Recommended converged-/hero-render backend for an adapter. */
-export type HeroBackendRec = 'pt-webgpu-full' | 'pt-webgpu-lite' | 'pt-webgl' | 'none';
+export type HeroBackendRec = 'pt-webgpu-full' | 'pt-webgpu-lite' | 'pt-webgl2' | 'none';
 
 /** pt-webgpu trace-tier recommendation derived from adapter limits. */
 export type PtWebgpuTierRec = 'full' | 'lite' | 'none';

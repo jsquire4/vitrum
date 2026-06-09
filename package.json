@@ -6,7 +6,6 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "examples/*",
     "tools/*"
   ],
   "scripts": {
@@ -23,42 +22,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "clean": "npm run clean --workspaces --if-present",
-    "fork-shader-smoke": "node ./scripts/run-fork-shader-smoke.mjs",
-    "fork-shader-smoke:strict": "node ./scripts/run-fork-shader-smoke.mjs --strict",
-    "shader-compile-ci": "npm run shader-compile-ci --workspace @vitrum/shader-compile-ci",
     "benchmark:gap-closure": "npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner",
-    "benchmark:qualitymodes": "npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner",
-    "benchmark:lifecycle-soak": "npm run benchmark:lifecycle-soak --workspace @vitrum/benchmark-runner",
-    "baseline:wave0": "npm run benchmark:wave0-baseline --workspace @vitrum/benchmark-runner",
-    "hardening:wave4": "npm run benchmark:wave4-hardening --workspace @vitrum/benchmark-runner",
-    "benchmark:pr-hybrid": "npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner",
-    "benchmark:seed-wg0": "npm run benchmark:seed-wg0 --workspace @vitrum/benchmark-runner",
-    "benchmark:pr-mechanical": "npm run benchmark:pr-mechanical --workspace @vitrum/benchmark-runner",
-    "benchmark:hybrid-lifecycle-soak": "npm run benchmark:hybrid-lifecycle-soak --workspace @vitrum/benchmark-runner",
-    "benchmark:pt-webgpu-adapter-probe": "npm run benchmark:pt-webgpu-adapter-probe --workspace @vitrum/benchmark-runner",
-    "benchmark:pt-webgl-oracle": "npm run benchmark:pt-webgl-oracle --workspace @vitrum/benchmark-runner",
-    "benchmark:gpu-windows": "node tools/benchmark-runner/run-gpu-host-windows.mjs",
-    "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke:strict && npm run shader-compile-ci && npm run benchmark:rc-acceptance-mechanical && npm run benchmark:bdpt-layered-mechanical",
     "benchmark:gap-closure-mechanical": "npm run benchmark:gap-closure-mechanical --workspace @vitrum/benchmark-runner",
-    "benchmark:gap-closure-gpu": "npm run benchmark:gap-closure-gpu --workspace @vitrum/benchmark-runner",
-    "benchmark:pr-hybrid-refs": "npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner",
-    "benchmark:pr-hybrid-gpu": "npm run benchmark:pr-hybrid-gpu --workspace @vitrum/benchmark-runner",
-    "benchmark:pr-hybrid-gpu-windows": "node tools/benchmark-runner/run-gpu-host-windows.mjs run-pr-hybrid-gpu-full.mjs VITRUM_PR_REQUIRE_GPU=1",
-    "benchmark:rc-acceptance": "npm run benchmark:rc-acceptance --workspace @vitrum/benchmark-runner",
-    "benchmark:rc-acceptance-full": "npm run benchmark:rc-acceptance-full --workspace @vitrum/benchmark-runner",
-    "benchmark:rc-acceptance-gpu": "node tools/benchmark-runner/run-rc-acceptance-wsl-vite-win-chrome.mjs",
-    "benchmark:rc-acceptance-windows": "node tools/benchmark-runner/run-rc-acceptance-wsl-vite-win-chrome.mjs",
+    "verify:mechanical": "npm run typecheck && npm test && npm run benchmark:rc-acceptance-mechanical",
     "benchmark:rc-acceptance-mechanical": "npm run benchmark:rc-acceptance-mechanical --workspace @vitrum/benchmark-runner",
-    "benchmark:bdpt-layered-refs": "npm run benchmark:bdpt-layered-refs --workspace @vitrum/benchmark-runner",
-    "benchmark:bdpt-layered-refs-gpu": "node tools/benchmark-runner/run-bdpt-layered-refs-win-chrome.mjs",
-    "benchmark:bdpt-layered-refs-gpu-wsl": "node tools/benchmark-runner/run-bdpt-layered-refs-wsl-vite-win-chrome.mjs",
-    "benchmark:bdpt-layered-refs-gpu-wsl-full": "VITRUM_BDPT_CPU_FILL=0 VITRUM_BDPT_QUICK=0 node tools/benchmark-runner/run-bdpt-layered-refs-wsl-vite-win-chrome.mjs",
-    "benchmark:bdpt-layered-refs-gpu-win": "node tools/benchmark-runner/run-bdpt-layered-refs-win-chrome.mjs",
-    "benchmark:bdpt-layered-mechanical": "npm run benchmark:bdpt-layered-mechanical --workspace @vitrum/benchmark-runner",
-    "capture:refs": "./scripts/capture-all-refs.sh",
-    "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",
-    "capture:refs:hero": "./scripts/capture-all-refs.sh --hero",
-    "capture:promote-baseline": "./scripts/promote-ref-baseline.sh",
     "capture:diff": "node ./tools/reference-renders/diff-baselines.mjs",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present",
     "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs"
@@ -68,6 +35,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@types/node": "^25.9.2",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
     "@webgpu/types": "^0.1.40",
@@ -86,8 +54,5 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git"
-  },
-  "overrides": {
-    "three": "0.171.0"
   }
 }

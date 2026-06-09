@@ -68,20 +68,11 @@ verification (used by `examples/neural-denoiser/`).
 URL toggle (`?denoiser=atrous-variance|svgf-real|neural`); `npm run dev
 --workspace @vitrum-examples/neural-denoiser`.
 
-## Peer dependencies
+## Host Contract
 
-`three >=0.167.0 <0.190` is an optional peer. The package root is safe to import
-for Three-free constants, types, GI-state helpers, and neural-weight utilities;
-calling `createWalkaroundEngine_Hybrid()` dynamically loads the concrete engine,
-which still requires Three for its legacy raw-`threeScene` fallback. The
-`@vitrum/walkaround-hybrid/three` subpath contains the explicit TSL/Node-material
-bridge exports (`applyDDGIShading`, `upgradeToNodeMaterial`) for hosts that
-already use `three/webgpu` and `three/tsl`.
-
-`@vitrum/three-bindings` is not a production dependency of this package; it is
-kept as a dev/test dependency for core-vs-Three equivalence tests and host
-adapter checks. `three` and `@types/three` remain in devDependencies for tests
-and typecheck.
+The package root accepts `@vitrum/core` scene data and has no Three.js peer or
+dev dependency. Hosts that use another scene graph should convert it to the core
+`Scene` contract before constructing `HybridEngine`.
 
 ## Architecture
 

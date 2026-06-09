@@ -11,8 +11,8 @@
  * Layout: `maxLightBounces` columns × 3 rows of vec4f, flattened row-minor as
  * `idx = col * 3 + row` (matches WGSL `bdptLightPathIndex`). Per light-vertex:
  * row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd, row 2 =
- * throughput + pdfRev. Layout matches fork BDPT / {@link BdptLightPathBuffer}
- * in `@vitrum/pt-webgl`.
+ * throughput + pdfRev. Layout matches the native WebGL2 BDPT light-path
+ * convention used for cross-backend parity.
  */
 
 export interface BdptLightPathBufferWebGPUOptions {

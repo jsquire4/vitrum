@@ -1,6 +1,6 @@
 # vitrum
 
-A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser. THREE.js-friendly, host-agnostic, drop-in.
+A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser. Core-scene, host-agnostic, drop-in.
 
 > **Status**: release-candidate track, private monorepo. Not yet on npm. Public release follows final packaging, ecosystem docs, and cross-host verification.
 
@@ -9,9 +9,9 @@ A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser.
 vitrum gives you two render modes under one API:
 
 - **Real-time GI** — WebGPU layered DDGI + ReSTIR DI + per-channel SVGF + GTAO. Targets ~60 fps for sub-500k-triangle scenes on consumer dGPUs.
-- **Converged path tracing** — WebGL2 wrapping a forked `three-gpu-pathtracer`. Hero-quality renders that converge over seconds.
+- **Converged path tracing** — native WebGL2 / WebGPU path tracing backends. Hero-quality renders that converge over seconds.
 
-You don't pick the backend; vitrum picks for you based on your hardware and scene complexity. You hand it a `THREE.Scene`, get back an `Engine` that you call `renderFrame()` on each frame.
+You don't pick the backend; vitrum picks for you based on your hardware and scene complexity. You hand it a `@vitrum/core` `Scene`, get back an `Engine`, and call `renderFrame()` on each frame.
 
 ## 5-line hello world
 
@@ -42,7 +42,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 
 ## Capability matrix
 
-| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl (WebGL2)          |
+| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl2 (WebGL2)         |
 | ----------------------------- | --------------------------- | -------------------------- |
 | **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
 | **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
@@ -57,7 +57,7 @@ See [`plan/archive/animation-support-status.md`](./plan/archive/animation-suppor
 
 ## When to use which engine
 
-`prefer: 'auto'` (default) gives you walkaround-hybrid on WebGPU + scenes < 500k tris, else pt-webgl.
+`prefer: 'auto'` (default) gives you walkaround-hybrid on WebGPU + scenes < 500k tris, else a native path-tracing backend.
 
 Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-camera demos. Set `prefer: 'quality'` for hero renders, product visualization, anything you'd want to save as a 4K PNG.
 
@@ -67,10 +67,9 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 | ----------------------------- | ------------------------------------------------------ |
 | `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath) |
 | `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats` types |
-| `@vitrum/three-bindings`      | `sceneFromThreeJS`, `loadGltfScene`                    |
 | `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
 
-Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
+Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
 
 ## Capability Contract Notes
 
@@ -87,9 +86,9 @@ This removes prior silent divergence between advertised and actual backend behav
 
 For local technical-maturity verification in this monorepo:
 
-- `npm run baseline:wave0` — baseline gate bundle (mechanical + benchmark smoke + optional quick refs)
-- `npm run hardening:wave4` — reliability gate bundle (mechanical, strict lifecycle soak, optional quality smoke)
-- `npm run verify:mechanical` — workspace typecheck + tests + shader smoke/compile checks
+- `npm run typecheck` — workspace TypeScript gate
+- `npm test` — workspace Vitest gate
+- `npm run verify:mechanical` — typecheck + tests + RC mechanical benchmark gate
 
 ## Migration Notes (2026-05 Coherence Sweep)
 
@@ -106,16 +105,10 @@ This is the design choice that makes the library survive Canvas remount, route c
 
 ## Examples
 
-**Start here** — the facade examples use the one-call `createEngine` / `attachVitrum` path from the Quick start above:
-
-- [`examples/hero-viewer`](./examples/hero-viewer) — drag-drop glTF viewer (`createEngine` facade) — **the minimal path; start here**
-- [`examples/hero-lighting-designer`](./examples/hero-lighting-designer) — interactive lights + frame-time HUD
-- [`examples/hero-product-viz`](./examples/hero-product-viz) — progressive PT product render with material editor
-
-Lower-level (direct backend construction — for reference and regression testing, **not** the minimal path):
-
-- [`examples/cornell-box`](./examples/cornell-box) — `@vitrum/pt-webgl` direct-construction benchmark + regression-test harness (the gap-closure capture scenes live here)
-- [`examples/two-engines-one-scene`](./examples/two-engines-one-scene) — both backends driving one scene; parity / benchmark harness
+The former Three.js examples were removed with the THREE cutover. Current smoke
+and acceptance fixtures live under `tools/reference-renders/` and
+`tools/benchmark-runner/`; new examples should be built against the core
+`Scene` contract.
 
 ## Architecture
 
@@ -123,13 +116,12 @@ Lower-level (direct backend construction — for reference and regression testin
 @vitrum/engine             Drop-in facade — createEngine, attachVitrum, VitrumCanvas
   ↓
 @vitrum/core               Engine contract; types only, no GPU code
-@vitrum/three-bindings     THREE.Scene → vitrum Scene + glTF loader
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
 @vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + GPU dispatch + receiver)
-@vitrum/pt-webgl           WebGL2 PT (wraps three-gpu-pathtracer fork)
+@vitrum/pt-webgl2          Native WebGL2 PT
 @vitrum/pt-webgpu          WebGPU-native PT (experimental backend)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
-@vitrum/shared-samplers    Hammersley, light tree, hero-wavelength MIS, spectral (Sobol lives in the three-gpu-pathtracer fork)
+@vitrum/shared-samplers    Hammersley, light tree, hero-wavelength MIS, spectral helpers
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
 @vitrum/scene-lighting     Host-side lighting state (time-of-day, sun, sky)
 @vitrum/stained-glass-extensions  Stained-glass host contract extensions
@@ -142,17 +134,16 @@ Lower-level (direct backend construction — for reference and regression testin
 
 | Scene                       | Engine            | Resolution | Convergence target | Time / Frame   |
 | --------------------------- | ----------------- | ---------- | ------------------ | -------------- |
-| Cornell box (~30 tris)      | pt-webgl          | 512×512    | 64 SPP             | ~17 s total    |
-| Cornell glass               | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
-| Cornell spectral (hero MIS) | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
+| Cornell box (~30 tris)      | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
+| Cornell glass               | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
+| Cornell spectral (hero MIS) | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
 | Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | 14–22 ms / frame |
 
-PR-6 regression benches (JSON under `tools/benchmark-runner/results/`, needs hardware WebGPU):
+Current mechanical benchmark gates:
 
 ```bash
-npm run benchmark:pr-mechanical          # CPU-only scene budgets
-VITRUM_PR_START_SERVER=1 npm run benchmark:pr-hybrid
-VITRUM_HYBRID_SOAK_START_SERVER=1 npm run benchmark:hybrid-lifecycle-soak
+npm run benchmark:gap-closure-mechanical
+npm run benchmark:rc-acceptance-mechanical
 ```
 
 Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid pipeline is initialized (~8 GB iGPU tier documented in PR-6 plan).
@@ -160,7 +151,7 @@ Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid
 ## What's novel here
 
 - **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))
-- **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; lives in the `three-gpu-pathtracer` fork.
+- **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; ported into the native path-tracing stack.
 - **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics + triangle meshes in the same path-tracing kernel. Production renderers usually pick one or the other.
 - **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path.
 
@@ -168,7 +159,6 @@ Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid
 
 See [CREDITS.md](./CREDITS.md) for the full attribution list (~30 papers + libraries). Headline dependencies:
 
-- **three.js** (Mr.doob et al., MIT)
 - **three-gpu-pathtracer** (Garrett Johnson, MIT)
 - **three-mesh-bvh** (Garrett Johnson, MIT)
 - **DDGI** (Majercik et al., 2019)

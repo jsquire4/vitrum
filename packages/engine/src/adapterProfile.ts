@@ -147,7 +147,7 @@ export async function probeAdapterProfile(
       adapterKind: facts.adapterKind,
       hasWebGL2,
       recommendedRealtimeTier: 'unavailable',
-      recommendedHeroBackend: hasWebGL2 ? 'pt-webgl' : 'none',
+      recommendedHeroBackend: hasWebGL2 ? 'pt-webgl2' : 'none',
       limits: {},
     });
   }
@@ -213,7 +213,7 @@ function recommendHeroBackend(
 ): HeroBackendRec {
   if (ptWebgpuTier === 'full') return 'pt-webgpu-full';
   if (ptWebgpuTier === 'lite') return 'pt-webgpu-lite';
-  if (hasWebGL2) return 'pt-webgl';
+  if (hasWebGL2) return 'pt-webgl2';
   return 'none';
 }
 

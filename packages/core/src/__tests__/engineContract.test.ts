@@ -11,7 +11,7 @@ import { asMat4, isMat4 } from '../scene/math.js';
 describe('backend promise ledger', () => {
   it('contains all expected backend IDs', () => {
     expect(Object.keys(BACKEND_PROMISE_LEDGER).sort()).toEqual([
-      'pt-webgl',
+      'pt-webgl2',
       'pt-webgpu',
       'walkaround-hybrid',
     ]);
@@ -42,7 +42,7 @@ describe('backend promise ledger', () => {
 
   it('pins the per-backend add/remove-primitive truth table', () => {
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportsAddRemovePrimitive).toBe(true);
-    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportsAddRemovePrimitive).toBe(true);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportsAddRemovePrimitive).toBe(true);
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportsAddRemovePrimitive).toBe(true);
   });
 
@@ -108,7 +108,7 @@ describe('backend promise ledger', () => {
   });
 
   it('pins PT backend resize and lighting as per-frame/offscreen concerns, not optional methods', () => {
-    for (const backendId of ['pt-webgl', 'pt-webgpu'] as const) {
+    for (const backendId of ['pt-webgl2', 'pt-webgpu'] as const) {
       const rec = BACKEND_PROMISE_LEDGER[backendId];
 
       expect(rec.presentationMode).toBe('offscreen-texture');
@@ -132,12 +132,12 @@ describe('backend promise ledger', () => {
     });
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
 
-    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails.environments).toEqual({
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.environments).toEqual({
       none: 'native',
       hdri: 'native',
       'procedural-sky': 'unsupported',
     });
-    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
 
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.environments).toEqual({
       none: 'native',

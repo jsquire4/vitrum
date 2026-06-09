@@ -37,7 +37,7 @@ export interface FrameQualitySettings {
    *  Default: engine-specific (typically the cap). */
   readonly bounces?: number;
 
-  /** Glossy filtering strength (three-gpu-pathtracer fork concept). 0 = off
+  /** Glossy filtering strength for converged path tracers. 0 = off
    *  (physically correct), 1 = aggressive firefly suppression. Backends that
    *  don't support glossy filtering ignore this. */
   readonly filteredGlossyFactor?: number;
@@ -79,7 +79,7 @@ export interface FrameInput {
    * Per-frame viewport (physical pixel dimensions + DPR).
    *
    * **Engine-honour contract (A4):**
-   * - Generic PT engines (e.g. `@vitrum/pt-webgl`) honour `viewport.width`
+   * - Generic PT engines (e.g. `@vitrum/pt-webgl2`) honour `viewport.width`
    *   and `viewport.height` every frame; passing different values triggers
    *   an internal render-target resize transparently.
    * - **`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT honour

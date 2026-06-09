@@ -5,7 +5,7 @@ WebGPU-native experimental path tracing backend for `@vitrum/core`.
 ## Experimental boundary
 
 This package is **experimental and internal-focused**. `@vitrum/pt-webgpu` is
-a peer WebGPU-native path tracing backend that runs alongside `@vitrum/pt-webgl`,
+a peer WebGPU-native path tracing backend that runs alongside `@vitrum/pt-webgl2`,
 serving the same contract surface at different quality/capability tiers. Until
 productionisation is complete:
 
@@ -19,9 +19,8 @@ productionisation is complete:
   deterministic reference (analytic / forward-traced) with a committed, sha-pinned
   baseline PNG (hero-λ spectral, spectral Beer–Lambert, thin-film TMM, Cauchy dispersion,
   layered front/back, SSS, multi-emitter, material-fields, MNEE caustic, BDPT). What does
-  **not** yet exist is an end-to-end *cross-backend parity* capture against `@vitrum/pt-webgl`
-  (its fork rows stay `experimental` pending a WebGL2 capture path — lavapipe is a WebGPU
-  device, so it cannot validate the GL fork). So renders are validated correct per-feature,
+  **not** yet exist is an end-to-end *cross-backend parity* capture against `@vitrum/pt-webgl2`
+  on the full scenario matrix. So renders are validated correct per-feature,
   but the two backends are not yet pixel-diffed against each other.
 - **`createEngine({ prefer: 'auto' })`** selects pt-webgpu when WebGPU is
   available and the scene has **≥ 500k triangles**; use `prefer:
@@ -106,9 +105,9 @@ adapters. WG-0 baseline capture (`npm run benchmark:seed-wg0`) runs on lite tier
 
 Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` (lite).
 
-## Parity with `@vitrum/pt-webgl` (contract surface)
+## Parity with `@vitrum/pt-webgl2` (contract surface)
 
-Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
+Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 
 - Progressive path tracing, BVH (+ TLAS on full tier), multi-bounce clamp
 - Packed materials (layers, thin-film stack, spectral grid, dispersion Abbe)

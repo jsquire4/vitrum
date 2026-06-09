@@ -1,64 +1,37 @@
 /**
- * worldSpaceMerge.ts — THREE-free world-space merged tri-stream / BVH builder
+ * worldSpaceMerge.ts — world-space merged tri-stream / BVH builder
  * from a `@vitrum/core` `Scene`.
  *
- * The keystone of the geometry-ingestion THREE-decouple (increment 3 of
- * `plan/three-decouple-analysis-2026-06-03.md` §3/§4). Today the ONLY
- * world-space-merge ingestion path is `buildSceneBVH` (`legacy/bvhCommon.ts`,
- * THREE-only): it bakes every mesh's `matrixWorld` into one merged vertex stream via
- * three-mesh-bvh's `StaticGeometryGenerator`, then builds one unified SAH BVH
- * over it. That merged build feeds three consumers that need WORLD-space
- * geometry (not the local-space BLAS + separate TLAS matrices that
- * `packSceneFromCore` emits):
+ * This is the canonical ingestion path for consumers that need WORLD-space
+ * geometry instead of the local-space BLAS + separate TLAS matrices emitted by
+ * `packSceneFromCore`:
  *
  *   1. the ReSTIR emitter list (triangle area / world face-normal / centroid /
  *      AABB — `walkaround-hybrid/restir/bvhCore.ts`),
- *   2. the DDGI merged BVH (`SceneBvh.update` → `buildSceneBVH`), and
- *   3. the RC merged BVH (`walkaround-hybrid/rc/bvhCore.ts` → `buildSceneBVH`).
+ *   2. the DDGI merged BVH, and
+ *   3. the RC merged BVH.
  *
- * `mergeWorldSpaceFromCore` is the THREE-free analogue: it iterates
- * `scene.primitives`, transforms each (instance's) local `positions`/`normals`
- * into world space by the primitive's core `transform` (the same Mat4 the GPU
- * buffer bakes in — `three-bindings/mesh.ts:convertMesh` writes
- * `mesh.matrixWorld.elements` straight into `MeshPrimitive.transform`),
- * concatenates into one merged world-space stream, and builds one merged BVH
- * via the THREE-free `buildArrayBvh`.
+ * `mergeWorldSpaceFromCore` iterates `scene.primitives`, transforms each
+ * primitive's local `positions`/`normals` into world space by the core
+ * `transform`, concatenates the streams, and builds one merged BVH via
+ * `buildArrayBvh`.
  *
  * ── Parity with `buildSceneBVH` (the migration gate) ──────────────────────────
  *
- * The MERGED VERTEX STREAM (positions + normals, pre-BVH-reorder) is produced
- * to be FLOAT-IDENTICAL to `StaticGeometryGenerator`'s merge:
- *   • positions  — `worldPos = matrixWorld · localPos`  (raw 4×4, = THREE's
- *     `Vector3.applyMatrix4`).
- *   • normals    — `worldN = normalize( normalMatrix · localN )` where
- *     `normalMatrix` is the inverse-transpose of the upper-left 3×3 of
- *     `matrixWorld` (= THREE's `Matrix3.getNormalMatrix` + `applyNormalMatrix`,
- *     which RE-NORMALISES). The arithmetic below mirrors THREE's exact cofactor
- *     `invert()` + `transpose()` expressions so the f32 round-off matches.
- *   • winding    — when `det(matrixWorld) < 0`, SGG's `invertGeometry` swaps
- *     v0↔v2 of every triangle (so a mirrored transform keeps front-facing
- *     winding). Mirrored here on the per-primitive index triples.
- *   • order      — primitives are concatenated in `scene.primitives` order,
- *     which equals `buildSceneBVH`'s `traverseVisible` mesh order for a scene
- *     synthesised by `vitrumSceneToThree` (one top-level THREE.Mesh per
- *     primitive, emitted in primitive order).
- *
- * The BVH NODE BYTES and the BVH-REORDERED `indices` are NOT byte-identical to
- * `buildSceneBVH`: three-mesh-bvh's `MeshBVH` and `buildArrayBvh` are DIFFERENT
- * SAH builders (different bin count, leaf threshold, split policy, tie-breaks),
- * so they emit a different tree topology + triangle permutation over the SAME
- * triangle SET. This is the analysis's R1 risk, and it is fundamental — not a
- * bug in this builder. Consumers that key off the BVH tri permutation (the
- * emitter CDF, a per-tri `bvhIndex.w` lane) must therefore be driven from ONE
- * builder consistently within a track; this function does not promise a
- * matching permutation, only a matching tri SET + matching world geometry.
+ * The merged vertex stream (positions + normals, pre-BVH-reorder) is built from
+ * core transforms:
+ *   • positions  — `worldPos = transform · localPos` (raw 4×4).
+ *   • normals    — `worldN = normalize(normalMatrix · localN)` where
+ *     `normalMatrix` is the inverse-transpose of the upper-left 3×3.
+ *   • winding    — when `det(transform) < 0`, the builder swaps v0↔v2 of every
+ *     triangle so mirrored transforms keep front-facing winding.
+ *   • order      — primitives are concatenated in `scene.primitives` order.
  *
  * To make both the "stream parity" and the "set / AABB / ray-query equivalence"
  * checkable, the result carries the pre-BVH-reorder merged stream
  * ({@link WorldSpaceMergeResult.mergedIndices} / `mergedTriMaterialId`) ALONGSIDE
  * the post-build BVH-ordered `indices` / `triMaterialId`.
  *
- * @since increment 3 (THREE-decouple keystone, 2026-06-03).
  */
 
 import type { Mat4, MaterialSpec, Scene, ScenePrimitive, Vec3 } from '@vitrum/core';

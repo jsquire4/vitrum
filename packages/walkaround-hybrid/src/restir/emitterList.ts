@@ -24,7 +24,7 @@ import {
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
 import { classifyTriangleEmitterCore } from '@vitrum/shared-bvh';
-import { materialEmissiveLe, type LegacyThreeMaterialLike } from './packingHelpers.js';
+import { materialEmissiveLe, type PbrMaterialLike } from './packingHelpers.js';
 
 interface Vector3Like {
   readonly x: number;
@@ -60,7 +60,7 @@ const EMITTER_FLOATS = EMITTER_STRIDE / 4;
  * `intensity` is the configured primary-light irradiance.
  */
 function classifyTriangleEmitter(
-  mat: LegacyThreeMaterialLike,
+  mat: PbrMaterialLike,
   normal: { x: number; y: number; z: number },
   lightDir: Vector3Like,
   primaryIntensity: number,
@@ -187,18 +187,17 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
 
 /**
  * Build the ReSTIR-DI emitter list from a merged world-space triangle stream +
- * legacy Three-like materials. Thin wrapper over {@link buildEmitterListCore}
+ * structural PBR-like materials. Thin wrapper over {@link buildEmitterListCore}
  * that supplies the material classifier ({@link classifyTriangleEmitter}).
- * Used when the geometry is ingested from a THREE scene graph (the historical
- * path), but kept structural so core modules can import this file without
- * pulling the `three` runtime.
+ * Kept structural so core modules can import this file without pulling a host
+ * scene-graph runtime.
  */
 export function buildEmitterList(
   indices: Uint32Array,
   positions: Float32Array,    // stride-4: read .xyz only
   normals: Float32Array,      // stride-4: read .xyz only
   triMatIdMap: Uint32Array,
-  materials: LegacyThreeMaterialLike[],
+  materials: PbrMaterialLike[],
   options: EmitterListOptions,
 ): {
   emitterFloats: Float32Array;

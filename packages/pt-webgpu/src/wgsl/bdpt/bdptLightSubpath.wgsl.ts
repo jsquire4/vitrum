@@ -1,7 +1,7 @@
 /**
  * BDPT light-subpath compute — bounce 0 (emitter) + extension bounces k>0.
- * Bounce 0 uses power-weighted discrete emitter pick (fork `randomLightSample` parity).
- * @see packages/three-gpu-pathtracer/.../bdpt_light_subpath.glsl.js
+ * Bounce 0 uses the power-weighted discrete emitter pick used by the native
+ * WebGL2 parity path.
  */
 export const PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL = /* wgsl */ `
 fn bdptLightLuminance(c: vec3f) -> f32 {

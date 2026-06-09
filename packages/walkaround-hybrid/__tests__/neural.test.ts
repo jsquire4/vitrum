@@ -686,7 +686,6 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
       primaryLightIntensity:1,
       skyTint:              [0.2, 0.4, 0.8],
       skyIrradiance:        0.5,
-      threeScene:           {} as unknown as import('three').Scene,
       denoiser:             'neural',
       // neuralWeights intentionally omitted
     })).toThrow(/neural.*weights|neuralWeights.*required/i);

@@ -2,13 +2,12 @@
  * coreEmittersToDDGILights — radiometrically-faithful `@vitrum/core`
  * `SceneEmitter` → `DDGILight` projection for the DDGI probe-update pass.
  *
- * Background — the lossy round-trip this replaces (Theme T16):
- * -----------------------------------------------------------
- * Before this mapper, `HybridEngineLifecycle` fed DDGI by walking the
- * THREE root produced by `vitrumSceneToThree` and RE-DERIVING each light's
- * intensity from the THREE light object
- * (`collectDDGILightsFromThreeRoot`). That round-trip was lossy on two
- * radiometric axes for rect-area emitters:
+ * Background — the lossy host-adapter round-trip this replaces (Theme T16):
+ * -----------------------------------------------------------------------
+ * Before this mapper, `HybridEngineLifecycle` fed DDGI by walking a
+ * host-renderer light graph and re-deriving each light's intensity from that
+ * renderer object. That round-trip was lossy on two radiometric axes for
+ * rect-area emitters:
  *
  *   1. Chroma dropped. `collectDDGILightsFromRectAreaLights` built a
  *      `DDGILight` with NO `color`, so the GPU packer defaulted the
@@ -24,15 +23,14 @@
  * It also discarded the emitter id (DDGILight carried no id), so host-side
  * code could not correlate a DDGI light back to its core emitter.
  *
- * This mapper consumes the core `SceneEmitter` union DIRECTLY — no THREE
+ * This mapper consumes the core `SceneEmitter` union DIRECTLY — no host-renderer
  * objects, no `userData.cellPower` round-trip — and produces the same
  * fixture-light projection the DDGI probe pass already consumes
  * (`kind: 'fixture'` point-light approximations), but with:
  *
  *   - chroma preserved (`color = emitter.color`);
  *   - the true cross-product area `4·|uAxis × vAxis|` for rect emitters
- *     (`π·r²` for disc emitters, matching `vitrumSceneToThree`'s
- *     area-preserving disc→rect conversion);
+ *     (`π·r²` for disc emitters);
  *   - the source emitter id preserved on `DDGILight.id`.
  *
  * Radiometric convention: the DDGI probe shader (`probeUpdateRays.wgsl`
@@ -54,7 +52,7 @@
  *     longer the packer's hardcoded `(1,0.95,0.85)`.
  *
  *     Single-count: a `sun` DDGILight carries `intensity = emitter.intensity`
- *     directly. The host (`HybridEngineLifecycle` / `_syncDdgiLightsFromThreeRoot`)
+ *     directly. The host (`HybridEngineLifecycle`)
  *     sets `ProbeUpdatePass.setSunIntensityMultiplier(1)` whenever a scene
  *     directional is present, so the packed sun intensity is exactly
  *     `emitter.intensity` (NOT `emitter.intensity · primaryLightIntensity` —
@@ -75,8 +73,8 @@
  *     spot GI contribution to the cone (KHR_lights_punctual convention).
  *     Point fixtures have a zero axis, so they stay omnidirectional.
  *   - mesh-area  → EXCLUDED. Folded into the referenced mesh's emissive
- *     material by `vitrumSceneToThree`; it reaches DDGI as emissive
- *     geometry probe rays hit, not as an analytic light.
+ *     material; it reaches DDGI as emissive geometry probe rays hit, not as an
+ *     analytic light.
  */
 
 import type { Scene, SceneEmitter, Vec3 } from '@vitrum/core';
@@ -85,10 +83,9 @@ import type { DDGILight } from './ddgi/types.js';
 /** True emissive area of a rect-area emitter from its two HALF-axis vectors:
  *  `4·|uAxis × vAxis|`. (`uAxis`/`vAxis` are half-width/half-height, so the
  *  full rectangle is `2·uAxis` by `2·vAxis`; its area is the magnitude of
- *  `(2u) × (2v) = 4·(u × v)`.) This is the same metric `vitrumSceneToThree`'s
- *  `buildRectAreaLight` uses for its `cellPower` helper — the lossy THREE
- *  walk instead used `width·height = 4·|u|·|v|`, which under-/over-states the
- *  area whenever the half-axes are not orthogonal. */
+ *  `(2u) × (2v) = 4·(u × v)`.) The lossy host-renderer walk instead used
+ *  `width·height = 4·|u|·|v|`, which under-/over-states the area whenever the
+ *  half-axes are not orthogonal. */
 function rectAreaFromHalfAxes(uAxis: Vec3, vAxis: Vec3): number {
   // cross = uAxis × vAxis
   const cx = uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1];
@@ -168,8 +165,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
       };
     }
     case 'disc-area': {
-      // Area-preserving footprint: a disc of radius r has area π·r², matching
-      // vitrumSceneToThree's disc→rect conversion (√π·r/2 half-spans → π·r²).
+      // Area-preserving footprint: a disc of radius r has area π·r².
       const area = Math.PI * e.radius * e.radius;
       if (area < 1e-12) return null;
       return {
@@ -215,8 +211,8 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
     }
     case 'mesh-area':
       // See module header: mesh-area is folded into the referenced mesh's
-      // emissive material by vitrumSceneToThree and reaches DDGI as emissive
-      // geometry probe rays hit, not as an analytic light.
+      // emissive material and reaches DDGI as emissive geometry probe rays hit,
+      // not as an analytic light.
       return null;
     default: {
       // Exhaustiveness guard — a new emitter kind added to the core union
@@ -232,8 +228,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
  * Map a core `Scene`'s emitter list directly to the DDGILight projection
  * consumed by the DDGI probe-update pass — preserving chroma, using the true
  * emissive area for area emitters, and carrying the source emitter id. This
- * is the authoritative, non-lossy replacement for the THREE-round-trip
- * `collectDDGILightsFromThreeRoot` whenever a core scene is available.
+ * is the authoritative, non-lossy projection from core scene emitters.
  */
 export function coreEmittersToDDGILights(scene: Scene): DDGILight[] {
   const out: DDGILight[] = [];
@@ -265,7 +260,7 @@ export function sceneHasDirectionalEmitter(scene: Scene): boolean {
  *
  * Centralising this keeps the "pick one path" single-count decision in one
  * place rather than duplicated across the init coordinator and the
- * incremental `_syncDdgiLightsFromThreeRoot` path.
+ * incremental DDGI light-sync path.
  */
 export function directionalSunMultiplier(
   scene: Scene | null,

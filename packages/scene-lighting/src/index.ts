@@ -2,12 +2,11 @@
  * @vitrum/scene-lighting — host-side lighting-state primitives shared across
  * vitrum render backends.
  *
- * The four modules below were previously colocated inside `@vitrum/pt-webgl/src/`
- * and are re-exported from there for backwards compatibility. They are
- * backend-agnostic: pure TypeScript computing scene-lighting values that each
- * renderer then uploads to its own UBO / three.js light.
+ * The four modules below are backend-agnostic: pure TypeScript computing
+ * scene-lighting values that each renderer uploads to its own UBO or light
+ * representation.
  *
- * Currently consumed by: `@vitrum/pt-webgl` (via re-export in its index).
+ * Currently consumed by the native path-tracing and walkaround renderers.
  */
 
 export * from './sunGeometry.js';

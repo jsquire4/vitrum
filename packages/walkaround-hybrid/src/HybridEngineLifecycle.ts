@@ -339,8 +339,8 @@ export class PipelineInitCoordinator {
       if (host.lastScene == null || !host.coreSceneSuppliesMeshes()) {
         throw new Error(
           '[HybridEngine] BVH source unavailable: concrete walkaround-hybrid ' +
-          'requires a core Scene with mesh primitives. Convert Three scenes with ' +
-          'sceneFromThreeJS(...) before calling setScene().',
+          'requires a core Scene with mesh primitives. Convert host scene data ' +
+          'to @vitrum/core Scene before calling setScene().',
         );
       }
       const bvhBuildOpts = {

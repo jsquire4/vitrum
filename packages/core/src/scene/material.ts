@@ -145,10 +145,9 @@ export interface ThinFilmStack {
  *  mutations — this is enforced by the type system, not just by convention
  *  (W3-D1, 2026-05-17).
  *
- *  Texture handles are opaque to core. The scene-binding layer (e.g.,
- *  @vitrum/three-bindings) is responsible for converting host textures to
- *  whatever format the backend expects (typed arrays for upload, GPU texture
- *  handles, etc.). Core just routes them through. */
+ *  Texture handles are opaque to core. Host adapters are responsible for
+ *  converting source textures to whatever format the backend expects (typed
+ *  arrays for upload, GPU texture handles, etc.). Core just routes them through. */
 export interface MaterialSpec {
   // ── Base PBR ────────────────────────────────────────────────────────────
   readonly baseColor: Vec3;
@@ -445,9 +444,9 @@ export interface UvTransform {
  * (0 = `MeshPrimitive.uvs`, 1 = `MeshPrimitive.uv1`); default 0. `transform`
  * carries `KHR_texture_transform`.
  *
- * The scene-binding layer (e.g. @vitrum/three-bindings) constructs these;
- * backends read `.handle` to upload/sample and `.texCoord`/`.transform` to
- * resolve UVs. Use `asTextureRef(handle)` for the common no-transform case.
+ * Host adapters construct these; backends read `.handle` to upload/sample and
+ * `.texCoord`/`.transform` to resolve UVs. Use `asTextureRef(handle)` for the
+ * common no-transform case.
  */
 export interface TextureRef {
   readonly handle: unknown;

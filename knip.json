@@ -53,11 +53,6 @@
         "benchmark-runner/*.mjs",
         "benchmark-runner/run-*.mjs"
       ]
-    },
-    "packages/three-gpu-pathtracer": {
-      "entry": ["src/index.js"],
-      "project": ["src/**/*.js"],
-      "ignore": ["example/**"]
     }
   }
 }

@@ -27,12 +27,11 @@ import type {
   CreateEngineErrorEvent,
   EnginePreference,
   CreateEngineOptions,
-  ThreeSceneLike,
 } from '../createEngine.js';
 
 export interface VitrumCanvasProps {
-  /** Scene description (vitrum or THREE). */
-  scene: Scene | ThreeSceneLike;
+  /** Scene description in the host-agnostic @vitrum/core contract. */
+  scene: Scene;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
    *  renderFrame on every RAF tick. */

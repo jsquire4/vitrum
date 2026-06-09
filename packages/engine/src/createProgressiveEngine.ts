@@ -47,21 +47,13 @@ import {
   type ProgressiveHandoffOptions,
 } from './progressiveHandoff.js';
 import type { AdapterProfile } from '@vitrum/core';
-import {
-  isThreeScene,
-  sceneFromThreeSceneLike,
-  type ThreeSceneLike,
-} from './threeSceneBridge.js';
-
 export interface CreateProgressiveEngineOptions {
   /** Canvas the REALTIME engine presents into (the converged engine renders
    *  offscreen). Used to obtain the WebGPU context for swap-chain plumbing. */
   readonly canvas: HTMLCanvasElement;
 
-  /** Scene description. Either a vitrum {@link Scene} or a THREE.Scene; THREE
-   *  scenes are auto-converted via @vitrum/three-bindings (once — both engines
-   *  receive the SAME converted vitrum scene). */
-  readonly scene: Scene | ThreeSceneLike;
+  /** Scene description in the host-agnostic @vitrum/core contract. */
+  readonly scene: Scene;
 
   /** Backend-specific overrides for the REALTIME (walkaround-hybrid) engine,
    *  merged on top of the scale-derived defaults exactly as `createEngine`'s
@@ -222,10 +214,10 @@ export async function createProgressiveEngine(
 
   const device = await adapter.requestDevice({ requiredLimits: union });
 
-  // From here on the device is allocated; EVERY subsequent throw (profile probe,
-  // THREE→vitrum scene conversion, either sub-engine build, the capability
-  // preflight) must destroy it so it never leaks. The try opens immediately after
-  // acquisition for exactly that reason.
+  // From here on the device is allocated; every subsequent throw (profile probe,
+  // either sub-engine build, the capability preflight) must destroy it so it
+  // never leaks. The try opens immediately after acquisition for exactly that
+  // reason.
   let realtime: (Engine & { dispose(): void }) | null = null;
   let converged: (Engine & { dispose(): void }) | null = null;
   try {
@@ -242,13 +234,10 @@ export async function createProgressiveEngine(
       opts.onAdapterProfile(await probeAdapterProfile(device));
     }
 
-    // Convert THREE → vitrum ONCE; both engines ingest the SAME vitrum scene (the
-    // handoff requires both to hold an identical scene — see the coordinator's
-    // scene-authority forwarding).
-    const sceneInputIsThree = isThreeScene(opts.scene);
-    const vitrumScene: Scene = sceneInputIsThree
-      ? await sceneFromThreeSceneLike(opts.scene)
-      : opts.scene;
+    // Both engines ingest the SAME vitrum scene; the handoff requires both to
+    // hold identical scene state (see the coordinator's scene-authority
+    // forwarding).
+    const vitrumScene: Scene = opts.scene;
 
     const aabb = computeSceneAABB(vitrumScene);
     const needsTlas = auditSceneNeedsTlas(vitrumScene).needsTlas;
@@ -261,7 +250,7 @@ export async function createProgressiveEngine(
     // Each gets its own synthesized CreateEngineOptions carrying its `advanced`.
     const realtimeBuildOpts: CreateEngineOptions = {
       canvas: opts.canvas,
-      scene: opts.scene,
+      scene: vitrumScene,
       ...(opts.realtimeOptions != null ? { advanced: opts.realtimeOptions } : {}),
       ...(opts.debug != null ? { debug: opts.debug } : {}),
       // onAdapterProfile is intentionally NOT forwarded — the facade already
@@ -273,21 +262,19 @@ export async function createProgressiveEngine(
       realtimeBuildOpts,
       vitrumScene,
       aabb,
-      sceneInputIsThree,
       needsTlas,
       shared,
     );
 
     const convergedBuildOpts: CreateEngineOptions = {
       canvas: opts.canvas,
-      scene: opts.scene,
+      scene: vitrumScene,
       ...(opts.convergedOptions != null ? { advanced: opts.convergedOptions } : {}),
       ...(opts.debug != null ? { debug: opts.debug } : {}),
     };
     converged = await constructPathTracerWebGPU(
       convergedBuildOpts,
       vitrumScene,
-      sceneInputIsThree,
       shared,
     );
 

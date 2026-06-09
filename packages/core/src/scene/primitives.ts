@@ -68,11 +68,10 @@ export type AnalyticShape =
 
 /**
  * Skinned mesh — vertex positions deformed each frame by a skeleton of
- * bone matrices. C1 (2026-05-19) initial contract for the foundation
- * adapter (`sceneFromThreeJS` acceptance). Per-frame skinning solver
- * + BVH refit are tracked separately.
+ * bone matrices. C1 (2026-05-19) initial contract for host adapters.
+ * Per-frame skinning solver + BVH refit are tracked separately.
  *
- * Layout follows glTF 2.0 / THREE.SkinnedMesh:
+ * Layout follows glTF 2.0 skinning conventions:
  * - `positions`/`normals`/`uvs`/`indices` — REST-pose geometry
  *   (positions in mesh-local space).
  * - `skinIndices` — 4 bone indices per vertex (Uint32Array, length
@@ -94,14 +93,13 @@ export type AnalyticShape =
  * WORLD space — yet consumers apply `transform` once on top. Hosts whose
  * skinned node carries a non-identity `transform` MUST therefore supply
  * `bindMatrix`/`bindMatrixInverse` such that the solve returns MESH-LOCAL
- * positions (THREE attached-bindMode: `bindMatrixInverse =
- * inverse(matrixWorld)` — exactly the term that cancels the node transform
- * out of the world-space bone chain). `@vitrum/three-bindings` captures the
- * pair automatically whenever either matrix is non-identity.
+ * positions. For host formats with world-space bone chains, `bindMatrixInverse`
+ * should cancel the skinned node transform whenever either bind matrix is
+ * non-identity.
  *
- * The CPU-side solver (`solveSkin`) lives in `@vitrum/core` (re-exported by
- * `@vitrum/three-bindings`); the engine ingests the deformed positions through
- * the existing `HybridEngine.updatePrimitive` positions-refit fast path (A3).
+ * The CPU-side solver (`solveSkin`) lives in `@vitrum/core`; the engine ingests
+ * the deformed positions through the existing `HybridEngine.updatePrimitive`
+ * positions-refit fast path (A3).
  *
  * Backends that don't implement skinning should report this in
  * `EngineCapabilities` and either skip the primitive (with a warning)

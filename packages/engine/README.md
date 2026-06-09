@@ -35,10 +35,10 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 
 `createEngine()` picks a backend from `CreateEngineOptions.prefer` (`'realtime' | 'quality' | 'quality-webgpu' | 'auto'`) plus runtime probing:
 - `realtime` → `@vitrum/walkaround-hybrid` (WebGPU DDGI + ReSTIR + per-channel SVGF + GTAO)
-- `quality` → `@vitrum/pt-webgl` (single merged BVH); **`pt-webgpu`** when the scene has multiple meshes or instancing and WebGPU is available (`auditSceneNeedsTlas`)
-- `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl`
-- `auto` → `walkaround-hybrid` (&lt;500k tris, WebGPU) or **`pt-webgpu`** (≥500k tris, WebGPU), else `pt-webgl`
-- Multi-mesh / instanced scenes on WebGL-only hosts still get `pt-webgl` with a `console.warn` from `createEngine()`
+- `quality` → `@vitrum/pt-webgl2` (single merged BVH); **`pt-webgpu`** when the scene has multiple meshes or instancing and WebGPU is available (`auditSceneNeedsTlas`)
+- `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl2`
+- `auto` → `walkaround-hybrid` (&lt;500k tris, WebGPU) or **`pt-webgpu`** (≥500k tris, WebGPU), else `pt-webgl2`
+- Multi-mesh / instanced scenes on WebGL-only hosts still get `pt-webgl2` with a `console.warn` from `createEngine()`
 
 Use **`quality-webgpu`** to force the WebGPU path tracer on smaller scenes.
 

@@ -250,8 +250,7 @@ export interface BuildPackedSceneOptions {
    * seen directly by the camera / through refraction (not only via NEE). See
    * `PTEngineWebGPUOptions.cameraVisibleEmitters`. Default `false` (caller passes
    * the engine's resolved value); `false` keeps the pre-2026-05-30 NEE-only
-   * behaviour (emissive stays at whatever the scene primitive carries — zero for
-   * `sceneFromThreeJS`-converted emissive meshes).
+   * behaviour (emissive stays at whatever the scene primitive carries).
    */
   readonly cameraVisibleEmitters?: boolean;
 }
@@ -267,16 +266,13 @@ export function buildPackedScene(
   // subset and `warnings` carries one message per dropped node.
   const { supported: scene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
 
-  // Camera-visible emitters: `sceneFromThreeJS` converts an emissive mesh into a
-  // `mesh-area` emitter and ZEROES the primitive's emissive (so the surface is
-  // sampled via NEE, not double-counted). To make the emitter glow on the camera
-  // ray + through refraction (the paths the analytic BSDF↔light connection cannot
-  // reach), re-attach the emitter's radiance (`color · intensity`, EXACTLY the
-  // value mesh-area NEE samples — emitterPacking.ts:173-176) onto the referenced
-  // primitive's material `emissive`. The kernel's emissive-on-hit term is gated
-  // to the non-MIS paths, so this does not double-count against NEE. Keyed by
-  // `emitter.meshId` → primitive `id` (`emissiveMeshAreaEmitter` sets
-  // `meshId = mesh.uuid` and `convertMesh` sets `id = mesh.uuid`).
+  // Camera-visible emitters: when a scene represents an emissive mesh as a
+  // `mesh-area` emitter and keeps the primitive material non-emissive, re-attach
+  // the emitter's radiance (`color · intensity`, EXACTLY the value mesh-area NEE
+  // samples — emitterPacking.ts:173-176) onto the referenced primitive's
+  // material `emissive`. The kernel's emissive-on-hit term is gated to the
+  // non-MIS paths, so this does not double-count against NEE. Keyed by
+  // `emitter.meshId` → primitive `id`.
   const emissiveByMeshId = new Map<string, { emissive: [number, number, number]; intensity: number }>();
   if (options.cameraVisibleEmitters === true) {
     for (const emitter of scene.emitters) {

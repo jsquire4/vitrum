@@ -29,7 +29,7 @@ import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } f
 // Extracted as a top-level helper so the unit test can pin the FrameInput
 // shape (with vs without WebGPU context) without a DOM/RAF harness.
 
-/** Output of {@link detectWebGPUSwapChain}. Both fields null ⇒ WebGL/host
+/** Output of {@link detectWebGPUSwapChain}. Both fields null ⇒ WebGL2/host
  *  is not WebGPU-backed (or canvas lacks a WebGPU context); attachVitrum
  *  will then leave `FrameInput.swapChainView` undefined.
  *  File-local — callers consume the type structurally via inference. */
@@ -40,10 +40,8 @@ interface WebGPUSwapChainInfo {
 
 /** Detect whether the canvas currently has a WebGPU context (configured by
  *  createEngine's walkaround backend constructor) and recover its format.
- *  Returns `{ context: null, format: undefined }` for WebGL hosts (where
- *  three.js's WebGLRenderer claims the canvas's `webgl2` context, leaving
- *  `getContext('webgpu')` returning null) or for test environments without
- *  WebGPU support.
+ *  Returns `{ context: null, format: undefined }` for WebGL2 hosts or for test
+ *  environments without WebGPU support.
  *
  *  @internal Exported for unit-test access. */
 export function detectWebGPUSwapChain(canvas: HTMLCanvasElement): WebGPUSwapChainInfo {
@@ -168,7 +166,7 @@ export interface CameraLike {
 }
 
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
-  /** Scene description. Either a vitrum Scene or a structural THREE.Scene. */
+  /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
    *  frame. The host mutates this camera (orbit controls, scripted animation)
@@ -217,7 +215,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
   const engine = await createEngine({
     canvas: opts.canvas,
-    scene: opts.scene as Parameters<typeof createEngine>[0]['scene'],
+    scene: opts.scene,
     ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.debug != null ? { debug: opts.debug } : {}),
@@ -248,7 +246,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
   // A4 — Only backends with `presentationMode === 'swapchain-required'`
   // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
-  // offscreen-texture backends (pt-webgl, pt-webgpu) honour
+  // offscreen-texture backends (pt-webgl2, pt-webgpu) honour
   // `FrameInput.viewport` per-frame and declare `setSize` absent.
   const needsExplicitSetSize =
     engine.capabilities.presentationMode === 'swapchain-required';

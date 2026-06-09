@@ -12,7 +12,7 @@
 //     (validated via {@link validateAnalyticParams});
 //   - mesh-like primitives cannot smuggle in analytic `params`.
 //
-// These were previously reimplemented (and had drifted) in pt-webgpu, pt-webgl,
+// These were previously reimplemented (and had drifted) in pt-webgpu, pt-webgl2,
 // and walkaround-hybrid; the strict pt-webgpu variant is the superset lifted
 // here so all backends share one invariant layer. Backend-specific fast-path
 // detection (material-only / transform-only / geometry-refit) stays in the

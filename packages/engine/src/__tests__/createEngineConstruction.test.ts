@@ -122,7 +122,7 @@ describe('createEngine backend construction safety', () => {
     hybridFactory.mockResolvedValue(engine);
 
     await expect(
-      constructWalkaround(makeOptions(), scene, aabb, false, false),
+      constructWalkaround(makeOptions(), scene, aabb, false),
     ).rejects.toThrow(/scene failed/);
 
     expect(engine.dispose).toHaveBeenCalledTimes(1);
@@ -143,7 +143,6 @@ describe('createEngine backend construction safety', () => {
       scene,
       aabb,
       false,
-      false,
       shared,
     );
 
@@ -163,7 +162,6 @@ describe('createEngine backend construction safety', () => {
     await constructPathTracerWebGPU(
       makeOptions({ restirPtReuse: true } as unknown as CreateEngineOptions['advanced']),
       scene,
-      false,
     );
 
     expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
@@ -181,7 +179,6 @@ describe('createEngine backend construction safety', () => {
     await constructPathTracerWebGPU(
       makeOptions({ traceTier: 'lite' } as unknown as CreateEngineOptions['advanced']),
       scene,
-      false,
       shared,
     );
 
@@ -200,7 +197,7 @@ describe('createEngine backend construction safety', () => {
     ptFactory.mockResolvedValue(engine);
 
     await expect(
-      constructPathTracerWebGPU(makeOptions(), scene, false),
+      constructPathTracerWebGPU(makeOptions(), scene),
     ).rejects.toThrow(/pt scene failed/);
 
     expect(engine.dispose).toHaveBeenCalledTimes(1);

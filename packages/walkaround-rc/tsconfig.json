@@ -12,9 +12,6 @@
       ],
       "@vitrum/shared-samplers": [
         "../shared-samplers/src/index.ts"
-      ],
-      "@vitrum/three-bindings": [
-        "../three-bindings/src/index.ts"
       ]
     }
   },

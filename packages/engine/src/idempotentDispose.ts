@@ -188,7 +188,7 @@ export function wrapWithIdempotentDispose(
   // wrapped engine instead of shadowing scene state. Disposed → null: the
   // contract says no method except state/capabilities is valid after dispose, so
   // the facade gives a uniform null regardless of whether the backend nulls its
-  // own scene reference on teardown (pt-webgpu) or keeps it (pt-webgl/hybrid).
+  // own scene reference on teardown (pt-webgpu) or keeps it (pt-webgl2/hybrid).
   const sceneEngine = engine as Engine;
   if (typeof sceneEngine.getScene === 'function') {
     proxy.getScene = () => (disposed ? null : sceneEngine.getScene!());

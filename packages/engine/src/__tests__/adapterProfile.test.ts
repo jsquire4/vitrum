@@ -100,15 +100,15 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     expect(p.adapterKind).toBe('swiftshader');
   });
 
-  it('below pt-webgpu lite floor → ptWebgpuTier none, hero falls to pt-webgl', async () => {
+  it('below pt-webgpu lite floor → ptWebgpuTier none, hero falls to pt-webgl2', async () => {
     const belowBuf = PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1;
     const belowTex = PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE - 1;
     const p = await probeAdapterProfile(fakeAdapter(belowBuf, belowTex));
     expect(p.ptWebgpuTier).toBe('none');
     // No GPUAdapter info ⇒ unknown adapter kind, not software.
     expect(p.isSoftwareAdapter).toBe(false);
-    // hasWebGL2 defaults true in the headless test env ⇒ pt-webgl fallback.
-    expect(p.recommendedHeroBackend).toBe('pt-webgl');
+    // hasWebGL2 defaults true in the headless test env ⇒ pt-webgl2 fallback.
+    expect(p.recommendedHeroBackend).toBe('pt-webgl2');
   });
 
   it('no navigator.gpu (no source, no WebGPU env) → hasWebGPU false', async () => {
@@ -117,7 +117,7 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     const p = await probeAdapterProfile();
     expect(p.hasWebGPU).toBe(false);
     expect(p.recommendedRealtimeTier).toBe('unavailable');
-    expect(p.recommendedHeroBackend).toBe('pt-webgl'); // headless WebGL2 default
+    expect(p.recommendedHeroBackend).toBe('pt-webgl2'); // headless WebGL2 default
   });
 });
 

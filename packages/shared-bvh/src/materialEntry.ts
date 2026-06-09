@@ -8,7 +8,7 @@
  *
  * Why this lives in `@vitrum/shared-bvh`:
  *   The per-material struct is bound alongside the per-triangle BVH +
- *   materialId LUT that `buildSceneBVH` already produces. The whole
+ *   materialId LUT emitted by the shared scene packers. The whole
  *   "scene → GPU storage" handoff is BVH-scoped infrastructure, so the
  *   canonical packer co-locates with the BVH builder rather than living
  *   inside one of the consuming engines.
@@ -61,13 +61,10 @@
  *   flags = 0.
  *
  * Default roughness: 1.0 — picked because (a) Lambertian fallback is the
- * safest "I have no idea what this surface is" behaviour and (b) THREE's
- * `MeshStandardMaterial` constructor sets `roughness = 1.0` by default, so
- * the canonical default lines up with the runtime-observed default in every
- * Three.js scene we currently consume. The pre-W2-C5 ddgi `extractThreePbr-
- * Scalars` default was 0.5 but only fired when a THREE material was
- * **missing** the field — which Three's constructor never lets happen —
- * making the divergence a code-level artefact rather than a runtime one.
+ * safest "I have no idea what this surface is" behaviour and (b) common PBR
+ * host material constructors default roughness to 1.0. The pre-W2-C5 DDGI
+ * scalar helper default was 0.5 but only fired when a material was missing the
+ * field, making the divergence a code-level artefact rather than a runtime one.
  *
  * @since W2-C5 (premium-grade-refactor-20260517.md §W2 sub-task 5).
  */
@@ -79,34 +76,27 @@ export const MATERIAL_ENTRY_FLOATS = 16;
 
 /**
  * Default visible color (linear-ish RGB) used when a triangle's material is
- * absent or carries neither a usable base nor attenuation color. Mirrors the
- * THREE-side `resolveTriColor` fallback `new THREE.Color(0.6, 0.58, 0.55)`
- * (walkaround `restir/packingHelpers.ts`) so the THREE-free path resolves the
- * identical warm-gray when no color is available. Exported for the equivalence
- * test (and any consumer that wants the same fallback). */
+ * absent or carries neither a usable base nor attenuation color. Exported for
+ * consumers that want the same warm-gray fallback. */
 export const MATERIAL_DEFAULT_TRI_COLOR: readonly [number, number, number] = [
   0.6, 0.58, 0.55,
 ];
 
 /**
  * Transmission threshold above which a surface is treated as "transmissive"
- * for triangle-color resolution (Beer-Lambert tint vs. base color). Mirrors the
- * `transmission > 0.01` gate in the THREE-side `resolveTriColor`. */
+ * for triangle-color resolution (Beer-Lambert tint vs. base color). */
 export const MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD = 0.01;
 
 /**
  * Transmission threshold above which an opaque-but-transmissive face is eligible
  * to become a "sun-attenuated secondary emitter" in the ReSTIR emitter list.
- * Mirrors the `transmission > 0.1` gate in the THREE-side
- * `classifyTriangleEmitter` (walkaround `restir/emitterList.ts`). Strictly
- * higher than {@link MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD} — a faintly
+ * Strictly higher than {@link MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD} — a faintly
  * transmissive surface tints but does not emit. */
 export const MATERIAL_EMITTER_TRANSMISSION_THRESHOLD = 0.1;
 
 /**
  * Minimum |dot(lightDir, faceNormal)| for a transmissive face to register as a
- * sun-attenuated emitter. Mirrors the `sunDot <= 0.05` reject in the THREE-side
- * `classifyTriangleEmitter`. */
+ * sun-attenuated emitter. */
 export const MATERIAL_EMITTER_SUN_DOT_THRESHOLD = 0.05;
 
 /** Byte stride per entry. */
@@ -128,9 +118,8 @@ export const MATERIAL_ATTEN_DIST_INFINITE = 1e9;
  * Engine-independent PBR-scalar bag accepted by {@link packMaterials}.
  *
  * Engines build their `MaterialEntryInput[]` from whatever source-of-truth
- * they use (THREE materials via `extractThreePbrScalars`, vitrum
- * `Material` records, a path-tracer's `MaterialBag`, …). The packer never
- * touches THREE — it is pure data.
+ * they use (core `MaterialSpec` records, structural PBR material bags, host
+ * adapters, ...). The packer is pure data.
  */
 export interface MaterialEntryInput {
   /** Linear-sRGB diffuse / albedo color. Defaults to (1, 1, 1). */
@@ -163,37 +152,33 @@ export interface MaterialEntryInput {
 
 /**
  * Map a `@vitrum/core` `MaterialSpec` directly into the canonical
- * {@link MaterialEntryInput} bag — the THREE-free counterpart to the
- * `extractThreePbrScalars`-based `threeToMaterialEntryInput` adapters in
- * `walkaround-hybrid` (RC: `rc/bvhCompute.ts`; DDGI: `ddgi/probeUpdateMaterials.ts`).
+ * {@link MaterialEntryInput} bag — the core counterpart to the structural
+ * `extractPbrScalars` adapters in `walkaround-hybrid`.
  *
- * When an engine's geometry comes from a core `Scene` (the THREE-decoupling
- * path — see `plan/three-decouple-analysis-2026-06-03.md`), the material is
- * already a `MaterialSpec`, so it maps straight to {@link MaterialEntryInput}
- * with no `THREE.Material` round-trip. This is the canonical
+ * When an engine's geometry comes from a core `Scene`, the material is already
+ * a `MaterialSpec`, so it maps straight to {@link MaterialEntryInput}. This is the canonical
  * "core material → GPU material struct" bridge; feed its output to
  * {@link packMaterials} for the 64-byte SSBO layout.
  *
- * Field mapping (mirrors `extractThreePbrScalars` → the RC/DDGI adapters):
+ * Field mapping (mirrors `extractPbrScalars` → the RC/DDGI adapters):
  *  - `baseColor` / `roughness` / `ior` / `transmission` / `attenuationColor` /
  *    `attenuationDistance` / `thickness` pass through 1:1.
- *  - `metallic` → `metalness` (the `MaterialEntryInput` field is spelled the
- *    THREE way; the core field is spelled the glTF way).
+ *  - `metallic` → `metalness` (the core field uses the glTF spelling; the
+ *    material-entry field keeps the established shader spelling).
  *  - `emissive` is **pre-multiplied** by `emissiveIntensity` so the GPU side
  *    sees a single radiance triple — exactly as the RC adapter does
  *    (`rc/bvhCompute.ts`). A missing `emissiveIntensity` defaults to ×1
- *    (matching `extractThreePbrScalars`' `PBR_DEFAULTS.emissiveIntensity`).
+ *    (matching `extractPbrScalars`' `PBR_DEFAULTS.emissiveIntensity`).
  *
  * Any field absent on the spec is left `undefined`, so {@link packMaterials}
  * applies the library-canonical defaults (`roughness = 1.0`, `ior = 1.5`,
- * `attenuationDistance → 1e9`, etc.) — identical to packing a THREE material
- * whose constructor left those at their defaults.
+ * `attenuationDistance → 1e9`, etc.).
  *
  * **Deliberate non-policy:** this adapter does NOT apply RC's `thickness → 0.1`
  * floor (RC's per-tri Beer-Lambert needs a non-zero numerator; DDGI does not).
  * That floor is an RC-side policy, not a property of the material, so RC applies
  * it on top of this adapter's faithful pass-through — exactly as it does today
- * on the `extractThreePbrScalars` output. Keeping it out here preserves the
+ * on the `extractPbrScalars` output. Keeping it out here preserves the
  * intentional RC-vs-DDGI divergence and keeps this function a pure field map.
  *
  * @param material a core `MaterialSpec` (the `@vitrum/core` PBR record).
@@ -227,48 +212,27 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// THREE-free emitter / Beer-Lambert / surface-texture classification
+// Core emitter / Beer-Lambert / surface-texture classification
 //
-// `MaterialSpec` counterparts to the THREE-material field readers used by the
-// ReSTIR/DDGI/RC emitter list + per-triangle color/glow packing
+// `MaterialSpec` field readers used by the ReSTIR/DDGI/RC emitter list and
+// per-triangle color/glow packing
 // (`walkaround-hybrid/src/restir/{packingHelpers,emitterList}.ts`). Every field
-// these read exists 1:1 on the core `MaterialSpec`, so the THREE round-trip is
-// not needed once the geometry is ingested from a core `Scene` (the
-// THREE-decoupling path — see `plan/three-decouple-analysis-2026-06-03.md`,
-// §7 next-increment 1).
+// these read lives on core `MaterialSpec`, with optional backend escape hatches
+// carried through `material.extensions`.
 //
-// Each function mirrors its THREE sibling's logic EXACTLY so a CPU equivalence
-// test can pin THREE-variant ≡ core-variant for matching materials, and so the
-// golden-pinned downstream bytes (emitter CDF, `bvhIndex.w`, `bvh_beer`,
-// `bvh_emissive_le`) are unchanged when the producer is swapped.
-//
-// **R3 caveat (`extensions['surfaceTextureId']` / `['skipEmitter']`).** The
-// THREE path reads `mat.userData.surfaceTextureId` and `mat.userData.skipEmitter`
-// off the live THREE material. On core these belong in `material.extensions`
-// (the backend escape hatch). VERIFIED (2026-06-03, by code-read of
-// `three-bindings/src/material.ts:convertMaterial` + `userDataKeys.ts`): the
-// current THREE→core converter does **NOT** copy these two userData keys into
-// `extensions` — `VITRUM_USER_DATA_KEYS` omits them and `convertMaterial` only
-// ever writes `extensions.dichroicLUTs`. So for a core scene produced by today's
-// `sceneFromThreeJS`, both read as `undefined` here (→ texType 0 / not-skipped),
-// which is the same as a THREE material whose host never stamped them. These
-// readers are therefore CONTRACT-CORRECT (they consult the documented location);
-// the converter wiring that would populate `extensions` from `userData` is a
-// separate, out-of-scope increment. Until that lands, a host feeding a core
-// `Scene` must set `material.extensions['surfaceTextureId' | 'skipEmitter']`
-// directly to exercise these lanes.
+// `extensions['surfaceTextureId']` and `extensions['skipEmitter']` are explicit
+// core-scene contract lanes. A host feeding a core `Scene` must set those values
+// directly to exercise the surface-texture and emitter-suppression paths.
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Emissive radiance Le (`emissive.rgb · emissiveIntensity`) of a core
  * `MaterialSpec`, or `null` when the surface is not self-emissive.
  *
- * THREE-free counterpart to `materialEmissiveLe`
- * (`walkaround-hybrid/src/restir/packingHelpers.ts`). Mirrors it EXACTLY,
- * including the three reject conditions (absent emissive, non-positive
- * intensity, all-non-positive emissive channels), so the camera-visible glow Le
- * and the NEE-sampled emitter radiance stay byte-identical when fed from a core
- * scene. Deliberately EXCLUDES the transmissive "sun-attenuated secondary
+ * Uses the same reject conditions as the rest of the core emitter pipeline
+ * (absent emissive, non-positive intensity, all-non-positive emissive channels),
+ * so the camera-visible glow Le and the NEE-sampled emitter radiance share one
+ * source. Deliberately EXCLUDES the transmissive "sun-attenuated secondary
  * emitter" branch — that lives in {@link classifyTriangleEmitterCore}.
  *
  * @param material a core `MaterialSpec`.
@@ -291,8 +255,7 @@ export function materialSpecEmissiveLe(
  * (per channel, with a 1e-6 floor). Returns the input color unchanged when any
  * required parameter is missing / non-finite / non-positive.
  *
- * THREE-free counterpart to the file-local `applyBeerLambert`
- * (`walkaround-hybrid/src/restir/packingHelpers.ts`); same math, tuple in/out.
+ * Tuple in/out helper used by per-triangle color and Beer-lane packing.
  */
 export function applyBeerLambertColor(
   attCol: readonly [number, number, number],
@@ -321,35 +284,19 @@ export function applyBeerLambertColor(
  * attenuation color (optionally Beer-Lambert-tinted) for a transmissive surface,
  * else the base color, else the warm-gray fallback.
  *
- * THREE-free counterpart to `resolveTriColor`
- * (`walkaround-hybrid/src/restir/packingHelpers.ts`). Mirrors it EXACTLY:
+ * Core triangle-color resolver:
  *  - `isTransmissive` ⇔ `transmission > {@link MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD}`
  *    (0.01).
  *  - transmissive → the attenuation color ({@link applyBeerLambertColor}-tinted
  *    iff `applyBeer`).
  *  - otherwise → `baseColor`, falling back to {@link MATERIAL_DEFAULT_TRI_COLOR}.
  *
- * **Critical THREE-default parity.** The THREE `resolveTriColor` gates on
- * `isTransmissive && attenColor`, but a `THREE.MeshPhysicalMaterial` ALWAYS has
- * an `attenuationColor` — its constructor defaults it to white `(1,1,1)` (and
- * `attenuationDistance` to `Infinity`). So in the THREE path the `&& attenColor`
- * guard is always true for a transmissive surface: it returns the (possibly
- * default-white) attenuation color, NEVER the base color. On a core
- * `MaterialSpec`, `attenuationColor` is genuinely OPTIONAL and may be absent —
- * so this function treats an absent `attenuationColor` on a transmissive
- * material as white `(1,1,1)`, reproducing the THREE constructor default. Were
- * it to fall through to `baseColor` instead, the golden-pinned `bvhIndex.w` /
- * `bvh_beer` bytes (produced by the THREE path) would drift. Likewise an absent
- * `attenuationDistance` is `Infinity` here (→ {@link applyBeerLambertColor}
- * passthrough), matching the THREE default.
- *
- * Parity note on the warm-gray fallback: the THREE `resolveTriColor` ends in
- * `physMat.color ?? stdMat?.color ?? warmGray`. A core `MaterialSpec`'s
+ * A transmissive material with no explicit `attenuationColor` is treated as
+ * white `(1,1,1)`, and an absent `attenuationDistance` behaves like Infinity
+ * (→ {@link applyBeerLambertColor} passthrough). A core `MaterialSpec`'s
  * `baseColor` is required and non-null, so the warm-gray fallback only fires for
  * the no-material case (`packBVH*Tri` passes the literal default when
- * `materials[matId]` is missing) — the per-material call always has a base
- * color. The default is still exported + honored here for a defensively-empty
- * `baseColor` tuple, keeping behavior identical to the THREE path's final `??`.
+ * `materials[matId]` is missing) or for defensively-empty loose inputs.
  *
  * @param material  a core `MaterialSpec`.
  * @param applyBeer when true, Beer-Lambert-tint the transmissive attenuation
@@ -363,11 +310,8 @@ export function materialSpecTriColor(
   const transmission = material.transmission ?? 0;
   const isTransmissive = transmission > MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD;
   if (isTransmissive) {
-    // THREE's MeshPhysicalMaterial defaults attenuationColor → white and
-    // attenuationDistance → Infinity, and the transmissive branch always uses
-    // the attenuation color (never baseColor). Mirror those defaults so the
-    // core variant produces the same bytes for an absent-field transmissive
-    // material as the THREE path that pinned the goldens.
+    // The transmissive branch always uses attenuation color (never baseColor).
+    // Missing attenuation data maps to no-tint / no-falloff defaults.
     const attenColor = material.attenuationColor ?? [1, 1, 1];
     if (applyBeer) {
       return applyBeerLambertColor(
@@ -379,10 +323,8 @@ export function materialSpecTriColor(
     return [attenColor[0], attenColor[1], attenColor[2]];
   }
   // `MaterialSpec.baseColor` is a required Vec3, so the per-material path always
-  // has a base color — the warm-gray fallback mirrors the THREE path's final
-  // `?? new THREE.Color(0.6, 0.58, 0.55)`, which only fires for a missing
-  // material (handled caller-side). The `Array.isArray` guard is a defensive
-  // runtime check for loosely-typed callers and keeps the fallback reachable.
+  // has a base color. The guard is a defensive runtime check for loosely-typed
+  // callers and keeps the warm-gray fallback reachable.
   const base = material.baseColor;
   if (Array.isArray(base) && base.length >= 3) return [base[0], base[1], base[2]];
   return [
@@ -396,13 +338,7 @@ export function materialSpecTriColor(
  * Read the surface-texture id (the `bvhIndex.w` low-byte `texType` lane, 3 bits)
  * from a core `MaterialSpec`'s `extensions['surfaceTextureId']`.
  *
- * THREE-free counterpart to the `mat.userData.surfaceTextureId` read in
- * `packBVHIndexWTri` (`walkaround-hybrid/src/restir/packingHelpers.ts`). Returns
- * `0` when absent / non-numeric (same default as the THREE path).
- *
- * See the R3 caveat block above: today's THREE→core converter does not populate
- * this from `userData`, so a host must set `extensions['surfaceTextureId']`
- * directly until that wiring lands.
+ * Returns `0` when absent / non-numeric.
  */
 export function materialSpecSurfaceTextureId(material: MaterialSpec): number {
   const raw = material.extensions?.['surfaceTextureId'];
@@ -411,10 +347,8 @@ export function materialSpecSurfaceTextureId(material: MaterialSpec): number {
 
 /**
  * Read the `skipEmitter` override from a core `MaterialSpec`'s
- * `extensions['skipEmitter']`. THREE-free counterpart to the
- * `mat.userData.skipEmitter === true` read in `classifyTriangleEmitter`
- * (`walkaround-hybrid/src/restir/emitterList.ts`). Strict `=== true` (any other
- * value, including absent, means "do not skip"). See the R3 caveat block above.
+ * `extensions['skipEmitter']`. Strict `=== true` (any other value, including
+ * absent, means "do not skip").
  */
 export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
   return material.extensions?.['skipEmitter'] === true;
@@ -422,9 +356,7 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
 
 /**
  * Classify a core `MaterialSpec` + face normal as a ReSTIR-DI emitter, or `null`
- * when the face is not selected. THREE-free counterpart to
- * `classifyTriangleEmitter` (`walkaround-hybrid/src/restir/emitterList.ts`),
- * implementing the same priority order:
+ * when the face is not selected. Priority order:
  *
  *  1. **Emissive** (`emissive.rgb · emissiveIntensity` positive) → direct
  *     emitter with `color = Le`, `intensity = emissiveIntensity` (default 1).
@@ -436,14 +368,12 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
  *     emitter:
  *       `color   = baseColor ⊙ attenuationColor · transmission · primaryIntensity · sunDot`
  *       `intensity = primaryIntensity · transmission · sunDot`
- *     `baseColor` / `attenuationColor` default to (1,1,1) when absent (matching
- *     the THREE branch's `?? new THREE.Color(1,1,1)`).
+ *     `baseColor` / `attenuationColor` default to (1,1,1) when absent.
  *  3. otherwise → `null` (skipped).
  *
  * `lightDir` is the configured primary-light direction; `primaryIntensity` is
- * its irradiance — both passed as plain numbers/tuples (no `THREE.Vector3`).
- * The caller computes power (`luminance(color) · area`) and the < 1e-8 drop, as
- * `buildEmitterList` does for the THREE path.
+ * its irradiance — both passed as plain numbers/tuples. The caller computes
+ * power (`luminance(color) · area`) and the < 1e-8 drop.
  *
  * @param material         a core `MaterialSpec`.
  * @param normal           the face normal (world-space, unit length).

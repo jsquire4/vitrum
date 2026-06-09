@@ -15,6 +15,7 @@ function readEnginePackageJson(): {
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  devDependencies?: Record<string, string>;
 } {
   return JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'));
 }
@@ -24,24 +25,29 @@ describe('@vitrum/engine package root boundary', () => {
     expect(readEngineRoot()).not.toMatch(/@vitrum\/three-bindings|three-bindings/);
   });
 
-  it('keeps legacy WebGL/THREE adapters off the hard dependency graph', () => {
+  it('depends on the native WebGL2 backend without legacy WebGL/THREE adapters', () => {
     const pkg = readEnginePackageJson();
+    expect(pkg.dependencies).toMatchObject({
+      '@vitrum/pt-webgl2': 'file:../pt-webgl2',
+    });
     expect(pkg.dependencies).not.toHaveProperty('@vitrum/pt-webgl');
     expect(pkg.dependencies).not.toHaveProperty('@vitrum/three-bindings');
-    expect(pkg.optionalDependencies).toMatchObject({
-      '@vitrum/pt-webgl': 'file:../pt-webgl',
-      '@vitrum/three-bindings': 'file:../three-bindings',
-    });
+    expect(pkg.optionalDependencies ?? {}).not.toHaveProperty('@vitrum/pt-webgl');
+    expect(pkg.optionalDependencies ?? {}).not.toHaveProperty('@vitrum/three-bindings');
+    expect(pkg.peerDependencies ?? {}).not.toHaveProperty('three');
+    expect(pkg.peerDependenciesMeta ?? {}).not.toHaveProperty('three');
+    expect(pkg.devDependencies ?? {}).not.toHaveProperty('three');
+    expect(pkg.devDependencies ?? {}).not.toHaveProperty('@types/three');
   });
 
-  it('lazy-loads legacy WebGL/THREE paths without static type queries', () => {
+  it('lazy-loads pt-webgl2 without retaining engine-level THREE bridge paths', () => {
     const createEngine = readEngineSource('createEngine.ts');
-    const bridge = readEngineSource('threeSceneBridge.ts');
 
-    expect(createEngine).not.toMatch(/^import\s+type[^\n]*@vitrum\/pt-webgl/m);
+    expect(createEngine).toMatch(/import\(['"]@vitrum\/pt-webgl2['"]\)/);
+    expect(createEngine).not.toMatch(/@vitrum\/pt-webgl(?!2)/);
+    expect(createEngine).not.toMatch(/@vitrum\/three-bindings/);
+    expect(createEngine).not.toMatch(/threeSceneBridge|ThreeSceneLike|sceneFromThreeSceneLike|isThreeScene/);
     expect(createEngine).not.toMatch(/typeof import\(['"]three['"]\)/);
-    expect(createEngine).not.toMatch(/import\(['"]three['"]\)\.WebGLRenderer/);
-    expect(bridge).not.toMatch(/typeof import\(['"]@vitrum\/three-bindings['"]\)/);
-    expect(bridge).not.toMatch(/Parameters<[^>]*sceneFromThreeJS/);
+    expect(createEngine).not.toMatch(/import\(['"]three['"]\)/);
   });
 });

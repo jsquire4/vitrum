@@ -63,9 +63,8 @@ export interface Engine {
    *  stop shadowing scene state in parallel with the engine.
    *
    *  **Returns the canonical `@vitrum/core` {@link Scene}** — never a backend
-   *  host object. Backends that ingest through an internal THREE.Scene
-   *  (`@vitrum/pt-webgl`, `@vitrum/walkaround-hybrid`) still return the vitrum
-   *  Scene they were handed, not their synthesized THREE graph.
+   *  host object. Backends with host-specific internal representations still
+   *  return the vitrum Scene they were handed, not a synthesized backend graph.
    *
    *  **Identity / mutation semantics (NOT a defensive copy):** the returned
    *  value is the engine's RETAINED reference to the scene it is currently
@@ -145,8 +144,8 @@ export interface Engine {
   /** Apply an environment-only update (HDRI texture / intensity / rotation
    *  swap, or transition to `kind: 'none'`) without rebuilding the BVH or
    *  re-uploading geometry/materials. Backends that can update the IBL
-   *  uniforms in place — pt-webgl wraps WebGLPathTracer.updateEnvironment(),
-   *  which costs one accumulator reset and no BVH work — implement this for
+   *  uniforms in place — pt-webgl2 costs one accumulator reset and no BVH work —
+   *  implement this for
    *  fast timeOfDay scrubs on the host side. Backends without a cheap env
    *  path (current HybridEngine is reactive to its own scene-source rather
    *  than host-driven env scrubs) may omit this method; hosts MUST

@@ -8,7 +8,7 @@
  *        - primitives: mesh / skinned-mesh / instanced-mesh / analytic.
  *          Instanced-mesh is genuine via the TLAS per-instance traversal;
  *          analytic is accepted through a generated MeshPrimitive fallback
- *          before the vitrumSceneToThree BVH+DDGI path.
+ *          before the core-native BVH+DDGI path.
  *        - emitters: directional / rect-area / disc-area / point / spot /
  *          mesh-area (rect/disc → ReSTIR-DI tris + DDGI fixtures; mesh-area →
  *          mesh emissive; point/spot → DDGI fixture lights; directional →
@@ -17,7 +17,7 @@
  *          host's sun-intensity multiplier=1). A scene directional is KEPT
  *          (not warn-skipped) and reaches the DDGI sun path.
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
- *      this.capabilities)` BEFORE any vitrumSceneToThree conversion, so an
+ *      this.capabilities)` BEFORE BVH ingestion, so an
  *      unsupported nodes are warn-skipped (NOT thrown / NOT silently flowed
  *      through), while supported analytics stay in authored `_lastScene` and
  *      appear as generated meshes in `_renderScene`.
@@ -29,25 +29,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import * as THREE from 'three';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
-
-// The partition filter under test runs SYNCHRONOUSLY in setScene, before the
-// fire-and-forget async init chain touches three-bindings. Stub the converter
-// (returns a real empty THREE.Scene — valid for the CPU BVH builder) + the
-// disposer (no-op) so the background chain + dispose() can't surface unhandled
-// rejections from real THREE texture disposal. solveSkin / material helpers are
-// not hit on this path but must exist for module resolution.
-vi.mock('@vitrum/three-bindings', () => ({
-  vitrumSceneToThree: () => new THREE.Scene(),
-  disposeVitrumThreeSceneRoot: () => undefined,
-  solveSkin: () => ({ positions: new Float32Array(0), normals: new Float32Array(0) }),
-  applyVitrumMaterialToMesh: () => undefined,
-  findMeshByPrimitiveId: () => null,
-}));
 
 /** Minimal GPUDevice stub — HybridEngine's constructor only stores the device
  *  (DDGI is CPU-side) and the factory's duck-type check needs
@@ -193,7 +178,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
 
       // The stored authored scene retains the supported primitive + emitter,
       // and the render-ingestion predicate treats an instanced-only core scene
-      // as a real triangle source for vitrumSceneToThree / TLAS init.
+  // as a real triangle source for TLAS init.
       const internals = engine as unknown as {
         _lastScene: Scene;
         _renderScene: Scene;

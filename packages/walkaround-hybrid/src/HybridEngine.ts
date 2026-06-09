@@ -9,7 +9,7 @@
  *   - useThree    → GPUDevice + canvas dimensions passed via factory opts
  *
  * Implements `@vitrum/core`'s `Engine` interface so a host can swap this
- * backend interchangeably with `@vitrum/pt-webgl`.
+ * backend interchangeably with the native path-tracing backends.
  *
  * RC subsystem: cascade dispatch + shade-pass balance-heuristic MIS shipped
  * (W8 Phase 3). See plan/w8-rc-mis-composition.md.
@@ -899,15 +899,15 @@ export class HybridEngine implements Engine {
       // BVH + DDGI ingest via a render-scene view. Mesh/skinned/instanced-mesh
       // flow through directly; analytic primitives are accepted in the authored
       // scene and converted to deterministic MeshPrimitive fallbacks before
-      // vitrumSceneToThree / ReSTIR / DDGI / RC consume them.
+      // ReSTIR / DDGI / RC consume them.
       supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic']),
       // Emitter kinds that genuinely reach a renderable state:
       //   - rect-area / disc-area → harvested as ReSTIR-DI direct emitter tris
       //     from core emitter data AND projected
       //     to DDGI fixture lights (coreEmittersToDDGILights) for indirect bounce.
-      //   - mesh-area → folded into the referenced mesh's emissive material by
-      //     vitrumSceneToThree, so it reaches both the ReSTIR-DI emissive-triangle
-      //     path and DDGI as emissive geometry.
+      //   - mesh-area → folded into the referenced mesh's emissive material, so
+      //     it reaches both the ReSTIR-DI emissive-triangle path and DDGI as
+      //     emissive geometry.
       //   - point / spot → projected to DDGI fixture lights by
       //     coreEmittersToDDGILights. Spots include real cone data (spotAxis +
       //     cosInner/cosOuter); evalPointLight in the probe shader applies the
@@ -985,8 +985,8 @@ export class HybridEngine implements Engine {
    * **BVH + DDGI geometry:** ReSTIR, DDGI, and RC consume the core scene's
    * mesh/skinned/instanced primitives directly.
    *
-   * **Host guidance:** For one `Scene` driving both `pt-webgl` and this engine,
-   * pass `setScene(sceneFromThreeJS(yourThreeScene))`.
+   * **Host guidance:** pass a canonical `@vitrum/core` Scene. Host-specific
+   * scene adapters live outside this package.
    *
    * **Capability filter + analytic fallback:** the scene is first partitioned
    * against this engine's declared `supported*Kinds` (warn + skip). Supported
@@ -994,7 +994,7 @@ export class HybridEngine implements Engine {
    * replaces them with generated MeshPrimitive fallbacks before the BVH/GI
    * ingestion path runs.
    *
-   * @param inputScene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
+   * @param inputScene - The `@vitrum/core` scene.
    */
   setScene(inputScene: Scene): void {
     if (this._state === 'disposed') {
@@ -1408,12 +1408,6 @@ export class HybridEngine implements Engine {
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
     this._rc?.invalidateBindings();
-    this._syncDdgiLightsFromCoreScene();
-    this._pipeline?.requestAccumReset();
-  }
-
-  /** Compatibility alias: re-upload DDGI point/rect lights from the live core scene. */
-  refreshDdgiLightsFromThreeScene(): void {
     this._syncDdgiLightsFromCoreScene();
     this._pipeline?.requestAccumReset();
   }
