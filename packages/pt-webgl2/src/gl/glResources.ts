@@ -295,7 +295,7 @@ export class GlResources {
     prog.bindTexture('materialIndexAttribute', scene.materialIndex);
     prog.bindTexture('materials', scene.materials);
     prog.bindTexture('attributesArray', scene.attributesArray, gl.TEXTURE_2D_ARRAY);
-    prog.bindTexture('lights', scene.lights);
+    prog.bindTexture('lights.tex', scene.lights); // LightsInfo { sampler2D tex; uint count; }
     // Every OPTIONAL sampler the fork GLSL declares must reference a valid texture of
     // the matching type — an unbound sampler defaults to unit 0 and collides with a
     // different-typed sampler there (GL_INVALID_OPERATION → black). bindTexture no-ops
@@ -308,9 +308,10 @@ export class GlResources {
     prog.bindTexture('sobolTexture', d2d);
     prog.bindTexture('stratifiedTexture', d2d);
     prog.bindTexture('stratifiedOffsetTexture', d2d);
+    // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; }
     prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
-    prog.bindTexture('envMapInfo.marginal', scene.envMarginal ?? d2d);
-    prog.bindTexture('envMapInfo.conditional', scene.envConditional ?? d2d);
+    prog.bindTexture('envMapInfo.marginalWeights', scene.envMarginal ?? d2d);
+    prog.bindTexture('envMapInfo.conditionalWeights', scene.envConditional ?? d2d);
   }
 
   #dummy2dTex: WebGLTexture | null = null;
