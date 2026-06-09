@@ -15,7 +15,16 @@ const REAL_ENUMS: Record<string, number> = {
   INVALID_INDEX: 0xffffffff,
 };
 
-export function createMockGl(): WebGL2RenderingContext {
+/**
+ * @param record - When supplied, the mock name-tags every uniform location
+ *   (`getUniformLocation` returns `{ __u: name }`) and records each scalar/array
+ *   uniform-set call into the map keyed by uniform name. This is what makes the
+ *   upload-gap GUARD test (uploadGapGuard.test.ts) possible — the default no-arg
+ *   mock returns anonymous `{}` locations and swallows the setters, so it is BLIND
+ *   to "was `lights.count` / the CMF tables / `backgroundAlpha` ever uploaded?"
+ *   (the §H H1–H3 bug class). Omit `record` to keep the original no-op behaviour.
+ */
+export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingContext {
   let nextEnum = 0x9000;
   const byName = new Map<string, number>(Object.entries(REAL_ENUMS));
   const byValue = new Map<number, string>();
@@ -29,6 +38,14 @@ export function createMockGl(): WebGL2RenderingContext {
       byValue.set(v, name);
     }
     return v;
+  };
+
+  const nameOf = (loc: unknown): string | null =>
+    loc != null && typeof loc === 'object' && '__u' in loc ? String((loc as { __u: unknown }).__u) : null;
+  const rec = (loc: unknown, value: unknown): void => {
+    if (record == null) return;
+    const n = nameOf(loc);
+    if (n != null) record.set(n, value);
   };
 
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
@@ -46,10 +63,18 @@ export function createMockGl(): WebGL2RenderingContext {
     getShaderParameter: () => true,
     getProgramInfoLog: () => '',
     getShaderInfoLog: () => '',
-    getUniformLocation: () => ({}),
+    // Name-tag locations only when recording (so GlProgram's per-name #loc cache
+    // carries the name through to the setters below); else opaque, as before.
+    getUniformLocation: record == null ? () => ({}) : (_prog, name) => ({ __u: name }),
     getUniformBlockIndex: () => 0,
     getActiveUniform: () => null,
     checkFramebufferStatus: () => enumOf('FRAMEBUFFER_COMPLETE'),
+    // Recording uniform setters (no-op when `record` is absent — the value is just
+    // dropped, same as the catch-all). Cover the scalar + array forms the engine uses.
+    uniform1ui: (loc, v) => rec(loc, v),
+    uniform1i: (loc, v) => rec(loc, v),
+    uniform1f: (loc, v) => rec(loc, v),
+    uniform1fv: (loc, v) => rec(loc, v),
   };
 
   const target: Record<string, unknown> = {};
