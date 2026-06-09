@@ -81,6 +81,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#spectralEnabled = opts.spectral ?? false;
     this.#bdpt = opts.bdpt ?? false;
+    if (this.#bdpt) {
+      // H5 (2026-06-09): the BDPT GLSL kernels compile, but the host does NOT yet
+      // drive the light-subpath passes (uBdptLightSubpathPass/VertexCol/MaxLightBounces
+      // are never set → the light subpath is never generated, so connections add
+      // nothing). The frame renders unidirectionally. Surfaced honestly rather than
+      // silently presenting unidirectional output as bidirectional. Full orchestration
+      // is tracked in items_to_fix §H5. (The unbound-sampler crash is fixed separately.)
+      console.warn(
+        '[pt-webgl2] bdpt: true — BDPT light-subpath passes are not yet host-driven; ' +
+          'rendering is currently unidirectional. See items_to_fix §H5.',
+      );
+    }
     this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
     this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
     this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));

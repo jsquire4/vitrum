@@ -370,6 +370,16 @@ export class GlResources {
     prog.bindTexture('sobolTexture', d2d);
     prog.bindTexture('stratifiedTexture', d2d);
     prog.bindTexture('stratifiedOffsetTexture', d2d);
+    // H5 FIX (2026-06-09): when FEATURE_BDPT is compiled in (`bdpt: true`), the GLSL
+    // declares `uniform sampler2D uBdptLightPathTex` but it was MISSING from this
+    // dummy list — so it stayed unbound, defaulted to unit 0, and collided with the
+    // usampler there → GL_INVALID_OPERATION → black frame (exactly the failure mode
+    // this block's comment warns about). Bind a dummy (no-op when bdpt is off, since
+    // bindTexture skips inactive samplers). NOTE: BDPT is not yet host-driven (the
+    // light-subpath passes are never issued — see index.ts), so with this bound the
+    // frame renders unidirectionally rather than crashing; full BDPT orchestration is
+    // tracked as a feature in items_to_fix §H5.
+    prog.bindTexture('uBdptLightPathTex', d2d);
     // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; float totalSum; }
     prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
     prog.bindTexture('envMapInfo.marginalWeights', scene.envMarginal ?? d2d);
