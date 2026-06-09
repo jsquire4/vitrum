@@ -8,8 +8,10 @@
 import type * as THREE from 'three';
 import type { SceneEnvironment } from '@vitrum/core';
 
-/** How the resolved `hdri` env handle is represented (see {@link resolveEnvironment}). */
-export type EnvironmentPayloadMode = 'texture' | 'raw';
+/** How resolved texture handles (env `hdri` + material maps) are represented:
+ *  `'texture'` = a `THREE.Texture` (for the fork-wrapping `@vitrum/pt-webgl`);
+ *  `'raw'` = a backend-neutral pixel payload (for the THREE-free path tracers). */
+export type TexturePayloadMode = 'texture' | 'raw';
 
 /** IEEE-754 half (uint16) → float32, no THREE dependency (keeps this module THREE-type-only). */
 function halfToFloat(h: number): number {
@@ -86,7 +88,7 @@ export function equirectTextureToPayload(
  */
 export function resolveEnvironment(
   threeScene: THREE.Scene,
-  mode: EnvironmentPayloadMode = 'texture',
+  mode: TexturePayloadMode = 'texture',
 ): SceneEnvironment {
   // In 'raw' mode, emit a THREE-free {width,height,data} payload for THREE-free
   // backends (pt-webgl2 / pt-webgpu); fall back to the texture handle when the

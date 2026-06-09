@@ -23,7 +23,8 @@ import {
   type ThreeMaterialConverter,
 } from './mesh.js';
 import { convertLight } from './lights.js';
-import { resolveEnvironment, type EnvironmentPayloadMode } from './environment.js';
+import { resolveEnvironment, type TexturePayloadMode } from './environment.js';
+import { materialTextureToPayload } from './texturePixels.js';
 
 export {
   vitrumSceneToThree,
@@ -60,15 +61,56 @@ export interface SceneFromThreeJSOptions {
   readonly materialConverter?: ThreeMaterialConverter;
 
   /**
-   * How the resolved `environment.hdri` handle is represented:
+   * How resolved texture handles — the env `environment.hdri` AND every material map
+   * (baseColorMap, normalMap, …) — are represented:
    *  - `'texture'` (default) — a `THREE.Texture`, for the fork-wrapping
    *    `@vitrum/pt-webgl` (its `vitrumSceneToThree` reads the texture back).
-   *  - `'raw'` — a backend-neutral `{ width, height, data }` equirect payload, so
-   *    the THREE-free path tracers (`@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) can
-   *    sample the IBL. Falls back to the texture when CPU pixels aren't readable.
+   *  - `'raw'` — a backend-neutral `{ width, height, data }` pixel payload, so the
+   *    THREE-free path tracers (`@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) can sample
+   *    them. DataTextures are read directly; Image/ImageBitmap/Canvas sources are read
+   *    back via a 2D canvas (no-op without a DOM). Each handle falls back to the
+   *    `THREE.Texture` when its CPU pixels aren't readable (GPU-only / CORS-tainted).
    * Set `'raw'` when the target backend is a THREE-free engine.
    */
-  readonly environmentPayload?: EnvironmentPayloadMode;
+  readonly texturePayload?: TexturePayloadMode;
+}
+
+/** The `MaterialSpec` map fields whose `TextureRef.handle` the 'raw' on-ramp rewrites. */
+const TEXTURE_MAP_KEYS = [
+  'baseColorMap', 'normalMap', 'roughnessMap', 'metallicMap', 'transmissionMap',
+  'emissiveMap', 'alphaMap', 'aoMap', 'clearcoatMap', 'clearcoatRoughnessMap',
+  'clearcoatNormalMap', 'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
+  'iridescenceThicknessMap', 'anisotropyMap',
+] as const;
+
+/**
+ * Replace every material-map `TextureRef.handle` (a `THREE.Texture`) with a raw
+ * `{ width, height, data }` pixel payload, so THREE-free backends can atlas them.
+ * Pixel extraction is cached per source handle (textures are shared across materials);
+ * a handle whose pixels can't be read is left as the THREE.Texture (graceful fallback).
+ */
+function rawifyMaterialTextures(primitives: ScenePrimitive[]): ScenePrimitive[] {
+  const cache = new Map<unknown, unknown>();
+  return primitives.map((prim) => {
+    const mat = prim.material as unknown as Record<string, { handle?: unknown } | undefined>;
+    let nextMat: Record<string, unknown> | null = null;
+    for (const key of TEXTURE_MAP_KEYS) {
+      const ref = mat[key];
+      const handle = ref?.handle;
+      // skip absent maps and handles that are already raw payloads ({ data })
+      if (handle == null || (handle as { data?: unknown }).data != null) continue;
+      let payload = cache.get(handle);
+      if (payload === undefined) {
+        payload = materialTextureToPayload(handle as THREE.Texture) ?? null;
+        cache.set(handle, payload);
+      }
+      if (payload != null) {
+        nextMat ??= { ...(prim.material as unknown as Record<string, unknown>) };
+        nextMat[key] = { ...ref, handle: payload };
+      }
+    }
+    return nextMat == null ? prim : ({ ...prim, material: nextMat } as unknown as ScenePrimitive);
+  });
 }
 
 function assertSupportedRenderableMaterial(
@@ -233,7 +275,12 @@ export function sceneFromThreeJS(
     }
   });
 
-  const environment = resolveEnvironment(threeScene, options.environmentPayload);
+  const environment = resolveEnvironment(threeScene, options.texturePayload);
 
-  return { primitives, emitters, environment };
+  // 'raw' on-ramp: rewrite material-map handles to backend-neutral pixel payloads
+  // (the env hdri is handled in resolveEnvironment above).
+  const outPrimitives =
+    options.texturePayload === 'raw' ? rawifyMaterialTextures(primitives) : primitives;
+
+  return { primitives: outPrimitives, emitters, environment };
 }
