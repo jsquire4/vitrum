@@ -149,93 +149,60 @@ vi.mock('../../../packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.
   };
 });
 
-vi.mock('../../../packages/walkaround-hybrid/src/restir/bvhCompute.js', () => {
+// THREE-decouple (2026-06-08): the live walkaround setScene core path builds its
+// BVH via restir/bvhCore.ts (buildReSTIRSceneBVHForCoreScene), NOT the removed
+// restir/bvhCompute.{js,ts}. Mock the module the engine actually imports so the
+// `bvhBuilds` smoke signal fires and so the real (CPU+GPU) BVH build is skipped.
+function makeBvhCoreMock(): Record<string, unknown> {
+  const buf = (bytes: number, count = 1): unknown => ({
+    cpuData: new ArrayBuffer(bytes),
+    count,
+    byteLength: bytes,
+  });
   function makeBuffers(): unknown {
     const state = smokeState();
     state.bvhBuilds.push({});
     return {
       bvhMode: 'merged' as const,
-      primitiveTlasBindings: [],
-      bvhNodes: { cpuData: new ArrayBuffer(32), count: 1, byteLength: 32 },
-      bvhIndex: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      bvhBeerColors: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      bvhPositions: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
+      bvhNodes: buf(32),
+      bvhIndex: buf(16),
+      bvhPositions: buf(16),
+      triangleMaterialIds: buf(4, 0),
+      bvhBeerColors: buf(16),
+      bvhEmissiveLe: buf(16),
+      bvhNormals: buf(16),
+      emitters: buf(16, 0),
+      emitterCdf: buf(16, 0),
       emitterCount: 0,
       totalEmissivePower: 0,
-      mergedGeometry: new THREE.BufferGeometry(),
+      lightTree: buf(16, 0),
+      lightTreeNodeCount: 0,
+      lightTreeEnabled: false,
+      // THREE-free merged-geometry handle (RestirMergedGeometryLike).
+      mergedGeometry: { boundingBox: null, computeBoundingBox: () => undefined, dispose: () => undefined },
       meshVertexRanges: [],
       bvhIndicesStride3: new Uint32Array(0),
-      triangleMaterialIds: { cpuData: new ArrayBuffer(4), count: 0, byteLength: 4 },
       buildMaterials: [],
       coreMaterials: [],
       emitterNormals: new Float32Array(0),
     };
   }
-
   return {
-    buildReSTIRSceneBVH: vi.fn(makeBuffers),
-    buildReSTIRSceneBVHForScene: vi.fn(makeBuffers),
+    buildReSTIRSceneBVHForCoreScene: vi.fn(makeBuffers),
+    rebuildReSTIRSceneBVHPrimitiveCore: vi.fn(makeBuffers),
+    resolveReSTIRBvhMode: vi.fn(() => 'merged' as const),
     rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCount: 0,
-      totalEmissivePower: 0,
-    })),
-    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
+      emitters: buf(16, 0),
+      emitterCdf: buf(16, 0),
       emitterCount: 0,
       totalEmissivePower: 0,
     })),
     disposeSceneBVH: vi.fn(),
   };
-});
+}
 
-vi.mock('../../../packages/walkaround-hybrid/src/restir/bvhCompute.ts', () => {
-  function makeBuffers(): unknown {
-    const state = smokeState();
-    state.bvhBuilds.push({});
-    return {
-      bvhMode: 'merged' as const,
-      primitiveTlasBindings: [],
-      bvhNodes: { cpuData: new ArrayBuffer(32), count: 1, byteLength: 32 },
-      bvhIndex: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      bvhBeerColors: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      bvhPositions: { cpuData: new ArrayBuffer(16), count: 1, byteLength: 16 },
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCount: 0,
-      totalEmissivePower: 0,
-      mergedGeometry: new THREE.BufferGeometry(),
-      meshVertexRanges: [],
-      bvhIndicesStride3: new Uint32Array(0),
-      triangleMaterialIds: { cpuData: new ArrayBuffer(4), count: 0, byteLength: 4 },
-      buildMaterials: [],
-      coreMaterials: [],
-      emitterNormals: new Float32Array(0),
-    };
-  }
-
-  return {
-    buildReSTIRSceneBVH: vi.fn(makeBuffers),
-    buildReSTIRSceneBVHForScene: vi.fn(makeBuffers),
-    rebuildEmitterBuffersFromCoreScene: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCount: 0,
-      totalEmissivePower: 0,
-    })),
-    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
-      emitters: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCdf: { cpuData: new ArrayBuffer(16), count: 0, byteLength: 16 },
-      emitterCount: 0,
-      totalEmissivePower: 0,
-    })),
-    disposeSceneBVH: vi.fn(),
-  };
-});
+vi.mock('../../../packages/walkaround-hybrid/src/restir/bvhCore.js', () => makeBvhCoreMock());
+vi.mock('../../../packages/walkaround-hybrid/src/restir/bvhCore.ts', () => makeBvhCoreMock());
 
 class FakeWebGL2RenderingContext {
   readonly MAX_FRAGMENT_UNIFORM_VECTORS = 0x8dfd;

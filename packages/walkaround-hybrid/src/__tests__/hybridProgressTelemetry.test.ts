@@ -210,6 +210,9 @@ function makeFrameDeps(opts: {
     setSunIntensityMultiplier: () => undefined,
     setGlassMixScale: () => undefined,
     getReadAtlasGPUTextures: () => null,
+    // Live BVH propagation (THREE-decouple): propagateBvhToGiSubsystems syncs the
+    // shared scene-BVH buffers into DDGI each frame when syncDdgi + bvhBuffers.
+    syncRestirBvhBuffers: () => undefined,
     gridParams: {},
   };
   return {

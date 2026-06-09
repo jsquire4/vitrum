@@ -4,14 +4,20 @@
  * Mirrors the TLAS refit test (rcRestirTlas.test.ts): a moved instance must
  * refresh the RC BVH geometry via writeBuffer + in-place node refit, NOT via
  * a full SAH rebuild + buffer realloc + dispatcher recreation.
+ *
+ * THREE-decouple (2026-06-08): `RCSubsystem.setScene(rawThreeScene)` was removed
+ * (it now throws — see HybridEngineRC.ts). The merged BVH is built from a
+ * `@vitrum/core` `Scene` via `setSceneFromCore()`, so these fixtures are core
+ * `MeshPrimitive`s instead of `THREE.Mesh`es. The refit logic under test
+ * (`refitMergedInstance`) is unchanged — it operates on the merged
+ * positions/nodes regardless of how they were built.
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { Scene, MeshPrimitive, MaterialSpec } from '@vitrum/core';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 
 installWebGPUPolyfills();
-
-import * as THREE from 'three';
 
 /** Mock GPUDevice recording createBuffer + writeBuffer; buffers are tagged by
  *  their label so we can assert which got re-uploaded. */
@@ -35,18 +41,54 @@ function makeMockDevice(): {
   return { device, createBuffer, writeBuffer };
 }
 
-/** A minimal THREE scene with one box mesh — enough for buildRCSceneBVH to
- *  produce a real merged BVH (>1 node) so refit has something to recompute. */
-function boxScene(): THREE.Scene {
-  const scene = new THREE.Scene();
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshStandardMaterial({ color: 0x808080 }),
-  );
-  mesh.name = 'box-0';
-  scene.add(mesh);
-  scene.updateMatrixWorld(true);
-  return scene;
+const GREY: MaterialSpec = { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0 };
+
+/** One quad (two tris) as a core MeshPrimitive (winding mirrors the RC
+ *  core-equivalence fixtures). */
+function quad(
+  id: string,
+  verts: [number, number, number][],
+  normal: [number, number, number],
+  material: MaterialSpec = GREY,
+): MeshPrimitive {
+  return {
+    kind: 'mesh',
+    id,
+    positions: new Float32Array([...verts[0]!, ...verts[1]!, ...verts[2]!, ...verts[3]!]),
+    normals: new Float32Array([...normal, ...normal, ...normal, ...normal]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
+    material,
+  };
+}
+
+/** Six faces of a unit cube spanning [-0.5, 0.5]^3 (the core analogue of the old
+ *  `THREE.BoxGeometry(1, 1, 1)`) — 12 tris ⇒ a real multi-node merged BVH so
+ *  refit has nodes to recompute. `off` shifts the whole cube so two cubes can
+ *  coexist with distinct world positions. */
+function unitCubePrimitives(
+  idPrefix: string,
+  off: [number, number, number] = [0, 0, 0],
+  material: MaterialSpec = GREY,
+): MeshPrimitive[] {
+  const n = -0.5;
+  const p = 0.5;
+  const [ox, oy, oz] = off;
+  const v = (x: number, y: number, z: number): [number, number, number] => [x + ox, y + oy, z + oz];
+  return [
+    quad(`${idPrefix}-zneg`, [v(n, n, n), v(p, n, n), v(p, p, n), v(n, p, n)], [0, 0, -1], material),
+    quad(`${idPrefix}-zpos`, [v(n, n, p), v(p, n, p), v(p, p, p), v(n, p, p)], [0, 0, 1], material),
+    quad(`${idPrefix}-xneg`, [v(n, n, n), v(n, n, p), v(n, p, p), v(n, p, n)], [-1, 0, 0], material),
+    quad(`${idPrefix}-xpos`, [v(p, n, n), v(p, n, p), v(p, p, p), v(p, p, n)], [1, 0, 0], material),
+    quad(`${idPrefix}-yneg`, [v(n, n, n), v(p, n, n), v(p, n, p), v(n, n, p)], [0, -1, 0], material),
+    quad(`${idPrefix}-ypos`, [v(n, p, n), v(p, p, n), v(p, p, p), v(n, p, p)], [0, 1, 0], material),
+  ];
+}
+
+/** A core Scene with one unit cube at the origin — replaces the old THREE
+ *  `boxScene()`. */
+function cubeScene(): Scene {
+  return { primitives: unitCubePrimitives('box-0'), emitters: [], environment: { kind: 'none' } };
 }
 
 describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
@@ -55,7 +97,7 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     const { device, createBuffer, writeBuffer } = makeMockDevice();
     const rc = new RCSubsystem(device);
 
-    rc.setScene(boxScene());
+    rc.setSceneFromCore(cubeScene());
     const createCallsAfterBuild = createBuffer.mock.calls.length;
     expect(createCallsAfterBuild).toBeGreaterThan(0);
     const dispatcherBefore = (rc as unknown as { _dispatcher: unknown })._dispatcher;
@@ -90,7 +132,7 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     const { RCSubsystem } = await import('../src/HybridEngineRC.js');
     const { device } = makeMockDevice();
     const rc = new RCSubsystem(device);
-    rc.setScene(boxScene());
+    rc.setSceneFromCore(cubeScene());
 
     const nodes = (rc as unknown as { _mergedNodesCpu: Float32Array | null })._mergedNodesCpu;
     const positions = (rc as unknown as { _mergedPositionsStride4: Float32Array | null })
@@ -111,64 +153,46 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     expect(rootMaxXAfter).toBeCloseTo(rootMaxXBefore + 10, 3);
   });
 
-  it('merged BVH includes non-PBR meshes (filter parity with ReSTIR merged build)', async () => {
+  it('merged BVH includes ALL core mesh primitives (vertex-set parity with ReSTIR)', async () => {
     // refitMergedInstance adopts ReSTIR's `bvhPositions.cpuData` directly into
     // RC's position mirror, then refits RC's own nodes/indices against it. That
-    // is correct ONLY when both built the SAME vertex layout. ReSTIR's merged
-    // build (`buildReSTIRSceneBVH`) filters `obj instanceof THREE.Mesh` — ALL
-    // meshes regardless of material. `buildRCSceneBVH`'s DEFAULT filter accepts
-    // only MeshStandard/MeshPhysical, so a non-PBR mesh would be dropped from RC
-    // but kept by ReSTIR → divergent vertex sets. RCSubsystem.setScene must pass
-    // the permissive `isMesh` filter so both vertex layouts match by construction.
+    // is correct ONLY when both built the SAME vertex layout. In the old THREE
+    // path this was a real hazard: ReSTIR's merged build filtered `isMesh`
+    // (ALL meshes) while `buildRCSceneBVH`'s DEFAULT filter accepted only
+    // MeshStandard/MeshPhysical — a non-PBR mesh would diverge the vertex sets.
+    // The decoupled core path has NO material-class filter: `setSceneFromCore`
+    // → `buildRCSceneBVHFromCore` consumes every core MeshPrimitive, so the
+    // vertex sets match ReSTIR's by construction. Pin it: a two-cube scene must
+    // contribute exactly 2x a one-cube scene's vertices (no spurious dropping).
     const { RCSubsystem } = await import('../src/HybridEngineRC.js');
     const { device } = makeMockDevice();
 
-    // PBR-only scene: one MeshStandard box.
-    const pbrOnly = new THREE.Scene();
-    const pbrBox = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ color: 0x808080 }),
-    );
-    pbrBox.name = 'pbr-box';
-    pbrOnly.add(pbrBox);
-    pbrOnly.updateMatrixWorld(true);
-
-    const rcPbr = new RCSubsystem(device);
-    rcPbr.setScene(pbrOnly);
-    const pbrVerts =
-      ((rcPbr as unknown as { _mergedPositionsStride4: Float32Array | null })
+    const oneCube: Scene = {
+      primitives: unitCubePrimitives('a'),
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rcOne = new RCSubsystem(device);
+    rcOne.setSceneFromCore(oneCube);
+    const oneVerts =
+      ((rcOne as unknown as { _mergedPositionsStride4: Float32Array | null })
         ._mergedPositionsStride4?.length ?? 0) / 4;
-    expect(pbrVerts).toBeGreaterThan(0);
+    expect(oneVerts).toBeGreaterThan(0);
 
-    // Mixed scene: same MeshStandard box PLUS a MeshBasicMaterial box. With the
-    // DEFAULT filter the basic box would be dropped and the vertex count would
-    // EQUAL the PBR-only count; with the permissive filter it is included so the
-    // count is strictly larger.
-    const mixed = new THREE.Scene();
-    const pbrBox2 = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ color: 0x808080 }),
-    );
-    pbrBox2.name = 'pbr-box';
-    const basicBox = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshBasicMaterial({ color: 0x222222 }),
-    );
-    basicBox.name = 'basic-box';
-    mixed.add(pbrBox2);
-    mixed.add(basicBox);
-    mixed.updateMatrixWorld(true);
-
-    const rcMixed = new RCSubsystem(device);
-    rcMixed.setScene(mixed);
-    const mixedVerts =
-      ((rcMixed as unknown as { _mergedPositionsStride4: Float32Array | null })
+    // Two cubes at distinct world positions (offset so they can't coalesce).
+    const twoCubes: Scene = {
+      primitives: [...unitCubePrimitives('a'), ...unitCubePrimitives('b', [3, 0, 0])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rcTwo = new RCSubsystem(device);
+    rcTwo.setSceneFromCore(twoCubes);
+    const twoVerts =
+      ((rcTwo as unknown as { _mergedPositionsStride4: Float32Array | null })
         ._mergedPositionsStride4?.length ?? 0) / 4;
 
-    // The MeshBasic box must have contributed its vertices — proving the
-    // permissive filter is in effect (the default filter would have dropped it,
-    // leaving mixedVerts === pbrVerts).
-    expect(mixedVerts).toBe(pbrVerts * 2);
+    // Both cubes contributed — proving no spurious primitive filtering.
+    expect(twoVerts).toBe(oneVerts * 2);
   });
 
   it('returns false (caller falls back to setScene) when in TLAS mode', async () => {
@@ -184,7 +208,7 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     const { RCSubsystem } = await import('../src/HybridEngineRC.js');
     const { device } = makeMockDevice();
     const rc = new RCSubsystem(device);
-    rc.setScene(boxScene());
+    rc.setSceneFromCore(cubeScene());
     // Wrong-length positions buffer → cannot apply the fast path.
     const out = rc.refitMergedInstance(new Float32Array(8), [0, 0, 0], [1, 1, 1]);
     expect(out).toBe(false);

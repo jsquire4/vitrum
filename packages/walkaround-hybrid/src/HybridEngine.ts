@@ -1506,8 +1506,16 @@ export class HybridEngine implements Engine {
       this._primaryLightDir = opts.primaryLightDir;
       changed = true;
       // Republish DDGI sun lights so the probe-update pass follows the same
-      // runtime direction that renderFrame() passes to the shade UBO.
-      this._syncDdgiLightsFromCoreScene();
+      // runtime direction that renderFrame() passes to the shade UBO. With a
+      // core mesh scene this re-merges scene emitters; without one (lights-only
+      // host, or before setScene) fall back to re-orienting the ctor lights —
+      // mirroring the init path (line ~836) so the sun follows primaryLightDir
+      // regardless of whether a mesh scene is present.
+      if (this._renderScene != null && this._coreSceneSuppliesMeshes()) {
+        this._syncDdgiLightsFromCoreScene();
+      } else {
+        this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
+      }
     }
     if (opts.primaryLightIntensity !== undefined) {
       this._primaryLightIntensity = opts.primaryLightIntensity;
