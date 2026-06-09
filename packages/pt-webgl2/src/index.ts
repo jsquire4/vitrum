@@ -15,7 +15,6 @@ import type {
 } from '@vitrum/core';
 import {
   asBackendTexture,
-  partitionSceneBySupport,
   patchEmitterInScene,
   patchPrimitiveInScene,
 } from '@vitrum/core';
@@ -142,13 +141,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
-    const { supported, warnings } = partitionSceneBySupport(scene, this.capabilities);
-    for (const w of warnings) console.warn(`[vitrum/pt-webgl2] ${w}`);
-    const built = buildSceneTextures(this.#gl, supported, this.capabilities);
+    // H7 FIX (2026-06-09): partition ONCE. setScene used to call
+    // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
+    // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
+    // buildSceneTextures now returns `supported`, so the filter runs a single time.
+    const built = buildSceneTextures(this.#gl, scene, this.capabilities);
+    for (const w of built.warnings) console.warn(`[vitrum/pt-webgl2] ${w}`);
     this.#sceneTextures?.destroy();
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
-    this.#scene = supported;
+    this.#scene = built.supported;
     this.reset();
   }
 
@@ -248,12 +250,20 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     }
 
     const frameUniforms = this.#frameUniforms(input, activeBounces, w, h);
+    // H7 FIX (2026-06-09): real per-frame time for the onFrame telemetry (was
+    // hardcoded 0). This is the CPU-side cost of building + SUBMITTING the accum
+    // step (uniform packing + the GL draw call); it is NOT GPU execution time
+    // (that would need EXT_disjoint_timer_query) — but it is a real, non-zero
+    // monotonic frame-cost signal instead of a constant 0. The no-draw paused/
+    // converged fast-outs honestly report 0 (they enqueue no work).
+    const t0 = performance.now();
     this.#gpu.drawAccumStep(this.#sceneTextures, this.#regime, input.frameSeed, frameUniforms);
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
 
     const tex = this.#gpu.resultTexture();
     if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
-    return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp);
+    const frameTimeMs = performance.now() - t0;
+    return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp, frameTimeMs);
   }
 
   reset(): void {
@@ -334,7 +344,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
   }
 
-  #frameRendered(tex: WebGLTexture, samples: number, isConverged: boolean, target: number): FrameRendered {
+  #frameRendered(tex: WebGLTexture, samples: number, isConverged: boolean, target: number, frameTimeMs = 0): FrameRendered {
     const nd = this.#supportsAuxBuffers ? this.#gpu.normalDepthTex : null;
     const al = this.#supportsAuxBuffers ? this.#gpu.albedoTex : null;
     const out: FrameRendered = {
@@ -347,7 +357,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fraction = target > 0 ? Math.min(samples / target, 1) : 1;
     for (const cb of this.#onProgressSubs) cb({ kind: 'pt-spp', current: samples, target, fraction });
-    for (const cb of this.#onFrameSubs) cb({ frameTimeMs: 0, spp: samples });
+    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples });
     return out;
   }
 

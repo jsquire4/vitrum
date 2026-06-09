@@ -290,6 +290,11 @@ export class GlResources {
     this.#blendProgram?.dispose();
     this.#blendProgram = null;
     this.#quad.dispose(gl);
+    // H7 FIX (2026-06-09): delete the lazily-allocated dummy textures — dispose()
+    // freed the programs/targets/quad but LEAKED these two GPU textures on every
+    // engine teardown (Canvas remount / route change churn would accumulate them).
+    if (this.#dummy2dTex != null) { gl.deleteTexture(this.#dummy2dTex); this.#dummy2dTex = null; }
+    if (this.#dummy2dArrTex != null) { gl.deleteTexture(this.#dummy2dArrTex); this.#dummy2dArrTex = null; }
   }
 
   // ----- internals -------------------------------------------------------------------------

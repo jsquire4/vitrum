@@ -33,6 +33,9 @@ export interface SceneTexturesBuild {
   readonly textures: UploadedSceneTextures;
   readonly merged: WorldSpaceMergeResult;
   readonly warnings: string[];
+  /** The capability-filtered scene (H7: returned so callers reuse this single
+   *  partition instead of running `partitionSceneBySupport` a second time). */
+  readonly supported: Scene;
 }
 
 /**
@@ -133,7 +136,7 @@ export function buildSceneTextures(
     },
   };
 
-  return { textures, merged, warnings };
+  return { textures, merged, warnings, supported };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
