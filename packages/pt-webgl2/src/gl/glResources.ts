@@ -25,6 +25,23 @@ import {
 } from './framebuffer.js';
 import { setBlendForRegime } from './blend.js';
 import { probeGlCaps, type GlCaps } from './glCaps.js';
+import {
+  CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE,
+  X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF,
+  X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL,
+} from '@vitrum/shared-samplers';
+
+// H2 — spectral CMF upload tables (constant; precomputed Float32 copies so the
+// per-frame upload allocates nothing). The spectral path importance-samples the
+// hero wavelength against these CIE 1931 tables/CDFs and reconstructs RGB via the
+// integrals; without them every uniform is 0 → wavelengthPdf=0 → black. The CDFs
+// are Float64Array in @vitrum/shared-samplers (length 82); GL needs Float32.
+const CMF_X_F32 = Float32Array.from(CIE_X_TABLE);
+const CMF_Y_F32 = Float32Array.from(CIE_Y_TABLE);
+const CMF_Z_F32 = Float32Array.from(CIE_Z_TABLE);
+const CMF_XCDF_F32 = Float32Array.from(X_CMF_CDF);
+const CMF_YCDF_F32 = Float32Array.from(Y_CMF_CDF);
+const CMF_ZCDF_F32 = Float32Array.from(Z_CMF_CDF);
 
 /**
  * Per-frame INDIVIDUAL uniforms the (verbatim-copied) fork GLSL reads — it declares
@@ -207,6 +224,24 @@ export class GlResources {
     prog.setFloat('environmentIntensity', frame.environmentIntensity);
     prog.setMat4('environmentRotation', frame.environmentRotation);
     prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
+    if (frame.spectralEnabled) {
+      // H2 FIX (2026-06-09): upload the CIE CMF tables + CDFs + integrals. Before
+      // this, GlProgram.setFloatArray had ZERO callers, so uCmfX/Y/Z, the three
+      // CDFs, and the integrals all defaulted to 0 → wavelengthPdf=0 →
+      // wavelengthToRGB() returned vec3(0) → `spectral: true` rendered BLACK.
+      // Constant data, cheap re-upload; gated so non-spectral frames skip it.
+      // (u_jakobCoeffs / iorCauchy stay at their flat-spectrum / no-dispersion
+      // defaults — those refine spectral reflectance colour, not black-vs-lit.)
+      prog.setFloatArray('uCmfX', CMF_X_F32);
+      prog.setFloatArray('uCmfY', CMF_Y_F32);
+      prog.setFloatArray('uCmfZ', CMF_Z_F32);
+      prog.setFloatArray('uXCmfCdf', CMF_XCDF_F32);
+      prog.setFloatArray('uYCmfCdf', CMF_YCDF_F32);
+      prog.setFloatArray('uZCmfCdf', CMF_ZCDF_F32);
+      prog.setFloat('uXCmfIntegral', X_CMF_INTEGRAL);
+      prog.setFloat('uYCmfIntegral', Y_CMF_INTEGRAL);
+      prog.setFloat('uZCmfIntegral', Z_CMF_INTEGRAL);
+    }
     prog.setInt('uCausticStrategy', frame.causticStrategy);
     prog.setFloat('uMneeMaxIterations', frame.mneeMaxIterations);
     prog.setFloat('uMneeMaxChainLength', frame.mneeMaxChainLength);
