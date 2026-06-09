@@ -118,6 +118,83 @@ or silently drop user data — exactly the rot that has made the maturity pictur
 4. **Then the research-grade items (A3 true spectral, A10/C2 neural weights, A9 BDPT-prod,
    A4 caustic decision, B7 SBVH).** Multi-week each; schedule deliberately.
 
+## Addendum — 2026-06-09 second-wave deep-read (11 agents, lead-verified)
+
+A full line-by-line re-read of all 12 packages found that several bucket entries UNDERSTATE
+the gap, plus new fidelity items. **Bugs/broken-surface findings went to `items_to_fix.md`
+Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS doc's picture:
+
+- **"Foundations + default render paths ~90%" needs a caveat: pt-webgl2 is NOT at RC level.**
+  ✅ Its entire analytic-light system is inert (`lights.count` never uploaded — items H1),
+  `spectral` renders black (H2), directly-visible env never accumulates (H3), and `bdpt` is
+  never driven (H5). As shipped it is an emissive-geometry-lit RGB tracer (~60-70%); the
+  fork-vs-native A/Bs passed because they exercised exactly the paths that work
+  (emissive-fold Cornell, glass, IBL-indirect, textures). Treat pt-webgl2's
+  release-candidate label as suspended until H1–H5 land.
+- **B1 is WORSE than written:** metals are excluded from DIRECT light too, not just GI
+  (`shade.wgsl.ts:230,309` — lo_direct/lo_indirect both return 0 for isGlass||isMetal), so
+  metals are effectively unlit except emitter glow; and the comment's escape hatch ("the
+  path-traced fork") was deleted 2026-06-09. Also the material payload carries only
+  RGB888 + 4-bit transmission + 1-bit metal + 3-bit texId — authored roughness/metalness
+  never reach the BRDF (two hardcoded roughnesses, `shade.wgsl.ts:519-521`). Closing B1
+  properly requires widening the packed material lane, not just a shader change.
+- **A2 (PPG) is two defects, not one:** beyond the sTree never splitting, ◻ the dTree's
+  interior nodes never carry flux → descent is uniform above the leaf level AND
+  `ppgEvalPdf` mismatches the actual sampling distribution → biased RIS when enabled
+  (items H25). The CPU oracle shares the flaw (byte-identity green while both wrong).
+- **A6 (NRC) has a structural ceiling:** ◻ the spread-termination predicate is
+  constant-true at the default `spreadC` and the training target is the DDGI estimate the
+  cache replaces — distillation, no upside (items H26/H27). A6's "validated consumable"
+  goal needs the Müller a0 semantics (camera-pdf footprint) + a path-traced training
+  target, not just tail-padding fixes.
+- **A10 (neural denoiser) is blocked before weights:** ✅(static) the in-place ReLU layers
+  bind one buffer as read + read_write in a single bind group — likely hard validation
+  failure on any real adapter (items H28). Repro on real GPU before training anything.
+- **NEW B13 — walkaround texture sampling is broken at the seam** ✅: UVs zeroed at both
+  `restir/bvhCore.ts` build sites (items H15). The G3 texture work (63a6dab) wired UVs
+  through shared-bvh, but walkaround discards them. S-effort, render-changing.
+- **NEW B14 — DDGI emitter blindness** ◻: probe rays see sun+point/spot+sky only; emissive
+  surfaces and area emitters contribute zero DDGI indirect (items H18). The RC emitter NEE
+  fix (1e893fa) has no DDGI counterpart. M–L effort.
+- **NEW B15 — four radiometric clamps between estimator and screen on the walkaround
+  default path** ◻: reuse-Jacobian clamp [0.1,10] (`jacobianShift.wgsl.ts:36`), GI W-cap 16,
+  irradiance clamp 5.0, firefly clamps 4.0/1.0-per-channel — all Cornell-calibrated; the
+  1.0/channel indirect clamp caps GI energy in any brighter scene. Needs scene-scale-aware
+  defaults or documented host-override guidance. M effort.
+- **NEW B16 — DI candidate generation has no BRDF lobe** ◻: `M_BRDF=1` declared, never
+  sampled (`ris.wgsl.ts:79`) — hurts glossy DI once B1 lands. S–M effort.
+- **C-bucket correction:** C1's "clear error" fix covers the FACTORY; the runtime
+  dispatcher (`oidnDispatcherCore.ts:338-340`) still converts every OIDN failure into one
+  console.warn → silent un-denoised frames (items H35). The host-visible failure surface
+  (denoiser `state()`) has zero consumers. S effort, high consumer value.
+
+**Second-wave claims-surface audit (same session, items H39–H59) added three structural
+buckets that the A–D framing was missing:**
+
+- **NEW C4 — zero examples** ✅: the THREE cutover deleted `examples/` and nothing replaced
+  it; every public entry point (`createEngine`, `attachVitrum`, `VitrumCanvas`,
+  `createProgressiveEngine`, both PT factories, the hybrid factory) has no runnable example
+  (items H57). For "a professional library others can use," this is a provisioning gap on
+  par with the OIDN assets. M effort (one core-Scene Cornell example per entry point).
+- **NEW C5 — contract-truth reconciliation** ✅: `promiseLedger` rows contradict shipped
+  runtime capabilities (pt-webgl2 analytic/mutations/aux); the fidelity matrix's `pt-webgl`
+  column describes a deleted package and omits pt-webgl2; CHANGELOG `[Unreleased]` has no
+  Removed entry for e14000c; ~6 tool READMEs document dead workflows; 2 packages have no
+  README (items H39–H45, H59). S–M effort, zero rendering risk, large honesty payoff.
+- **NEW D10 — test-infrastructure gates** ✅/◻: the suite is structurally blind to the
+  H1-class (mock GL accepts every uniform; stub GPUDevices validate no sizes; no vitest run
+  compiles any shader; the only behavioral gates live outside `npm test`). The top-3 payoff
+  tests: GL uniform-upload completeness via recording mock, in-repo naga parse gate, and a
+  size-validating GPU stub (items H53–H56 list ten, prioritized). M effort total; this is
+  what stops the next H1 from shipping green.
+- **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
+  fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
+  casualties — see B1/B13), and a dozen fields have zero consumers in ANY backend
+  (anisotropy*, envMapIntensity, aoMap, bumpMap, displacementMap, lightMap,
+  angularDiameter, castShadow/receiveShadow, tangents). Extends D3's "consumption tracked"
+  list with the verified full set; `denoiser` is additionally a silent no-op on both PT
+  backends for any value but `'oidn-final'` (H48).
+
 ## Open decisions (need a call before building)
 
 - **A4:** real progressive photon map, or retire photon-map and make MNEE the sole caustic path?
