@@ -1,0 +1,320 @@
+// GlResources — the GL resource owner (plan/three-removal/02-gl-framework.md §5, §6).
+// Analog of pt-webgpu's GpuResources / the fork's PathTracingRenderer state. It owns:
+//   - the accumulation FBO + RGBA32F color texture (+ optional MRT gNormalDepth/gAlbedo),
+//   - the Regime-2 ping-pong blend pair (allocated lazily only when needed),
+//   - the PT GlProgram (built from composeTraceGlsl + FULLSCREEN_VERT),
+//   - the Regime-2 BlendMaterial composite quad program,
+//   - the std140 FrameParams UBO (WS5 frameParamsPacker target),
+//   - a FullscreenQuad.
+//
+// The per-sample draw (drawAccumStep) replaces the fork's renderTask generator: bind the
+// accum FBO + MRT draw buffers, set the blend regime, bind scene textures + params UBO, and
+// draw the fullscreen triangle (fork PathTracingRenderer.js:144-167, §6 of plan 02).
+
+import type { TraceFeatures, AccumRegime } from '../featureTypes.js';
+import { featureDefines } from '../featureTypes.js';
+import type { UploadedSceneTextures } from '../scene/sceneTextures.js';
+import { composeTraceGlsl } from '../glsl/composeTraceGlsl.js';
+import { GlProgram } from './glProgram.js';
+import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
+import {
+  createRenderTarget,
+  bindRenderTarget,
+  clearRenderTarget,
+  type RenderTarget,
+} from './framebuffer.js';
+import { setBlendForRegime } from './blend.js';
+import { probeGlCaps, type GlCaps } from './glCaps.js';
+
+/** The std140 FrameParams UBO binding point — must match the GLSL `layout(binding = 0)`. */
+const FRAME_PARAMS_BINDING = 0;
+/** FrameParams std140 block size in bytes (placeholder until WS5 freezes the layout). */
+const FRAME_PARAMS_SIZE = 256;
+
+/**
+ * The Regime-2 composite quad fragment (verbatim port of the fork's BlendMaterial.js:31-59,
+ * GL_FragColor → pc_fragColor). Lerps target1/target2 by `opacity = 1/(samples+1)` with
+ * alpha-weighted compositing, written into the ping-pong pair.
+ */
+const BLEND_FRAG = `
+in vec2 vUv;
+uniform float opacity;
+uniform sampler2D target1;
+uniform sampler2D target2;
+void main() {
+  vec4 color1 = texture(target1, vUv);
+  vec4 color2 = texture(target2, vUv);
+  float invOpacity = 1.0 - opacity;
+  float totalAlpha = color1.a * invOpacity + color2.a * opacity;
+  if (color1.a != 0.0 || color2.a != 0.0) {
+    pc_fragColor.rgb = color1.rgb * (invOpacity * color1.a / totalAlpha)
+                     + color2.rgb * (opacity * color2.a / totalAlpha);
+    pc_fragColor.a = totalAlpha;
+  } else {
+    pc_fragColor = vec4(0.0);
+  }
+}
+`;
+
+export class GlResources {
+  readonly #gl: WebGL2RenderingContext;
+  readonly #caps: GlCaps;
+  /** Whether MRT aux g-buffers (gNormalDepth/gAlbedo) are allocated + written. */
+  readonly #auxBuffers: boolean;
+  readonly #quad: FullscreenQuad;
+
+  /** The PT accumulation target (RGBA32F primary + optional MRT aux). */
+  #accum: RenderTarget | null = null;
+  /** Regime-2 ping-pong blend pair — allocated lazily on first alpha-composite step. */
+  #blend: [RenderTarget, RenderTarget] | null = null;
+  /** Which slot of the blend pair currently holds the readable result. */
+  #blendReadIndex = 0;
+
+  #ptProgram: GlProgram | null = null;
+  #blendProgram: GlProgram | null = null;
+  #paramsUbo: WebGLBuffer | null = null;
+
+  #accumWidth = 0;
+  #accumHeight = 0;
+  /** Samples already accumulated since the last clearAccum() — drives opacity 1/(N+1). */
+  #samples = 0;
+
+  /**
+   * @param supportsAuxBuffers host policy for the MRT g-buffers; intersected here with the
+   * device's MAX_DRAW_BUFFERS so a 1-MRT device degrades to attachment-0-only (plan 02 §4).
+   */
+  constructor(gl: WebGL2RenderingContext, supportsAuxBuffers: boolean) {
+    this.#gl = gl;
+    this.#caps = probeGlCaps(gl);
+    this.#auxBuffers = supportsAuxBuffers && this.#caps.maxDrawBuffers >= 3;
+    this.#quad = new FullscreenQuad(gl);
+  }
+
+  /** Probed device capabilities (regime selection, MRT/sampler budgets). */
+  get caps(): GlCaps {
+    return this.#caps;
+  }
+
+  /**
+   * Ensure the accumulation resources match w×h, reallocating on a size change.
+   * Returns `recreated` — true when targets were (re)built, so the caller resets its
+   * sample counter (fork PathTracingRenderer.setSize → reset, :358-374).
+   */
+  ensureAccumResources(w: number, h: number): boolean {
+    if (w === this.#accumWidth && h === this.#accumHeight && this.#accum != null) return false;
+    this.#destroyTargets();
+    this.#accum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
+    this.#accumWidth = w;
+    this.#accumHeight = h;
+    this.#samples = 0;
+    return true;
+  }
+
+  /** Build the PT program from `composeTraceGlsl(features)` once (idempotent). */
+  ensureProgram(features: TraceFeatures): void {
+    this.#ptProgram ??= new GlProgram(
+      this.#gl,
+      FULLSCREEN_VERT,
+      composeTraceGlsl(features),
+      featureDefines(features),
+    );
+  }
+
+  /** The PT program (null before ensureProgram) — for the host to set uniforms/defines. */
+  get ptProgram(): GlProgram | null {
+    return this.#ptProgram;
+  }
+
+  /** Clear all accumulation targets to (0,0,0,0) + reset the sample counter (fork reset()). */
+  clearAccum(): void {
+    if (this.#accum != null) clearRenderTarget(this.#gl, this.#accum);
+    if (this.#blend != null) {
+      clearRenderTarget(this.#gl, this.#blend[0]);
+      clearRenderTarget(this.#gl, this.#blend[1]);
+    }
+    this.#blendReadIndex = 0;
+    this.#samples = 0;
+  }
+
+  /**
+   * One accumulation step (plan 02 §6). Binds the accum FBO + MRT draw buffers, sets the
+   * blend regime, uploads the running-average opacity + seed, binds the scene textures and
+   * the params UBO, and draws the fullscreen triangle. For the alpha-composite regime it then
+   * runs the BlendMaterial composite into the ping-pong pair.
+   */
+  drawAccumStep(scene: UploadedSceneTextures, regime: AccumRegime, seed: number): void {
+    const gl = this.#gl;
+    if (this.#accum == null) throw new Error('pt-webgl2: drawAccumStep before ensureAccumResources');
+    if (this.#ptProgram == null) throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
+    const prog = this.#ptProgram;
+
+    bindRenderTarget(gl, this.#accum);
+    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
+    setBlendForRegime(gl, regime, this.#samples);
+
+    prog.use();
+    prog.setInt('seed', seed);
+    prog.setFloat('opacity', 1 / (this.#samples + 1));
+    this.#bindSceneTextures(prog, scene);
+    this.#bindParamsUbo(prog);
+    this.#quad.draw(gl);
+
+    if (regime === 'alpha-composite') this.#compositeBlendStep();
+
+    this.#samples += 1;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /** The readable accumulation result texture (ping-pong slot for Regime 2, else primary). */
+  resultTexture(): WebGLTexture | null {
+    if (this.#blend != null) {
+      const [a, b] = this.#blend;
+      return (this.#blendReadIndex === 0 ? a : b).color;
+    }
+    return this.#accum?.color ?? null;
+  }
+
+  /** The packed normal+depth g-buffer (null when MRT disabled). */
+  get normalDepthTex(): WebGLTexture | null {
+    return this.#accum?.normalDepth ?? null;
+  }
+
+  /** The albedo g-buffer (null when MRT disabled). */
+  get albedoTex(): WebGLTexture | null {
+    return this.#accum?.albedo ?? null;
+  }
+
+  dispose(): void {
+    const gl = this.#gl;
+    this.#destroyTargets();
+    this.#ptProgram?.dispose();
+    this.#ptProgram = null;
+    this.#blendProgram?.dispose();
+    this.#blendProgram = null;
+    if (this.#paramsUbo != null) {
+      gl.deleteBuffer(this.#paramsUbo);
+      this.#paramsUbo = null;
+    }
+    this.#quad.dispose(gl);
+  }
+
+  // ----- internals -------------------------------------------------------------------------
+
+  /** Composite the latest PT sample into the ping-pong pair (Regime 2; fork :156-165). */
+  #compositeBlendStep(): void {
+    const gl = this.#gl;
+    const accum = this.#accum;
+    if (accum == null) return;
+    this.#ensureBlendPair();
+    const blend = this.#blend;
+    if (blend == null) return;
+    const [slot0, slot1] = blend;
+    const readTarget = this.#blendReadIndex === 0 ? slot0 : slot1;
+    const writeTarget = this.#blendReadIndex === 0 ? slot1 : slot0;
+
+    const blendProg = this.#ensureBlendProgram();
+    bindRenderTarget(gl, writeTarget);
+    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
+    gl.disable(gl.BLEND); // the composite math is done in-shader, not by fixed-function blend.
+
+    blendProg.use();
+    blendProg.setFloat('opacity', 1 / (this.#samples + 1));
+    // target1 = prior accumulated result; target2 = the just-rendered PT sample.
+    blendProg.bindTexture('target1', readTarget.color);
+    blendProg.bindTexture('target2', accum.color);
+    this.#quad.draw(gl);
+
+    this.#blendReadIndex = 1 - this.#blendReadIndex;
+  }
+
+  #ensureBlendProgram(): GlProgram {
+    this.#blendProgram ??= new GlProgram(this.#gl, FULLSCREEN_VERT, BLEND_FRAG, {});
+    return this.#blendProgram;
+  }
+
+  #ensureBlendPair(): void {
+    if (this.#blend != null) return;
+    this.#blend = [
+      createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false),
+      createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false),
+    ];
+    clearRenderTarget(this.#gl, this.#blend[0]);
+    clearRenderTarget(this.#gl, this.#blend[1]);
+    this.#blendReadIndex = 0;
+  }
+
+  /** Bind the scene texture bundle to the PT program's samplers (plan 04 §4 binding remap). */
+  #bindSceneTextures(prog: GlProgram, scene: UploadedSceneTextures): void {
+    const gl = this.#gl;
+    // BVH struct samplers (BVH { usampler2D index; sampler2D position; sampler2D bvhBounds;
+    // usampler2D bvhContents; } — bvh_struct_definitions.glsl).
+    prog.bindTexture('bvh.index', scene.bvhIndex);
+    prog.bindTexture('bvh.position', scene.bvhPosition);
+    prog.bindTexture('bvh.bvhBounds', scene.bvhBounds);
+    prog.bindTexture('bvh.bvhContents', scene.bvhContents);
+    prog.bindTexture('materialIndexAttribute', scene.materialIndex);
+    prog.bindTexture('materials', scene.materials);
+    prog.bindTexture('attributesArray', scene.attributesArray, gl.TEXTURE_2D_ARRAY);
+    prog.bindTexture('lights', scene.lights);
+    if (scene.iesProfiles != null) prog.bindTexture('iesProfiles', scene.iesProfiles, gl.TEXTURE_2D_ARRAY);
+    if (scene.textures2DArray != null) prog.bindTexture('textures', scene.textures2DArray, gl.TEXTURE_2D_ARRAY);
+    if (scene.envMap != null) prog.bindTexture('envMapInfo.map', scene.envMap);
+    if (scene.envMarginal != null) prog.bindTexture('envMapInfo.marginal', scene.envMarginal);
+    if (scene.envConditional != null) prog.bindTexture('envMapInfo.conditional', scene.envConditional);
+  }
+
+  /**
+   * Upload the packed std140 FrameParams bytes into the UBO (allocates it lazily).
+   * Call once per frame before `drawAccumStep`. NOTE: the GLSL `FrameParams` block
+   * layout must match the frameParamsPacker slot layout — pin this with the
+   * generated-layout codegen before trusting GPU output (plan 08, the std140 freeze).
+   */
+  uploadFrameParams(bytes: ArrayBuffer): void {
+    const gl = this.#gl;
+    if (this.#paramsUbo == null) {
+      const ubo = gl.createBuffer();
+      if (ubo == null) throw new Error('pt-webgl2: failed to create FrameParams UBO');
+      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+      gl.bufferData(gl.UNIFORM_BUFFER, FRAME_PARAMS_SIZE, gl.DYNAMIC_DRAW);
+      this.#paramsUbo = ubo;
+    } else {
+      gl.bindBuffer(gl.UNIFORM_BUFFER, this.#paramsUbo);
+    }
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, new Uint8Array(bytes));
+    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+  }
+
+  /** Bind the std140 FrameParams UBO to the PT program's block (allocated lazily). */
+  #bindParamsUbo(prog: GlProgram): void {
+    const gl = this.#gl;
+    if (this.#paramsUbo == null) {
+      const ubo = gl.createBuffer();
+      if (ubo == null) throw new Error('pt-webgl2: failed to create FrameParams UBO');
+      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+      gl.bufferData(gl.UNIFORM_BUFFER, FRAME_PARAMS_SIZE, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+      this.#paramsUbo = ubo;
+    }
+    const program = prog.program;
+    if (program != null) {
+      const blockIndex = gl.getUniformBlockIndex(program, 'FrameParams');
+      if (blockIndex !== gl.INVALID_INDEX) {
+        gl.uniformBlockBinding(program, blockIndex, FRAME_PARAMS_BINDING);
+      }
+    }
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, FRAME_PARAMS_BINDING, this.#paramsUbo);
+  }
+
+  #destroyTargets(): void {
+    this.#accum?.destroy();
+    this.#accum = null;
+    if (this.#blend != null) {
+      this.#blend[0].destroy();
+      this.#blend[1].destroy();
+      this.#blend = null;
+    }
+    this.#accumWidth = 0;
+    this.#accumHeight = 0;
+    this.#blendReadIndex = 0;
+  }
+}

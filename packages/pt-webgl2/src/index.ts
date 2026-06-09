@@ -5,33 +5,41 @@ import type {
   EngineState,
   FrameInput,
   FrameOutput,
+  FrameRendered,
   FrameStats,
   ProgressStats,
   Scene,
 } from '@vitrum/core';
-import { partitionSceneBySupport } from '@vitrum/core';
-import { mergeWorldSpaceFromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import { asBackendTexture, partitionSceneBySupport } from '@vitrum/core';
+import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
-import type { PTEngineWebGL2Options, WebGl2TraceTier } from './options.js';
+import type { PTEngineWebGL2Options } from './options.js';
+import { resolveWebGl2TraceTier, type WebGl2TraceTier } from './traceTier.js';
+import { GlResources } from './gl/glResources.js';
+import { probeGlCaps } from './gl/glCaps.js';
+import { buildSceneTextures } from './scene/uploadSceneTextures.js';
+import type { UploadedSceneTextures } from './scene/sceneTextures.js';
+import {
+  packFrameParams,
+  type FrameParamsConfig,
+  type FrameParamsScene,
+} from './frameParamsPacker.js';
+import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
+const DEFAULT_SPP_TARGET = 16;
 
-/**
- * Slice 0 surface — the converged display texture once the GL pipeline lands.
- * (No `getDenoisedFrame` yet; OIDN wires in a later slice.)
- */
 export interface PTEngineWebGL2Surface {
-  /** @internal Slice 0: the retained single-root merged BVH pack (for tests/inspection). */
+  /** @internal The retained single-root merged BVH pack (for tests/inspection). */
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
 }
 
 /**
- * THREE-free WebGL2 path-tracing backend. Slice 0 = the contract spine + scene
- * ingestion (shared-bvh pack); the GL render pipeline (GlResources/GlProgram + the
- * GLSL kernels) is the next increment and gated on a real WebGL2 capture host, so
- * `renderFrame` returns a legal `FrameSkipped` until then.
+ * THREE-free WebGL2 path-tracing backend. The framework (GL resources, the packers,
+ * the ported GLSL kernels) is fully wired here; pixel-level fidelity is validated
+ * against the fork on a real-GPU WebGL2 capture host (plan 06 — the one external gate).
  */
 class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #slot: StateSlot;
@@ -39,11 +47,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
   readonly #causticStrategy: EngineCapabilities['causticStrategy'];
+  readonly #spectralEnabled: boolean;
+  readonly #bdpt: boolean;
+  readonly #mneeMaxIterations: number;
+  readonly #mneeMaxChainLength: number;
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
+  readonly #regime: AccumRegime;
+  readonly #gpu: GlResources;
 
   #scene: Scene | null = null;
   #geoPack: WorldSpaceMergeResult | null = null;
+  #sceneTextures: UploadedSceneTextures | null = null;
   #samplesAccumulated = 0;
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
@@ -54,8 +69,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#maxBouncesLimit = Math.max(1, opts.maxBounces ?? DEFAULT_MAX_BOUNCES);
     this.#maxSamplesLimit = Math.max(1, opts.maxSamplesPerPixel ?? DEFAULT_MAX_SPP);
     this.#causticStrategy = opts.causticStrategy ?? 'none';
+    this.#spectralEnabled = opts.spectral ?? false;
+    this.#bdpt = opts.bdpt ?? false;
+    this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
+    this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
     this.#traceTier = traceTier;
     this.#supportsAuxBuffers = traceTier === 'full';
+    // Additive HDR accumulation needs EXT_float_blend; otherwise the alpha-composite
+    // ping-pong regime is the unbiased fallback (plan 02 §3).
+    this.#regime = probeGlCaps(opts.device).floatBlend ? 'normal' : 'alpha-composite';
+    this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
   }
 
   get state(): EngineState {
@@ -79,10 +102,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#guardLive('setScene');
     const { supported, warnings } = partitionSceneBySupport(scene, this.capabilities);
     for (const w of warnings) console.warn(`[vitrum/pt-webgl2] ${w}`);
-    this.#geoPack = mergeWorldSpaceFromCore(supported, { positionStride: 4 });
+    const built = buildSceneTextures(this.#gl, supported, this.capabilities);
+    this.#sceneTextures?.destroy();
+    this.#sceneTextures = built.textures;
+    this.#geoPack = built.merged;
     this.#scene = supported;
-    // TODO(Slice 1+): upload BVH/material/light textures via uploadSceneTextures (WS3),
-    //   then GlResources.ensureProgram + the accumulation draw (WS2/WS5).
     this.reset();
   }
 
@@ -90,15 +114,49 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#scene;
   }
 
-  renderFrame(_input: FrameInput): FrameOutput {
+  renderFrame(input: FrameInput): FrameOutput {
     this.#guardLive('renderFrame');
-    // Slice 0: the GL pipeline is not wired yet — return a legal skip.
-    return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    if (this.#sceneTextures == null || this.#geoPack == null) {
+      return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    }
+
+    const q = input.quality ?? {};
+    const activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
+    const targetSpp = Math.min(q.samplesTarget ?? DEFAULT_SPP_TARGET, this.#maxSamplesLimit);
+    const res = q.resolutionFactor ?? 1;
+    const w = Math.max(1, Math.floor(input.viewport.width * res));
+    const h = Math.max(1, Math.floor(input.viewport.height * res));
+
+    // Paused → return the current accumulation without drawing.
+    if (this.#slot.get() === 'paused') {
+      const tex = this.#gpu.resultTexture();
+      if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+      return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp);
+    }
+
+    if (this.#gpu.ensureAccumResources(w, h)) this.#samplesAccumulated = 0;
+    this.#gpu.ensureProgram(this.#traceFeatures());
+
+    // Converged → fast-out without drawing (this is how accumulation terminates).
+    if (this.#samplesAccumulated >= targetSpp) {
+      const tex = this.#gpu.resultTexture();
+      if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+      return this.#frameRendered(tex, this.#samplesAccumulated, true, targetSpp);
+    }
+
+    const params = packFrameParams(this.#frameConfig(activeBounces), this.#frameSceneInfo(), input, w, h);
+    this.#gpu.uploadFrameParams(params);
+    this.#gpu.drawAccumStep(this.#sceneTextures, this.#regime, input.frameSeed);
+    this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
+
+    const tex = this.#gpu.resultTexture();
+    if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp);
   }
 
   reset(): void {
     this.#samplesAccumulated = 0;
-    // TODO(Slice 0+): GlResources.clearAccum() once the accumulation FBO exists.
+    this.#gpu.clearAccum();
   }
 
   pause(): void {
@@ -113,7 +171,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
-    // TODO(Slice 0+): GlResources.dispose() + scene-texture destroy() once they exist.
+    this.#gpu.dispose();
+    this.#sceneTextures?.destroy();
+    this.#sceneTextures = null;
     this.#scene = null;
     this.#geoPack = null;
     this.#onFrameSubs.clear();
@@ -131,23 +191,56 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return () => this.#onProgressSubs.delete(cb);
   }
 
+  // ── internals ──────────────────────────────────────────────────────────────
+
+  #traceFeatures(): TraceFeatures {
+    return { ...DEFAULT_TRACE_FEATURES, bdpt: this.#bdpt, additiveAccum: this.#regime === 'additive' };
+  }
+
+  #frameConfig(maxBounces: number): FrameParamsConfig {
+    return {
+      maxBounces,
+      spectral: this.#spectralEnabled,
+      causticStrategy: this.#causticStrategy,
+      mneeMaxIterations: this.#mneeMaxIterations,
+      mneeMaxChainLength: this.#mneeMaxChainLength,
+      bdpt: this.#bdpt,
+    };
+  }
+
+  #frameSceneInfo(): FrameParamsScene {
+    const tex = this.#sceneTextures!;
+    const geo = this.#geoPack!;
+    return {
+      triangleCount: geo.triangleCount,
+      bvhNodeCount: geo.bvhNodes.length / 8,
+      lightCount: tex.lightCount,
+      hasEnvironmentMap: tex.envMap != null,
+      environmentMapWidth: tex.envWidth,
+      environmentMapHeight: tex.envHeight,
+    };
+  }
+
+  #frameRendered(tex: WebGLTexture, samples: number, isConverged: boolean, target: number): FrameRendered {
+    const nd = this.#supportsAuxBuffers ? this.#gpu.normalDepthTex : null;
+    const al = this.#supportsAuxBuffers ? this.#gpu.albedoTex : null;
+    const out: FrameRendered = {
+      kind: 'rendered',
+      primaryRadiance: asBackendTexture<'pt-webgl2', WebGLTexture>(tex),
+      ...(nd != null ? { normalDepth: asBackendTexture<'pt-webgl2', WebGLTexture>(nd) } : {}),
+      ...(al != null ? { albedo: asBackendTexture<'pt-webgl2', WebGLTexture>(al) } : {}),
+      samplesAccumulated: samples,
+      isConverged,
+    };
+    const fraction = target > 0 ? Math.min(samples / target, 1) : 1;
+    for (const cb of this.#onProgressSubs) cb({ kind: 'pt-spp', current: samples, target, fraction });
+    for (const cb of this.#onFrameSubs) cb({ frameTimeMs: 0, spp: samples });
+    return out;
+  }
+
   #guardLive(method: string): void {
     if (this.#slot.get() === 'disposed') throw new Error(`${method}: engine is disposed`);
   }
-}
-
-/**
- * Minimal WebGL2 trace-tier gate (Slice 0). Full implementation in traceTier.ts (WS5):
- * gate on EXT_color_buffer_float / EXT_float_blend / MAX_DRAW_BUFFERS / texunits.
- */
-function resolveWebGl2TraceTier(gl: WebGL2RenderingContext, force?: WebGl2TraceTier): WebGl2TraceTier {
-  if (force) return force;
-  const floatColor = gl.getExtension('EXT_color_buffer_float') != null;
-  if (!floatColor) {
-    throw new Error('pt-webgl2: EXT_color_buffer_float is required (RGBA32F render targets)');
-  }
-  const drawBuffers = (gl.getParameter(gl.MAX_DRAW_BUFFERS) as number) ?? 1;
-  return drawBuffers >= 3 ? 'full' : 'lite';
 }
 
 export const createPTEngine_WebGL2: EngineFactory<
