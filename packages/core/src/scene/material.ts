@@ -195,6 +195,15 @@ export interface MaterialSpec {
   readonly iridescenceMap?: TextureRef;
   readonly iridescenceThicknessMap?: TextureRef;
   readonly anisotropyMap?: TextureRef;     // glTF KHR_materials_anisotropy (RG = dir, B = strength)
+  readonly specularColorMap?: TextureRef;     // glTF KHR_materials_specular (RGB = specularColor)
+  readonly specularIntensityMap?: TextureRef; // glTF KHR_materials_specular (A = specularFactor)
+  readonly bumpMap?: TextureRef;              // height-field normal perturbation (THREE bumpMap)
+  readonly bumpScale?: number;                // default 1
+  readonly displacementMap?: TextureRef;      // vertex displacement height (THREE displacementMap)
+  readonly displacementScale?: number;        // default 1
+  readonly displacementBias?: number;         // default 0
+  readonly lightMap?: TextureRef;             // baked diffuse irradiance (THREE lightMap)
+  readonly lightMapIntensity?: number;        // default 1
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
   readonly sheen?: number;
@@ -205,6 +214,29 @@ export interface MaterialSpec {
   readonly iridescence?: number;
   readonly iridescenceIor?: number;
   readonly iridescenceThicknessRange?: Vec2;
+
+  // ── Dielectric specular (glTF KHR_materials_specular) ───────────────────
+  /**
+   * Dielectric specular reflection strength factor ∈ [0, 1]
+   * (KHR_materials_specular `specularFactor`). Scales the base 0.04 dielectric
+   * F0 reflectance; has no effect on the metallic lobe. Default 1.
+   *
+   * Reference: glTF KHR_materials_specular.
+   */
+  readonly specularIntensity?: number;
+  /**
+   * Dielectric specular color tint (KHR_materials_specular
+   * `specularColorFactor`) applied to the dielectric F0. Default [1, 1, 1].
+   *
+   * Reference: glTF KHR_materials_specular.
+   */
+  readonly specularColor?: Vec3;
+  /**
+   * Environment/IBL specular intensity multiplier (mirrors
+   * `THREE.MeshStandardMaterial.envMapIntensity`). Scales the contribution of
+   * image-based-lighting reflections. Default 1.
+   */
+  readonly envMapIntensity?: number;
 
   // ── Spectral attenuation (RFE-01) ──────────────────────────────────────
   /**
@@ -368,6 +400,15 @@ export type MaterialMapFields = Pick<
   | 'iridescenceMap'
   | 'iridescenceThicknessMap'
   | 'anisotropyMap'
+  | 'specularColorMap'
+  | 'specularIntensityMap'
+  | 'bumpMap'
+  | 'bumpScale'
+  | 'displacementMap'
+  | 'displacementScale'
+  | 'displacementBias'
+  | 'lightMap'
+  | 'lightMapIntensity'
 >;
 export type DisneyBsdMaterialFields = Pick<
   MaterialSpec,

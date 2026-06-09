@@ -78,6 +78,53 @@ describe('convertMaterial — alpha mode + AO + lobe maps', () => {
   });
 });
 
+describe('convertMaterial — D3 auxiliary maps + KHR_materials_specular', () => {
+  it('captures bump / displacement / lightMap (+ scales) + envMapIntensity', () => {
+    const m = new THREE.MeshStandardMaterial();
+    m.bumpMap = new THREE.Texture(); m.bumpScale = 0.5;
+    m.displacementMap = new THREE.Texture(); m.displacementScale = 2; m.displacementBias = 0.1;
+    m.lightMap = new THREE.Texture(); m.lightMapIntensity = 0.8;
+    m.envMapIntensity = 1.5;
+    const spec = convertMaterial(m);
+    expect(spec.bumpMap?.handle).toBe(m.bumpMap);
+    expect(spec.bumpScale).toBeCloseTo(0.5);
+    expect(spec.displacementMap?.handle).toBe(m.displacementMap);
+    expect(spec.displacementScale).toBeCloseTo(2);
+    expect(spec.displacementBias).toBeCloseTo(0.1);
+    expect(spec.lightMap?.handle).toBe(m.lightMap);
+    expect(spec.lightMapIntensity).toBeCloseTo(0.8);
+    expect(spec.envMapIntensity).toBeCloseTo(1.5);
+  });
+
+  it('omits default-valued aux fields on a clean standard material', () => {
+    const spec = convertMaterial(new THREE.MeshStandardMaterial());
+    expect(spec.bumpMap).toBeUndefined();
+    expect(spec.displacementMap).toBeUndefined();
+    expect(spec.lightMap).toBeUndefined();
+    expect(spec.envMapIntensity).toBeUndefined(); // default 1 is not captured
+  });
+
+  it('captures KHR_materials_specular intensity + color (+ maps) on a physical material', () => {
+    const m = new THREE.MeshPhysicalMaterial();
+    m.specularIntensity = 0.6;
+    m.specularColor = new THREE.Color(0.2, 0.4, 0.8);
+    m.specularIntensityMap = new THREE.Texture();
+    m.specularColorMap = new THREE.Texture();
+    const spec = convertMaterial(m);
+    expect(spec.specularIntensity).toBeCloseTo(0.6);
+    expect(spec.specularColor?.[0]).toBeCloseTo(0.2);
+    expect(spec.specularColor?.[2]).toBeCloseTo(0.8);
+    expect(spec.specularIntensityMap?.handle).toBe(m.specularIntensityMap);
+    expect(spec.specularColorMap?.handle).toBe(m.specularColorMap);
+  });
+
+  it('omits default specular (intensity 1, white color)', () => {
+    const spec = convertMaterial(new THREE.MeshPhysicalMaterial());
+    expect(spec.specularIntensity).toBeUndefined();
+    expect(spec.specularColor).toBeUndefined();
+  });
+});
+
 describe('toTextureRef ↔ fromTextureRef round-trip', () => {
   it('preserves a UV-transformed baseColor map through THREE → vitrum → THREE', () => {
     const tex = new THREE.Texture();

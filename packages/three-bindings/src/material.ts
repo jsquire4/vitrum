@@ -112,6 +112,24 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     base.aoMap = toTextureRef(m.aoMap);
     if (m.aoMapIntensity !== 1) base.aoMapIntensity = m.aoMapIntensity;
   }
+  // Auxiliary standard-material maps (D3 — previously dropped on the floor).
+  // Only captured when present / non-default so default materials stay clean.
+  if (m.bumpMap != null) {
+    base.bumpMap = toTextureRef(m.bumpMap);
+    if (m.bumpScale !== 1) base.bumpScale = m.bumpScale;
+  }
+  if (m.displacementMap != null) {
+    base.displacementMap = toTextureRef(m.displacementMap);
+    if (m.displacementScale !== 1) base.displacementScale = m.displacementScale;
+    if (m.displacementBias !== 0) base.displacementBias = m.displacementBias;
+  }
+  if (m.lightMap != null) {
+    base.lightMap = toTextureRef(m.lightMap);
+    if (m.lightMapIntensity !== 1) base.lightMapIntensity = m.lightMapIntensity;
+  }
+  if (m.envMapIntensity !== undefined && m.envMapIntensity !== 1) {
+    base.envMapIntensity = m.envMapIntensity;
+  }
 
   // Alpha mode (glTF semantics): alphaTest > 0 → mask; else transparent → blend.
   if (m.alphaTest > 0) {
@@ -175,6 +193,16 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     base.anisotropyRotation = p.anisotropyRotation;
     if (p.anisotropyMap != null) base.anisotropyMap = toTextureRef(p.anisotropyMap);
   }
+
+  // KHR_materials_specular (D3 — previously dropped). THREE defaults:
+  // specularIntensity = 1, specularColor = white. Only capture overrides.
+  if (p.specularIntensity !== 1) base.specularIntensity = p.specularIntensity;
+  const sc = p.specularColor;
+  if (sc != null && (sc.r !== 1 || sc.g !== 1 || sc.b !== 1)) {
+    base.specularColor = colorToVec3(sc);
+  }
+  if (p.specularIntensityMap != null) base.specularIntensityMap = toTextureRef(p.specularIntensityMap);
+  if (p.specularColorMap != null) base.specularColorMap = toTextureRef(p.specularColorMap);
 
   // ── userData.vitrum* stamps (RFE-06..08 / RFE-03) ──────────────────────────
   // The host stamps these on THREE materials so backends can read them via the
