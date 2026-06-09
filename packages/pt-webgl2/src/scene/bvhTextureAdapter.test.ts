@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
-import { packSceneFromCore } from '@vitrum/shared-bvh';
+import { mergeWorldSpaceFromCore } from '@vitrum/shared-bvh';
 import { packBvhTextureData, type BvhTextureData } from './bvhTextureAdapter.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ function bruteForce(d: BvhTextureData, orig: V3, dir: V3): { t: number; tri: num
 }
 
 describe('BVH texture adapter — packed textures traverse correctly (vs brute force)', () => {
-  const pack = packSceneFromCore(multiNodeScene(), { tlas: false, resolveMaterialId: () => 0 });
+  const pack = mergeWorldSpaceFromCore(multiNodeScene(), { positionStride: 4 });
   const d = packBvhTextureData(pack);
 
   it('produces a multi-node BVH (interior nodes exist, so traversal is exercised)', () => {

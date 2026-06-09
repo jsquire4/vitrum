@@ -45,16 +45,10 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 // W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
 // (canonical castPrimary(px, dims, camPos, invVP)).
 
-// Reproject a world-space position through the previous-frame view+proj
-// matrix.  Returns the previous pixel as ivec2 or -1 outside the frustum.
-// We assume the projection matrix is unchanged between frames (FOV+aspect
-// are static), so we use the current projMatrix together with the stored
-// prevViewMatrix — matching how WalkaroundStage feeds the UBO
-// (prevProjMatrix=projMatrix in the captureFrame path).
+// Reproject a world-space position through the previous-frame view-projection
+// matrix. Returns the previous pixel as ivec2 or -1 outside the frustum.
 fn reprojectToPrev(world: vec3f, dims: vec2u) -> vec2i {
-  let prevView = ubo.prevViewMatrix;
-  let proj     = ubo.projMatrix;
-  let clip = proj * (prevView * vec4f(world, 1.0));
+  let clip = ubo.prevViewProjMatrix * vec4f(world, 1.0);
   if (clip.w <= 0.0) { return vec2i(-1, -1); }
   let ndc = clip.xyz / clip.w;
   if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) { return vec2i(-1, -1); }

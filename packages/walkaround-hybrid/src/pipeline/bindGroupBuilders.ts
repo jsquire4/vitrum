@@ -75,11 +75,13 @@ interface FrameBindGroupResources {
   hdrTotalTexture: GPUTexture;
   /** Item 24 — visible-point diffuse albedo (shade write, indirectCombine read). */
   albedoTexture: GPUTexture;
+  /** SVGF-real current object ID (shade write, SVGF reprojection read). */
+  svgfCurrentObjectIdTexture: GPUTexture;
 }
 
 // Positional resource order MUST match the 'frame' descriptor table in
 // bindGroupDescriptors.ts (which carries the per-binding rationale notes —
-// incl. the inert/placeholder G-buffer slots 0-4 and shade-only 10/12/13/14).
+// incl. the inert/placeholder G-buffer slots 0-4 and shade-only 10/12/13/14/15).
 export function buildFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,
@@ -102,6 +104,7 @@ export function buildFrameBindGroup(
     textureView(r.hdrIndirectTexture, viewCache), // 12 hdrIndirect (shade-write only)
     textureView(r.hdrTotalTexture, viewCache),  // 13 hdrTotal (shade-write only)
     textureView(r.albedoTexture, viewCache),    // 14 albedo (shade-write only)
+    textureView(r.svgfCurrentObjectIdTexture, viewCache), // 15 SVGF current object ID
   ]);
 }
 

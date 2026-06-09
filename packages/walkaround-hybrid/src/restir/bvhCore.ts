@@ -119,10 +119,10 @@ function coreEmitterBuffers(
     primaryLightIntensity?: number;
   } = {},
 ): RebuiltEmitterBuffers {
-  const merged = mergeWorldSpaceFromCore(scene, {
-    positionStride: 4,
-    filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
-  });
+  // This stream is only for ReSTIR light selection. Expanding instanced meshes
+  // here keeps emissive instances visible to direct lighting while the render
+  // BVH can still use the TLAS/BLAS path for traversal.
+  const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
   const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,

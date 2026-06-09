@@ -18,10 +18,10 @@ import {
 } from '@vitrum/shared-bvh';
 import { invertMat4 } from './math/mat4.js';
 import {
-  applyEmitterCountMutation,
   applyEnvironmentMutation,
   rebuildLightTreeForScene,
   rebuildTlasForSceneTransforms,
+  uploadEmitterArrays,
   uploadScenePackGeometry,
   uploadScenePackGeometryRealloc,
   uploadScenePackBlasOnly,
@@ -398,43 +398,7 @@ export class SceneMutationRouter {
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers != null) {
       const packed = packEmitterArrays(nextScene);
-      device.queue.writeBuffer(
-        sceneBuffers.pointLightsBuffer,
-        0,
-        packed.pointLightsData.buffer,
-        packed.pointLightsData.byteOffset,
-        packed.pointLightsData.byteLength,
-      );
-      device.queue.writeBuffer(
-        sceneBuffers.spotLightsBuffer,
-        0,
-        packed.spotLightsData.buffer,
-        packed.spotLightsData.byteOffset,
-        packed.spotLightsData.byteLength,
-      );
-      device.queue.writeBuffer(
-        sceneBuffers.rectAreaLightsBuffer,
-        0,
-        packed.rectAreaLightsData.buffer,
-        packed.rectAreaLightsData.byteOffset,
-        packed.rectAreaLightsData.byteLength,
-      );
-      device.queue.writeBuffer(
-        sceneBuffers.meshAreaLightsBuffer,
-        0,
-        packed.meshAreaLightsData.buffer,
-        packed.meshAreaLightsData.byteOffset,
-        packed.meshAreaLightsData.byteLength,
-      );
-      sceneBuffers.pointLightsData.set(packed.pointLightsData);
-      sceneBuffers.spotLightsData.set(packed.spotLightsData);
-      sceneBuffers.rectAreaLightsData.set(packed.rectAreaLightsData);
-      sceneBuffers.meshAreaLightsData.set(packed.meshAreaLightsData);
-      applyEmitterCountMutation(sceneBuffers, {
-        pointLightCount: packed.pointLightCount,
-        spotLightCount: packed.spotLightCount,
-        rectAreaLightCount: packed.rectAreaLightCount,
-        meshAreaLightCount: packed.meshAreaLightCount,
+      const lightsReallocated = uploadEmitterArrays(device, sceneBuffers, packed, {
         directionalLight: defaultDirectionalLight(nextScene),
         directionalIrradiance: defaultDirectionalIrradiance(nextScene),
       });
@@ -442,7 +406,8 @@ export class SceneMutationRouter {
       // rebuild + re-upload it (reallocating + invalidating bind groups if the
       // node count changed). Without this the GPU selection would importance-
       // sample the OLD light set after an incremental emitter patch.
-      if (rebuildLightTreeForScene(device, sceneBuffers, nextScene)) {
+      const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffers, nextScene);
+      if (lightsReallocated || lightTreeReallocated) {
         host.invalidateBindGroups();
       }
       host.setSceneState(nextScene);

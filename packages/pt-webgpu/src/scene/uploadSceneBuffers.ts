@@ -25,6 +25,7 @@ import {
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
   packEmitterArrays,
+  type PackedEmitterArrays,
 } from './emitterPacking.js';
 
 // 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally
@@ -788,6 +789,25 @@ function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBuffe
 }
 
 /**
+ * Light-buffer handles + CPU mirrors are reassigned by the incremental
+ * updateEmitter path when dynamic emitter expansion changes byte lengths.
+ */
+interface MutableEmitterBufferHandles {
+  pointLightsBuffer: GPUBuffer;
+  spotLightsBuffer: GPUBuffer;
+  rectAreaLightsBuffer: GPUBuffer;
+  meshAreaLightsBuffer: GPUBuffer;
+  pointLightsData: Float32Array;
+  spotLightsData: Float32Array;
+  rectAreaLightsData: Float32Array;
+  meshAreaLightsData: Float32Array;
+}
+
+function asMutableSceneBufferEmitterHandles(sb: UploadedSceneBuffers): MutableEmitterBufferHandles {
+  return sb as unknown as MutableEmitterBufferHandles;
+}
+
+/**
  * The five BLAS GPU buffer handles + their CPU-mirror typed arrays, normally
  * `readonly`, are reassigned in place by {@link uploadScenePackGeometryRealloc}
  * when a mesh vertex/index count changes (the concat buffers grow/shrink, so the
@@ -834,6 +854,103 @@ export function applyEmitterCountMutation(
   mutable.directionalIrradiance = next.directionalIrradiance;
 }
 
+function storageBufferMinByteLength(data: ArrayBufferView): number {
+  return data.byteLength === 0 ? 16 : Math.ceil(data.byteLength / 4) * 4;
+}
+
+function uploadOrReallocateEmitterBuffer(
+  device: GPUDevice,
+  currentBuffer: GPUBuffer,
+  currentData: Float32Array,
+  nextData: Float32Array,
+  label: string,
+  assign: (buffer: GPUBuffer, data: Float32Array) => void,
+): boolean {
+  if (storageBufferMinByteLength(nextData) !== storageBufferMinByteLength(currentData)) {
+    const nextBuffer = createStorageBuffer(device, label, nextData);
+    currentBuffer.destroy();
+    assign(nextBuffer, new Float32Array(nextData));
+    return true;
+  }
+  if (nextData.byteLength > 0) {
+    device.queue.writeBuffer(
+      currentBuffer,
+      0,
+      nextData.buffer,
+      nextData.byteOffset,
+      nextData.byteLength,
+    );
+  }
+  currentData.set(nextData);
+  return false;
+}
+
+export function uploadEmitterArrays(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  packed: PackedEmitterArrays,
+  nextDirectional: {
+    readonly directionalLight: readonly [number, number, number];
+    readonly directionalIrradiance: readonly [number, number, number];
+  },
+): boolean {
+  const handles = asMutableSceneBufferEmitterHandles(sb);
+  let reallocated = false;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
+    sb.pointLightsBuffer,
+    sb.pointLightsData,
+    packed.pointLightsData,
+    'vitrum.pt-webgpu.scene.pointLights',
+    (buffer, data) => {
+      handles.pointLightsBuffer = buffer;
+      handles.pointLightsData = data;
+    },
+  ) || reallocated;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
+    sb.spotLightsBuffer,
+    sb.spotLightsData,
+    packed.spotLightsData,
+    'vitrum.pt-webgpu.scene.spotLights',
+    (buffer, data) => {
+      handles.spotLightsBuffer = buffer;
+      handles.spotLightsData = data;
+    },
+  ) || reallocated;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
+    sb.rectAreaLightsBuffer,
+    sb.rectAreaLightsData,
+    packed.rectAreaLightsData,
+    'vitrum.pt-webgpu.scene.rectAreaLights',
+    (buffer, data) => {
+      handles.rectAreaLightsBuffer = buffer;
+      handles.rectAreaLightsData = data;
+    },
+  ) || reallocated;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
+    sb.meshAreaLightsBuffer,
+    sb.meshAreaLightsData,
+    packed.meshAreaLightsData,
+    'vitrum.pt-webgpu.scene.meshAreaLights',
+    (buffer, data) => {
+      handles.meshAreaLightsBuffer = buffer;
+      handles.meshAreaLightsData = data;
+    },
+  ) || reallocated;
+  applyEmitterCountMutation(sb, {
+    pointLightCount: packed.pointLightCount,
+    spotLightCount: packed.spotLightCount,
+    rectAreaLightCount: packed.rectAreaLightCount,
+    meshAreaLightCount: packed.meshAreaLightCount,
+    directionalLight: nextDirectional.directionalLight,
+    directionalIrradiance: nextDirectional.directionalIrradiance,
+  });
+  return reallocated;
+}
+
 /**
  * WS2 — rebuild the power-weighted light tree from `scene` and re-upload it after
  * an incremental emitter / environment patch (which change light powers /
@@ -871,7 +988,7 @@ export function rebuildLightTreeForScene(
   const prevByteLen = sb.lightTreeNodes.byteLength;
   // `createStorageBuffer` rounds empty arrays up to a 16-byte placeholder, so the
   // live buffer's minimum size is 16; compare against the same flooring.
-  const nextMinBytes = nodes.byteLength === 0 ? 16 : Math.ceil(nodes.byteLength / 4) * 4;
+  const nextMinBytes = storageBufferMinByteLength(nodes);
   const liveMinBytes = prevByteLen === 0 ? 16 : Math.ceil(prevByteLen / 4) * 4;
   mutable.lightTreeNodes = nodes;
   if (nextMinBytes !== liveMinBytes) {
@@ -1027,8 +1144,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     // {@link uploadScenePackGeometryRealloc} (mesh vertex/index-count change).
     // Reading them late keeps `destroy` free of stale handles (no double-free /
     // leak) without a closure rewire on every realloc. The non-resized buffers
-    // (materials / analytic / environment / lights) never reallocate, so they
-    // stay captured.
+    // (materials / analytic / environment) stay captured.
     destroy: () => {
       uploaded.positionsBuffer.destroy();
       uploaded.normalsBuffer.destroy();
@@ -1042,10 +1158,10 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       analyticWorldToLocalBuffer.destroy();
       environmentMapTexelsBuffer.destroy();
       environmentMapCdfBuffer.destroy();
-      pointLightsBuffer.destroy();
-      spotLightsBuffer.destroy();
-      rectAreaLightsBuffer.destroy();
-      meshAreaLightsBuffer.destroy();
+      uploaded.pointLightsBuffer.destroy();
+      uploaded.spotLightsBuffer.destroy();
+      uploaded.rectAreaLightsBuffer.destroy();
+      uploaded.meshAreaLightsBuffer.destroy();
       // Light-tree buffer is realloc-swapped by rebuildLightTreeForScene when
       // the node count changes — resolve it late off `uploaded` like the
       // BLAS/TLAS handles, or the swapped-in buffer leaks (and the original

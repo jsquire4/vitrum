@@ -41,7 +41,7 @@
  *
  * Several frame/ubo bindings are inert placeholders that MUST stay bound for
  * layout compatibility across pipelines that don't reference them (e.g. the
- * frame G-buffer slots 0-4, and the shade-only output slots 10/12/13/14).
+ * frame G-buffer slots 0-4, and the shade-only output slots 10/12/13/14/15).
  * Their rationale lives in each entry's `note` field below — do NOT prune any
  * inert binding; dropping it from the layout breaks every pipeline that shares
  * the BGL.
@@ -134,6 +134,10 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // visible-point albedo; indirectCombine reads it. Inert for ris/temporal/
       // spatial/risGi but must stay bound for frame-BGL layout compat.
       { binding: 14, kind: 'storage-tex:rgba16float', note: 'albedo (shade-write only; indirectCombine reads it)' },
+      // Slot 15 — SVGF-real object ID. shade writes the current frame's stable
+      // visible object/primitive/triangle ID; SVGF reprojection reads it via the
+      // denoiser-private bind group. Inert for RIS/temporal/spatial/risGi.
+      { binding: 15, kind: 'storage-tex:r32uint', note: 'SVGF current object ID (shade-write only; svgf-real reads it)' },
     ],
   },
   {

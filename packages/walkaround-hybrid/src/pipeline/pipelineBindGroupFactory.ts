@@ -33,7 +33,7 @@ export function buildPerFrameBindGroups(
   placeholderView: GPUTextureView,
   resourceCache?: PipelineResourceCache,
 ): PerFrameBindGroups {
-  const { common, restirDI, restirGI, gtao } = resources;
+  const { common, restirDI, restirGI, gtao, svgf } = resources;
   const buildFrame = (): GPUBindGroup => buildFrameBindGroup(device, cache, {
     placeholderView,
     reservoirCurrentBuffer: restirDI.reservoirCurrentBuffer,
@@ -46,6 +46,7 @@ export function buildPerFrameBindGroups(
     hdrIndirectTexture: common.hdrIndirectTexture,
     hdrTotalTexture: common.hdrTotalTexture,
     albedoTexture: common.albedoTexture,
+    svgfCurrentObjectIdTexture: svgf.svgfCurrentObjectIdTexture,
   }, resourceCache);
   const buildScene = (): GPUBindGroup => buildSceneBindGroup(device, cache, scene);
   const aoFullView = resourceCache?.textureView(gtao.aoFullTexture) ?? gtao.aoFullTexture.createView();
@@ -85,6 +86,7 @@ export function buildPerFrameBindGroups(
       common.hdrIndirectTexture,
       common.hdrTotalTexture,
       common.albedoTexture,
+      svgf.svgfCurrentObjectIdTexture,
     ], buildFrame) ?? buildFrame(),
     scene: resourceCache?.bindGroup('per-frame:scene', sceneKey, buildScene) ?? buildScene(),
     ubo: resourceCache?.bindGroup('per-frame:ubo', [

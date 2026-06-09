@@ -60,7 +60,7 @@ export interface BGLCache {
   nrc?: GPUBindGroupLayout;
 }
 
-// frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14)
+// frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14/15)
 // are declared in bindGroupDescriptors.ts with per-binding rationale notes.
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.frame) return cache.frame;
@@ -471,4 +471,3 @@ export function getIndirectCombineBindGroupLayout(
   });
   return cache.indirectCombine;
 }
-

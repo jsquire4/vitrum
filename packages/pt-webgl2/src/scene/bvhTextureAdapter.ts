@@ -1,4 +1,4 @@
-import type { ScenePackResult } from '@vitrum/shared-bvh';
+import type { ScenePackResult, WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 
 /**
  * BVH texture-packing adapter — the inverse of three-mesh-bvh's
@@ -46,16 +46,38 @@ export interface BvhTextureData {
   readonly triangleCount: number;
 }
 
+export type BvhTexturePackSource = ScenePackResult | WorldSpaceMergeResult;
+
+function isWorldSpaceMergeResult(pack: BvhTexturePackSource): pack is WorldSpaceMergeResult {
+  return 'positionStrideFloats' in pack;
+}
+
+function assertScenePackHasSingleBlas(pack: ScenePackResult): void {
+  if (pack.triangleCount === 0) return;
+  if (pack.primitiveTlasBindings.length !== 1) {
+    throw new Error(
+      'pt-webgl2: packBvhTextureData requires a single-root BVH. ' +
+        'Use mergeWorldSpaceFromCore(scene, { positionStride: 4 }) for multi-primitive scenes.',
+    );
+  }
+}
+
 /**
  * PURE: re-stride shared-bvh's flat arrays into the 4 BVH data-texture payloads.
  * No GL — directly unit-testable (CPU-traverse the output vs a brute-force oracle).
  */
-export function packBvhTextureData(pack: ScenePackResult): BvhTextureData {
+export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
+  const merged = isWorldSpaceMergeResult(pack);
+  if (!merged) assertScenePackHasSingleBlas(pack);
+
   const nodeF32 = pack.bvhNodes;
   const nodeU32 = new Uint32Array(nodeF32.buffer, nodeF32.byteOffset, nodeF32.length);
   const nodeCount = nodeF32.length / 8;
-  const vertexCount = pack.positions.length / 4;
+  const positionStride = merged ? pack.positionStrideFloats : 4;
+  const indexStride = merged ? pack.bvhIndexStride : 4;
+  const vertexCount = merged ? pack.vertexCount : pack.positions.length / 4;
   const triangleCount = pack.triangleCount;
+  const triMaterialIds = merged ? pack.triMaterialId : pack.triMaterialIds;
 
   // bvhBounds — RGBA32F, 2 texels/node
   const boundsDim = squareDim(nodeCount * 2);
@@ -83,27 +105,29 @@ export function packBvhTextureData(pack: ScenePackResult): BvhTextureData {
   const positionDim = squareDim(vertexCount);
   const position = new Float32Array(positionDim * positionDim * 4);
   for (let v = 0; v < vertexCount; v += 1) {
-    const s = v * 4;
-    position[s] = pack.positions[s]!;
-    position[s + 1] = pack.positions[s + 1]!;
-    position[s + 2] = pack.positions[s + 2]!;
-    position[s + 3] = 1.0;
+    const src = v * positionStride;
+    const dst = v * 4;
+    position[dst] = pack.positions[src]!;
+    position[dst + 1] = pack.positions[src + 1]!;
+    position[dst + 2] = pack.positions[src + 2]!;
+    position[dst + 3] = 1.0;
   }
 
   // index — RGBA32UI, 1 texel/tri, .xyz = global vertex indices
   const indexDim = squareDim(triangleCount);
   const index = new Uint32Array(indexDim * indexDim * 4);
   for (let t = 0; t < triangleCount; t += 1) {
-    const s = t * 4;
-    index[s] = pack.indices[s]!;
-    index[s + 1] = pack.indices[s + 1]!;
-    index[s + 2] = pack.indices[s + 2]!;
+    const src = t * indexStride;
+    const dst = t * 4;
+    index[dst] = pack.indices[src]!;
+    index[dst + 1] = pack.indices[src + 1]!;
+    index[dst + 2] = pack.indices[src + 2]!;
   }
 
   // materialIndex — RGBA32UI .x, 1 texel/tri
   const materialIndexDim = squareDim(triangleCount);
   const materialIndex = new Uint32Array(materialIndexDim * materialIndexDim * 4);
-  for (let t = 0; t < triangleCount; t += 1) materialIndex[t * 4] = pack.triMaterialIds[t]!;
+  for (let t = 0; t < triangleCount; t += 1) materialIndex[t * 4] = triMaterialIds[t]!;
 
   return {
     bounds, boundsDim, contents, contentsDim, position, positionDim,

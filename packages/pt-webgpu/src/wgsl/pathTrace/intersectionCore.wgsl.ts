@@ -39,6 +39,10 @@ struct SceneHit {
   // (no transform needed when propagated through the TLAS instance frame). Zero
   // for analytic-shape hits and non-shading (any-hit) traversals. (P2)
   baryVW: vec2f,
+  // Actual TLAS instance for mesh hits, or INVALID_TLAS_INSTANCE_INDEX for the
+  // merged-BLAS/lite/analytic paths. Full-tier normal maps use this to transform
+  // their per-hit tangent basis into the same world frame as hit.normal.
+  instanceIndex: u32,
 };
 
 const SHAPE_SPHERE = 1u;
@@ -269,6 +273,7 @@ fn traceMeshBvh(
     (*hit).triIndex = 0u;
     (*hit).normal = vec3f(0.0, 1.0, 0.0);
     (*hit).baryVW = vec2f(0.0);
+    (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
   }
 
   var stack: array<u32, 64>;
@@ -351,6 +356,7 @@ fn traceMeshBvh(
           (*hit).triIndex = t;
           (*hit).normal = shadeNormal;
           (*hit).baryVW = shadeBaryVW;
+          (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
         }
       }
     } else {

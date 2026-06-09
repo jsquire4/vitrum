@@ -21,8 +21,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-06 (2): intersectionCore closest-hit live-bound fix
     // (see wgslContract.test.ts) — lite composes the same core. RENDER-CHANGING
     // on purpose; GPU-validated via the G-P0.3 capture matrix.
-    expect(digest).toBe('d78372ff5267152911d09b354267e498d90b24a823b8b204778416f258e53398');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72749);
+    // Re-pinned 2026-06-08: SceneHit gained an invalid-or-real TLAS
+    // instanceIndex for the full-tier normal-map tangent transform. Lite always
+    // writes the invalid sentinel, so this is render-neutral for lite.
+    expect(digest).toBe('aeb91fc1e0c7b769390b6e97b6160ad6b34deb3e7489e4dd1f7c246ee61cfac4');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73175);
   });
 });
 

@@ -3,8 +3,12 @@
  *
  * pt-webgpu's selectable-light enumeration order is fixed:
  *
- *   directional? · point[stride8] · spot[stride12] · (rect|disc)-area[stride16]
- *     · mesh-area[stride16] · env?
+ *   directional? · point[stride8] · spot[stride12] · rect-area[stride16]
+ *     · mesh-triangle-area[stride16] · env?
+ *
+ * Disc-area emitters are lowered by emitterPacking.ts into the mesh-triangle
+ * section as an equal-area fan, so the stride walk still mirrors the GPU kernel
+ * without a dedicated disc storage layout.
  *
  * That walk was open-coded FOUR times — `bdptEmitterPower`, `sampleBdptBounce0Cpu`
  * (both in `./bdptEmitterPickCpu.ts`) and `buildLightTreeInputForScene`
@@ -136,7 +140,7 @@ export function* walkPositionalEmitters(
   }
 }
 
-/** Quad area = 4·|u×v| (matches the WGSL rect/disc-area NEE term). */
+/** Quad area = 4·|u×v| (matches the WGSL rect-area NEE term). */
 export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
   const cross: Vec3 = [
     uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1],

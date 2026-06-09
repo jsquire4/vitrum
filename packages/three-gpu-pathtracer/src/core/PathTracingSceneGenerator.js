@@ -125,7 +125,7 @@ export class PathTracingSceneGenerator {
 			// and build another with the latest data while sharing the results.
 			if ( ! this._pendingGenerate ) {
 
-				this._pendingGenerate = new Promise( async () => {
+				this._pendingGenerate = ( async () => {
 
 					await this.bvh;
 					this._pendingGenerate = null;
@@ -133,7 +133,7 @@ export class PathTracingSceneGenerator {
 					// TODO: support multiple callbacks queued?
 					return this.generateAsync( onProgress );
 
-				} );
+				} )();
 
 			}
 

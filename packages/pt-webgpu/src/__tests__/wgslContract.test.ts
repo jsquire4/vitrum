@@ -49,8 +49,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-07: photon-map demotion comment block added to
     // caustic.wgsl.ts (honest-labeling, COMMENT-ONLY — verified no WGSL-code
     // line changed; the demotion docs the gatherRadius/strategyScale constants).
-    expect(digest).toBe('3c439c130532fca46848256db4114a3e86102d767cc71f825c670e8d5b29df26');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(217233);
+    // Re-pinned 2026-06-08: TLAS mesh hits now carry instanceIndex, and normal
+    // maps transform their derived tangent through the hit instance localToWorld
+    // before shading rotated/scaled instances. RENDER-CHANGING on purpose.
+    expect(digest).toBe('72c1de3bc71fd20687157b329e59cc0e259bf91051771b593cb753b278f40947');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(218299);
   });
 });
 
@@ -221,6 +224,15 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('(*hit).dist = worldDist;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       '(*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);',
+    );
+  });
+
+  it('carries the TLAS instance index into normal-map tangent reconstruction', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const INVALID_TLAS_INSTANCE_INDEX = 0xffffffffu;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('instanceIndex: u32,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('(*hit).instanceIndex = instIdx;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);',
     );
   });
 

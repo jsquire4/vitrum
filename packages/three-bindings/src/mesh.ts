@@ -21,9 +21,10 @@ import { luminance } from './math.js';
 
 /**
  * Detect emissive meshes that should be treated as area-light emitters.
- * Returns a SceneEmitter when the mesh's material has non-zero emissive
- * luminance; null otherwise. Callers strip the emissive contribution from
- * the corresponding MeshPrimitive material so emission is not double-counted.
+ * This legacy single-mesh helper checks `material[0]` for material arrays;
+ * `sceneFromThreeJS` uses the material-aware helper below for grouped
+ * multi-material meshes. Callers strip the emissive contribution from the
+ * corresponding MeshPrimitive material so emission is not double-counted.
  */
 export function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
   const rawMat = Array.isArray(mesh.material) ? mesh.material[0] ?? null : mesh.material;
@@ -284,12 +285,13 @@ export function convertMesh(obj: THREE.Mesh, options: MeshConversionOptions = {}
   const attrs = extractMeshAttributeSet(geo, label, 'Mesh');
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
 
-  // Multi-material meshes: warn and fall back to first material.
-  // sceneFromThreeJS uses convertMeshToPrimitives for group-aware expansion.
+  // Multi-material meshes: this legacy single-primitive helper falls back to
+  // material[0]. sceneFromThreeJS uses convertMeshToPrimitives for group-aware
+  // expansion without this warning.
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
-      `@vitrum/three-bindings: unsupported multi-material mesh at "${label}" (${obj.material.length} materials). ` +
-      `Only the first material will be used. Supported types are listed in the backend's EngineCapabilities.`,
+      `@vitrum/three-bindings: convertMesh() received a multi-material Mesh at "${label}" (${obj.material.length} materials). ` +
+      `This legacy single-primitive helper uses material[0]; use sceneFromThreeJS() for grouped multi-material expansion.`,
     );
   }
 
@@ -500,8 +502,8 @@ export function convertInstancedMesh(
 
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
-      `@vitrum/three-bindings: unsupported multi-material InstancedMesh at "${label}". ` +
-        `Only the first material will be used.`,
+      `@vitrum/three-bindings: convertInstancedMesh() received a multi-material InstancedMesh at "${label}" (${obj.material.length} materials). ` +
+        `This legacy single-primitive helper uses material[0]; use sceneFromThreeJS() for grouped multi-material expansion.`,
     );
   }
 
@@ -723,8 +725,8 @@ function convertSkinnedMeshInternal(
     options.suppressMultiMaterialWarning !== true
   ) {
     console.warn(
-      `@vitrum/three-bindings: unsupported multi-material SkinnedMesh at "${label}" (${obj.material.length} materials). ` +
-      `Only the first material will be used.`,
+      `@vitrum/three-bindings: convertSkinnedMesh() received a multi-material SkinnedMesh at "${label}" (${obj.material.length} materials). ` +
+      `This legacy single-primitive helper uses material[0]; use sceneFromThreeJS() for grouped multi-material expansion.`,
     );
   }
   const material = convertFirstMaterial(obj.material, label, 'SkinnedMesh', 'SkinnedMesh', options);

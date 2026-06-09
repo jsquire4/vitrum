@@ -234,6 +234,59 @@ interface ExtraEmitterTri {
   Le: [number, number, number];
 }
 
+const DISC_AREA_TRIANGLE_COUNT = 32;
+const TAU = Math.PI * 2;
+
+function emitterLe(color: Vec3, intensity: number): [number, number, number] {
+  return [color[0] * intensity, color[1] * intensity, color[2] * intensity];
+}
+
+function normalizeVec3(v: Vec3): [number, number, number] | null {
+  const x = v[0];
+  const y = v[1];
+  const z = v[2];
+  const lenSq = x * x + y * y + z * z;
+  if (lenSq < 1e-12 || !Number.isFinite(lenSq)) return null;
+  const invLen = 1 / Math.sqrt(lenSq);
+  return [x * invLen, y * invLen, z * invLen];
+}
+
+function discTangentBasis(n: [number, number, number]): {
+  tangent: [number, number, number];
+  bitangent: [number, number, number];
+} {
+  const up: [number, number, number] = Math.abs(n[1]) > 0.999 ? [1, 0, 0] : [0, 1, 0];
+  let tx = up[1] * n[2] - up[2] * n[1];
+  let ty = up[2] * n[0] - up[0] * n[2];
+  let tz = up[0] * n[1] - up[1] * n[0];
+  const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz);
+  if (tLen > 1e-8) {
+    tx /= tLen;
+    ty /= tLen;
+    tz /= tLen;
+  }
+  const bx = n[1] * tz - n[2] * ty;
+  const by = n[2] * tx - n[0] * tz;
+  const bz = n[0] * ty - n[1] * tx;
+  return { tangent: [tx, ty, tz], bitangent: [bx, by, bz] };
+}
+
+function discPoint(
+  center: Vec3,
+  tangent: [number, number, number],
+  bitangent: [number, number, number],
+  radius: number,
+  theta: number,
+): [number, number, number] {
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  return [
+    center[0] + radius * (tangent[0] * c + bitangent[0] * s),
+    center[1] + radius * (tangent[1] * c + bitangent[1] * s),
+    center[2] + radius * (tangent[2] * c + bitangent[2] * s),
+  ];
+}
+
 /**
  * THREE-free counterpart to {@link collectRectAreaLightEmitterTris}: derive the
  * extra ReSTIR emitter triangles for every `kind: 'rect-area'` emitter DIRECTLY
@@ -259,10 +312,43 @@ interface ExtraEmitterTri {
  * Rejections mirror the THREE path exactly: a degenerate basis
  * (`|uAxis × vAxis|² < 1e-12`, the `buildRectAreaLight` null-return) and a
  * sub-`1e-8` triangle cross-length are both skipped.
+ *
+ * Despite the legacy rect-only name, this also collects `disc-area` emitters as
+ * a 32-triangle equal-area fan. The fan radius is scaled so the represented
+ * polygon area equals the analytic disc area, preserving total power and the
+ * area-PDF used by ReSTIR. `mesh-area` emitters are not expanded here: material
+ * emissive mesh triangles already enter through the world-space emitter stream.
  */
 export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTri[] {
   const out: ExtraEmitterTri[] = [];
   for (const e of scene.emitters) {
+    if (e.kind === 'disc-area') {
+      if (e.radius <= 0 || !Number.isFinite(e.radius)) continue;
+      const n = normalizeVec3(e.normal);
+      if (n == null) continue;
+
+      const { tangent, bitangent } = discTangentBasis(n);
+      const segmentAngle = TAU / DISC_AREA_TRIANGLE_COUNT;
+      const areaPreservingRadius = e.radius * Math.sqrt(segmentAngle / Math.sin(segmentAngle));
+      const triArea = Math.PI * e.radius * e.radius / DISC_AREA_TRIANGLE_COUNT;
+      const N: [number, number, number] = [-n[0], -n[1], -n[2]];
+      const Le = emitterLe(e.color, e.intensity);
+
+      for (let i = 0; i < DISC_AREA_TRIANGLE_COUNT; i += 1) {
+        const curr = discPoint(e.position, tangent, bitangent, areaPreservingRadius, i * segmentAngle);
+        const next = discPoint(e.position, tangent, bitangent, areaPreservingRadius, (i + 1) * segmentAngle);
+        out.push({
+          vA: [e.position[0], e.position[1], e.position[2]],
+          vB: next,
+          vC: curr,
+          normal: N,
+          area: triArea,
+          Le,
+        });
+      }
+      continue;
+    }
+
     if (e.kind !== 'rect-area') continue;
     const p = e.position;
     const u = e.uAxis;
@@ -296,9 +382,7 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     if (crossLen < 1e-8) continue;
     const triArea = crossLen * 0.5;
 
-    const col: Vec3 = e.color;
-    const I = e.intensity;
-    const Le: [number, number, number] = [col[0] * I, col[1] * I, col[2] * I];
+    const Le = emitterLe(e.color, e.intensity);
 
     // Two tris (LL,LR,UR) + (LL,UR,UL) — identical winding to the THREE path.
     out.push({ vA: ll, vB: lr, vC: ur, normal: N, area: triArea, Le });

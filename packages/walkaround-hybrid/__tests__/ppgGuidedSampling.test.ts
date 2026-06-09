@@ -323,7 +323,7 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
   // unknown because updateUBO ignores swapChain* / sigma / gtao* / adaptive*.
   const m = new Float32Array(16).fill(0);
   const baseInputs: PipelineFrameInputs = {
-    camera: { viewMatrix: m, projMatrix: m, prevViewMatrix: m, cameraPos: [1, 2, 3] },
+    camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [1, 2, 3] },
     screen: { screenWidth: 64, screenHeight: 48, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
       emitterCount: 2, totalEmissivePower: 5,

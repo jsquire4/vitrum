@@ -282,7 +282,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * - `'full'` (default) — the full pipeline: TLAS-capable, RC/PPG/neural
    *   allowed, requires `HYBRID_WEBGPU_REQUIRED_LIMITS` (16 buf / 8 tex).
    * - `'lite'` — a reduced-budget path for adapters that meet only
-   *   `HYBRID_LITE_LIMITS` (≈10 buf / 5 tex). Lite runs the SAME shade pipeline
+   *   `HYBRID_LITE_LIMITS` (≈10 buf / 6 tex). Lite runs the SAME shade pipeline
    *   (no WGSL fork) but:
    *     - forces `extensions['walkaround-hybrid'].bvhMode = 'merged'` (drops the
    *       5 TLAS scene-group storage buffers — the buffer-axis win) even when a

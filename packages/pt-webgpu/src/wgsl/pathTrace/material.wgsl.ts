@@ -91,6 +91,8 @@ struct FrameParams {
 @group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;${extraBindings}
+
+const INVALID_TLAS_INSTANCE_INDEX = 0xffffffffu;
 `;
 }
 
@@ -292,12 +294,12 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
 // Normal map (linear array) — descriptor vec4[0].y. Perturbs the geometric shading
 // normal by the tangent-space normal map. The tangent frame is DERIVED per-hit
 // from the triangle's positions + UVs (Lengyel) — no precomputed tangents needed
-// — then Gram-Schmidt-orthonormalized against geomNormal. Returns geomNormal
-// unchanged when there's no normal map (→ byte-identical). The derived tangent is
-// in BLAS-LOCAL space; for identity / translation-only instances that equals the
-// world tangent (exact), and rotated instances are approximate (v1 limitation).
+// — then transformed through the hit TLAS instance and Gram-Schmidt-
+// orthonormalized against geomNormal. Returns geomNormal unchanged when there's
+// no normal map (→ byte-identical). Merged-BLAS / lite / analytic paths pass the
+// invalid instance sentinel and keep the historical local-space tangent.
 // Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
-fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f) -> vec3f {
+fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32) -> vec3f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 3u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
   let normalIdx = i32(materialTexDescriptors[base].y);
@@ -317,6 +319,15 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f) -
   if (abs(det) < 1e-10) { return geomNormal; }
   let f = 1.0 / det;
   var tangent = f * (duv2.y * e1 - duv1.y * e2);
+  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
+    let m = instanceIndex * 4u;
+    if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
+      let l2w0 = tlasInstanceLocalToWorld[m];
+      let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+      let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+      tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
+    }
+  }
   // Gram-Schmidt orthonormalize against the (world) geometric normal.
   tangent = tangent - geomNormal * dot(geomNormal, tangent);
   let tlen = length(tangent);

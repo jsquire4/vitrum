@@ -283,7 +283,7 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
     'svgfVarianceMomentsIntermedTexture',
   ] as const;
 
-  it('svgf category drops to ~0 when svgfEnabled is false (non-svgf-real denoiser)', () => {
+  it('svgf category drops to object-id-only when svgfEnabled is false (non-svgf-real denoiser)', () => {
     const device = makeStubDevice();
     const enabled  = estimateFrameResourcesMemory(
       createFrameResources(device, W, H, { svgfEnabled: true }));
@@ -294,7 +294,8 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
     // must reclaim essentially all of the svgf category (only the two 1×1
     // object-id placeholders remain — kilobytes).
     expect(enabled.byCategory.svgf!).toBeGreaterThan(40 * MB);
-    expect(disabled.byCategory.svgf!).toBeLessThan(1 * MB);
+    expect(disabled.byCategory.svgf!).toBeGreaterThan(15 * MB);
+    expect(disabled.byCategory.svgf!).toBeLessThan(20 * MB);
     // The reclaimed bytes show up 1:1 in the total — nothing else moved.
     expect(enabled.total - disabled.total).toBe(
       enabled.byCategory.svgf! - disabled.byCategory.svgf!);
@@ -315,7 +316,7 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
     }
   });
 
-  it('non-svgf denoisers allocate 1x1 SVGF persistent textures; svgf-real allocates full-res', () => {
+  it('non-svgf denoisers allocate 1x1 SVGF histories; object IDs stay full-res for shade', () => {
     const device = makeStubDevice();
     const enabled = createFrameResources(device, W, H, { svgfEnabled: true });
     const disabled = createFrameResources(device, W, H, { svgfEnabled: false });
@@ -336,6 +337,15 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
       expect(full.height, `${field} full-res-mode height`).toBe(1);
       expect(placeholder.width, `${field} placeholder width`).toBe(1);
       expect(placeholder.height, `${field} placeholder height`).toBe(1);
+    }
+
+    for (const field of ['svgfCurrentObjectIdTexture', 'svgfPreviousObjectIdTexture'] as const) {
+      const full = enabled.svgf[field] as unknown as StubTexture;
+      const disabledFull = disabled.svgf[field] as unknown as StubTexture;
+      expect(full.width, `${field} full-res-mode width`).toBe(W);
+      expect(full.height, `${field} full-res-mode height`).toBe(H);
+      expect(disabledFull.width, `${field} disabled width`).toBe(W);
+      expect(disabledFull.height, `${field} disabled height`).toBe(H);
     }
   });
 });

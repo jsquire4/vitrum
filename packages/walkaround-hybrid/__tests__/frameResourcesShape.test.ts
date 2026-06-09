@@ -78,6 +78,8 @@ const FIELD_MIGRATION_TABLE = [
   // svgf ──────────────────────────────────────────────────────────────────
   ['svgfObjIdPlaceholderTexture',    'svgf'],
   ['svgfPrevObjIdPlaceholderTexture','svgf'],
+  ['svgfCurrentObjectIdTexture',     'svgf'],
+  ['svgfPreviousObjectIdTexture',    'svgf'],
   ['svgfPrevNormalDepthTexture',     'svgf'],
   ['svgfHistoryLengthTextureA',      'svgf'],
   ['svgfHistoryLengthTextureB',      'svgf'],
@@ -123,8 +125,8 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     // The legacy interface had 46 sibling fields (the "41-field god-struct"
     // shorthand in the W1-R2 brief is approximate — actual count when
     // enumerated: common 24 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 +
-    // svgf 11 = 47). Every entry must appear exactly once.
-    expect(FIELD_MIGRATION_TABLE.length).toBe(47);
+    // svgf 13 = 49). Every entry must appear exactly once.
+    expect(FIELD_MIGRATION_TABLE.length).toBe(49);
     const seen = new Set<string>();
     for (const [field] of FIELD_MIGRATION_TABLE) {
       expect(seen.has(field), `legacy field '${field}' listed twice`).toBe(false);
@@ -143,7 +145,7 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     expect(Object.keys(res.neural)).toEqual([]);
   });
 
-  it('svgf gating (svgfEnabled:false, G-P2.6) preserves the exact 11-field svgf shape', () => {
+  it('svgf gating (svgfEnabled:false, G-P2.6) preserves the exact 13-field svgf shape', () => {
     // The full-res SVGF textures are gated off when the active denoiser is not
     // svgf-real. The struct shape MUST stay identical (every field non-null) so
     // nothing off the svgf-real dispatch path observes a missing field — the

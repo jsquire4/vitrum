@@ -207,19 +207,29 @@ export interface GTAOFrameResources {
   gtaoUboBuffer: GPUBuffer;
 }
 
-/** SVGF ('svgf-real' mode) persistent textures — history, moments, prev-rad, variance. */
+/** SVGF ('svgf-real' mode) persistent textures — object IDs, history, moments, prev-rad, variance. */
 export interface SVGFFrameResources {
   /**
-   * T2.H1 — 1×1 r32uint placeholder for object-ID inputs. Object IDs are
-   * not available in the current walkaround pipeline; this placeholder makes
-   * both currObjId and prevObjId read as 0, which means the object-id mismatch
-   * test (oPrev != objIdCurr → 0 != 0 = false) never rejects reprojection.
+   * T2.H1 legacy fallback — 1×1 r32uint placeholder for current object-ID
+   * inputs. Real frame dispatch binds {@link svgfCurrentObjectIdTexture}; this
+   * remains only for defensive fallback paths / tests that construct partial
+   * resource bundles.
    */
   svgfObjIdPlaceholderTexture: GPUTexture;
-  /** Conservative prev-object-id placeholder (value 1). When bound as prevObjId
-   *  against currObjId=0, reprojection rejects history instead of accepting
-   *  stale cross-object reuse while true object IDs are unavailable. */
+  /** Conservative prev-object-id fallback placeholder (value 1). */
   svgfPrevObjIdPlaceholderTexture: GPUTexture;
+  /**
+   * Current-frame stable object/primitive/triangle ID (r32uint, full-res).
+   * Written by shade for the primary visible surface and read by SVGF
+   * reprojection as currObjId. 0 is reserved for sky/miss pixels.
+   */
+  svgfCurrentObjectIdTexture: GPUTexture;
+  /**
+   * Previous-frame stable object/primitive/triangle ID (r32uint, full-res).
+   * Read by SVGF reprojection as prevObjId, then refreshed from
+   * svgfCurrentObjectIdTexture at the end of SVGF dispatch.
+   */
+  svgfPreviousObjectIdTexture: GPUTexture;
   /**
    * Previous-frame normal+depth history for reprojection validity checks.
    * Copied from `common.gNormalDepthTexture` after each denoiser dispatch.
@@ -428,11 +438,12 @@ export interface FrameResourceOptions {
    *  default); `4` ⇒ quarter-res AO target (`gtaoMode:'quarter'`). Sizes the
    *  `gtao.aoHalfTexture` at `W/factor × H/factor`. Defaults to `2`. */
   readonly gtaoDownscale?: number;
-  /** Allocate SVGF-real's ~80-90 MB @1080p of full-res persistent textures.
-   *  `true` only when the active denoiser is `svgf-real` (the sole reader —
-   *  `SVGFRealDenoiser.dispatch`). When `false` (the default `atrous-variance`
-   *  and every other denoiser) the SVGF struct collapses to 1×1 placeholders:
-   *  byte-identical render, full-res footprint reclaimed (G-P2.6). Defaults to
+  /** Allocate SVGF-real's ~80-90 MB @1080p of full-res history/moments/
+   *  radiance textures. `true` only when the active denoiser is `svgf-real`
+   *  (the sole reader — `SVGFRealDenoiser.dispatch`). When `false` (the default
+   *  `atrous-variance` and every other denoiser) those heavy textures collapse
+   *  to 1×1 placeholders. The full-res r32uint object-ID pair remains allocated
+   *  because shade writes it through the shared frame bind group. Defaults to
    *  `true` so callers that omit it keep the legacy full-allocation behavior. */
   readonly svgfEnabled?: boolean;
 }
@@ -535,6 +546,8 @@ export function destroyFrameResources(r: FrameResources): void {
   // svgf
   r.svgf.svgfObjIdPlaceholderTexture.destroy();
   r.svgf.svgfPrevObjIdPlaceholderTexture.destroy();
+  r.svgf.svgfCurrentObjectIdTexture.destroy();
+  r.svgf.svgfPreviousObjectIdTexture.destroy();
   r.svgf.svgfPrevNormalDepthTexture.destroy();
   r.svgf.svgfHistoryLengthTextureA.destroy();
   r.svgf.svgfHistoryLengthTextureB.destroy();

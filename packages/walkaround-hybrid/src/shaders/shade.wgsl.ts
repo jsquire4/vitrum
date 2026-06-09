@@ -64,6 +64,10 @@ export const SHADE_WGSL = /* wgsl */ `
 // colour; indirectCombine re-multiplies (filtered_lighting × albedo) after
 // the denoising chain.
 @group(0) @binding(14) var hdrAlbedoOut: texture_storage_2d<rgba16float, write>;
+// SVGF-real object ID output. 0 is sky; nonzero hit IDs combine the TLAS
+// instance index and the hit triangle index so reprojection rejects history
+// across independently moving objects / primitives / triangles.
+@group(0) @binding(15) var svgfObjectIdOut: texture_storage_2d<r32uint, write>;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
@@ -131,6 +135,15 @@ struct DDGIGridUBO {
 
 fn loadSpatialDI(pixelIdx: u32) -> ReservoirDI {
   return loadReservoirDI_rw(&spatialReservoir, pixelIdx);
+}
+
+fn stableSvgfObjectId(hit: IntersectionResult) -> u32 {
+  let inst = hit.instanceIndex + 1u;
+  let tri = hit.indices.w + 1u;
+  var h = 2166136261u;
+  h = (h ^ inst) * 16777619u;
+  h = (h ^ tri) * 16777619u;
+  return select(h, 1u, h == 0u);
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
@@ -458,6 +471,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(hdrAlbedoOut,   pix, vec4f(1.0, 1.0, 1.0, 1.0));
     textureStore(hdrIndirectOut, pix, vec4f(0.0, 0.0, 0.0, 1.0));
     textureStore(hdrTotalOut,    pix, vec4f(skyMiss, 1.0));
+    textureStore(svgfObjectIdOut, pix, vec4u(0u));
     return;
   }
 
@@ -498,6 +512,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // panel-wall boundary.
   let depthSigned = primaryHit.dist * select(1.0, -1.0, isGlass);
   textureStore(gNormalDepthOut, pix, vec4f(normal * 0.5 + 0.5, depthSigned));
+  textureStore(svgfObjectIdOut, pix, vec4u(stableSvgfObjectId(primaryHit)));
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let albedo   = matColor.rgb;

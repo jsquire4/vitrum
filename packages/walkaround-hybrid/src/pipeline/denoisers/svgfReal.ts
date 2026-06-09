@@ -166,12 +166,11 @@ export class SVGFRealDenoiser implements Denoiser {
     // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).
     // For the walkaround-hybrid pipeline, currDepth + currNormal come from
     // gNormalDepthTexture (.r = depth packed, .xyz = normal packed 0..1).
-    // We use gNormalDepthTexture for both curr and prev depth/normal: one-frame
-    // lag on the previous-frame G-buffer is acceptable for a real-time engine
-    // and avoids allocating a full second G-buffer. Object IDs are not available
-    // in the current walkaround pipeline; we bind conservative placeholders
-    // (curr=0, prev=1) so obj-id mismatch rejects temporal reuse instead of
-    // accepting potentially stale history.
+    // We use the current shade-authored G-buffer for curr depth/normal and the
+    // previous-frame snapshot copied at the end of this dispatch for prev
+    // depth/normal. Object IDs follow the same lifecycle: shade writes the
+    // current full-res r32uint ID, reprojection reads the previous full-res
+    // r32uint ID, then this dispatch copies current → previous for frame N+1.
     // Select ping-pong slots: read from A, write to B (or vice versa).
     const histRead = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureA : svgf.svgfHistoryLengthTextureB;
     const histWrite = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureB : svgf.svgfHistoryLengthTextureA;
@@ -179,6 +178,14 @@ export class SVGFRealDenoiser implements Denoiser {
     const momWrite = this._pingPong === 0 ? svgf.svgfMomentsTextureB : svgf.svgfMomentsTextureA;
     const radRead = this._pingPong === 0 ? svgf.svgfPrevRadianceTextureA : svgf.svgfPrevRadianceTextureB;
     const radWrite = this._pingPong === 0 ? svgf.svgfPrevRadianceTextureB : svgf.svgfPrevRadianceTextureA;
+    const hasRealObjectIdHistory =
+      svgf.svgfCurrentObjectIdTexture != null && svgf.svgfPreviousObjectIdTexture != null;
+    const currObjIdTexture = hasRealObjectIdHistory
+      ? svgf.svgfCurrentObjectIdTexture
+      : svgf.svgfObjIdPlaceholderTexture;
+    const prevObjIdTexture = hasRealObjectIdHistory
+      ? svgf.svgfPreviousObjectIdTexture
+      : svgf.svgfPrevObjIdPlaceholderTexture;
 
     const reproj = this._reprojPipeline;
     {
@@ -191,10 +198,10 @@ export class SVGFRealDenoiser implements Denoiser {
           { binding: 2, resource: common.motionVectorTexture.createView() },       // motionVec
           { binding: 3, resource: common.gNormalDepthTexture.createView() },       // currDepth (.r)
           { binding: 4, resource: common.gNormalDepthTexture.createView() },       // currNormal (.xyz 0..1)
-          { binding: 5, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
+          { binding: 5, resource: currObjIdTexture.createView() },                 // currObjId
           { binding: 6, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevDepth
           { binding: 7, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevNormal
-          { binding: 8, resource: svgf.svgfPrevObjIdPlaceholderTexture.createView() }, // prevObjId (conservative placeholder)
+          { binding: 8, resource: prevObjIdTexture.createView() },                 // prevObjId
           { binding: 9, resource: histRead.createView() },                         // historyLengthIn
           { binding: 10, resource: momRead.createView() },                         // momentsIn
           { binding: 11, resource: radWrite.createView() },                        // colorOut (storage write)
@@ -298,6 +305,17 @@ export class SVGFRealDenoiser implements Denoiser {
         depthOrArrayLayers: 1,
       },
     );
+    if (hasRealObjectIdHistory) {
+      encoder.copyTextureToTexture(
+        { texture: currObjIdTexture },
+        { texture: prevObjIdTexture },
+        {
+          width: currObjIdTexture.width,
+          height: currObjIdTexture.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+    }
     return denoised;
   }
 

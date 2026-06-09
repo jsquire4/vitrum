@@ -150,4 +150,4 @@ export const SHADE_PROLOGUE_ORM_TEX_APPLY_FULL =
  *  is no normal map → byte-identical. Perturbs before firstHitNormal is captured
  *  so the G-buffer normal is the mapped one. */
 export const SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL =
-  `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal);`;
+  `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;

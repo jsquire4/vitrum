@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import { asMat4, type Scene } from '@vitrum/core';
+import { luminance } from '@vitrum/shared-samplers';
+import { meshTriangleArea } from '../bdpt/flatEmitterWalk.js';
+import { buildLightTreeInputForScene } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
 function baseScene(): Scene {
@@ -14,6 +17,71 @@ function baseScene(): Scene {
     emitters: [],
     environment: { kind: 'none' },
   };
+}
+
+function quadScene(kind: 'mesh' | 'instanced-mesh' = 'mesh'): Scene {
+  const primitive = {
+    kind,
+    id: 'quad',
+    positions: new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      1, 1, 0,
+      0, 1, 0,
+    ]),
+    normals: new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
+    ...(kind === 'instanced-mesh'
+      ? {
+          instances: [
+            asMat4([
+              1, 0, 0, 0,
+              0, 1, 0, 0,
+              0, 0, 1, 0,
+              0, 0, 0, 1,
+            ]),
+            asMat4([
+              1, 0, 0, 0,
+              0, 1, 0, 0,
+              0, 0, 1, 0,
+              10, 0, 0, 1,
+            ]),
+          ],
+        }
+      : {}),
+  } as Scene['primitives'][number];
+  return {
+    primitives: [primitive],
+    emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'quad', color: [0.25, 0.5, 1], intensity: 4 }],
+    environment: { kind: 'none' },
+  };
+}
+
+function triAt(data: Float32Array, tri: number): {
+  a: [number, number, number];
+  b: [number, number, number];
+  c: [number, number, number];
+  r: [number, number, number];
+} {
+  const o = tri * 16;
+  return {
+    a: [data[o]!, data[o + 1]!, data[o + 2]!],
+    b: [data[o + 4]!, data[o + 5]!, data[o + 6]!],
+    c: [data[o + 8]!, data[o + 9]!, data[o + 10]!],
+    r: [data[o + 12]!, data[o + 13]!, data[o + 14]!],
+  };
+}
+
+function expectVec3Close(actual: readonly [number, number, number], expected: readonly [number, number, number]): void {
+  expect(actual[0]).toBeCloseTo(expected[0], 6);
+  expect(actual[1]).toBeCloseTo(expected[1], 6);
+  expect(actual[2]).toBeCloseTo(expected[2], 6);
 }
 
 describe('buildPackedScene emitter + environment packing', () => {
@@ -32,6 +100,78 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(packed.spotLightCount).toBe(1);
     expect(packed.rectAreaLightCount).toBe(1);
     expect(packed.meshAreaLightCount).toBe(1);
+  });
+
+  it('expands mesh-area emitters to every referenced triangle', () => {
+    const scene = quadScene('mesh');
+    const packed = buildPackedScene(scene);
+    expect(packed.meshAreaLightCount).toBe(2);
+    expect(packed.meshAreaLightsData.length).toBe(2 * 16);
+    const t0 = triAt(packed.meshAreaLightsData, 0);
+    const t1 = triAt(packed.meshAreaLightsData, 1);
+    expectVec3Close(t0.a, [0, 0, 0]);
+    expectVec3Close(t0.b, [1, 0, 0]);
+    expectVec3Close(t0.c, [1, 1, 0]);
+    expectVec3Close(t1.a, [0, 0, 0]);
+    expectVec3Close(t1.b, [1, 1, 0]);
+    expectVec3Close(t1.c, [0, 1, 0]);
+    expectVec3Close(t0.r, [1, 2, 4]);
+    expectVec3Close(t1.r, [1, 2, 4]);
+
+    const tree = buildLightTreeInputForScene(scene);
+    expect(tree.powers.length).toBe(2);
+    expectVec3Close(tree.centroids[0]!, [2 / 3, 1 / 3, 0]);
+    expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
+    expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
+    expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
+  });
+
+  it('expands instanced mesh-area emitters across every instance and triangle', () => {
+    const packed = buildPackedScene(quadScene('instanced-mesh'));
+    expect(packed.meshAreaLightCount).toBe(4);
+    const firstInstanceFirstTri = triAt(packed.meshAreaLightsData, 0);
+    const secondInstanceFirstTri = triAt(packed.meshAreaLightsData, 2);
+    expectVec3Close(firstInstanceFirstTri.a, [0, 0, 0]);
+    expectVec3Close(firstInstanceFirstTri.b, [1, 0, 0]);
+    expectVec3Close(firstInstanceFirstTri.c, [1, 1, 0]);
+    expectVec3Close(secondInstanceFirstTri.a, [10, 0, 0]);
+    expectVec3Close(secondInstanceFirstTri.b, [11, 0, 0]);
+    expectVec3Close(secondInstanceFirstTri.c, [11, 1, 0]);
+  });
+
+  it('lowers disc-area emitters into equal-area mesh triangle records', () => {
+    const radius = 2;
+    const radiance: [number, number, number] = [3, 1.5, 0.75];
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [{
+        kind: 'disc-area',
+        id: 'disc',
+        position: [0, 2, 0],
+        normal: [0, 1, 0],
+        radius,
+        color: [1, 0.5, 0.25],
+        intensity: 3,
+      }],
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.rectAreaLightCount).toBe(0);
+    expect(packed.meshAreaLightCount).toBe(32);
+    let area = 0;
+    for (let i = 0; i < packed.meshAreaLightCount; i += 1) {
+      const tri = triAt(packed.meshAreaLightsData, i);
+      expectVec3Close(tri.r, radiance);
+      area += meshTriangleArea(tri.a, tri.b, tri.c);
+    }
+    expect(area).toBeCloseTo(Math.PI * radius * radius, 5);
+
+    const tree = buildLightTreeInputForScene(scene);
+    expect(tree.powers.length).toBe(32);
+    const totalPower = tree.powers.reduce((sum, p) => sum + p, 0);
+    expect(totalPower).toBeCloseTo(
+      luminance(radiance[0], radiance[1], radiance[2]) * Math.PI * radius * radius,
+      4,
+    );
   });
 
   it('cameraVisibleEmitters re-attaches mesh-area emitter radiance onto the primitive material (color·intensity)', () => {

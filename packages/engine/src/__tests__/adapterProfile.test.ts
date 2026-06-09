@@ -47,11 +47,11 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     expect(p.maxStorageTexturesPerStage).toBe(8);
   });
 
-  it('10/5 → not full hybrid but lite-capable, pt-webgpu full, medium ceiling', async () => {
-    // 10 buffers / 5 textures: below hybrid full (16/8), at/above hybrid lite
-    // (10/5), and at/above pt-webgpu full (10 buf / 5 tex).
+  it('10/6 → not full hybrid but lite-capable, pt-webgpu full, medium ceiling', async () => {
+    // 10 buffers / 6 textures: below hybrid full (16/8), at/above hybrid lite
+    // (10/6), and at/above pt-webgpu full (10 buf / 5 tex).
     const p = await probeAdapterProfile(
-      fakeAdapter(10, 5, { vendor: 'intel', architecture: 'gen12' }),
+      fakeAdapter(10, 6, { vendor: 'intel', architecture: 'gen12' }),
     );
     expect(p.hybridCapable).toBe(false);
     expect(p.hybridLiteCapable).toBe(true);

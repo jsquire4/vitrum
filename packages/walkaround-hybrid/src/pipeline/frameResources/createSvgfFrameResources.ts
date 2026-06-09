@@ -1,5 +1,5 @@
 /**
- * SVGF-real persistent textures + object-id placeholders (W4a split).
+ * SVGF-real persistent textures + object-id resources (W4a split).
  *
  * Perf hygiene (G-P2.6): the ~10 full-resolution persistent textures here
  * (~80-90 MB @1080p — history/moments/prev-radiance/variance ping-pong pairs)
@@ -13,11 +13,39 @@
  * frameResourcesShape.test.ts) but every full-res texture collapses to a 1×1
  * placeholder of the SAME format/usage. The render is byte-identical because
  * nothing reads these fields off the svgf-real dispatch path; only the GPU
- * memory footprint drops. The two 1×1 object-id placeholders are always tiny
- * regardless, so they are allocated unconditionally.
+ * memory footprint drops. The real object-id textures stay full-resolution even
+ * when SVGF-real is not active because shade writes the current ID through the
+ * shared frame bind group layout. The old 1×1 object-id placeholders are kept
+ * as fallback-only resources.
  */
 
 import type { SVGFFrameResources } from '../resourceManager.js';
+
+function writeR32UintFill(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+  value: number,
+): void {
+  const bytesPerRow = Math.max(256, Math.ceil((width * 4) / 256) * 256);
+  const data = new Uint8Array(bytesPerRow * height);
+  if (value !== 0) {
+    const view = new DataView(data.buffer);
+    for (let y = 0; y < height; y += 1) {
+      const row = y * bytesPerRow;
+      for (let x = 0; x < width; x += 1) {
+        view.setUint32(row + x * 4, value, true);
+      }
+    }
+  }
+  device.queue.writeTexture(
+    { texture },
+    data,
+    { offset: 0, bytesPerRow },
+    { width, height, depthOrArrayLayers: 1 },
+  );
+}
 
 export function createSvgfFrameResources(
   device: GPUDevice,
@@ -58,6 +86,24 @@ export function createSvgfFrameResources(
     { bytesPerRow: 4 },
     [1, 1],
   );
+  const svgfCurrentObjectIdTexture = device.createTexture({
+    label: 'svgf-real-current-object-id',
+    size: [width, height],
+    format: 'r32uint',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC |
+      GPUTextureUsage.COPY_DST,
+  });
+  const svgfPreviousObjectIdTexture = device.createTexture({
+    label: 'svgf-real-previous-object-id',
+    size: [width, height],
+    format: 'r32uint',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  writeR32UintFill(device, svgfCurrentObjectIdTexture, width, height, 0);
+  writeR32UintFill(device, svgfPreviousObjectIdTexture, width, height, 1);
   const svgfPrevNormalDepthTexture = device.createTexture({
     label: 'svgf-real-prev-normal-depth',
     size: [w, h],
@@ -143,6 +189,8 @@ export function createSvgfFrameResources(
   return {
     svgfObjIdPlaceholderTexture,
     svgfPrevObjIdPlaceholderTexture,
+    svgfCurrentObjectIdTexture,
+    svgfPreviousObjectIdTexture,
     svgfPrevNormalDepthTexture,
     svgfHistoryLengthTextureA,
     svgfHistoryLengthTextureB,

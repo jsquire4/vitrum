@@ -32,7 +32,7 @@ function baseInputs(): PipelineFrameInputs {
   const m = new Float32Array(16);
   for (let i = 0; i < 16; i++) m[i] = i * 0.5 + 1;
   return {
-    camera: { viewMatrix: m, projMatrix: m, prevViewMatrix: m, cameraPos: [1, 2, 3] },
+    camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [1, 2, 3] },
     screen: { screenWidth: 1920, screenHeight: 1080, frameSeed: 42, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
       totalEmissivePower: 12.5, emitterCount: 7,

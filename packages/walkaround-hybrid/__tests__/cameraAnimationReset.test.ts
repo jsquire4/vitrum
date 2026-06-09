@@ -11,10 +11,10 @@
  *
  * What is NOT covered here (GPU-only path):
  *   - The actual α blend on the GPU: `alpha = accumFrameIndex === 0 ? 1.0 : α`.
- *   - prevViewMatrix reprojection in temporal.wgsl / temporalGi.wgsl.
+ *   - prevViewProjMatrix reprojection in temporal.wgsl / temporalGi.wgsl.
  *   Those would require a real device. The structural tests in
  *   sprint17-restirGiTemporalSpatial.test.ts verify the WGSL contains
- *   `ubo.prevViewMatrix` and `projectToPrevHalfPx`.
+ *   `ubo.prevViewProjMatrix` and `projectToPrevHalfPx`.
  */
 
 import { describe, it, expect } from 'vitest';

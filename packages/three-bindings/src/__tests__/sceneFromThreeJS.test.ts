@@ -2,6 +2,34 @@ import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
 import { sceneFromThreeJS } from '../index.js';
 
+function geometryFromPositions(positions: number[]): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  const normals = new Float32Array(positions.length);
+  for (let i = 2; i < normals.length; i += 3) normals[i] = 1;
+  g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  return g;
+}
+
+function groupedQuadGeometry(): THREE.BufferGeometry {
+  const g = geometryFromPositions([
+    0, 0, 0,
+    1, 0, 0,
+    0, 1, 0,
+    1, 1, 0,
+  ]);
+  g.setIndex([0, 1, 2, 2, 1, 3]);
+  g.addGroup(0, 3, 1);
+  g.addGroup(3, 3, 0);
+  return g;
+}
+
+function expectMatrixClose(actual: ArrayLike<number>, expected: THREE.Matrix4): void {
+  for (let k = 0; k < 16; k += 1) {
+    expect(actual[k]).toBeCloseTo(expected.elements[k]!, 5);
+  }
+}
+
 describe('sceneFromThreeJS', () => {
   it('maps one MeshPhysical mesh to a mesh primitive', () => {
     const s = new THREE.Scene();
@@ -72,6 +100,108 @@ describe('sceneFromThreeJS', () => {
     expect(second.material.baseColor).toEqual([0, 1, 0]);
   });
 
+  it('splits non-indexed grouped Mesh geometry and leaves group gaps unmaterialized', () => {
+    const s = new THREE.Scene();
+    const g = geometryFromPositions([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      10, 0, 0,
+      11, 0, 0,
+      10, 1, 0,
+      20, 0, 0,
+      21, 0, 0,
+      20, 1, 0,
+    ]);
+    g.addGroup(0, 3, 0);
+    g.addGroup(6, 3, 1);
+
+    const mesh = new THREE.Mesh(g, [
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 0, 1) }),
+    ]);
+    s.add(mesh);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(2);
+
+    const first = v.primitives[0]!;
+    const second = v.primitives[1]!;
+    expect(first.kind).toBe('mesh');
+    expect(second.kind).toBe('mesh');
+    if (first.kind !== 'mesh' || second.kind !== 'mesh') return;
+
+    expect(first.positions).toEqual(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]));
+    expect(second.positions).toEqual(new Float32Array([
+      20, 0, 0,
+      21, 0, 0,
+      20, 1, 0,
+    ]));
+    expect(first.material.baseColor).toEqual([1, 0, 0]);
+    expect(second.material.baseColor).toEqual([0, 0, 1]);
+  });
+
+  it('throws for grouped Mesh material indices outside the material array', () => {
+    const s = new THREE.Scene();
+    const g = geometryFromPositions([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]);
+    g.addGroup(0, 3, 2);
+    const mesh = new THREE.Mesh(g, [
+      new THREE.MeshStandardMaterial(),
+      new THREE.MeshStandardMaterial(),
+    ]);
+    mesh.name = 'bad-material-index';
+    s.add(mesh);
+
+    expect(() => sceneFromThreeJS(s)).toThrow(
+      /Mesh "bad-material-index" group 0 references material index 2, but the mesh has 2 materials/,
+    );
+  });
+
+  it('throws for grouped Mesh ranges outside indexed and non-indexed geometry bounds', () => {
+    const indexedScene = new THREE.Scene();
+    const indexed = geometryFromPositions([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]);
+    indexed.setIndex([0, 1, 2]);
+    indexed.addGroup(1, 3, 0);
+    const indexedMesh = new THREE.Mesh(indexed, [
+      new THREE.MeshStandardMaterial(),
+      new THREE.MeshStandardMaterial(),
+    ]);
+    indexedMesh.name = 'bad-index-range';
+    indexedScene.add(indexedMesh);
+    expect(() => sceneFromThreeJS(indexedScene)).toThrow(
+      /Mesh "bad-index-range" group 0 index range \[1, 4\) exceeds index count 3/,
+    );
+
+    const nonIndexedScene = new THREE.Scene();
+    const nonIndexed = geometryFromPositions([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]);
+    nonIndexed.addGroup(1, 3, 0);
+    const nonIndexedMesh = new THREE.Mesh(nonIndexed, [
+      new THREE.MeshStandardMaterial(),
+      new THREE.MeshStandardMaterial(),
+    ]);
+    nonIndexedMesh.name = 'bad-vertex-range';
+    nonIndexedScene.add(nonIndexedMesh);
+    expect(() => sceneFromThreeJS(nonIndexedScene)).toThrow(
+      /Mesh "bad-vertex-range" group 0 vertex range \[1, 4\) exceeds vertex count 3/,
+    );
+  });
+
   it('targets split mesh-area emitters at the derived group primitive id', () => {
     const s = new THREE.Scene();
     const g = new THREE.BufferGeometry();
@@ -108,6 +238,37 @@ describe('sceneFromThreeJS', () => {
     });
     expect(v.primitives[0]!.kind).toBe('mesh');
     expect(v.primitives[0]!.material.emissive).toEqual([0, 0, 0]);
+  });
+
+  it('creates mesh-area emitters only for emissive multi-material groups', () => {
+    const s = new THREE.Scene();
+    const mesh = new THREE.Mesh(groupedQuadGeometry(), [
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0.2, 0.8, 0.1) }),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: new THREE.Color(0.75, 0.25, 0.5),
+        emissiveIntensity: 3,
+      }),
+    ]);
+    s.add(mesh);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(2);
+    expect(v.emitters).toHaveLength(1);
+    expect(v.emitters[0]).toMatchObject({
+      kind: 'mesh-area',
+      meshId: `${mesh.uuid}:group:0:material:1`,
+      color: [0.75, 0.25, 0.5],
+      intensity: 3,
+    });
+
+    const emissivePrim = v.primitives.find((p) => p.id === `${mesh.uuid}:group:0:material:1`);
+    const nonEmissivePrim = v.primitives.find((p) => p.id === `${mesh.uuid}:group:1:material:0`);
+    expect(emissivePrim?.kind).toBe('mesh');
+    expect(nonEmissivePrim?.kind).toBe('mesh');
+    expect(emissivePrim?.material.emissive).toEqual([0, 0, 0]);
+    expect(emissivePrim?.material.emissiveIntensity).toBe(0);
+    expect(nonEmissivePrim?.material.emissive).toBeUndefined();
   });
 
   it('emissive MeshPhysicalMaterial emits mesh-area and strips duplicate emissive on primitive', () => {
@@ -180,9 +341,19 @@ describe('sceneFromThreeJS', () => {
     const im = new THREE.InstancedMesh(g, [
       new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0) }),
       new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
-    ], 2);
-    im.setMatrixAt(0, new THREE.Matrix4().makeTranslation(2, 0, 0));
-    im.setMatrixAt(1, new THREE.Matrix4().makeTranslation(0, 3, 0));
+    ], 3);
+    const instanceMatrices = [
+      new THREE.Matrix4().makeTranslation(2, 0, 0),
+      new THREE.Matrix4().makeTranslation(0, 3, 0),
+      new THREE.Matrix4().compose(
+        new THREE.Vector3(-1, 2, 4),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 3, Math.PI / 5)),
+        new THREE.Vector3(2, 0.5, 1.25),
+      ),
+    ];
+    for (let i = 0; i < instanceMatrices.length; i += 1) {
+      im.setMatrixAt(i, instanceMatrices[i]!);
+    }
     im.instanceMatrix.needsUpdate = true;
     s.add(im);
 
@@ -213,12 +384,12 @@ describe('sceneFromThreeJS', () => {
     ]));
     expect(first.material.baseColor).toEqual([1, 0, 0]);
     expect(second.material.baseColor).toEqual([0, 1, 0]);
-    expect(first.instances).toHaveLength(2);
-    expect(second.instances).toHaveLength(2);
-    expect(first.instances[0]![12]).toBeCloseTo(2);
-    expect(first.instances[1]![13]).toBeCloseTo(3);
-    expect(second.instances[0]![12]).toBeCloseTo(2);
-    expect(second.instances[1]![13]).toBeCloseTo(3);
+    expect(first.instances).toHaveLength(3);
+    expect(second.instances).toHaveLength(3);
+    for (let i = 0; i < instanceMatrices.length; i += 1) {
+      expectMatrixClose(first.instances[i]!, instanceMatrices[i]!);
+      expectMatrixClose(second.instances[i]!, instanceMatrices[i]!);
+    }
   });
 
   it('emissive InstancedMesh emits mesh-area and strips duplicate emissive on primitive', () => {
@@ -249,44 +420,59 @@ describe('sceneFromThreeJS', () => {
     expect(prim.material.emissiveIntensity).toBe(0);
   });
 
-  it('splits grouped multi-material SkinnedMesh geometry into per-group skinned primitives', () => {
+  it('splits grouped multi-material SkinnedMesh geometry and preserves skin, morph, and skeleton payloads', () => {
     const s = new THREE.Scene();
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+    const g = geometryFromPositions([
       0, 0, 0,
       1, 0, 0,
       0, 1, 0,
       1, 1, 0,
-    ]), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
-      0, 0, 1,
-      0, 0, 1,
-      0, 0, 1,
-      0, 0, 1,
-    ]), 3));
+    ]);
     g.setAttribute('skinIndex', new THREE.BufferAttribute(new Uint16Array([
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
+      0, 1, 0, 0,
+      1, 0, 0, 0,
+      1, 1, 0, 0,
       0, 0, 0, 0,
     ]), 4));
     g.setAttribute('skinWeight', new THREE.BufferAttribute(new Float32Array([
+      0.75, 0.25, 0, 0,
       1, 0, 0, 0,
-      1, 0, 0, 0,
-      1, 0, 0, 0,
-      1, 0, 0, 0,
+      0.5, 0.5, 0, 0,
+      0.25, 0.75, 0, 0,
     ]), 4));
+    const morphPositions = new Float32Array([
+      0.1, 0.2, 0.3,
+      1.1, 1.2, 1.3,
+      2.1, 2.2, 2.3,
+      3.1, 3.2, 3.3,
+    ]);
+    const morphNormals = new Float32Array([
+      0.01, 0.02, 0.03,
+      0.11, 0.12, 0.13,
+      0.21, 0.22, 0.23,
+      0.31, 0.32, 0.33,
+    ]);
+    g.morphTargetsRelative = true;
+    g.morphAttributes.position = [new THREE.BufferAttribute(morphPositions, 3)];
+    g.morphAttributes.normal = [new THREE.BufferAttribute(morphNormals, 3)];
     g.setIndex([0, 1, 2, 2, 1, 3]);
     g.addGroup(0, 3, 1);
     g.addGroup(3, 3, 0);
 
-    const bone = new THREE.Bone();
+    const rootBone = new THREE.Bone();
+    rootBone.position.set(0, 1, 0);
+    const childBone = new THREE.Bone();
+    childBone.position.set(2, 0, 0);
+    rootBone.add(childBone);
+    const skeleton = new THREE.Skeleton([rootBone, childBone]);
+    const bindMatrix = new THREE.Matrix4().makeTranslation(4, -2, 0.5);
     const sm = new THREE.SkinnedMesh(g, [
       new THREE.MeshStandardMaterial({ color: new THREE.Color(0, 1, 0) }),
       new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 0, 0) }),
     ]);
-    sm.add(bone);
-    sm.bind(new THREE.Skeleton([bone]));
+    sm.add(rootBone);
+    sm.bind(skeleton, bindMatrix);
+    sm.morphTargetInfluences = [0.65];
     s.add(sm);
 
     const v = sceneFromThreeJS(s);
@@ -310,15 +496,55 @@ describe('sceneFromThreeJS', () => {
       1, 1, 0,
     ]));
     expect(first.skinIndices).toEqual(new Uint32Array([
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
+      0, 1, 0, 0,
+      1, 0, 0, 0,
+      1, 1, 0, 0,
     ]));
     expect(first.skinWeights).toEqual(new Float32Array([
+      0.75, 0.25, 0, 0,
       1, 0, 0, 0,
-      1, 0, 0, 0,
-      1, 0, 0, 0,
+      0.5, 0.5, 0, 0,
     ]));
+    expect(second.skinIndices).toEqual(new Uint32Array([
+      1, 1, 0, 0,
+      1, 0, 0, 0,
+      0, 0, 0, 0,
+    ]));
+    expect(second.skinWeights).toEqual(new Float32Array([
+      0.5, 0.5, 0, 0,
+      1, 0, 0, 0,
+      0.25, 0.75, 0, 0,
+    ]));
+    expect(first.morphTargets?.[0]).toEqual(new Float32Array([
+      0.1, 0.2, 0.3,
+      1.1, 1.2, 1.3,
+      2.1, 2.2, 2.3,
+    ]));
+    expect(second.morphTargets?.[0]).toEqual(new Float32Array([
+      2.1, 2.2, 2.3,
+      1.1, 1.2, 1.3,
+      3.1, 3.2, 3.3,
+    ]));
+    expect(first.morphTargetNormals?.[0]).toEqual(new Float32Array([
+      0.01, 0.02, 0.03,
+      0.11, 0.12, 0.13,
+      0.21, 0.22, 0.23,
+    ]));
+    expect(second.morphTargetNormals?.[0]).toEqual(new Float32Array([
+      0.21, 0.22, 0.23,
+      0.11, 0.12, 0.13,
+      0.31, 0.32, 0.33,
+    ]));
+    expect(first.morphWeights).toEqual(new Float32Array([0.65]));
+    expect(second.morphWeights).toEqual(new Float32Array([0.65]));
+    expect(first.bones).toHaveLength(32);
+    expect(first.boneInverses).toHaveLength(32);
+    expect(second.bones).toEqual(first.bones);
+    expect(second.boneInverses).toEqual(first.boneInverses);
+    expect(first.bindMatrix).toEqual(new Float32Array(bindMatrix.elements));
+    expect(first.bindMatrixInverse).toEqual(new Float32Array(sm.bindMatrixInverse.elements));
+    expect(second.bindMatrix).toEqual(first.bindMatrix);
+    expect(second.bindMatrixInverse).toEqual(first.bindMatrixInverse);
     expect(first.material.baseColor).toEqual([1, 0, 0]);
     expect(second.material.baseColor).toEqual([0, 1, 0]);
   });

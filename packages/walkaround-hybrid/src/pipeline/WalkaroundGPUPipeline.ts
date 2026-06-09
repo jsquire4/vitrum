@@ -255,10 +255,10 @@ function registerPasses(
  */
 export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBuffersPerShaderStage: 16,
-  // Sprint 18 — shade writes 4 storage textures simultaneously
-  // (hdrColorOut, gNormalDepthOut, hdrIndirectOut, hdrTotalOut), at the
-  // default cap of 4. Indirect-combine writes a 5th. Lift to 8 so future
-  // additions (sparse / motion-vector outputs) have headroom too.
+  // Sprint 18 + SVGF object IDs — shade writes 6 storage textures
+  // simultaneously (hdrColorOut, gNormalDepthOut, hdrIndirectOut, hdrTotalOut,
+  // albedo, objectId), above the default cap of 4. Lift to 8 so future
+  // additions still have headroom.
   maxStorageTexturesPerShaderStage: 8,
 };
 
@@ -272,8 +272,8 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
  * permutation). The win is on the **storage-buffer axis**: lite forces the
  * merged-BVH path (`bvhMode:'merged'`), which removes the 5 TLAS scene-group
  * buffers, dropping the peak storage-buffer count from the full path's 16 to
- * the merged path's ~10. The **texture** floor stays at 5 because the shade
- * pass structurally writes 4 storage textures simultaneously + 1 — that cannot
+ * the merged path's ~10. The **texture** floor stays at 6 because the shade
+ * pass structurally writes six storage textures simultaneously — that cannot
  * drop without forking shade.wgsl, which the lite-tier decision explicitly
  * avoids.
  *
@@ -289,9 +289,9 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
 export const HYBRID_LITE_LIMITS: Record<string, number> = {
   // Merged-path peak (no 5 TLAS scene-group buffers vs the full 16).
   maxStorageBuffersPerShaderStage: 10,
-  // Shade's 4 simultaneous storage-texture writes + 1; cannot go lower
+  // Shade's 6 simultaneous storage-texture writes; cannot go lower
   // without a shade.wgsl fork (the lite decision avoids that fork).
-  maxStorageTexturesPerShaderStage: 5,
+  maxStorageTexturesPerShaderStage: 6,
 };
 
 /**
@@ -391,10 +391,10 @@ export interface PipelineFrameCamera {
   viewMatrix: Float32Array;
   /** Camera projection matrix (column-major mat4x4f, 16 floats). */
   projMatrix: Float32Array;
-  /** Previous-frame view matrix — drives temporal reservoir reuse. Pass
-   *  the same matrix as viewMatrix on the first frame to avoid a one-frame
-   *  ghost from uninitialized previous-frame state. */
-  prevViewMatrix: Float32Array;
+  /** Previous-frame view-projection matrix (prevProj * prevView). Pass
+   *  the current projection/view product on the first frame to avoid a
+   *  one-frame ghost from uninitialized previous-frame state. */
+  prevViewProjMatrix: Float32Array;
   /** World-space camera position [x, y, z]. */
   cameraPos: [number, number, number];
 }

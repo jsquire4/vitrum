@@ -130,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(217233); // re-pinned 2026-06-07: photon-map demotion comment block (comment-only)
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(218299); // re-pinned 2026-06-08: TLAS instance index for normal-map tangents
     // The default trace must NOT contain any restir-pt reuse entry point.
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtTemporal');

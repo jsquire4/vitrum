@@ -63,6 +63,7 @@ describe('pipelineBindGroupFactory', () => {
       },
       restirGI: { reservoirGiCurrentBuffer: {} },
       gtao: { aoFullTexture: { createView: () => placeholderView } },
+      svgf: { svgfCurrentObjectIdTexture: { createView: () => placeholderView } },
     } as never;
 
     const groups = buildPerFrameBindGroups(device, cache, resources, scene, ddgi as never, placeholderView);
@@ -124,6 +125,7 @@ describe('pipelineBindGroupFactory', () => {
       },
       restirGI: { reservoirGiCurrentBuffer: {} },
       gtao: { aoFullTexture: { createView: vi.fn(() => textureView) } },
+      svgf: { svgfCurrentObjectIdTexture: { createView: vi.fn(() => textureView) } },
     } as never;
 
     const first = buildPerFrameBindGroups(
@@ -198,6 +200,7 @@ describe('pipelineBindGroupFactory', () => {
       },
       restirGI: { reservoirGiCurrentBuffer: {} },
       gtao: { aoFullTexture: { createView: vi.fn(() => textureView) } },
+      svgf: { svgfCurrentObjectIdTexture: { createView: vi.fn(() => textureView) } },
     };
     const resized = {
       ...base,
@@ -205,6 +208,68 @@ describe('pipelineBindGroupFactory', () => {
         ...base.common,
         hdrColorTexture: { createView: vi.fn(() => textureView) },
       },
+    };
+
+    const first = buildPerFrameBindGroups(device, cache, base as never, scene, ddgi as never, placeholderView, resourceCache);
+    const second = buildPerFrameBindGroups(device, cache, resized as never, scene, ddgi as never, placeholderView, resourceCache);
+
+    expect(second.frame).not.toBe(first.frame);
+    expect(second.scene).toBe(first.scene);
+    expect(buildFrameBindGroup).toHaveBeenCalledTimes(2);
+    expect(buildSceneBindGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds a cached frame group after the SVGF current object-id texture changes', () => {
+    const device = {} as GPUDevice;
+    const cache = {};
+    const resourceCache = new PipelineResourceCache();
+    const placeholderView = {} as GPUTextureView;
+    const textureView = {} as GPUTextureView;
+    const scene = {
+      bvhNodesBuffer: {} as GPUBuffer,
+      bvhIndexBuffer: {} as GPUBuffer,
+      bvhPositionBuffer: {} as GPUBuffer,
+      emitterBuffer: {} as GPUBuffer,
+      emitterCdfBuffer: {} as GPUBuffer,
+      bvhBeerTextureView: {} as GPUTextureView,
+      bvhNormalBuffer: {} as GPUBuffer,
+      bvhEmissiveTextureView: {} as GPUTextureView,
+      tlasNodesBuffer: {} as GPUBuffer,
+      tlasInstanceIndicesBuffer: {} as GPUBuffer,
+      tlasBlasRootsBuffer: {} as GPUBuffer,
+      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
+      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+    };
+    const ddgi = {
+      buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+    };
+    const objectIdA = { createView: vi.fn(() => textureView) };
+    const objectIdB = { createView: vi.fn(() => textureView) };
+    const base = {
+      common: {
+        hdrColorTexture: { createView: vi.fn(() => textureView) },
+        nearestSampler: {},
+        gNormalDepthTexture: { createView: vi.fn(() => textureView) },
+        uboBuffer: {},
+        tierTexture: { createView: vi.fn(() => textureView) },
+        compositeSampler: {},
+        resolvedTexture: { createView: vi.fn(() => textureView) },
+        hdrIndirectTexture: { createView: vi.fn(() => textureView) },
+        hdrTotalTexture: { createView: vi.fn(() => textureView) },
+        albedoTexture: { createView: vi.fn(() => textureView) },
+      },
+      restirDI: {
+        reservoirCurrentBuffer: {},
+        reservoirPreviousBuffer: {},
+        reservoirSpatialBuffer: {},
+      },
+      restirGI: { reservoirGiCurrentBuffer: {} },
+      gtao: { aoFullTexture: { createView: vi.fn(() => textureView) } },
+      svgf: { svgfCurrentObjectIdTexture: objectIdA },
+    };
+    const resized = {
+      ...base,
+      svgf: { svgfCurrentObjectIdTexture: objectIdB },
     };
 
     const first = buildPerFrameBindGroups(device, cache, base as never, scene, ddgi as never, placeholderView, resourceCache);

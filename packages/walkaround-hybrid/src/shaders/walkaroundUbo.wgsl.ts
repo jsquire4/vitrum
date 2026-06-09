@@ -82,7 +82,7 @@ const LEAFNODE_FLAG = 0xFFFF0000u;
 struct WalkaroundUBO {
   viewMatrix:                 mat4x4f, //  offset 0
   projMatrix:                 mat4x4f, //  offset 64
-  prevViewMatrix:             mat4x4f, //  offset 128
+  prevViewProjMatrix:         mat4x4f, //  offset 128 — previous frame prevProj * prevView
   cameraPos:                  vec3f,   //  offset 192
   frameSeed:                  u32,     //  offset 204
   screenSize:                 vec2u,   //  offset 208

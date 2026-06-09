@@ -23,6 +23,35 @@
 import { TLAS_SCENE_HIT_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
 import { PT_WEBGPU_INTERSECTION_CORE_WGSL } from './intersectionCore.wgsl.js';
 
+function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
+  const withInit = wgsl.replace(
+    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  var stack: array<u32, 64>;`,
+    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  var stack: array<u32, 64>;`,
+  );
+  if (withInit === wgsl) {
+    throw new Error('TLAS SceneHit init anchor changed; update pt-webgpu instance-index augmentation.');
+  }
+
+  const withAssignment = withInit.replace(
+    `          (*hit).triIndex = localHit.triIndex;
+          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
+          // Barycentric weights are space-invariant`,
+    `          (*hit).triIndex = localHit.triIndex;
+          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
+          (*hit).instanceIndex = instIdx;
+          // Barycentric weights are space-invariant`,
+  );
+  if (withAssignment === withInit) {
+    throw new Error('TLAS SceneHit assignment anchor changed; update pt-webgpu instance-index augmentation.');
+  }
+
+  return withAssignment;
+}
+
 export const PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL = /* wgsl */ `
 ${PT_WEBGPU_INTERSECTION_CORE_WGSL}
 
@@ -83,12 +112,14 @@ fn traceAnalyticShapes(
       (*hit).dist = worldT;
       (*hit).triIndex = params.triangleCount + ai;
       (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localN);
+      (*hit).baryVW = vec2f(0.0);
+      (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
     }
   }
   return false;
 }
 
-${TLAS_SCENE_HIT_TRAVERSAL_WGSL}
+${tlasSceneHitTraversalWithInstanceIndex(TLAS_SCENE_HIT_TRAVERSAL_WGSL)}
 
 fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   var hit: SceneHit;

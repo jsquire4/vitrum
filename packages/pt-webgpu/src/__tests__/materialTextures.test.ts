@@ -113,4 +113,14 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('@group(3) @binding(4) var materialTexSampler: sampler');
     expect(wgsl).toContain('fn sampleBaseColorTexture(');
   });
+
+  it('normal maps transform derived tangents through the hit TLAS instance', () => {
+    const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
+    expect(wgsl).toContain(
+      'fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32)',
+    );
+    expect(wgsl).toContain('if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u)');
+    expect(wgsl).toContain('let l2w0 = tlasInstanceLocalToWorld[m];');
+    expect(wgsl).toContain('tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);');
+  });
 });

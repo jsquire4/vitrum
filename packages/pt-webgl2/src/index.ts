@@ -10,7 +10,7 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
-import { packSceneFromCore, type ScenePackResult } from '@vitrum/shared-bvh';
+import { mergeWorldSpaceFromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options, WebGl2TraceTier } from './options.js';
@@ -23,8 +23,8 @@ const DEFAULT_MAX_BOUNCES = 32;
  * (No `getDenoisedFrame` yet; OIDN wires in a later slice.)
  */
 export interface PTEngineWebGL2Surface {
-  /** @internal Slice 0: the retained ScenePackResult (for tests/inspection). */
-  readonly _debugGeoPack: ScenePackResult | null;
+  /** @internal Slice 0: the retained single-root merged BVH pack (for tests/inspection). */
+  readonly _debugGeoPack: WorldSpaceMergeResult | null;
 }
 
 /**
@@ -43,7 +43,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #supportsAuxBuffers: boolean;
 
   #scene: Scene | null = null;
-  #geoPack: ScenePackResult | null = null;
+  #geoPack: WorldSpaceMergeResult | null = null;
   #samplesAccumulated = 0;
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
@@ -71,7 +71,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     );
   }
 
-  get _debugGeoPack(): ScenePackResult | null {
+  get _debugGeoPack(): WorldSpaceMergeResult | null {
     return this.#geoPack;
   }
 
@@ -79,7 +79,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#guardLive('setScene');
     const { supported, warnings } = partitionSceneBySupport(scene, this.capabilities);
     for (const w of warnings) console.warn(`[vitrum/pt-webgl2] ${w}`);
-    this.#geoPack = packSceneFromCore(supported, { tlas: false, resolveMaterialId: () => 0 });
+    this.#geoPack = mergeWorldSpaceFromCore(supported, { positionStride: 4 });
     this.#scene = supported;
     // TODO(Slice 1+): upload BVH/material/light textures via uploadSceneTextures (WS3),
     //   then GlResources.ensureProgram + the accumulation draw (WS2/WS5).

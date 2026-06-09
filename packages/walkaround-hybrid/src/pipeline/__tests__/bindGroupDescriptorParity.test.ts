@@ -112,6 +112,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     hdrIndirectTexture: { createView: () => view } as unknown as GPUTexture,
     hdrTotalTexture: { createView: () => view } as unknown as GPUTexture,
     albedoTexture: { createView: () => view } as unknown as GPUTexture,
+    svgfCurrentObjectIdTexture: { createView: () => view } as unknown as GPUTexture,
   }),
   scene: (d, c) => buildSceneBindGroup(d, c, {
     bvhNodesBuffer: buf, bvhIndexBuffer: buf, bvhPositionBuffer: buf,
@@ -193,11 +194,11 @@ describe('bind-group descriptor parity (T9-stepB)', () => {
   });
 
   it('every inert/placeholder binding retains its rationale note', () => {
-    // The frame G-buffer placeholders (0-4) + shade-only outputs (10/12/13/14)
+    // The frame G-buffer placeholders (0-4) + shade-only outputs (10/12/13/14/15)
     // and the ubo adaptive-tier slot (2) are load-bearing-but-inert; their
     // notes are the only record of why they must stay bound. Guard them.
     const frame = BIND_GROUP_TABLE.find((e) => e.id === 'frame')!;
-    for (const b of [0, 1, 2, 3, 4, 10, 12, 13, 14]) {
+    for (const b of [0, 1, 2, 3, 4, 10, 12, 13, 14, 15]) {
       const e = frame.entries.find((x) => x.binding === b)!;
       expect(e.note, `frame binding ${b} note`).toBeTruthy();
     }

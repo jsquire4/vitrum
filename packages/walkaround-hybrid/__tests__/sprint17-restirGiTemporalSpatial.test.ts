@@ -36,8 +36,8 @@ describe('Sprint 17 — temporal-GI WGSL', () => {
     expect(TEMPORAL_GI_WGSL).toContain('ubo.restirGiMClamp');
   });
 
-  it('reprojects via the previous-frame view matrix', () => {
-    expect(TEMPORAL_GI_WGSL).toContain('ubo.prevViewMatrix');
+  it('reprojects via the previous-frame view-projection matrix', () => {
+    expect(TEMPORAL_GI_WGSL).toContain('ubo.prevViewProjMatrix');
     expect(TEMPORAL_GI_WGSL).toContain('projectToPrevHalfPx');
   });
 

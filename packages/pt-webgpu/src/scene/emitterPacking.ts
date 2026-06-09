@@ -1,4 +1,4 @@
-import type { DiscAreaEmitter, MeshAreaEmitter, Scene } from '@vitrum/core';
+import type { DiscAreaEmitter, Mat4, MeshAreaEmitter, Scene } from '@vitrum/core';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
@@ -8,39 +8,92 @@ import {
   walkPositionalEmitters,
 } from '../bdpt/flatEmitterWalk.js';
 
-// Per-emitter capacity caps + float strides — file-local. No external
-// consumers (2026-05-18 dead-code sweep verified workspace-wide). Re-exports
-// previously surfaced from uploadSceneBuffers.ts were also dropped in the
-// same sweep.
-const MAX_POINT_LIGHTS = 16;
-const MAX_SPOT_LIGHTS = 8;
-const MAX_RECT_AREA_LIGHTS = 8;
-const MAX_MESH_AREA_LIGHTS = 8;
-
 /** vec4 pairs per point light: position, radiance */
 const POINT_LIGHT_FLOAT_STRIDE = 8;
 const SPOT_LIGHT_FLOAT_STRIDE = 12;
 const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
 const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 
-/** Map disc emitter to rect-axis payload — half-span √(π)/2·radius on each orthogonal tangent so WGSL quad area (=4|u×v|) equals π·r². Sampling differs from a true disc. */
-function discAreaPackedAsRect(e: DiscAreaEmitter): {
-  readonly position: readonly [number, number, number];
-  readonly uAxis: readonly [number, number, number];
-  readonly vAxis: readonly [number, number, number];
-  readonly radiance: readonly [number, number, number];
-} {
+/**
+ * Disc emitters lower into mesh-area triangle records so the existing WGSL
+ * triangle sampler is used instead of pretending a disc is a rectangle. The
+ * regular fan radius is scaled so its total triangle area equals pi*r^2.
+ */
+const DISC_AREA_TRIANGLE_SEGMENTS = 32;
+
+type Vec3 = [number, number, number];
+
+type PackedMeshAreaTriangle = {
+  readonly triA: Vec3;
+  readonly triB: Vec3;
+  readonly triC: Vec3;
+  readonly radiance: Vec3;
+};
+
+export interface PackedEmitterArrays {
+  readonly warnings: string[];
+  readonly pointLightCount: number;
+  readonly spotLightCount: number;
+  readonly rectAreaLightCount: number;
+  readonly meshAreaLightCount: number;
+  readonly pointLightsData: Float32Array;
+  readonly spotLightsData: Float32Array;
+  readonly rectAreaLightsData: Float32Array;
+  readonly meshAreaLightsData: Float32Array;
+}
+
+function pushVec4(
+  out: number[],
+  v: readonly [number, number, number],
+  w = 0,
+): void {
+  out.push(v[0], v[1], v[2], w);
+}
+
+function packedFloatData(
+  values: readonly number[],
+  count: number,
+  stride: number,
+  label: string,
+): Float32Array {
+  const expected = count * stride;
+  if (values.length !== expected) {
+    throw new Error(
+      `@vitrum/pt-webgpu: internal ${label} packing mismatch (${values.length} floats, expected ${expected}).`,
+    );
+  }
+  return new Float32Array(values);
+}
+
+function emitterRadiance(
+  e: Pick<DiscAreaEmitter | MeshAreaEmitter, 'color' | 'intensity'>,
+): Vec3 {
+  return [
+    e.color[0] * e.intensity,
+    e.color[1] * e.intensity,
+    e.color[2] * e.intensity,
+  ];
+}
+
+function discAreaPackedAsTriangles(
+  e: DiscAreaEmitter,
+  warnings: string[],
+): readonly PackedMeshAreaTriangle[] {
+  if (!Number.isFinite(e.radius) || e.radius < 1e-8) {
+    warnings.push(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
+    );
+    return [];
+  }
   const nx = e.normal[0];
   const ny = e.normal[1];
   const nz = e.normal[2];
   const nLen = Math.hypot(nx, ny, nz);
   if (nLen < 1e-8) {
-    return {
-      position: [e.position[0], e.position[1], e.position[2]],
-      uAxis: [0, 0, 0],
-      vAxis: [0, 0, 0],
-      radiance: [0, 0, 0],
-    };
+    warnings.push(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate normal; skipped.`,
+    );
+    return [];
   }
   const ux = nx / nLen;
   const uy = ny / nLen;
@@ -58,12 +111,10 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   const tz = ax * uy - ay * ux;
   const tLen = Math.hypot(tx, ty, tz);
   if (tLen < 1e-8) {
-    return {
-      position: [e.position[0], e.position[1], e.position[2]],
-      uAxis: [0, 0, 0],
-      vAxis: [0, 0, 0],
-      radiance: [0, 0, 0],
-    };
+    warnings.push(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate tangent basis; skipped.`,
+    );
+    return [];
   }
   const tcx = tx / tLen;
   const tcy = ty / tLen;
@@ -71,19 +122,29 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   const bx = uy * tcz - uz * tcy;
   const by = uz * tcx - ux * tcz;
   const bz = ux * tcy - uy * tcx;
-  const s = (Math.sqrt(Math.PI) * e.radius) / 2;
-  const uAxis = [tcx * s, tcy * s, tcz * s] as const;
-  const vAxis = [bx * s, by * s, bz * s] as const;
-  return {
-    position: [e.position[0], e.position[1], e.position[2]],
-    uAxis,
-    vAxis,
-    radiance: [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ],
-  };
+  const center: Vec3 = [e.position[0], e.position[1], e.position[2]];
+  const polygonAreaFactor = 0.5
+    * DISC_AREA_TRIANGLE_SEGMENTS
+    * Math.sin((2 * Math.PI) / DISC_AREA_TRIANGLE_SEGMENTS);
+  const fanRadius = e.radius * Math.sqrt(Math.PI / polygonAreaFactor);
+  const radiance = emitterRadiance(e);
+  const triangles: PackedMeshAreaTriangle[] = [];
+  for (let i = 0; i < DISC_AREA_TRIANGLE_SEGMENTS; i += 1) {
+    const a0 = (2 * Math.PI * i) / DISC_AREA_TRIANGLE_SEGMENTS;
+    const a1 = (2 * Math.PI * (i + 1)) / DISC_AREA_TRIANGLE_SEGMENTS;
+    const p0: Vec3 = [
+      center[0] + (tcx * Math.cos(a0) + bx * Math.sin(a0)) * fanRadius,
+      center[1] + (tcy * Math.cos(a0) + by * Math.sin(a0)) * fanRadius,
+      center[2] + (tcz * Math.cos(a0) + bz * Math.sin(a0)) * fanRadius,
+    ];
+    const p1: Vec3 = [
+      center[0] + (tcx * Math.cos(a1) + bx * Math.sin(a1)) * fanRadius,
+      center[1] + (tcy * Math.cos(a1) + by * Math.sin(a1)) * fanRadius,
+      center[2] + (tcz * Math.cos(a1) + bz * Math.sin(a1)) * fanRadius,
+    ];
+    triangles.push({ triA: center, triB: p0, triC: p1, radiance });
+  }
+  return triangles;
 }
 
 export function defaultDirectionalLight(scene: Scene): readonly [number, number, number] {
@@ -118,215 +179,178 @@ export function defaultDirectionalIrradiance(scene: Scene): readonly [number, nu
   ];
 }
 
-/**
- * Pack a single mesh-area emitter's first triangle (positions in world space)
- * and per-emitter radiance. Returns `null` when the emitter's referenced
- * primitive is missing, not a mesh, or has fewer than one triangle — in those
- * cases a warning is emitted via the `warnings` accumulator.
- *
- * Extracted from the legacy `firstMeshAreaLight` helper so `packEmitterArrays`
- * can iterate emitters directly without faking a single-emitter scene.
- */
-function packMeshAreaTriangle(
+function packMeshAreaTriangles(
   emitter: MeshAreaEmitter,
   scene: Scene,
   warnings: string[],
-): {
-  readonly triA: readonly [number, number, number];
-  readonly triB: readonly [number, number, number];
-  readonly triC: readonly [number, number, number];
-  readonly radiance: readonly [number, number, number];
-} | null {
+): readonly PackedMeshAreaTriangle[] {
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') {
     warnings.push(`Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`);
-    return null;
+    return [];
   }
   const positions = primitive.positions;
-  if ((primitive.indices?.length ?? positions.length / 3) < 3 || positions.length < 9) {
+  const vertexCount = Math.floor(positions.length / 3);
+  const triangleIndexCount = primitive.indices?.length ?? vertexCount;
+  const triangleCount = Math.floor(triangleIndexCount / 3);
+  if (triangleCount < 1 || vertexCount < 3 || positions.length < 9) {
     warnings.push(`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`);
-    return null;
+    return [];
   }
-  const i0 = primitive.indices?.[0] ?? 0;
-  const i1 = primitive.indices?.[1] ?? 1;
-  const i2 = primitive.indices?.[2] ?? 2;
   const fetchPos = (idx: number): [number, number, number] => [
     positions[idx * 3] ?? 0,
     positions[idx * 3 + 1] ?? 0,
     positions[idx * 3 + 2] ?? 0,
   ];
-  let a = fetchPos(i0);
-  let b = fetchPos(i1);
-  let c = fetchPos(i2);
-  const transform = primitive.kind === 'instanced-mesh' ? primitive.instances[0] : primitive.transform;
-  if (transform != null) {
-    a = transformPoint(transform, a);
-    b = transformPoint(transform, b);
-    c = transformPoint(transform, c);
+  const indexAt = (offset: number): number => primitive.indices?.[offset] ?? offset;
+  const transforms: readonly (Mat4 | undefined)[] = primitive.kind === 'instanced-mesh'
+    ? primitive.instances
+    : [primitive.transform];
+  if (transforms.length === 0) {
+    warnings.push(`Mesh-area emitter "${emitter.id}" references instanced primitive "${emitter.meshId}" with no instances.`);
+    return [];
   }
-  return {
-    triA: a,
-    triB: b,
-    triC: c,
-    radiance: [
-      emitter.color[0] * emitter.intensity,
-      emitter.color[1] * emitter.intensity,
-      emitter.color[2] * emitter.intensity,
-    ],
-  };
+  const radiance = emitterRadiance(emitter);
+  const packed: PackedMeshAreaTriangle[] = [];
+  let invalidTriangleCount = 0;
+  let degenerateTriangleCount = 0;
+  for (const transform of transforms) {
+    for (let tri = 0; tri < triangleCount; tri += 1) {
+      const base = tri * 3;
+      const i0 = indexAt(base);
+      const i1 = indexAt(base + 1);
+      const i2 = indexAt(base + 2);
+      if (
+        i0 < 0 || i0 >= vertexCount ||
+        i1 < 0 || i1 >= vertexCount ||
+        i2 < 0 || i2 >= vertexCount
+      ) {
+        invalidTriangleCount += 1;
+        continue;
+      }
+      let a = fetchPos(i0);
+      let b = fetchPos(i1);
+      let c = fetchPos(i2);
+      if (transform != null) {
+        a = transformPoint(transform, a);
+        b = transformPoint(transform, b);
+        c = transformPoint(transform, c);
+      }
+      if (meshTriangleArea(a, b, c) < 1e-12) {
+        degenerateTriangleCount += 1;
+        continue;
+      }
+      packed.push({ triA: a, triB: b, triC: c, radiance });
+    }
+  }
+  if (invalidTriangleCount > 0) {
+    warnings.push(
+      `Mesh-area emitter "${emitter.id}" skipped ${invalidTriangleCount} triangle(s) with out-of-range indices.`,
+    );
+  }
+  if (degenerateTriangleCount > 0) {
+    warnings.push(
+      `Mesh-area emitter "${emitter.id}" skipped ${degenerateTriangleCount} degenerate triangle(s).`,
+    );
+  }
+  if (packed.length === 0) {
+    warnings.push(`Mesh-area emitter "${emitter.id}" produced no non-degenerate triangles.`);
+  }
+  return packed;
 }
 
-export function packEmitterArrays(scene: Scene): {
-  readonly warnings: string[];
-  readonly pointLightCount: number;
-  readonly spotLightCount: number;
-  readonly rectAreaLightCount: number;
-  readonly meshAreaLightCount: number;
-  readonly pointLightsData: Float32Array;
-  readonly spotLightsData: Float32Array;
-  readonly rectAreaLightsData: Float32Array;
-  readonly meshAreaLightsData: Float32Array;
-} {
+export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   const warnings: string[] = [];
-  const pointLightsData = new Float32Array(MAX_POINT_LIGHTS * POINT_LIGHT_FLOAT_STRIDE).fill(0);
+  const pointLights: number[] = [];
   let pointLightCount = 0;
   for (const e of scene.emitters) {
     if (e.kind !== 'point') continue;
-    if (pointLightCount >= MAX_POINT_LIGHTS) {
-      warnings.push(
-        `@vitrum/pt-webgpu: point lights capped at ${MAX_POINT_LIGHTS}; emitter "${e.id}" and subsequent point emitters omitted.`,
-      );
-      break;
-    }
-    const o = pointLightCount * POINT_LIGHT_FLOAT_STRIDE;
-    pointLightsData[o + 0] = e.position[0];
-    pointLightsData[o + 1] = e.position[1];
-    pointLightsData[o + 2] = e.position[2];
-    pointLightsData[o + 4] = e.color[0] * e.intensity;
-    pointLightsData[o + 5] = e.color[1] * e.intensity;
-    pointLightsData[o + 6] = e.color[2] * e.intensity;
+    pushVec4(pointLights, [e.position[0], e.position[1], e.position[2]]);
+    pushVec4(pointLights, [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ]);
     pointLightCount += 1;
   }
+  const pointLightsData = packedFloatData(
+    pointLights,
+    pointLightCount,
+    POINT_LIGHT_FLOAT_STRIDE,
+    'point-light',
+  );
 
-  const spotLightsData = new Float32Array(MAX_SPOT_LIGHTS * SPOT_LIGHT_FLOAT_STRIDE).fill(0);
+  const spotLights: number[] = [];
   let spotLightCount = 0;
   for (const e of scene.emitters) {
     if (e.kind !== 'spot') continue;
-    if (spotLightCount >= MAX_SPOT_LIGHTS) {
-      warnings.push(
-        `@vitrum/pt-webgpu: spot lights capped at ${MAX_SPOT_LIGHTS}; emitter "${e.id}" and subsequent spot emitters omitted.`,
-      );
-      break;
-    }
     const d = e.direction;
     const len = Math.hypot(d[0], d[1], d[2]);
     const dir: readonly [number, number, number] =
       len < 1e-8 ? [0, -1, 0] : [d[0] / len, d[1] / len, d[2] / len];
-    const o = spotLightCount * SPOT_LIGHT_FLOAT_STRIDE;
-    spotLightsData[o + 0] = e.position[0];
-    spotLightsData[o + 1] = e.position[1];
-    spotLightsData[o + 2] = e.position[2];
-    spotLightsData[o + 4] = dir[0];
-    spotLightsData[o + 5] = dir[1];
-    spotLightsData[o + 6] = dir[2];
-    spotLightsData[o + 7] = Math.cos(e.angle);
-    spotLightsData[o + 8] = e.color[0] * e.intensity;
-    spotLightsData[o + 9] = e.color[1] * e.intensity;
-    spotLightsData[o + 10] = e.color[2] * e.intensity;
+    pushVec4(spotLights, [e.position[0], e.position[1], e.position[2]]);
+    pushVec4(spotLights, [dir[0], dir[1], dir[2]], Math.cos(e.angle));
+    pushVec4(spotLights, [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ]);
     spotLightCount += 1;
   }
+  const spotLightsData = packedFloatData(
+    spotLights,
+    spotLightCount,
+    SPOT_LIGHT_FLOAT_STRIDE,
+    'spot-light',
+  );
 
-  const rectAreaLightsData = new Float32Array(MAX_RECT_AREA_LIGHTS * RECT_AREA_LIGHT_FLOAT_STRIDE).fill(0);
+  const rectAreaLights: number[] = [];
   let rectAreaLightCount = 0;
   for (const e of scene.emitters) {
-    if (e.kind !== 'rect-area' && e.kind !== 'disc-area') continue;
-
-    let position: readonly [number, number, number];
-    let uAxis: readonly [number, number, number];
-    let vAxis: readonly [number, number, number];
-    let rgb: readonly [number, number, number];
-
-    if (e.kind === 'rect-area') {
-      position = [e.position[0], e.position[1], e.position[2]];
-      uAxis = [e.uAxis[0], e.uAxis[1], e.uAxis[2]];
-      vAxis = [e.vAxis[0], e.vAxis[1], e.vAxis[2]];
-      rgb = [
-        e.color[0] * e.intensity,
-        e.color[1] * e.intensity,
-        e.color[2] * e.intensity,
-      ];
-    } else {
-      if (Number.isFinite(e.radius) && e.radius < 1e-8) {
-        warnings.push(
-          `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
-        );
-        continue;
-      }
-      if (Math.hypot(e.normal[0], e.normal[1], e.normal[2]) < 1e-8) {
-        warnings.push(
-          `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate normal; skipped.`,
-        );
-        continue;
-      }
-      const d = discAreaPackedAsRect(e);
-      position = d.position;
-      uAxis = d.uAxis;
-      vAxis = d.vAxis;
-      rgb = d.radiance;
-    }
-
-    if (rectAreaLightCount >= MAX_RECT_AREA_LIGHTS) {
-      warnings.push(
-        `@vitrum/pt-webgpu: rect-/disc-area lights capped at ${MAX_RECT_AREA_LIGHTS}; emitter "${e.id}" and subsequent area emitters omitted.`,
-      );
-      break;
-    }
-
-    const o = rectAreaLightCount * RECT_AREA_LIGHT_FLOAT_STRIDE;
-    rectAreaLightsData[o + 0] = position[0];
-    rectAreaLightsData[o + 1] = position[1];
-    rectAreaLightsData[o + 2] = position[2];
-    rectAreaLightsData[o + 4] = uAxis[0];
-    rectAreaLightsData[o + 5] = uAxis[1];
-    rectAreaLightsData[o + 6] = uAxis[2];
-    rectAreaLightsData[o + 8] = vAxis[0];
-    rectAreaLightsData[o + 9] = vAxis[1];
-    rectAreaLightsData[o + 10] = vAxis[2];
-    rectAreaLightsData[o + 12] = rgb[0];
-    rectAreaLightsData[o + 13] = rgb[1];
-    rectAreaLightsData[o + 14] = rgb[2];
+    if (e.kind !== 'rect-area') continue;
+    pushVec4(rectAreaLights, [e.position[0], e.position[1], e.position[2]]);
+    pushVec4(rectAreaLights, [e.uAxis[0], e.uAxis[1], e.uAxis[2]]);
+    pushVec4(rectAreaLights, [e.vAxis[0], e.vAxis[1], e.vAxis[2]]);
+    pushVec4(rectAreaLights, [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ]);
     rectAreaLightCount += 1;
   }
+  const rectAreaLightsData = packedFloatData(
+    rectAreaLights,
+    rectAreaLightCount,
+    RECT_AREA_LIGHT_FLOAT_STRIDE,
+    'rect-area-light',
+  );
 
-  const meshAreaLightsData = new Float32Array(MAX_MESH_AREA_LIGHTS * MESH_AREA_LIGHT_FLOAT_STRIDE).fill(0);
-  let meshAreaLightCount = 0;
+  const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
+  // Disc-area emitters lower into the mesh-area triangle section. Keeping this
+  // loop before mesh-area preserves the old flat walk's type block order:
+  // rect/disc area came before mesh area.
+  for (const emitter of scene.emitters) {
+    if (emitter.kind !== 'disc-area') continue;
+    meshAreaTriangles.push(...discAreaPackedAsTriangles(emitter, warnings));
+  }
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
-    if (meshAreaLightCount >= MAX_MESH_AREA_LIGHTS) {
-      warnings.push(
-        `@vitrum/pt-webgpu: mesh-area lights capped at ${MAX_MESH_AREA_LIGHTS}; emitter "${emitter.id}" and subsequent omitted.`,
-      );
-      break;
-    }
-    const packedOne = packMeshAreaTriangle(emitter, scene, warnings);
-    if (packedOne == null) {
-      continue;
-    }
-    const o = meshAreaLightCount * MESH_AREA_LIGHT_FLOAT_STRIDE;
-    meshAreaLightsData[o + 0] = packedOne.triA[0];
-    meshAreaLightsData[o + 1] = packedOne.triA[1];
-    meshAreaLightsData[o + 2] = packedOne.triA[2];
-    meshAreaLightsData[o + 4] = packedOne.triB[0];
-    meshAreaLightsData[o + 5] = packedOne.triB[1];
-    meshAreaLightsData[o + 6] = packedOne.triB[2];
-    meshAreaLightsData[o + 8] = packedOne.triC[0];
-    meshAreaLightsData[o + 9] = packedOne.triC[1];
-    meshAreaLightsData[o + 10] = packedOne.triC[2];
-    meshAreaLightsData[o + 12] = packedOne.radiance[0];
-    meshAreaLightsData[o + 13] = packedOne.radiance[1];
-    meshAreaLightsData[o + 14] = packedOne.radiance[2];
-    meshAreaLightCount += 1;
+    meshAreaTriangles.push(...packMeshAreaTriangles(emitter, scene, warnings));
   }
+  const meshAreaLights: number[] = [];
+  for (const tri of meshAreaTriangles) {
+    pushVec4(meshAreaLights, tri.triA);
+    pushVec4(meshAreaLights, tri.triB);
+    pushVec4(meshAreaLights, tri.triC);
+    pushVec4(meshAreaLights, tri.radiance);
+  }
+  const meshAreaLightCount = meshAreaTriangles.length;
+  const meshAreaLightsData = packedFloatData(
+    meshAreaLights,
+    meshAreaLightCount,
+    MESH_AREA_LIGHT_FLOAT_STRIDE,
+    'mesh-area-light',
+  );
 
   return {
     warnings,
@@ -359,7 +383,7 @@ export function packEmitterArrays(scene: Scene): {
 //     Lighting Calculations", ACM TOG (power-weighted light-list partition).
 // ────────────────────────────────────────────────────────────────────────────
 
-/** The positional area-emitter kinds (carry a finite area for the power term). */
+/** The core positional area-emitter kinds (carry a finite area for the power term). */
 export const AREA_LIGHT_KINDS: ReadonlySet<string> = new Set([
   'rect-area',
   'disc-area',
@@ -388,8 +412,6 @@ export function emitterPower(
   return kind.kind === 'area' ? lum * Math.max(0, kind.area) : lum;
 }
 
-type Vec3 = [number, number, number];
-
 function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
   return { min: [p[0], p[1], p[2]], max: [p[0], p[1], p[2]] };
 }
@@ -399,7 +421,10 @@ function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
  * of `scene`, in the EXACT order pt-webgpu's NEE walk iterates them so the tree's
  * `emitterIndex` aligns 1:1 with the kernel's linear `current` index:
  *
- *   directional? · point[] · spot[] · (rect|disc)-area[] · mesh-area[] · env?
+ *   directional? · point[] · spot[] · rect-area[] · mesh-triangle-area[] · env?
+ *
+ * `disc-area` emitters are lowered by `packEmitterArrays` into the mesh-triangle
+ * section as an equal-area fan, so every tree leaf still matches one GPU slot.
  *
  * The `directional` / `env` slots are non-positional, so they are given the union
  * AABB of all positional lights (the "lit region"). Inside that AABB the descent's
@@ -470,7 +495,7 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
         break;
       }
       case 'rect': {
-        // rect/disc-area — quad area = 4·|u×v| (matches the WGSL area-light NEE
+        // rect-area — quad area = 4·|u×v| (matches the WGSL area-light NEE
         // term). AABB = the four corners p ± u ± v.
         const p = e.position;
         const u = e.uAxis;
@@ -486,7 +511,8 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
         break;
       }
       case 'mesh': {
-        // mesh-area — triangle area = 0.5·|(B−A)×(C−A)| (matches the WGSL term).
+        // mesh-area and lowered disc-area records — triangle area =
+        // 0.5·|(B−A)×(C−A)| (matches the WGSL term).
         const a = e.triA;
         const b = e.triB;
         const c = e.triC;

@@ -5,7 +5,7 @@
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
  *   offset  64: projMatrix                  (64 bytes)
- *   offset 128: prevViewMatrix              (64 bytes)
+ *   offset 128: prevViewProjMatrix          (64 bytes)
  *   offset 192: cameraPos                   (vec3f = 12 bytes)
  *   offset 204: frameSeed                   (u32 = 4 bytes)
  *   offset 208: screenSize                  (vec2u = 8 bytes)
@@ -184,7 +184,7 @@ export function updateUBO(
 
   f32.set(inputs.camera.viewMatrix,     0);    //  0..15 (64 bytes)
   f32.set(inputs.camera.projMatrix,    16);    // 16..31 (64 bytes)
-  f32.set(inputs.camera.prevViewMatrix, 32);   // 32..47 (64 bytes)
+  f32.set(inputs.camera.prevViewProjMatrix, 32); // 32..47 (64 bytes)
   f32[48] = inputs.camera.cameraPos[0];
   f32[49] = inputs.camera.cameraPos[1];
   f32[50] = inputs.camera.cameraPos[2];

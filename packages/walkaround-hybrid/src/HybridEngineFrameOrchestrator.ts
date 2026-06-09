@@ -26,6 +26,21 @@ export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
   isConverged: false,
 };
 
+// Column-major mat4 multiply, matching WGSL `a * b` for the camera matrices.
+function multiplyMat4ColumnMajor(a: Float32Array, b: Float32Array): Float32Array {
+  const out = new Float32Array(16);
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) {
+        sum += (a[k * 4 + row] ?? 0) * (b[col * 4 + k] ?? 0);
+      }
+      out[col * 4 + row] = sum;
+    }
+  }
+  return out;
+}
+
 interface HybridEngineFrameDiag {
   initStart: number;
   initCount: number;
@@ -554,13 +569,17 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   // compute kernels + UBO `screenSize` use the internal dims (not the canvas
   // dims). Canvas resizes still require `setSize()` (see renderFrame JSDoc).
   const internal = deps.control.applyResolutionFactor(input.quality?.resolutionFactor, now);
+  const viewMatrix = new Float32Array(input.viewMatrix);
+  const projMatrix = new Float32Array(input.projMatrix);
+  const prevViewMatrix = new Float32Array(input.prevViewMatrix ?? input.viewMatrix);
+  const prevProjMatrix = new Float32Array(input.prevProjMatrix ?? input.projMatrix);
 
   pipeline.renderFrame({
     camera: {
-      viewMatrix:     new Float32Array(input.viewMatrix),
-      projMatrix:     new Float32Array(input.projMatrix),
-      prevViewMatrix: new Float32Array(input.prevViewMatrix ?? input.viewMatrix),
-      cameraPos:      input.cameraPosition as [number, number, number],
+      viewMatrix,
+      projMatrix,
+      prevViewProjMatrix: multiplyMat4ColumnMajor(prevProjMatrix, prevViewMatrix),
+      cameraPos: input.cameraPosition as [number, number, number],
     },
     screen: {
       screenWidth:    internal.width,

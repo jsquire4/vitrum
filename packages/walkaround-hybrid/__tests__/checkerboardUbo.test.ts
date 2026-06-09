@@ -43,7 +43,7 @@ import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.
 function fakeInputs(): PipelineFrameInputs {
   const m = new Float32Array(16);
   return {
-    camera: { viewMatrix: m, projMatrix: m, prevViewMatrix: m, cameraPos: [0, 0, 0] },
+    camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [0, 0, 0] },
     screen: { screenWidth: 64, screenHeight: 64, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
       totalEmissivePower: 1, emitterCount: 4,

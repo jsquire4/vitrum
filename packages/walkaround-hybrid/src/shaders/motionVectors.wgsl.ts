@@ -30,7 +30,7 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
   let worldPos = ray.origin + ray.direction * depth;
 
   let currClip = ubo.projMatrix * ubo.viewMatrix * vec4f(worldPos, 1.0);
-  let prevClip = ubo.projMatrix * ubo.prevViewMatrix * vec4f(worldPos, 1.0);
+  let prevClip = ubo.prevViewProjMatrix * vec4f(worldPos, 1.0);
   if (abs(currClip.w) <= 1e-6 || abs(prevClip.w) <= 1e-6) {
     textureStore(motionVectorsOut, gid.xy, vec4f(0.0, 0.0, 0.0, 0.0));
     return;
@@ -63,4 +63,3 @@ export const MOTION_VECTORS_MODULE: WgslModule = {
   source: MOTION_VECTORS_WGSL,
   requires: ['walkaroundUbo', 'sceneTraversal', 'sharedPrimitives', 'cameraRays'],
 };
-
