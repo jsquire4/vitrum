@@ -28,7 +28,7 @@ import { GlResources } from './gl/glResources.js';
 import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
-import { invertMat4 } from './frameParamsPacker.js';
+import { invertMat4 } from './mat4.js';
 import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
 

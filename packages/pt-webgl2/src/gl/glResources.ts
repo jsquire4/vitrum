@@ -48,11 +48,6 @@ export interface FrameUniforms {
   readonly mneeMaxChainLength: number;
 }
 
-/** The std140 FrameParams UBO binding point — must match the GLSL `layout(binding = 0)`. */
-const FRAME_PARAMS_BINDING = 0;
-/** FrameParams std140 block size in bytes (placeholder until WS5 freezes the layout). */
-const FRAME_PARAMS_SIZE = 256;
-
 /**
  * The Regime-2 composite quad fragment (verbatim port of the fork's BlendMaterial.js:31-59,
  * GL_FragColor → pc_fragColor). Lerps target1/target2 by `opacity = 1/(samples+1)` with
@@ -98,7 +93,6 @@ export class GlResources {
 
   #ptProgram: GlProgram | null = null;
   #blendProgram: GlProgram | null = null;
-  #paramsUbo: WebGLBuffer | null = null;
 
   #accumWidth = 0;
   #accumHeight = 0;
@@ -251,10 +245,6 @@ export class GlResources {
     this.#ptProgram = null;
     this.#blendProgram?.dispose();
     this.#blendProgram = null;
-    if (this.#paramsUbo != null) {
-      gl.deleteBuffer(this.#paramsUbo);
-      this.#paramsUbo = null;
-    }
     this.#quad.dispose(gl);
   }
 
@@ -367,48 +357,6 @@ export class GlResources {
       this.#dummy2dArrTex = t;
     }
     return this.#dummy2dArrTex;
-  }
-
-  /**
-   * Upload the packed std140 FrameParams bytes into the UBO (allocates it lazily).
-   * Call once per frame before `drawAccumStep`. NOTE: the GLSL `FrameParams` block
-   * layout must match the frameParamsPacker slot layout — pin this with the
-   * generated-layout codegen before trusting GPU output (plan 08, the std140 freeze).
-   */
-  uploadFrameParams(bytes: ArrayBuffer): void {
-    const gl = this.#gl;
-    if (this.#paramsUbo == null) {
-      const ubo = gl.createBuffer();
-      if (ubo == null) throw new Error('pt-webgl2: failed to create FrameParams UBO');
-      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
-      gl.bufferData(gl.UNIFORM_BUFFER, FRAME_PARAMS_SIZE, gl.DYNAMIC_DRAW);
-      this.#paramsUbo = ubo;
-    } else {
-      gl.bindBuffer(gl.UNIFORM_BUFFER, this.#paramsUbo);
-    }
-    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, new Uint8Array(bytes));
-    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
-  }
-
-  /** Bind the std140 FrameParams UBO to the PT program's block (allocated lazily). */
-  #bindParamsUbo(prog: GlProgram): void {
-    const gl = this.#gl;
-    if (this.#paramsUbo == null) {
-      const ubo = gl.createBuffer();
-      if (ubo == null) throw new Error('pt-webgl2: failed to create FrameParams UBO');
-      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
-      gl.bufferData(gl.UNIFORM_BUFFER, FRAME_PARAMS_SIZE, gl.DYNAMIC_DRAW);
-      gl.bindBuffer(gl.UNIFORM_BUFFER, null);
-      this.#paramsUbo = ubo;
-    }
-    const program = prog.program;
-    if (program != null) {
-      const blockIndex = gl.getUniformBlockIndex(program, 'FrameParams');
-      if (blockIndex !== gl.INVALID_INDEX) {
-        gl.uniformBlockBinding(program, blockIndex, FRAME_PARAMS_BINDING);
-      }
-    }
-    gl.bindBufferBase(gl.UNIFORM_BUFFER, FRAME_PARAMS_BINDING, this.#paramsUbo);
   }
 
   #destroyTargets(): void {

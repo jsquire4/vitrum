@@ -267,7 +267,31 @@ export function sceneFromThreeJS(
     }
 
     // ── Lights ──────────────────────────────────────────────────────────────
-    if ((obj as THREE.Light).isLight !== true) return;
+    if ((obj as THREE.Light).isLight !== true) {
+      // Renderable geometry types vitrum's backends do not ingest yet (Points,
+      // Line/LineSegments, Sprite, BatchedMesh, LOD) would otherwise vanish
+      // SILENTLY here — only Mesh/SkinnedMesh/InstancedMesh and lights are
+      // handled above. Warn once per type so the omission is visible. Pure
+      // scene-graph nodes (Group, Object3D, Bone, Camera, …) stay silent.
+      const flags = obj as unknown as Record<string, unknown>;
+      const isUnsupportedRenderable =
+        flags.isPoints === true ||
+        flags.isLine === true ||
+        flags.isLineSegments === true ||
+        flags.isSprite === true ||
+        flags.isBatchedMesh === true ||
+        flags.isLOD === true;
+      if (isUnsupportedRenderable && !warnedTypes.has(obj.type)) {
+        warnedTypes.add(obj.type);
+        console.warn(
+          `[vitrum/three-bindings] sceneFromThreeJS: '${obj.type}' is a renderable ` +
+            `object type vitrum backends do not ingest yet — it will NOT appear in the ` +
+            `rendered scene (dropped silently before this fix). Supported renderables: ` +
+            `Mesh, SkinnedMesh, InstancedMesh.`,
+        );
+      }
+      return;
+    }
 
     const emitter = convertLight(obj as THREE.Light, warnedTypes);
     if (emitter != null) {

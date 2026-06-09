@@ -60,7 +60,6 @@ export * from './constants.js';
 // `export * from '@vitrum/scene-lighting'`).
 export { IblBakerCache } from './legacy/three/iblBaker.js';
 export type { IblBakerCacheOptions } from './legacy/three/iblBaker.js';
-export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
 
 // Re-exported from @vitrum/scene-lighting — the four lighting-state modules
 // (sun geometry, time-of-day → SkyParams, intensity table, unified LightingState)

@@ -399,15 +399,16 @@ fn lo_indirect(
   let cRestir = m;
   // RC-has-energy gate (algorithm-combination-fitness fix, 2026-06-07):
   // the confidence MIS hands RC weight rcWeight*(1-m) purely from the host
-  // toggle, with no check that RC's cascades actually carry radiance. On a
-  // scene OUTSIDE RC's light model (RC samples sun + emissive geometry + env
-  // only — NOT the rect-area emitter list; see walkaround-rc probeRayCast),
-  // every cascade is zero by construction, so a non-zero rcWeight would
-  // REPLACE the (correct) ReSTIR-GI estimate with RC's zero → black indirect.
-  // Gating cRc on the already-computed Lo_rc closes that: an empty cascade
-  // forces cRc=0 ⇒ wRestirGi=1 ⇒ ReSTIR-GI keeps full weight. Bit-identity
-  // preserved both ways — RC off ⇒ rcWeight=0 AND Lo_rc=0, RC on-with-energy
-  // ⇒ the gate is 1.0 and the blend is unchanged.
+  // toggle, with no check that RC's cascades actually carry radiance. When RC
+  // is disabled (rcWeight=0 ⇒ Lo_rc=0), or a cascade is empty for a given
+  // pixel, a non-zero weight would REPLACE the (correct) ReSTIR-GI estimate
+  // with RC's zero → black indirect. Gating cRc on the already-computed Lo_rc
+  // closes that: an empty cascade forces cRc=0 ⇒ wRestirGi=1 ⇒ ReSTIR-GI keeps
+  // full weight. (RC's probe cast DOES sample sun + emissive geometry + env +
+  // rect-area emitter NEE since 1e893fa — see walkaround-rc probeRayCast; the
+  // gate guards RC-off / empty-cascade pixels, NOT a light-model mismatch.)
+  // Bit-identity preserved both ways — RC off ⇒ rcWeight=0 AND Lo_rc=0, RC
+  // on-with-energy ⇒ the gate is 1.0 and the blend is unchanged.
   let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;
   let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);
   let cSum = cRestir + cRc;

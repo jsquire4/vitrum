@@ -221,17 +221,6 @@ export class PPGCoordinator implements PipelineSubsystem {
       });
   }
 
-  /**
-   * Reset per-leaf sample counts and dTree flux after a training readback
-   * cycle (Müller §3.3). Call once CPU has merged GPU flux atomics into the
-   * sTree and before the next frame's update pass accumulates fresh stats.
-   */
-  resetTrainingAccumulators(): void {
-    if (this._sTree) {
-      resetAccumulators(this._sTree);
-    }
-  }
-
   dispose(): void {
     this._enabled = false;
     this._sTree = null;

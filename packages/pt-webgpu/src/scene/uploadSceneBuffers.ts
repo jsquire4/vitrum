@@ -1090,6 +1090,14 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     packed.materialTextureLinearSources,
     'rgba8unorm',
   );
+  // Surface texture-array warnings (heterogeneous source sizes → wrong UVs, or an
+  // unusable image) instead of dropping them — these were silently discarded.
+  for (const w of materialTextureArray.warnings) {
+    console.warn(`[vitrum/pt-webgpu] material texture array (sRGB): ${w}`);
+  }
+  for (const w of materialLinearArray.warnings) {
+    console.warn(`[vitrum/pt-webgpu] material texture array (linear): ${w}`);
+  }
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);

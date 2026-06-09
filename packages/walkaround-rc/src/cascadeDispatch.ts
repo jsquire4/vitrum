@@ -15,9 +15,12 @@
  *   2. Creates one bind group per pass from the caller-supplied GPU buffer handles.
  *   3. Dispatches passes in order: cast C0→C4, then merge C3→C0.
  *
- * Verification status: structural (TypeScript compile + binding-shape unit tests).
- * Behavioral (GPU render correctness) has NOT been verified.
- * See README.md Known Issues for residual risk.
+ * Verification status: structural (TypeScript compile + binding-shape unit tests)
+ * PLUS behavioral — the RC merged-BVH path is CPU-brute-force-oracle-validated
+ * (tree-shape-invariant, 100% vs ground truth) and exercised by the rcEnabled
+ * GPU smoke added with the F-RC1 stride fix (781f66f); the cascade-zero light-
+ * model gaps were resolved 2026-06-07 (596c341 RC-has-energy gate + 1e893fa
+ * probe-cast emitter NEE, converged A/B 999 dB). See README.md for residual risk.
  *
  * Dispatch counts — preserved from source TSL compute() arguments:
  *   Cast pass k:  totalRays = probes[0]*probes[1]*probes[2]*rays

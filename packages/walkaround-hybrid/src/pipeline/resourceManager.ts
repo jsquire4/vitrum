@@ -155,9 +155,11 @@ export interface RestirGIFrameResources {
    * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
    * Layout: RESERVOIR_GI_STRIDE = 30 u32 (120 bytes) per pixel.
    *   [0..19] = Sprint-16/17 reconnection sample (byte-identical to the
-   *             original 80-byte layout); [20..29] = GRIS Phase-0
-   *             reconnection-shift cache (Lin 2022) — written-but-unread until
-   *             Phase 1/2. See shaders/reservoirGi.wgsl.ts.
+   *             original 80-byte layout); [20..29] = GRIS reconnection-shift
+   *             cache (Lin 2022) — READ by the GRIS reuse variants of the
+   *             temporal/spatial GI passes (e.g. temporalGi.wgsl.ts:317 reads
+   *             cosReconOut/distRecon); active when built with restirPtReuse
+   *             (off by default). See shaders/reservoirGi.wgsl.ts.
    * Size: (W/2) × (H/2) × 120 bytes. At 2688×1344 → ~87 MB.
    * Written by `risGiMain`; read by temporal/spatial passes and shade.
    */
