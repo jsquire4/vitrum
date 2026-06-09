@@ -15,9 +15,8 @@
 // `lite` is the graceful-degradation tier (single-output, smaller textures,
 // fewer bounces, no HDRI) for low-cap contexts.
 //
-// NOTE: src/options.ts already declares an identical `WebGl2TraceTier` union;
-// it is re-declared here so this module is self-contained. The integrator
-// dedups the two declarations into one source of truth.
+// `WebGl2TraceTier` is owned here (the tier-selection module) and re-exported by
+// src/options.ts, so there is a single source of truth for the union.
 
 export type WebGl2TraceTier = 'full' | 'lite';
 

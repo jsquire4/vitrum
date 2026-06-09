@@ -1,6 +1,10 @@
 import type { EngineOptions } from '@vitrum/core';
+import type { WebGl2TraceTier } from './traceTier.js';
 
-export type WebGl2TraceTier = 'full' | 'lite';
+// `WebGl2TraceTier` is owned by ./traceTier.ts (the tier-selection module);
+// re-exported here so consumers of the options surface keep importing it from
+// one place. (Previously this module re-declared an identical union — D9 dedup.)
+export type { WebGl2TraceTier };
 
 /**
  * Options for {@link createPTEngine_WebGL2}. Narrows the core `EngineOptions.device`

@@ -149,6 +149,16 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly materialLinearTexture: GPUTexture;
   /** P2 — linear 2d-array view bound in group 3 (binding 5). */
   readonly materialLinearTextureView: GPUTextureView;
+  /** Live GPU footprint of the scene resources, split so the debug surface can
+   *  honour `GpuMemoryBreakdown`'s invariants: `bufferBytes` (all 24 scene
+   *  STORAGE buffers) + `textureBytesByFormat` (the two material arrays, keyed by
+   *  their actual `GPUTextureFormat`). Read off the CURRENT handles (not a
+   *  creation-time constant) so it stays correct after a realloc fast-path swaps
+   *  BLAS/TLAS/uvs/light-tree buffers onto this struct. */
+  readonly gpuMemoryBytes: () => {
+    readonly bufferBytes: number;
+    readonly textureBytesByFormat: Readonly<Record<string, number>>;
+  };
   readonly destroy: () => void;
 }
 
@@ -1187,6 +1197,35 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       materialTexDescriptorsBuffer.destroy();
       materialTextureArray.texture.destroy();
       materialLinearArray.texture.destroy();
+    },
+    // Sum the CURRENT GPUBuffer sizes off `uploaded` (realloc-swapped handles
+    // included) + the two material texture arrays (GPUTexture has no `.size`, so
+    // derive w·h·layers·4 at rgba8 = 4 B/texel, keyed by the actual format).
+    // Keeps `debug.estimatedGpuMemoryBytes` honest instead of under-reporting by
+    // the whole scene.
+    gpuMemoryBytes: () => {
+      const buffers: readonly GPUBuffer[] = [
+        uploaded.positionsBuffer, uploaded.normalsBuffer, uploaded.indicesBuffer,
+        uploaded.triMaterialIdsBuffer, uploaded.materialsBuffer, uploaded.bvhNodesBuffer,
+        uploaded.analyticHeadersBuffer, uploaded.analyticParamsBuffer,
+        uploaded.analyticLocalToWorldBuffer, uploaded.analyticWorldToLocalBuffer,
+        uploaded.environmentMapTexelsBuffer, uploaded.environmentMapCdfBuffer,
+        uploaded.pointLightsBuffer, uploaded.spotLightsBuffer, uploaded.rectAreaLightsBuffer,
+        uploaded.meshAreaLightsBuffer, uploaded.lightTreeBuffer,
+        uploaded.tlasNodesBuffer, uploaded.tlasInstanceIndicesBuffer, uploaded.tlasBlasRootsBuffer,
+        uploaded.tlasInstanceWorldToLocalBuffer, uploaded.tlasInstanceLocalToWorldBuffer,
+        uploaded.uvsBuffer, uploaded.materialTexDescriptorsBuffer,
+      ];
+      let bufferBytes = 0;
+      for (const b of buffers) bufferBytes += b.size;
+      const textureBytesByFormat: Record<string, number> = {};
+      const addTex = (t: GPUTexture): void => {
+        const bytes = t.width * t.height * t.depthOrArrayLayers * 4;
+        textureBytesByFormat[t.format] = (textureBytesByFormat[t.format] ?? 0) + bytes;
+      };
+      addTex(uploaded.materialTexture);
+      addTex(uploaded.materialLinearTexture);
+      return { bufferBytes, textureBytesByFormat };
     },
   };
   return uploaded;

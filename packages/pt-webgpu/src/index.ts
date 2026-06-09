@@ -452,25 +452,37 @@ class PTEngineWebGPU implements Engine {
       const varMomentBufBytes = gpu.varianceMomentsBuffer != null
         ? gpu.accumBufferByteSize : 0;
       const paramsBufBytes    = gpu.paramsBuffer != null ? 512 : 0;
-      // Scene buffers (BVH, materials, indices, etc.) are owned by
-      // UploadedSceneBuffers; size accounting there would require touching
-      // the uploader — left for a follow-up so this commit stays focused.
+      // Scene buffers (BVH/materials/indices/TLAS/emitters/light-tree/UVs) + the
+      // two material texture arrays, summed live off the current handles (was
+      // previously omitted, so `total` under-reported by the whole scene).
+      const scene = this.#sceneBuffers != null
+        ? this.#sceneBuffers.gpuMemoryBytes()
+        : { bufferBytes: 0, textureBytesByFormat: {} as Readonly<Record<string, number>> };
+      const sceneTexBytes = Object.values(scene.textureBytesByFormat).reduce((a, b) => a + b, 0);
+      const sceneBytes = scene.bufferBytes + sceneTexBytes;
 
       const commonTexBytes = accumBytes + normalDepthBytes + albedoBytes
         + varianceBytes + motionBytes;
       const commonBufBytes = accumBufBytes + varMomentBufBytes + paramsBufBytes;
-      const total = commonTexBytes + commonBufBytes;
+      const total = commonTexBytes + commonBufBytes + sceneBytes;
+
+      // byTextureFormat: common render targets (rgba16float) + the scene's
+      // material arrays by their actual format. Keeps the secondary tables
+      // summing to `total` (the documented invariant).
+      const textureFormats: Record<string, number> = { rgba16float: commonTexBytes };
+      for (const [fmt, bytes] of Object.entries(scene.textureBytesByFormat)) {
+        textureFormats[fmt] = (textureFormats[fmt] ?? 0) + bytes;
+      }
 
       return Object.freeze({
         total,
         byCategory: Object.freeze({
-          common: total,
+          common: commonTexBytes + commonBufBytes,
+          scene: sceneBytes,
         }),
-        byTextureFormat: Object.freeze({
-          rgba16float: commonTexBytes,
-        }),
+        byTextureFormat: Object.freeze(textureFormats),
         byBufferUsage: Object.freeze({
-          storage: accumBufBytes + varMomentBufBytes,
+          storage: accumBufBytes + varMomentBufBytes + scene.bufferBytes,
           uniform: paramsBufBytes,
         }),
       });
