@@ -54,6 +54,16 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.accumulates).toBe(true);
     expect(c.causticStrategy).toBe('none');
     expect(c.supportedPrimitiveKinds?.has('mesh')).toBe(true);
+    expect(c.supportsIncrementalScene).toBe(false);
+    expect(c.incrementalPatchSupport).toEqual({
+      transform: false,
+      positions: false,
+      material: false,
+      emitter: false,
+      topology: false,
+    });
+    expect(c.supportDetails?.mutations.material).toBe('unsupported');
+    expect(c.supportDetails?.mutations.environment).toBe('unsupported');
   });
 
   it('setScene ingests via shared-bvh; getScene returns the filtered scene', async () => {

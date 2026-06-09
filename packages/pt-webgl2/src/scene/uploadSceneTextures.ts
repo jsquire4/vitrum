@@ -21,6 +21,7 @@ import type { EngineCapabilities, Scene } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
 import { mergeWorldSpaceFromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
+import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
@@ -48,9 +49,15 @@ export function buildSceneTextures(
   // (1) capability filter
   const { supported, warnings } = partitionSceneBySupport(scene, caps);
 
+  // (1b) fold `mesh-area` emitter radiance back onto its surface material's
+  //      emissive — three-bindings strips it for NEE backends, but the fork
+  //      integrator lights area sources by HITTING the emissive surface
+  //      (surf.emission). Without this the Cornell light renders black.
+  const ptScene = foldMeshAreaEmittersIntoMaterials(supported);
+
   // (2) merged world-space tri stream + single-root BVH (stride 4 = the form the
   //     BVH texture adapter and attribute array both index).
-  const merged = mergeWorldSpaceFromCore(supported, { positionStride: 4 });
+  const merged = mergeWorldSpaceFromCore(ptScene, { positionStride: 4 });
 
   // (3) BVH data textures (+ per-tri materialIndex)
   const bvhData = packBvhTextureData(merged);

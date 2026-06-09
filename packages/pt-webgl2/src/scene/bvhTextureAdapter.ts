@@ -124,10 +124,19 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
     index[dst + 2] = pack.indices[src + 2]!;
   }
 
-  // materialIndex — RGBA32UI .x, 1 texel/tri
-  const materialIndexDim = squareDim(triangleCount);
+  // materialIndex — RGBA32UI .x, PER-VERTEX. The fork GLSL reads
+  // `uTexelFetch1D(materialIndexAttribute, surfaceHit.faceIndices.x).r` — indexed by a
+  // VERTEX index, not a triangle index (it mirrors three-mesh-bvh's per-vertex
+  // UIntVertexAttributeTexture). So assign each vertex its triangle's material id.
+  const materialIndexDim = squareDim(vertexCount);
   const materialIndex = new Uint32Array(materialIndexDim * materialIndexDim * 4);
-  for (let t = 0; t < triangleCount; t += 1) materialIndex[t * 4] = triMaterialIds[t]!;
+  for (let t = 0; t < triangleCount; t += 1) {
+    const m = triMaterialIds[t]!;
+    const src = t * indexStride;
+    materialIndex[pack.indices[src]! * 4] = m;
+    materialIndex[pack.indices[src + 1]! * 4] = m;
+    materialIndex[pack.indices[src + 2]! * 4] = m;
+  }
 
   return {
     bounds, boundsDim, contents, contentsDim, position, positionDim,

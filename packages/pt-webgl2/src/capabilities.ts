@@ -8,6 +8,8 @@ import type {
 } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
 
+const PT_WEBGL2_BASE_SUPPORT_DETAILS = BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails;
+
 /**
  * The single source of truth for what this backend ingests. `buildCapabilities`
  * derives its `supported*Kinds` from THIS object, and `setScene` filters the scene
@@ -48,12 +50,12 @@ export function buildCapabilities(
   supportsAuxBuffers: boolean,
 ): EngineCapabilities {
   return {
-    supportsIncrementalScene: true,
+    supportsIncrementalScene: false,
     incrementalPatchSupport: {
-      transform: true,
-      positions: true,
-      material: true,
-      emitter: true,
+      transform: false,
+      positions: false,
+      material: false,
+      emitter: false,
       topology: false,
     },
     supportsAddRemovePrimitive: false,
@@ -67,6 +69,19 @@ export function buildCapabilities(
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     causticStrategy,
-    supportDetails: BACKEND_PROMISE_LEDGER['pt-webgl'].supportDetails,
+    supportDetails: {
+      ...PT_WEBGL2_BASE_SUPPORT_DETAILS,
+      mutations: {
+        ...PT_WEBGL2_BASE_SUPPORT_DETAILS.mutations,
+        transform: 'unsupported',
+        positions: 'unsupported',
+        material: 'unsupported',
+        emitter: 'unsupported',
+        topology: 'unsupported',
+        addPrimitive: 'unsupported',
+        removePrimitive: 'unsupported',
+        environment: 'unsupported',
+      },
+    },
   };
 }
