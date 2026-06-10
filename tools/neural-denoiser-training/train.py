@@ -34,10 +34,22 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+
+# NOTE: torch is imported lazily inside train() so that `--dry-run` (numpy-only
+# dataset + shape + export-path validation) works on boxes WITHOUT PyTorch
+# installed. Do NOT add a top-level `import torch` — it would break --dry-run.
+try:                       # pragma: no cover - environment dependent
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils.data import Dataset, DataLoader
+    _HAS_TORCH = True
+except ImportError:        # pragma: no cover - environment dependent
+    _HAS_TORCH = False
+    # Provide a stub base class so the UNetDenoiser definition below still parses.
+    class _StubModule:
+        pass
+    nn = type('nn', (), {'Module': _StubModule})  # type: ignore
 
 
 # ── Architecture ─────────────────────────────────────────────────────────────
@@ -143,7 +155,7 @@ class UNetDenoiser(nn.Module):
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 
-class DenoisingDataset(Dataset):
+class DenoisingDataset(Dataset if _HAS_TORCH else object):
     """
     Paired noisy / clean dataset loader.
 
@@ -334,15 +346,153 @@ def export_vitrum_weights(model: UNetDenoiser, out_path: str) -> None:
     print(f'Exported vitrum weights → {out_path} ({os.path.getsize(out_path) / 1024:.1f} KB)')
 
 
+# ── Canonical layer shapes (single source of truth, mirrors unetArchitecture.ts) ─
+# Each entry: name → (weight_shape, bias_len). Conv2d weight is OIKW
+# (outC, inC, kH, kW); ConvTranspose2d weight is IOKW (inC, outC, kH, kW).
+# This drives BOTH the numpy dry-run export and the canonical param-count check.
+CANONICAL_LAYERS: list[tuple[str, tuple[int, int, int, int], int]] = [
+    ('enc1_conv',  (24,   9, 3, 3),  24),
+    ('enc1_down',  (24,  24, 3, 3),  24),
+    ('enc2_conv',  (48,  24, 3, 3),  48),
+    ('enc2_down',  (48,  48, 3, 3),  48),
+    ('enc3_conv',  (96,  48, 3, 3),  96),
+    ('enc3_down',  (96,  96, 3, 3),  96),
+    ('bottleneck', (192, 96, 3, 3), 192),
+    ('dec3_up',    (192, 96, 2, 2),  96),   # IOKW (inC=192, outC=96)
+    ('dec3_conv',  (96,  96, 3, 3),  96),
+    ('dec2_up',    (96,  48, 2, 2),  48),   # IOKW
+    ('dec2_conv',  (48,  48, 3, 3),  48),
+    ('dec1_up',    (48,  24, 2, 2),  24),   # IOKW
+    ('dec1_conv',  (24,  24, 3, 3),  24),
+    ('proj',       (3,   24, 1, 1),   3),
+]
+CANONICAL_PARAM_COUNT = 535107   # pinned by neural.test.ts deriveParamCount.
+
+
+def canonical_param_count() -> int:
+    total = 0
+    for _name, wshape, blen in CANONICAL_LAYERS:
+        n = 1
+        for d in wshape:
+            n *= d
+        total += n + blen
+    return total
+
+
+def write_vitrum_binary(records: list[tuple[str, np.ndarray, np.ndarray]], out_path: str) -> int:
+    """Write the .vitrum-model binary (loadWeightsFromArrayBuffer schema). Returns total params."""
+    with open(out_path, 'wb') as f:
+        f.write(struct.pack('<I', VITRUM_MODEL_MAGIC))
+        f.write(struct.pack('<I', VITRUM_MODEL_VERSION))
+        f.write(struct.pack('<I', len(records)))
+        for (name, weights, biases) in records:
+            name_bytes = name.encode('utf-8')
+            f.write(struct.pack('<I', len(name_bytes)))
+            f.write(name_bytes)
+            f.write(struct.pack('<I', len(weights)))
+            f.write(weights.tobytes())
+            f.write(struct.pack('<I', len(biases)))
+            f.write(biases.tobytes())
+    return sum(len(w) + len(b) for (_, w, b) in records)
+
+
+def enumerate_samples(data_dir: str) -> list[tuple[Path, Path, Path, Path]]:
+    """Numpy-only mirror of DenoisingDataset's sample discovery (no torch)."""
+    samples: list[tuple[Path, Path, Path, Path]] = []
+    data_path = Path(data_dir)
+    for scene_dir in sorted(data_path.iterdir()):
+        if not scene_dir.is_dir():
+            continue
+        noisy_dir, clean_dir = scene_dir / 'noisy', scene_dir / 'clean'
+        if not noisy_dir.exists() or not clean_dir.exists():
+            continue
+        for noisy_path in sorted(noisy_dir.glob('frame_*.png')):
+            stem = noisy_path.stem
+            albedo = noisy_dir / f'{stem}_albedo.png'
+            normal = noisy_dir / f'{stem}_normal.png'
+            clean  = clean_dir / f'{stem}.png'
+            if albedo.exists() and normal.exists() and clean.exists():
+                samples.append((noisy_path, albedo, normal, clean))
+    return samples
+
+
+def dry_run(args: argparse.Namespace) -> None:
+    """
+    Numpy-only end-to-end validation (NO torch required):
+      1. Discover noisy/clean pairs in --data.
+      2. Load + stack the 9-channel input, assert shapes.
+      3. Build a deterministic random checkpoint matching the canonical
+         layer shapes, write the .vitrum-model binary, assert 535,107 params.
+    This exercises the dataset-loading + export format path so the round-trip
+    test (walkaround-hybrid) can load the result through the real weights.ts loader.
+    """
+    print('=== train.py --dry-run (numpy-only; PyTorch NOT required) ===')
+
+    # 1. Dataset discovery.
+    samples = enumerate_samples(args.data)
+    if not samples:
+        raise SystemExit(
+            f'No valid pairs in {args.data}. Run capture-dataset.mjs first. See dataset_spec.md.'
+        )
+    print(f'Discovered {len(samples)} noisy/clean pairs.')
+
+    # 2. Shape validation on the first sample.
+    noisy_p, albedo_p, normal_p, clean_p = samples[0]
+    def load(p: Path) -> np.ndarray:
+        return np.asarray(Image.open(p).convert('RGB'), dtype=np.float32) / 255.0  # [H,W,3]
+    noisy, albedo, normal, clean = load(noisy_p), load(albedo_p), load(normal_p), load(clean_p)
+    x = np.concatenate([noisy, albedo, normal], axis=-1)  # [H,W,9]
+    H, W, _ = x.shape
+    assert x.shape[2] == 9, f'expected 9 input channels, got {x.shape[2]}'
+    assert clean.shape == (H, W, 3), f'clean shape {clean.shape} != ({H},{W},3)'
+    assert noisy.shape == albedo.shape == normal.shape == (H, W, 3)
+    print(f'Input stack OK: x[{H}x{W}x9] (noisy+albedo+normal), target clean[{H}x{W}x3]')
+
+    # 3. Build deterministic random checkpoint + export.
+    rng = np.random.default_rng(args.seed)
+    records: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for name, wshape, blen in CANONICAL_LAYERS:
+        fan_in = wshape[1] * wshape[2] * wshape[3]  # inC*kH*kW (He init)
+        scale = (2.0 / max(1, fan_in)) ** 0.5
+        w = rng.uniform(-scale, scale, size=wshape).astype(np.float32).flatten()
+        b = rng.uniform(-0.01, 0.01, size=blen).astype(np.float32)
+        records.append((name, w, b))
+
+    total = write_vitrum_binary(records, args.out_bin)
+    expect = canonical_param_count()
+    assert expect == CANONICAL_PARAM_COUNT, f'shape-table param count {expect} != {CANONICAL_PARAM_COUNT}'
+    assert total == CANONICAL_PARAM_COUNT, (
+        f'exported param count {total} != canonical {CANONICAL_PARAM_COUNT}'
+    )
+    size_kb = os.path.getsize(args.out_bin) / 1024
+    print(f'Exported {len(records)} layers → {args.out_bin} ({size_kb:.1f} KB)')
+    print(f'Param count: {total:,} == canonical {CANONICAL_PARAM_COUNT:,}  ✓')
+    print('=== dry-run OK: dataset + shapes + export format all validated ===')
+
+
 # ── Training loop ─────────────────────────────────────────────────────────────
 
 def train(args: argparse.Namespace) -> None:
+    if not _HAS_TORCH:
+        raise SystemExit(
+            'PyTorch is not installed. Run with --dry-run for a numpy-only '
+            'dataset+shape+export validation, or `pip install torch torchvision Pillow numpy` '
+            'to train. See README.md.'
+        )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Training on {device}')
 
+    # --smoke: tiny end-to-end run (few epochs, small patch, single worker).
+    if args.smoke:
+        args.epochs = min(args.epochs, 2)
+        args.patch_size = min(args.patch_size, 64)
+        print(f'[smoke] epochs={args.epochs} patch={args.patch_size} batch={args.batch}')
+
     # Dataset + loader.
     dataset = DenoisingDataset(args.data, patch_size=args.patch_size)
-    loader  = DataLoader(dataset, batch_size=args.batch, shuffle=True, num_workers=2, pin_memory=True)
+    workers = 0 if args.smoke else 2
+    loader  = DataLoader(dataset, batch_size=args.batch, shuffle=True,
+                         num_workers=workers, pin_memory=(device.type == 'cuda'))
     print(f'Dataset: {len(dataset)} samples')
 
     # Model.
@@ -352,6 +502,10 @@ def train(args: argparse.Namespace) -> None:
 
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model parameters: {param_count:,}')
+    assert param_count == CANONICAL_PARAM_COUNT, (
+        f'model param count {param_count} != canonical {CANONICAL_PARAM_COUNT} — '
+        f'architecture drifted from unetArchitecture.ts'
+    )
 
     # Training loop.
     for epoch in range(1, args.epochs + 1):
@@ -396,16 +550,22 @@ def parse_args() -> argparse.Namespace:
         description='Train the vitrum U-Net neural denoiser.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument('--data',       required=True,          help='Path to noisy/clean pair dataset directory')
+    p.add_argument('--data',       default='data_smoke',   help='Path to noisy/clean pair dataset directory')
     p.add_argument('--epochs',     type=int,   default=50, help='Number of training epochs')
     p.add_argument('--batch',      type=int,   default=4,  help='Batch size')
     p.add_argument('--lr',         type=float, default=1e-4, help='Initial learning rate')
     p.add_argument('--patch-size', type=int,   default=256, help='Training crop size (pixels)')
     p.add_argument('--out-pth',    default='model.pth',    help='Output PyTorch checkpoint path')
     p.add_argument('--out-bin',    default='weights.bin',  help='Output vitrum binary weights path')
+    p.add_argument('--seed',       type=int,   default=1984, help='RNG seed (dry-run weight init)')
+    p.add_argument('--smoke',      action='store_true',    help='Tiny end-to-end run (≤2 epochs, ≤64 patch); requires torch')
+    p.add_argument('--dry-run',    action='store_true',    help='Numpy-only dataset+shape+export validation (no torch)')
     return p.parse_args()
 
 
 if __name__ == '__main__':
     args = parse_args()
-    train(args)
+    if args.dry_run:
+        dry_run(args)
+    else:
+        train(args)

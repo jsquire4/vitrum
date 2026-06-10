@@ -1,0 +1,6 @@
+# Generated training artifacts — all reproducible via capture-dataset.mjs / train.py.
+__pycache__/
+data_smoke/
+data/
+*.bin
+*.pth
