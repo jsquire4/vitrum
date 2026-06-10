@@ -21,13 +21,24 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   13..20 spectral attenuation samples (32 floats)
  *   21 spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount
  *   22 σ_a.rgb (Beer-Lambert absorption coefficient), hasSigmaA flag  ← WS4
+ *   23 clearcoat, clearcoatRoughness, sheen, sheenRoughness              ← H52
+ *   24 sheenColor.rgb, iridescence                                       ← H52
+ *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax, 0 (pad)  ← H52
  *
  * WS4: vec4 #22 (`MATERIAL_VEC4_STRIDE` bumped 22 → 23) carries the RGB
  * absorption coefficient σ_a derived from `attenuationColor`/`attenuationDistance`
  * so the volumetric random walk has a real per-channel extinction term that does
  * not depend on the (optional) spectral-attenuation curve.
+ *
+ * H52: vec4s #23–#25 (`MATERIAL_VEC4_STRIDE` bumped 23 → 26) carry the three
+ * Disney extension lobes — clearcoat (additive GGX at F0=0.04), sheen (Charlie
+ * retro-reflective), and iridescence (thin-film Fresnel modification of F0).
+ * All three scalars default to 0, so zero-default scenes are NUMERICALLY
+ * IDENTICAL to the pre-H52 path (the lobes multiply by their scalar and are
+ * skipped when it is 0).
+ * Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
  */
-const MATERIAL_VEC4_STRIDE = 23;
+const MATERIAL_VEC4_STRIDE = 26;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light wavelength range, canonical from shared-samplers/cieCmf.
@@ -189,5 +200,40 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
   } else {
     packed.push(0, 0, 0, 0);
   }
+
+  // H52 — Disney extension lobes: clearcoat / sheen / iridescence.
+  // All scalar fields default to 0; zero-default scenes are numerically
+  // identical to the pre-H52 path because the WGSL lobes multiply by their
+  // scalar and the kernel short-circuits when it is 0.
+  //
+  // Refs: glTF KHR_materials_clearcoat (Spec rev 3.0); KHR_materials_sheen;
+  //       KHR_materials_iridescence; Belcour & Barla, "A Practical Extension
+  //       to Microfacet Theory for the Modeling of Varying Iridescence,"
+  //       ACM TOG 36(4) (SIGGRAPH 2017).
+
+  // vec4 #23: clearcoat, clearcoatRoughness, sheen, sheenRoughness
+  const clearcoat = clamp01(material.clearcoat ?? 0);
+  const clearcoatRoughness = clamp01(material.clearcoatRoughness ?? 0);
+  const sheen = clamp01(material.sheen ?? 0);
+  const sheenRoughness = clamp01(material.sheenRoughness ?? 0);
+  packed.push(clearcoat, clearcoatRoughness, sheen, sheenRoughness);
+
+  // vec4 #24: sheenColor.rgb, iridescence
+  const sheenColor = material.sheenColor ?? [0, 0, 0];
+  const iridescence = clamp01(material.iridescence ?? 0);
+  packed.push(
+    clamp01(sheenColor[0] ?? 0),
+    clamp01(sheenColor[1] ?? 0),
+    clamp01(sheenColor[2] ?? 0),
+    iridescence,
+  );
+
+  // vec4 #25: iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax, pad
+  const iridescenceIor = Math.max(finite(material.iridescenceIor ?? 1.3, 1.3), 1.0);
+  const iridescenceRange = material.iridescenceThicknessRange ?? [100, 400];
+  const iridescenceMin = Math.max(finite(iridescenceRange[0] ?? 100, 100), 0);
+  const iridescenceMax = Math.max(finite(iridescenceRange[1] ?? 400, 400), 0);
+  packed.push(iridescenceIor, iridescenceMin, iridescenceMax, 0);
+
   return packed;
 }

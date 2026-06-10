@@ -60,16 +60,22 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // (environmentHdriIntensity, f32 slot 31, replaces _padAuto0); H14-B adds spot
     // loop to restirPtProducer; H51-D bumps point stride 8→12 + spot stride 12→16
     // (penumbra+distance+decay). RENDER-CHANGING on HDRI + spot/point scenes; A/B required.
-    expect(digest).toBe('fe41d34f0aa5ef4aedeaaf0c6e13a02e99dd6ee64092341144902bf5362edb25');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(220870);
+    // Re-pinned 2026-06-09: H52 — clearcoat (additive GGX F0=0.04), sheen (Charlie
+    // NDF + Neubelt-Pettineo visibility), and iridescence (Belcour & Barla 2017
+    // thin-film Fresnel F0 modification) lobes added to the WebGPU BRDF.
+    // MATERIAL_VEC4_STRIDE bumped 23→26. Zero-default invariant: all lobes
+    // short-circuit when their scalar is 0 → pre-H52 scenes are numerically identical.
+    // RENDER-CHANGING on clearcoat/sheen/iridescence materials.
+    expect(digest).toBe('20465e36cefb2d8fd6981ef45dd3ed6a24dea84136310a14db8336ce8070df94');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(240384);
   });
 });
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
-    // WS4 bumped the stride 22 → 23 (new vec4 #22 carries volumetric σ_a.rgb +
-    // hasSigmaA flag). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 23u;');
+    // H52 bumped the stride 23 → 26 (new vec4s #23–#25 carry clearcoat/sheen/
+    // iridescence Disney extension lobes). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 26u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
   });

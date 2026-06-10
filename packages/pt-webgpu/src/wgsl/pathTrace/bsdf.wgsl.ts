@@ -17,6 +17,363 @@
  * `ggxD`, `smithG1`) and `luminance` from `material.wgsl.ts`.
  */
 export const PT_WEBGPU_PATH_TRACE_BSDF_WGSL = /* wgsl */ `
+// ============================================================
+// H52 — Disney extension lobes: clearcoat / sheen / iridescence
+// ============================================================
+
+// ── Iridescence (thin-film Fresnel modification of specular F0) ───────────────
+// Ported from packages/pt-webgl2/src/glsl/shader/bsdf/iridescence_functions.glsl.js
+// which implements Belcour & Barla, "A Practical Extension to Microfacet Theory
+// for the Modeling of Varying Iridescence," ACM TOG 36(4) (SIGGRAPH 2017).
+// https://hal.archives-ouvertes.fr/hal-01518344/document
+//
+// WGSL translation notes: component-wise comparisons use select() (no ternary),
+// vector comparisons use all()/any().  No implicit vec3 ternary in WGSL.
+//
+// Refs: glTF KHR_materials_iridescence; Belcour & Barla 2017 (§4 Analytic
+//       Spectral Integration); Schlick 1994.
+//
+// XYZ → sRGB (Rec. 709) colour matrix (row-major → applied as column multiply).
+fn iridXyzToRec709(xyz: vec3f) -> vec3f {
+  return vec3f(
+     3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
+    -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
+     0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z,
+  );
+}
+
+// F0 → IOR (Schlick inverse — clamp F0 away from 1 to avoid sqrt(0)/div-by-zero).
+fn iridFresnel0ToIor(f0: vec3f) -> vec3f {
+  let sqrtF0 = sqrt(clamp(f0, vec3f(0.0), vec3f(0.9999)));
+  return (vec3f(1.0) + sqrtF0) / (vec3f(1.0) - sqrtF0);
+}
+
+// Scalar IOR → F0.
+fn iridIorToFresnel0Scalar(transmittedIor: f32, incidentIor: f32) -> f32 {
+  let r = (transmittedIor - incidentIor) / (transmittedIor + incidentIor);
+  return r * r;
+}
+
+// Vec3 IOR → F0.
+fn iridIorToFresnel0Vec(transmittedIor: vec3f, incidentIor: f32) -> vec3f {
+  let r = (transmittedIor - vec3f(incidentIor)) / (transmittedIor + vec3f(incidentIor));
+  return r * r;
+}
+
+// Schlick Fresnel at a scalar F0 (used for the air-film interface).
+fn iridSchlickScalar(cosTheta: f32, f0: f32) -> f32 {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (1.0 - f0) * m2 * m2 * m;
+}
+
+// Schlick Fresnel at a vec3 F0 (used for the film-substrate interface).
+fn iridSchlickVec(cosTheta: f32, f0: vec3f) -> vec3f {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (vec3f(1.0) - f0) * m2 * m2 * m;
+}
+
+// Evaluate the CIE-XYZ sensitivity functions as a sum of Gaussians (Belcour 2017 §4).
+// OPD = optical path difference in metres (≈ 2·n·d·cosTheta).
+// shift = per-channel phase shift vec (from interface phase mismatch).
+fn iridEvalSensitivity(OPD: f32, shift: vec3f) -> vec3f {
+  let phase = 2.0 * PI * OPD * 1.0e-9;
+  let val = vec3f(5.4856e-13, 4.4201e-13, 5.2481e-13);
+  let pos = vec3f(1.6810e+06, 1.7953e+06, 2.2084e+06);
+  let vari = vec3f(4.3278e+09, 9.3046e+09, 6.6121e+09);
+  var xyz = val * sqrt(2.0 * PI * vari) * cos(pos * phase + shift) * exp(-phase * phase * vari);
+  // Extra Gaussian term for the X channel (Belcour 2017 supplemental).
+  xyz.x = xyz.x + 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09)
+      * cos(2.2399e+06 * phase + shift.x) * exp(-4.5282e+09 * phase * phase);
+  xyz = xyz / 1.0685e-7;
+  return iridXyzToRec709(xyz);
+}
+
+// Full iridescence Fresnel (Belcour & Barla 2017, §4 Analytic Spectral Integration).
+// outsideIOR: medium IOR above the thin film (typically 1.0).
+// eta2:        thin-film IOR.
+// cosTheta1:  cosine of incidence angle in the outside medium.
+// thicknessNm: thin-film thickness in nanometres.
+// baseF0:      substrate F0 (the specular colour the iridescence modifies).
+// Returns the iridescent reflectance in sRGB.  Negative values are clamped to 0.
+fn evalIridescence(
+  outsideIOR: f32,
+  eta2: f32,
+  cosTheta1: f32,
+  thicknessNm: f32,
+  baseF0: vec3f,
+) -> vec3f {
+  // Force iridescenceIor → outsideIOR when thickness → 0 (graceful fade-out).
+  let iridescenceIor = mix(outsideIOR, eta2, smoothstep(0.0, 0.03, thicknessNm));
+
+  // Snell's law at the air-film interface → cosine in the film.
+  let sinTheta2Sq = (outsideIOR / iridescenceIor) * (outsideIOR / iridescenceIor)
+      * max(0.0, 1.0 - cosTheta1 * cosTheta1);
+  let cosTheta2Sq = 1.0 - sinTheta2Sq;
+  // TIR → return full white reflectance (degenerate — the film is opaque).
+  if (cosTheta2Sq < 0.0) { return vec3f(1.0); }
+  let cosTheta2 = sqrt(cosTheta2Sq);
+
+  // ── First interface (outside ↔ film) ──────────────────────────────────────
+  let R0_scalar = iridIorToFresnel0Scalar(iridescenceIor, outsideIOR);
+  let R12 = iridSchlickScalar(cosTheta1, R0_scalar);
+  let R21 = R12;           // symmetric (non-absorbing dielectric)
+  let T121 = 1.0 - R12;
+  // Phase shift at first interface: π when going into a denser medium.
+  let phi12 = select(0.0, PI, iridescenceIor < outsideIOR);
+  let phi21 = PI - phi12;
+
+  // ── Second interface (film ↔ substrate) ───────────────────────────────────
+  let baseIOR = iridFresnel0ToIor(clamp(baseF0, vec3f(0.0), vec3f(0.9999)));
+  let R1_vec = iridIorToFresnel0Vec(baseIOR, iridescenceIor);
+  let R23 = iridSchlickVec(cosTheta2, R1_vec);
+  // Phase shift per channel: π when going from film into a less-dense substrate.
+  // WGSL: no implicit component-wise ternary — use select() per component.
+  var phi23 = vec3f(0.0);
+  phi23.x = select(0.0, PI, baseIOR.x < iridescenceIor);
+  phi23.y = select(0.0, PI, baseIOR.y < iridescenceIor);
+  phi23.z = select(0.0, PI, baseIOR.z < iridescenceIor);
+
+  // ── Compound terms (Belcour 2017 §4, Eq. 5–7) ────────────────────────────
+  let OPD = 2.0 * iridescenceIor * thicknessNm * cosTheta2;
+  let phi = vec3f(phi21) + phi23;
+  let R123 = clamp(R12 * R23, vec3f(1e-5), vec3f(0.9999));
+  let r123 = sqrt(R123);
+  let Rs = (T121 * T121) * R23 / (vec3f(1.0) - R123);
+
+  // m = 0 (DC) term.
+  let C0 = vec3f(R12) + Rs;
+  var I = C0;
+
+  // m = 1, 2 (Dirac pairs).
+  var Cm = Rs - vec3f(T121);
+  for (var m = 1; m <= 2; m = m + 1) {
+    Cm = Cm * r123;
+    let Sm = 2.0 * iridEvalSensitivity(f32(m) * OPD, f32(m) * phi);
+    I = I + Cm * Sm;
+  }
+
+  return max(I, vec3f(0.0));
+}
+
+// Mix the base specular F0 with the iridescent Fresnel based on the iridescence
+// factor.  thicknessNm is sampled linearly between min and max using viewDotN.
+// Returns a modified F0 that the caller substitutes into fresnelSchlick.
+// Ref: glTF KHR_materials_iridescence §3.
+fn iridescenceModifiedF0(
+  baseF0: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  thicknessMin: f32,
+  thicknessMax: f32,
+  cosTheta: f32,
+) -> vec3f {
+  if (iridescence < 1e-4) {
+    return baseF0; // zero-default: numerically identical to pre-H52 path.
+  }
+  let thicknessNm = mix(thicknessMin, thicknessMax, clamp(cosTheta, 0.0, 1.0));
+  let iridF = evalIridescence(1.0, iridescenceIor, cosTheta, thicknessNm, baseF0);
+  return mix(baseF0, iridF, iridescence);
+}
+
+// ── Clearcoat (additive GGX specular at fixed IOR 1.5) ────────────────────────
+// Ref: glTF KHR_materials_clearcoat (Spec rev 3.0) §3.
+//      Burley, "Physically-Based Shading at Disney," SIGGRAPH 2012 §5.4.
+// The clearcoat lobe is an additive GGX specular layer at a fixed IOR of 1.5
+// (F0 = 0.04), independent of the base metallic/roughness lobe.
+// The caller supplies the ALREADY COMPUTED clearcoat roughness (= clearcoatRoughness²
+// clamped below 1e-3 as for the base GGX); the clearcoat scalar weights the result.
+// The lobe uses the same Cook-Torrance estimator as evaluateBrdf's specular branch.
+// evalClearcoatLobe returns the BRDF kernel (WITHOUT nDotL) so it can be
+// summed with evaluateBrdf and the caller multiplies by nDotL once, matching
+// the convention used throughout the kernel's NEE paths.
+fn evalClearcoatLobe(
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (clearcoat < 1e-4) { return vec3f(0.0); } // zero-default short-circuit.
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  // Fixed IOR 1.5 → F0 = ((1.5-1)/(1.5+1))² = 0.04.
+  let f0cc = vec3f(0.04);
+  let f = fresnelSchlick(vDotH, f0cc);
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
+  // BRDF kernel (no nDotL) — caller multiplies by nDotL together with the base lobe.
+  let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+  return clearcoat * spec;
+}
+
+// Clearcoat PDF contribution for brdfDirectionalPdf.
+// Weighted by clearcoat scalar; the base lobe PDF is extended by this term.
+// Returns 0 when clearcoat == 0 (zero-default: identical to pre-H52 PDF).
+fn clearcoatPdf(clearcoat: f32, clearcoatRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
+  if (clearcoat < 1e-4) { return 0.0; }
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotV <= 1e-5) { return 0.0; }
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g1Wo = smithG1(nDotV, clearcoatRoughness);
+  return (d * g1Wo) / max(4.0 * nDotV, 1e-6);
+}
+
+// ── Sheen (Charlie distribution retro-reflective lobe) ────────────────────────
+// Ref: glTF KHR_materials_sheen §3; Estevez & Kulla, "Production Friendly
+//      Microfacet Sheen BRDF," SIGGRAPH 2017.
+// The Charlie NDF: D_c(h; α) = (2 + 1/α) * sin(θ_h)^(1/α) / (2π).
+// The sheen lobe is EVALUATION-ONLY (no dedicated sampler — the cosine-hemisphere
+// sampler covers it indirectly).  The brdfDirectionalPdf for the sheen term returns
+// a cosine-hemisphere approximation; v1 documents this as an accepted bias that
+// keeps the sampler simple.  The sheen contribution is typically small enough
+// (grazing-only velvet-like highlight) that the variance impact is negligible.
+// When sheen == 0 the function returns vec3(0) — zero-default invariant.
+fn charlieD(nDotH: f32, alpha: f32) -> f32 {
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * PI);
+}
+
+// Neubelt-Pettineo visibility (Neubelt & Pettineo 2013 approximation for sheen).
+fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
+  return 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+}
+
+// evalSheenLobe returns the BRDF kernel (WITHOUT nDotL) matching the convention
+// of evaluateBrdf (caller multiplies by nDotL once for the full NEE contribution).
+// Evaluation-only: no dedicated sampler (cosine-hemisphere covers it indirectly).
+// The PDF bookkeeping for the sheen lobe uses a cosine-hemisphere approximation
+// (see brdfDirectionalPdfFull below).  This is documented as an accepted v1 bias;
+// the sheen lobe is a small grazing-angle velvet highlight whose variance impact
+// from the mismatched PDF is negligible.
+fn evalSheenLobe(
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (sheen < 1e-4) { return vec3f(0.0); } // zero-default short-circuit.
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  let d = charlieD(nDotH, alpha);
+  let vis = sheenVisibility(nDotL, nDotV);
+  // BRDF kernel (no nDotL) — caller multiplies by nDotL together with the base lobe.
+  return sheen * sheenColor * d * vis;
+}
+
+// ── H52 extended BRDF evaluation (base + clearcoat + sheen + iridescence) ─────
+// evaluateBrdfFull: adds the three Disney extension lobes to the base Cook-Torrance
+// BRDF.  Returns the BRDF kernel (WITHOUT nDotL); callers multiply by nDotL once.
+// When all extension scalars are 0 the result is identical to evaluateBrdf.
+//
+// iridescence modifies the base specular F0 BEFORE the Cook-Torrance evaluation
+// (it is NOT an additive lobe — it replaces the F0 that governs diffuse/specular
+// partition and the specular highlight colour).  Clearcoat and sheen ARE additive.
+//
+// Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence;
+//       Belcour & Barla 2017 (iridescence); Estevez & Kulla 2017 (sheen).
+fn evaluateBrdfFull(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+
+  // Iridescence-modified F0 (modifies diffuse/specular partition + specular colour).
+  let f0base = mix(vec3f(0.04), baseColor, metallic);
+  let f0 = iridescenceModifiedF0(
+    f0base, iridescence, iridescenceIor,
+    iridescenceThicknessMin, iridescenceThicknessMax, vDotH,
+  );
+
+  let f = fresnelSchlick(vDotH, f0);
+  let alpha = max(roughness * roughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+  let kd = (vec3f(1.0) - f) * (1.0 - metallic);
+  let diff = kd * baseColor * INV_PI;
+  let base = diff + spec;
+
+  // Additive extension lobes (each returns BRDF kernel, no nDotL factor).
+  let cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, wi);
+  let sh = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, wo, wi);
+  return base + cc + sh;
+}
+
+// brdfDirectionalPdfFull: the pdf for the full lobe mixture used in MIS.
+// The base pdf comes from brdfDirectionalPdf; the clearcoat and sheen terms add
+// their (weighted) pdfs.  The sheen PDF uses a cosine-hemisphere approximation
+// (v1 documented bias — see evalSheenLobe).
+// When all extension scalars are 0 the result is identical to brdfDirectionalPdf.
+fn brdfDirectionalPdfFull(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> f32 {
+  let basePdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
+  let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, wi);
+  // Sheen PDF approximation: cosine-hemisphere (v1 accepted bias — see evalSheenLobe).
+  let nDotL = max(dot(normal, wi), 0.0);
+  let sheenPdf = sheen * nDotL * INV_PI;
+  // Iridescence does NOT add a new sampling lobe (it modifies F0 of the existing
+  // specular lobe, which the base brdfDirectionalPdf already accounts for).
+  // These parameters are present for API symmetry with evaluateBrdfFull.
+  // WGSL does not penalise unused function parameters.
+  // Total pdf: sum of all lobe pdfs.
+  let total = basePdf + ccPdf + sheenPdf;
+  return total;
+}
+
 fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);

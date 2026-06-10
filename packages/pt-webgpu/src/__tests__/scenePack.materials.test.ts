@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene, SpectralCurve, SurfaceAbsorptionLayer, ThinFilmStack } from '@vitrum/core';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
+import { materialToPackedVec4s, MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
+import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 
 describe('buildPackedScene material payload packing', () => {
   it('packs layered/spectral/thin-film summaries', () => {
@@ -25,7 +27,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(92); // WS4: MATERIAL_FLOAT_STRIDE 88 → 92 (σ_a vec4)
+    expect(packed.materials.length).toBe(104); // H52: MATERIAL_FLOAT_STRIDE 92 → 104 (clearcoat/sheen/iridescence)
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
@@ -57,5 +59,124 @@ describe('buildPackedScene material payload packing', () => {
     expect(packed.materials[23]).toBeCloseTo(0);
     expect(packed.materials[29]).toBeGreaterThanOrEqual(0);
     expect(packed.materials[52]).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── H52 — Disney extension lobe packing (clearcoat / sheen / iridescence) ────
+// Vec4 layout: #23 = clearcoat/sheen scalars, #24 = sheenColor.rgb + iridescence,
+//              #25 = iridescenceIor + thicknessMin + thicknessMax + pad.
+// Float offsets: 92, 96, 100 respectively.
+describe('H52 Disney extension lobe packing', () => {
+  const CC_OFFSET   = 23 * 4; // 92
+  const SH_OFFSET   = 24 * 4; // 96
+  const IRID_OFFSET = 25 * 4; // 100
+
+  it('packs clearcoat and clearcoatRoughness in vec4 #23 slots x,y', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      clearcoat: 0.75, clearcoatRoughness: 0.3,
+    } as never);
+    expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
+    expect(packed[CC_OFFSET + 0]).toBeCloseTo(0.75);     // clearcoat
+    expect(packed[CC_OFFSET + 1]).toBeCloseTo(0.3);      // clearcoatRoughness
+    expect(packed[CC_OFFSET + 2]).toBeCloseTo(0);        // sheen = 0 default
+    expect(packed[CC_OFFSET + 3]).toBeCloseTo(0);        // sheenRoughness = 0 default
+  });
+
+  it('packs sheen and sheenRoughness in vec4 #23 slots z,w', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      sheen: 0.6, sheenRoughness: 0.4,
+    } as never);
+    expect(packed[CC_OFFSET + 2]).toBeCloseTo(0.6);      // sheen
+    expect(packed[CC_OFFSET + 3]).toBeCloseTo(0.4);      // sheenRoughness
+  });
+
+  it('packs sheenColor.rgb and iridescence in vec4 #24', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      sheenColor: [0.9, 0.5, 0.1], iridescence: 0.8,
+    } as never);
+    expect(packed[SH_OFFSET + 0]).toBeCloseTo(0.9);      // sheenColor.r
+    expect(packed[SH_OFFSET + 1]).toBeCloseTo(0.5);      // sheenColor.g
+    expect(packed[SH_OFFSET + 2]).toBeCloseTo(0.1);      // sheenColor.b
+    expect(packed[SH_OFFSET + 3]).toBeCloseTo(0.8);      // iridescence
+  });
+
+  it('packs iridescenceIor, thicknessMin, thicknessMax, pad in vec4 #25', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      iridescence: 1, iridescenceIor: 2.0,
+      iridescenceThicknessRange: [50, 600],
+    } as never);
+    expect(packed[IRID_OFFSET + 0]).toBeCloseTo(2.0);    // iridescenceIor
+    expect(packed[IRID_OFFSET + 1]).toBeCloseTo(50);     // thicknessMin
+    expect(packed[IRID_OFFSET + 2]).toBeCloseTo(600);    // thicknessMax
+    expect(packed[IRID_OFFSET + 3]).toBe(0);             // pad
+  });
+
+  it('defaults all extension scalars to 0 when fields absent (zero-default invariant)', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0,
+    } as never);
+    // clearcoat, clearcoatRoughness, sheen, sheenRoughness all 0
+    expect(packed[CC_OFFSET + 0]).toBe(0);
+    expect(packed[CC_OFFSET + 1]).toBe(0);
+    expect(packed[CC_OFFSET + 2]).toBe(0);
+    expect(packed[CC_OFFSET + 3]).toBe(0);
+    // sheenColor [0,0,0], iridescence 0
+    expect(packed[SH_OFFSET + 0]).toBe(0);
+    expect(packed[SH_OFFSET + 1]).toBe(0);
+    expect(packed[SH_OFFSET + 2]).toBe(0);
+    expect(packed[SH_OFFSET + 3]).toBe(0);
+    // iridescenceIor defaults to 1.3 (safe even when iridescence=0 — WGSL never reads it)
+    expect(packed[IRID_OFFSET + 0]).toBeCloseTo(1.3);
+    expect(packed[IRID_OFFSET + 1]).toBeCloseTo(100);    // thicknessMin default
+    expect(packed[IRID_OFFSET + 2]).toBeCloseTo(400);    // thicknessMax default
+    expect(packed[IRID_OFFSET + 3]).toBe(0);             // pad
+  });
+
+  it('clamps extension scalars to [0,1] and iridescenceIor to ≥1', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      clearcoat: 2.5, clearcoatRoughness: -0.1,
+      sheen: -1, sheenRoughness: 3,
+      sheenColor: [5, -2, 0.5], iridescence: 1.5,
+      iridescenceIor: 0.5, // must clamp to ≥1
+      iridescenceThicknessRange: [-10, 800],
+    } as never);
+    expect(packed[CC_OFFSET + 0]).toBeCloseTo(1);        // clearcoat clamped from 2.5
+    expect(packed[CC_OFFSET + 1]).toBeCloseTo(0);        // clearcoatRoughness clamped from -0.1
+    expect(packed[CC_OFFSET + 2]).toBeCloseTo(0);        // sheen clamped from -1
+    expect(packed[CC_OFFSET + 3]).toBeCloseTo(1);        // sheenRoughness clamped from 3
+    expect(packed[SH_OFFSET + 0]).toBeCloseTo(1);        // sheenColor.r clamped from 5
+    expect(packed[SH_OFFSET + 1]).toBeCloseTo(0);        // sheenColor.g clamped from -2
+    expect(packed[SH_OFFSET + 2]).toBeCloseTo(0.5);      // sheenColor.b in range
+    expect(packed[SH_OFFSET + 3]).toBeCloseTo(1);        // iridescence clamped from 1.5
+    expect(packed[IRID_OFFSET + 0]).toBeGreaterThanOrEqual(1); // iridescenceIor ≥ 1
+    expect(packed[IRID_OFFSET + 1]).toBeCloseTo(0);      // thicknessMin clamped from -10
+    expect(packed[IRID_OFFSET + 2]).toBeCloseTo(800);    // thicknessMax
+  });
+});
+
+// ── Material stride consistency gate (TS vs WGSL lockstep) ───────────────────
+// MATERIAL_VEC4_STRIDE is a constant that exists in two places:
+//   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 26, exported as
+//      MATERIAL_FLOAT_STRIDE = 104)
+//   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 26u;)
+// If they diverge, every material read in the GPU kernel is silently misaligned.
+// This test checks both sources agree, and that the TS float-stride is exactly
+// 4× the WGSL vec4-stride.
+describe('material stride consistency (TS vs WGSL lockstep)', () => {
+  it('MATERIAL_FLOAT_STRIDE equals 26 * 4 = 104 (H52 bumped 23→26)', () => {
+    expect(MATERIAL_FLOAT_STRIDE).toBe(104);
+  });
+
+  it('WGSL MATERIAL_VEC4_STRIDE constant matches TS stride / 4', () => {
+    // Parse the integer from the WGSL constant declaration.
+    const match = PT_WEBGPU_TRACE_WGSL.match(/const MATERIAL_VEC4_STRIDE\s*=\s*(\d+)u;/);
+    expect(match).not.toBeNull();
+    const wgslStride = parseInt(match![1]!, 10);
+    expect(wgslStride * 4).toBe(MATERIAL_FLOAT_STRIDE);
   });
 });

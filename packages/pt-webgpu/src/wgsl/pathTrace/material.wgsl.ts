@@ -379,7 +379,8 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL = /* wgsl */ `
 const LEAFNODE_FLAG = 0xffff0000u;
 // MUST stay in lockstep with TS \`MATERIAL_VEC4_STRIDE\` in scene/materialPacking.ts.
 // WS4 bumped 22 → 23: vec4 #22 carries volumetric σ_a.rgb + hasSigmaA flag.
-const MATERIAL_VEC4_STRIDE = 23u;
+// H52 bumped 23 → 26: vec4s #23–#25 carry clearcoat / sheen / iridescence lobes.
+const MATERIAL_VEC4_STRIDE = 26u;
 const MATERIAL_SCALAR_STRIDE = MATERIAL_VEC4_STRIDE * 4u;
 const THIN_FILM_LAYER_LIMIT = 8u;
 const THIN_FILM_SCALAR_BASE = 28u;
@@ -591,6 +592,19 @@ struct DecodedMaterial {
   // medium (σ_a = 0) from "no absorption authored".
   sigmaA: vec3f,
   hasSigmaA: bool,
+  // H52 — Disney extension lobes (clearcoat / sheen / iridescence).
+  // All three default to 0; zero-default scenes are numerically identical to
+  // the pre-H52 path because each lobe is gated on its scalar being > 0.
+  // Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
 }
 
 // RFE-03 / fork activeLayerWeight: scalar throughput through face layer at hero λ.
@@ -612,6 +626,9 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m6Index = m0Index + 6u;
   let m19Index = m0Index + 21u;
   let m22Index = m0Index + 22u; // WS4 σ_a vec4
+  let m23Index = m0Index + 23u; // H52 clearcoat/sheen vec4
+  let m24Index = m0Index + 24u; // H52 sheenColor + iridescence vec4
+  let m25Index = m0Index + 25u; // H52 iridescence params vec4
   let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
   let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
   let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
@@ -621,6 +638,10 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
   let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
   let m22 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m22Index], m22Index < arrayLength(&materials));
+  // H52: defaults for all three lobes are 0 (zero-default = numerically identical to pre-H52 path).
+  let m23 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m23Index], m23Index < arrayLength(&materials));
+  let m24 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m24Index], m24Index < arrayLength(&materials));
+  let m25 = select(vec4f(1.3, 100.0, 400.0, 0.0), materials[m25Index], m25Index < arrayLength(&materials));
   var mat: DecodedMaterial;
   mat.baseColor = m0.rgb;
   mat.roughness = clamp(m0.w, 0.02, 1.0);
@@ -645,6 +666,16 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.dispersionAbbe = max(m19.y, 0.0);
   mat.sigmaA = vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0));
   mat.hasSigmaA = m22.w > 0.5;
+  // H52 — clearcoat / sheen / iridescence lobe decode.
+  mat.clearcoat = clamp(m23.x, 0.0, 1.0);
+  mat.clearcoatRoughness = clamp(m23.y, 0.0, 1.0);
+  mat.sheen = clamp(m23.z, 0.0, 1.0);
+  mat.sheenRoughness = clamp(m23.w, 0.0, 1.0);
+  mat.sheenColor = clamp(m24.rgb, vec3f(0.0), vec3f(1.0));
+  mat.iridescence = clamp(m24.w, 0.0, 1.0);
+  mat.iridescenceIor = max(m25.x, 1.0);
+  mat.iridescenceThicknessMin = max(m25.y, 0.0);
+  mat.iridescenceThicknessMax = max(m25.z, 0.0);
   // A material has a PARTICIPATING MEDIUM the eye path must traverse when it is
   // transmissive AND has either scattering (σ_s) OR Beer-Lambert absorption
   // (σ_a from attenuationColor / a spectral-attenuation curve). The σ_a-only case

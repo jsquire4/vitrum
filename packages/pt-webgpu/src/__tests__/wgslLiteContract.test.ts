@@ -29,14 +29,17 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-09: H14-E — _padAuto0 renamed to environmentHdriIntensity (f32)
     // in the FrameParams struct; lite composes the same material.wgsl.ts.
     // Render-neutral for lite (lite never reads HDRI fields).
-    expect(digest).toBe('a8c9854c4af31f9d4efa74f8153f067e9dc3269e6ae88368c100902a02678ca5');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73844);
+    // Re-pinned 2026-06-09: H52 — clearcoat/sheen/iridescence lobes + MATERIAL_VEC4_STRIDE
+    // 23→26. Lite composes the same material.wgsl.ts and bsdf.wgsl.ts.
+    // Zero-default invariant: render-neutral for materials without these extension fields.
+    expect(digest).toBe('230602816caf398e32a3a8f018a4b7e938d4bd752265f3eb563ef3608e8f983e');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(90953);
   });
 });
 
 describe('pt-webgpu lite WGSL contract', () => {
   it('uses the reduced binding layout (no motion / TLAS / light buffers)', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 23u;'); // WS4: 22 → 23
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 26u;'); // H52: 23 → 26
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('motionVectorsTexture');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');

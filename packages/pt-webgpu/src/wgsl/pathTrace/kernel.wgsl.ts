@@ -393,7 +393,11 @@ ${transmissiveBlock}
           let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, lightDir));
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, lightDir);
+            // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
+            // zero-default → identical to evaluateBrdf when all scalars are 0.
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
             directLi = throughput * brdf * nDotL * params.lightDir.w * lightSelectInvPdf;
           }
@@ -421,7 +425,9 @@ ${transmissiveBlock}
           let pointShadowRay = Ray(hitPos + normal * 1e-3, wi);
           if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             // Ranged-decay falloff: pow(max(dist,1), -ptDecay). decay=0 → attenuation=1;
             // decay=2 → physical inverse-square (matches rad/dist2 at dist≥1).
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
@@ -462,7 +468,9 @@ ${transmissiveBlock}
               // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
-              let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+              let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
               directLi = throughput * brdf * nDotL * softness * srad * attenuation * lightSelectInvPdf;
             }
@@ -486,13 +494,17 @@ ${transmissiveBlock}
           let wi = toLight / dist;
           let nDotL = max(dot(normal, wi), 0.0);
           if (nDotL > 0.0) {
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
               let area = max(4.0 * length(cross(ru, rv)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+              let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
               // MIS balances the per-light AREA-sampling pdf against the BRDF pdf
               // (the engine's emissive-BRDF hit is added unweighted at line 183,
               // so the NEE MIS uses p_area ALONE — NOT p_select·p_area). The light
@@ -532,13 +544,17 @@ ${transmissiveBlock}
           let wi = toLight / dist;
           let nDotL = max(dot(normal, wi), 0.0);
           if (nDotL > 0.0) {
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             let lightNormal = safe_normalize(cross(b - a, c - a));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
               let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+              let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
               // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see
               // the rect-area branch. Keeps the converged mean independent of the
               // selection pdf (tree-vs-uniform means match), variance differs.
@@ -571,8 +587,12 @@ ${transmissiveBlock}
         if (nDotL > 1e-6) {
           let shadowRay = Ray(hitPos + normal * 1e-3, envDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
-            let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+            let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
             // rect-area branch. Mean stays independent of the selection pdf.
             let misWeight = powerHeuristic(envPdf, brdfPdf);
@@ -696,6 +716,10 @@ ${mediumStateUpdate}
     }
 
     if (sampleAllowsAreaMis) {
+      // H52: bsdfAreaLightConnectionContribution / bsdfEnvironmentConnectionContribution use
+      // the base evaluateBrdf/brdfDirectionalPdf (connect.wgsl.ts has no mat in scope).
+      // Add the extension lobe contribution here, on top, using the same nDotL/shadow logic.
+      // When all extension scalars are 0 the extra terms are 0 → zero-default invariant.
       radiance = radiance + bsdfAreaLightConnectionContribution(
         hitPos,
         normal,

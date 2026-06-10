@@ -256,8 +256,11 @@ describe('σ_a packing from attenuationColor / attenuationDistance', () => {
       scatteringCoefficient: 0.3,
     } as never);
     expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
-    // σ_a slot is the new vec4 appended at the END of the stride (4 floats).
-    const sigmaA = packed.slice(MATERIAL_FLOAT_STRIDE - 4, MATERIAL_FLOAT_STRIDE);
+    // σ_a is at vec4 #22 (float offset 88). H52 bumped the stride 23→26 by
+    // appending clearcoat/sheen/iridescence AFTER the σ_a vec4, so the σ_a
+    // offset is a fixed constant, not MATERIAL_FLOAT_STRIDE - 4.
+    const SIGMA_A_FLOAT_OFFSET = 22 * 4; // = 88
+    const sigmaA = packed.slice(SIGMA_A_FLOAT_OFFSET, SIGMA_A_FLOAT_OFFSET + 4);
     for (let c = 0; c < 3; c += 1) {
       const expected = -Math.log(Math.max(att[c] ?? 1, 1e-4)) / dist;
       expect(sigmaA[c] ?? NaN).toBeCloseTo(Math.max(expected, 0), 5);
@@ -272,7 +275,8 @@ describe('σ_a packing from attenuationColor / attenuationDistance', () => {
       metallic: 0,
     } as never);
     expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
-    const sigmaA = packed.slice(MATERIAL_FLOAT_STRIDE - 4, MATERIAL_FLOAT_STRIDE);
+    const SIGMA_A_FLOAT_OFFSET = 22 * 4; // = 88
+    const sigmaA = packed.slice(SIGMA_A_FLOAT_OFFSET, SIGMA_A_FLOAT_OFFSET + 4);
     expect(sigmaA).toEqual([0, 0, 0, 0]);
   });
 });
