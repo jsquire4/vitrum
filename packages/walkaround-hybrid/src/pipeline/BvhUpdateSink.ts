@@ -69,6 +69,7 @@ export interface BvhUpdateSink {
       | 'bvhIndex'
       | 'bvhBeerColors'
       | 'bvhEmissiveLe'
+      | 'bvhRoughMetal'
       | 'bvhNormals'
       | 'bvhPositions'
       | 'bvhMode'
@@ -93,6 +94,8 @@ export interface BvhUpdateSink {
     indexSlice: { byteOffset: number; data: ArrayBuffer },
     beerFull: { data: ArrayBuffer; triCount: number },
     emissiveFull: { data: ArrayBuffer; triCount: number },
+    /** B1 — FULL per-tri roughness+metalness re-upload (optional). */
+    roughMetalFull?: { data: ArrayBuffer; triCount: number },
   ): void;
 
   /**

@@ -104,6 +104,10 @@ export const SHADE_WGSL = /* wgsl */ `
 //   element[base+12] = cosOuter + pad×3 (0.0 for point = no cone)
 // arrayLength(&analytic_lights) / 16u gives the number of analytic lights.
 @group(1) @binding(13) var<storage, read> analytic_lights: array<vec4f>;
+// B1 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
+// into the real GGX roughness/metal that feed lo_direct / lo_analyticNEE and the
+// glossy/metal specular-indirect lobe (was hardcoded rough=0.85/0.05, metal=0).
+@group(1) @binding(14) var bvh_material: texture_2d<u32>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
 
@@ -241,7 +245,11 @@ fn lo_analyticNEE(
   isGlass:  bool,
   isMetal:  bool,
 ) -> vec3f {
-  if (isGlass || isMetal) { return vec3f(0.0); }
+  // B1 — metals now receive DIRECT light (the isMetal early-out is removed):
+  // evalGGX evaluates the GGX specular lobe with the real conductor F0
+  // (= baseColor when metal). Glass still skips here (its Lo_emit / refracted
+  // path drives it; refracted analytic NEE is out of scope this pass).
+  if (isGlass) { return vec3f(0.0); }
   // V28 H41-spot FIX (2026-06-09): the struct is 4×vec4f per entry (packer
   // ANALYTIC_LIGHT_STRIDE_FLOATS=16 floats = 4 vec4s). arrayLength on an
   // array<vec4f> returns the VEC4 count, so entry count = arrayLength/4 (was /16,
@@ -317,7 +325,12 @@ fn lo_direct(
   isMetal:  bool,
   rng:      ptr<function, u32>,
 ) -> vec3f {
-  if (isGlass || isMetal) { return vec3f(0.0); }
+  // B1 — metals now receive DIRECT light via the GGX specular lobe (real
+  // conductor F0 from baseColor). Only glass skips ReSTIR-DI here (the
+  // near-mirror chromatic-pollution rationale below); refracted DI is out of
+  // scope. The prior firefly-speckle rationale for skipping metals is addressed
+  // by the existing direct firefly clamp + the (now physically-tight) GGX lobe.
+  if (isGlass) { return vec3f(0.0); }
   let r = loadSpatialDI(pixelIdx);
   if (r.W <= 0.0 || r.M == 0u) { return vec3f(0.0); }
   let lid = r.lightId;
@@ -509,6 +522,61 @@ fn lo_indirect(
   return wRestirGi * Lo_indirect + wRc * Lo_rc;
 }
 
+// --- B1: Glossy/metal SPECULAR indirect (ReSTIR-GI sample × GGX specular lobe) -
+//
+// The ReSTIR-GI reservoir is a DIFFUSE-irradiance cache: its candidates are
+// cosine-hemisphere sampled and its target p̂ = luminance(Lo)·cosθ·INV_PI is the
+// Lambertian receiver response (unchanged by B1 — preserving GRIS reuse
+// correctness + the diffuse-default invariant). lo_indirect consumes that
+// demodulated-diffuse channel.
+//
+// For glossy/metal receivers the diffuse lobe is absent (metal) or minor
+// (glossy); their indirect is a SPECULAR reflection of the same reconnection
+// radiance Lo arriving from xs. This term evaluates the GGX specular lobe of the
+// receiver material against that stored sample (wi = normalize(xs − pos)) and
+// returns it as UN-demodulated radiance — so it joins the DIRECT channel (it is
+// NOT proportional to the diffuse albedo, so it must bypass indirectCombine's
+// albedo re-modulation; metals carry their reflectance tint in the specular F0).
+//
+// Consistency: this reuses the SAME reservoir sample (xs, Lo, W) that the
+// diffuse target selected — a deterministic BSDF re-weighting of a chosen
+// sample (the same pattern lo_emit / lo_emitterGlow use), NOT a second
+// estimator, so there is no p̂/consumption mismatch. Single nearest GI reservoir
+// (no bilinear blend) — the specular lobe is higher-frequency, so the half-res
+// blur of the diffuse path is undesirable here.
+//
+// Gate: fires only when metal > 0 OR roughness < SPEC_GI_ROUGH_MAX, so a
+// default-diffuse scene (rough 0.85, metal 0) gets EXACTLY zero specular
+// indirect — preserving the diffuse-default invariant byte-for-byte.
+const SPEC_GI_ROUGH_MAX: f32 = 0.6;
+fn lo_indirectSpecular(
+  gid:    vec2u,
+  dims:   vec2u,
+  pos:    vec3f,
+  normal: vec3f,
+  wo:     vec3f,
+  albedo: vec3f,
+  rough:  f32,
+  metal:  f32,
+  isGlass: bool,
+) -> vec3f {
+  if (isGlass) { return vec3f(0.0); }
+  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX) { return vec3f(0.0); }
+  let halfDims = dims / 2u;
+  let hx = min(gid.x / 2u, halfDims.x - 1u);
+  let hy = min(gid.y / 2u, halfDims.y - 1u);
+  let giIdx = hy * halfDims.x + hx;
+  let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+  if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
+  let toS = g.xs - pos;
+  let distS = length(toS);
+  if (distS <= 1e-4) { return vec3f(0.0); }
+  let wi = toS / distS;
+  // evalGGXSpecularOnly already includes the NdotL cosine + conductor F0.
+  let specBrdf = evalGGXSpecularOnly(albedo, rough, metal, normal, wo, wi);
+  return g.Lo * specBrdf * g.W;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
@@ -607,8 +675,15 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let albedo   = matColor.rgb;
-  let rough    = select(0.85, 0.05, isGlass);
-  let metal    = 0.0;
+  // B1 — real authored roughness/metalness from the per-tri bvh_material texture
+  // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
+  // invariant packs 0.85 for unspecified roughness / 0.05 for glass / metal 0,
+  // so a default-diffuse scene is numerically unchanged; authored glossy/metal
+  // surfaces now drive the GGX direct lobe + the specular-indirect term below.
+  let rmCoord  = vec2u(primaryHit.indices.w % BVH_MATERIAL_TEX_WIDTH, primaryHit.indices.w / BVH_MATERIAL_TEX_WIDTH);
+  let rm       = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
+  let rough    = rm.x;
+  let metal    = rm.y;
 
   // ── Per-term lighting composition ────────────────────────────────────────
   //
@@ -629,6 +704,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let Lo_sunCaustic = lo_sg_caustic(pix, pos, normal, albedo, isGlass, isMetal);
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
   let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, isMetal);
+  // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
+  // reservoir sample. UN-demodulated (joins the direct channel below); fires only
+  // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
+  let Lo_indirectSpec = lo_indirectSpecular(pix, dims, pos, normal, wo, albedo, rough, metal, isGlass);
 
   // Active terms (current pipeline state):
   //   Lo_emit         glass primary hit, deterministic per pixel
@@ -678,7 +757,13 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_emitterGlow (self-emission) joins Lo_emit OUTSIDE the AO term — emission
   // is not occluded by ambient occlusion.
   // H41 — Lo_analyticNEE is in the direct channel (same firefly-clamp tier as Lo_direct).
-  let directRadiance = Lo_emit + Lo_emitterGlow + (Lo_direct + Lo_analyticNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
+  // B1 — Lo_indirectSpec (glossy/metal specular reflection of GI) joins the
+  // UN-demodulated direct channel (it is not albedo-proportional, so it must
+  // bypass indirectCombine's albedo re-modulation). It is NOT AO-modulated:
+  // GTAO is a diffuse-occlusion term; specular reflections are not darkened by
+  // it. Zero for default-diffuse surfaces, so the diffuse-default invariant
+  // holds byte-for-byte (the term is identically vec3f(0) there).
+  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + (Lo_direct + Lo_analyticNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

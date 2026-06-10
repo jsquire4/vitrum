@@ -8,7 +8,15 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-export const MATERIAL_DECODE_WGSL = /* wgsl */ `// Decode RGB888 + (trans4|texType4) packed material data from bvhIndex[triIdx].w.
+export const MATERIAL_DECODE_WGSL = /* wgsl */ `// B1 — fixed texel width of the per-triangle bvh_material (roughness+metalness)
+// r32uint texture. Matches BVH_BEER_TEX_WIDTH in bvhBeerTexture.ts (the
+// roughMetal texture is uploaded via the SAME beer-texture helper / 4096 width),
+// so triIndex → vec2u(tri % W, tri / W) addresses identically. Declared here
+// (not surfaceTextures) so ris/risGi/cast — which do not require surfaceTextures
+// — can address bvh_material without pulling in the surface-texture module.
+const BVH_MATERIAL_TEX_WIDTH: u32 = 4096u;
+
+// Decode RGB888 + (trans4|texType4) packed material data from bvhIndex[triIdx].w.
 // Returns vec4f(r, g, b, transmission) in [0, 1].  The texture-type id is
 // retrieved separately via decodeSurfaceTextureId.
 fn decodeMaterialColor(packed: u32) -> vec4f {
@@ -35,6 +43,18 @@ fn decodeSurfaceTextureId(packed: u32) -> u32 {
 // can't smooth across the thin came strips.
 fn decodeIsMetal(packed: u32) -> bool {
   return ((packed >> 3u) & 0x1u) != 0u;
+}
+
+// B1 (road-to-100) — decode per-triangle roughness+metalness from the packed
+// bvh_material u32 (one u32 per triangle): bits[31:24]=rough×255,
+// bits[23:16]=metal×255. Returns vec2f(roughness, metalness) in [0,1]. The
+// caller textureLoads bvh_material at the triangle's texel (same addressing as
+// bvh_beer) and passes the .r value here. See packingHelpers.packBVHRoughMetal
+// for the DIFFUSE-DEFAULT INVARIANT (no authored roughness → 0.85; glass → 0.05).
+fn decodeRoughMetal(packed: u32) -> vec2f {
+  let rough = f32((packed >> 24u) & 0xFFu) / 255.0;
+  let metal = f32((packed >> 16u) & 0xFFu) / 255.0;
+  return vec2f(rough, metal);
 }
 
 `;

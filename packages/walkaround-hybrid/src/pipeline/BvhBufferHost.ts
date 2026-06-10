@@ -36,6 +36,10 @@ export interface SceneBindGroupResources {
   /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
    *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
   bvhEmissiveTextureView: GPUTextureView;
+  /** B1 — per-tri roughness+metalness, r32uint texture (binding 14). The
+   *  ReSTIR/shade GGX BRDF + glossy/metal GI target read it via
+   *  `decodeRoughMetal(triIndex)`. Same r32uint layout as `bvhBeer`. */
+  bvhRoughMetalTextureView: GPUTextureView;
   /** WS1 — per-vertex world-space normals (stride-4 vec4f). Barycentric-blended
    *  in the primary passes for a smooth shading normal. */
   bvhNormalBuffer: GPUBuffer;
@@ -63,6 +67,10 @@ export class BvhBufferHost {
   /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture. */
   private _bvhEmissiveTexture: EmissiveTexture | null = null;
   private _bvhEmissiveTriCount = 0;
+  /** B1 — per-tri roughness+metalness, r32uint texture (reuses BeerTexture
+   *  helpers; identical r32uint/one-u32-per-triangle layout). */
+  private _bvhRoughMetalTexture: BeerTexture | null = null;
+  private _bvhRoughMetalTriCount = 0;
   /** WS1 — per-vertex world-space normals for the smooth shading-normal blend. */
   private _bvhNormalBuffer: GPUBuffer | null = null;
   private _bvhPositionBuffer: GPUBuffer | null = null;
@@ -111,6 +119,10 @@ export class BvhBufferHost {
       device,
       new Float32Array(bvhBuffers.bvhEmissiveLe.cpuData),
       this._bvhEmissiveTriCount);
+    // B1 — per-tri roughness+metalness r32uint texture (same helper as beer).
+    this._bvhRoughMetalTriCount = bvhBuffers.bvhRoughMetal.count;
+    this._bvhRoughMetalTexture = uploadBeerTexture(
+      device, bvhBuffers.bvhRoughMetal.cpuData, this._bvhRoughMetalTriCount);
     // WS1 — per-vertex world-space normals (stride-4 vec4f, .w unused). Same
     // data the DDGI / emitter paths already use (shared.normals).
     this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
@@ -173,6 +185,7 @@ export class BvhBufferHost {
       emitterCdfBuffer: this._emitterCdfBuffer!,
       bvhBeerTextureView: this._resourceCache.textureView(this._bvhBeerTexture!.texture),
       bvhEmissiveTextureView: this._resourceCache.textureView(this._bvhEmissiveTexture!.texture),
+      bvhRoughMetalTextureView: this._resourceCache.textureView(this._bvhRoughMetalTexture!.texture),
       bvhNormalBuffer: this._bvhNormalBuffer!,
       tlasNodesBuffer: this._tlasNodesBuffer!,
       tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer!,
@@ -216,6 +229,14 @@ export class BvhBufferHost {
         height: this._bvhEmissiveTexture.height,
         depthOrArrayLayers: 1,
         format: 'rgba32float' as GPUTextureFormat,
+      };
+    }
+    if (this._bvhRoughMetalTexture != null) {
+      section.bvhRoughMetalTexture = {
+        width: this._bvhRoughMetalTexture.width,
+        height: this._bvhRoughMetalTexture.height,
+        depthOrArrayLayers: 1,
+        format: 'r32uint' as GPUTextureFormat,
       };
     }
 
@@ -300,19 +321,26 @@ export class BvhBufferHost {
      *  wholesale rationale as beer; a triangle slice is not a rectangular
      *  texture region). */
     emissiveFull: { data: ArrayBuffer; triCount: number },
+    /** B1 — FULL per-tri roughness+metalness re-upload (same wholesale
+     *  rationale as beer/emissive). Optional so legacy callers stay valid. */
+    roughMetalFull?: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this.initialized) return;
     device.queue.writeBuffer(this._bvhIndexBuffer!, indexSlice.byteOffset, indexSlice.data);
     refreshBeerTexture(device, this._bvhBeerTexture!, beerFull.data, beerFull.triCount);
     refreshEmissiveTexture(
       device, this._bvhEmissiveTexture!, new Float32Array(emissiveFull.data), emissiveFull.triCount);
+    if (roughMetalFull && this._bvhRoughMetalTexture) {
+      refreshBeerTexture(
+        device, this._bvhRoughMetalTexture, roughMetalFull.data, roughMetalFull.triCount);
+    }
   }
 
   refreshBvhFullRebuild(
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this.initialized) return;
@@ -320,6 +348,7 @@ export class BvhBufferHost {
     this._bvhIndexBuffer!.destroy();
     this._bvhBeerTexture!.texture.destroy();
     this._bvhEmissiveTexture!.texture.destroy();
+    this._bvhRoughMetalTexture?.texture.destroy();
     this._bvhNormalBuffer!.destroy();
     this._bvhPositionBuffer!.destroy();
     this._destroyTlasBuffers();
@@ -328,6 +357,9 @@ export class BvhBufferHost {
     this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
     this._bvhBeerTexture = uploadBeerTexture(
       device, bvhBuffers.bvhBeerColors.cpuData, this._bvhBeerTriCount);
+    this._bvhRoughMetalTriCount = bvhBuffers.bvhRoughMetal.count;
+    this._bvhRoughMetalTexture = uploadBeerTexture(
+      device, bvhBuffers.bvhRoughMetal.cpuData, this._bvhRoughMetalTriCount);
     this._bvhEmissiveTriCount = bvhBuffers.bvhEmissiveLe.count;
     this._bvhEmissiveTexture = uploadEmissiveTexture(
       device, new Float32Array(bvhBuffers.bvhEmissiveLe.cpuData), this._bvhEmissiveTriCount);
@@ -341,6 +373,7 @@ export class BvhBufferHost {
     this._bvhIndexBuffer?.destroy();
     this._bvhBeerTexture?.texture.destroy();
     this._bvhEmissiveTexture?.texture.destroy();
+    this._bvhRoughMetalTexture?.texture.destroy();
     this._bvhNormalBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
     this._destroyTlasBuffers();
@@ -352,6 +385,7 @@ export class BvhBufferHost {
     this._bvhIndexBuffer = null;
     this._bvhBeerTexture = null;
     this._bvhEmissiveTexture = null;
+    this._bvhRoughMetalTexture = null;
     this._bvhNormalBuffer = null;
     this._bvhPositionBuffer = null;
     this._emitterBuffer = null;

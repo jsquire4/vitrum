@@ -302,6 +302,13 @@ interface PPGFrameResources {
   dTreeOffsetsBuf?: GPUBuffer;
   /** Atomic u32 accumulator — one slot per dTree node (matches dTreeBuf layout). */
   fluxAtomicsBuf?: GPUBuffer;
+  /**
+   * A2 — per-spatial-cell training-sample counter (one atomic u32 per sTree
+   * leaf cell, indexed by `dTreeIndex`). The update kernel increments this once
+   * per accepted training record; the coordinator reads it back each window and
+   * feeds `splitOverflowLeaves(sTree, counts)` so high-traffic cells subdivide.
+   */
+  cellSampleCountsBuf?: GPUBuffer;
   /** Update kernel UBO. */
   updateUboBuffer?: GPUBuffer;
 }
@@ -565,6 +572,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ppg.dTreeBuf?.destroy();
   r.ppg.dTreeOffsetsBuf?.destroy();
   r.ppg.fluxAtomicsBuf?.destroy();
+  r.ppg.cellSampleCountsBuf?.destroy();
   r.ppg.updateUboBuffer?.destroy();
   // neural — empty placeholder; nothing to destroy until W10.
 }
@@ -643,6 +651,12 @@ export function allocatePPGResources(
   res.ppg.fluxAtomicsBuf = device.createBuffer({
     label: 'ppg-fluxAtomics',
     size: Math.max(16, fluxAtomicsCount * 4),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  // A2 — per-spatial-cell sample counter: one atomic u32 per spatial cell.
+  res.ppg.cellSampleCountsBuf = device.createBuffer({
+    label: 'ppg-cellSampleCounts',
+    size: Math.max(16, maxSpatialCells * 4),
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
   res.ppg.updateUboBuffer = device.createBuffer({

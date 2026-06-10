@@ -17,10 +17,10 @@
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
-import { buildSTree, resetAccumulators, splitOverflowLeaves } from '../ppg/sTree.js';
+import { buildSTree, splitOverflowLeaves } from '../ppg/sTree.js';
 import { refineDTree } from '../ppg/dTree.js';
 import { serialiseSTree } from '../ppg/serialise.js';
-import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
+import { PPG_MIS_ALPHA, PPG_FLUX_DECAY } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
 import { allocatePPGResources, type FrameResources } from './resourceManager.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
@@ -58,6 +58,8 @@ export class PPGCoordinator implements PipelineSubsystem {
    *  BVH bounds at initialize() time. */
   private _sceneAABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
   private _fluxReadbackBuffer: GPUBuffer | null = null;
+  /** A2 — staging buffer for the per-cell sample counts read back alongside flux. */
+  private _cellCountReadbackBuffer: GPUBuffer | null = null;
   private _fluxReadbackInFlight = false;
   private _lastFluxReadbackFrame = -1;
   /**
@@ -166,7 +168,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     if (!this._enabled || this._sTree == null) return;
     const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
     const offsetsBuf = frameResources.ppg.dTreeOffsetsBuf;
-    if (!fluxAtomicsBuf || !offsetsBuf) return;
+    const cellCountsBuf = frameResources.ppg.cellSampleCountsBuf;
+    if (!fluxAtomicsBuf || !offsetsBuf || !cellCountsBuf) return;
     if (this._fluxReadbackInFlight) return;
     if (this._lastFluxReadbackFrame >= 0
       && frameCount - this._lastFluxReadbackFrame < intervalFrames) {
@@ -194,6 +197,13 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._lastFluxReadbackFrame = frameCount;
     this._fluxReadbackInFlight = true;
 
+    // A2 — the per-cell sample counter holds one u32 per spatial cell. Read back
+    // the same active prefix (activeCells cells).
+    const cellCountBytes = Math.min(
+      cellCountsBuf.size,
+      Math.max(4, activeCells * 4),
+    );
+
     // The readback staging buffer only needs to hold the active prefix. Grow
     // it on demand (it never shrinks within a session, which keeps it stable
     // as the sTree subdivides across training windows).
@@ -205,20 +215,34 @@ export class PPGCoordinator implements PipelineSubsystem {
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       });
     }
+    if (this._cellCountReadbackBuffer == null || this._cellCountReadbackBuffer.size < cellCountBytes) {
+      this._cellCountReadbackBuffer?.destroy();
+      this._cellCountReadbackBuffer = this._device.createBuffer({
+        label: 'ppg-cellcount-readback',
+        size: cellCountBytes,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
 
     const enc = this._device.createCommandEncoder({ label: 'ppg-flux-readback-copy' });
     enc.copyBufferToBuffer(fluxAtomicsBuf, 0, this._fluxReadbackBuffer, 0, activeBytes);
+    enc.copyBufferToBuffer(cellCountsBuf, 0, this._cellCountReadbackBuffer, 0, cellCountBytes);
     this._device.queue.submit([enc.finish()]);
 
     void this._device.queue.onSubmittedWorkDone()
       .then(async () => {
-        if (this._fluxReadbackBuffer == null || this._sTree == null) return;
+        if (this._fluxReadbackBuffer == null || this._cellCountReadbackBuffer == null
+          || this._sTree == null) return;
         await this._fluxReadbackBuffer.mapAsync(GPUMapMode.READ, 0, activeBytes);
         const mapped = this._fluxReadbackBuffer.getMappedRange(0, activeBytes);
         const raw = new Uint32Array(mapped.slice(0));
         this._fluxReadbackBuffer.unmap();
+        await this._cellCountReadbackBuffer.mapAsync(GPUMapMode.READ, 0, cellCountBytes);
+        const cellMapped = this._cellCountReadbackBuffer.getMappedRange(0, cellCountBytes);
+        const cellCounts = new Uint32Array(cellMapped.slice(0));
+        this._cellCountReadbackBuffer.unmap();
         this._mergeFluxAndRefine(
-          raw, frameResources, maxSpatialCells, maxDTreeNodesPerCell,
+          raw, cellCounts, frameResources, maxSpatialCells, maxDTreeNodesPerCell,
         );
       })
       .catch((err) => {
@@ -236,6 +260,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._lastFluxReadbackFrame = -1;
     this._fluxReadbackBuffer?.destroy();
     this._fluxReadbackBuffer = null;
+    this._cellCountReadbackBuffer?.destroy();
+    this._cellCountReadbackBuffer = null;
     this._fluxZeroScratch = null;
   }
 
@@ -285,9 +311,10 @@ export class PPGCoordinator implements PipelineSubsystem {
 
   /**
    * W9 — Pack and upload the update-kernel UBO. Layout (16 bytes):
-   *   [0] sampleCount  (u32) — half-res ReSTIR-GI reservoir entries
-   *   [1] fluxBudget   (u32) — total atomic slots
-   *   [2..3] padding
+   *   [0] sampleCount       (u32) — half-res ReSTIR-GI reservoir entries
+   *   [1] fluxBudget        (u32) — total flux atomic slots
+   *   [2] sampleCountBudget (u32) — A2: cell-sample-counter slots (= maxSpatialCells)
+   *   [3] padding
    */
   private _writeUpdateUBO(
     frameResources: FrameResources,
@@ -299,13 +326,15 @@ export class PPGCoordinator implements PipelineSubsystem {
     if (!buf) return;
     const fluxAtomics = frameResources.ppg.fluxAtomicsBuf;
     const fluxBudget = fluxAtomics ? Math.floor(fluxAtomics.size / 4) : 0;
+    const cellCounts = frameResources.ppg.cellSampleCountsBuf;
+    const sampleCountBudget = cellCounts ? Math.floor(cellCounts.size / 4) : 0;
     const halfW = Math.max(1, Math.floor(width / 2));
     const halfH = Math.max(1, Math.floor(height / 2));
     const data = new ArrayBuffer(16);
     const u32 = new Uint32Array(data);
     u32[0] = halfW * halfH;
     u32[1] = fluxBudget;
-    u32[2] = 0;
+    u32[2] = sampleCountBudget;
     u32[3] = 0;
     this._device.queue.writeBuffer(buf, 0, data);
   }
@@ -317,12 +346,16 @@ export class PPGCoordinator implements PipelineSubsystem {
    * @param rawFlux              The active-prefix slice copied back from the
    *                             GPU (length = activeCells × maxDTreeNodesPerCell,
    *                             possibly shorter than the full GPU buffer).
+   * @param cellCounts           A2 — per-spatial-cell sample counts (one u32 per
+   *                             cell, indexed by dTreeIndex) read back this window;
+   *                             drives `splitOverflowLeaves`.
    * @param maxSpatialCells      Cell capacity of the GPU buffers (= offsets /4).
    * @param maxDTreeNodesPerCell Per-cell slot stride baked into the buffers and
    *                             the update kernel (MAX_DTREE_NODES_PER_CELL).
    */
   private _mergeFluxAndRefine(
     rawFlux: Uint32Array,
+    cellCounts: Uint32Array,
     frameResources: FrameResources,
     maxSpatialCells: number,
     maxDTreeNodesPerCell: number,
@@ -330,14 +363,23 @@ export class PPGCoordinator implements PipelineSubsystem {
     const sTree = this._sTree;
     if (!sTree) return;
     const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
-    if (!fluxAtomicsBuf) return;
+    const cellCountsBuf = frameResources.ppg.cellSampleCountsBuf;
+    if (!fluxAtomicsBuf || !cellCountsBuf) return;
 
     const activeCells = Math.min(sTree.dTrees.length, maxSpatialCells);
+    // RUNAWAY FIX — Müller §5 per-window decay of the persistent flux
+    // accumulator. The GPU buffer is zeroed each window (below), so `rawFlux`
+    // is THIS window's fresh deposits. We combine it with the decayed carry-over
+    // already stored on each CPU dTree node: `flux ← decay·prevFlux + fresh`.
+    // Under steady input this converges to the bounded geometric steady state
+    // F/(1−decay) instead of growing without bound (the filed runaway is the
+    // decay=1 / no-reset regime). decay=0 reproduces the historical full reset.
+    const decay = PPG_FLUX_DECAY;
 
     for (let dTreeIdx = 0; dTreeIdx < activeCells; dTreeIdx++) {
       const dTree = sTree.dTrees[dTreeIdx]!;
 
-      // ── Step 1: assign leaf flux from GPU readback ────────────────────────
+      // ── Step 1: combine fresh GPU readback with decayed carry-over ─────────
       // Interior nodes in the GPU atomic buffer are never written (the update
       // kernel descends to a leaf, then atomicAdd to that leaf's slot). So we
       // only set flux for leaf nodes here; interior node flux will be computed
@@ -348,10 +390,13 @@ export class PPGCoordinator implements PipelineSubsystem {
         const slot = dTreeIdx * maxDTreeNodesPerCell + nodeIdx;
         const node = dTree.nodes[nodeIdx]!;
         // `rawFlux` only spans the active prefix; slots within it are dense.
-        const flux = (rawFlux[slot] ?? 0) / PPGCoordinator._FLUX_SCALE;
+        const fresh = (rawFlux[slot] ?? 0) / PPGCoordinator._FLUX_SCALE;
         if (node.isLeaf) {
-          node.flux = flux;
-          totalFlux += flux;
+          // Decay the retained leaf flux (temporal prior), add this window's
+          // fresh deposit. (A freshly-split child carries its parent's already
+          // -merged flux as the prior, so the inherited distribution is kept.)
+          node.flux = decay * node.flux + fresh;
+          totalFlux += node.flux;
         } else {
           // Interior node: zero out first; the propagation pass fills it.
           node.flux = 0;
@@ -404,10 +449,25 @@ export class PPGCoordinator implements PipelineSubsystem {
     // the allocation — `_uploadTree`'s writeBuffer would throw or silently
     // truncate the live tree. Passing the real cap keeps the CPU model and
     // the GPU buffers in lockstep.
-    splitOverflowLeaves(sTree, undefined, maxSpatialCells);
+    //
+    // A2 — the split decision now reads the GPU per-cell sample counts (the
+    // CPU-side node.sampleCount is never written on this path). On a split, the
+    // child cells inherit a CLONE of the parent's (decayed-and-merged) dTree as
+    // their directional prior (Müller §3.1 — handled inside splitOverflowLeaves).
+    splitOverflowLeaves(sTree, undefined, maxSpatialCells, cellCounts);
 
     this._uploadTree(frameResources);
-    resetAccumulators(sTree);
+    // Clear ONLY the sTree leaf sampleCounts (the CPU split path is unused; the
+    // GPU counter is the source). The dTree flux is the retained temporal prior
+    // and is DELIBERATELY NOT zeroed here — decay was already folded into Step 1.
+    for (const node of sTree.nodes) {
+      if (node.splitAxis === -1) node.sampleCount = 0;
+    }
+
+    // The cell set may have GROWN during splitOverflowLeaves; clear the GPU
+    // accumulators for the POST-split active prefix so the new child cells'
+    // slots start clean for the next window.
+    const postSplitActiveCells = Math.min(sTree.dTrees.length, maxSpatialCells);
 
     // Reset GPU flux accumulators for the next training window. Only the
     // active prefix was ever written (every other slot is still zero), so we
@@ -415,10 +475,17 @@ export class PPGCoordinator implements PipelineSubsystem {
     // instead of allocating a fresh multi-MB zero array each window.
     const clearU32 = Math.min(
       Math.floor(fluxAtomicsBuf.size / 4),
-      Math.max(1, activeCells * maxDTreeNodesPerCell),
+      Math.max(1, postSplitActiveCells * maxDTreeNodesPerCell),
     );
-    if (this._fluxZeroScratch == null || this._fluxZeroScratch.length < clearU32) {
-      this._fluxZeroScratch = new Uint32Array(clearU32);
+    // A2 — also clear the per-cell sample-count buffer (one u32 per cell) so the
+    // next window's split decision is based only on the next window's traffic.
+    const clearCellU32 = Math.min(
+      Math.floor(cellCountsBuf.size / 4),
+      Math.max(1, postSplitActiveCells),
+    );
+    const scratchNeeded = Math.max(clearU32, clearCellU32);
+    if (this._fluxZeroScratch == null || this._fluxZeroScratch.length < scratchNeeded) {
+      this._fluxZeroScratch = new Uint32Array(scratchNeeded);
     } else {
       // Grown-but-reused scratch may carry stale zeros only (we never write
       // non-zero into it), so no fill is needed; it is allocated zeroed and
@@ -430,6 +497,13 @@ export class PPGCoordinator implements PipelineSubsystem {
       this._fluxZeroScratch.buffer,
       this._fluxZeroScratch.byteOffset,
       clearU32 * 4,
+    );
+    this._device.queue.writeBuffer(
+      cellCountsBuf,
+      0,
+      this._fluxZeroScratch.buffer,
+      this._fluxZeroScratch.byteOffset,
+      clearCellU32 * 4,
     );
   }
 }

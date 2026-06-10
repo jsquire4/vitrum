@@ -35,6 +35,11 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const RESTIR_CAST_PRIMARY_WGSL = /* wgsl */ `
 
+// B1 — per-triangle roughness+metalness (r32uint texture). Decoded into the
+// PrimarySurface rough/metal so temporal+spatial DI reuse evaluate the GGX p̂
+// with the real authored material (was hardcoded rough=0.85/0.05, metal=0).
+@group(1) @binding(14) var bvh_material: texture_2d<u32>;
+
 // ============================================================
 // Canonical primary-surface cast used by temporal + spatial.
 //   Generates a primary ray for (px, dims) through (camPos, invVP),
@@ -71,10 +76,14 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   );
   s.wo     = -ray.direction;
   let matColor = decodeMaterialColor(hit.matColorPacked);
-  let isGlass  = matColor.a > 0.3;
   s.albedo = matColor.rgb;
-  s.rough  = select(0.85, 0.05, isGlass);
-  s.metal  = 0.0;
+  // B1 — real authored roughness/metalness from the per-tri bvh_material texture
+  // (was hardcoded select(0.85,0.05,isGlass) / metal 0). The diffuse-default
+  // invariant keeps default-diffuse surfaces at 0.85 / glass at 0.05.
+  let rmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
+  let rm = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
+  s.rough  = rm.x;
+  s.metal  = rm.y;
   s.depth  = hit.dist;
   return s;
 }

@@ -123,6 +123,8 @@ interface SceneBindGroupResources {
   /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
    *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
   bvhEmissiveTextureView: GPUTextureView;
+  /** B1 — per-tri roughness+metalness, r32uint texture (binding 14). */
+  bvhRoughMetalTextureView: GPUTextureView;
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -152,6 +154,7 @@ export function buildSceneBindGroup(
     { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
     { buffer: r.analyticLightsBuffer },             // 13 H41 analytic point/spot lights for shade NEE
+    r.bvhRoughMetalTextureView,                     // 14 B1 per-tri roughness+metalness (r32uint texture)
   ]);
 }
 
@@ -634,13 +637,16 @@ export interface PpgUpdateBindGroupResources {
   sTreeBuf: GPUBuffer;
   dTreeBuf: GPUBuffer;
   dTreeOffsetsBuf: GPUBuffer;
+  /** A2 — per-spatial-cell sample counter (binding 5). */
+  cellSampleCountsBuf: GPUBuffer;
   updateUboBuffer: GPUBuffer;
 }
 
 /**
  * Build the two auto-layout bind groups for the PPG update kernel
  * (ppgUpdate.wgsl.ts):
- *   group(0): reservoirGiCurrent / fluxAtomics / sTree / dTree / dTreeOffsets
+ *   group(0): reservoirGiCurrent / fluxAtomics / sTree / dTree / dTreeOffsets /
+ *            cellSampleCounts
  *   group(1): updateUbo
  */
 export function buildPpgUpdateBindGroups(
@@ -657,6 +663,7 @@ export function buildPpgUpdateBindGroups(
       { binding: 2, resource: { buffer: r.sTreeBuf } },
       { binding: 3, resource: { buffer: r.dTreeBuf } },
       { binding: 4, resource: { buffer: r.dTreeOffsetsBuf } },
+      { binding: 5, resource: { buffer: r.cellSampleCountsBuf } },
     ],
   });
   const bg1 = device.createBindGroup({

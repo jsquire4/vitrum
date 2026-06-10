@@ -260,18 +260,29 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
 // Returns a per-channel visibility multiplier from origin along sunDir:
 //   - Unobstructed     -> vec3f(1.0)
 //   - Hit opaque       -> vec3f(0.0)
-//   - Hit glass        -> tint * transmission, then continue past the slab
-//                        and recurse (bounded to 3 glass crossings).
+//   - Hit glass        -> Beer-Lambert transmittance, then continue past the
+//                        slab and recurse (bounded to 3 glass crossings).
 //
-// Linear-tint glass attenuation (NOT Beer-Lambert): this kernel applies
-// visibility *= attenuationColor * transmission per glass slab — no
-// exponential, no thickness. The canonical MaterialEntry now carries
-// thickness and attenuationDistance (W2-C5), so a future revision can
-// promote this to full Beer-Lambert exp(-attenColor * thickness /
-// attenDist) (matching probeRayCast.wgsl in @vitrum/walkaround-rc)
-// without changing the buffer layout. Earlier comments labelled this
-// "Beer-Lambert simplification" — the linear formulation does NOT
-// reduce to Beer-Lambert in any limit, so the label was misleading.
+// Beer-Lambert glass attenuation (B5, 2026-06-10). Per glass slab:
+//   visibility *= transmission · exp(-attenuationColor · (t / attenuationDistance))
+// where attenuationColor is the per-channel absorption coefficient σ and the
+// dimensionless optical-depth ratio t/attenuationDistance is the path length in
+// units of the medium e-fold (mean-free) distance — matching the canonical
+// probeRayCast.wgsl in @vitrum/walkaround-rc (which uses the material thickness
+// scalar). HERE we have the actual continuation ray, so we use the TRUE
+// geometric path length through the slab: t = (entry->exit) distance found by
+// continuing the ray inside the medium to its next surface, clamped to the
+// material thickness as an upper bound so a probe ray that grazes a thin
+// pane or misses the far face (open/non-watertight glass) cannot accumulate an
+// unbounded optical depth. This is the documented path-length approximation:
+//   t = clamp(distToExit, 0, thickness)   [exit = next hit along sunDir]
+// Limits: σ→0 OR t→0  ⇒ exp(0)=1 (clear glass passes transmission only);
+//         σ→∞ OR t→∞  ⇒ exp(-∞)=0 (opaque). Reduces to Beer-Lambert exactly.
+// The previous linear-tint form (visibility *= attenuationColor · transmission)
+// did NOT reduce to Beer-Lambert in any limit (no exponential, no thickness).
+//
+// MaterialEntry carries attenuationColor / attenuationDistance / thickness
+// (W2-C5) so no buffer-layout change is needed.
 fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;
@@ -293,9 +304,21 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
       // Opaque occluder — sun is fully blocked.
       return vec3f(0.0);
     }
-    // Glass slab — apply per-cell tint, then continue past the slab.
-    visibility = visibility * sMat.attenuationColor * sMat.transmission;
-    let hitPos = rayOrigin + sunDir * sHit.dist;
+    // Glass slab — Beer-Lambert transmittance over the geometric path length.
+    // Find the exit point by intersecting the continuation ray just past the
+    // entry face; distToExit is the in-medium path length. Clamp to thickness
+    // (upper bound — guards open/non-watertight glass where the ray would exit
+    // far away or miss the far face entirely).
+    let entryPos  = rayOrigin + sunDir * sHit.dist;
+    var exitRay: Ray;
+    exitRay.origin    = entryPos + sunDir * (gridParams.spacing * 1e-4);
+    exitRay.direction = sunDir;
+    let exitHit  = bvhTraceFirstHit(exitRay);
+    let distToExit = select(sMat.thickness, exitHit.dist, exitHit.didHit && exitHit.dist < 1e15);
+    let pathLen  = clamp(distToExit, 0.0, max(sMat.thickness, 1e-4));
+    let beerAtten = exp(-sMat.attenuationColor * (pathLen / max(1e-4, sMat.attenuationDistance)));
+    visibility = visibility * sMat.transmission * beerAtten;
+    let hitPos = entryPos;
     // M14: step past the slab by 1% of probe spacing so the offset is
     // proportional to scene scale (replacing the Cornell-specific 0.5 units).
     // For Cornell spacing ~0.17 → step 0.0017; for a 100-unit building →

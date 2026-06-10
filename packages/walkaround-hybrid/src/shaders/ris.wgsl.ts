@@ -48,6 +48,10 @@ export const RIS_WGSL = /* wgsl */ `
 // kept for the shadow-ray offset. (Beer texture binding 5 is shade-only — ris
 // declares a subset of the scene BGL; WGSL permits that.)
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// B1 — per-triangle roughness+metalness (r32uint texture). Decoded into the
+// real GGX roughness/metal that feed evalGGX in the candidate p̂ (was hardcoded
+// rough=0.85/0.05, metal=0).
+@group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 // Group 2: uniform buffer (WalkaroundUBO struct defined in COMMON_WGSL)
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -160,8 +164,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let isGlass   = matColor.a > 0.3;  // transmission > ~76/255
   // Use the actual BVH-baked material color for all surfaces.
   let albedo    = matColor.rgb;
-  let roughness = select(0.85, 0.05, isGlass);
-  let metalness = 0.0;
+  // B1 — real authored roughness/metalness from the per-tri bvh_material texture
+  // (was hardcoded). The diffuse-default invariant packs 0.85 for unspecified
+  // roughness / 0.05 for glass, so default-diffuse scenes are numerically
+  // unchanged; authored glossy/metal surfaces now drive the GGX candidate p̂.
+  let rmCoord   = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
+  let rm        = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
+  let roughness = rm.x;
+  let metalness = rm.y;
 
   var r = emptyReservoirDI();
   let totalPower = max(ubo.totalEmPower, 1e-8);

@@ -62,6 +62,28 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
   return (diffuse + specular) * NdotL;
 }
 
+// B1 (road-to-100) — GGX SPECULAR lobe ONLY (no diffuse term), full energy
+// including NdotL and the metal/dielectric Fresnel F0. Used by the glossy/metal
+// GI path: the diffuse-indirect channel stays albedo-demodulated (Schied 2017),
+// so the specular lobe is evaluated separately here and added to the
+// UN-demodulated direct channel (it is NOT proportional to the diffuse albedo,
+// so it must bypass the indirectCombine albedo re-modulation). F0 = mix(0.04,
+// albedo, metal) — conductor reflectance tint comes from baseColor when metal.
+fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let h = safe_normalize(wo + wi);
+  let NdotL = max(0.0, dot(n, wi));
+  let NdotV = max(1e-4, dot(n, wo));
+  let NdotH = max(0.0, dot(n, h));
+  let VdotH = max(0.0, dot(wo, h));
+  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let F0 = mix(vec3f(0.04), albedo, metal);
+  let F  = fresnelSchlick(VdotH, F0);
+  let D  = distributionGGX(NdotH, max(0.01, rough));
+  let G  = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  let specular = (D * G * F) / (4.0 * NdotV * NdotL);
+  return specular * NdotL;
+}
+
 `;
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */

@@ -157,6 +157,66 @@ export function packBVHIndexWTri(
   indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// B1 — per-triangle roughness + metalness lane.
+//
+// The bvhIndex.w payload (RGBA8 baseColor | trans4 | isMetal1 | texId3) is full;
+// authored roughness/metalness never reached the BRDF (shade hardcoded
+// rough = select(0.85, 0.05, isGlass), metal = 0). B1 (road-to-100) needs the
+// real per-triangle values so the GGX BRDF in lo_direct / lo_analyticNEE and the
+// glossy/metal GI target are physically driven.
+//
+// Layout: one u32 per triangle (parallel to bvh_beer / bvh_emissive, same texel
+// addressing). bits[31:24] = roughness×255, bits[23:16] = metalness×255. The
+// low 16 bits are reserved (zero) for a future anisotropy/clearcoat lane.
+//
+// DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
+// ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
+// before B1 — so a default-roughness diffuse scene (metal 0) is numerically
+// unchanged. Glass (transmission > 0.5) packs 0.05 to match the prior glass
+// hardcode. Metalness 0 default.
+const ROUGH_DEFAULT = 0.85;
+const ROUGH_GLASS = 0.05;
+
+function packRoughMetalByte(roughness: number, metalness: number): number {
+  const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
+  const m8 = Math.min(255, Math.max(0, Math.round(metalness * 255))) & 0xFF;
+  return ((r8 << 24) | (m8 << 16)) >>> 0;
+}
+
+/** Resolve a triangle's (roughness, metalness) for packing, applying the B1
+ *  diffuse-default invariant (no authored roughness → 0.85; glass → 0.05). */
+function resolveRoughMetal(
+  roughness: number | undefined,
+  metalness: number | undefined,
+  transmission: number | undefined,
+): { rough: number; metal: number } {
+  const isGlass = (transmission ?? 0) > 0.5;
+  let rough: number;
+  if (roughness === undefined || !Number.isFinite(roughness)) {
+    rough = isGlass ? ROUGH_GLASS : ROUGH_DEFAULT;
+  } else {
+    rough = Math.min(1, Math.max(0, roughness));
+  }
+  const metal = Math.min(1, Math.max(0, metalness ?? 0));
+  return { rough, metal };
+}
+
+/** Pack one triangle's roughness+metalness into a parallel u32 buffer. */
+export function packBVHRoughMetalTri(
+  rmBuf: Uint32Array,
+  triMaterialId: Uint32Array,
+  materials: readonly PbrMaterialLike[],
+  tri: number,
+): void {
+  const matId = triMaterialId[tri]!;
+  const mat = materials[matId];
+  const rm = mat
+    ? resolveRoughMetal(mat.roughness, mat.metalness, mat.transmission)
+    : { rough: ROUGH_DEFAULT, metal: 0 };
+  rmBuf[tri] = packRoughMetalByte(rm.rough, rm.metal);
+}
+
 /** Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer. */
 export function packBVHBeerColorTri(
   beerBuf: Uint32Array,
@@ -188,11 +248,13 @@ export function repackBVHMaterialRange(
   materials: readonly PbrMaterialLike[],
   triStart: number,
   triCount: number,
+  rmBuf?: Uint32Array,
 ): void {
   const triEnd = triStart + triCount;
   for (let t = triStart; t < triEnd; t++) {
     packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
     packBVHBeerColorTri(beerBuf, triMaterialId, materials, t);
+    if (rmBuf) packBVHRoughMetalTri(rmBuf, triMaterialId, materials, t);
   }
 }
 
@@ -212,6 +274,24 @@ export function packBVHIndexW(
     packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
   }
   return indexBuf;
+}
+
+/**
+ * Pack per-triangle roughness+metalness into a parallel u32 buffer
+ * (bits[31:24]=rough×255, bits[23:16]=metal×255). Read by the ReSTIR/shade
+ * WGSL via decodeRoughMetal(triIndex). See packBVHRoughMetalTri for the B1
+ * diffuse-default invariant.
+ */
+export function packBVHRoughMetal(
+  triMaterialId: Uint32Array,
+  materials: readonly PbrMaterialLike[],
+  triCount: number,
+): Uint32Array<ArrayBuffer> {
+  const rmBuf = new Uint32Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    packBVHRoughMetalTri(rmBuf, triMaterialId, materials, t);
+  }
+  return rmBuf;
 }
 
 /**
@@ -352,6 +432,35 @@ export function packBVHIndexWFromCore(
     indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
   }
   return indexBuf;
+}
+
+/**
+ * Core-material counterpart to {@link packBVHRoughMetal}: pack per-triangle
+ * roughness+metalness (bits[31:24]=rough×255, bits[23:16]=metal×255) from a
+ * `MaterialSpec[]`. Applies the SAME B1 diffuse-default invariant as the
+ * structural packer: no authored `roughness` → 0.85 (0.05 for glass,
+ * transmission > 0.5); metalness from `mat.metallic ?? 0`. Missing slot →
+ * (0.85, 0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so the core
+ * and structural paths produce identical per-triangle output.
+ */
+export function packBVHRoughMetalFromCore(
+  triMaterialId: Uint32Array,
+  materials: readonly MaterialSpec[],
+  triCount: number,
+): Uint32Array<ArrayBuffer> {
+  const rmBuf = new Uint32Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const mat = materials[triMaterialId[t]!];
+    let rough = ROUGH_DEFAULT;
+    let metal = 0;
+    if (mat) {
+      const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission);
+      rough = rm.rough;
+      metal = rm.metal;
+    }
+    rmBuf[t] = packRoughMetalByte(rough, metal);
+  }
+  return rmBuf;
 }
 
 /**

@@ -91,6 +91,7 @@ function makeMinimalCtx(
         dTreeBuf: makeMockBuffer(),
         dTreeOffsetsBuf: makeMockBuffer(),
         fluxAtomicsBuf: makeMockBuffer(),
+        cellSampleCountsBuf: makeMockBuffer(), // A2 — per-cell sample counters
         updateUboBuffer: makeMockBuffer(),
       }
     : {};

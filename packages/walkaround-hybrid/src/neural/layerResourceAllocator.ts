@@ -227,6 +227,14 @@ export async function allocateGraph(
           device, pipeline, patchedLayer, weightsByName, uniformBuf,
           tensors, placeholderBuf, allocatedBuffers,
         );
+        // Leak guard: the line below overwrites the `inName` entry, which is the
+        // ONLY reference to the relu's binding-0 INPUT buffer (the upstream
+        // conv's output). Without preserving it, dispose()'s tensor-map loop
+        // would never destroy it → GPU memory leak on engine teardown (7 such
+        // buffers in the default UNet spec). Stash it under a unique key so it
+        // stays in the map and is destroyed normally; the key is never read by
+        // any layer's bind-group build (layers reference `inName`, not this key).
+        tensors.set(`${layer.name}_in_orig`, srcTb);
         // Remap: downstream layers reading `inName` (= `layer.output`) should
         // now see the relu-written buffer.
         tensors.set(inName, outTb);

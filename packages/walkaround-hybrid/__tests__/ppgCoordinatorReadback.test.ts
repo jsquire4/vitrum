@@ -91,7 +91,18 @@ function makeHarness(fluxBacking: Uint32Array) {
         };
         return readbackBuf as unknown as GPUBuffer;
       }
-      return { size: desc.size, usage: desc.usage, label: desc.label, destroy: () => {} } as unknown as GPUBuffer;
+      // A2 — the cell-count readback staging buffer (and any other staging the
+      // coordinator creates) needs a functional map surface too.
+      return {
+        size: desc.size,
+        usage: desc.usage,
+        label: desc.label,
+        destroy: () => {},
+        mapAsync: async () => {},
+        getMappedRange: (off?: number, size?: number) =>
+          new ArrayBuffer(size ?? desc.size - (off ?? 0)),
+        unmap: () => {},
+      } as unknown as GPUBuffer;
     },
     createCommandEncoder: () => ({
       copyBufferToBuffer: (
@@ -122,6 +133,7 @@ function makeHarness(fluxBacking: Uint32Array) {
       dTreeBuf: { label: 'dTree', destroy: () => {} },
       dTreeOffsetsBuf: offsetsBuf,
       fluxAtomicsBuf: fluxBuf,
+      cellSampleCountsBuf: { label: 'ppg-cellSampleCounts', size: MAX_SPATIAL_CELLS * 4, destroy: () => {} },
       updateUboBuffer: { label: 'update-ubo', size: 16, destroy: () => {} },
     },
   } as unknown as FrameResources;
@@ -151,9 +163,11 @@ describe('PPGCoordinator — bounded flux readback', () => {
     // Force the readback (interval 0 → fires immediately).
     coord.maybeRunTrainingRefine(h.frameResources, 100, 0);
     // Drain the fire-and-forget promise chain.
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    for (let i = 0; i < 12; i += 1) await Promise.resolve(); // A2: two mapAsync chains now
 
-    expect(h.copies.length).toBe(1);
+    // A2 — two bounded copies per window now: the flux prefix + the per-cell
+    // sample-count prefix (the spatial-split feed).
+    expect(h.copies.length).toBe(2);
     // Active prefix for 1 cell = MAX_DTREE_NODES_PER_CELL u32 = 341 * 4 bytes,
     // which is FAR less than the full buffer (1024 * 341 * 4 ≈ 1.4 MB).
     const expectedActiveBytes = MAX_DTREE_NODES_PER_CELL * 4;
@@ -194,7 +208,7 @@ describe('PPGCoordinator — bounded flux readback', () => {
     );
 
     coord.maybeRunTrainingRefine(h.frameResources, 100, 0);
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    for (let i = 0; i < 12; i += 1) await Promise.resolve(); // A2: two mapAsync chains now
 
     // Sanity: the readback completed (copy issued, prefix mapped). If the
     // implementation had read the poisoned tail, the merge would have summed

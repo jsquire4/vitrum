@@ -156,13 +156,17 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
-  // Skip glass / metal — DDGI atlas sampling does not apply to glossy/specular
-  // surfaces; they currently get NO indirect GI (road-to-100 B1). ReSTIR-DI
-  // Lo_direct is still evaluated for these pixels at the shade stage.
+  // B1 (road-to-100) — metals/glossy now get a GI reservoir. The reservoir is a
+  // DIFFUSE-irradiance cache (cosine-hemisphere candidates, Lambertian target
+  // p̂ = luminance(Lo)·cosθ·INV_PI — UNCHANGED, preserving GRIS reuse +
+  // diffuse-default invariance). shade reflects this stored radiance off the
+  // glossy/metal surface via the GGX specular lobe (shade.lo_indirectSpecular),
+  // so metals/glossy receive real specular indirect — no longer an empty punt.
+  // Glass STILL gets an empty reservoir: refracted GI is out of scope this pass
+  // (glass indirect is its Beer-Lambert transmitted radiance via lo_emit).
   let matColor = decodeMaterialColor(hit.matColorPacked);
   let isGlass = matColor.a > 0.3;
-  let isMetal = decodeIsMetal(hit.matColorPacked);
-  if (isGlass || isMetal) {
+  if (isGlass) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
     return;
   }

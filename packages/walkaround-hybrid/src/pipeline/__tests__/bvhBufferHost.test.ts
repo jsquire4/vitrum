@@ -60,6 +60,7 @@ describe('BvhBufferHost', () => {
       bvhIndex: buf,
       bvhBeerColors: buf,
       bvhEmissiveLe: buf,
+      bvhRoughMetal: buf,
       bvhNormals: buf,
       bvhPositions: buf,
       emitters: buf,

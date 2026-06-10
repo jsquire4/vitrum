@@ -183,6 +183,13 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // has no point/spot emitters; the count is in WalkaroundUBO.analyticLightCount
       // so the shade loop is a no-op for pure area-emitter scenes.
       { binding: 13, kind: 'storage-ro', note: 'analytic_lights (H41 point/spot NEE; 64-byte stride; shade-only)' },
+      // B1 (road-to-100) — per-triangle roughness+metalness lane (r32uint
+      // texture, one u32 per triangle: bits[31:24]=rough×255, [23:16]=metal×255).
+      // Read by ris/risGi/risGiNrc/restirCastPrimary/shade via
+      // decodeRoughMetal(triIndex) to drive the GGX BRDF + glossy/metal GI target.
+      // A texture (not a storage buffer) so it does NOT count against the
+      // maxStorageBuffersPerShaderStage=16 shade-pass floor.
+      { binding: 14, kind: 'tex:uint', note: 'bvh_material (per-tri roughness+metalness, r32uint texture)' },
     ],
   },
   {

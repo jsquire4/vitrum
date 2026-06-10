@@ -30,6 +30,12 @@ export interface SceneBVHBuffers {
   triangleMaterialIds: StorageBufferHandle;
   bvhBeerColors: StorageBufferHandle;
   bvhEmissiveLe: StorageBufferHandle;
+  /** B1 (road-to-100) — per-triangle roughness+metalness lane
+   *  (bits[31:24]=rough×255, bits[23:16]=metal×255), uploaded as an r32uint
+   *  texture (BvhBufferHost) and read by the ReSTIR/shade GGX BRDF +
+   *  glossy/metal GI target via decodeRoughMetal(triIndex). See
+   *  packingHelpers.packBVHRoughMetal for the diffuse-default invariant. */
+  bvhRoughMetal: StorageBufferHandle;
   bvhNormals: StorageBufferHandle;
   emitters: StorageBufferHandle;
   emitterCdf: StorageBufferHandle;

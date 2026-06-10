@@ -159,10 +159,12 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
+  // B1 — metals/glossy now get a (diffuse-target) GI reservoir; shade reflects
+  // it via the GGX specular lobe. Glass still punts (refracted GI out of scope).
+  // Mirrors risGi.wgsl. The Lambertian target p̂ is unchanged.
   let matColor = decodeMaterialColor(hit.matColorPacked);
   let isGlass = matColor.a > 0.3;
-  let isMetal = decodeIsMetal(hit.matColorPacked);
-  if (isGlass || isMetal) {
+  if (isGlass) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
     return;
   }
@@ -253,13 +255,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
       if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC)) {
         let xsAlbedo = xsMat.rgb;
-        // The packed material payload carries no roughness (materialDecode.wgsl
-        // packs only RGB888 + transmission4 + isMetal1 — no roughness channel).
-        // gi-ris already excludes glass/metal suffix surfaces, so xs is a
-        // diffuse-ish wall. xsRough=1.0 (full diffuse) is correct here: it
-        // encodes the SAME feature the query sees, which is what matters for
-        // self-training consistency. A per-vertex roughness would require a BVH
-        // attribute extension; tracked as a future improvement.
+        // xsRough = 1.0 (full diffuse) for the NRC self-training feature. B1
+        // added a per-tri roughness lane (bvh_material), so a real xs roughness
+        // is now AVAILABLE in principle — but NRC (opt-in/experimental) does not
+        // bind bvh_material on this pass, and the reconnection vertex xs is a
+        // diffuse-bounce target regardless; the constant keeps the training
+        // feature identical to the query, which is what matters for self-training
+        // consistency. Wiring real xsRough is a follow-up scoped to the NRC track.
         let xsRough = 1.0;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).

@@ -81,6 +81,7 @@ import {
   packBVHIndexWFromCore,
   packBVHBeerColorsFromCore,
   packBVHEmissiveLeFromCore,
+  packBVHRoughMetalFromCore,
 } from './restir/packingHelpers.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -1004,6 +1005,7 @@ export function materialPatch(
 
   const indexView = new Uint32Array(bvh.bvhIndex.cpuData);
   const beerView = new Uint32Array(bvh.bvhBeerColors.cpuData);
+  const roughMetalView = new Uint32Array(bvh.bvhRoughMetal.cpuData);
   const updatedCoreMaterials = bvh.coreMaterials.map((m, matId) => (matIds.has(matId) ? nextMaterial : m));
   const fullIndex = packBVHIndexWFromCore(
     bvh.bvhIndicesStride3,
@@ -1016,8 +1018,15 @@ export function materialPatch(
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
+  // B1 — repack the per-tri roughness+metalness lane for the edited materials.
+  const fullRoughMetal = packBVHRoughMetalFromCore(
+    triMaterialIds,
+    updatedCoreMaterials,
+    bvh.bvhBeerColors.count,
+  );
   indexView.set(fullIndex);
   beerView.set(fullBeer);
+  roughMetalView.set(fullRoughMetal);
   const fullEmissive = packBVHEmissiveLeFromCore(
     triMaterialIds,
     updatedCoreMaterials,
@@ -1052,6 +1061,9 @@ export function materialPatch(
       ) as ArrayBuffer,
       triCount: bvh.bvhBeerColors.count,
     },
+    // B1 — re-upload the whole roughness+metalness texture wholesale (same
+    // wholesale rationale as beer/emissive).
+    { data: bvh.bvhRoughMetal.cpuData, triCount: bvh.bvhRoughMetal.count },
   );
 
   let outBvh: SceneBVHBuffers = { ...bvh, bvhEmissiveLe: updatedEmissiveLe, coreMaterials: updatedCoreMaterials };

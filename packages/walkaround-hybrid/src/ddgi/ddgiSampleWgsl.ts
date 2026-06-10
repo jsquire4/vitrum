@@ -79,24 +79,41 @@ fn ddgiSample(
     let tw = mix(vec3f(1.0) - frac, frac, vec3f(co));
     var w  = tw.x * tw.y * tw.z;
 
-    // Receiver-side per-probe weight — strict Lambertian cosine baseline.
-    // Majercik et al. 2019 §6 ("Dynamic Diffuse Global Illumination with
-    // Ray-Traced Irradiance Fields"), Algorithm 2 / Eq. 11 baseline form:
-    //   w_n = max(0, dot(receiverNormal, probeDirection))
-    // This is the cosine kernel that matches the producer-side accumulation
-    // (probeUpdateBlend irradiance pass already uses max(0, n·d)). Earlier
-    // code used the wrap-around variant pow((n·p + 1)/2, 2) + 0.2 as a "smooth
-    // backface modulation" — that's a tunable in the paper's Eq. 9 discussion,
-    // not the baseline, and biases the receiver toward off-axis probes with
-    // the wrong falloff. Switching to the strict baseline gives a physically
-    // consistent receiver↔producer pair (no magic exponent, no +0.2 floor).
+    // NO receiver-side per-probe cosine weight (2026-06-10 cardinal-bias fix).
+    //
+    // History: this site used to multiply w by the "smooth backface" probe-
+    // direction cosine max(0, dot(surfaceNormal, probeDirection)) — a
+    // SPATIAL probe-rejection heuristic from the OCTAHEDRAL DDGI era
+    // (Majercik 2019 §6, where each octahedral cell stored a single cosine-mean
+    // and the receiver weight down-weighted probes "behind" the receiver).
+    //
+    // It is radiometrically WRONG for the L2-SH atlas we now ship: each probe
+    // stores a COMPLETE cosine-convolved irradiance field E(n) = Σ E_lm·Y_lm(n)
+    // valid for ANY normal n (the cosine-weighted hemisphere integral is
+    // already baked in at blend time, ddgiSH.wgsl.ts). The extra probe-direction
+    // cosine then DOUBLE-applies a cosine and, worse, biases by NORMAL
+    // ORIENTATION: for an axis-aligned (cardinal) normal sitting between the 8
+    // cube-corner probes, the 4 probes on the far side get dot(n,probeDir) ≤ 0
+    // → hard-zeroed, and the 4 near probes sit ~45° off n → dot ≈ 0.5-0.7, so
+    // the trilinear blend is starved asymmetrically. DIAGONAL normals see a
+    // symmetric probe-weight spread and are barely touched.
+    //
+    // CPU self-validating harness (ddgiReceiverFullHarness.test.ts) over the
+    // 5³ / 0.4-spacing grid the GPU oracle uses, enclosed-box analytic field,
+    // luminance error vs the closed-form ∫L(n·ω)dω:
+    //   term                       +x      -x     diag_xy  diag_xyz
+    //   hard cosine (OLD/SHIPPED) -20.9%  -20.7%  -2.6%    +1.1%
+    //   wrap (d·.5+.5)²+0.2       -14.3%  -14.4%  -1.6%    +1.0%
+    //   NO cosine (THIS FIX)       -6.0%   -6.5%  -0.5%    +0.9%
+    // The residual ~6% at cardinals is pure spatial trilinear discretization
+    // (receiver on a probe plane, quarter-cell normal bias) — diagonal-quality
+    // and irreducible at this grid density. This reproduces + cures the GPU
+    // oracle's 23-60% cardinal under-read (HARDWARE-VALIDATION-NEEDS.md
+    // "DDGI fidelity vs ground truth"). Backface/occlusion rejection is left to
+    // the PHYSICAL Chebyshev visibility term below (depth-based), not a
+    // geometric normal heuristic.
     let toProbe   = probeWorld - biasedPos;
     let probeDist = length(toProbe);
-    if (probeDist > 1e-3) {
-      let probeDir = toProbe / probeDist;
-      let bw       = max(0.0, dot(surfaceNormal, probeDir));
-      w = w * bw;
-    }
 
     // Octahedral-encode the surface→probe direction (visibility lookup).
     let probeDirToSurf = normalize(biasedPos - probeWorld);

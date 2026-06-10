@@ -40,7 +40,10 @@
  *   group(0) binding(2) — ppgSTreeBuf:      array<f32>   (serialised sTree)
  *   group(0) binding(3) — ppgDTreeBuf:      array<f32>   (serialised dTree blocks)
  *   group(0) binding(4) — ppgDTreeOffsets:  array<u32>   (dTreeIndex → f32 offset)
- *   group(1) binding(0) — ppgUBO: struct { sampleCount: u32, _pad: u32, ... }
+ *   group(0) binding(5) — ppgCellSampleCounts: array<atomic<u32>> (A2 — per-cell
+ *                          training-record counter, indexed by dTreeIndex; the
+ *                          coordinator reads it back to drive splitOverflowLeaves)
+ *   group(1) binding(0) — ppgUBO: struct { sampleCount, fluxBudget, sampleCountBudget, _pad }
  */
 
 import { RESERVOIR_GI_STRIDE } from './ppgConstants.js';
@@ -85,10 +88,10 @@ export function buildPpgUpdateWgsl(maxDTreeNodesPerCell: number = 341): string {
 // W9: real flat-buffer leaf location (no more uniform-grid stub).
 
 struct PPGUpdateUBO {
-  sampleCount : u32,  // total half-res GI reservoir entries this frame
-  fluxBudget  : u32,  // number of u32 slots in ppgFluxAtomics (bounds check)
-  padding0    : u32,
-  padding1    : u32,
+  sampleCount       : u32,  // total half-res GI reservoir entries this frame
+  fluxBudget        : u32,  // number of u32 slots in ppgFluxAtomics (bounds check)
+  sampleCountBudget : u32,  // A2 — slots in ppgCellSampleCounts (= maxSpatialCells)
+  padding1          : u32,
 }
 
 @group(0) @binding(0) var<storage, read>           ppgReservoirGiCurrent : array<u32>;
@@ -97,6 +100,9 @@ struct PPGUpdateUBO {
 @group(0) @binding(2) var<storage, read>           ppgSTreeBuf           : array<f32>;
 @group(0) @binding(3) var<storage, read>           ppgDTreeBuf           : array<f32>;
 @group(0) @binding(4) var<storage, read>           ppgDTreeOffsets       : array<u32>;
+// A2 — per-spatial-cell training-sample counter (one atomic u32 per cell,
+// indexed by dTreeIndex). Drives the CPU sTree split decision.
+@group(0) @binding(5) var<storage, read_write>     ppgCellSampleCounts   : array<atomic<u32>>;
 @group(1) @binding(0) var<uniform>                 ppgUBO                : PPGUpdateUBO;
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
@@ -215,6 +221,13 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let sBase = sTreeFindLeafBase(pos);
   let dTreeIndex = u32(ppgSTreeBuf[sBase + 10u]);
   let dOff = ppgDTreeOffsets[dTreeIndex];
+
+  // A2 — count ONE training record for this spatial cell (drives the CPU sTree
+  // split decision in splitOverflowLeaves). Bounded by the per-cell counter
+  // buffer length (maxSpatialCells = sampleCountBudget).
+  if (dTreeIndex < ppgUBO.sampleCountBudget) {
+    atomicAdd(&ppgCellSampleCounts[dTreeIndex], 1u);
+  }
 
   // Walk the dTree to the leaf for this direction.
   let leafBase = dTreeFindLeafBase(dOff, uv);

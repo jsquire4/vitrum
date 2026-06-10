@@ -43,6 +43,7 @@ function makeBvh(): SceneBVHBuffers {
     bvhIndex: zeroBuf,
     bvhBeerColors: zeroBuf,
     bvhEmissiveLe: zeroBuf,
+    bvhRoughMetal: zeroBuf,
     bvhNormals: zeroBuf,
     bvhPositions: vertBuf,
     emitters: zeroBuf,

@@ -670,8 +670,12 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     // makes a single hoisted `sceneBindings` fragment impossible.
     // 2026-06-06 (G-P0.1 smooth-normal reuse consistency): temporal + spatial
     // gained bvh_normal @binding(11), which made temporal's group(1) block
-    // IDENTICAL to ris's — that convergence is pinned below; the ≥3-distinct-
-    // shapes rationale for keeping the block inlined still holds.
+    // IDENTICAL to ris's. B1 (road-to-100, 2026-06-10) then RE-DIVERGED them:
+    // ris declares bvh_material @binding(14) INLINE (its candidate p̂ decodes
+    // real roughness/metal), while temporal/spatial pull bvh_material via the
+    // shared restirCastPrimary module (a SEPARATE source), so temporal.wgsl's
+    // own group(1) block no longer carries binding 14. The ≥3-distinct-shapes
+    // rationale for keeping the block inlined holds even more strongly now.
     const group1Lines = (src: string): string =>
       src
         .split('\n')
@@ -682,8 +686,10 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     const temporal = group1Lines(TEMPORAL_WGSL);
     const risGi = group1Lines(RIS_GI_WGSL);
     expect(ris).not.toBe(shade);
-    expect(ris).toBe(temporal); // converged under G-P0.1 — same scene-binding shape
+    expect(ris).not.toBe(temporal); // B1 — ris gained inline bvh_material @binding(14); temporal gets it via restirCastPrimary
     expect(ris).not.toBe(risGi);
     expect(shade).not.toBe(temporal);
+    // ris/temporal still share every binding EXCEPT the B1 bvh_material line.
+    expect(temporal).toBe(ris.split('\n').filter((l) => !l.includes('binding(14)')).join('\n'));
   });
 });

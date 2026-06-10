@@ -1403,9 +1403,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     /** Camera-visible emitters — FULL per-tri emissive Le re-upload (same
      *  wholesale rationale as beer). */
     emissiveFull: { data: ArrayBuffer; triCount: number },
+    /** B1 — FULL per-tri roughness+metalness re-upload (same wholesale rationale). */
+    roughMetalFull?: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerFull, emissiveFull);
+    this._bvhHost.refreshBvhMaterialSlice(
+      this._device, indexSlice, beerFull, emissiveFull, roughMetalFull);
   }
 
   /**
@@ -1424,7 +1427,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   refreshBvhFullRebuild(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this._initialized) return;

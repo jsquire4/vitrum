@@ -168,11 +168,19 @@ export function sTreeAccumulate(
  * @param sTree     The tree to mutate in place.
  * @param threshold Sample-count threshold (default `PPG_CELL_SPLIT_THRESHOLD`).
  * @param maxCells  Hard cap on total leaf count.
+ * @param cellSampleCounts  A2 — OPTIONAL per-cell sample counts indexed by
+ *   `dTreeIndex` (the GPU-side counter read back by `PPGCoordinator`). When
+ *   supplied, each leaf's split decision uses `cellSampleCounts[node.dTreeIndex]`
+ *   instead of the CPU-side `node.sampleCount` (which the production training
+ *   path never writes — `sTreeAccumulate` has no GPU-path callers). When
+ *   omitted, the historical `node.sampleCount` path is used unchanged (keeps the
+ *   existing unit tests valid).
  */
 export function splitOverflowLeaves(
   sTree: STree,
   threshold: number = PPG_CELL_SPLIT_THRESHOLD,
   maxCells: number = 16_384,
+  cellSampleCounts?: ArrayLike<number>,
 ): void {
   // Snapshot leaf count before we start (new leaves added during iteration
   // may themselves be over threshold — we defer them to the next rebuild cycle).
@@ -182,7 +190,12 @@ export function splitOverflowLeaves(
   for (let i = 0; i < initialLen; i++) {
     const node = sTree.nodes[i]!;
     if (node.splitAxis !== -1) continue;          // interior node
-    if (node.sampleCount <= threshold) continue;  // not over threshold
+    // A2 — prefer the externally-supplied GPU sample count for this cell when
+    // available; fall back to the (CPU-path) node.sampleCount otherwise.
+    const sampleCount = cellSampleCounts !== undefined
+      ? (cellSampleCounts[node.dTreeIndex] ?? 0)
+      : node.sampleCount;
+    if (sampleCount <= threshold) continue;       // not over threshold
     if (leafCount >= maxCells) break;             // hard cap
 
     // Split this leaf.
@@ -287,6 +300,49 @@ export function resetAccumulators(sTree: STree): void {
     dTree.totalFlux = 0;
     for (const dn of dTree.nodes) {
       dn.flux = 0;
+    }
+  }
+}
+
+/**
+ * RUNAWAY FIX — Müller §5 per-iteration flux DECAY (replaces the full reset on
+ * the persistent CPU accumulator).
+ *
+ * The training loop deposits raw radiance summed over samples each window and
+ * never divides by the source pdf (the GPU update kernel does `atomicAdd(lum)`).
+ * If the trained flux were simply ACCUMULATED across windows with no reset and
+ * no decay, the total grows without bound (linear in window count — verified in
+ * the CPU harness: `last/win6 = 2.31x` and climbing). The full reset
+ * (`resetAccumulators`) bounds it but throws away ALL temporal history every
+ * window → high window-to-window variance and a cold restart each cycle.
+ *
+ * Müller's practical scheme keeps the SD-tree structure across iterations and
+ * combines successive iterations' statistics; vitrum models that as a geometric
+ * decay of the persistent flux accumulator: each window scales the carried-over
+ * flux by `decay ∈ [0,1)` BEFORE the new window's deposits are added. Under a
+ * steady per-window input F this converges to the bounded geometric steady
+ * state `F / (1 − decay)` (decay 0.5 ⇒ 2F), instead of diverging — see
+ * `__tests__/ppgRunawayBound.test.ts`.
+ *
+ * `decay === 0` is exactly the historical full reset (no carry-over);
+ * `decay === 1` is the divergent no-decay accumulation (rejected). The PPG
+ * coordinator uses {@link PPG_FLUX_DECAY} (0.5).
+ *
+ * sTree leaf `sampleCount`s are split-decision statistics, not radiance; they
+ * are produced fresh by the GPU counter each window (A2) and are NOT decayed
+ * here (they are zeroed so the next window's GPU readback is the sole source).
+ */
+export function decayAccumulators(sTree: STree, decay: number): void {
+  const d = Math.max(0, Math.min(1, decay));
+  for (const node of sTree.nodes) {
+    if (node.splitAxis === -1) {
+      node.sampleCount = 0;
+    }
+  }
+  for (const dTree of sTree.dTrees) {
+    dTree.totalFlux *= d;
+    for (const dn of dTree.nodes) {
+      dn.flux *= d;
     }
   }
 }

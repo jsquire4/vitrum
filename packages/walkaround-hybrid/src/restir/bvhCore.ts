@@ -19,6 +19,7 @@ import {
   packBVHIndexWFromCore,
   packBVHBeerColorsFromCore,
   packBVHEmissiveLeFromCore,
+  packBVHRoughMetalFromCore,
 } from './packingHelpers.js';
 import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import {
@@ -344,6 +345,8 @@ function buffersFromCoreScenePack(
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
+  // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
+  const roughMetalBuf = packBVHRoughMetalFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // H23 — apply mesh-area emitter Le overrides to the emissive-Le glow buffer so
   // the camera-visible glow on an emitter-referenced mesh reflects the emitter Le.
   const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
@@ -370,6 +373,7 @@ function buffersFromCoreScenePack(
     triangleMaterialIds: makeStorageHandle(geo.triMaterialIds, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
+    bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
     bvhNormals: makeStorageHandle(geo.normals, 16),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,
@@ -426,6 +430,8 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triCount,
   );
   const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
+  // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
+  const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
   // glow buffer reflects the emitter Le for mesh-area-referenced primitives.
   const emissiveMergedMats = buildMeshAreaLeOverrides(scene, merged.materials);
@@ -445,6 +451,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triangleMaterialIds: makeStorageHandle(merged.triMaterialId, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
+    bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
     bvhNormals: makeStorageHandle(merged.normals, 16),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,

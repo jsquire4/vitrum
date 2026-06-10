@@ -16,6 +16,7 @@
  *     binding(2) sTreeBuf                 (storage, read)
  *     binding(3) dTreeBuf                 (storage, read)
  *     binding(4) dTreeOffsets             (storage, read)
+ *     binding(5) cellSampleCountsBuf      (storage, read_write)  [A2]
  *   group(1):
  *     binding(0) updateUboBuffer (uniform)
  */
@@ -59,7 +60,7 @@ export class PPGUpdatePass implements Pass {
     // registered. If a host bypasses the initialization branch, fail loudly
     // instead of silently skipping training.
     if (!ppg.sTreeBuf || !ppg.dTreeBuf || !ppg.dTreeOffsetsBuf ||
-        !ppg.fluxAtomicsBuf || !ppg.updateUboBuffer ||
+        !ppg.fluxAtomicsBuf || !ppg.cellSampleCountsBuf || !ppg.updateUboBuffer ||
         !resources.restirGI.reservoirGiCurrentBuffer) {
       throw new Error(
         '[PPG] update dispatch invariant violated: PPG resources are not allocated. ' +
@@ -76,6 +77,7 @@ export class PPGUpdatePass implements Pass {
         sTreeBuf: ppg.sTreeBuf,
         dTreeBuf: ppg.dTreeBuf,
         dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
+        cellSampleCountsBuf: ppg.cellSampleCountsBuf,
         updateUboBuffer: ppg.updateUboBuffer,
       },
     );

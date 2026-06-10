@@ -122,6 +122,15 @@ export class InferenceGraph {
    * is called again (resize), all bind groups are rebuilt.
    */
   async initialize(device: GPUDevice, weights: ModelWeights, W: number, H: number): Promise<void> {
+    // Defensive: if initialize() is called a second time (e.g. a future resize
+    // path that re-initializes in place rather than recreating the instance),
+    // the previous allocation's GPU buffers would be ORPHANED — the field
+    // overwrites below drop every reference in `_tensors`/`_allocatedBuffers`,
+    // and nothing would ever `.destroy()` them. dispose() releases the prior
+    // allocation first; it is a no-op on a never-initialized instance.
+    if (this._ready || this._allocatedBuffers.length > 0 || this._tensors.size > 0) {
+      this.dispose();
+    }
     this._device = device;
     this._W      = W;
     this._H      = H;

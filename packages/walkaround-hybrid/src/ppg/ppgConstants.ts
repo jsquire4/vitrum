@@ -59,6 +59,19 @@ export const PPG_DTREE_INITIAL_DEPTH = 2;
  */
 export const PPG_MIS_ALPHA = 0.5;
 
+/**
+ * Per-window flux decay factor (Müller §5 — "keep the SD-tree across iterations").
+ *
+ * Applied to the persistent CPU flux accumulator at the start of each training
+ * window: `flux ← decay·flux + newWindowFlux`. Under steady input this gives the
+ * bounded geometric steady state `F/(1−decay)` (0.5 ⇒ 2F), retaining temporal
+ * history (lower variance than a hard reset) while provably bounding total flux.
+ * `0` reproduces the old full-reset; `1` is the divergent no-decay regime that
+ * caused the filed refine-loop runaway. See `sTree.decayAccumulators` +
+ * `__tests__/ppgRunawayBound.test.ts`.
+ */
+export const PPG_FLUX_DECAY = 0.5;
+
 /** Maximum number of sTree spatial cells (host-configurable default). */
 export const PPG_MAX_SPATIAL_CELLS = 16_384;
 
