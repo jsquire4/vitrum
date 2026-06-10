@@ -14,17 +14,9 @@ import * as ReactDOM from 'react-dom/client';
 // VitrumCanvas is the named export from the /react subpath of @vitrum/engine.
 // eslint-disable-next-line import/no-unresolved
 import { VitrumCanvas } from '@vitrum/engine/react';
+import type { CameraLike } from '@vitrum/engine';
 import type { ProgressStats } from '@vitrum/core';
 import { createCornellScene } from '@vitrum-examples/cornell-scene';
-
-// CameraLike is not re-exported from '@vitrum/engine'. Define inline — any
-// object satisfying this structural interface is accepted by <VitrumCanvas>.
-interface CameraLike {
-  updateMatrixWorld(): void;
-  readonly matrixWorldInverse: { readonly elements: ArrayLike<number> };
-  readonly projectionMatrix: { readonly elements: ArrayLike<number> };
-  readonly position: { readonly x: number; readonly y: number; readonly z: number };
-}
 
 // ── URL params ─────────────────────────────────────────────────────────────────
 const urlParams = new URLSearchParams(location.search);

@@ -25,6 +25,9 @@ export interface BackendMethodPromises {
    *  read-back (returns the retained canonical core {@link Scene}). All three
    *  shipping backends retain the core Scene and implement it. */
   readonly getScene: boolean;
+  /** Whether the backend implements `Engine.onError()` — the GPU/runtime
+   *  error subscription.  All three shipping backends wire this. */
+  readonly onError: boolean;
 }
 
 export interface FrameInputPromises {
@@ -294,6 +297,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onProgress: true,
       debug: true,
       getScene: true,
+      // GPU error surface: device.uncapturederror (throttled) + device.lost.
+      onError: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: false,
@@ -371,6 +376,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onProgress: true,
       debug: false,
       getScene: true,
+      // Context-lost surface: webglcontextlost canvas event.
+      onError: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,
@@ -438,6 +445,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       onProgress: true,
       debug: true,
       getScene: true,
+      // GPU error surface: device.uncapturederror (throttled) + device.lost.
+      onError: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,

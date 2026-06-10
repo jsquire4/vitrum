@@ -5,6 +5,9 @@ import { createPTEngine_WebGPU } from '../index.js';
 function makeStubDevice(): GPUDevice {
   return {
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -43,5 +46,6 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(typeof engine.onProgress === 'function').toBe(expected.methodPromises.onProgress);
     expect(typeof engine.debug === 'object').toBe(expected.methodPromises.debug);
     expect(typeof engine.getScene === 'function').toBe(expected.methodPromises.getScene);
+    expect(typeof engine.onError === 'function').toBe(expected.methodPromises.onError);
   });
 });

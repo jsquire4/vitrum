@@ -95,6 +95,9 @@ function makeStubDevice() {
     ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
     limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
   return { device, writeBuffer, createBuffer };
 }

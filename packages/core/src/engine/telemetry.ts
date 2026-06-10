@@ -76,6 +76,47 @@ export interface FrameStats {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Engine error surface (item 28, trust-remediation-plan-2026-06-10.md)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Structured error emitted through {@link Engine.onError}.
+ *
+ * **Design rationale:** the engine does NOT throw on runtime GPU errors —
+ * `renderFrame` must not crash the host RAF loop.  Instead, errors are
+ * delivered asynchronously through this subscription so the host can log,
+ * surface a UI badge, or decide to dispose+recreate the engine.
+ *
+ * `fatal: true` means the engine has transitioned to `'error'` state:
+ * further `renderFrame` calls will return `kind:'skipped'` and no GPU work
+ * will be submitted.  The host action is `engine.dispose()` followed by
+ * creating a fresh engine.
+ *
+ * `fatal: false` is informational — the error was recovered (e.g. a single
+ * uncaptured validation error on one frame); rendering continues.
+ *
+ * **Kinds:**
+ *  - `'gpu-validation'`  — WebGPU `GPUValidationError` from the device's
+ *    `uncapturederror` event.  Usually indicates a shader or API contract
+ *    violation; may be recoverable for transient single-frame misuse.
+ *  - `'gpu-internal'`    — WebGPU `GPUInternalError`; driver/hardware-level.
+ *  - `'device-lost'`     — `GPUDevice.lost` resolved (`fatal: true`).
+ *  - `'context-lost'`    — WebGL2 `webglcontextlost` event (`fatal: true`).
+ *  - `'render'`          — Exception thrown inside `renderFrame` (fatal only
+ *    after consecutive-throw threshold; see `attachVitrum`).
+ */
+export interface EngineError {
+  /** Error category — discriminant for error-specific handling. */
+  readonly kind: 'gpu-validation' | 'gpu-internal' | 'device-lost' | 'context-lost' | 'render';
+  /** Human-readable description of the error. */
+  readonly message: string;
+  /** When `true` the engine is in `'error'` state; dispose and recreate. */
+  readonly fatal: boolean;
+  /** Raw platform event/object (GPUError, GPUDeviceLostInfo, Event, Error …). */
+  readonly raw?: unknown;
+}
+
 /** Progress event surfaced via {@link Engine.onProgress}.  The discriminator
  *  is `kind`; consumers switch on it to interpret `current` / `target`. */
 export interface ProgressStats {

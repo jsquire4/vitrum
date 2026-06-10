@@ -8,6 +8,9 @@ function makeStubDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

@@ -4,6 +4,9 @@ import { createPTEngine_WebGPU } from '../index.js';
 function makeStubDevice(): GPUDevice {
   return {
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -89,6 +92,9 @@ describe('createPTEngine_WebGPU', () => {
         maxStorageBuffersPerShaderStage: 10,
         maxStorageTexturesPerShaderStage: 4,
       },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
     const engine = await createPTEngine_WebGPU({ device: liteDevice });
     expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(true);

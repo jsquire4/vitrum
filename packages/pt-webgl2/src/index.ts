@@ -1,6 +1,7 @@
 import type {
   Engine,
   EngineCapabilities,
+  EngineError,
   EngineFactory,
   EngineState,
   FrameInput,
@@ -111,6 +112,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #samplesAccumulated = 0;
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
+  #onErrorSubs = new Set<(e: EngineError) => void>();
 
   constructor(opts: PTEngineWebGL2Options, slot: StateSlot, traceTier: WebGl2TraceTier) {
     this.#slot = slot;
@@ -159,11 +161,14 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#onContextLost = (e: Event): void => {
       e.preventDefault(); // Required so 'webglcontextrestored' can fire later.
       this.#contextLost = true;
-      console.warn(
-        '[vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. ' +
-          'Per the core contract, the host should call engine.dispose() and ' +
-          'create a fresh engine with the recovered context.',
-      );
+      const msg = '[vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. ' +
+        'Per the core contract, the host should call engine.dispose() and ' +
+        'create a fresh engine with the recovered context.';
+      console.warn(msg);
+      // Route through onError so the host can react programmatically (item 28).
+      for (const cb of this.#onErrorSubs) {
+        try { cb({ kind: 'context-lost', message: msg, fatal: true, raw: e }); } catch {}
+      }
     };
     this.#onContextRestored = (): void => {
       // Do NOT attempt auto-restore (the GPU resource state is stale). Warn the
@@ -378,6 +383,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#geoPack = null;
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
+    this.#onErrorSubs.clear();
     this.#slot.set('disposed');
   }
 
@@ -389,6 +395,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   onProgress(cb: (p: ProgressStats) => void): () => void {
     this.#onProgressSubs.add(cb);
     return () => this.#onProgressSubs.delete(cb);
+  }
+
+  onError(cb: (error: EngineError) => void): () => void {
+    this.#onErrorSubs.add(cb);
+    return () => this.#onErrorSubs.delete(cb);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

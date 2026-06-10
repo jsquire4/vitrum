@@ -10,6 +10,9 @@ function makeMockDevice(): GPUDevice {
       writeBuffer: () => {},
       submit: () => {},
     },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -53,5 +56,6 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(typeof engineView.onProgress === 'function').toBe(expected.methodPromises.onProgress);
     expect(typeof engineView.debug === 'object').toBe(expected.methodPromises.debug);
     expect(typeof engineView.getScene === 'function').toBe(expected.methodPromises.getScene);
+    expect(typeof engineView.onError === 'function').toBe(expected.methodPromises.onError);
   });
 });

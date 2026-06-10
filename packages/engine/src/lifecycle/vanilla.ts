@@ -13,7 +13,7 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type { Engine, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import type { Engine, EngineError, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 
@@ -166,6 +166,16 @@ export interface CameraLike {
 }
 
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
+  /** Engine-level GPU/runtime error callback. Receives errors from the
+   *  underlying engine's `onError` subscription (device-lost, GPU validation
+   *  errors, WebGL context-lost).  Distinct from `onError` in
+   *  {@link CreateEngineOptions}, which covers engine-construction failures:
+   *  this callback fires for runtime GPU errors AFTER construction succeeds.
+   *
+   *  `fatal: true` means the engine is in `'error'` state — the host should
+   *  call `handle.dispose()` and recreate.  Non-fatal errors are informational;
+   *  rendering continues. */
+  readonly onEngineError?: (error: EngineError) => void;
   /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
@@ -231,6 +241,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     : undefined;
   const unsubProgress = opts.onProgress && engine.onProgress
     ? engine.onProgress(opts.onProgress)
+    : undefined;
+  // Forward engine-level GPU errors to the host's onEngineError callback.
+  const unsubEngineError = opts.onEngineError && engine.onError
+    ? engine.onError((err) => { try { opts.onEngineError!(err); } catch {} })
     : undefined;
 
   // Resize: track the canvas's CSS pixel size + DPR. Renderframe receives
@@ -407,6 +421,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       try { resizeObserver?.disconnect(); } catch {}
       try { unsubFrame?.(); } catch {}
       try { unsubProgress?.(); } catch {}
+      try { unsubEngineError?.(); } catch {}
       try { engine.dispose(); } catch {}
     },
   };

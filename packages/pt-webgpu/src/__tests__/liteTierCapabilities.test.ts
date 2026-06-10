@@ -23,6 +23,9 @@ function makeLiteDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 4,
     },
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -33,6 +36,9 @@ function makeFullDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -48,6 +54,9 @@ function makeLiteDeviceForSetScene(): GPUDevice {
     createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
     createCommandEncoder: vi.fn(),
     ...textureStubMethods(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

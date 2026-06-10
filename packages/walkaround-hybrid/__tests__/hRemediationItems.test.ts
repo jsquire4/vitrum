@@ -294,6 +294,9 @@ describe('H46 — HybridEngine construction warnings', () => {
       limits: { maxStorageBuffersPerShaderStage: 10 },
       features: { has: () => false },
       label: 'stub',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
 
     return {
@@ -406,6 +409,9 @@ describe('H47 — ppgMaxSpatialCells threading', () => {
       limits: { maxStorageBuffersPerShaderStage: 10 },
       features: { has: () => false },
       label: 'stub',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
 
     const engine = new mod.HybridEngine({
@@ -441,6 +447,9 @@ describe('H47 — ppgMaxSpatialCells threading', () => {
       limits: { maxStorageBuffersPerShaderStage: 10 },
       features: { has: () => false },
       label: 'stub',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
 
     const engine = new mod.HybridEngine({

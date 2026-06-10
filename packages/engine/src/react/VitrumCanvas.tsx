@@ -20,8 +20,8 @@
 // hosts never pay the cost.
 
 import * as React from 'react';
-import type { Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
-import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
+import type { EngineError, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
+import type { AttachVitrumHandle, AttachVitrumOptions, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
   CreateEngineErrorEvent,
@@ -55,6 +55,10 @@ export interface VitrumCanvasProps {
   debug?: boolean;
   /** Called for recoverable create/attach/runtime engine errors. */
   onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
+  /** GPU/runtime engine errors forwarded from the engine's onError subscription
+   *  (device-lost, validation errors, WebGL context-lost).  See
+   *  {@link AttachVitrumOptions.onEngineError}. */
+  onEngineError?: (error: EngineError) => void;
   /** Called when attachVitrum fails. */
   onAttachError?: (error: unknown) => void;
   /** Forwarded to the underlying canvas element. */
@@ -71,6 +75,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
+    const onEngineErrorRef = React.useRef<VitrumCanvasProps['onEngineError']>(props.onEngineError);
     // H31 — ref-stabilize `advanced` and `onAttachError` so inline-object props
     // do not cause full engine teardown+recreate on every parent render. The
     // effect dep array only observes the ref (stable identity), not the prop value
@@ -84,6 +89,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     React.useEffect(() => { onFrameRef.current = props.onFrame; },         [props.onFrame]);
     React.useEffect(() => { onProgressRef.current = props.onProgress; },   [props.onProgress]);
     React.useEffect(() => { onErrorRef.current = props.onError; },         [props.onError]);
+    React.useEffect(() => { onEngineErrorRef.current = props.onEngineError; }, [props.onEngineError]);
     React.useEffect(() => { advancedRef.current = props.advanced; },       [props.advanced]);
     React.useEffect(() => { onAttachErrorRef.current = props.onAttachError; }, [props.onAttachError]);
 
@@ -113,6 +119,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         onFrame: (stats) => { onFrameRef.current?.(stats); },
         onProgress: (progress) => { onProgressRef.current?.(progress); },
         onError: (error, event) => { onErrorRef.current?.(error, event); },
+        onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch {} },
       })
         .then((h) => {
           if (cancelled) {

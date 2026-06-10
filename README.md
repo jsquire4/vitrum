@@ -46,7 +46,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | ----------------------------- | --------------------------- | -------------------------- |
 | **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
 | **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
-| **Light types**               | point/dir/area/sky (point+spot via DDGI only — approximate direct) | point / dir / area / sky   |
+| **Light types**               | point/spot/dir/area/sky (point+spot: analytic NEE in shade pass + DDGI probe bounce; rect-area: NEE) | point / dir / area / sky   |
 | **Materials**                 | PBR + transmission          | PBR + transmission; spectral hero-λ lit (hero-λ tint over RGB — achromatic-flat reflectance); clearcoat/sheen unsupported |
 | **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      |
 | **BDPT**                      | not applicable              | implemented + host-driven (A5); ANGLE/Chromium falls back to unidirectional |
@@ -106,12 +106,18 @@ This is the design choice that makes the library survive Canvas remount, route c
 
 ## Examples
 
-The Three.js example apps (`examples/`) were removed with the THREE cutover (`e14000c`).
-Current smoke and acceptance fixtures live under `tools/reference-renders/` and
-`tools/benchmark-runner/`. New examples should speak the reference-render capture protocol
-(`VITRUM_CAPTURE_READY` + URL params) and be built against the `@vitrum/core` `Scene`
-contract — see `plan/h-remediation-plan-2026-06-09.md` §7 (H57) for the planned example
-scaffolding.
+Seven Vite apps in [`examples/`](./examples/) demonstrate every public API entry point —
+`attachVitrum`, `createEngine`, `<VitrumCanvas>`, `createProgressiveEngine`,
+`createPTEngine_WebGPU` (backend-direct), and `createPTEngine_WebGL2` (backend-direct).
+Each implements the capture protocol (`VITRUM_CAPTURE_READY` + `?vitrumSpp=N` URL param)
+for headless reference-render scripts.
+
+See **[`examples/README.md`](./examples/README.md)** for the full app inventory, how to
+run each one (`npm run dev --workspace=examples/<name>`), URL params, and sharp-edge notes.
+
+For diagnosing black renders (missing `swapChainView`, `setScene` not called, WebGL2
+context loss, device-limit errors, NaN pixels) see
+**[`docs/debugging-black-frames.md`](./docs/debugging-black-frames.md)**.
 
 ## Architecture
 

@@ -250,6 +250,19 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('exposes onError subscription (item 28 — GPU error surface)', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    expect(typeof e.onError).toBe('function');
+    const errors: unknown[] = [];
+    const unsub = e.onError!((err) => errors.push(err));
+    expect(typeof unsub).toBe('function');
+    // Unsubscribe should not throw.
+    expect(() => unsub()).not.toThrow();
+    // After unsubscribe, further unsub calls are idempotent.
+    expect(() => unsub()).not.toThrow();
+    e.dispose();
+  });
+
   it('addPrimitive and removePrimitive rebuild, validate ids, and allow an empty scene', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene({ primitives: [tri('a', 0)], emitters: [], environment: { kind: 'none' } });

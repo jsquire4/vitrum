@@ -30,6 +30,9 @@ function makeStubDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
@@ -56,6 +59,9 @@ describe('H14-C: getRestirPtResultBuffer on the Engine contract', () => {
         maxStorageTexturesPerShaderStage: 8,
       },
       createCommandEncoder: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
     // restirPtReuse requires full tier; the buffer is null until a frame runs.
     const engine = await createPTEngine_WebGPU({ device: fullDevice, restirPtReuse: true });

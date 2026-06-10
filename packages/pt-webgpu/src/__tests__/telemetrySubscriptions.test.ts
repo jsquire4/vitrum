@@ -4,6 +4,9 @@ import { createPTEngine_WebGPU } from '../index.js';
 function makeStubDevice(): GPUDevice {
   return {
     createCommandEncoder: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

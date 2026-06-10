@@ -79,6 +79,9 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
     }),
     createCommandEncoder: vi.fn(() => encoder),
     limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8 },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

@@ -131,6 +131,9 @@ function makeStubDevice(): GPUDevice {
     queue: { submit: noop, writeBuffer: noop },
     features: new Set<string>(),
     limits: {},
+    addEventListener: noop,
+    removeEventListener: noop,
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

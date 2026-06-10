@@ -40,6 +40,7 @@ import type {
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
+  EngineError,
   EngineFactory,
   EngineState,
   FrameStats,
@@ -581,6 +582,15 @@ export class HybridEngine implements Engine {
    *  accumulator fills). Empty until a host calls {@link onProgress}. */
   private readonly _progressSubs: Array<(p: ProgressStats) => void> = [];
 
+  /** GPU error subscribers (item 28). */
+  private readonly _errorSubs: Array<(e: EngineError) => void> = [];
+  /** Dedup-throttle: message → frame-index of last emission. */
+  private _errorThrottleMap = new Map<string, number>();
+  /** Frame counter for error throttle (incremented in renderFrame). */
+  private _errorFrameCount = 0;
+  /** Bound uncapturederror handler — stored so it can be removed on dispose. */
+  private _onUncapturedError: ((e: Event) => void) | null = null;
+
   /** Read-only snapshot of recent frame timings collected when the engine
    *  was constructed with `debug: true`. Returns an empty array when debug
    *  is off (no allocation cost is paid in production). */
@@ -1063,6 +1073,40 @@ export class HybridEngine implements Engine {
         this._pipeline?.setDenoiserPassEnabled(enabled);
       },
     });
+
+    // ── GPU error wiring (item 28) ─────────────────────────────────────────
+    // Attach an `uncapturederror` listener on the WebGPU device to route
+    // validation/internal errors to the host via onError subscribers.
+    // Throttled: one report per distinct message per 32 frames to avoid spam.
+    // Listener is removed on dispose (engine does not own the device).
+    this._onUncapturedError = (event: Event): void => {
+      if (this._state === 'disposed') return;
+      const gpuEvent = event as { error?: { message?: string } };
+      const rawError = gpuEvent.error;
+      const message = rawError?.message ?? String(event);
+      const kind: EngineError['kind'] = rawError != null &&
+        rawError.constructor?.name === 'GPUInternalError'
+          ? 'gpu-internal'
+          : 'gpu-validation';
+      const lastFrame = this._errorThrottleMap.get(message) ?? -Infinity;
+      if (this._errorFrameCount - lastFrame >= 32) {
+        this._errorThrottleMap.set(message, this._errorFrameCount);
+        this._emitError({ kind, message, fatal: false, raw: rawError });
+      }
+    };
+    opts.device.addEventListener('uncapturederror', this._onUncapturedError);
+
+    // device.lost: fatal transition to 'error' state.
+    opts.device.lost.then((info: { reason?: string; message?: string }) => {
+      if (this._state === 'disposed') return;
+      this._state = 'error';
+      this._emitError({
+        kind: 'device-lost',
+        message: info.message ?? `GPUDevice lost (reason: ${info.reason ?? 'unknown'})`,
+        fatal: true,
+        raw: info,
+      });
+    }).catch(() => { /* spec says it shouldn't reject; guard defensively */ });
   }
 
   // ── Scene management ───────────────────────────────────────────────────
@@ -2134,6 +2178,8 @@ export class HybridEngine implements Engine {
    * FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
+    // Advance the error-throttle frame counter (see _onUncapturedError).
+    this._errorFrameCount++;
     // Ergonomics guard: HybridEngine sizes its render targets at construction /
     // `setSize()` and does NOT honour `FrameInput.viewport` per-frame (unlike the
     // converged PT backends — see the FrameInput.viewport contract note). A host
@@ -2379,6 +2425,24 @@ export class HybridEngine implements Engine {
     };
   }
 
+  /** Subscribe to GPU/runtime errors. Returns an unsubscribe function.
+   *  Wired events: device `uncapturederror` (throttled, non-fatal) and
+   *  `device.lost` (fatal, transitions engine to `'error'`). */
+  onError(cb: (error: EngineError) => void): () => void {
+    this._errorSubs.push(cb);
+    return () => {
+      const i = this._errorSubs.indexOf(cb);
+      if (i >= 0) this._errorSubs.splice(i, 1);
+    };
+  }
+
+  /** Internal: emit an error to all subscribers. Catches subscriber throws. */
+  private _emitError(error: EngineError): void {
+    for (const cb of this._errorSubs) {
+      try { cb(error); } catch { /* must not break rendering */ }
+    }
+  }
+
   // ── Dispose ────────────────────────────────────────────────────────────
 
   /**
@@ -2400,6 +2464,15 @@ export class HybridEngine implements Engine {
       // Already disposed and no in-flight chain to coordinate with — no-op.
       return;
     }
+
+    // Remove GPU error listener before any teardown so the handler can't fire
+    // after dispose (the device is no longer ours to observe).
+    if (this._onUncapturedError != null) {
+      this._device.removeEventListener('uncapturederror', this._onUncapturedError);
+      this._onUncapturedError = null;
+    }
+    this._errorSubs.length = 0;
+    this._errorThrottleMap.clear();
 
     // requestTeardown returns true when the coordinator has no chain in
     // flight (we tear down here and now), false when it has one in flight

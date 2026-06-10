@@ -21,6 +21,9 @@ function fakeDevice(): GPUDevice {
     createBuffer: () => ({ destroy() {} }),
     createTexture: () => ({ createView: () => ({}), destroy() {} }),
     createQuerySet: () => ({}),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

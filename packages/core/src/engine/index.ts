@@ -27,7 +27,7 @@ import type { InverseSession, InverseSessionOptions } from '../inverse.js';
 import type { EngineState } from './state.js';
 import type { EngineCapabilities } from './capabilities.js';
 import type { EngineDebugSurface } from './debug.js';
-import type { FrameStats, ProgressStats } from './telemetry.js';
+import type { FrameStats, ProgressStats, EngineError } from './telemetry.js';
 
 export * from './state.js';
 export * from './capabilities.js';
@@ -275,6 +275,31 @@ export interface Engine {
    *  for warm-up). Same throw-safety + optionality semantics as
    *  {@link onFrame}. */
   onProgress?(cb: (progress: ProgressStats) => void): () => void;
+
+  /**
+   * Subscribe to engine-level GPU/runtime errors.  Returns an unsubscribe
+   * function; call it (or dispose the engine) to stop receiving errors.
+   *
+   * **Wired events (per backend):**
+   *  - All WebGPU backends — `GPUDevice.addEventListener('uncapturederror')`
+   *    with per-distinct-message throttling (one report per unique message per
+   *    32 frames).  Also `GPUDevice.lost.then(...)` → `kind:'device-lost'`,
+   *    `fatal:true`, which also transitions the engine to `'error'` state.
+   *  - `@vitrum/pt-webgl2` — `webglcontextlost` canvas event →
+   *    `kind:'context-lost'`, `fatal:true`.
+   *
+   * **Contract:** callbacks MUST NOT throw — the engine catches and ignores
+   * any thrown exceptions to keep the render loop alive.
+   *
+   * **Optional** (follows the same opt-in convention as `onFrame` /
+   * `onProgress`): all three shipping backends implement this method; a
+   * minimal backend that omits it still satisfies the core `Engine` contract.
+   * Hosts MUST typeof-check before calling:
+   * ```ts
+   * const unsub = engine.onError?.(e => console.error(e));
+   * ```
+   */
+  onError?(cb: (error: EngineError) => void): () => void;
 
   /** Optional debug-introspection surface for dev overlays. When present,
    *  exposes engine-internal state (DDGI atlases, BVH nodes, GI signal

@@ -381,6 +381,9 @@ describe('HybridEngine — W11 OIDN model URL validation', () => {
       createBindGroup: () => ({}),
       createPipelineLayout: () => ({}),
       queue: { writeBuffer: () => {}, submit: () => {} },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
   }
 

@@ -4,26 +4,10 @@
  * onFrame callback.
  *
  * Capture protocol: sets globalThis.VITRUM_CAPTURE_READY after targetSpp frames.
- *
- * API sharp edges observed while writing this example:
- * - CameraLike is NOT re-exported from '@vitrum/engine' (it is internal to
- *   lifecycle/vanilla.ts). Hosts must either define the structural interface
- *   inline (as done here) or satisfy the type implicitly (TypeScript structural
- *   typing means any object with the four required fields is accepted).
  */
 
-import { attachVitrum } from '@vitrum/engine';
+import { attachVitrum, type CameraLike } from '@vitrum/engine';
 import type { FrameStats } from '@vitrum/core';
-
-// CameraLike is an internal type in @vitrum/engine (not re-exported from the
-// public index). Define the structural interface inline — any object with these
-// four members satisfies attachVitrum's camera parameter.
-interface CameraLike {
-  updateMatrixWorld(): void;
-  readonly matrixWorldInverse: { readonly elements: ArrayLike<number> };
-  readonly projectionMatrix: { readonly elements: ArrayLike<number> };
-  readonly position: { readonly x: number; readonly y: number; readonly z: number };
-}
 import { createCornellScene } from '@vitrum-examples/cornell-scene';
 
 // ── URL params ────────────────────────────────────────────────────────────────

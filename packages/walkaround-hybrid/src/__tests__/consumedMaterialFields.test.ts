@@ -33,6 +33,9 @@ function makeDeviceStub(): GPUDevice {
     createTexture: vi.fn(),
     createBindGroup: vi.fn(),
     queue: { submit: vi.fn(), writeBuffer: vi.fn() },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

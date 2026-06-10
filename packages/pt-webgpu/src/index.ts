@@ -3,6 +3,7 @@ import type {
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
+  EngineError,
   EngineFactory,
   EngineOptions,
   EngineState,
@@ -278,6 +279,17 @@ class PTEngineWebGPU implements Engine {
   readonly #gpu: GpuResources;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
+  #onErrorSubs = new Set<(error: EngineError) => void>();
+  // ── GPU error surface (item 28, trust-remediation-plan-2026-06-10) ────────
+  // Dedup-throttle: only report one error per distinct message per N frames to
+  // avoid spamming the host when a shader validation error fires every frame.
+  #errorThrottleMap = new Map<string, number>(); // message → last-reported frameCount
+  #errorFrameCount = 0;
+  static readonly #ERROR_THROTTLE_FRAMES = 32;
+  readonly #onUncapturedError: (event: Event) => void;
+  // device.lost is a Promise<GPUDeviceLostInfo> — we store no reference to it but
+  // we attach a .then handler that routes into #emitError.  The handler is
+  // removed implicitly when the Promise settles (Promises don't hold listener refs).
   readonly #postDenoiser: OIDNFinalDispatcher | null;
   readonly #spectralEnabled: boolean;
   readonly #lightTreeImportanceSampling: boolean;
@@ -410,6 +422,46 @@ class PTEngineWebGPU implements Engine {
       repackScene: (scene, opts) => this.#repackScene(scene, opts),
       setScene: (scene) => this.setScene(scene),
       reset: () => this.reset(),
+    });
+
+    // ── GPU error wiring (item 28) ─────────────────────────────────────────
+    // Listen for validation/internal errors on the device.  The spec fires these
+    // through the `uncapturederror` event on GPUDevice; we throttle per distinct
+    // message to avoid per-frame spam when a shader has a persistent bug.
+    // The listener is attached at construction and removed at dispose (host-owns-
+    // lifecycle: we listen to a device we do not own, so we MUST clean up).
+    this.#onUncapturedError = (event: Event): void => {
+      if (this.#slot.get() === 'disposed') return;
+      const gpuEvent = event as { error?: { message?: string } };
+      const rawError = gpuEvent.error;
+      const message = rawError?.message ?? String(event);
+      // Detect kind from the error constructor name (spec mandates GPUValidationError
+      // and GPUInternalError as the only two concrete subtypes).
+      const kind: EngineError['kind'] = rawError != null && rawError.constructor?.name === 'GPUInternalError'
+        ? 'gpu-internal'
+        : 'gpu-validation';
+      // Throttle: only report the first occurrence per message per N frames.
+      const lastFrame = this.#errorThrottleMap.get(message) ?? -Infinity;
+      if (this.#errorFrameCount - lastFrame >= PTEngineWebGPU.#ERROR_THROTTLE_FRAMES) {
+        this.#errorThrottleMap.set(message, this.#errorFrameCount);
+        this.#emitError({ kind, message, fatal: false, raw: rawError });
+      }
+    };
+    opts.device.addEventListener('uncapturederror', this.#onUncapturedError);
+
+    // device.lost: settle → transition engine to 'error' state and emit fatal.
+    // We do NOT own the device so we only report + block further rendering.
+    opts.device.lost.then((info: { reason?: string; message?: string }) => {
+      if (this.#slot.get() === 'disposed') return;
+      this.#slot.set('error');
+      this.#emitError({
+        kind: 'device-lost',
+        message: info.message ?? `GPUDevice lost (reason: ${info.reason ?? 'unknown'})`,
+        fatal: true,
+        raw: info,
+      });
+    }).catch(() => {
+      // device.lost should not reject per spec, but guard defensively.
     });
   }
 
@@ -644,6 +696,16 @@ class PTEngineWebGPU implements Engine {
         cb(progress);
       } catch {
         // Telemetry callbacks must not break rendering.
+      }
+    }
+  }
+
+  #emitError(error: EngineError): void {
+    for (const cb of this.#onErrorSubs) {
+      try {
+        cb(error);
+      } catch {
+        // Error callbacks must not break rendering.
       }
     }
   }
@@ -919,6 +981,9 @@ class PTEngineWebGPU implements Engine {
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#assertLive('renderFrame');
+    // Advance the error-throttle frame counter so per-frame GPU errors don't
+    // spam the host on every call (see #onUncapturedError throttle logic).
+    this.#errorFrameCount++;
     if (!this.#inInverseRender) {
       this.#lastFrameInput = input;
     }
@@ -1677,6 +1742,9 @@ class PTEngineWebGPU implements Engine {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    // Remove GPU error listener before tearing down resources so the handler
+    // never fires after dispose (the device is no longer ours to observe).
+    this.#device.removeEventListener('uncapturederror', this.#onUncapturedError);
     this.#postDenoiser?.dispose();
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
@@ -1693,6 +1761,8 @@ class PTEngineWebGPU implements Engine {
     this.#geoPack = null;
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
+    this.#onErrorSubs.clear();
+    this.#errorThrottleMap.clear();
     this.#slot.set('disposed');
   }
 
@@ -1707,6 +1777,13 @@ class PTEngineWebGPU implements Engine {
     this.#onProgressSubs.add(cb);
     return () => {
       this.#onProgressSubs.delete(cb);
+    };
+  }
+
+  onError(cb: (error: EngineError) => void): () => void {
+    this.#onErrorSubs.add(cb);
+    return () => {
+      this.#onErrorSubs.delete(cb);
     };
   }
 }

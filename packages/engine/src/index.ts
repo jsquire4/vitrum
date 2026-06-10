@@ -37,6 +37,10 @@ export {
   attachVitrum,
   type AttachVitrumOptions,
   type AttachVitrumHandle,
+  // CameraLike: the structural camera interface for the RAF loop. A real
+  // THREE.PerspectiveCamera / THREE.OrthographicCamera satisfies it structurally.
+  // Exported so hosts can type their own camera adapters without redefining inline.
+  type CameraLike,
 } from './lifecycle/vanilla.js';
 
 // Raw WebGPU device negotiation — the lifecycle-layer peer of attachVitrum for

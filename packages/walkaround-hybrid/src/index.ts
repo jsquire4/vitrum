@@ -43,3 +43,18 @@ export {
 } from './neural/weights.js';
 export type { ModelWeights, LayerWeights } from './neural/weights.js';
 export { WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
+
+// Quality preset public surface — hosts can enumerate tiers, resolve preset
+// knob values, and build quality-picker UIs without importing internal paths.
+export {
+  QUALITY_PRESETS,
+  resolveQualityPreset,
+  CHECKERBOARD_MEASURED_PERF_PROOF,
+  CHECKERBOARD_PENDING_PERF_PROOF,
+  CHECKERBOARD_SUPPORT_DETAILS,
+  type QualityTier,
+  type QualityPreset,
+  type CheckerboardPerfProof,
+  type CheckerboardPerPassSpeedups,
+  type CheckerboardQualitySummary,
+} from './HybridEngineQualityPreset.js';

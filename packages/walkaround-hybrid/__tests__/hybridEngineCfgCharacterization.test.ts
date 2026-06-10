@@ -42,6 +42,9 @@ function makeMockDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 8,
     },
     features: new Set<string>(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 

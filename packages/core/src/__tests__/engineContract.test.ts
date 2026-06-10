@@ -81,6 +81,16 @@ describe('backend promise ledger', () => {
     }
   });
 
+  it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.methodPromises.onError).toBe(true);
+      // This is also an exhaustive contract check so new backends are forced
+      // to decide rather than inherit a silent false default.
+      expect(typeof rec.methodPromises.onError).toBe('boolean');
+      void id;
+    }
+  });
+
   it('pins walkaround mutation fidelity rows that differ from the boolean patch surface', () => {
     const rec = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
 

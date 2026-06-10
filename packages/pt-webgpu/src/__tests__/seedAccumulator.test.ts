@@ -66,7 +66,12 @@ describe('pt-webgpu seedBlit WGSL contract', () => {
 describe('pt-webgpu seedAccumulator capability', () => {
   it('reports supportsAccumulatorSeed === true', async () => {
     const engine = await createPTEngine_WebGPU({
-      device: { createCommandEncoder: vi.fn() } as unknown as GPUDevice,
+      device: {
+        createCommandEncoder: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        lost: new Promise<never>(() => {}),
+      } as unknown as GPUDevice,
     });
     expect(engine.capabilities.supportsAccumulatorSeed).toBe(true);
     expect(typeof engine.seedAccumulator).toBe('function');
@@ -107,6 +112,9 @@ function makeSeedCapableDevice(): GPUDevice {
     createBindGroup: vi.fn(() => ({})),
     createCommandEncoder: vi.fn(() => encoder),
     limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8 },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
 }
 
