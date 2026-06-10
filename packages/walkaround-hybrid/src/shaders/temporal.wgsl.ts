@@ -102,7 +102,10 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   prev.M = min(prev.M, ubo.temporalMClampDI);
 
   // Evaluate p̂ at CURRENT pixel for the previous reservoir's chosen light.
-  let pHatPrevAtCur = restir_di_compute_phat_from_surface(prev.lightId, curSurf);
+  // Wave 4: pass prev.xi so the ENV_SAMPLE_SENTINEL branch can recover the
+  // stored HDRI direction (restir_di_compute_phat_xi handles both emitter and
+  // env-sentinel lids — emitter path ignores xi, env path decodes xi → dir).
+  let pHatPrevAtCur = restir_di_compute_phat_xi(prev.lightId, prev.xi, curSurf);
   let w_prev = pHatPrevAtCur * prev.W * f32(prev.M);
 
   // Combine reservoirs.
@@ -117,8 +120,8 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
     combined.xi      = prev.xi;
   }
 
-  // Recompute W.
-  let pHatZ = restir_di_compute_phat_from_surface(combined.lightId, curSurf);
+  // Recompute W. Wave 4: pass combined.xi for the env-sentinel path.
+  let pHatZ = restir_di_compute_phat_xi(combined.lightId, combined.xi, curSurf);
   combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);

@@ -169,7 +169,15 @@ struct FrameParams {
   // it gates the diffuse multi-bounce feedback loop of the DDGI atlas. (Was the
   // inert _pad2 slot; byte size unchanged.)
   indirectFeedback: u32,
-  _pad3: u32, _pad4: u32,
+  // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+  // hasEnv = 1u  → sample ddgiEnvMap by ray direction on probe-ray miss.
+  // hasEnv = 0u  → existing procedural gradient (default; byte-identical).
+  // envRotationY + envIntensity match the H6 convention in environmentSample.wgsl:
+  //   lookupDir = RY(-envRotationY) · worldDir
+  //   result    = texel.rgb * envIntensity
+  hasEnv:       u32,
+  envRotationY: f32,
+  envIntensity: f32,
 }
 
 // -----------------------------------------------------------------
@@ -226,6 +234,15 @@ struct DdgiTraceParams {
 @group(2) @binding(3) var                      irradianceSamp: sampler;
 @group(2) @binding(4) var<uniform>             gridParams:   ProbeGridParams;
 @group(2) @binding(5) var<uniform>             frameParams:  FrameParams;
+// Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+// ddgiEnvMap  : rgba16float equirect radiance (unit-intensity, .rgb; .a unused
+//               by DDGI — pdf lane is for DI MIS). A 1×1 placeholder is bound
+//               when hasEnv=0 so the bind group is always valid.
+// ddgiEnvSamp : sampler for ddgiEnvMap. The DDGI look-up uses textureLoad (not
+//               textureSample) to avoid requiring the 'filter' usage on the
+//               texture, matching the environmentSample.wgsl convention.
+@group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
+@group(2) @binding(7) var                      ddgiEnvSamp:  sampler;
 
 // -----------------------------------------------------------------
 // BVH traversal — merged world BLAS or TLAS+local BLAS (PR-5.2).
@@ -484,17 +501,56 @@ fn probeWorldPos(probeIdx: u32) -> vec3f {
 // -----------------------------------------------------------------
 // Sky / environment colour sampling for probe miss-rays.
 //
-// Uses frameParams.skyTint and frameParams.skyIrradiance written by the
-// host's ProbeUpdatePass.setSkyParams() (B2 audit remediation — replaced
-// the Cornell-only hardcoded gradient). The default host values
-// (tint=vec3f(0.4,0.6,1.0), irradiance=2.0) reproduce the former
-// hardcoded midpoint exactly, so Cornell renders are unchanged.
+// Wave 4 (2026-06-10) — HDRI-aware: when frameParams.hasEnv == 1u the
+// probe-ray miss samples the equirect env map (ddgiEnvMap) by the ray
+// direction using the SAME UV + rotation convention as envRadiance in
+// environmentSample.wgsl (H6):
 //
-// Geometry: above-horizon tinted by skyTint × cosine falloff from zenith;
-// below-horizon attenuated to a neutral dark ground to avoid artificially
-// brightening the indirect irradiance from probe rays that miss the floor.
+//   lookupDir = ddgiEnvRotateYNeg(normalize(dir), envRotationY)
+//               [= RY(-envRotationY)·dir — world → unrotated-map space]
+//   phi   = atan2(lookupDir.z, lookupDir.x)
+//   theta = acos(clamp(lookupDir.y, -1, 1))
+//   u = fract(phi/(2π) + 0.5)        [same as: fract(phi*INV_PI*0.5 + 0.5)]
+//   v = clamp(theta/π, 0, 0.999999)
+//   texel = textureLoad(ddgiEnvMap, vec2i(floor(u*W), floor(v*H)), 0)
+//   result = texel.rgb * max(envIntensity, 0)
+//
+// When hasEnv == 0u the existing procedural gradient is returned unchanged
+// (byte-identical to the pre-Wave-4 path for scenes without an HDRI).
+//
+// Procedural path: uses frameParams.skyTint and frameParams.skyIrradiance
+// written by ProbeUpdatePass.setSkyParams(). Default values
+// (tint=(0.4,0.6,1.0), irradiance=2.0) reproduce the former hardcoded
+// midpoint exactly — Cornell renders are unchanged.
 // -----------------------------------------------------------------
+
+// H6 — RY(-rotY)·d: world direction → unrotated-map lookup direction.
+// Matches envRotateYNeg in environmentSample.wgsl exactly.
+fn ddgiEnvRotateYNeg(d: vec3f, rotY: f32) -> vec3f {
+  let c = cos(rotY);
+  let s = sin(rotY);
+  return vec3f(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
+}
+
 fn sampleSkyColor(dir: vec3f) -> vec3f {
+  // HDRI path: sample the equirect map by direction.
+  if (frameParams.hasEnv == 1u) {
+    let dims = textureDimensions(ddgiEnvMap, 0);
+    let w = i32(dims.x);
+    let h = i32(dims.y);
+    if (w > 0 && h > 0) {
+      let lookupDir = ddgiEnvRotateYNeg(safe_normalize(dir), frameParams.envRotationY);
+      let phi   = atan2(lookupDir.z, lookupDir.x);
+      let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
+      let u = fract(phi * (1.0 / (2.0 * PI)) + 0.5);
+      let v = clamp(theta * (1.0 / PI), 0.0, 0.999999);
+      let ix = clamp(i32(floor(u * f32(w))), 0, w - 1);
+      let iy = clamp(i32(floor(v * f32(h))), 0, h - 1);
+      let texel = textureLoad(ddgiEnvMap, vec2i(ix, iy), 0);
+      return texel.rgb * max(frameParams.envIntensity, 0.0);
+    }
+  }
+  // Procedural sky fallback (no HDRI, or degenerate map dims).
   let above = max(0.0, dir.y);   // 0..1 above horizon
   let below = max(0.0, -dir.y);  // 0..1 below horizon
   // Above-horizon: lerp from horizon (white/neutral) to zenith tint,

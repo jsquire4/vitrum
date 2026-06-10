@@ -334,6 +334,23 @@ fn lo_direct(
   let r = loadSpatialDI(pixelIdx);
   if (r.W <= 0.0 || r.M == 0u) { return vec3f(0.0); }
   let lid = r.lightId;
+
+  // Wave 4 — ENV_SAMPLE_SENTINEL: the reservoir's winning candidate was an HDRI
+  // importance-sampled direction. Decode xi → world direction and shade with the
+  // env radiance × BRDF × W (no shadow ray — visibility was already tested in RIS;
+  // the W already bakes in occlusion via the w_sum=0 zero-out on occlusion, matching
+  // the existing emitter DI pattern where visibility is resolved in ris.wgsl before
+  // storing the reservoir).
+  if (lid == ENV_SAMPLE_SENTINEL) {
+    if (!envHasMap()) { return vec3f(0.0); }
+    let envDir = envDirFromXi(r.xi);
+    let nDotL = max(0.0, dot(normal, envDir));
+    if (nDotL < 1e-6) { return vec3f(0.0); }
+    let envColor = envRadiance(envDir);
+    let brdfE = evalGGX(albedo, rough, metal, normal, wo, envDir);
+    return envColor * brdfE * r.W;
+  }
+
   if (lid >= ubo.emitterCount) { return vec3f(0.0); }
   let e  = emitters[lid];
   // Stochastic xi instead of (0.5, 0.5). The deterministic centre-sample

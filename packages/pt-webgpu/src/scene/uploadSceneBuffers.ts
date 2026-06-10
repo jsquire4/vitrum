@@ -28,6 +28,7 @@ import {
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
   packEmitterArrays,
+  type EnvSummaryForTree,
   type PackedEmitterArrays,
 } from './emitterPacking.js';
 
@@ -446,7 +447,19 @@ export function buildPackedScene(
   // no variance reduction over the uniform pick (and `buildLightTree` requires a
   // non-empty input), so below 2 lights we ship an empty buffer + the uniform
   // fallback gate (`lightTreeEnabled = false`).
-  const lightTreeInput = buildLightTreeInputForScene(scene);
+  //
+  // Pass the already-computed `emitArrays` (from packEmitterArrays above) and the
+  // env summary derived from `environment` (from environmentParams above) so
+  // buildLightTreeInputForScene does NOT re-run either expensive call a second time.
+  const envSummaryForTree: EnvSummaryForTree = {
+    hasHdri: environment.hasHdri,
+    sunStrength: environment.sunStrength,
+    tint: environment.tint,
+  };
+  const lightTreeInput = buildLightTreeInputForScene(scene, {
+    packed: emitArrays,
+    envSummary: envSummaryForTree,
+  });
   let lightTreeNodes = new Float32Array(0);
   let lightTreeNodeCount = 0;
   let lightTreeEnabled = false;
@@ -1063,13 +1076,22 @@ export function uploadEmitterArrays(
  * Mirrors the `uploadScenePack*Realloc` pattern: the `lightTreeBuffer` handle is
  * read off the struct at destroy-time, so swapping a fresh handle here needs no
  * `destroy`-closure rewire.
+ *
+ * `precomputed` — optional already-computed sub-results (same-scene). When provided,
+ * the internal `packEmitterArrays` / `environmentParams` calls inside
+ * `buildLightTreeInputForScene` are skipped:
+ *   - `packed`: result of `packEmitterArrays(scene)` already held by the caller.
+ *   - `envSummary`: narrow env metadata from `environmentParams(scene)` held by caller.
+ * Incremental callers (updateEmitter / updateEnvironment / updatePrimitive) always
+ * hold one or both of these — threading them here avoids a redundant recomputation.
  */
 export function rebuildLightTreeForScene(
   device: GPUDevice,
   sb: UploadedSceneBuffers,
   scene: Scene,
+  precomputed?: { packed?: PackedEmitterArrays; envSummary?: EnvSummaryForTree },
 ): boolean {
-  const input = buildLightTreeInputForScene(scene);
+  const input = buildLightTreeInputForScene(scene, precomputed);
   let nodes = new Float32Array(0);
   let nodeCount = 0;
   let enabled = false;

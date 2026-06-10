@@ -95,6 +95,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #regime: AccumRegime;
   readonly #gpu: GlResources;
 
+  // ── Context-loss state ─────────────────────────────────────────────────────
+  // `#contextLost` is set to true on `webglcontextlost` (before the user-space
+  // event fires) and cleared if the host disposes and recreates. Per the core
+  // contract the HOST recreates the engine on device loss — this engine does NOT
+  // auto-restore. The event listeners are registered against the canvas element
+  // (which the WebGL2RenderingContext always exposes via `.canvas`).
+  #contextLost = false;
+  readonly #onContextLost: (e: Event) => void;
+  readonly #onContextRestored: () => void;
+
   #scene: Scene | null = null;
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
@@ -134,6 +144,41 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         ? 'normal'
         : 'alpha-composite';
     this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
+
+    // ── Context-loss listeners ────────────────────────────────────────────────
+    // Per the WebGL spec, calling `preventDefault()` on the `webglcontextlost`
+    // event signals that the page wants to handle restore — required before
+    // `webglcontextrestored` will ever fire. We set `#contextLost` to block all
+    // rendering + resource-creation paths. Per the core contract the HOST disposes
+    // and recreates the engine when the context is lost; this engine does NOT
+    // attempt to auto-rebuild. The `webglcontextrestored` handler only warns the
+    // host to do so (do not attempt auto-restore from inside the engine).
+    this.#onContextLost = (e: Event): void => {
+      e.preventDefault(); // Required so 'webglcontextrestored' can fire later.
+      this.#contextLost = true;
+      console.warn(
+        '[vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. ' +
+          'Per the core contract, the host should call engine.dispose() and ' +
+          'create a fresh engine with the recovered context.',
+      );
+    };
+    this.#onContextRestored = (): void => {
+      // Do NOT attempt auto-restore (the GPU resource state is stale). Warn the
+      // host to dispose + recreate as specified by the core Engine contract.
+      console.warn(
+        '[vitrum/pt-webgl2] WebGL context restored. ' +
+          'Call engine.dispose() and create a fresh engine with the recovered context — ' +
+          'this engine cannot resume after a context loss.',
+      );
+    };
+    // `gl.canvas` is the HTMLCanvasElement or OffscreenCanvas the context was
+    // created from. addEventListener is present on both; the cast to EventTarget
+    // handles the union.
+    const canvas = opts.device.canvas as EventTarget;
+    if (canvas != null && typeof canvas.addEventListener === 'function') {
+      canvas.addEventListener('webglcontextlost', this.#onContextLost);
+      canvas.addEventListener('webglcontextrestored', this.#onContextRestored);
+    }
   }
 
   get state(): EngineState {
@@ -249,6 +294,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#guardLive('renderFrame');
+    // Context-loss guard: the GL device is no longer usable. Return a safe skipped
+    // output (allowed by the contract — the host owns the device-lost recovery path).
+    if (this.#contextLost) {
+      return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    }
     if (this.#sceneTextures == null || this.#geoPack == null) {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
@@ -311,6 +361,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    // Remove context-loss listeners before tearing down resources — the listeners
+    // are no longer needed and must not fire after dispose().
+    const canvas = this.#gl.canvas as EventTarget;
+    if (canvas != null && typeof canvas.removeEventListener === 'function') {
+      canvas.removeEventListener('webglcontextlost', this.#onContextLost);
+      canvas.removeEventListener('webglcontextrestored', this.#onContextRestored);
+    }
     this.#gpu.dispose();
     this.#sceneTextures?.destroy();
     this.#sceneTextures = null;

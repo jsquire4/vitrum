@@ -151,8 +151,27 @@ export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtl
 
 /** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */
 export function uploadTextureAtlas(gl: WebGL2RenderingContext, atlas: TextureAtlas): WebGLTexture {
+  // Size guards: exceed MAX_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS and the
+  // texImage3D silently fails on most drivers — throw an actionable error first.
+  if (gl.isContextLost()) {
+    throw new Error('pt-webgl2: WebGL context lost — cannot create material texture atlas');
+  }
+  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (atlas.dim > maxSize) {
+    throw new Error(
+      `pt-webgl2: material texture atlas needs a ${atlas.dim}² layer but this device only supports ` +
+        `${maxSize}² — reduce the resolution of material textures in the scene.`,
+    );
+  }
+  const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+  if (atlas.layerCount > maxLayers) {
+    throw new Error(
+      `pt-webgl2: material texture atlas needs ${atlas.layerCount} layers but this device only supports ` +
+        `${maxLayers} — reduce the number of unique material textures in the scene.`,
+    );
+  }
   const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create texture atlas');
+  if (tex == null) throw new Error('pt-webgl2: WebGL context lost — cannot create material texture atlas');
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);

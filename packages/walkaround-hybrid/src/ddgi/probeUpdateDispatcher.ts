@@ -90,6 +90,12 @@ export function dispatchProbeUpdateRaysPass(
       { binding: 3, resource: gpu.linearSampler },
       { binding: 4, resource: { buffer: gpu.gridParamsBuf } },
       { binding: 5, resource: { buffer: gpu.frameParamsBuf } },
+      // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+      // A 1×1 placeholder view is bound when hasEnv=0 so the bind group is
+      // always valid; the WGSL sampleSkyColor gates on frameParams.hasEnv
+      // before sampling, so the placeholder is never actually read.
+      { binding: 6, resource: gpu.envMapView },
+      { binding: 7, resource: gpu.envSamplerForProbe },
     ],
   });
 

@@ -66,6 +66,8 @@ function makeMockDevice(tracking: MockDeviceTracking): GPUDevice {
         height: (desc.size as GPUExtent3DDict).height ?? 4,
         depthOrArrayLayers: 1,
         destroy: vi.fn(() => { tracking.destroyedTextures.push(tex as unknown as GPUTexture); }),
+        // Wave 4: createView() is needed for the env-map placeholder created in init().
+        createView: vi.fn(() => ({})),
       } as unknown as GPUTexture;
       tracking.createdTextures.push(tex);
       return tex;
@@ -152,10 +154,13 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     // matIdBuf, tlasNodesBuf, tlasInstIdxBuf, tlasBlasRootsBuf, tlasW2lBuf,
     // tlasL2wBuf, traceParamsBuf, materialsBuf, lightsBuf, gridParamsBuf,
     // frameParamsBuf, blendParamsBuf, borderVisUboBuf, rayResultsBuf,
-    // activeProbesBuf = 19 buffers (borderIrrUboBuf removed with the SH
-    // irradiance migration — no irradiance border pass).
+    // activeProbesBuf, emitterTrisBuf = 20 buffers (borderIrrUboBuf removed
+    // with the SH irradiance migration — no irradiance border pass).
+    // Wave 4: 1 extra texture (env-map placeholder) is now also allocated.
     const buffersAfterInit = tracking.createdBuffers.length;
     expect(buffersAfterInit).toBeGreaterThanOrEqual(19); // at least 19 buffers from init
+    // Wave 4 — placeholder env texture (rgba16float, 1×1) is created in init().
+    expect(tracking.createdTextures.length).toBeGreaterThanOrEqual(1);
 
     pass.dispose();
 
@@ -169,6 +174,12 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       (b) => !tracking.destroyedBuffers.includes(b),
     );
     expect(undestroyed).toHaveLength(0);
+
+    // Wave 4 — the pass-owned env-map placeholder texture must also be destroyed.
+    const undestroyedTex = tracking.createdTextures.filter(
+      (t) => !tracking.destroyedTextures.includes(t),
+    );
+    expect(undestroyedTex).toHaveLength(0);
   });
 
   it('double dispose() does not throw and does not call destroy() a second time', async () => {

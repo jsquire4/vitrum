@@ -37,6 +37,7 @@ import {
 } from './wgsl/pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
+import { PT_WEBGPU_PRESENT_WGSL } from './wgsl/present.wgsl.js';
 import {
   composeRestirPtProducerWgsl,
   composeRestirPtTemporalWgsl,
@@ -216,6 +217,29 @@ export class GpuResources {
    */
   #seedBlitVarPlaceholder: GPUBuffer | null = null;
 
+  // ── Present-pass resources (tonemap / exposure / outputColorSpace) ────────────
+  /**
+   * Present-pass output texture (rgba16float, TEXTURE_BINDING | STORAGE_BINDING).
+   * Sized to match `accumTexture`; recreated when the accum dims change (inside
+   * `ensureAccumResources`).  The present compute pass reads `accumTexture` (the
+   * running-mean linear HDR stored by `accumulateFrame`) and writes the
+   * tonemapped + OETF-encoded result here.  `renderFrame` returns this texture as
+   * `primaryRadiance`; adjoint/OIDN readbacks continue using `accumTexture`.
+   * Null before the first `ensureAccumResources` call.
+   */
+  presentTexture: GPUTexture | null = null;
+  presentView: GPUTextureView | null = null;
+  /**
+   * PresentParams UBO (16 bytes): tonemapMode (u32), exposure (f32),
+   * outputColorSpace (u32), _pad (u32). Written per-frame by `writePresentParams`.
+   * Null until `ensurePresentPipeline` is first called.
+   */
+  #presentParamsBuffer: GPUBuffer | null = null;
+  /** The present compute pipeline (lazily built on first `ensurePresentPipeline`). */
+  #presentPipeline: GPUComputePipeline | null = null;
+  /** Byte size of the PresentParams UBO: 4 × 4 bytes. */
+  static readonly PRESENT_PARAMS_BYTES = 16;
+
   /** Bytes per eye vertex in the scratch stack: 2× vec4f = 32. */
   static readonly BDPT_EYE_VERTEX_BYTES = 32;
   /**
@@ -275,6 +299,10 @@ export class GpuResources {
     this.accumBufferByteSize = 0;
     this.accumWidth = 0;
     this.accumHeight = 0;
+    // The present texture is sized to accumTexture; destroy it together.
+    this.presentTexture?.destroy();
+    this.presentTexture = null;
+    this.presentView = null;
   }
 
   clearAccumBuffer(): void {
@@ -373,6 +401,16 @@ export class GpuResources {
     this.accumBufferByteSize = targetByteSize;
     this.accumWidth = width;
     this.accumHeight = height;
+    // Present texture — same dims as accumTexture. Needs STORAGE_BINDING (write)
+    // for the present compute pass and TEXTURE_BINDING so hosts can read it.
+    // COPY_SRC so snapshot/debug paths can read it back.
+    this.presentTexture = this.#device.createTexture({
+      label: 'vitrum.pt-webgpu.present',
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
+    this.presentView = this.presentTexture.createView();
     // Drop ALL cached bind groups: the path-trace groups AND (when reuse is on)
     // the reuse group-0, which references the just-recreated accum/aux views.
     this.invalidateBindGroups();
@@ -1401,6 +1439,94 @@ export class GpuResources {
     this.sppmBuffersReady = false;
   }
 
+  // ── Present-pass public API ──────────────────────────────────────────────────
+
+  /**
+   * Lazily build the present compute pipeline and its PresentParams UBO.
+   * No-op if already built. Must be called before `dispatchPresentPass`.
+   *
+   * Uses `layout: 'auto'` (the present pass has no cross-pipeline layout sharing).
+   */
+  ensurePresentPipeline(): void {
+    if (this.#presentPipeline != null) return;
+    const module = this.#device.createShaderModule({
+      label: 'vitrum.pt-webgpu.present',
+      code: PT_WEBGPU_PRESENT_WGSL,
+    });
+    this.#presentPipeline = this.#device.createComputePipeline({
+      label: 'vitrum.pt-webgpu.present.pipeline',
+      layout: 'auto',
+      compute: { module, entryPoint: 'presentMain' },
+    });
+    this.#presentParamsBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.present.params',
+      size: GpuResources.PRESENT_PARAMS_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  /**
+   * Write the PresentParams UBO for the current frame.  Converts the
+   * FrameQualitySettings string dials to their WGSL-side numeric indices:
+   *   tonemapMode:      aces=0(default), agx=1, reinhard=2, linear=3, none=4
+   *   exposure:         linear multiplier, default 1.0
+   *   outputColorSpace: srgb=0(default, apply OETF), linear=1(skip OETF)
+   *
+   * Called per-frame by the engine just before `dispatchPresentPass`.
+   * No-op if `ensurePresentPipeline` has not been called yet.
+   */
+  writePresentParams(
+    tonemapMode: number,
+    exposure: number,
+    outputColorSpace: number,
+  ): void {
+    if (this.#presentParamsBuffer == null) return;
+    const ubo = new ArrayBuffer(GpuResources.PRESENT_PARAMS_BYTES);
+    const u = new Uint32Array(ubo);
+    const f = new Float32Array(ubo);
+    u[0] = tonemapMode >>> 0;
+    f[1] = exposure;
+    u[2] = outputColorSpace >>> 0;
+    u[3] = 0; // _pad
+    this.#device.queue.writeBuffer(this.#presentParamsBuffer, 0, ubo);
+  }
+
+  /**
+   * Encode the present compute pass onto `encoder`.  Reads `accumTexture`
+   * (the running-mean linear HDR) and writes the tonemapped+OETF result to
+   * `presentTexture`.  Must be called AFTER the path-trace pass has written
+   * `accumTexture` this frame.
+   *
+   * Preconditions: `ensurePresentPipeline` + `writePresentParams` have run;
+   * `accumTexture` / `presentTexture` / `presentView` / `accumView` are non-null.
+   */
+  dispatchPresentPass(encoder: GPUCommandEncoder, width: number, height: number): void {
+    if (
+      this.#presentPipeline == null ||
+      this.#presentParamsBuffer == null ||
+      this.accumTexture == null ||
+      this.presentTexture == null ||
+      this.presentView == null
+    ) {
+      return;
+    }
+    // Per-frame bind group: PresentParams UBO + accumTex (sampled) + presentTex (storage write).
+    const bg = this.#device.createBindGroup({
+      label: 'vitrum.pt-webgpu.present.bindgroup',
+      layout: this.#presentPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#presentParamsBuffer } },
+        { binding: 1, resource: this.accumTexture.createView() },
+        { binding: 2, resource: this.presentView },
+      ],
+    });
+    const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.present.pass' });
+    pass.setPipeline(this.#presentPipeline);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
+    pass.end();
+  }
+
   /**
    * Full GPU-resource teardown for engine `dispose()`: destroy the accum textures
    * + buffers, drop the cached bind groups, destroy + null the params buffer, and
@@ -1421,6 +1547,9 @@ export class GpuResources {
     this.#seedBlitVarPlaceholder = null;
     this.#seedBlitSampler = null; // GPUSampler has no destroy(); drop the ref
     this.#seedBlitPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
+    this.#presentParamsBuffer?.destroy();
+    this.#presentParamsBuffer = null;
+    this.#presentPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
     this.paramsBuffer?.destroy();
     this.paramsBuffer = null;
     this.computePipeline = null;

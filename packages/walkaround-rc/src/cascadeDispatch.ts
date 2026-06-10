@@ -134,6 +134,14 @@ export interface RCDispatchOptsRaw {
    *  placeholder so the bind group stays valid. */
   emittersBuf?: GPUBuffer;
   emitterCount?: number;
+
+  /** A7 (2026-06-10): packed `RCLightBuffer` (point/spot analytic lights).
+   *  16-byte header (count + 3 pad) + up to 16 × 64-byte RCLight entries =
+   *  1040 bytes total. The host packs this via `packRCLights()` in
+   *  HybridEngineRC.ts. Omit to bind a 1040-byte zero placeholder (lightCount
+   *  stays 0 → loop is a no-op, byte-identical with prior). */
+  lightsBuf?: GPUBuffer;
+  lightCount?: number;
 }
 
 // ─── Uniform data builders ────────────────────────────────────────────────────
@@ -161,6 +169,7 @@ function buildCascadeUniformDataInto(
   bvhMode: number,
   tlasNodeCount: number,
   emitterCount: number,
+  lightCount: number,           // A7: point/spot analytic light count
   dims: readonly CascadeDim[] = CASCADE_DIMS,
 ): void {
   const dim = dims[k]!;
@@ -176,8 +185,8 @@ function buildCascadeUniformDataInto(
   // sunColor(3f), envIntensity(f)
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), bvhMode(u)
   // tlasNodeCount(u), emitterCount(u) [slot 29 — RC emitter NEE]
-  // Total allocation 40 float/uint = 160 bytes (WGSL struct padded to its
-  // 16-byte-aligned size; the trailing slots are slack).
+  // lightCount(u) [slot 30 — A7 point/spot lights], _pad3/4/5(u)
+  // Total allocation 40 float/uint = 160 bytes.
   const ui = new Uint32Array(d.buffer);
   d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
   d[4]  = s[0]; d[5]  = s[1]; d[6]  = s[2]; d[7]  = 0;
@@ -195,6 +204,8 @@ function buildCascadeUniformDataInto(
   ui[27] = bvhMode >>> 0;
   ui[28] = tlasNodeCount >>> 0;
   ui[29] = emitterCount >>> 0;
+  ui[30] = lightCount >>> 0;    // A7: point/spot analytic light count
+  // ui[31..33] = _pad3/4/5 (zero from Float32Array init)
 }
 
 function buildMergeUniformData(
@@ -301,6 +312,7 @@ export class RCDispatcher {
       const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
       const tlasNodeCount = opts.tlasNodeCount ?? 0;
       const emitterCount = opts.emitterCount ?? 0;
+      const lightCount = opts.lightCount ?? 0;
       buildCascadeUniformDataInto(
         pass.cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
@@ -310,6 +322,7 @@ export class RCDispatcher {
         bvhMode,
         tlasNodeCount,
         emitterCount,
+        lightCount,
         dims,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -355,7 +368,7 @@ export class RCDispatcher {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  /** Cast pass: BVH+mat SSBOs, cascade out, env, uniforms, optional TLAS (C2). */
+  /** Cast pass: BVH+mat SSBOs, cascade out, env, uniforms, optional TLAS (C2), analytic lights (A7). */
   private _castBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
     return device.createBindGroupLayout({
       label: 'rc-cast-bgl',
@@ -375,6 +388,10 @@ export class RCDispatcher {
         { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_emitters
+        // A7 (2026-06-10): analytic point/spot lights (rc_lights: RCLightBuffer).
+        // 16-byte header + up to 16 × 64-byte entries = 1040 bytes; a 1040-byte zero
+        // placeholder is bound when the scene has no point/spot fixtures.
+        { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
       ],
     });
   }
@@ -514,6 +531,11 @@ export class RCDispatcher {
     // loop never reads it. 80 (not 32) bytes because EmitterTri is 80 bytes;
     // a sub-stride placeholder would be rejected like the TLAS 16-vs-32 class.
     const emittersBuf = opts.emittersBuf ?? this._dummyStorageBuffer(device, 'rc-emitters-dummy', 80);
+    // A7 (2026-06-10): analytic point/spot lights buffer (binding 15, RCLightBuffer).
+    // 16-byte header (count + 3 pad u32) + 16 × 64-byte RCLight entries = 1040 bytes.
+    // When absent, bind a 1040-byte zero placeholder (count=0 → loop no-op).
+    // 1040 bytes ≥ the RCLightBuffer struct stride so strict backends accept it.
+    const lightsBuf = opts.lightsBuf ?? this._dummyStorageBuffer(device, 'rc-lights-dummy', 1040);
 
     // Env texture + sampler. If the caller supplied both, use them; otherwise
     // create a 1×1 black placeholder.
@@ -555,6 +577,7 @@ export class RCDispatcher {
       const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
       const tlasNodeCount = opts.tlasNodeCount ?? 0;
       const emitterCount = opts.emitterCount ?? 0;
+      const lightCount = opts.lightCount ?? 0;
       buildCascadeUniformDataInto(
         cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
@@ -564,6 +587,7 @@ export class RCDispatcher {
         bvhMode,
         tlasNodeCount,
         emitterCount,
+        lightCount,
         cascadeDims,
       );
       const cascadeParamsBuf = device.createBuffer({
@@ -598,6 +622,7 @@ export class RCDispatcher {
           { binding: 12, resource: { buffer: tlasW2lBuf } },
           { binding: 13, resource: { buffer: tlasL2wBuf } },
           { binding: 14, resource: { buffer: emittersBuf } },
+          { binding: 15, resource: { buffer: lightsBuf } },  // A7: rc_lights
         ],
       });
 

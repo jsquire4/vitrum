@@ -88,31 +88,31 @@ export function buildSceneTextures(
   //      IS the unique-material list the materials texture packs. The atlas layer
   //      map turns each material's `<map>` ref into the GLSL's layer index.
   const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOf);
-  const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim);
+  const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
 
   // (5) lights (6px/light) — driven from the original scene's emitters.
   const lightsData = packLightsTexture(supported.emitters);
-  const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim);
+  const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
 
   // (5b) B4 — mesh-area triangle lights for NEE, built from the emissive mesh-area
   //      emitters + the merged world-space geometry. null when the scene has none.
   const meshLightsData = packMeshAreaLights(supported, merged);
   const meshLights =
-    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim) : null;
+    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
 
   // (6) environment importance-sampling (null for non-HDRI scenes).
   const env = buildEquirectInfo(supported.environment);
-  const envMap = env.map ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height) : null;
+  const envMap = env.map ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map') : null;
   const envMarginal = env.marginal
-    ? uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height)
+    ? uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF')
     : null;
   const envConditional = env.conditional
-    ? uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height)
+    ? uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height, 'environment conditional CDF')
     : null;
 
   // (7) vertex-attribute array (normal / tangent / uv / color), 4 layers.
   const attrData = packAttributesArray(merged);
-  const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers);
+  const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes');
 
   // (8) assemble the bundle.
   let destroyed = false;
@@ -171,6 +171,55 @@ function setSampling2D(gl: WebGL2RenderingContext, target: number): void {
   gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
+/**
+ * Guard a 2D texture dimension against the device's `MAX_TEXTURE_SIZE`.
+ * Throws a clear, actionable error naming the resource, the required size, and
+ * the device limit before any GL call is attempted — so the host gets a
+ * JavaScript Error with an accurate message instead of a silent texImage2D
+ * failure followed by a black render.
+ *
+ * @param gl           the live WebGL2 context
+ * @param dim          the required square dimension (or the larger of width/height)
+ * @param resourceName human-readable name for the error message (e.g. "scene BVH position")
+ * @throws Error with actionable text when `dim > MAX_TEXTURE_SIZE`
+ */
+function guardTexSize(gl: WebGL2RenderingContext, dim: number, resourceName: string): void {
+  // isContextLost() returns true after a context-loss event; gl.getParameter would
+  // return 0 in that state, producing a misleading "needs 0² > 0²" message.
+  // Guard here so resource-creation paths fail with the correct error.
+  if (gl.isContextLost()) {
+    throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
+  }
+  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (dim > maxSize) {
+    throw new Error(
+      `pt-webgl2: ${resourceName} needs a ${dim}² RGBA32F texture but this device only supports ` +
+        `${maxSize}² — reduce scene complexity (fewer triangles / materials / lights) or split the scene.`,
+    );
+  }
+}
+
+/**
+ * Guard an array-texture layer count against the device's `MAX_ARRAY_TEXTURE_LAYERS`.
+ *
+ * @param gl           the live WebGL2 context
+ * @param layers       the required layer count
+ * @param resourceName human-readable name (e.g. "material texture atlas")
+ * @throws Error with actionable text when `layers > MAX_ARRAY_TEXTURE_LAYERS`
+ */
+function guardArrayLayers(gl: WebGL2RenderingContext, layers: number, resourceName: string): void {
+  if (gl.isContextLost()) {
+    throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} array texture`);
+  }
+  const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+  if (layers > maxLayers) {
+    throw new Error(
+      `pt-webgl2: ${resourceName} needs ${layers} array-texture layers but this device only supports ` +
+        `${maxLayers} — reduce the number of unique material textures in the scene.`,
+    );
+  }
+}
+
 /** Square RGBA32F sampler2D (dim×dim), NEAREST/ClampToEdge. Accepts the
  *  `TexelGrid.data` union; the materials/lights grids are `kind: 'rgba32f'`, so
  *  the float view is the correct upload type. */
@@ -178,9 +227,11 @@ function uploadRgba32f(
   gl: WebGL2RenderingContext,
   data: Float32Array | Uint32Array,
   dim: number,
+  resourceName: string,
 ): WebGLTexture {
+  guardTexSize(gl, dim, resourceName);
   const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create RGBA32F texture');
+  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   setSampling2D(gl, gl.TEXTURE_2D);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, dim, dim, 0, gl.RGBA, gl.FLOAT, data);
@@ -193,9 +244,11 @@ function uploadRgba32fRect(
   data: Float32Array,
   width: number,
   height: number,
+  resourceName: string,
 ): WebGLTexture {
+  guardTexSize(gl, Math.max(width, height), resourceName);
   const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create RGBA32F rect texture');
+  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   setSampling2D(gl, gl.TEXTURE_2D);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, data);
@@ -209,9 +262,12 @@ function uploadRgba32fArray(
   data: Float32Array,
   dim: number,
   layers: number,
+  resourceName: string,
 ): WebGLTexture {
+  guardTexSize(gl, dim, resourceName);
+  guardArrayLayers(gl, layers, resourceName);
   const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create RGBA32F array texture');
+  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} array texture`);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
   setSampling2D(gl, gl.TEXTURE_2D_ARRAY);
   gl.texImage3D(

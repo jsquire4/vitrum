@@ -31,9 +31,30 @@ export const RESTIR_PHAT_WGSL = /* wgsl */ `
 //   computePHat_t / computePHat_s) used. Bitterli 2020 §4.3
 //   MUST BE IDENTICAL — structurally enforced via this shared
 //   declaration site.
+//
+// Wave 4: renamed to restir_di_compute_phat_xi(lid, xi, surf) — takes the
+// reservoir's stored xi so the ENV_SAMPLE_SENTINEL branch can recover the
+// sampled direction. For emitter candidates xi is ignored (the emitter centroid
+// is used as before). The old name is kept as a thin wrapper for any callers
+// that haven't been updated (should be zero after Wave 4).
 // ============================================================
-fn restir_di_compute_phat_from_surface(lid: u32, surf: PrimarySurface) -> f32 {
+
+// ENV branch: p̂ = luminance(envRadiance(dir) * evalGGX(... dir)) — no geometry
+// term (the IBL is at infinity: no cosθ_light, no 1/dist² falloff). This is the
+// solid-angle measure p̂ consistent with the SA-measure source pdf the env
+// candidate used (envDirectionalPdf).
+fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   if (!surf.hit) { return 0.0; }
+  // Wave 4 — ENV_SAMPLE_SENTINEL: decode xi → world direction, evaluate env p̂.
+  if (lid == ENV_SAMPLE_SENTINEL) {
+    if (!envHasMap()) { return 0.0; }
+    let wi = envDirFromXi(xi);
+    let nDotL = max(0.0, dot(surf.normal, wi));
+    if (nDotL < 1e-6) { return 0.0; }
+    let color = envRadiance(wi);
+    let brdf  = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
+    return luminance(color * brdf);
+  }
   let e = emitters[lid];
   let centroid = (e.vA + e.vB + e.vC) / 3.0;
   let toL = centroid - surf.pos;
@@ -50,13 +71,26 @@ fn restir_di_compute_phat_from_surface(lid: u32, surf: PrimarySurface) -> f32 {
   let brdf = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
   return luminance(e.Le * brdf * G);
 }
+
+// Thin wrapper: emitter-only callers that don't have xi handy.
+// For sentinel lids this always returns 0 (xi = vec2f(0) decodes to
+// +Y which has nDotL≈0 for typical scenes — no mis-shading, just zero
+// contribution, which is safe for reuse weights).
+fn restir_di_compute_phat_from_surface(lid: u32, surf: PrimarySurface) -> f32 {
+  return restir_di_compute_phat_xi(lid, vec2f(0.0), surf);
+}
 `;
 
-/** W2-C7 — declarative include-graph entry for the canonical p̂. */
+/** W2-C7 — declarative include-graph entry for the canonical p̂.
+ *  Wave 4: adds `environmentSample` to the requires chain so the
+ *  ENV_SAMPLE_SENTINEL branch can call envHasMap() / envRadiance() /
+ *  envDirFromXi(). `environmentSample` declares the scene-group bindings
+ *  15-19; all passes that compose restirPHat already bind the full scene BGL
+ *  (which includes those slots), so no bind-group layout change is needed. */
 export const RESTIR_PHAT_MODULE: WgslModule = {
   name: 'restirPHat',
   source: RESTIR_PHAT_WGSL,
-  // Depends on `common` for PrimarySurface, emitters, emitterGeometry, evalGGX,
-  // luminance, and the ubo binding.
-  requires: ['common'],
+  // `common` for PrimarySurface, emitters, emitterGeometry, evalGGX, luminance, ubo.
+  // `environmentSample` for ENV_SAMPLE_SENTINEL / envHasMap / envRadiance / envDirFromXi.
+  requires: ['common', 'environmentSample'],
 };

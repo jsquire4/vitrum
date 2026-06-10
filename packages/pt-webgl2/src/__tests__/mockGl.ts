@@ -9,22 +9,56 @@ const REAL_ENUMS: Record<string, number> = {
   MAX_DRAW_BUFFERS: 0x8824,
   MAX_TEXTURE_IMAGE_UNITS: 0x8872,
   MAX_TEXTURE_SIZE: 0x0d33,
+  MAX_ARRAY_TEXTURE_LAYERS: 0x88ff,
   COMPILE_STATUS: 0x8b81,
   LINK_STATUS: 0x8b82,
   ACTIVE_UNIFORMS: 0x8b86,
   INVALID_INDEX: 0xffffffff,
 };
 
+export interface MockGlOptions {
+  /** Recording map for uniform-set tracking (upload-gap guard tests). */
+  record?: Map<string, unknown>;
+  /**
+   * Override MAX_TEXTURE_SIZE returned by `getParameter`. Default: 16384.
+   * Set to a small value (e.g. 4) to test the size-validation guards.
+   */
+  maxTexSize?: number;
+  /**
+   * Override MAX_ARRAY_TEXTURE_LAYERS returned by `getParameter`. Default: 256.
+   * Set to a small value (e.g. 2) to test the array-layer guards.
+   */
+  maxArrayLayers?: number;
+  /**
+   * When true, `isContextLost()` returns true from the start — simulates an
+   * already-lost context for testing the context-loss robustness paths.
+   */
+  contextLost?: boolean;
+}
+
 /**
- * @param record - When supplied, the mock name-tags every uniform location
- *   (`getUniformLocation` returns `{ __u: name }`) and records each scalar/array
- *   uniform-set call into the map keyed by uniform name. This is what makes the
- *   upload-gap GUARD test (uploadGapGuard.test.ts) possible — the default no-arg
- *   mock returns anonymous `{}` locations and swallows the setters, so it is BLIND
- *   to "was `lights.count` / the CMF tables / `backgroundAlpha` ever uploaded?"
- *   (the §H H1–H3 bug class). Omit `record` to keep the original no-op behaviour.
+ * @param recordOrOpts - Either a recording Map (legacy positional form for
+ *   back-compat) or a `MockGlOptions` bag.
+ *   - When a Map is supplied: name-tags every uniform location and records
+ *     scalar/array uniform-set calls (upload-gap GUARD tests, §H H1–H3).
+ *   - When `MockGlOptions` is supplied: full control over tex-size limits and
+ *     context-loss simulation.
+ *   - Omit for the default no-op mock (anonymous locations, 16384 tex limit).
  */
-export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingContext {
+export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions): WebGL2RenderingContext {
+  // Normalise the overloaded argument.
+  let record: Map<string, unknown> | undefined;
+  let maxTexSizeOverride: number | undefined;
+  let maxArrayLayersOverride: number | undefined;
+  let contextLostOverride = false;
+  if (recordOrOpts instanceof Map) {
+    record = recordOrOpts;
+  } else if (recordOrOpts != null) {
+    record = recordOrOpts.record;
+    maxTexSizeOverride = recordOrOpts.maxTexSize;
+    maxArrayLayersOverride = recordOrOpts.maxArrayLayers;
+    contextLostOverride = recordOrOpts.contextLost ?? false;
+  }
   let nextEnum = 0x9000;
   const byName = new Map<string, number>(Object.entries(REAL_ENUMS));
   const byValue = new Map<number, string>();
@@ -50,11 +84,13 @@ export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingCont
 
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
     getExtension: () => ({}),
+    isContextLost: () => contextLostOverride,
     getParameter: (p) => {
       switch (byValue.get(p as number)) {
         case 'MAX_DRAW_BUFFERS': return 8;
         case 'MAX_TEXTURE_IMAGE_UNITS': return 32;
-        case 'MAX_TEXTURE_SIZE': return 16384;
+        case 'MAX_TEXTURE_SIZE': return maxTexSizeOverride ?? 16384;
+        case 'MAX_ARRAY_TEXTURE_LAYERS': return maxArrayLayersOverride ?? 256;
         default: return 0;
       }
     },
@@ -82,7 +118,29 @@ export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingCont
     uniformMatrix4fv: (loc, _transpose, v) => rec(loc, v),
   };
 
-  const target: Record<string, unknown> = {};
+  // Minimal mock canvas — supports addEventListener/removeEventListener so the
+  // engine's context-loss listener wiring does not throw. `dispatchEvent` lets
+  // tests fire synthetic webglcontextlost / webglcontextrestored events.
+  const canvasListeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+  const mockCanvas = {
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      let s = canvasListeners.get(type);
+      if (s == null) { s = new Set(); canvasListeners.set(type, s); }
+      s.add(listener);
+    },
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      canvasListeners.get(type)?.delete(listener);
+    },
+    /** Test helper: fire all registered listeners for `type` with `event`. */
+    dispatchEvent(type: string, event: Event): void {
+      for (const l of canvasListeners.get(type) ?? []) {
+        if (typeof l === 'function') l(event);
+        else l.handleEvent(event);
+      }
+    },
+  };
+
+  const target: Record<string, unknown> = { canvas: mockCanvas };
   return new Proxy(target, {
     get(t, prop): unknown {
       if (typeof prop !== 'string') return undefined;

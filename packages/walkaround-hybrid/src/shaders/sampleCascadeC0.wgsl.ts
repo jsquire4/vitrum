@@ -85,13 +85,32 @@ struct RCParams {
 // cosine-weight mass in .w (so the trilinear caller can detect a
 // degenerate / uninitialised probe and renormalise around it).
 //
-//   .rgb = (sum L*cos / sum cos) * raysPerProbe * 0.5    (Wsum > 1e-4)
-//   .rgb = vec3f(0), .w = 0                              (otherwise)
+// A7 receiver fix (2026-06-10): the estimator is a Monte Carlo irradiance
+// integral over the full sphere. The producer casts N rays uniformly
+// distributed over 4π steradians (uniform octahedral tiling), each with
+// solid angle Ω_k ≈ 4π/N. The irradiance estimate is:
 //
-// The raysPerProbe*0.5 factor and the (sum L*cos / sum cos) normalisation
-// are kept verbatim from the original nearest-probe path so a degenerate
-// (single-corner) trilinear blend reduces bit-for-bit to the old estimate.
-// The Lambertian 1/pi factor is applied once by the caller after the blend.
+//   E(n) = Σ_k L_k · max(0, n·ω_k) · Ω_k
+//        = (4π/N) · Σ_k L_k · cos_k
+//        = 4π · Le / raysPerProbe          (Le = Σ L_k·cos_k)
+//
+// The 1/π Lambertian factor is applied once by the caller after the blend,
+// giving the final indirect signal (E/π).
+//
+// Previous formula (Le/Wsum * raysPerProbe * 0.5) computed the
+// cosine-weighted MEAN radiance times N/2, which grows linearly with N and
+// over-estimates by a factor of ≈ 2.55 at the default N=16 — any
+// cascadeDims override silently changed scene brightness. The new formula is
+// ray-count-independent: at N=16 AND N=64 a unit-radiance isotropic field
+// returns E ≈ π (the correct Lambertian irradiance for L=1 uniform field).
+//
+// Wsum is still returned in .w so the trilinear caller can detect and skip
+// degenerate / uninitialised probes (the probe normal-facing guard is
+// unchanged — a probe with no rays facing the receiver normal returns 0).
+//
+// Reference: Veach 1997 §2.3 — MC estimator (1/N) · Σ f/pdf with
+// pdf = 1/(4π) for uniform sphere → estimate = (4π/N) · Σ L cos.
+const FOUR_PI_RC: f32 = 12.56637061436;   // 4π, precomputed to avoid /0 on pure-zero Wsum
 fn rcProbeIrradiance(probeIdx: u32, normal: vec3f) -> vec4f {
   let base = probeIdx * rcParams.raysPerProbe;
   var Le: vec3f = vec3f(0.0);
@@ -111,7 +130,8 @@ fn rcProbeIrradiance(probeIdx: u32, normal: vec3f) -> vec4f {
     Wsum = Wsum + cosTheta;
   }
   if (Wsum > 1e-4) {
-    return vec4f(Le / Wsum * f32(rcParams.raysPerProbe) * 0.5, Wsum);
+    // A7: E = (4π/N) · Σ L_k·cos_k = 4π · Le / raysPerProbe (N-independent).
+    return vec4f(Le * FOUR_PI_RC / f32(rcParams.raysPerProbe), Wsum);
   }
   return vec4f(0.0);
 }

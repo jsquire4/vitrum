@@ -62,6 +62,7 @@ import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
   OCTAHEDRAL_CORE_WGSL,
+  TONEMAP_MODE_INDEX,
 } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
 import {
@@ -660,9 +661,15 @@ class PTEngineWebGPU implements Engine {
     samplesAccumulated: number,
     isConverged: boolean,
   ): FrameOutput {
+    // Prefer the tonemapped presentTexture as primaryRadiance (written by the
+    // present pass each renderFrame).  Fall back to the raw linear accumTexture
+    // on the fast-outs (before the first render, paused, converged) where the
+    // present pass does not dispatch — presentTexture already carries the last
+    // frame's tonemapped output and is a valid displayable surface.
+    const displayTex = this.#gpu.presentTexture ?? primary;
     return {
       kind: 'rendered',
-      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(primary),
+      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(displayTex),
       ...(this.#gpu.normalDepthTexture != null
         ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#gpu.normalDepthTexture) }
         : {}),
@@ -1123,6 +1130,24 @@ class PTEngineWebGPU implements Engine {
       1,
     );
     pass.end();
+
+    // ── Present pass: tonemap / exposure / outputColorSpace ───────────────────
+    // Reads the just-written accumTexture (running-mean linear HDR) and writes
+    // the tonemapped + OETF-encoded result to presentTexture. Both textures are
+    // created in ensureAccumResources and have TEXTURE_BINDING | STORAGE_BINDING
+    // usages. The present pass always runs (aces@1.0@srgb by default); hosts
+    // that want raw linear output can set tonemap:'none' + outputColorSpace:'linear'.
+    // Adjoint/OIDN readbacks always use accumTexture (not presentTexture).
+    if (gpu.presentTexture != null) {
+      const q = input.quality ?? {};
+      const tonemapMode = TONEMAP_MODE_INDEX[q.tonemap ?? 'aces'];
+      const exposure = q.exposure ?? 1.0;
+      const outputColorSpace = q.outputColorSpace === 'linear' ? 1 : 0;
+      gpu.ensurePresentPipeline();
+      gpu.writePresentParams(tonemapMode, exposure, outputColorSpace);
+      gpu.dispatchPresentPass(encoder, width, height);
+    }
+
     this.#device.queue.submit([encoder.finish()]);
 
     // ReSTIR-PT ping-pong: this frame's resolved reservoir (`Cur`) becomes next

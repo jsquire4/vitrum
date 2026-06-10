@@ -220,6 +220,20 @@ export class BvhBufferHost {
     return { buffer: this._emitterBuffer, count: this._emitterCount };
   }
 
+  /** A7 (2026-06-10): equirectangular env map texture + sampler for RC probe
+   *  env sampling. Returns null before `uploadInitial`. The map is the
+   *  placeholder (black) when no HDRI has been uploaded; RC should bind it
+   *  regardless — `envIntensity` stays 1 but the placeholder just returns
+   *  (0,0,0,1) so the last-cascade env sample produces zero radiance, which
+   *  is correct when no env is present. */
+  envBindings(): { textureView: GPUTextureView; sampler: GPUSampler } | null {
+    if (this._env == null) return null;
+    return {
+      textureView: this._resourceCache.textureView(this._env.map),
+      sampler: this._env.sampler,
+    };
+  }
+
   sceneBindGroupResources(): SceneBindGroupResources {
     if (!this.initialized) {
       throw new Error('[BvhBufferHost] uploadInitial must run before sceneBindGroupResources');

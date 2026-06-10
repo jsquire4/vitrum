@@ -130,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(281858); // re-pinned 2026-06-10: A4 real SPPM — SPPM_GROUP4_BINDINGS_WGSL added, caustic gather moved out of megakernel. RENDER-CHANGING for causticStrategy:'photon-map'.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(283013); // re-pinned 2026-06-10: A4 real SPPM — SPPM_GROUP4_BINDINGS_WGSL added, caustic gather moved out of megakernel. RENDER-CHANGING for causticStrategy:'photon-map'. Re-pinned 2026-06-10: pt-webgpu tonemap dials + spectral MIS connection halves + rpt spatial pdfSrc — tonemap/spectral RENDER-CHANGING, A/B pending V28-B.
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');

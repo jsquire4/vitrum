@@ -135,6 +135,13 @@ struct CascadeUniforms {
   // sun+emissive+env (the prior behaviour, byte-identical). Host packs this
   // at slot 29 (offset 116) in buildCascadeUniformDataInto.
   emitterCount      : u32,
+  // A7 (2026-06-10): number of point/spot analytic lights in rc_lights.
+  // 0 ⇒ analytic-light evaluation is skipped (byte-identical with prior).
+  // Host packs this at slot 30 (offset 120) in buildCascadeUniformDataInto.
+  lightCount        : u32,
+  _pad3             : u32,
+  _pad4             : u32,
+  _pad5             : u32,
 };
 
 // ─── EmitterTri struct ────────────────────────────────────────────────────────
@@ -219,8 +226,49 @@ fn traceSunVisibility(
   return vec3f(0.0);
 }
 
+// ─── RCLight struct ──────────────────────────────────────────────────────────
+// 64-byte analytic point/spot light for RC probe rays (A7, 2026-06-10).
+// Layout mirrors DDGI's DDGILight (probeUpdateRays.wgsl.ts) exactly so the
+// same DDGIProbeLights-style host buffer can be shared into RC via binding 15.
+//
+// Host packs at most RC_MAX_LIGHTS entries (16, matching DDGI's cap) into
+// rc_lights using packRCLights() in HybridEngineRC.ts.  lightCount == 0 ⇒
+// the evalRCPointSpotLights loop is a no-op (byte-identical with prior).
+//
+// Struct layout (4 × u32/f32 = 16 floats = 64 bytes):
+//   [0]       kind:       0 = not used (skipped), 1 = point, 2 = spot
+//   [1..3]    _pad0..2
+//   [4..6]    position:   vec3f world-space position
+//   [7]       intensity:  scalar (lux / cd equivalent — 1/r² applied below)
+//   [8..10]   direction:  vec3f spot-cone axis (toward-light; zero = point → no cone)
+//   [11]      innerCone:  cosine of inner-cone angle (smooth = 1 for point)
+//   [12..14]  color:      vec3f RGB
+//   [15]      outerCone:  cosine of outer-cone angle (hard edge = 0 for point)
+
+const RC_LIGHT_POINT: u32 = 1u;
+const RC_LIGHT_SPOT:  u32 = 2u;
+const RC_MAX_LIGHTS:  u32 = 16u;
+
+struct RCLight {
+  kind:      u32,
+  _pad0: f32, _pad1: f32, _pad2: f32,
+  position:  vec3f,
+  intensity: f32,
+  direction: vec3f,
+  innerCone: f32,
+  color:     vec3f,
+  outerCone: f32,
+};
+
+// Header: count (u32) + 3 × u32 pad = 16 bytes, then up to 16 × RCLight entries.
+struct RCLightBuffer {
+  count: u32,
+  _h0: u32, _h1: u32, _h2: u32,
+  items: array<RCLight, 16>,
+};
+
 // ─── Bind group declarations ──────────────────────────────────────────────────
-// Cast pass: @group(0) bindings 0-8.
+// Cast pass: @group(0) bindings 0-15.
 
 @group(0) @binding(0) var<storage, read>       rc_bvh:                   array<BVHNode>;
 @group(0) @binding(1) var<storage, read>       rc_geom_index:            array<vec4u>;
@@ -237,6 +285,10 @@ fn traceSunVisibility(
 @group(0) @binding(12) var<storage, read>      rc_tlas_w2l:              array<vec4f>;
 @group(0) @binding(13) var<storage, read>      rc_tlas_l2w:              array<vec4f>;
 @group(0) @binding(14) var<storage, read>      rc_emitters:              array<EmitterTri>;
+// A7 (2026-06-10): point/spot analytic lights for probe-ray direct lighting.
+// lightCount == 0 ⇒ loop is a no-op. Host binds the same DDGIProbeLights-style
+// buffer (packRCLights) or a 1040-byte zero placeholder when no fixtures exist.
+@group(0) @binding(15) var<storage, read>      rc_lights:                RCLightBuffer;
 
 // ─── Rect-area emitter NEE ────────────────────────────────────────────────────
 // RC's prior light model (radiance = directSun + emissive + envTransmission)
@@ -255,7 +307,13 @@ fn traceSunVisibility(
 // shade/ReSTIR-DI convention. The shadow ray reuses traceSunVisibility's
 // glass-aware semantics via rcTraceFirstHit: an OPAQUE hit before the light
 // occludes; we ignore glass tint here (kept simple — RC is a coarse GI cache).
-fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, triEps: f32) -> vec3f {
+// A7 (2026-06-10): scene-scale-proportional normal bias for shadow rays.
+// Uses the smallest room-size axis * 0.001 (mirroring DDGI's gridParams.spacing
+// * 0.001 — M13 precedent); replaces the hardcoded world-unit values 0.01/0.02
+// that were Cornell-specific and silently wrong for other scene scales.
+// Passed by the entry point as 'normalBias' so it is computed once per thread.
+
+fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, triEps: f32, normalBias: f32) -> vec3f {
   var Lo = vec3f(0.0);
   for (var ei: u32 = 0u; ei < count; ei = ei + 1u) {
     let e = rc_emitters[ei];
@@ -274,14 +332,59 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
 
     // Opaque shadow test toward the light sample (stop just short of it).
+    // A7: normalBias is scene-scale-proportional (replaces hardcoded 0.01).
     var sRay = Ray();
-    sRay.origin    = hitPos + n * 0.01;
+    sRay.origin    = hitPos + n * normalBias;
     sRay.direction = wi;
     let sHit = rcTraceFirstHit(sRay, triEps);
-    if (sHit.didHit && sHit.dist < dist - 0.02) { continue; }
+    if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }
 
     let G = (cosSurf * cosLight) / dist2;
     Lo = Lo + albedo * 0.31831 * e.Le * G * e.area;   // 0.31831 = 1/π
+  }
+  return Lo;
+}
+
+// ─── Point/spot analytic lights (A7, 2026-06-10) ─────────────────────────────
+// Mirrors DDGI's evalPointLight (probeUpdateRays.wgsl.ts) with the same
+// conventions: distance falloff 1/(r²+1), spot-cone smoothstep, shadow ray
+// using the same scene-scale-proportional normalBias. Called only when
+// lightCount > 0, so sun-only and emitter-only scenes are byte-identical.
+fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32, triEps: f32) -> vec3f {
+  let count = min(rc_lights.count, RC_MAX_LIGHTS);
+  if (count == 0u) { return vec3f(0.0); }
+  var Lo = vec3f(0.0);
+  for (var li: u32 = 0u; li < count; li = li + 1u) {
+    let light = rc_lights.items[li];
+    if (light.kind != RC_LIGHT_POINT && light.kind != RC_LIGHT_SPOT) { continue; }
+
+    let toLight = light.position - hitPos;
+    let dist    = length(toLight);
+    if (dist < 1e-6) { continue; }
+    let lightDir = toLight / dist;
+    let nDotL = max(0.0, dot(n, lightDir));
+    if (nDotL < 1e-3) { continue; }
+
+    // Spot cone falloff (KHR_lights_punctual convention; point → no cone).
+    let axisLen2 = dot(light.direction, light.direction);
+    var coneFalloff = 1.0;
+    if (axisLen2 > 0.25) {
+      let cosToP = dot(lightDir, light.direction * inverseSqrt(axisLen2));
+      coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+      if (coneFalloff <= 0.0) { continue; }
+    }
+
+    // Shadow test — stop just short of the light position.
+    var sRay = Ray();
+    sRay.origin    = hitPos + n * normalBias;
+    sRay.direction = lightDir;
+    let shadow = rcTraceFirstHit(sRay, triEps);
+    if (shadow.didHit && shadow.dist < dist - normalBias) { continue; }
+
+    // 1/(r²+1) falloff (matches DDGI's evalPointLight — softens singularity at r→0).
+    let atten = light.intensity / (dist * dist + 1.0);
+    // Lambertian receiver: Lo += (albedo/π) · light_irradiance
+    Lo = Lo + albedo * 0.31831 * light.color * atten * nDotL * coneFalloff;
   }
   return Lo;
 }
@@ -354,14 +457,21 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let matAtten    = mat.attenuationColor;
     let matEmissive = mat.emissive;
 
-    let sunVis = traceSunVisibility(hitPos + n * 0.01, u.sunDirection, slabStep, triEps);
+    // A7: scene-scale-proportional normal bias for all shadow rays.
+    // min(roomSize) * 0.001 mirrors DDGI's gridParams.spacing * 0.001 (M13).
+    let normalBias = min(u.roomSize.x, min(u.roomSize.y, u.roomSize.z)) * 0.001;
+
+    let sunVis = traceSunVisibility(hitPos + n * normalBias, u.sunDirection, slabStep, triEps);
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
 
     // Rect-area emitter NEE (2026-06-07): closes the regime gap where RC saw
     // sun + emissive geometry + env but NOT the abstract rect-area emitter
     // list. emitterCount==0 ⇒ no-op (RC's prior light model, byte-identical).
-    let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps);
+    let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps, normalBias);
+
+    // A7 (2026-06-10): point/spot analytic lights (fixtures). lightCount==0 ⇒ no-op.
+    let pointSpotLights = evalRCPointSpotLights(hitPos, n, matColor, normalBias, triEps);
 
     let emissive = matEmissive;
 
@@ -384,7 +494,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondMat   = rc_materials[secondMatId];
         let secondColor = secondMat.baseColor;
         let sunVis2 = traceSunVisibility(
-          secondPos + secondHit.normal * 0.01,
+          secondPos + secondHit.normal * normalBias,
           u.sunDirection,
           slabStep,
           triEps,
@@ -395,7 +505,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       }
     }
 
-    radiance = directSun + emitterNEE + emissive + transContrib;
+    radiance = directSun + emitterNEE + pointSpotLights + emissive + transContrib;
   }
 
   let outIdx = probeIdx * u.raysPerProbe + rayIdx;

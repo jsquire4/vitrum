@@ -28,4 +28,27 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   rayResultsBuf: GPUBuffer;
   activeProbesBuf: GPUBuffer;
   linearSampler: GPUSampler;
+  /**
+   * Wave 4 — HDRI into DDGI probe misses (2026-06-10).
+   *
+   * Env-map texture view for the `ddgiEnvMap` binding (@group(2) @binding(6)).
+   * A 1×1 placeholder rgba16float view is always bound so the bind group is
+   * valid even when no HDRI is loaded (hasEnv=0 in FrameParams gates the
+   * sample path in WGSL — the placeholder is never actually read).
+   *
+   * Owned by ProbeUpdatePass (not the caller) only when `envMapOwnedByPass`
+   * is true; callers that provide a long-lived external view set this false.
+   */
+  envMapView: GPUTextureView;
+  /** Whether `envMapView` references a pass-owned placeholder texture that
+   *  must be destroyed on dispose / view swap. */
+  envMapOwnedByPass: boolean;
+  /** Placeholder or caller-supplied texture backing `envMapView`. Null when
+   *  the view was supplied externally (non-owned). Destroyed by dispose only
+   *  when `envMapOwnedByPass` is true. */
+  envMapPlaceholderTex: GPUTexture | null;
+  /** Sampler for ddgiEnvMap (@group(2) @binding(7)). When the caller provides
+   *  a view, it should also provide a matching sampler; otherwise the pass's
+   *  own `linearSampler` is reused (clamp, linear). */
+  envSamplerForProbe: GPUSampler;
 }

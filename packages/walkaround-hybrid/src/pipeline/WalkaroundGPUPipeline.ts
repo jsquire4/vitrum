@@ -1417,6 +1417,15 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized ? this._bvhHost.emitterBufferAndCount() : null;
   }
 
+  /** A7 (2026-06-10): equirectangular env map texture view + sampler for RC
+   *  probe-ray env sampling. Null before init. The view is always available
+   *  after init (a 1×1 black placeholder backs it until updateEnvironment
+   *  is called with a real HDRI). Forward both to `RCSubsystem.dispatchFrame`
+   *  so the last-cascade env sample reads the scene environment. */
+  getEnvBindings(): { textureView: GPUTextureView; sampler: GPUSampler } | null {
+    return this._initialized ? this._bvhHost.envBindings() : null;
+  }
+
   /** WS1 — live merged per-vertex normal buffer for GPU skinning writes. */
   getBvhNormalBuffer(): GPUBuffer | null {
     return this._initialized ? this._bvhHost.getBvhNormalBuffer() : null;

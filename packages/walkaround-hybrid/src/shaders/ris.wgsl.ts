@@ -81,6 +81,16 @@ export const RIS_WGSL = /* wgsl */ `
 // for cleaner direct-light reservoirs feeding spatial+temporal.
 const M_LIGHT = 64u;
 const M_BRDF  = 1u;
+// Wave 4 — M_ENV: one importance-sampled HDRI candidate per pixel.
+// HDRI maps are spatially smooth (sinθ-weighted CDF pre-baked); one
+// sample captures the dominant bright region (e.g. a sun disk) with
+// low variance. A second env candidate would increase cost by 0.8% of
+// RIS while halving env variance — the gain doesn't justify the cost
+// given temporal accumulation already suppresses env noise.
+// Gate: envHasMap() → 0 contribution for no-HDRI scenes (p̂ = 0 →
+// w = 0 → reservoir unchanged), so M_ENV = 1 is a no-op for all
+// emitter-only scenes — byte-identical with the pre-Wave-4 kernel.
+const M_ENV   = 1u;
 
 @compute @workgroup_size(8, 8, 1)
 fn risMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -341,47 +351,112 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     updateReservoirDI(&r, bestLid, bestXi, wB, &rng);
   }
 
+  // --- M_ENV candidate(s): HDRI importance-sampled directional candidates (Wave 4) ──
+  //
+  // The M_LIGHT+M_BRDF loops handle area-emitter and BSDF-sampled candidates; both
+  // contribute ZERO for HDRI-lit scenes with no mesh area lights. This loop adds one
+  // importance-sampled env direction per pixel via the pre-baked sinθ-weighted CDF
+  // (bindings 16-17). The env candidate is gated by envHasMap() so emitter-only
+  // scenes are BYTE-IDENTICAL to the pre-Wave-4 kernel (p̂=0 → w=0 → reservoir
+  // unchanged, M still incremented). The sentinel lightId (ENV_SAMPLE_SENTINEL) tells
+  // downstream passes to decode xi → direction rather than indexing into emitters[].
+  //
+  // MEASURE CONSISTENCY: env samples live in SOLID-ANGLE measure (the env is at
+  // infinity — there is no geometry term G = cosθ_light/dist²). The BRDF candidate
+  // above CONVERTS to area measure to match the area-light candidates; the env
+  // candidate stays in SA measure. Both representations are valid in a multi-strategy
+  // RIS pool because each candidate divides p̂ by its OWN source pdf — unbiasedness
+  // holds regardless of mixed measures. The shared canonical p̂ (restir_di_compute_phat_xi)
+  // returns the SA-measure env p̂ (no G term) for sentinel lids, which is consistent
+  // with the SA source pdf used here.
+  //
+  // VISIBILITY: shadow ray toward the sampled direction with tmax=1e20 (to infinity).
+  // skipGlass=true (same as emitter shadow rays — glass is translucent to env light).
+  for (var ei = 0u; ei < M_ENV; ei++) {
+    let envS = envImportanceSample(&rng);
+    if (envS.pdf <= 1e-8 || !envHasMap()) { continue; }
+    let nDotL = max(0.0, dot(normal, envS.dir));
+    if (nDotL < 1e-6) { continue; }
+    let brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir);
+    // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
+    let pHatE = luminance(envS.color * brdfE);
+    // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
+    let pXe = max(1e-15, envS.pdf);
+    let wE = select(0.0, pHatE / pXe, pHatE > 0.0);
+    // Encode direction into xi: xi.x = theta/PI, xi.y = phi/(2PI)+0.5.
+    let envXi = envDirToXi(envS.dir);
+    updateReservoirDI(&r, ENV_SAMPLE_SENTINEL, envXi, wE, &rng);
+  }
+
   // --- Visibility test on chosen candidate ---
   if (r.M > 0u && r.w_sum > 0.0) {
     let lid = r.lightId;
-    let e   = emitters[lid];
-    // 2026-05-18 sweep finding #3 fix — sample the EXACT point that was
-    // chosen by the WRS (r.xi), not the centroid. The centroid bias was
-    // a real correctness gap: visibility at the centroid disagrees with
-    // visibility at the sample for any emitter whose extent is comparable
-    // to the occluder's.
-    let ls  = sampleEmitterPoint(e, r.xi);
-    let toL = ls.pos - pos;
-    let dist = length(toL);
-    let wi  = toL / dist;
     // WS1 — offset along the GEOMETRIC normal (smooth normal can self-hit).
     let shadowOrig = pos + geoNormal * 1e-3;
-    // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
-    // (light passes through glass; per-channel tinted-visibility handles tint).
-    let occluded = traceSceneAny(
-      ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-      shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
-    if (occluded) {
-      r.w_sum = 0.0;
-      r.W     = 0.0;
+
+    // Wave 4 — ENV_SAMPLE_SENTINEL: shadow ray to infinity along the stored dir.
+    if (lid == ENV_SAMPLE_SENTINEL) {
+      let envDir = envDirFromXi(r.xi);
+      let occluded = traceSceneAny(
+        ubo.bvhMode, ubo.tlasNodeCount,
+        &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon, true);
+      if (occluded) {
+        r.w_sum = 0.0;
+        r.W     = 0.0;
+      } else {
+        var surf: PrimarySurface;
+        surf.hit    = true;
+        surf.pos    = pos;
+        surf.normal = normal;
+        surf.wo     = wo;
+        surf.albedo = albedo;
+        surf.rough  = roughness;
+        surf.metal  = metalness;
+        surf.depth  = hit.dist;
+        let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
+        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+      }
     } else {
-      // Build a PrimarySurface from the inline-cast values so the canonical
-      // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
-      // sees the same struct shape as the reuse passes.
-      var surf: PrimarySurface;
-      surf.hit    = true;
-      surf.pos    = pos;
-      surf.normal = normal;
-      surf.wo     = wo;
-      surf.albedo = albedo;
-      surf.rough  = roughness;
-      surf.metal  = metalness;
-      surf.depth  = hit.dist;
-      let pHatZ = restir_di_compute_phat_from_surface(lid, surf);
-      r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+      let e   = emitters[lid];
+      // 2026-05-18 sweep finding #3 fix — sample the EXACT point that was
+      // chosen by the WRS (r.xi), not the centroid. The centroid bias was
+      // a real correctness gap: visibility at the centroid disagrees with
+      // visibility at the sample for any emitter whose extent is comparable
+      // to the occluder's.
+      let ls  = sampleEmitterPoint(e, r.xi);
+      let toL = ls.pos - pos;
+      let dist = length(toL);
+      let wi  = toL / dist;
+      // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
+      // (light passes through glass; per-channel tinted-visibility handles tint).
+      let occluded = traceSceneAny(
+        ubo.bvhMode, ubo.tlasNodeCount,
+        &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+        shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+      if (occluded) {
+        r.w_sum = 0.0;
+        r.W     = 0.0;
+      } else {
+        // Build a PrimarySurface from the inline-cast values so the canonical
+        // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
+        // sees the same struct shape as the reuse passes.
+        var surf: PrimarySurface;
+        surf.hit    = true;
+        surf.pos    = pos;
+        surf.normal = normal;
+        surf.wo     = wo;
+        surf.albedo = albedo;
+        surf.rough  = roughness;
+        surf.metal  = metalness;
+        surf.depth  = hit.dist;
+        let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
+        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+      }
     }
   }
 

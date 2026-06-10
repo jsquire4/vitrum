@@ -20,6 +20,8 @@ export interface GlCaps {
   readonly maxTexUnits: number;
   /** gl.MAX_TEXTURE_SIZE — square data-texture dimension ceiling. */
   readonly maxTexSize: number;
+  /** gl.MAX_ARRAY_TEXTURE_LAYERS — layer-count ceiling for sampler2DArray textures. */
+  readonly maxArrayLayers: number;
 }
 
 /**
@@ -34,5 +36,6 @@ export function probeGlCaps(gl: WebGL2RenderingContext): GlCaps {
     maxDrawBuffers: gl.getParameter(gl.MAX_DRAW_BUFFERS) as number,
     maxTexUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number,
     maxTexSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+    maxArrayLayers: gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
   };
 }

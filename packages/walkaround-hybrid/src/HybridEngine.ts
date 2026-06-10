@@ -1914,8 +1914,22 @@ export class HybridEngine implements Engine {
         resolved.rotationY ?? 0,
         resolved.directionalIntensity ?? 1,
       );
+      // Wave 4 (2026-06-10) — HDRI into DDGI probe misses: hand the equirect
+      // radiance view to the probe-update pass so probe-ray misses sample the
+      // real map (procedural-sky fallback stays when no env is bound).
+      const envBindings = this._pipeline.getEnvBindings();
+      if (envBindings != null) {
+        this._ddgi.setEnvironment(
+          envBindings.textureView,
+          envBindings.sampler,
+          resolved.rotationY ?? 0,
+          resolved.directionalIntensity ?? 1,
+          true,
+        );
+      }
     } else {
       this._pipeline.updateDirectionalEnvironment(null, 0, 0);
+      this._ddgi.setEnvironment(null, null, 0, 0, false);
     }
   }
 

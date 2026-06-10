@@ -546,6 +546,21 @@ function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
 }
 
 /**
+ * Narrow environment summary consumed by `buildLightTreeInputForScene` to
+ * determine whether the env leaf is present and what radiance proxy to use.
+ * Extracted from `EnvironmentParams` (environmentPacking.ts) so the caller can
+ * pass the already-computed result without re-running the full HDRI/sky bake.
+ */
+export interface EnvSummaryForTree {
+  /** Whether the scene has a valid HDRI map (routes through HDRI CDF sampling). */
+  readonly hasHdri: boolean;
+  /** Procedural-sky / HDRI sun-strength scalar (drives the env NEE gate). */
+  readonly sunStrength: number;
+  /** Environment tint used as the env-leaf radiance proxy in the power estimate. */
+  readonly tint: readonly [number, number, number];
+}
+
+/**
  * Build the `@vitrum/shared-samplers` light-tree input over the SELECTABLE lights
  * of `scene`, in the EXACT order pt-webgpu's NEE walk iterates them so the tree's
  * `emitterIndex` aligns 1:1 with the kernel's linear `current` index:
@@ -568,9 +583,19 @@ function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
  * The caller (`buildPackedScene`) passes the SAME packed counts/radiances the
  * GPU loops consume, so index alignment cannot drift from the capability-capped
  * packed arrays.
+ *
+ * `precomputed` — optional already-computed sub-results. When provided, the
+ * function skips the corresponding internal calls (avoids re-running the
+ * potentially-expensive HDRI/sky bake a second time for the same scene):
+ *   - `packed`: result of a prior `packEmitterArrays(scene)` call.
+ *   - `envSummary`: narrow env metadata derived from a prior `environmentParams(scene)`.
+ * Both are verified to be passed from the SAME scene to preserve byte-identity.
  */
-export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
-  const packed = packEmitterArrays(scene);
+export function buildLightTreeInputForScene(
+  scene: Scene,
+  precomputed?: { packed?: PackedEmitterArrays; envSummary?: EnvSummaryForTree },
+): LightTreeBuildInput {
+  const packed = precomputed?.packed ?? packEmitterArrays(scene);
   const dirIrr = defaultDirectionalIrradiance(scene);
   // Mirror the kernel's directional NEE gate EXACTLY: the kernel iterates the
   // directional slot iff `params.lightDir.w > 1e-6`, where `lightDir.w` is the
@@ -585,8 +610,13 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
 
   // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
   // > 1e-6`, both derived from the SAME `environmentParams` the GPU uploads.
-  const envParams = environmentParams(scene);
-  const hasEnv = envParams.hasHdri || envParams.sunStrength > 1e-6;
+  // When the caller already has an EnvSummaryForTree (from a prior environmentParams
+  // call for the same scene), use it directly to avoid re-running the HDRI/sky bake.
+  const envSummary: EnvSummaryForTree = precomputed?.envSummary ?? (() => {
+    const p = environmentParams(scene);
+    return { hasHdri: p.hasHdri, sunStrength: p.sunStrength, tint: p.tint };
+  })();
+  const hasEnv = envSummary.hasHdri || envSummary.sunStrength > 1e-6;
 
   const powers: number[] = [];
   const centroids: Vec3[] = [];
@@ -728,8 +758,8 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
     // proxy gives a stable RELATIVE weight against the local lights. A floor of
     // 1 on the strength keeps the env slot selectable (its leaf pdf must be > 0)
     // even for a faint sky.
-    const strength = Math.max(envParams.sunStrength, 1);
-    const t = envParams.tint;
+    const strength = Math.max(envSummary.sunStrength, 1);
+    const t = envSummary.tint;
     const envRad: Vec3 = [t[0] * strength, t[1] * strength, t[2] * strength];
     powers.push(emitterPower(envRad, { kind: 'delta' }));
     centroids.push(unionCentroid);

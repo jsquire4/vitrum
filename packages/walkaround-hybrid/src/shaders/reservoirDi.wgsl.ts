@@ -42,6 +42,34 @@ struct EmitterTri {
 // (visibility at centroid vs at the actual sample disagrees for any
 // emitter whose extent is comparable to the occluder's). Bitterli 2020
 // section 4 documents this as the canonical "store xi alongside lightId" path.
+//
+// Wave 4 — ENV_SAMPLE_SENTINEL: when an importance-sampled HDRI candidate wins
+// the reservoir, lightId is set to 0xFFFFFFFFu (unreachable as a real emitter
+// index since emitterCount < 2^32 in practice). The xi field is repurposed to
+// store the sampled direction as equirect UV:
+//   xi.x = theta / PI       (v-coord: 0 = up/+Y, 1 = down/-Y)
+//   xi.y = phi / (2PI) + 0.5  (u-coord: 0..1, wrapping at ±PI)
+// envDirFromReservoirXi() reconstructs the world-space direction.
+// Passes that call restir_di_compute_phat_xi() transparently handle both
+// emitter and env-sentinel reservoirs via the lid guard.
+const ENV_SAMPLE_SENTINEL: u32 = 0xFFFFFFFFu;
+
+// Encode a world-space direction into reservoir xi (equirect UV).
+fn envDirToXi(dir: vec3f) -> vec2f {
+  let d = safe_normalize(dir);
+  let phi = atan2(d.z, d.x);          // [-PI, PI]
+  let theta = acos(clamp(d.y, -1.0, 1.0));  // [0, PI]
+  return vec2f(theta * INV_PI, fract(phi * INV_PI * 0.5 + 0.5));
+}
+
+// Decode reservoir xi back to a world-space direction (env sentinel only).
+fn envDirFromXi(xi: vec2f) -> vec3f {
+  let theta = xi.x * PI;
+  let phi   = (xi.y - 0.5) * (2.0 * PI);
+  let st = sin(theta);
+  return safe_normalize(vec3f(cos(phi) * st, cos(theta), sin(phi) * st));
+}
+
 struct ReservoirDI {
   lightId: u32,
   M:       u32,

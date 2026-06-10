@@ -14,6 +14,7 @@ import { asBackendTexture } from '@vitrum/core';
 import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { DDGI } from './ddgi/DDGI.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
+import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
@@ -419,17 +420,49 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
     // triangles ⇒ the same buffer is valid for RC's BVH; null ⇒ RC keeps its
     // prior light model.
     const rcEmitters = pipeline.getEmitterBufferAndCount();
+
+    // A7 (2026-06-10): sync analytic point/spot lights into RC.
+    // `updateLights` is idempotent and cheap (only re-uploads when the lights
+    // array changes). Forward the same DDGILight list that DDGI uses so RC and
+    // DDGI always agree on the fixture set. Null scene → empty list.
+    const scene = deps.subsystems.lastScene;
+    if (scene != null) {
+      const ddgiLights = coreEmittersToDDGILights(scene);
+      deps.subsystems.rc.updateLights(ddgiLights);
+    }
+
+    // A7 (2026-06-10): chromatic sun color from the scene directional emitter.
+    // The prior code packed [I, I, I] (scalar intensity → achromatic grey),
+    // losing the emitter's real RGB. Mirror DDGI's path (packDDGIProbeLights
+    // packs col.r/g/b from the scene directional, defaulting to warm-white
+    // (1, 0.95, 0.85) when absent). Extract from the core scene's first
+    // `directional` emitter when available; fall back to the scalar tint.
+    const dirEmitter = scene?.emitters.find((e) => e.kind === 'directional');
+    const I = deps.lighting.primaryLightIntensity;
+    const sunColor: [number, number, number] = dirEmitter != null
+      ? [
+          dirEmitter.color[0] * I,
+          dirEmitter.color[1] * I,
+          dirEmitter.color[2] * I,
+        ]
+      : [I, I, I];  // legacy fallback: achromatic (no scene directional)
+
+    // A7: env texture forwarded from the main pipeline so the last-cascade
+    // env sample reads the real HDRI (or the 1×1 black placeholder when
+    // no HDRI is active — byte-identical env-less).
+    const rcEnvBindings = pipeline.getEnvBindings();
+
     deps.subsystems.rc.dispatchFrame({
       sunDirection: deps.lighting.primaryLightDir,
-      sunColor: [
-        deps.lighting.primaryLightIntensity,
-        deps.lighting.primaryLightIntensity,
-        deps.lighting.primaryLightIntensity,
-      ],
+      sunColor,
       frameSeed: input.frameSeed,
       triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
       ...(rcEmitters != null
         ? { emittersBuf: rcEmitters.buffer, emitterCount: rcEmitters.count }
+        : {}),
+      // A7: forward env texture so RC env sampling is live (placeholder if null).
+      ...(rcEnvBindings != null
+        ? { envTextureView: rcEnvBindings.textureView, envSampler: rcEnvBindings.sampler }
         : {}),
     });
     pipeline.setRCInputs(deps.subsystems.rc.buildRCInputs(deps.flags.rcWeight));

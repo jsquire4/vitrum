@@ -112,8 +112,13 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // composition; photonMapContribution replaced with sppmGather() shim; old 32-photon
     // per-pixel approximation + gatherRadius=0.35 + ×1.25 fudge REMOVED.
     // RENDER-CHANGING for causticStrategy:'photon-map'; off-path byte-identical for other strategies.
-    expect(digest).toBe('29ccf24475567e0d939a3acb3d96c4eea728586d85ae24e6aa853da1bf4e9762');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(281858);
+    // Re-pinned 2026-06-10: pt-webgpu tonemap dials + spectral MIS connection halves + rpt spatial
+    // pdfSrc — heroLambda/matId params added to bsdfAreaLightConnectionContribution /
+    // bsdfEnvironmentConnectionContribution; spectralEmissionAtHero + materialEnvMapIntensity
+    // applied in BSDF half of MIS pair; qPdfSrc gathered in restirPtSpatial (was passing W not pdfSrc).
+    // tonemap/spectral RENDER-CHANGING, A/B pending V28-B.
+    expect(digest).toBe('cc158496c8984c30f5066aeea7c6e66bef7ee1b2acde9547bde233afb9f36544');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(283013);
   });
 });
 

@@ -107,18 +107,19 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
 
   // ── Pass-1 GATHER accepted neighbours (full-GBH needs the domain set up front)
   var nQ: u32 = 0u;
-  var qXv:  array<vec3f, 5>;
-  var qNv:  array<vec3f, 5>;
-  var qWo:  array<vec3f, 5>;
-  var qAlb: array<vec3f, 5>;
-  var qRough: array<f32, 5>;
-  var qMetal: array<f32, 5>;
-  var qXs:  array<vec3f, 5>;
-  var qNs:  array<vec3f, 5>;
-  var qLo:  array<vec3f, 5>;
-  var qC:   array<f32, 5>;
-  var qW:   array<f32, 5>;
-  var qJ:   array<f32, 5>;
+  var qXv:     array<vec3f, 5>;
+  var qNv:     array<vec3f, 5>;
+  var qWo:     array<vec3f, 5>;
+  var qAlb:    array<vec3f, 5>;
+  var qRough:  array<f32, 5>;
+  var qMetal:  array<f32, 5>;
+  var qXs:     array<vec3f, 5>;
+  var qNs:     array<vec3f, 5>;
+  var qLo:     array<vec3f, 5>;
+  var qC:      array<f32, 5>;
+  var qW:      array<f32, 5>;
+  var qPdfSrc: array<f32, 5>;  // the REAL source BSDF pdf stored in each neighbour's reservoir
+  var qJ:      array<f32, 5>;
 
   for (var i: u32 = 0u; i < K_RPT_SPATIAL; i = i + 1u) {
     let off = rptSpatialDiscPx(&rng);
@@ -163,7 +164,7 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     qXv[nQ] = rQ.xv; qNv[nQ] = rQ.nv; qWo[nQ] = woQ;
     qAlb[nQ] = rQ.albV; qRough[nQ] = rQ.roughnessV; qMetal[nQ] = rQ.metalV;
     qXs[nQ] = rQ.xs; qNs[nQ] = rQ.ns; qLo[nQ] = rQ.Lo;
-    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qJ[nQ] = J;
+    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qPdfSrc[nQ] = rQ.pdfSrc; qJ[nQ] = J;
     nQ = nQ + 1u;
   }
 
@@ -207,7 +208,11 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
       rCenter.albV, rCenter.roughnessV, rCenter.metalV, qXs[i], qLo[i]);
     let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
     let oldM = rOut.M;
-    updateReservoirPT(&rOut, qXs[i], qNs[i], qLo[i], qW[i], w_q, &rng);
+    // Pass the neighbour's real source BSDF pdf (pdfSrc) — NOT the unbiased contribution
+    // weight W. W already bakes in 1/pdfSrc (W = w_sum/p̂ after finalise); passing W here
+    // would store an energy-scaled pdf that corrupts the reconstructed path when this
+    // neighbour's sample wins. pdfSrc is the denominator for the resolve unbiased estimator.
+    updateReservoirPT(&rOut, qXs[i], qNs[i], qLo[i], qPdfSrc[i], w_q, &rng);
     rOut.M = oldM + u32(qC[i]);
   }
 

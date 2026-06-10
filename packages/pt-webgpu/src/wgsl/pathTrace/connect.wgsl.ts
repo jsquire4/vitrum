@@ -234,6 +234,7 @@ fn bsdfAreaLightConnectionContribution(
   transmission: f32,
   ior: f32,
   throughputAtVertex: vec3f,
+  heroLambda: f32,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) {
@@ -280,9 +281,13 @@ fn bsdfAreaLightConnectionContribution(
   if (bestDist >= INFINITY || bestLightPdf <= 1e-6) {
     return vec3f(0.0);
   }
+  // A3 — spectralize the BSDF-connection emission at the hero λ in spectral mode,
+  // matching the NEE half (kernel.wgsl.ts §631/676) so both halves of the MIS pair
+  // use the same emission model for chromatic emitters. RGB mode: byte-identical.
+  let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
   let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
-  return throughputAtVertex * brdf * nDotL * bestEmission * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / max(bsdfPdf, 1e-6);
 }
 
 fn bsdfEnvironmentConnectionContribution(
@@ -296,6 +301,8 @@ fn bsdfEnvironmentConnectionContribution(
   transmission: f32,
   ior: f32,
   throughputAtVertex: vec3f,
+  heroLambda: f32,
+  matId: u32,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return vec3f(0.0); }
@@ -306,6 +313,14 @@ fn bsdfEnvironmentConnectionContribution(
   let env = environmentLookup(wi);
   let misWeight = powerHeuristic(bsdfPdf, env.pdf);
   let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-  return throughputAtVertex * brdf * nDotL * env.color * misWeight / max(bsdfPdf, 1e-6);
+  // A3 — spectralize the env connection at the hero λ in spectral mode, matching the
+  // NEE miss-shader path (kernel.wgsl.ts §431) and the NEE env branch (§724).
+  // D3 — apply per-material envMapIntensity to the BSDF-connection env term, matching
+  // the NEE env branch (kernel.wgsl.ts §723-724). envMapIntensity == 1.0 (default) →
+  // envScale == 1.0 → byte-identical. Non-unit values scale BOTH halves identically so
+  // the converged env contribution is consistent across the two MIS strategies.
+  let envScale = materialEnvMapIntensity(matId);
+  let envColorOut = select(env.color, spectralEmissionAtHero(env.color, heroLambda), params.spectralEnabled != 0u) * envScale;
+  return throughputAtVertex * brdf * nDotL * envColorOut * misWeight / max(bsdfPdf, 1e-6);
 }
 `;

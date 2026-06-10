@@ -30,6 +30,7 @@
 
 import type { MaterialSpec, Scene } from '@vitrum/core';
 import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
+import type { DDGILight } from './ddgi/types.js';
 import {
   buildRCSceneBVHFromCore,
   packCascadeMaterialsFromCore,
@@ -70,6 +71,17 @@ interface RCFrameInputs {
    *  model (sun + emissive geometry + env). */
   readonly emittersBuf?:        GPUBuffer;
   readonly emitterCount?:       number;
+  /** A7 (2026-06-10): environment equirectangular texture + sampler for the
+   *  last-cascade env sample and glass transContrib env branch. When absent
+   *  the dispatcher uses a 1×1 black placeholder (byte-identical env-less
+   *  behaviour). The pipeline's `BvhBufferHost.envMapTextureView` /
+   *  `envSampler` should be forwarded here when an HDRI is active. */
+  readonly envTextureView?:     GPUTextureView | null;
+  readonly envSampler?:         GPUSampler | null;
+  /** A7 (2026-06-10): packed point/spot analytic lights buffer and count.
+   *  Use `packRCLights()` to build. Omit ⇒ fixtures produce no RC radiance. */
+  readonly lightsBuf?:          GPUBuffer | null;
+  readonly lightCount?:         number;
 }
 
 /**
@@ -106,6 +118,79 @@ export function packRCParams(
   return buf;
 }
 
+// ─── RCLightBuffer packing (A7, 2026-06-10) ──────────────────────────────────
+//
+// Layout mirrors DDGI's DDGILightUniforms / DDGILight (probeUpdateLights.ts)
+// so the same host-side DDGILight structs can be forwarded into RC. The WGSL
+// struct is `RCLightBuffer` in probeRayCast.wgsl.ts:
+//   [0]     count (u32)
+//   [1..3]  _h0/h1/h2 pad (u32)
+//   [4..]   items: array<RCLight, 16>  — 16 × 16 f32 = 256 f32 = 1024 bytes
+// Total: 4 + 256 = 260 u32/f32 = 1040 bytes.
+//
+// Each RCLight (matches WGSL RCLight struct, 64 bytes = 16 floats):
+//   [0]       kind (u32): 0=skip, 1=point, 2=spot
+//   [1..3]    _pad
+//   [4..6]    position (vec3f)
+//   [7]       intensity (f32)
+//   [8..10]   direction (vec3f) — spot cone axis toward-light; zero for point
+//   [11]      innerCone (f32)   — cosine of inner angle
+//   [12..14]  color (vec3f)
+//   [15]      outerCone (f32)   — cosine of outer angle
+//
+// Only 'fixture' and 'teaLight' kind DDGILights become point/spot RC lights;
+// 'sun' kind is handled separately via sunDirection/sunColor in CascadeUniforms.
+// Off-lights (l.on === false) are filtered out.
+// Cap: 16 (matching DDGI's MAX_DDGI_PROBE_LIGHTS).
+
+/** Byte size of the full RCLightBuffer GPU allocation. */
+export const RC_LIGHTS_BUFFER_BYTES = (4 + 16 * 16) * 4; // 1040 bytes
+
+/**
+ * Pack a `DDGILight[]` into the `RCLightBuffer` wire format.
+ * Ignores 'sun' kind (RC uses sunDirection/sunColor in CascadeUniforms).
+ * Truncates at 16 entries (matching DDGI's per-probe cap) with a warning.
+ */
+export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
+  const HEADER_FLOATS  = 4;
+  const LIGHT_FLOATS   = 16;
+  const MAX            = 16;
+  const data = new Float32Array(HEADER_FLOATS + MAX * LIGHT_FLOATS);
+  const ui   = new Uint32Array(data.buffer);
+
+  const fixtures = lights.filter((l) => l.on && (l.kind === 'fixture' || l.kind === 'teaLight'));
+  if (fixtures.length > MAX) {
+    console.warn(
+      `[RC] packRCLights: scene has ${fixtures.length} active fixtures but RC supports ` +
+      `at most ${MAX}. Extra lights beyond the cap are dropped for probe-ray GI.`,
+    );
+  }
+  const active = fixtures.slice(0, MAX);
+  ui[0] = active.length;  // count
+
+  active.forEach((l, i) => {
+    const base = HEADER_FLOATS + i * LIGHT_FLOATS;
+    const ub   = base;
+    const isSpot = l.spotAxis != null && (l.spotCosInner != null || l.spotCosOuter != null);
+    ui[ub]        = isSpot ? 2 : 1;         // kind: 2=spot, 1=point
+    data[base + 4] = l.position?.x ?? 0;
+    data[base + 5] = l.position?.y ?? 0;
+    data[base + 6] = l.position?.z ?? 0;
+    data[base + 7] = l.intensity;
+    // Spot axis (toward-light direction; zero vector → point light → cone skipped).
+    data[base + 8]  = l.spotAxis?.x ?? 0;
+    data[base + 9]  = l.spotAxis?.y ?? 0;
+    data[base + 10] = l.spotAxis?.z ?? 0;
+    data[base + 11] = l.spotCosInner ?? 1;  // innerCone cos (1 = no inner cone)
+    data[base + 12] = l.color?.r ?? 1;
+    data[base + 13] = l.color?.g ?? 1;
+    data[base + 14] = l.color?.b ?? 1;
+    data[base + 15] = l.spotCosOuter ?? 0;  // outerCone cos (0 = point fallback)
+  });
+
+  return data.buffer;
+}
+
 export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
@@ -137,6 +222,16 @@ export class RCSubsystem implements PipelineSubsystem {
   private _lastBvhVersion = 0;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
+  /** A7 (2026-06-10): GPU buffer for the packed RCLightBuffer (point/spot lights).
+   *  Re-created whenever `updateLights()` is called with a different set.
+   *  Null until the first `updateLights()` call; the dispatcher falls back to
+   *  its internal 1040-byte placeholder when null (lightCount = 0). */
+  private _lightsGpuBuf: GPUBuffer | null = null;
+  private _lightsCount = 0;
+  /** A7: fingerprint of the last `updateLights` payload to skip redundant GPU
+   *  buffer re-creation on frames where the light set hasn't changed. Computed
+   *  as a cheap JSON.stringify of the filtered (on && fixture/teaLight) entries. */
+  private _lightsFingerprint = '';
 
   constructor(device: GPUDevice, cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
     this._device = device;
@@ -376,6 +471,46 @@ export class RCSubsystem implements PipelineSubsystem {
     return true;
   }
 
+  /**
+   * A7 (2026-06-10): upload/replace the packed point/spot analytic lights
+   * buffer that RC probe rays use for direct-lighting NEE.
+   *
+   * Call once after `setSceneFromCore` / `syncRestirBvhBuffers` and again
+   * whenever the scene's fixture list changes (matches the DDGI path:
+   * `ProbeUpdatePass.setLights` → `packDDGIProbeLights`).
+   *
+   * The host should forward the same `DDGILight[]` that DDGI uses so the two
+   * GI subsystems see the same analytic lights.  Sun-kind entries are ignored;
+   * only 'fixture' and 'teaLight' entries become RC point/spot lights.
+   */
+  updateLights(lights: readonly DDGILight[]): void {
+    // Fingerprint the active fixture/teaLight subset to avoid redundant GPU
+    // buffer re-creation on frames where the light set hasn't changed.
+    const active = lights.filter((l) => l.on && (l.kind === 'fixture' || l.kind === 'teaLight'));
+    const fp = JSON.stringify(active);
+    if (fp === this._lightsFingerprint) return;  // no change → skip GPU work
+    this._lightsFingerprint = fp;
+
+    const packed = packRCLights(lights);
+    if (this._lightsGpuBuf != null) {
+      this._lightsGpuBuf.destroy();
+      this._lightsGpuBuf = null;
+    }
+    // Count only fixture / teaLight entries (same filter as packRCLights).
+    this._lightsCount = Math.min(active.length, 16);
+    if (this._lightsCount === 0) return;  // keep _lightsGpuBuf null; dispatcher uses placeholder
+    const buf = this._device.createBuffer({
+      label: 'rc-lights',
+      size:  RC_LIGHTS_BUFFER_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(packed));
+    buf.unmap();
+    this._lightsGpuBuf = buf;
+    this.invalidateBindings();
+  }
+
   dispatchFrame(inputs: RCFrameInputs): void {
     if (!this._dispatcher || !this._bvhBuffers || !this._cascadeBufs ||
         !this._probeOriginWorld || !this._roomSize) {
@@ -398,9 +533,19 @@ export class RCSubsystem implements PipelineSubsystem {
       triIntersectEpsilon: inputs.triIntersectEpsilon,
       bvhMode:          this._bvhMode,
       tlasNodeCount:    this._tlasNodeCount,
+      // A7: env texture forwarded from the main pipeline (placeholder if absent).
+      ...(inputs.envTextureView != null && inputs.envSampler != null
+        ? { envTextureView: inputs.envTextureView, envSampler: inputs.envSampler }
+        : {}),
       ...(inputs.emittersBuf != null
         ? { emittersBuf: inputs.emittersBuf, emitterCount: inputs.emitterCount ?? 0 }
         : {}),
+      // A7: analytic lights (fixtures). Null lightsBuf falls back to dispatcher placeholder.
+      ...(this._lightsGpuBuf != null
+        ? { lightsBuf: this._lightsGpuBuf, lightCount: this._lightsCount }
+        : (inputs.lightsBuf != null
+          ? { lightsBuf: inputs.lightsBuf, lightCount: inputs.lightCount ?? 0 }
+          : {})),
       ...(bvh.tlasNodesBuf != null
         ? {
             tlasNodesBuf: bvh.tlasNodesBuf,
@@ -437,6 +582,12 @@ export class RCSubsystem implements PipelineSubsystem {
       this._dispatcher.dispose();
       this._dispatcher = null;
     }
+    if (this._lightsGpuBuf != null) {
+      this._lightsGpuBuf.destroy();
+      this._lightsGpuBuf = null;
+    }
+    this._lightsCount = 0;
+    this._lightsFingerprint = '';  // reset so next init re-uploads correctly
   }
 
   private _refitTlasGpuBuffers(

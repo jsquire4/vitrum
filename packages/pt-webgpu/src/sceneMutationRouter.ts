@@ -48,6 +48,7 @@ import {
   defaultDirectionalLight,
   hasMeshAreaEmitterForPrimitive,
   packEmitterArrays,
+  type EnvSummaryForTree,
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
 
@@ -498,7 +499,9 @@ export class SceneMutationRouter {
           directionalIrradiance: defaultDirectionalIrradiance(nextScene),
           directionalAngularDiameter: defaultDirectionalAngularDiameter(nextScene),
         });
-        const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffersForEmitters, nextScene);
+        // Thread already-computed emitterPacked into rebuildLightTreeForScene so
+        // it skips the redundant packEmitterArrays call inside buildLightTreeInputForScene.
+        const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffersForEmitters, nextScene, { packed: emitterPacked });
         if (emittersReallocated || lightTreeReallocated) {
           host.invalidateBindGroups();
         }
@@ -534,7 +537,9 @@ export class SceneMutationRouter {
       // rebuild + re-upload it (reallocating + invalidating bind groups if the
       // node count changed). Without this the GPU selection would importance-
       // sample the OLD light set after an incremental emitter patch.
-      const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffers, nextScene);
+      // Thread already-computed `packed` so buildLightTreeInputForScene skips
+      // the redundant packEmitterArrays call.
+      const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffers, nextScene, { packed });
       if (lightsReallocated || lightTreeReallocated) {
         host.invalidateBindGroups();
       }
@@ -636,7 +641,14 @@ export class SceneMutationRouter {
         // WS2 — the env counts as a selectable light in the NEE walk, so an env
         // change can flip the light-tree gate / leaf count. Rebuild + re-upload
         // (reallocating + invalidating bind groups if the node count changed).
-        if (rebuildLightTreeForScene(device, sceneBuffers, nextScene)) {
+        // Thread the already-computed env summary so buildLightTreeInputForScene
+        // skips the redundant environmentParams call.
+        const envSummaryForTree: EnvSummaryForTree = {
+          hasHdri: packed.hasHdri,
+          sunStrength: packed.sunStrength,
+          tint: packed.tint,
+        };
+        if (rebuildLightTreeForScene(device, sceneBuffers, nextScene, { envSummary: envSummaryForTree })) {
           host.invalidateBindGroups();
         }
         host.setSceneState(nextScene);

@@ -133,6 +133,18 @@ export class ProbeUpdatePass {
   // probes (maxBounces == 1). Set from HybridEngine._cfg.maxBounces.
   private _indirectFeedback = true;
 
+  // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+  // When hasEnv=true, _uploadFrameParams passes the env-map view + rotation/intensity
+  // into the WGSL FrameParams; sampleSkyColor() samples the equirect map on miss.
+  // Default false → procedural gradient (byte-identical for non-HDRI scenes).
+  private _hasEnv      = false;
+  private _envRotationY = 0;
+  private _envIntensity = 0;
+  // Optional externally-provided env map view. When null, a 1×1 placeholder is
+  // created at init time and destroyed on dispose.
+  private _envMapView:    GPUTextureView | null = null;
+  private _envSampler:    GPUSampler | null = null;
+
   // Phase-0 productization — DDGI round-robin probe-update divisor. The ray
   // pass + the blend pass MUST agree on `probesPerFrame = ceil(total/N)`, so
   // both pack functions read this single field. Default 4 reproduces the
@@ -223,6 +235,58 @@ export class ProbeUpdatePass {
    */
   setIndirectFeedback(enabled: boolean): void {
     this._indirectFeedback = enabled;
+  }
+
+  /**
+   * Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+   *
+   * Supply the equirect env-map texture view and matching sampler so probe
+   * miss-rays sample the actual HDRI instead of the procedural sky gradient.
+   *
+   * Call with `hasEnv = false` (or omit the call entirely) to keep the
+   * procedural gradient — byte-identical to pre-Wave-4 behaviour for scenes
+   * without an HDRI.
+   *
+   * The texture view must remain valid for the lifetime of the ProbeUpdatePass
+   * (or until the next `setEnvironment` call). ProbeUpdatePass does NOT take
+   * ownership of the view — the caller is responsible for its lifetime (the
+   * pipeline's BvhBufferHost owns the env textures).
+   *
+   * If the GPU state is already initialised, the new view / sampler is picked
+   * up on the NEXT `runFrame` call (the bind group is rebuilt each frame so
+   * there is no explicit invalidation step).
+   *
+   * UV convention: matches `environmentSample.wgsl envRadiance` exactly —
+   *   lookupDir = RY(-rotationY) · worldDir   [H6 world→map]
+   *   u = fract(atan2(z,x)/(2π) + 0.5),  v = clamp(acos(y)/π, 0, 1)
+   *
+   * @param view       GPUTextureView for the rgba16float equirect radiance map.
+   * @param sampler    GPUSampler (clamp-to-edge, linear) for the same texture.
+   *                   Pass null to reuse the pass's internal linearSampler.
+   * @param rotationY  Y-axis rotation in radians (H6 — CCW dome rotation means
+   *                   lookupDir = RY(-rotationY)·worldDir). Pass 0 for no rotation.
+   * @param intensity  Radiance multiplier applied to the texel after lookup.
+   *                   Matches `envParams.intensity` in `environmentSample.wgsl`.
+   * @param hasEnv     `true` to activate the HDRI sample path; `false` to keep
+   *                   the procedural gradient (the default).
+   */
+  setEnvironment(
+    view: GPUTextureView | null,
+    sampler: GPUSampler | null,
+    rotationY: number,
+    intensity: number,
+    hasEnv: boolean,
+  ): void {
+    this._hasEnv       = hasEnv;
+    this._envRotationY = rotationY;
+    this._envIntensity = intensity;
+    this._envMapView   = view;
+    this._envSampler   = sampler;
+    // If GPU is already up, update the env fields in the GpuState immediately
+    // so the next runFrame bind-group creation picks them up without a re-init.
+    if (this._gpu) {
+      this._syncEnvViewsToGpu();
+    }
   }
 
   /**
@@ -371,6 +435,18 @@ export class ProbeUpdatePass {
     const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const UB = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
 
+    // Wave 4 — HDRI into DDGI probe misses: create a 1×1 placeholder env
+    // map texture so the bind group is always valid (hasEnv=0 in FrameParams
+    // prevents it from ever being sampled when no HDRI is present).
+    const TEX_BINDING = 0x04;
+    const COPY_DST_TEX = 0x02;
+    const placeholderEnvTex = device.createTexture({
+      label: 'vitrum.ddgi.env.placeholder',
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: 'rgba16float',
+      usage: TEX_BINDING | COPY_DST_TEX,
+    });
+
     this._gpu = {
       device,
       raysPipeline,
@@ -402,7 +478,16 @@ export class ProbeUpdatePass {
       emitterTrisBuf:  makeBuffer(16, RO),
       emitterTrisCount: 0,
       linearSampler,
+      // Wave 4 — env map: placeholder initially; real view + sampler wired via
+      // setEnvironment() (called from the engine before runFrame).
+      envMapView:         placeholderEnvTex.createView(),
+      envMapOwnedByPass:  true,
+      envMapPlaceholderTex: placeholderEnvTex,
+      envSamplerForProbe:  linearSampler,
     };
+    // If setEnvironment() was called before init (engine wires env before GPU is
+    // ready), apply those values now.
+    this._syncEnvViewsToGpu();
     return true;
   }
 
@@ -686,8 +771,32 @@ export class ProbeUpdatePass {
       glassMixScale: this._glassMixScale,
       updateDivisor: this._probeUpdateDivisor,
       indirectFeedback: this._indirectFeedback,
+      // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+      hasEnv:       this._hasEnv,
+      envRotationY: this._envRotationY,
+      envIntensity: this._envIntensity,
     });
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
+  }
+
+  /** Wave 4 — sync the external env-map view + sampler into GpuState.
+   *  Called after init() (to apply early setEnvironment() calls) and
+   *  directly from setEnvironment() (when gpu is already live). */
+  private _syncEnvViewsToGpu(): void {
+    const gpu = this._gpu;
+    if (!gpu) return;
+    if (this._envMapView !== null) {
+      // External view provided: destroy the pass-owned placeholder (once).
+      if (gpu.envMapOwnedByPass && gpu.envMapPlaceholderTex !== null) {
+        gpu.envMapPlaceholderTex.destroy();
+        gpu.envMapPlaceholderTex = null;
+        gpu.envMapOwnedByPass = false;
+      }
+      gpu.envMapView = this._envMapView;
+      gpu.envSamplerForProbe = this._envSampler ?? gpu.linearSampler;
+    }
+    // When _envMapView is null (setEnvironment with hasEnv=false, or reset),
+    // the placeholder is kept as-is — it's already the right view and sampler.
   }
 
   private _uploadBlendParams(device: GPUDevice): void {
@@ -831,6 +940,10 @@ export class ProbeUpdatePass {
     g.visScratchTex?.destroy();
     g.rayResultsBuf.destroy();
     g.activeProbesBuf.destroy();
+    // Wave 4 — destroy the pass-owned placeholder env texture (if we own it).
+    if (g.envMapOwnedByPass && g.envMapPlaceholderTex !== null) {
+      g.envMapPlaceholderTex.destroy();
+    }
     this._gpu = null;
     this._atlasCache.dispose();
   }

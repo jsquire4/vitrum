@@ -180,20 +180,28 @@ export interface BvhTextures {
 
 /** Upload the packed data to GL data textures (RGBA32F / RGBA32UI, NEAREST, ClampToEdge). */
 export function uploadBvhTextures(gl: WebGL2RenderingContext, d: BvhTextureData): BvhTextures {
-  const fTex = (dim: number, data: Float32Array): WebGLTexture =>
-    makeTex(gl, dim, gl.RGBA32F, gl.RGBA, gl.FLOAT, data);
-  const uTex = (dim: number, data: Uint32Array): WebGLTexture =>
-    makeTex(gl, dim, gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
-  const bounds = fTex(d.boundsDim, d.bounds);
-  const contents = uTex(d.contentsDim, d.contents);
-  const position = fTex(d.positionDim, d.position);
-  const index = uTex(d.indexDim, d.index);
-  const materialIndex = uTex(d.materialIndexDim, d.materialIndex);
+  const fTex = (dim: number, data: Float32Array, name: string): WebGLTexture =>
+    makeTex(gl, dim, gl.RGBA32F, gl.RGBA, gl.FLOAT, data, name);
+  const uTex = (dim: number, data: Uint32Array, name: string): WebGLTexture =>
+    makeTex(gl, dim, gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data, name);
+  const bounds = fTex(d.boundsDim, d.bounds, BVH_TEX_NAMES['f_bounds']!);
+  const contents = uTex(d.contentsDim, d.contents, BVH_TEX_NAMES['u_contents']!);
+  const position = fTex(d.positionDim, d.position, BVH_TEX_NAMES['f_position']!);
+  const index = uTex(d.indexDim, d.index, BVH_TEX_NAMES['u_index']!);
+  const materialIndex = uTex(d.materialIndexDim, d.materialIndex, BVH_TEX_NAMES['u_materialIndex']!);
   return {
     bounds, contents, position, index, materialIndex,
     destroy() { for (const t of [bounds, contents, position, index, materialIndex]) gl.deleteTexture(t); },
   };
 }
+
+const BVH_TEX_NAMES: Record<string, string> = {
+  f_bounds: 'scene BVH bounds',
+  f_position: 'scene BVH position',
+  u_contents: 'scene BVH contents',
+  u_index: 'scene BVH index',
+  u_materialIndex: 'scene BVH material index',
+};
 
 function makeTex(
   gl: WebGL2RenderingContext,
@@ -202,9 +210,22 @@ function makeTex(
   format: number,
   type: number,
   data: ArrayBufferView,
+  resourceName: string,
 ): WebGLTexture {
+  // Size guard: a texImage2D call with dim > MAX_TEXTURE_SIZE silently fails on
+  // many drivers and renders black — throw an actionable error instead.
+  if (gl.isContextLost()) {
+    throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
+  }
+  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (dim > maxSize) {
+    throw new Error(
+      `pt-webgl2: ${resourceName} needs a ${dim}² texture but this device only supports ` +
+        `${maxSize}² — reduce triangle count or split the scene.`,
+    );
+  }
   const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create BVH texture');
+  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);

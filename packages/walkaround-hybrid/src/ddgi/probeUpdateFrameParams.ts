@@ -61,6 +61,26 @@ export interface ProbeUpdateFrameParamsInput {
    *  infinite-bounce diffuse EMA, maxBounces >= 2). `false` drops it →
    *  direct-only probes (maxBounces == 1). NOT a PT bounce cap. */
   indirectFeedback?: boolean;
+  /**
+   * Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+   * `true` activates the equirect env-map sample path in the WGSL
+   * `sampleSkyColor` function; `false` (default) keeps the existing
+   * procedural sky gradient so scenes without an HDRI are byte-identical.
+   */
+  hasEnv?: boolean;
+  /**
+   * Y-axis rotation (radians) for the equirect env lookup. Matches the H6
+   * `envRotateYNeg` convention in `environmentSample.wgsl`:
+   *   map-lookup-dir = RY(-envRotationY) · worldDir
+   * Pass 0 when `hasEnv` is false (no-op).
+   */
+  envRotationY?: number;
+  /**
+   * Radiance intensity multiplier applied to the env-map texel after lookup.
+   * Matches `envParams.intensity` in `environmentSample.wgsl`.
+   * Pass 0 or omit when `hasEnv` is false (no-op).
+   */
+  envIntensity?: number;
 }
 
 /** Clamp the divisor to ≥ 1 so `probesPerFrame` never exceeds `totalProbes`. */
@@ -86,8 +106,10 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
     // identical radiance to the pre-gate `direct + indirect`). Host sets false
     // for maxBounces == 1.
     indirectFeedback: (input.indirectFeedback ?? true) ? 1 : 0,
-    _pad3: 0,
-    _pad4: 0,
+    // Wave 4 — HDRI into DDGI probe misses (2026-06-10).
+    hasEnv: (input.hasEnv ?? false) ? 1 : 0,
+    envRotationY: input.envRotationY ?? 0,
+    envIntensity: input.envIntensity ?? 0,
   });
   return data;
 }

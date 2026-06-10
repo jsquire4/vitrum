@@ -279,6 +279,7 @@ export function composePathTraceKernelWgsl(opts: {
         transmission,
         ior,
         throughputAtVertex,
+        heroLambda,
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(
         hitPos,
@@ -291,6 +292,8 @@ export function composePathTraceKernelWgsl(opts: {
         transmission,
         ior,
         throughputAtVertex,
+        heroLambda,
+        matId,
       );
     }
 `;

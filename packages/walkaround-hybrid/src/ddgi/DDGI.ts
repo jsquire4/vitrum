@@ -183,6 +183,38 @@ export class DDGI {
     this._pass.setEmitterTris(tris, count);
   }
 
+  /**
+   * Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
+   *
+   * Forward the directional env-map texture view + sampler to the underlying
+   * ProbeUpdatePass so probe miss-rays sample the actual HDRI instead of the
+   * procedural sky gradient. Call from the engine whenever the directional
+   * environment changes (in `_applyDirectionalEnvironment`).
+   *
+   * Call with `hasEnv = false` (or pass `null` view) to revert to the
+   * procedural gradient — byte-identical to the pre-Wave-4 path.
+   *
+   * UV convention: matches `environmentSample.wgsl envRadiance` (H6):
+   *   lookupDir = RY(-rotationY) · worldDir   [world → unrotated-map space]
+   *
+   * @param view       GPUTextureView for the rgba16float equirect radiance map,
+   *                   or null when reverting to the procedural gradient.
+   * @param sampler    GPUSampler for the map, or null to use the pass's own
+   *                   linear+clamp sampler.
+   * @param rotationY  Y-axis rotation in radians (H6 convention). 0 = no rotation.
+   * @param intensity  Radiance multiplier applied to the texel after lookup.
+   * @param hasEnv     `true` to activate HDRI sampling; `false` for procedural sky.
+   */
+  setEnvironment(
+    view: GPUTextureView | null,
+    sampler: GPUSampler | null,
+    rotationY: number,
+    intensity: number,
+    hasEnv: boolean,
+  ): void {
+    this._pass.setEnvironment(view, sampler, rotationY, intensity, hasEnv);
+  }
+
   // ── Forwarding façade — callers go through DDGI, not DDGI.pass/probeGrid ──
 
   /**

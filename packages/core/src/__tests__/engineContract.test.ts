@@ -127,7 +127,10 @@ describe('backend promise ledger', () => {
   it('pins environment fidelity rows for DDGI SH walkaround versus path tracers', () => {
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.environments).toEqual({
       none: 'native',
-      hdri: 'approximate',
+      // Wave 4 (2026-06-10): promoted approximate→native — env DI NEE candidate
+      // in RIS, HDRI in DDGI probe misses + risGiNrc + RC, runtime CDF rebuild
+      // on updateEnvironment. Radiometric A/B pending V28-B.
+      hdri: 'native',
       'procedural-sky': 'unsupported',
     });
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);

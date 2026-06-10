@@ -374,7 +374,102 @@ describe('cascadeMerge: solid-angle-weighted average', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. octCellSolidAngle 4π identity (cascadeMerge.wgsl.ts)
+// 3. rcProbeIrradiance receiver estimator (A7 fix — sampleCascadeC0.wgsl.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+// WGSL formula (sampleCascadeC0.wgsl.ts, rcProbeIrradiance):
+//
+//   for each ray k:
+//     Le += L_k * cos_k          (cos_k = max(dot(N,rayDir_k), 0))
+//   return (4π / N) × Le
+//
+// This is the standard Monte Carlo irradiance estimator for uniform sphere
+// sampling (pdf = 1/(4π)):  E = (1/N) Σ L_k · cos_k / pdf = (4π/N) Σ L_k·cos_k
+//
+// Two key radiometric identities we verify here:
+//   (A) N-independence: for a UNIFORM isotropic radiance field L(ω)=c, the
+//       estimator converges to E = π·c independent of N. At cell-center jitter
+//       (jx=jy=0.5) the estimator is exact for any N (uniform grid = MC with
+//       deterministic low-discrepancy directions covering the sphere).
+//   (B) Correction magnitude: the OLD formula (Le/Wsum * N * 0.5) gives
+//       Le*N/2 for Wsum≈1 (typical in a uniform field), which is N/2 times
+//       larger than the correct π — 2.55× wrong at N=16, 8× wrong at N=64.
+//       We assert the corrected formula gives a consistent result at N=16 and N=64.
+//
+// References:
+//   Veach 1997, §2.3 — MC estimator, E[f/p] = integral(f) for any pdf p > 0.
+//   Shirley & Morley 2003, §14.3 — hemisphere cosine-weighted sampling;
+//     irradiance = ∫ L cos dω; uniform pdf = 1/(4π) → estimator = (4π/N)Σ(L·cos).
+describe('rcProbeIrradiance: A7 receiver estimator (sampleCascadeC0.wgsl.ts)', () => {
+  const FOUR_PI_RC = 4 * Math.PI;  // matches `const FOUR_PI_RC: f32 = 12.56637...` in WGSL
+
+  // TS mirror of the corrected WGSL rcProbeIrradiance accumulation loop.
+  // N = raysPerProbe (rayGridSize*rayGridSize); cell-center jitter (0.5, 0.5).
+  // Returns the estimated irradiance E ≈ ∫ L(ω) · max(dot(N,ω),0) dω.
+  function rcProbeIrradiance(
+    N: number,
+    L: (rayDir: [number, number, number]) => number,
+    normal: [number, number, number] = [0, 1, 0],
+  ): number {
+    const gridSize = Math.round(Math.sqrt(N));
+    let Le = 0;
+    for (let rayIdx = 0; rayIdx < N; rayIdx++) {
+      const d = probeRayDir(rayIdx, gridSize, 0.5, 0.5);  // cell-center = deterministic
+      const cosK = Math.max(d[0] * normal[0] + d[1] * normal[1] + d[2] * normal[2], 0);
+      Le += L(d) * cosK;
+    }
+    return FOUR_PI_RC * Le / N;
+  }
+
+  // ── (A) N-independence at cell-center jitter ─────────────────────────────
+  // For a uniform isotropic field L=1, the hemisphere integral is:
+  //   E = ∫₊ cos θ dω = π  (standard Lambertian hemisphere result).
+  // The corrected formula (4π/N)·Σcos_k should give ≈ π independent of N.
+  // We test N=16 (C0 — the default inner cascade) and N=64 (C1).
+  // Tolerance: 5% relative — the octahedral deterministic grid has inherent
+  // per-N discretization bias (the octahedral-to-sphere Jacobian is non-uniform);
+  // this is the expected approximation error of a 4×4..8×8 grid, not a formula bug.
+  it.each([16, 64] as const)(
+    'uniform field L=1 → E ≈ π (within 5%) for N=%i',
+    (N) => {
+      const e = rcProbeIrradiance(N, () => 1);
+      const relErr = Math.abs(e - Math.PI) / Math.PI;
+      expect(relErr, `N=${N}: E=${e.toFixed(6)} vs π=${Math.PI.toFixed(6)}`).toBeLessThan(0.05);
+    },
+  );
+
+  // ── (B) N-independence: N=16 and N=64 agree to within 10% ────────────────
+  // The OLD formula (Le*N/2) grows linearly with N — the ratio N64/N16 = 4.
+  // The CORRECTED formula (4π*Le/N) is N-independent in the MC sense, so the
+  // ratio stays within the octahedral-grid discretization window (< 10%).
+  // The key assertion is the ratio is NOT near 4 (which the old formula gives).
+  it('N=16 and N=64 agree to within 10% (OLD formula would give ratio ≈ 4)', () => {
+    const e16 = rcProbeIrradiance(16, () => 1);
+    const e64 = rcProbeIrradiance(64, () => 1);
+    const ratio = e64 / e16;
+    expect(
+      Math.abs(ratio - 1),
+      `E(N=64)/E(N=16) = ${ratio.toFixed(6)} — should be ≈1 for the corrected formula; ` +
+      `a ratio of ~4 would indicate the OLD (N-dependent) bug is still present`,
+    ).toBeLessThan(0.10);
+  });
+
+  // ── (C) Magnitude: corrected formula is NOT the old formula ──────────────
+  // OLD formula: Le / Wsum * N * 0.5 (where Wsum ≈ total cosine weight ≈ N/4
+  // for a uniform field, giving Le*(N/2)/Wsum ≈ 2*Le).
+  // For L=1, N=16, uniform field: old ≈ N/2 * (4/N) * average-cos * N ≈ wrong.
+  // We assert the corrected result ≈ π (not N/2 ≈ 8 for N=16).
+  it('corrected formula gives ≈ π, NOT ≈ N/2 (old formula sanity-guard)', () => {
+    const e16 = rcProbeIrradiance(16, () => 1);
+    // The OLD formula at N=16: Le/Wsum * 16 * 0.5 = Le/Wsum * 8.
+    // In a uniform field Wsum = Σcos_k; for N=16, Σcos ≈ N/4 = 4, so Le/Wsum ≈ 1,
+    // giving ≈ 8. The corrected value is ≈ π ≈ 3.14.
+    expect(e16, `corrected E=${e16.toFixed(4)} should be near π=${Math.PI.toFixed(4)}`).toBeGreaterThan(Math.PI * 0.98);
+    expect(e16, `corrected E=${e16.toFixed(4)} should NOT be near the old N/2=8`).toBeLessThan(4.0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. octCellSolidAngle 4π identity (cascadeMerge.wgsl.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 describe('cascadeMerge: octCellSolidAngle solid-angle identity (sphere = 4π)', () => {
   // The merge kernel's `octCellSolidAngle` uses ONE planar quad per cell. Summed

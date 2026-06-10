@@ -219,27 +219,33 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(COMMON_WGSL).toContain('tlasNodeCount:');
   });
 
-  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + ENVIRONMENT_SAMPLE_WGSL + RIS_WGSL', () => {
+  it('ris: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
     // RIS_MODULE.requires === ['restirPHat', 'regir', 'environmentSample'].
-    // `regir` requires `lightTree` (which requires `common`); `environmentSample`
-    // requires [], so the dep-first DFS emits:
-    // common (via restirPHat) → restirPHat → lightTree (via regir) → regir →
-    // environmentSample → ris. B3 — environmentSample lands just before the RIS
-    // kernel (its env bindings 15-19 + directional lookup/importance helpers).
+    // Wave 4: restirPHat now requires ['common', 'environmentSample'] (the
+    // ENV_SAMPLE_SENTINEL branch calls envHasMap/envRadiance/envDirFromXi).
+    // DFS order: common (via restirPHat.requires[0]) → environmentSample
+    // (via restirPHat.requires[1]) → restirPHat → lightTree (via regir) →
+    // regir → environmentSample (already emitted, skipped) → ris.
+    // environmentSample now appears at position 2 (before restirPHat) rather
+    // than at the end, because restirPHat pulls it in first.
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + ENVIRONMENT_SAMPLE_WGSL + RIS_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
     );
   });
 
-  it('temporal: COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
+  it('temporal: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
+    // Wave 4: restirPHat now requires ['common', 'environmentSample'] so
+    // environmentSample is emitted before restirPHat in all passes that
+    // depend on restirPHat (temporal, spatial, ris).
     expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
     );
   });
 
-  it('spatial: COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
+  it('spatial: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
+    // Wave 4: see temporal note above — same dep change.
     expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
     );
   });
 

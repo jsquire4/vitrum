@@ -31,8 +31,14 @@ export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   // unchanged). 1 = multi-bounce diffuse EMA (maxBounces >= 2, default),
   // 0 = direct-only probes (maxBounces == 1).
   { name: 'indirectFeedback', type: 'u32' },
-  { name: '_pad3',          type: 'u32'   },
-  { name: '_pad4',          type: 'u32'   },
+  // Wave 4 — HDRI into DDGI probe misses (2026-06-10).
+  // hasEnv=1 gates the equirect sample path in sampleSkyColor; 0 keeps the
+  // procedural gradient (byte-identical to the pre-Wave-4 path for no-HDRI
+  // scenes). envRotationY + envIntensity mirror the convention in
+  // environmentSample.wgsl (H6 RY(-rotY) world→map lookup).
+  { name: 'hasEnv',         type: 'u32'   },   // was _pad3
+  { name: 'envRotationY',   type: 'f32'   },   // was _pad4 — repurposed (same 4-byte slot)
+  { name: 'envIntensity',   type: 'f32'   },   // new; UBO grows by 4 bytes (was 48 → 52, next 64-byte boundary unchanged)
 ] as const);
 
 export const DDGI_BLEND_PARAMS_UBO = defineUbo([

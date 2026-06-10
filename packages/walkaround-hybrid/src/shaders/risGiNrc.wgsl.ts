@@ -296,7 +296,10 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     } else {
       xs = pos + wi * RECONNECT_MAX_DIST;
       ns = -wi;
-      Lo = ubo.skyTint * ubo.skyIrradiance;
+      // Wave 4 parity — directional IBL: sample the actual map along wi (same
+      // as risGi.wgsl:264). envRadiance falls back to skyTint×skyIrradiance when
+      // no HDRI is bound, preserving byte-identity with the scalar-sky path.
+      Lo = envRadiance(wi);
     }
 
     let pHat = luminance(Lo) * cosTheta * INV_PI;
@@ -379,6 +382,9 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
   return {
     name: 'risGiNrc',
     source,
-    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf'],
+    // Wave 4 parity: `environmentSample` added so envRadiance() is in scope for
+    // the GI-escape sky-miss branch (matching risGi.wgsl:264). The @group(1)
+    // env bindings 15-19 are already present in the scene BGL for NRC passes.
+    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf', 'environmentSample'],
   };
 }

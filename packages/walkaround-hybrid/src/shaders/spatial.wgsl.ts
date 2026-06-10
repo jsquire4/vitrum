@@ -157,7 +157,8 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let nbrM = max(1u, nbr.M / M_SCALE);
 
     // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
-    let pHatNbrAtCenter = restir_di_compute_phat_from_surface(nbr.lightId, center);
+    // Wave 4: pass nbr.xi for the ENV_SAMPLE_SENTINEL path.
+    let pHatNbrAtCenter = restir_di_compute_phat_xi(nbr.lightId, nbr.xi, center);
     let w = pHatNbrAtCenter * nbr.W * f32(nbrM);
 
     r.M += nbrM;
@@ -172,7 +173,8 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Recompute W.
-  let pHatZ = restir_di_compute_phat_from_surface(r.lightId, center);
+  // Wave 4: use xi-aware pHat so ENV_SAMPLE_SENTINEL reservoirs get correct W.
+  let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, center);
   r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
