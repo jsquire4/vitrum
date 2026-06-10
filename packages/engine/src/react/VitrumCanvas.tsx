@@ -71,13 +71,21 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
+    // H31 — ref-stabilize `advanced` and `onAttachError` so inline-object props
+    // do not cause full engine teardown+recreate on every parent render. The
+    // effect dep array only observes the ref (stable identity), not the prop value
+    // (new object each render). The latest value is read inside the effect.
+    const advancedRef = React.useRef<VitrumCanvasProps['advanced']>(props.advanced);
+    const onAttachErrorRef = React.useRef<VitrumCanvasProps['onAttachError']>(props.onAttachError);
 
     // Keep the latest dynamic props in refs so the engine sees them
     // without having to be torn down + recreated when they change.
-    React.useEffect(() => { qualityRef.current = props.quality; },     [props.quality]);
-    React.useEffect(() => { onFrameRef.current = props.onFrame; },     [props.onFrame]);
-    React.useEffect(() => { onProgressRef.current = props.onProgress; }, [props.onProgress]);
-    React.useEffect(() => { onErrorRef.current = props.onError; },     [props.onError]);
+    React.useEffect(() => { qualityRef.current = props.quality; },         [props.quality]);
+    React.useEffect(() => { onFrameRef.current = props.onFrame; },         [props.onFrame]);
+    React.useEffect(() => { onProgressRef.current = props.onProgress; },   [props.onProgress]);
+    React.useEffect(() => { onErrorRef.current = props.onError; },         [props.onError]);
+    React.useEffect(() => { advancedRef.current = props.advanced; },       [props.advanced]);
+    React.useEffect(() => { onAttachErrorRef.current = props.onAttachError; }, [props.onAttachError]);
 
     // Effect dependency captures the structural inputs only. Mutable refs
     // bypass the dep array for dynamic props.
@@ -93,7 +101,10 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         camera: props.camera,
         ...(props.prefer ? { prefer: props.prefer } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
-        ...(props.advanced != null ? { advanced: props.advanced } : {}),
+        // H31 — read advanced from the ref at construction time so inline objects
+        // captured in the effect closure don't force engine teardown+recreate on
+        // each parent render. advancedRef.current is always the latest value.
+        ...(advancedRef.current != null ? { advanced: advancedRef.current } : {}),
         ...(props.debug != null ? { debug: props.debug } : {}),
         // Live-propagation: pass a getter so the rAF tick reads the latest
         // `props.quality` each frame (qualityRef.current is updated by the
@@ -112,7 +123,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           attached = h;
         })
         .catch((err) => {
-          props.onAttachError?.(err);
+          // H31 — call via ref so inline onAttachError props don't appear in
+          // the effect dep array (which would cause teardown per parent render).
+          onAttachErrorRef.current?.(err);
           console.error('[VitrumCanvas] attachVitrum failed:', err);
         });
 
@@ -121,7 +134,11 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         attached?.dispose();
         handleRef.current = null;
       };
-    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.advanced, props.debug, props.onAttachError]);
+    // H31 — `advanced` and `onAttachError` are intentionally NOT in the dep
+    // array; they are accessed via stable refs (advancedRef / onAttachErrorRef)
+    // to prevent inline-object props from tearing down the engine per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.debug]);
 
     // forwardRef plumbing.
     React.useImperativeHandle(externalRef, () => canvasRef.current as HTMLCanvasElement, []);

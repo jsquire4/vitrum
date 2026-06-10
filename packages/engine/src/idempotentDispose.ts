@@ -101,12 +101,19 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
  *  acceptance criterion ("engine.dispose() followed by engine.dispose()
  *  is idempotent").
  *
+ *  H31-c — `onDisposeError` is an optional channel for throws that originate
+ *  inside `engine.dispose()` or `postDispose()`. Without it those errors are
+ *  silently swallowed (the prior behaviour — both catch blocks rethrew nothing).
+ *  The channel is intentionally optional: existing callers keep their silent
+ *  behaviour by default.
+ *
  *  @internal Exported for unit-test access only. Not part of the public
  *  `@vitrum/engine` API surface; consumers should use {@link createEngine}
  *  / {@link attachVitrum}. */
 export function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
+  onDisposeError?: (err: unknown) => void,
 ): Engine & Partial<GIStatePersistable> {
   let disposed = false;
   const patchSupport = engine.capabilities.incrementalPatchSupport;
@@ -148,8 +155,8 @@ export function wrapWithIdempotentDispose(
     dispose() {
       if (disposed) return;
       disposed = true;
-      try { engine.dispose(); } catch {}
-      try { postDispose(); } catch {}
+      try { engine.dispose(); } catch (err) { try { onDisposeError?.(err); } catch {} }
+      try { postDispose(); } catch (err) { try { onDisposeError?.(err); } catch {} }
     },
     // T3.G followup — pass the underlying engine.debug surface through
     // unchanged. Methods are bound to the engine instance, so calling

@@ -59,6 +59,16 @@ interface PtWebgl2ModuleLike {
 
 export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
 
+/** Engine returned by {@link createEngine} with its chosen backendId attached.
+ *  Hosts that need to know which backend was selected (e.g. to type-narrow
+ *  `opts.advanced` for backend-specific API calls) read this field.
+ *
+ *  The `advanced` cast to a backend-specific options type is safe ONLY when
+ *  `engine.backendId` matches the target backend — gate such casts on this field. */
+export interface EngineWithBackendId extends Engine, Partial<GIStatePersistable> {
+  readonly backendId: CreateEngineBackendId;
+}
+
 export type CreateEngineErrorPhase =
   | 'create:walkaround-hybrid'
   | 'create:pt-webgpu'
@@ -130,7 +140,7 @@ export interface CreateEngineOptions {
   readonly onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
 }
 
-export async function createEngine(opts: CreateEngineOptions): Promise<Engine & Partial<GIStatePersistable>> {
+export async function createEngine(opts: CreateEngineOptions): Promise<EngineWithBackendId> {
   if (opts.canvas == null) {
     throw new TypeError('createEngine: opts.canvas is required');
   }
@@ -155,7 +165,8 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
 
   if (backend === 'walkaround-hybrid') {
     try {
-      return await constructWalkaround(opts, vitrumScene, aabb, tlasAudit.needsTlas);
+      const engine = await constructWalkaround(opts, vitrumScene, aabb, tlasAudit.needsTlas);
+      return attachBackendId(engine, 'walkaround-hybrid');
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:walkaround-hybrid',
@@ -172,7 +183,8 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
   }
   if (backend === 'pt-webgpu') {
     try {
-      return await constructPathTracerWebGPU(opts, vitrumScene);
+      const engine = await constructPathTracerWebGPU(opts, vitrumScene);
+      return attachBackendId(engine, 'pt-webgpu');
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
@@ -184,6 +196,22 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
     }
   }
   return await constructPathTracerWebGLFallback(opts, vitrumScene);
+}
+
+/** Attach a `backendId` property to an engine returned by a constructor.
+ *  The property is non-enumerable-but-readable so it doesn't interfere with
+ *  spread/clone patterns the host might use on the Engine object.
+ *  @internal */
+function attachBackendId(
+  engine: Engine & Partial<GIStatePersistable>,
+  backendId: CreateEngineBackendId,
+): EngineWithBackendId {
+  return Object.defineProperty(engine, 'backendId', {
+    value: backendId,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  }) as EngineWithBackendId;
 }
 
 function reportCreateEngineError(
@@ -210,10 +238,11 @@ async function constructPathTracerFallback(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
   tryWebGpuFirst: boolean,
-): Promise<Engine> {
+): Promise<EngineWithBackendId> {
   if (tryWebGpuFirst) {
     try {
-      return await constructPathTracerWebGPU(opts, vitrumScene);
+      const engine = await constructPathTracerWebGPU(opts, vitrumScene);
+      return attachBackendId(engine, 'pt-webgpu');
     } catch (err) {
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
@@ -229,9 +258,10 @@ async function constructPathTracerFallback(
 async function constructPathTracerWebGLFallback(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
-): Promise<Engine> {
+): Promise<EngineWithBackendId> {
   try {
-    return await constructPathTracer(opts, vitrumScene);
+    const engine = await constructPathTracer(opts, vitrumScene);
+    return attachBackendId(engine, 'pt-webgl2');
   } catch (err) {
     reportCreateEngineError(opts, err, {
       phase: 'create:pt-webgl2',

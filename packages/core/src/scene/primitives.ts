@@ -16,13 +16,21 @@ export interface MeshPrimitive {
   readonly normals: Float32Array;
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1); uv pairs
-  readonly tangents?: Float32Array;       // xyzw per vertex; w = bitangent sign
+  /** Tangents, xyzw per vertex (w = bitangent sign).
+   *  @reserved Accepted; no backend currently samples tangents for rendering
+   *  (used only as a topology-change sentinel in updatePrimitive). road-to-100 texture tier. */
+  readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) (components = length / vertexCount)
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
-  readonly castShadow?: boolean;          // default true
-  readonly receiveShadow?: boolean;       // default true
+  /** Whether this mesh casts shadows on other geometry. Default true.
+   *  @reserved Accepted by the contract; pt-webgl2 hardcodes `true` (fork default) and
+   *  walkaround-hybrid does not gate on it. road-to-100 shadow tier. */
+  readonly castShadow?: boolean;
+  /** Whether this mesh receives shadows from other geometry. Default true.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
+  readonly receiveShadow?: boolean;
 }
 
 /** Same geometry repeated at many transforms. Backend may build a single BVH
@@ -34,6 +42,8 @@ export interface InstancedMeshPrimitive {
   readonly normals: Float32Array;
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1)
+  /** Tangents, xyzw per vertex (w = bitangent sign).
+   *  @reserved Accepted; not yet consumed by any backend for rendering. road-to-100. */
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;
@@ -112,6 +122,8 @@ export interface SkinnedMeshPrimitive {
   readonly normals: Float32Array;     // rest-pose, mesh-local
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;         // 2nd UV channel (TextureRef.texCoord 1)
+  /** Tangents, xyzw per vertex (w = bitangent sign).
+   *  @reserved Accepted; not yet consumed by any backend for rendering. road-to-100. */
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;      // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;
@@ -159,7 +171,12 @@ export interface SkinnedMeshPrimitive {
   readonly morphWeights?: Float32Array;
   readonly material: MaterialSpec;
   readonly transform?: Mat4;
+  /** Whether this mesh casts shadows on other geometry. Default true.
+   *  @reserved Accepted by the contract; pt-webgl2 hardcodes `true` (fork default) and
+   *  walkaround-hybrid does not gate on it. road-to-100 shadow tier. */
   readonly castShadow?: boolean;
+  /** Whether this mesh receives shadows from other geometry. Default true.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
   readonly receiveShadow?: boolean;
 }
 

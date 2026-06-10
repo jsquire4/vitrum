@@ -58,6 +58,18 @@ function expectUnitNormals(mesh: MeshPrimitive): void {
   }
 }
 
+/** Assert that a generated mesh has UVs present and all values in [0, 1]. */
+function expectUVsInRange(mesh: MeshPrimitive): void {
+  const vertexCount = mesh.positions.length / 3;
+  expect(mesh.uvs).toBeDefined();
+  expect(mesh.uvs!.length).toBe(vertexCount * 2);
+  for (let i = 0; i < mesh.uvs!.length; i++) {
+    const val = mesh.uvs![i]!;
+    expect(val).toBeGreaterThanOrEqual(0);
+    expect(val).toBeLessThanOrEqual(1);
+  }
+}
+
 function meshFor(shape: AnalyticPrimitive['shape'], params: readonly number[], options?: AnalyticPrimitiveToMeshOptions): MeshPrimitive {
   return analyticPrimitiveToMesh(analytic(shape, params), options);
 }
@@ -81,6 +93,7 @@ describe('analyticPrimitiveToMesh', () => {
     expect(mesh.indices).toHaveLength(36);
     expectBounds(mesh, [-3, -3, -3], [5, 7, 9]);
     expectUnitNormals(mesh);
+    expectUVsInRange(mesh);
   });
 
   it('generates deterministic smooth sphere geometry from options', () => {
@@ -95,6 +108,7 @@ describe('analyticPrimitiveToMesh', () => {
     expect(Array.from(a.indices!)).toEqual(Array.from(b.indices!));
     expectBounds(a, [-1, 0, 1], [3, 4, 5]);
     expectUnitNormals(a);
+    expectUVsInRange(a);
   });
 
   it('generates cylinder geometry along the local Y axis', () => {
@@ -104,6 +118,7 @@ describe('analyticPrimitiveToMesh', () => {
     expect(mesh.indices).toHaveLength(96);
     expectBounds(mesh, [-2, -2, -2], [2, 4, 2]);
     expectUnitNormals(mesh);
+    expectUVsInRange(mesh);
   });
 
   it('generates capsule geometry between endpoint params', () => {
@@ -113,6 +128,7 @@ describe('analyticPrimitiveToMesh', () => {
     expect(mesh.indices).toHaveLength(192);
     expectBounds(mesh, [-0.5, -0.5, -0.5], [0.5, 2.5, 0.5]);
     expectUnitNormals(mesh);
+    expectUVsInRange(mesh);
   });
 
   it('generates an H-channel came extrusion matching the core param layout', () => {
@@ -122,6 +138,7 @@ describe('analyticPrimitiveToMesh', () => {
     expect(mesh.indices).toHaveLength(108);
     expectBounds(mesh, [-5, -2, -1], [5, 2, 1]);
     expectUnitNormals(mesh);
+    expectUVsInRange(mesh);
   });
 
   it('uses and clones a supplied fallbackMesh by default', () => {

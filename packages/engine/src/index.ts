@@ -12,6 +12,7 @@ export {
   type CreateEngineErrorEvent,
   type CreateEngineErrorPhase,
   type CreateEngineOptions,
+  type EngineWithBackendId,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngine.js';

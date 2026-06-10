@@ -14,12 +14,14 @@ export interface AnalyticPrimitiveToMeshOptions {
 interface GeometryData {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
+  readonly uvs: Float32Array;
   readonly indices: Uint32Array;
 }
 
 interface GeometryBuilder {
   readonly positions: number[];
   readonly normals: number[];
+  readonly uvs: number[];
   readonly indices: number[];
 }
 
@@ -63,6 +65,7 @@ function meshFromGeometry(primitive: AnalyticPrimitive, geometry: GeometryData):
     id: primitive.id,
     positions: geometry.positions,
     normals: geometry.normals,
+    uvs: geometry.uvs,
     indices: geometry.indices,
     material: primitive.material,
     ...(primitive.transform != null ? { transform: primitive.transform } : {}),
@@ -109,13 +112,14 @@ function positiveDimension(value: number): number {
 }
 
 function createBuilder(): GeometryBuilder {
-  return { positions: [], normals: [], indices: [] };
+  return { positions: [], normals: [], uvs: [], indices: [] };
 }
 
-function pushVertex(builder: GeometryBuilder, position: V3, normal: V3): number {
+function pushVertex(builder: GeometryBuilder, position: V3, normal: V3, uv: readonly [number, number] = [0, 0]): number {
   const index = builder.positions.length / 3;
   builder.positions.push(position[0], position[1], position[2]);
   builder.normals.push(normal[0], normal[1], normal[2]);
+  builder.uvs.push(uv[0], uv[1]);
   return index;
 }
 
@@ -127,15 +131,27 @@ function finish(builder: GeometryBuilder): GeometryData {
   return {
     positions: new Float32Array(builder.positions),
     normals: new Float32Array(builder.normals),
+    uvs: new Float32Array(builder.uvs),
     indices: new Uint32Array(builder.indices),
   };
 }
 
-function addQuad(builder: GeometryBuilder, a: V3, b: V3, c: V3, d: V3, normal: V3): void {
-  const i0 = pushVertex(builder, a, normal);
-  const i1 = pushVertex(builder, b, normal);
-  const i2 = pushVertex(builder, c, normal);
-  const i3 = pushVertex(builder, d, normal);
+function addQuad(
+  builder: GeometryBuilder,
+  a: V3,
+  b: V3,
+  c: V3,
+  d: V3,
+  normal: V3,
+  uvA: readonly [number, number] = [0, 0],
+  uvB: readonly [number, number] = [1, 0],
+  uvC: readonly [number, number] = [0, 1],
+  uvD: readonly [number, number] = [1, 1],
+): void {
+  const i0 = pushVertex(builder, a, normal, uvA);
+  const i1 = pushVertex(builder, b, normal, uvB);
+  const i2 = pushVertex(builder, c, normal, uvC);
+  const i3 = pushVertex(builder, d, normal, uvD);
   pushTriangle(builder, i0, i1, i2);
   pushTriangle(builder, i2, i1, i3);
 }
@@ -321,10 +337,12 @@ function appendRingSide(
   const bottom: number[] = [];
   const top: number[] = [];
   for (let i = 0; i < segments; i++) {
+    // u = azimuth [0,1], v = 0 at bottom, 1 at top.
+    const uCoord = i / segments;
     const radial = circleDirection(u, v, i, segments);
     const normal = radial;
-    bottom.push(pushVertex(builder, add(bottomCenter, scale(radial, radius)), normal));
-    top.push(pushVertex(builder, add(topCenter, scale(radial, radius)), normal));
+    bottom.push(pushVertex(builder, add(bottomCenter, scale(radial, radius)), normal, [uCoord, 0]));
+    top.push(pushVertex(builder, add(topCenter, scale(radial, radius)), normal, [uCoord, 1]));
   }
 
   for (let i = 0; i < segments; i++) {
@@ -344,11 +362,15 @@ function appendCylinderCap(
   segments: number,
 ): void {
   const normal: V3 = [0, axisSign, 0];
-  const centerIndex = pushVertex(builder, center, normal);
+  // Cap center at UV (0.5, 0.5); ring vertices at (cos+1)/2, (sin+1)/2.
+  const centerIndex = pushVertex(builder, center, normal, [0.5, 0.5]);
   const ring: number[] = [];
   for (let i = 0; i < segments; i++) {
     const radial = circleDirection(u, v, i, segments);
-    ring.push(pushVertex(builder, add(center, scale(radial, radius)), normal));
+    // radial is already normalized [cos,0,sin]; map to [0,1]² cap UV.
+    const uCap = (radial[0] + 1) * 0.5;
+    const vCap = (radial[2] + 1) * 0.5;
+    ring.push(pushVertex(builder, add(center, scale(radial, radius)), normal, [uCap, vCap]));
   }
   for (let i = 0; i < segments; i++) {
     const next = (i + 1) % segments;
@@ -369,19 +391,28 @@ function buildSurfaceRows(
 ): GeometryData {
   const builder = createBuilder();
   const rowIndices: number[][] = [];
+  const totalRows = rows.length;
 
-  for (const row of rows) {
+  for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+    const row = rows[rowIdx]!;
+    // v-coordinate: 0 at south pole (first row), 1 at north pole (last row).
+    const vCoord = rowIdx / (totalRows - 1);
+
     if (row.radius <= EPS_DIM) {
-      rowIndices.push([pushVertex(builder, row.center, normalize(scale(axis, row.normalAxis)))]);
+      // Pole vertex — single vertex at UV (0.5, vCoord). The standard
+      // lat/long convention uses the column-average u for the pole (0.5).
+      // This keeps vertex counts unchanged from the pre-UV implementation.
+      rowIndices.push([pushVertex(builder, row.center, normalize(scale(axis, row.normalAxis)), [0.5, vCoord])]);
       continue;
     }
 
     const indices: number[] = [];
     for (let i = 0; i < segments; i++) {
+      const uCoord = i / segments;
       const radial = circleDirection(u, v, i, segments);
       const position = add(row.center, scale(radial, row.radius));
       const normal = normalize(add(scale(radial, row.normalRadial), scale(axis, row.normalAxis)));
-      indices.push(pushVertex(builder, position, normal));
+      indices.push(pushVertex(builder, position, normal, [uCoord, vCoord]));
     }
     rowIndices.push(indices);
   }

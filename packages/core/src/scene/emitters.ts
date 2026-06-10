@@ -16,13 +16,16 @@ export interface EmitterBase {
   readonly id: SceneNodeId;
   readonly color: Vec3;
   readonly intensity: number;
-  readonly castShadow?: boolean;          // default true
+  /** Whether this emitter's shadow rays are cast. Default true.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
+  readonly castShadow?: boolean;
 }
 
 export interface DirectionalEmitter extends EmitterBase {
   readonly kind: 'directional';
   readonly direction: Vec3;               // unit vector pointing AT the light
-  /** Optional: angular subtense for soft shadows. 0 = perfectly directional. */
+  /** Optional: angular subtense for soft shadows. 0 = perfectly directional.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 soft-shadow tier). */
   readonly angularDiameter?: number;
 }
 

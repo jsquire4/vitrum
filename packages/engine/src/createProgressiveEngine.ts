@@ -101,6 +101,12 @@ export interface CreateProgressiveEngineOptions {
    *  {@link AdapterProfile} (probed from the union device) before the engines are
    *  built. Lets a host read the tier verdict for a HUD / CI artifact. */
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
+
+  /** H31-b — host-visible error callback for canvas-configure failures.
+   *  Mirrors the `onError` parameter on {@link CreateEngineOptions}. Called for
+   *  the belt-and-braces `configureWebGpuCanvas` at line ~307; the error is
+   *  non-fatal (the sub-engines already configured the context). */
+  readonly onError?: (error: unknown) => void;
 }
 
 export interface ProgressiveEngineHandle {
@@ -304,7 +310,9 @@ export async function createProgressiveEngine(
     // the REALTIME engine's swap-chain presentation (constructWalkaround already
     // did this, but it is idempotent + best-effort, so a host that swapped the
     // canvas is still covered).
-    configureWebGpuCanvas(opts.canvas, device);
+    // H31-b — thread the host onError callback so canvas-configure failures are
+    // surfaced rather than silently swallowed.
+    configureWebGpuCanvas(opts.canvas, device, opts.onError);
 
     const coordinatorOpts: ProgressiveHandoffOptions = {
       realtime,

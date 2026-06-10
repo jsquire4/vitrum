@@ -220,13 +220,20 @@ function recommendHeroBackend(
 /** Synchronous WebGL2 presence check (no async adapter request). Returns true
  *  in non-DOM environments (headless tests) so a missing `document` does not
  *  falsely report 'none' — the realtime/hero recommendation already gates on
- *  the WebGPU verdicts. */
+ *  the WebGPU verdicts.
+ *
+ *  H31-e — the catch branch used to return `true`, which caused a false-positive
+ *  `recommendedHeroBackend` on any exception thrown by `getContext('webgl2')` (e.g.
+ *  a CSP violation or a WebGL-disabled worker). Return `false` on exception so the
+ *  WebGL2 recommendation is conservative on real failures. The `document` undefined
+ *  guard stays `true` — headless test environments without a DOM are intentionally
+ *  assumed to support WebGL2 (test stubs handle that). */
 function detectWebGL2Sync(): boolean {
   if (typeof document === 'undefined') return true;
   try {
     const canvas = document.createElement('canvas');
     return canvas.getContext('webgl2') != null;
   } catch {
-    return true;
+    return false;
   }
 }

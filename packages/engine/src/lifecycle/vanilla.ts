@@ -236,14 +236,33 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // Resize: track the canvas's CSS pixel size + DPR. Renderframe receives
   // the latest values via FrameInput.viewport.
   //
+  // H30 — synchronous initial sizing: set canvas.width/height from CSS client
+  // size × DPR so the backing store matches the visible area before the first
+  // frame. Without this the default 300×150 backing store is used as the
+  // initial viewport while ResizeObserver uses contentRect×DPR — two different
+  // coordinate systems. We unify them here so the initial seed matches the
+  // resize math exactly.
+  //
   // A4 — generic PT engines honour viewport-per-frame, but HybridEngine
   // (WebGPU walkaround) does not — its DDGI atlas / ReSTIR reservoirs /
   // history textures / accumulation buffer are sized at construction and
   // can only be resized via `setSize(w, h)`. Call it when available so
   // WebGPU hosts using attachVitrum get correct resize behaviour out of box.
-  let viewportW = Math.max(1, Math.floor(opts.canvas.width));
-  let viewportH = Math.max(1, Math.floor(opts.canvas.height));
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
+  const safeDprInitial = Number.isFinite(viewportDpr) && viewportDpr > 0 ? viewportDpr : 1;
+  // Seed from CSS clientWidth/Height × DPR, falling back to the canvas backing
+  // store dimensions when the element has no layout (e.g. test environments
+  // where clientWidth is always 0).
+  const initCssW = opts.canvas.clientWidth > 0 ? opts.canvas.clientWidth : opts.canvas.width;
+  const initCssH = opts.canvas.clientHeight > 0 ? opts.canvas.clientHeight : opts.canvas.height;
+  const initW = Math.max(1, Math.floor(initCssW * safeDprInitial));
+  const initH = Math.max(1, Math.floor(initCssH * safeDprInitial));
+  // Synchronously set the backing store so the first renderFrame sees the
+  // correct physical size (matches what ResizeObserver will maintain thereafter).
+  opts.canvas.width = initW;
+  opts.canvas.height = initH;
+  let viewportW = initW;
+  let viewportH = initH;
   // A4 — Only backends with `presentationMode === 'swapchain-required'`
   // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
   // offscreen-texture backends (pt-webgl2, pt-webgpu) honour
@@ -300,6 +319,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let prevProj: Mat4 | undefined;
   let rafHandle: number | null = null;
   let stopped = false;
+  // H31-d — consecutive-throw counter. After RAF_SELF_STOP_THRESHOLD consecutive
+  // renderFrame throws the loop stops itself and reports a non-recoverable error.
+  // The counter resets on any successful renderFrame call.
+  const RAF_SELF_STOP_THRESHOLD = 5;
+  let consecutiveThrows = 0;
 
   const tick = (): void => {
     if (stopped) return;
@@ -331,9 +355,27 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     });
     try {
       engine.renderFrame(input);
+      // Reset the consecutive-throw counter on any successful frame.
+      consecutiveThrows = 0;
     } catch (err) {
-      // Surface engine errors but don't kill the loop — the engine has its
-      // own error state that the host can observe via engine.state.
+      consecutiveThrows++;
+      if (consecutiveThrows >= RAF_SELF_STOP_THRESHOLD) {
+        // H31-d: engine is persistently broken — stop the loop and report
+        // non-recoverable so the host knows the engine has halted.
+        stopped = true;
+        if (rafHandle != null) {
+          cancelAnimationFrame(rafHandle);
+          rafHandle = null;
+        }
+        reportError(err, { phase: 'attach:renderFrame', recoverable: false });
+        console.error(
+          `[attachVitrum] renderFrame threw ${RAF_SELF_STOP_THRESHOLD} consecutive times; ` +
+          'RAF loop stopped. Dispose and recreate the engine to recover.',
+          err,
+        );
+        return;
+      }
+      // Recoverable: surface the error but keep the loop alive.
       reportError(err, { phase: 'attach:renderFrame', recoverable: true });
       console.error('[attachVitrum] renderFrame threw:', err);
     }

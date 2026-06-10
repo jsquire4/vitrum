@@ -49,9 +49,7 @@ export function pickBackend(
   if (hasWebGPU) {
     return 'pt-webgpu';
   }
-  if (needsTlas) {
-    // WebGL-only host: merged BVH is the only pt-webgl2 path; caller should warn.
-    return 'pt-webgl2';
-  }
+  // WebGL-only host: merged BVH is the only pt-webgl2 path; caller should warn
+  // when needsTlas is true (handled at the createEngine call site).
   return 'pt-webgl2';
 }

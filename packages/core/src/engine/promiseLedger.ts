@@ -152,6 +152,22 @@ const ALL_EMITTERS_NATIVE: BackendSupportDetails['emitters'] = Object.freeze({
   'mesh-area': 'native',
 });
 
+/**
+ * Walkaround-hybrid emitter support: point/spot are routed through the DDGI
+ * fixture-light path only (no ReSTIR-DI term) — they contribute to indirect
+ * GI via probe radiance but are NOT directly sampled in the ReSTIR direct-
+ * illumination reservoir. Road-to-100: H41 Option A adds an analytic NEE loop
+ * for point/spot in the shade pass (W4).
+ */
+const WALKAROUND_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
+  directional: 'native',
+  'rect-area': 'native',
+  'disc-area': 'native',
+  point: 'approximate',   // DDGI-only; no ReSTIR-DI direct term
+  spot: 'approximate',    // DDGI-only; cone falloff applied, no ReSTIR-DI direct term
+  'mesh-area': 'native',
+});
+
 const NO_ANALYTIC_SHAPES: BackendSupportDetails['analyticShapes'] = Object.freeze({
   sphere: 'unsupported',
   box: 'unsupported',
@@ -200,16 +216,15 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // TLAS per-instance traversal path.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
-    // mesh emissive material; point/spot → DDGI fixture lights. Spots carry
-    // real cone data (spotAxis + cosInner/cosOuter) and evalPointLight in the
-    // probe shader applies smoothstep cone falloff. See coreEmittersToDDGILights.
-    // `directional` → DDGI `sun` light: coreEmittersToDDGILights maps a scene
-    // directional to a `sun` DDGILight carrying its real direction (negated to
-    // a travel direction), intensity, and colour, and the host single-counts it
-    // by setting the DDGI sun-intensity multiplier to 1 (so the config
-    // primaryLightIntensity does not additionally scale the DDGI sun; it still
-    // drives the shade-side Lo_emit). ReSTIR-DI harvests no directional emitter,
-    // so there is no DI double-count.
+    // mesh emissive material; directional → DDGI `sun` light. point/spot →
+    // DDGI fixture lights (DDGI-only routing; no ReSTIR-DI direct term —
+    // grade 'approximate'; see WALKAROUND_EMITTERS). Spots carry real cone data
+    // (spotAxis + cosInner/cosOuter) and evalPointLight in the probe shader
+    // applies smoothstep cone falloff. See coreEmittersToDDGILights.
+    // `directional` → coreEmittersToDDGILights maps it to a `sun` DDGILight
+    // carrying its real direction + intensity + colour; the host single-counts it
+    // by setting the DDGI sun-intensity multiplier to 1. ReSTIR-DI harvests no
+    // directional emitter, so there is no DI double-count.
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
@@ -221,7 +236,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'instanced-mesh': 'native',
         analytic: 'fallback-generated-mesh',
       },
-      emitters: ALL_EMITTERS_NATIVE,
+      emitters: WALKAROUND_EMITTERS,
       environments: {
         none: 'native',
         hdri: 'approximate',
@@ -272,23 +287,28 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsAddRemovePrimitive: true,
     supportsAuxBuffers: false,
     accumulates: true,
-    // The native WebGL2 packer ingests mesh / skinned-mesh / instanced-mesh;
-    // analytic is accepted through a generated MeshPrimitive
-    // fallback immediately before scene packing. The authored analytic
-    // scene remains cached so params/shape patches can full-rebuild.
-    // instanced-mesh IS supported: the backend-side scene pack preserves each
+    // The native WebGL2 packer ingests mesh / skinned-mesh / instanced-mesh.
+    // `analytic` is NOT in the runtime set (PT_WEBGL2_SUPPORT.supportedAnalyticShapes
+    // is empty); analytic primitives are warned-and-skipped. No generated-mesh
+    // fallback path exists in the current slice — road-to-100 D3.
+    // instanced-mesh IS supported: the backend scene pack preserves each
     // instance at its real per-instance world transform.
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
-    supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
+    // Runtime supportedAnalyticShapes is an empty Set (PT_WEBGL2_SUPPORT). No
+    // analytic shape is accepted — none here either.
+    supportedAnalyticShapes: [],
     presentationMode: 'offscreen-texture',
     supportDetails: {
       primitives: {
         mesh: 'native',
         'skinned-mesh': 'native',
         'instanced-mesh': 'native',
-        analytic: 'fallback-generated-mesh',
+        // Analytic primitives are warned-and-skipped in the current slice.
+        // The authored scene is cached for param/shape patches, but ingestion
+        // skips the shape (no generated-mesh fallback). Road-to-100 D3.
+        analytic: 'unsupported',
       },
       emitters: ALL_EMITTERS_NATIVE,
       environments: {
@@ -296,22 +316,21 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         hdri: 'native',
         'procedural-sky': 'unsupported',
       },
-      analyticShapes: {
-        sphere: 'fallback-generated-mesh',
-        box: 'fallback-generated-mesh',
-        capsule: 'fallback-generated-mesh',
-        cylinder: 'fallback-generated-mesh',
-        'h-channel-came': 'fallback-generated-mesh',
-      },
+      analyticShapes: NO_ANALYTIC_SHAPES,
       mutations: {
-        transform: 'native',
-        positions: 'native',
-        material: 'native',
-        emitter: 'native',
-        topology: 'native',
+        // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
+        // (a full scene-texture/BVH repack, not a targeted in-place edit).
+        // The incrementalPatchSupport flags above reflect the OUTCOME (patches
+        // are absorbed without error), but the support GRADE is fallback-rebuild
+        // because no fast-path exists in the current slice.
+        transform: 'fallback-rebuild',
+        positions: 'fallback-rebuild',
+        material: 'fallback-rebuild',
+        emitter: 'fallback-rebuild',
+        topology: 'fallback-rebuild',
         addPrimitive: 'fallback-rebuild',
         removePrimitive: 'fallback-rebuild',
-        environment: 'native',
+        environment: 'fallback-rebuild',
         resize: 'unsupported',
         lighting: 'unsupported',
       },

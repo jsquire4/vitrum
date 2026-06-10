@@ -183,8 +183,12 @@ export interface MaterialSpec {
   readonly transmissionMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;
-  readonly aoMap?: TextureRef;             // ambient occlusion (glTF occlusionTexture)
-  readonly aoMapIntensity?: number;        // default 1
+  /** Ambient occlusion map (glTF occlusionTexture).
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+  readonly aoMap?: TextureRef;
+  /** Ambient occlusion strength multiplier. Default 1.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly aoMapIntensity?: number;
   readonly clearcoatMap?: TextureRef;
   readonly clearcoatRoughnessMap?: TextureRef;
   readonly clearcoatNormalMap?: TextureRef;
@@ -196,13 +200,27 @@ export interface MaterialSpec {
   readonly anisotropyMap?: TextureRef;     // glTF KHR_materials_anisotropy (RG = dir, B = strength)
   readonly specularColorMap?: TextureRef;     // glTF KHR_materials_specular (RGB = specularColor)
   readonly specularIntensityMap?: TextureRef; // glTF KHR_materials_specular (A = specularFactor)
-  readonly bumpMap?: TextureRef;              // height-field normal perturbation (THREE bumpMap)
-  readonly bumpScale?: number;                // default 1
-  readonly displacementMap?: TextureRef;      // vertex displacement height (THREE displacementMap)
-  readonly displacementScale?: number;        // default 1
-  readonly displacementBias?: number;         // default 0
-  readonly lightMap?: TextureRef;             // baked diffuse irradiance (THREE lightMap)
-  readonly lightMapIntensity?: number;        // default 1
+  /** Height-field normal perturbation map.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+  readonly bumpMap?: TextureRef;
+  /** Bump perturbation scale. Default 1.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly bumpScale?: number;
+  /** Vertex displacement height map.
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+  readonly displacementMap?: TextureRef;
+  /** Displacement amplitude scale. Default 1.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly displacementScale?: number;
+  /** Displacement bias (shifts the zero point). Default 0.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly displacementBias?: number;
+  /** Baked diffuse irradiance / light map (additive to emissive).
+   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+  readonly lightMap?: TextureRef;
+  /** Light map intensity multiplier. Default 1.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly lightMapIntensity?: number;
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
   readonly sheen?: number;
@@ -231,9 +249,11 @@ export interface MaterialSpec {
    */
   readonly specularColor?: Vec3;
   /**
-   * Environment/IBL specular intensity multiplier (mirrors
-   * `THREE.MeshStandardMaterial.envMapIntensity`). Scales the contribution of
+   * Environment/IBL specular intensity multiplier. Scales the contribution of
    * image-based-lighting reflections. Default 1.
+   *
+   * @reserved Accepted by the contract; not yet consumed by any backend.
+   * road-to-100 item (IBL specular tier).
    */
   readonly envMapIntensity?: number;
 
@@ -343,12 +363,10 @@ export interface MaterialSpec {
    * Anisotropic specular highlight strength ∈ [0, 1].
    * 0 = isotropic (default); 1 = fully anisotropic.
    *
-   * Mirrors `THREE.MeshPhysicalMaterial.anisotropy`. The field is set
-   * directly on the THREE material (not via userData) for ripple and
-   * waterglass cells in the stainedGlass baking pipeline.
+   * @reserved Accepted by the contract; not yet consumed by any backend.
+   * Planned for the stained-glass rendering pipeline (road-to-100 D3).
    *
-   * Reference: Three.js MeshPhysicalMaterial.anisotropy
-   * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropy).
+   * Reference: glTF KHR_materials_anisotropy.
    */
   readonly anisotropy?: number;
 
@@ -356,10 +374,10 @@ export interface MaterialSpec {
    * Rotation of the anisotropic highlight in radians ∈ [0, π].
    * Only meaningful when `anisotropy` > 0.
    *
-   * Mirrors `THREE.MeshPhysicalMaterial.anisotropyRotation`.
+   * @reserved Accepted by the contract; not yet consumed by any backend.
+   * Planned alongside `anisotropy` (road-to-100 D3).
    *
-   * Reference: Three.js MeshPhysicalMaterial.anisotropyRotation
-   * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropyRotation).
+   * Reference: glTF KHR_materials_anisotropy.
    */
   readonly anisotropyRotation?: number;
 

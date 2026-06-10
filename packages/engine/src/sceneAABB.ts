@@ -143,16 +143,13 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
         return { ...transformed, triangles: triCount };
       }
     }
-    if (prim.transform != null) {
-      const tx = prim.transform[12]!;
-      const ty = prim.transform[13]!;
-      const tz = prim.transform[14]!;
-      return {
-        min: [tx, ty, tz],
-        max: [tx, ty, tz],
-        triangles: 0,
-      };
-    }
+    // H31-f (D10) — an analytic primitive without a fallbackMesh contributes
+    // null (skip) instead of a zero-volume point at the transform origin. A
+    // zero-volume point collapses one extent dimension to 0, making the
+    // diagonal underestimate the scene scale → scale-derived epsilons too
+    // small (Möller-Trumbore ε, emitter dist² floor, camera-reset threshold).
+    // null-skip is conservative: the AABB slightly undersizes the scene instead
+    // of poisoning scale with a degenerate point contribution.
     return null;
   }
   return null;
