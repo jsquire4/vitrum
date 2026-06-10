@@ -1,0 +1,22 @@
+{
+  "name": "@vitrum-examples/progressive",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Progressive handoff example: walkaround real-time GI → pt-webgpu converged PT on camera settle.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitrum/engine": "file:../../packages/engine",
+    "@vitrum-examples/cornell-scene": "file:../cornell-scene"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.5.0",
+    "vite": "^5.0.0"
+  }
+}

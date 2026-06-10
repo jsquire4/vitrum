@@ -23,6 +23,15 @@ const outputPath = resolve(here, `results/gap-closure-verification-${resultDate}
 const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
 const captureCommandOverride = process.env.VITRUM_CAPTURE_CMD?.trim() ?? '';
 
+/**
+ * Return the default capture command for a scenario, or '' if none applies.
+ *
+ * No built-in command is wired: every capture requires a running example server
+ * (served by `npm run dev` or `npm run preview` in the appropriate examples/**
+ * workspace) and a configured VITRUM_CAPTURE_URL. Set VITRUM_CAPTURE_CMD to
+ * `node ./tools/benchmark-runner/capture-adapter-playwright.mjs` and
+ * VITRUM_CAPTURE_URL to your dev-server URL to enable GPU captures.
+ */
 function defaultCaptureCommand(scenario) {
   void scenario;
   return '';
@@ -182,8 +191,9 @@ async function runCapture(scenario, variant, outputImagePath) {
       ok: false,
       status: 'blocked-no-capture-adapter',
       reason:
-        'VITRUM_CAPTURE_CMD is unset and no default adapter exists for this scenario backend. ' +
-        'Set VITRUM_CAPTURE_CMD or use backend "pt-webgpu" for the built-in capturePtWebgpu adapter.',
+        'VITRUM_CAPTURE_CMD is unset. Set VITRUM_CAPTURE_CMD to ' +
+        '"node ./tools/benchmark-runner/capture-adapter-playwright.mjs" and ' +
+        'VITRUM_CAPTURE_URL to your running example server URL to enable GPU captures.',
     };
   }
   const run = await runCommand(captureCommand, {

@@ -1,6 +1,34 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { launchChromiumForCapture } from './playwrightWebGpu.mjs';
+
+/**
+ * Launch a Playwright Chromium browser configured for WebGPU / WebGL2 capture.
+ *
+ * On Linux we add `--use-angle=vulkan` so ANGLE promotes WebGL2 to a Vulkan
+ * backend; `--enable-unsafe-webgpu` unlocks the WebGPU origin trial. These
+ * flags are no-ops on Windows/macOS where WebGPU is enabled by default.
+ *
+ * The caller must call `browser.close()` when done.
+ *
+ * @param {import('playwright').BrowserType} chromium - The playwright `chromium` object.
+ * @returns {Promise<import('playwright').Browser>}
+ */
+async function launchChromiumForCapture(chromium) {
+  const isLinux = process.platform === 'linux';
+  const args = [
+    '--enable-unsafe-webgpu',
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    // Suppress GPU info bar in headed mode.
+    '--disable-infobars',
+  ];
+  if (isLinux) {
+    // Promote WebGL2 to Vulkan via ANGLE — required for hardware-accelerated
+    // WebGL2 and WebGPU on Linux (Mesa/Vulkan or dzn on WSL2).
+    args.push('--use-angle=vulkan');
+  }
+  return chromium.launch({ headless: true, args });
+}
 
 const outputPng = process.env.VITRUM_OUTPUT_PNG;
 if (!outputPng) {

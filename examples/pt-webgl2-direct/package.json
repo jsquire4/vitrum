@@ -1,0 +1,22 @@
+{
+  "name": "@vitrum-examples/pt-webgl2-direct",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal example: createPTEngine_WebGL2 direct — host acquires the WebGL2 context and drives the backend.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitrum/pt-webgl2": "file:../../packages/pt-webgl2",
+    "@vitrum/core": "file:../../packages/core",
+    "@vitrum-examples/cornell-scene": "file:../cornell-scene"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vite": "^5.0.0"
+  }
+}

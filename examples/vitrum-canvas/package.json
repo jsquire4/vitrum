@@ -1,0 +1,27 @@
+{
+  "name": "@vitrum-examples/vitrum-canvas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal React example: <VitrumCanvas> component — drop-in for React apps.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitrum/engine": "file:../../packages/engine",
+    "@vitrum-examples/cornell-scene": "file:../cornell-scene",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@webgpu/types": "^0.1.40",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.0.0"
+  }
+}

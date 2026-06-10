@@ -50,7 +50,10 @@ class UNetDenoiser(nn.Module):
     Channel widths:
       Encoder:    9 → 24 → 48 → 96 → 192 (bottleneck)
       Decoder: 192 → 96 → 48 → 24 → 3
-    Parameter count: ~426,075 (~1.63 MB f32).
+    Parameter count: ~535,107 (~2.04 MB f32, ~1.02 MB f16).
+    (Earlier docs cited ~426,075; that figure excluded the three strided
+    down-conv layers enc1_down/enc2_down/enc3_down — 109,032 params.
+    Canonical source: packages/walkaround-hybrid/src/neural/unetArchitecture.ts)
 
     No batch norm: inference is per-frame; BN would require re-normalization
     at runtime across frames. Uses ReLU activations only.

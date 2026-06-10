@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "@webgpu/types"
+    ],
+    "paths": {
+      "@vitrum-examples/cornell-scene": [
+        "../cornell-scene/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "../../packages/pt-webgl2/src/glsl/glsl-modules.d.ts"
+  ]
+}

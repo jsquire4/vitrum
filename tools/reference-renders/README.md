@@ -1,9 +1,8 @@
 # Reference renders
 
 Reference PNGs are how we A/B-verify visual output of the renderer across
-session branches before merge. The capture flow is **the verification gate** the
-premium-grade refactor plan calls "mandatory" for any change that touches a
-backend's visible output (see `plan/premium-grade-refactor-20260517.md` §1.2).
+branches before merge. The capture flow is **the verification gate** called
+"mandatory" for any change that touches a backend's visible output.
 
 ## Mechanical acceptance gates (no GPU)
 
@@ -11,91 +10,73 @@ These run in `npm run verify:mechanical` and pin harness contracts only — **no
 
 | Gate | Command |
 |------|---------|
-| W8 RC off/on | `npm run benchmark:rc-acceptance-mechanical` |
-| BDPT vs layered | `npm run benchmark:bdpt-layered-mechanical` |
+| W8 RC off/on | `npm run benchmark:rc-acceptance-mechanical --workspace @vitrum/benchmark-runner` |
+| RC behavior | `npm run benchmark:rc-behavior-mechanical --workspace @vitrum/benchmark-runner` |
 
-Fixture PNGs live under `W8-rc-{off,on}/` and `bdpt-layered-mechanical/`. Replace with real GPU captures when refreshing baselines (`benchmark:rc-acceptance-full`, `benchmark:bdpt-layered-refs`).
+Fixture PNGs live under `W8-rc-{off,on}/` and `bdpt-layered-mechanical/`. Replace
+with real GPU captures when refreshing baselines.
 
 ## Quick start — capture refs on the current branch
 
-```bash
-# From repo root, with workspace npm-installed and Playwright chromium pulled.
-npm run capture:refs
-```
-
-This produces a labelled output directory under
-`tools/reference-renders/session-YYYYMMDD/` containing:
-
-| File                          | What it is                                                    |
-|-------------------------------|---------------------------------------------------------------|
-| `cornell-glass.png`           | Cornell glass-sphere scenario (pt-webgl)                      |
-| `cornell-caustic.png`         | Cornell caustic test (manifold-NEE)                            |
-| `cornell-spectral.png`        | Cornell spectral-rendering scenario                            |
-| `cornell-layered.png`         | Cornell layered-BSDF test                                      |
-| `cornell-sss.png`             | Cornell SSS / dispersion                                       |
-| `cornell-parity.png`          | Cornell WebGPU-vs-WebGL parity                                 |
-| `hero-product-viz.png`        | Hero product visualizer — procedural glass scene               |
-| `hero-viewer-realtime.png`    | Hero glTF viewer — walkaround GI engine on a chrome sphere     |
-| `hero-viewer-quality.png`     | Same scene, path-tracer engine                                 |
-
-Default resolution: **1280×720 @ 512 SPP, 8 bounces**.
-
-## Variants
+GPU captures require a running example server and Playwright Chromium.
+Start an example app in one terminal (e.g., `npm run dev --workspace @vitrum-examples/pt-webgl2-direct`),
+then in another terminal:
 
 ```bash
-npm run capture:refs:quick    # 512x512 @ 64 SPP — smoke test (~30s/scene)
-npm run capture:refs:hero     # 1920x1080 @ 2048 SPP — high quality (~5-10 min/scene)
+VITRUM_GPU_CAPTURE=1 \
+VITRUM_ALLOW_BASELINE_GEN=1 \
+VITRUM_CAPTURE_CMD="node ./tools/benchmark-runner/capture-adapter-playwright.mjs" \
+VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
+npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
 
-Custom label (recommended for branch-named captures):
+The `capture-adapter-playwright.mjs` adapter launches Playwright Chromium with
+WebGPU flags (`--enable-unsafe-webgpu`; `--use-angle=vulkan` on Linux) and
+awaits `globalThis.VITRUM_CAPTURE_READY === true` on the page before screenshotting.
 
-```bash
-./scripts/capture-all-refs.sh --label W1-pre
-./scripts/capture-all-refs.sh --label W1-post --diff W1-pre
-```
+See `tools/benchmark-runner/README.md` for the full capture adapter protocol and
+env-var reference.
 
-Subset:
+The H57 example apps under `examples/` implement the capture protocol:
+- `examples/pt-webgl2-direct/` — pt-webgl2 backend
+- `examples/pt-webgpu-direct/` — pt-webgpu backend
+- `examples/create-engine/`, `examples/attach-vitrum/`, `examples/progressive/` — facade
 
-```bash
-./scripts/capture-all-refs.sh --only cornell        # cornell-box only
-./scripts/capture-all-refs.sh --only hero-product   # product viz only
-./scripts/capture-all-refs.sh --only hero-viewer    # glTF viewer only
-```
+Default resolution: **1280×720 @ 512 SPP, 8 bounces** (set via URL params).
 
 ## A/B diff against a baseline
 
 ```bash
-# Compare a fresh capture vs the locked baseline:
+# Compare a fresh capture dir vs the locked baseline:
 node tools/reference-renders/diff-baselines.mjs \
-  --candidate tools/reference-renders/session-20260517 \
+  --candidate tools/reference-renders/session-YYYYMMDD \
   --baseline  tools/reference-renders/baseline
-
-# Or built into the capture run:
-./scripts/capture-all-refs.sh --label post-fix --diff baseline
 ```
 
 The diff tool reports:
-- **`OK`** — SHA-256 match (bit-exact, the expected outcome for pure
-  refactors like W1).
-- **`OK*`** — pixels differ but mean-absolute-diff is below tolerance
-  (default `0.001`). Allowed for FP-rounding-level numerical drift.
-- **`DIFF`** — pixels differ outside tolerance. Either a bug or an
-  intentional algorithmic change requiring visual sign-off in the PR body.
-- **`MISS`** — baseline is missing the file. New scenarios need baselines
-  generated separately.
+- **`OK`** — SHA-256 match (bit-exact, expected for pure refactors).
+- **`OK*`** — pixels differ but mean-absolute-diff is below tolerance (default `0.001`).
+- **`DIFF`** — pixels differ outside tolerance. Either a bug or an intentional
+  algorithmic change requiring visual sign-off in the PR body.
+- **`MISS`** — baseline is missing the file. New scenarios need baselines generated separately.
 
-Pixel-diff requires `pngjs` (`npm i -D pngjs` at the workspace root). Without
-it, the tool falls back to size+SHA comparison only, which still catches
-bit-exact regressions.
+Pixel-diff requires `pngjs` (installed at workspace root). Without it, the tool
+falls back to size+SHA comparison only.
 
 ## Promoting a capture to a new baseline
 
 Once a capture has visual sign-off (eyeballed on a real GPU, not SwiftShader):
 
 ```bash
-cp tools/reference-renders/session-20260517/*.png tools/reference-renders/baseline/
+cp tools/reference-renders/session-YYYYMMDD/*.png tools/reference-renders/baseline/
 git add tools/reference-renders/baseline/
-git commit -m "chore(refs): adopt session-20260517 captures as new baseline"
+git commit -m "chore(refs): adopt session-YYYYMMDD captures as new baseline"
+```
+
+A promote helper is also available:
+
+```bash
+bash scripts/promote-ref-baseline.sh session-YYYYMMDD
 ```
 
 ## What the capture protocol requires from an example app
@@ -111,60 +92,61 @@ globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c'; // which canvas to screenshot
 ```
 
 It must also honour these URL params:
-- `?vitrumScenario=<id>` — flips the page into capture mode
-- `?vitrumAutoStart=1` — skips any "click to start" gate
+- `?vitrumScenario=<id>` — flip into capture mode
+- `?vitrumAutoStart=1` — skip any "click to start" gate
 - `?vitrumWidth`, `?vitrumHeight` — canvas size lock
 - `?vitrumSpp`, `?vitrumBounces` — quality knobs
 
 The Playwright adapter (`tools/benchmark-runner/capture-adapter-playwright.mjs`)
 translates `VITRUM_*` env vars into the corresponding URL params automatically.
 
-Currently implementing the protocol:
-- `examples/cornell-box` (full implementation, multiple scenarios)
-- `examples/hero-product-viz` (procedural scene, single scenario)
-- `examples/hero-viewer` (built-in fallback hero scene + procedural)
+## Existing artifacts
+
+- `baseline/` — the locked reference set. **24 PNG baselines committed** as of
+  2026-06-09: pt-webgpu fidelity-matrix captures (rfe03, rfe05, rfe07, rfe08,
+  rfe09, rfe14, ptwgpu-parity-material-fields, ptwgpu-spectral-hero,
+  ptwgpu-sss-mixed-panels, ptwgpu-thinfilm-angle, ptwgpu-cauchy-dispersion,
+  ptwgpu-layered-front), fork-vs-native A/B captures (cornell-glass,
+  cornell-caustic, cornell-spectral, cornell-layered, cornell-sss,
+  cornell-parity, cornell-bdpt-on, hero-product-viz, hero-viewer-quality,
+  hero-viewer-realtime), plus mnee-glass-slab and rfe03-layered-front-back
+  originals. See `baseline/README.md` for per-file status.
+  **Note on rfe09-bridge-global-cmf.png:** this baseline was captured before
+  commit `daa9716` (pt-webgpu within-leaf closest-hit fix); its post-`daa9716`
+  radiometric status is unverified — re-capture before using as an enforcement gate.
+- `post-sweep-20260512/` — sample capture set from the 2026-05-12
+  post-sweep verification (6 Cornell scenarios at 1280×720).
+- `pt-webgl-fidelity/` — pre-e14000c fork baselines kept as THREE-cutover A/B
+  reference. See `pt-webgl-fidelity/README.md`.
+- `W8-rc-{off,on}/`, `bdpt-layered-mechanical/` — mechanical fixture sets.
 
 ## CI gate
 
-For continuous protection, wire the capture + diff into CI:
-
 ```bash
 # fails if any scene drifts outside tolerance
-./scripts/capture-all-refs.sh --label ci-$GITHUB_SHA --diff baseline
+VITRUM_GPU_CAPTURE=1 \
+VITRUM_CAPTURE_CMD="node ./tools/benchmark-runner/capture-adapter-playwright.mjs" \
+VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
+VITRUM_STRICT_GAP_CLOSURE=1 \
+npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
 
-The diff tool exits non-zero on divergence, so this is a one-line CI gate.
-GPU is required; a self-hosted GPU runner or a cloud GPU instance is needed
-(SwiftShader produces black canvases and will report `DIFF` for everything).
-
-## Existing artifacts
-
-- `baseline/` — the locked reference set. Currently sparse — only
-  `rfe03-layered-front-back.png` is committed (RFE-03 verification).
-  Run `npm run capture:refs` on a known-good GPU machine to populate.
-- `post-sweep-20260512/` — sample capture set from the 2026-05-12
-  post-sweep verification (6 cornell scenarios at 1280×720).
-- `sweep-2026-05-11-diff-report.md` — A/B sign-off template for the
-  2026-05-11 sweep. Mirror this format for future per-workstream sweeps
-  (`W1-diff-report.md`, `W2-C3-diff-report.md`, etc.).
+GPU is required; SwiftShader produces black canvases and will report `DIFF` for
+everything. Use a self-hosted GPU runner or a cloud GPU instance.
 
 ## Troubleshooting
 
 - **Black PNGs** → no real GPU passthrough. Chrome fell back to SwiftShader.
-  Re-run on a machine with hardware acceleration, or set
-  `--use-angle=vulkan` / `--enable-unsafe-webgpu` in the Playwright launch
-  args (see `tools/benchmark-runner/capture-adapter-playwright.mjs`).
+  Re-run on a machine with hardware acceleration, or verify `--use-angle=vulkan`
+  / `--enable-unsafe-webgpu` flags are present in the Playwright launch
+  (see `capture-adapter-playwright.mjs`).
 
 - **`Executable doesn't exist at .../chrome-headless-shell`** → Chromium not
-  installed. Run `npx playwright install chromium`. This is a 200MB download
-  and is intentionally not part of `npm install` (see `CONTRIBUTING.md` for
-  why GPU tests are opt-in).
+  installed. Run `npx playwright install chromium`. This is a ~200 MB download
+  and is intentionally not part of `npm install` (GPU tests are opt-in; see
+  `CONTRIBUTING.md`).
 
-- **Timeouts on `--hero` mode** → 2048 SPP at 1080p can take several
-  minutes per scene. Bump `VITRUM_CAPTURE_TIMEOUT_MS` or run with a smaller
-  SPP target.
+- **Timeouts** → bump `VITRUM_CAPTURE_TIMEOUT_MS` or run with a smaller SPP target.
 
-- **Sliders / camera moved mid-capture** → headless Chromium can fire stray
-  pointer events. Both `hero-product-viz` and `hero-viewer` lock their
-  inputs in capture mode (sliders ignore input, orbit controls disabled).
-  Verify the canvas-style width/height matches what's in the PNG header.
+- **Sliders / camera moved mid-capture** → headless Chromium can fire stray pointer
+  events. Lock inputs in capture mode (check `?vitrumAutoStart=1` is being read).

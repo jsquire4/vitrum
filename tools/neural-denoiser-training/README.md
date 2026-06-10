@@ -73,7 +73,7 @@ The U-Net follows Ronneberger et al. 2015 with the Chaitanya et al. 2017
 | Decoder L1    | H × W × 24          |
 | Output        | H × W × 3 (RGB)     |
 
-**Parameters:** ~426,075 (~1.63 MB at f32)
+**Parameters:** ~535,107 (~2.04 MB at f32, ~1.02 MB at f16)
 
 Skip connections are element-wise addition (not concatenation). The skip
 source for decoder level N is the pre-downsampling encoder feature map
