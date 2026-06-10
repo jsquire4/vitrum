@@ -34,11 +34,6 @@ export const FrameParamsSlot = {
   bdptMaxEyeDepth: 28,
   lightTreeEnabled: 29,
   lightTreeNodeCount: 30,
-  /** H14-E: HDRI radiance intensity multiplier — separate from environmentSun.w
-   *  (which drives the procedural-sky sun strength). Both lanes are f32.
-   *  Value = scene.environment.intensity ?? 1 when an HDRI is present; 0 otherwise.
-   *  The WGSL equirect lookup uses this lane so the HDRI is NOT silently zeroed
-   *  when environmentSun.w is 0. */
   environmentHdriIntensity: 31,
   cameraPos: 32,
   lightDir: 36,
@@ -47,7 +42,6 @@ export const FrameParamsSlot = {
   invViewProj: 48,
   viewProj: 64,
   prevViewProj: 80,
-  /** N-directional: packed directional count — kernel loops this many directionalLights[] records. */
   directionalLightCount: 96,
 } as const;
 

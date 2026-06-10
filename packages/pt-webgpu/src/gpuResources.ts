@@ -480,10 +480,14 @@ export class GpuResources {
     });
 
     // Helper for sampled texture_2d<f32> bindings (B12 lite-tier textures).
+    // Trust-audit F2 (2026-06-10): these textures are rgba32float, which WebGPU
+    // classifies as UNFILTERABLE-float — declaring them 'float' (filterable) made
+    // every lite-tier pipeline fail validation and render black. The kernel only
+    // ever textureLoad()s them, so 'unfilterable-float' is exactly right.
     const sampledTex = (binding: number): GPUBindGroupLayoutEntry => ({
       binding,
       visibility: VIS,
-      texture: { sampleType: 'float', viewDimension: '2d' },
+      texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
     });
 
     // Group 0 — bindings 0..11 (both tiers) + 12..14 (lite texture slots) / 12..13 (full).
@@ -1072,7 +1076,14 @@ export class GpuResources {
    */
   buildBindGroups(sb: UploadedSceneBuffers, bdptLightPathBuffer: () => GPUBuffer): GPUBindGroup {
     if (this.pathTraceBindGroup != null) return this.pathTraceBindGroup;
-    const liteEntries: GPUBindGroupEntry[] = [
+    // Bindings 0–11 are shared between the lite and full tiers; the tiers then
+    // DIVERGE at 12+ (lite: B12 sampled light/env textures at 12–14; full:
+    // motion-vectors storage texture at 12 + variance-moments buffer at 13).
+    // Trust-audit F1 (2026-06-10): the full entries previously spread the WHOLE
+    // lite array (duplicate bindings 12/13 + a stray 14) — WebGPU rejected the
+    // bind group, so EVERY full-tier render crashed before frame 1. The mock
+    // device suite validated nothing; the lavapipe behavioral harness caught it.
+    const sharedEntries: GPUBindGroupEntry[] = [
       { binding: 0, resource: this.accumView! },
       { binding: 1, resource: { buffer: this.paramsBuffer! } },
       { binding: 2, resource: { buffer: this.accumBuffer! } },
@@ -1085,13 +1096,16 @@ export class GpuResources {
       { binding: 9, resource: this.normalDepthView! },
       { binding: 10, resource: this.albedoView! },
       { binding: 11, resource: this.varianceView! },
+    ];
+    const liteEntries: GPUBindGroupEntry[] = [
+      ...sharedEntries,
       // B12 — lite-tier texture bindings 12–14 (sampled, not storage).
       { binding: 12, resource: this.liteEnvTextureView! },
       { binding: 13, resource: this.liteEnvCdfTextureView! },
       { binding: 14, resource: this.liteLightTextureView! },
     ];
     const fullGroup0Entries: GPUBindGroupEntry[] = [
-      ...liteEntries,
+      ...sharedEntries,
       { binding: 12, resource: this.motionVectorsView! },
       { binding: 13, resource: { buffer: this.varianceMomentsBuffer! } },
     ];
@@ -1338,22 +1352,28 @@ export class GpuResources {
     // #buildSharedPipelineLayout via ensurePipeline. We don't need the layout
     // here — just ensure the buffer handles exist so buildBindGroups can bind them.
     // When SPPM is not active, ensure at least a placeholder buffer for the
-    // layout — 16 bytes satisfies the binding without allocating the real data.
+    // layout. Trust-audit F1b (2026-06-10): the placeholders were 16/16/32 bytes
+    // but the WGSL runtime-sized arrays impose a min-binding-size of ONE ELEMENT
+    // (photonCells element = 48 B) — WebGPU rejected the group-3 bind group, so
+    // EVERY full-tier render with causticStrategy != 'photon-map' failed. This is
+    // the 4th occurrence of the min-binding-size placeholder class (ea88803 /
+    // 0bedd92 / the 32B BVHNode dummies); placeholders sized 64 B to clear any
+    // current element stride with headroom.
     if (!sppmActive) {
       if (this.sppmPhotonCellsBuffer == null) {
         this.sppmPhotonCellsBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.photonCells.placeholder',
-          size: 16,
+          size: 64,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
         this.sppmCellCountersBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.cellCounters.placeholder',
-          size: 16,
+          size: 64,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
         this.sppmStatsBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.stats.placeholder',
-          size: 32,
+          size: 64,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         // SPPM buffers just created — invalidate group-3 so it rebuilds

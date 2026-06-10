@@ -238,11 +238,13 @@ struct DdgiTraceParams {
 // ddgiEnvMap  : rgba16float equirect radiance (unit-intensity, .rgb; .a unused
 //               by DDGI — pdf lane is for DI MIS). A 1×1 placeholder is bound
 //               when hasEnv=0 so the bind group is always valid.
-// ddgiEnvSamp : sampler for ddgiEnvMap. The DDGI look-up uses textureLoad (not
-//               textureSample) to avoid requiring the 'filter' usage on the
-//               texture, matching the environmentSample.wgsl convention.
+// NOTE: the env look-up uses textureLoad (not textureSample), so NO sampler
+// binding exists here. Trust-audit F3 (2026-06-10): a declared-but-unused
+// ddgiEnvSamp sampler at binding(7) was stripped by the layout:'auto'
+// pipeline, while the dispatcher still passed an 8th bind-group entry; WebGPU
+// rejected the probe-update bind group on EVERY frame (probe radiance silently
+// never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
-@group(2) @binding(7) var                      ddgiEnvSamp:  sampler;
 
 // -----------------------------------------------------------------
 // BVH traversal — merged world BLAS or TLAS+local BLAS (PR-5.2).

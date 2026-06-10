@@ -94,8 +94,10 @@ export function dispatchProbeUpdateRaysPass(
       // A 1×1 placeholder view is bound when hasEnv=0 so the bind group is
       // always valid; the WGSL sampleSkyColor gates on frameParams.hasEnv
       // before sampling, so the placeholder is never actually read.
+      // Trust-audit F3: NO sampler entry — the WGSL uses textureLoad and a
+      // declared-but-unused sampler is stripped by layout:'auto', so passing
+      // an entry for it failed bind-group validation every frame.
       { binding: 6, resource: gpu.envMapView },
-      { binding: 7, resource: gpu.envSamplerForProbe },
     ],
   });
 
