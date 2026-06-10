@@ -214,10 +214,14 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
 
+    // H23: mesh-area emitter color*intensity (10*10=100 per channel) overrides the
+    // material emissive ([1, 0.25, 0.1]) when a mesh-area emitter references the primitive.
+    // The emitter color/intensity is the physical radiance; the material emissive is replaced.
+    const expectedLe: [number, number, number] = [100, 100, 100]; // color=[10,10,10] * intensity=10
     expect(emitters).toHaveLength(1);
-    expect(emitters[0]!.color[0]).toBeCloseTo(1, 6);
-    expect(emitters[0]!.color[1]).toBeCloseTo(0.25, 6);
-    expect(emitters[0]!.color[2]).toBeCloseTo(0.1, 6);
-    expect(buffers.totalEmissivePower).toBeCloseTo(luminance(1, 0.25, 0.1) * 0.5, 5);
+    expect(emitters[0]!.color[0]).toBeCloseTo(expectedLe[0], 3);
+    expect(emitters[0]!.color[1]).toBeCloseTo(expectedLe[1], 3);
+    expect(emitters[0]!.color[2]).toBeCloseTo(expectedLe[2], 3);
+    expect(buffers.totalEmissivePower).toBeCloseTo(luminance(expectedLe[0], expectedLe[1], expectedLe[2]) * 0.5, 5);
   });
 });

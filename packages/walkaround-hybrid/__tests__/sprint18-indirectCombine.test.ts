@@ -52,8 +52,10 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     // Both Lo_sunCaustic and Lo_skyAperture still feed directRadiance × ao.
     // (Lo_emitterGlow — camera-visible emitters, 2026-05-30 — joins Lo_emit
     // outside the AO term; it sits between Lo_emit and the AO-scaled group.)
+    // H41 — Lo_analyticNEE (point/spot additive NEE) inserted between Lo_direct
+    // and Lo_sunCaustic inside the AO-scaled group.
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*\(Lo_direct\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
+      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
     );
   });
 

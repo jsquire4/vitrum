@@ -225,13 +225,48 @@ export function collectRectAreaLightEmitterTris(
   return out;
 }
 
-interface ExtraEmitterTri {
+export interface ExtraEmitterTri {
   vA: [number, number, number];
   vB: [number, number, number];
   vC: [number, number, number];
   normal: [number, number, number];
   area: number;
   Le: [number, number, number];
+}
+
+/**
+ * H18 — Pack an `ExtraEmitterTri[]` into the 80-byte-stride (5 × vec4f)
+ * Float32Array layout consumed by the DDGI probe-ray kernel's
+ * `ddgiEmitterTris` storage buffer and the RC `rc_emitters` buffer.
+ *
+ * Layout per entry (20 floats):
+ *   [0..2]  vA.xyz + pad(0)
+ *   [4..6]  vB.xyz + pad(0)
+ *   [8..10] vC.xyz + pad(0)
+ *   [12..14] normal.xyz + area
+ *   [16..18] Le.rgb + pad(0)
+ *
+ * Returns a zero-count dummy (empty Float32Array) when `tris` is empty so
+ * callers can safely pass `data` to a placeholder GPU buffer.
+ */
+export function packEmitterTrisForDDGI(tris: readonly ExtraEmitterTri[]): {
+  data: Float32Array;
+  count: number;
+} {
+  const count = tris.length;
+  if (count === 0) return { data: new Float32Array(0), count: 0 };
+  const STRIDE = 20; // 5 × vec4f = 20 floats = 80 bytes
+  const data = new Float32Array(count * STRIDE);
+  for (let i = 0; i < count; i++) {
+    const t = tris[i]!;
+    const base = i * STRIDE;
+    data[base + 0]  = t.vA[0]!; data[base + 1]  = t.vA[1]!; data[base + 2]  = t.vA[2]!; data[base + 3]  = 0;
+    data[base + 4]  = t.vB[0]!; data[base + 5]  = t.vB[1]!; data[base + 6]  = t.vB[2]!; data[base + 7]  = 0;
+    data[base + 8]  = t.vC[0]!; data[base + 9]  = t.vC[1]!; data[base + 10] = t.vC[2]!; data[base + 11] = 0;
+    data[base + 12] = t.normal[0]!; data[base + 13] = t.normal[1]!; data[base + 14] = t.normal[2]!; data[base + 15] = t.area;
+    data[base + 16] = t.Le[0]!; data[base + 17] = t.Le[1]!; data[base + 18] = t.Le[2]!; data[base + 19] = 0;
+  }
+  return { data, count };
 }
 
 const DISC_AREA_TRIANGLE_COUNT = 32;
@@ -387,4 +422,91 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     out.push({ vA: ll, vB: ur, vC: ul, normal: N, area: triArea, Le });
   }
   return out;
+}
+
+/**
+ * H41 — Analytic point/spot emitter struct layout for the shade NEE buffer.
+ *
+ * Stride: 4 × vec4f = 64 bytes = 16 floats per entry.
+ *   [0..2]  position.xyz + pad(0)
+ *   [4..6]  color.rgb (linear, pre-multiplied by intensity) + pad(0)
+ *   [8..10] direction.xyz (toward-light; (0,0,0) for omnidirectional point)
+ *          + cosInner (cosine of inner cone half-angle; 1.0 for point = no cone)
+ *   [12]   cosOuter (cosine of outer cone half-angle; 0.0 for point = no cone)
+ *           pad×3
+ *
+ * Point emitters: direction=(0,0,0), cosInner=1, cosOuter=0.
+ * Spot emitters: direction=normalize(axis), cosInner=cos(innerHalfAngle),
+ *                cosOuter=cos(outerHalfAngle).
+ *
+ * The WGSL shade NEE loop uses `Le/(d²+ε)·cosθ·smoothstep` falloff:
+ *   smoothstep(cosOuter, cosInner, dot(-dir, towardLight)) for spot cone
+ *   = 1 for point (cosOuter=0 < cosInner=1, always within cone).
+ */
+const ANALYTIC_LIGHT_STRIDE_FLOATS = 16; // 4 × vec4f
+
+export interface PackedAnalyticLights {
+  data: Float32Array;
+  count: number;
+}
+
+/**
+ * Pack `point` and `spot` emitters from a `@vitrum/core` `Scene` into the
+ * 64-byte-stride analytic-lights buffer for shade NEE (H41).
+ *
+ * Returns a 16-float placeholder (1 dummy entry, count=0) when the scene has
+ * no point/spot emitters, so the bind group is always valid (WebGPU storage
+ * bindings must be non-empty).
+ */
+export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLights {
+  const emitters = scene.emitters.filter(
+    (e) => e.kind === 'point' || e.kind === 'spot',
+  );
+  if (emitters.length === 0) {
+    // Dummy placeholder — 1 zeroed entry, count=0 so the shader skips the loop.
+    return { data: new Float32Array(ANALYTIC_LIGHT_STRIDE_FLOATS), count: 0 };
+  }
+
+  const S = ANALYTIC_LIGHT_STRIDE_FLOATS;
+  const data = new Float32Array(emitters.length * S);
+  let out = 0;
+  for (const e of emitters) {
+    if (e.kind === 'point') {
+      const [r, g, b] = e.color;
+      const i = e.intensity;
+      const [px, py, pz] = e.position;
+      data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
+      data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
+      // point: direction=(0,0,0), cosInner=1 (no cone)
+      data[out * S + 8]  = 0;  data[out * S + 9]  = 0;  data[out * S + 10] = 0;  data[out * S + 11] = 1;
+      // cosOuter=0 (no cone outer), pad
+      data[out * S + 12] = 0;  data[out * S + 13] = 0;  data[out * S + 14] = 0;  data[out * S + 15] = 0;
+      out++;
+    } else if (e.kind === 'spot') {
+      const [r, g, b] = e.color;
+      const i = e.intensity;
+      const [px, py, pz] = e.position;
+      // SpotEmitter.direction is the direction the spot points (unit vector).
+      const dirRaw = e.direction;
+      const dx = dirRaw[0], dy = dirRaw[1], dz = dirRaw[2];
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const nx = dLen > 1e-8 ? dx / dLen : 0;
+      const ny = dLen > 1e-8 ? dy / dLen : -1;
+      const nz = dLen > 1e-8 ? dz / dLen : 0;
+      // SpotEmitter.angle is the outer half-cone. penumbra [0..1] shrinks the
+      // inner cone: innerAngle = outerAngle * (1 - penumbra). At penumbra=0 →
+      // hard edge (inner==outer); at penumbra=1 → full penumbra (inner=0).
+      const outerHalf = e.angle;  // radians, half-cone
+      const penumbra = e.penumbra ?? 0;
+      const innerHalf = outerHalf * (1 - penumbra);
+      const cosInner = Math.cos(innerHalf);
+      const cosOuter = Math.cos(outerHalf);
+      data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
+      data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
+      data[out * S + 8]  = nx;  data[out * S + 9]  = ny;  data[out * S + 10] = nz;  data[out * S + 11] = cosInner;
+      data[out * S + 12] = cosOuter; data[out * S + 13] = 0; data[out * S + 14] = 0; data[out * S + 15] = 0;
+      out++;
+    }
+  }
+  return { data, count: out };
 }

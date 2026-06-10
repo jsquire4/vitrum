@@ -76,6 +76,7 @@ import {
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
+import { buildPpgUpdateWgsl } from '../ppg/ppgUpdate.wgsl.js';
 
 interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
@@ -130,6 +131,14 @@ export async function compilePipelines(
      *  GRIS-class regression (f8df9a4). The value carries the encoding/MLP
      *  config the WGSL sizes are baked from (must match the host NrcSubsystem). */
     nrcConfig?: RisGiNrcConfig;
+    /**
+     * H29 — per-cell dTree node cap baked into the PPG flux buffer
+     * (= `fluxAtomicsBuf.size / 4 / maxSpatialCells` from allocatePPGResources).
+     * The PPG update shader's `MAX_DTREE_NODES_PER_CELL` is template-interpolated
+     * from this value so the shader and the host agree on the stride.
+     * Default 341 (depth-4 full quadtree). Only used when ppgEnabled is true.
+     */
+    ppgMaxDTreeNodesPerCell?: number;
   },
 ): Promise<CompiledPipelines> {
   // GRIS / ReSTIR-PT reconnection-shift reuse is opt-in via the host flag
@@ -421,9 +430,17 @@ export async function compilePipelines(
   // T2.H3 — PPG update pipeline (Müller 2017 §3.3): opt-in via opts.ppgEnabled.
   // Guided sampling itself is inlined in gi-ris via ppgPdf.wgsl; the update
   // kernel is the only standalone PPG training pass.
+  // H29: the WGSL MAX_DTREE_NODES_PER_CELL is built from the live allocation
+  // value (opts.ppgMaxDTreeNodesPerCell) so the shader and host stride agree.
   let ppgUpdatePipeline: GPUComputePipeline | undefined;
   if (opts?.ppgEnabled) {
-    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES) });
+    const ppgMaxDTreeNodesPerCell = opts?.ppgMaxDTreeNodesPerCell ?? 341;
+    const ppgUpdateModule = {
+      name: 'ppgUpdate' as const,
+      source: buildPpgUpdateWgsl(ppgMaxDTreeNodesPerCell),
+      requires: ['luminance', 'ppgTreeLayout'] as const,
+    };
+    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, WGSL_MODULES) });
     const info = await ppgUpdateSM.getCompilationInfo();
     const errs = info.messages.filter(m => m.type === 'error');
     if (errs.length > 0) {

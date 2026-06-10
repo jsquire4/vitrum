@@ -46,7 +46,38 @@
 import { RESERVOIR_GI_STRIDE } from './ppgConstants.js';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-export const PPG_UPDATE_WGSL = /* wgsl */`
+/**
+ * Default spatial-cell count used by allocatePPGResources and the dTree stride
+ * calculation. Placed here (beside the stride builder) so both the compiler
+ * and allocator can import it from a single source.
+ *
+ * H29 — the GPU stride constant `MAX_DTREE_NODES_PER_CELL` is now
+ * template-interpolated by `buildPpgUpdateWgsl(maxDTreeNodesPerCell)` instead
+ * of being hardcoded in the WGSL source. pipelineCompiler.ts passes the live
+ * allocation value so both the shader and the host agree on the per-cell stride
+ * at every configuration.
+ */
+export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
+
+/**
+ * Build the PPG update kernel WGSL source for a given per-cell dTree node cap.
+ *
+ * H29 — converts the formerly static `PPG_UPDATE_WGSL` string into a builder
+ * so the `MAX_DTREE_NODES_PER_CELL` constant is single-sourced: it is
+ * template-interpolated from the live `maxDTreeNodesPerCell` value that
+ * `allocatePPGResources` used to size the GPU flux buffer.  This eliminates
+ * the silent divergence where the host could allocate with a non-default cap
+ * while the GPU kernel still used the hardcoded 341.
+ *
+ * Byte-identical at the default cap (341): the produced WGSL contains `341u`
+ * exactly as before.
+ *
+ * @param maxDTreeNodesPerCell  Per-cell node cap baked into the GPU flux
+ *   buffer (= `fluxAtomicsBuf.size / 4 / maxSpatialCells`).  Default 341
+ *   (depth-4 full quadtree: 1+4+16+64+256).
+ */
+export function buildPpgUpdateWgsl(maxDTreeNodesPerCell: number = 341): string {
+  return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Muller et al. 2017 section 3.3 - training from accepted GI reservoir samples.
 // The training tuple is (xv, normalize(xs - xv), Lo) from reservoirGiCurrent.
@@ -70,8 +101,9 @@ struct PPGUpdateUBO {
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
 // STREE_HEADER_F32, STREE_NODE_STRIDE). ppgUpdate-specific constant below.
-// Must match allocatePPGResources default (resourceManager.ts).
-const MAX_DTREE_NODES_PER_CELL : u32 = 341u;
+// H29: MAX_DTREE_NODES_PER_CELL is now single-sourced — pipelineCompiler.ts
+// passes the live allocatePPGResources value to buildPpgUpdateWgsl().
+const MAX_DTREE_NODES_PER_CELL : u32 = ${maxDTreeNodesPerCell}u;
 const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${RESERVOIR_GI_STRIDE}u;
 
 // ── Fixed-point encode (1/65536 ULP resolution) ──────────────────────────────
@@ -196,12 +228,28 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   atomicAdd(&ppgFluxAtomics[slot], encodeFlux(lum));
 }
 `;
+}
+
+/**
+ * H29 — default module instance (maxDTreeNodesPerCell = 341).
+ *
+ * Used by wgslModules.ts / wgslCompose tests that import PPG_UPDATE_MODULE
+ * directly (e.g. the WGSL-compose byte-identity gate). pipelineCompiler.ts
+ * MUST call buildPpgUpdateWgsl() with the live allocation value instead of
+ * using this constant when compiling the actual GPU pipeline.
+ */
+export const PPG_UPDATE_WGSL: string = buildPpgUpdateWgsl(341);
 
 /** W1-R6 — declarative include-graph entry. Requires the canonical
  *  Rec.709 luminance helper and ppgTreeLayout for the shared layout constants.
  *  No octahedralCore require: the 2026-06-09 equal-area fix replaced the
  *  octEncode call with the inline cylindrical map (`ppgDirToUv`), so the
- *  shared octahedral helpers are no longer referenced by this kernel. */
+ *  shared octahedral helpers are no longer referenced by this kernel.
+ *
+ *  H29: pipelineCompiler.ts builds its own WgslModule via buildPpgUpdateWgsl()
+ *  with the live allocation cap. This module instance uses the default 341 for
+ *  compose-tests and module-registry purposes.
+ */
 export const PPG_UPDATE_MODULE: WgslModule = {
   name: 'ppgUpdate',
   source: PPG_UPDATE_WGSL,

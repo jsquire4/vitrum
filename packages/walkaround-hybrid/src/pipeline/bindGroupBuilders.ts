@@ -128,6 +128,8 @@ interface SceneBindGroupResources {
   tlasBlasRootsBuffer: GPUBuffer;
   tlasInstanceWorldToLocalBuffer: GPUBuffer;
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  /** H41 — packed point/spot analytic lights (binding 13). 64-byte stride. */
+  analyticLightsBuffer: GPUBuffer;
 }
 
 export function buildSceneBindGroup(
@@ -149,6 +151,7 @@ export function buildSceneBindGroup(
     { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
     { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
+    { buffer: r.analyticLightsBuffer },             // 13 H41 analytic point/spot lights for shade NEE
   ]);
 }
 

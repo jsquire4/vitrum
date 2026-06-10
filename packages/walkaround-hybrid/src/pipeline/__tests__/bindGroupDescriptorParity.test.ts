@@ -121,6 +121,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     bvhBeerTextureView: view, bvhNormalBuffer: buf, bvhEmissiveTextureView: view,
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
+    analyticLightsBuffer: buf,
   }),
   ubo: (d, c) => buildUboBindGroup(d, c, buf, view, view),
   composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler),

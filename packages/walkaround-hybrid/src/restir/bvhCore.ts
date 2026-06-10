@@ -126,6 +126,127 @@ function makeMergedGeometry(
   } as unknown as SceneBVHBuffers['mergedGeometry'];
 }
 
+/**
+ * H23 — Build a material-slot → Le override map from scene `mesh-area` emitters.
+ *
+ * For each `mesh-area` emitter in the scene, find the referenced primitive by id,
+ * look up its material slot in the merged material array (by structural signature),
+ * and record `emitter.color * emitter.intensity` as the Le override for that slot.
+ *
+ * Override rule: the emitter's Le (color*intensity) REPLACES the material's emissive
+ * Le when the emitter specifies it. This is the override-vs-sum rule: apply either
+ * emitter Le OR material emissive, not both summed. The host explicitly wired a
+ * mesh-area emitter to make the mesh a light with a specific colour/intensity; the
+ * material emissive is a style hint, not the physical source.
+ *
+ * Caveats documented:
+ *  - Dedup collision: if two primitives share the same material (by structural
+ *    signature), the override applies to ALL triangles with that material slot. This
+ *    is an accepted edge case — mesh-area emitters are typically unique materials.
+ *  - Missing reference: a meshId that matches no primitive is warned and skipped.
+ *
+ * @returns Map from material-slot-index to Le [r,g,b] override; empty when no
+ *          mesh-area emitters are present.
+ */
+function buildMeshAreaLeOverrides(
+  scene: Scene,
+  mergedMaterials: readonly MaterialSpec[],
+): Map<number, [number, number, number]> {
+  const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
+  if (meshAreaEmitters.length === 0) return new Map();
+
+  // Build primitive-id → material index (slot in mergedMaterials)
+  const primitiveIdToMaterialSlot = new Map<string, number>();
+  for (const p of scene.primitives) {
+    if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
+      const sig = JSON.stringify({
+        emissive: p.material.emissive,
+        emissiveIntensity: p.material.emissiveIntensity,
+        baseColor: p.material.baseColor,
+        roughness: p.material.roughness,
+        metallic: p.material.metallic,
+        transmission: p.material.transmission,
+      });
+      // Find the slot by scanning mergedMaterials — O(M) but called once per build.
+      for (let s = 0; s < mergedMaterials.length; s++) {
+        const m = mergedMaterials[s]!;
+        const mSig = JSON.stringify({
+          emissive: m.emissive,
+          emissiveIntensity: m.emissiveIntensity,
+          baseColor: m.baseColor,
+          roughness: m.roughness,
+          metallic: m.metallic,
+          transmission: m.transmission,
+        });
+        if (mSig === sig) {
+          primitiveIdToMaterialSlot.set(String(p.id), s);
+          break;
+        }
+      }
+    }
+  }
+
+  const overrides = new Map<number, [number, number, number]>();
+  for (const e of meshAreaEmitters) {
+    if (e.kind !== 'mesh-area') continue;
+    const meshId = String(e.meshId);
+    const slot = primitiveIdToMaterialSlot.get(meshId);
+    if (slot === undefined) {
+      console.warn(
+        `[H23] mesh-area emitter "${e.id}" references meshId="${meshId}" which matches no scene primitive. ` +
+        `Emitter color/intensity will be ignored. Check that the emitter's meshId matches a primitive id.`,
+      );
+      continue;
+    }
+    const Le: [number, number, number] = [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ];
+    overrides.set(slot, Le);
+  }
+  return overrides;
+}
+
+/**
+ * H23 — Apply mesh-area emitter Le overrides to a primitive-ordered `coreMaterials`
+ * array (as produced by `materialResolver`). Returns a patched copy where each
+ * primitive id referenced by a `mesh-area` emitter has its emissive replaced by
+ * `emitter.color * emitter.intensity`. Used by `packBVHEmissiveLeFromCore` so the
+ * camera-visible emissive glow also reflects the emitter Le, not just the ReSTIR
+ * emitter stream. Emitter ids that match no primitive are warned and skipped.
+ */
+function applyMeshAreaLeOverridesToCoreMaterials(
+  scene: Scene,
+  coreMaterials: readonly MaterialSpec[],
+): readonly MaterialSpec[] {
+  const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
+  if (meshAreaEmitters.length === 0) return coreMaterials;
+
+  // Build primitive-id → coreMaterials slot index.
+  const idToSlot = new Map<string, number>();
+  let meshIdx = 0;
+  for (const p of scene.primitives) {
+    if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
+      if (!idToSlot.has(String(p.id))) idToSlot.set(String(p.id), meshIdx);
+      meshIdx++;
+    }
+  }
+
+  const patched = [...coreMaterials] as MaterialSpec[];
+  for (const e of meshAreaEmitters) {
+    if (e.kind !== 'mesh-area') continue;
+    const slot = idToSlot.get(String(e.meshId));
+    if (slot === undefined) {
+      // Warn already issued by buildMeshAreaLeOverrides for the emitter-list path.
+      continue;
+    }
+    const Le: [number, number, number] = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity];
+    patched[slot] = { ...patched[slot]!, emissive: [Le[0], Le[1], Le[2]] as const, emissiveIntensity: 1 };
+  }
+  return patched;
+}
+
 function coreEmitterBuffers(
   scene: Scene,
   options: {
@@ -138,12 +259,24 @@ function coreEmitterBuffers(
   // BVH can still use the TLAS/BLAS path for traversal.
   const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
   const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
+  // H23 — derive mesh-area emitter Le overrides. When a mesh-area emitter
+  // references a primitive, override that material slot's emissive Le with
+  // emitter.color * emitter.intensity (overrides material emissive; does NOT
+  // double-apply — the merged material Le is replaced, not summed).
+  const meshAreaOverrides = buildMeshAreaLeOverrides(scene, merged.materials);
+  const productionMaterials = merged.materials.map((m, slot) => {
+    const leOverride = meshAreaOverrides.get(slot);
+    if (leOverride == null) return toProductionEmissiveRadiance(m);
+    // Override: set emissive to the emitter Le and emissiveIntensity to 1
+    // (toProductionEmissiveRadiance would keep ei=1 which is correct).
+    return { ...m, emissive: [leOverride[0], leOverride[1], leOverride[2]] as const, emissiveIntensity: 1 };
+  });
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,
     merged.positions,
     merged.normals,
     merged.triMaterialId,
-    merged.materials.map(toProductionEmissiveRadiance),
+    productionMaterials,
     { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
@@ -211,7 +344,10 @@ function buffersFromCoreScenePack(
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
-  const emissiveLeBuf = packBVHEmissiveLeFromCore(geo.triMaterialIds, coreMaterials, triCount);
+  // H23 — apply mesh-area emitter Le overrides to the emissive-Le glow buffer so
+  // the camera-visible glow on an emitter-referenced mesh reflects the emitter Le.
+  const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
+  const emissiveLeBuf = packBVHEmissiveLeFromCore(geo.triMaterialIds, emissiveCoreMats, triCount);
 
   const emitterSlice = coreEmitterBuffers(scene, options);
   const merged = mergeWorldSpaceFromCore(scene, {
@@ -290,7 +426,15 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triCount,
   );
   const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
-  const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, merged.materials, triCount);
+  // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
+  // glow buffer reflects the emitter Le for mesh-area-referenced primitives.
+  const emissiveMergedMats = buildMeshAreaLeOverrides(scene, merged.materials);
+  const mergedMatsForEmissive = merged.materials.map((m, slot) => {
+    const lo = emissiveMergedMats.get(slot);
+    if (lo == null) return toProductionEmissiveRadiance(m);
+    return { ...m, emissive: [lo[0], lo[1], lo[2]] as const, emissiveIntensity: 1 };
+  });
+  const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, mergedMatsForEmissive, triCount);
   const emitterSlice = coreEmitterBuffers(scene, options);
 
   return {

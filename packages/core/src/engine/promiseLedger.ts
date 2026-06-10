@@ -163,8 +163,11 @@ const WALKAROUND_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
   directional: 'native',
   'rect-area': 'native',
   'disc-area': 'native',
-  point: 'approximate',   // DDGI-only; no ReSTIR-DI direct term
-  spot: 'approximate',    // DDGI-only; cone falloff applied, no ReSTIR-DI direct term
+  // H41 — additive analytic NEE loop in shade.wgsl (binding 13, separate from
+  // the RIS area-emitter pool). Inverse-square + spot cone smoothstep falloff
+  // with deterministic shadow rays. Grade promoted from 'approximate' to 'native'.
+  point: 'native',
+  spot: 'native',
   'mesh-area': 'native',
 });
 

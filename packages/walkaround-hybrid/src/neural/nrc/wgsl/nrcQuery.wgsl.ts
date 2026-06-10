@@ -82,6 +82,10 @@ export function nrcQueryLayerPlan(o: NrcQueryWgslOptions): QueryLayerPlan {
  *   3 — nrcLevels       (read-only storage, NrcLevelDesc) — per-level descriptors
  *   4 — nrcRecords      (read_write storage, f32) — self-training record gather
  *   5 — nrcCfg          (uniform, NrcCfgUBO) — encoding + record params
+ *   6 — nrcSlotClaims   (read_write storage, atomic<u32>) — per-slot first-writer
+ *                        claim flags (H27: one u32 per recordCap slot; 0=unclaimed,
+ *                        1=claimed). Cleared each frame by the host. Prevents torn
+ *                        records when two invocations race for the same slot.
  *
  * The encoded-input width and MLP sizes are baked as constants from the config
  * passed to the builder, so the inline loop reads the trainer's concatenated
@@ -147,8 +151,13 @@ struct NrcCfgUBO {
 // are [NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos]
 // (recordStride = NRC_IN_W + OUT_W + 3). A record with target == 0 across all
 // channels is treated as empty by the host gather.
-@group(4) @binding(4) var<storage, read_write> nrcRecords : array<f32>;
-@group(4) @binding(5) var<uniform>             nrcCfg     : NrcCfgUBO;
+@group(4) @binding(4) var<storage, read_write> nrcRecords    : array<f32>;
+@group(4) @binding(5) var<uniform>             nrcCfg        : NrcCfgUBO;
+// H27 — per-slot claim flags (atomic u32, one per recordCap slot). 0=unclaimed,
+// 1=claimed. A compare-exchange in nrcWriteRecord ensures the first invocation to
+// claim a slot wins; subsequent racers see 1 and skip the write (torn-record fix).
+// The host clears this buffer to zero at the start of each frame window.
+@group(4) @binding(6) var<storage, read_write> nrcSlotClaims : array<atomic<u32>>;
 
 // ── One-blob encode of a scalar into NRC_BLOB_BINS bins, L1-normalised. Writes
 // the bins into a function-local scratch (exact mirror of nrcEncoding.ts). ──
@@ -296,24 +305,36 @@ fn nrcQueryRadiance(pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, a
   return max(nrcMlpForward(&feat), vec3f(0.0));
 }
 
-// Write one self-training record for the host gather. Deterministic per-pixel
-// slot (pixelIdxGi % recordCap) — each invocation owns exactly one slot, so no
-// atomics / data race. target is the radiance the path actually accumulated at
-// this suffix vertex (Müller §5 self-training target). The input is re-assembled
-// identically to the query so the trainer fits the SAME encoding it queried.
+// Write one self-training record for the host gather.
+//
+// H27 first-writer-wins claim (torn-record fix): although each invocation uses
+// a deterministic slot (pixelIdxGi % recordCap), two invocations at different
+// pixels CAN alias to the same slot when recordCap < pixelCount. Without a
+// claim gate the two writes interleave (torn record). The atomicCompareExchangeWeak
+// ensures only the FIRST writer to arrive on a given slot succeeds; subsequent
+// racers observe claimed=1 and skip. The host clears nrcSlotClaims to 0 at the
+// start of each frame so every slot is available again.
+//
+// target is the outgoing radiance the path computed at this suffix vertex
+// (Muller §5 self-training: the cache learns the radiance the path carried).
+// H27: target is now direct-sun + one-DDGI-bounce Lo (not bare DDGI irradiance)
+// — the improved target is computed in the gi-ris main body and passed as tgt.
 //
 // Record layout (recordStride = NRC_IN_W + OUT_W + 3 f32s):
 //   [ NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos ]
 // The raw query world position is appended so the host can drive the hash-grid
 // encode-backward (nrcEncodeBackward.wgsl.ts): the scatter recomputes the
-// trilinear corners from this pos + the scene AABB. It cannot recover the pos
-// from the encoded input (the hash-grid forward is many-to-one / collides), so
-// the pos must be carried explicitly. (Müller 2022 Instant-NGP §4.)
+// trilinear corners from this pos + the scene AABB. (Müller 2022 Instant-NGP §4.)
 fn nrcWriteRecord(
   slot: u32, pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, albedo: vec3f,
   tgt: vec3f,
 ) {
   if (slot >= nrcCfg.recordCap) { return; }
+  // First-writer-wins: try to claim the slot atomically. If we see old=0 →
+  // new=1 (exchanged=true), we are the first writer and proceed. If the slot
+  // was already claimed (exchanged=false), skip to avoid tearing.
+  let claimed = atomicCompareExchangeWeak(&nrcSlotClaims[slot], 0u, 1u);
+  if (!claimed.exchanged) { return; }
   var feat: array<f32, NRC_IN_W>;
   nrcAssembleInput(pos, normal, viewDir, roughness, albedo, &feat);
   let base = slot * nrcCfg.recordStride;

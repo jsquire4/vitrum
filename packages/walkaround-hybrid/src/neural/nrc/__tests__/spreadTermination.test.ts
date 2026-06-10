@@ -13,6 +13,7 @@ import {
   type PathSegment,
 } from '../spreadTermination.ts';
 import { nrcSpreadTerminationWgsl } from '../wgsl/spreadTermination.wgsl.ts';
+import { RIS_GI_NRC_BODY } from '../../../shaders/risGiNrc.wgsl.ts';
 
 describe('NRC spread term — per segment', () => {
   it('equals sqrt(d² / (p·|cosθ|))', () => {
@@ -106,26 +107,22 @@ describe('NRC cache-termination heuristic a(x) > c·a0', () => {
   });
 });
 
-// ─── H56-a: c=0.01 default-config characterization ──────────────────────────
+// ─── H56-a: c=0.01 default-config enforcement (H26 fixed) ───────────────────
 //
 // Tests the spread termination at the PRODUCTION default (c = 0.01), with
 // realistic camera / bounce geometry drawn from a Cornell-box-like scene.
-// These are CHARACTERIZATION tests: they pin the CURRENT behaviour so that any
-// change to the predicate (intentional or accidental) is surfaced immediately.
+// These are ENFORCEMENT tests (H26 fix landed): they pin the CORRECT behaviour
+// (runningSum seeded at 0.0) and will fail if the predicate is regressed.
 //
-// H26 SEEDING BUG NOTE (risGiNrc.wgsl.ts:232):
-//   The GPU WGSL currently seeds `runningSum = a0term` (the first-segment spread
-//   TERM, not 0).  The correct Müller §5 seeding is `runningSum = 0.0`, because
-//   the bounce-edge's accumulated spread starts from zero and is compared against
-//   c·a0 (not c·a0 + a0term·something).
+// H26 SEEDING FIX (risGiNrc.wgsl.ts — runningSum = 0.0):
+//   The GPU WGSL previously seeded `runningSum = a0term` (the first-segment
+//   spread TERM), which made the spread accumulation non-zero before the first
+//   bounce edge — causing the termination threshold to fire immediately on the
+//   primary vertex (k=0) and turn every pixel into a cache query.
 //
-//   The CPU oracle below correctly uses `runningSum = 0` (as implemented in
-//   accumulatedSpread / evaluateSpreadTermination).  These tests therefore reflect
-//   the CORRECT oracle behavior, NOT the current GPU seeding bug.
-//
-//   When H26 is fixed (risGiNrc.wgsl.ts:232 `a0term` → `0.0`), the GPU and CPU
-//   paths will agree.  No change to these tests is needed — they already test the
-//   intended (fixed) behavior.
+//   The fix seeds `runningSum = 0.0` (Müller 2021 §5), matching the CPU oracle
+//   (accumulatedSpread / evaluateSpreadTermination). The GPU and CPU paths now
+//   agree — these tests enforce that agreement.
 //
 // Geometry:
 //   Primary ray: camera at z=5, hits the back wall at distance ~5.0,
@@ -134,7 +131,7 @@ describe('NRC cache-termination heuristic a(x) > c·a0', () => {
 //   Bounce 2:    left wall → ceiling, distance ~1.5, cosθ ≈ 0.5, pdf = 0.30/π.
 //   Bounce 3:    ceiling → right wall, distance ~3.0, cosθ ≈ 0.6, pdf = 0.25/π.
 
-describe('NRC spread termination — c=0.01 production-default characterization (H56-a)', () => {
+describe('NRC spread termination — c=0.01 production-default enforcement (H56-a, H26 fixed)', () => {
   // Production default c (Müller §5, vitrum default from HybridEngineOptions / risGiNrc.wgsl.ts).
   const C_PRODUCTION = 0.01;
 
@@ -207,17 +204,20 @@ describe('NRC spread termination — c=0.01 production-default characterization 
     }
   });
 
-  it('WGSL seeding note: the GPU currently seeds runningSum=a0term (H26 bug), oracle uses 0', () => {
-    // This test documents the H26 divergence WITHOUT testing the GPU.
-    // The oracle (CPU) is correct.  When H26 is fixed in risGiNrc.wgsl.ts:232,
-    // the GPU and oracle align.  No test change is needed then — the production
-    // behavior becomes the oracle behavior.
+  it('H26 fixed: WGSL now seeds runningSum=0.0 matching the CPU oracle', () => {
+    // H26 is fixed: risGiNrc.wgsl.ts now seeds runningSum = 0.0 (not a0term).
+    // This test enforces that the GPU seeding matches the oracle seeding by
+    // checking the WGSL source for the corrected initialization.
     //
-    // Verify the oracle's seeding by computing the first-segment spread term and
-    // confirming it is NOT zero (which would make the H26 seeding vacuously correct).
+    // Also verify that a0term ≠ 0 (so the old bug would have caused divergence):
     const t0 = segmentSpreadTerm(primarySeg);
-    expect(t0).toBeGreaterThan(0);  // a0term ≠ 0 → oracle and buggy GPU differ
-    expect(t0).toBeCloseTo(5.0, 4); // sqrt(25 / (1.0 · 1.0)) = 5
+    expect(t0).toBeGreaterThan(0);   // a0term = sqrt(25/1.0) = 5 (non-zero)
+    expect(t0).toBeCloseTo(5.0, 4);  // sqrt(25 / (1.0 · 1.0)) = 5
+
+    // Enforce the fix: the NRC body must seed runningSum at 0.0 not a0term.
+    // (The GPU numerical test itself is deferred to hardware validation HVN/V20.)
+    expect(RIS_GI_NRC_BODY).toContain('var runningSum: f32 = 0.0;');
+    expect(RIS_GI_NRC_BODY).not.toContain('var runningSum: f32 = a0term;');
   });
 });
 

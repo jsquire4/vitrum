@@ -95,6 +95,15 @@ export const SHADE_WGSL = /* wgsl */ `
 // surfaces glow to the camera (the ReSTIR-DI emitter list only lights RECEIVERS;
 // without this the emitter's own pixels render black). Shade-only binding.
 @group(1) @binding(12) var bvh_emissive: texture_2d<f32>;
+// H41 — analytic point/spot emitter buffer for shade NEE.
+// Separate from the RIS area-emitter pool (no PDF contamination).
+// Stride: 4 × vec4f = 64 bytes = 16 vec4f elements per entry.
+//   element[base+0]  = position.xyz   + pad
+//   element[base+4]  = color.rgb (Le = color×intensity) + pad
+//   element[base+8]  = direction.xyz  + cosInner (1.0 for point)
+//   element[base+12] = cosOuter + pad×3 (0.0 for point = no cone)
+// arrayLength(&analytic_lights) / 16u gives the number of analytic lights.
+@group(1) @binding(13) var<storage, read> analytic_lights: array<vec4f>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
 
@@ -203,6 +212,80 @@ fn lo_emit(
 fn lo_emitterGlow(triIndex: u32) -> vec3f {
   let coord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
   return textureLoad(bvh_emissive, vec2i(coord), 0).rgb;
+}
+
+// --- H41: Analytic point/spot NEE (ADDITIVE, separate from RIS area-emitter pool) ---
+//
+// Iterates the analytic_lights buffer for point and spot emitters. This term
+// is SEPARATE from lo_direct (which samples the ReSTIR area-emitter reservoir).
+// Adding it additively prevents PDF contamination — the two estimators address
+// disjoint light sources (area emitters vs analytic point/spot), so their
+// contributions sum without double-counting.
+//
+// Light model: inverse-square falloff with ε denominator floor to avoid
+// division-by-zero at the light position. Spot falloff: smoothstep from
+// cosOuter to cosInner. Point: cosInner=1, cosOuter=0 → smoothstep(0,1,x) = x²(3-2x) is not 1 at x≥1, so use cosOuter < cosInner always.
+//
+// Shadow: deterministic shadow ray (not stochastic — no variance per pixel,
+// no need for reservoir denoising). skipGlass=true (same as lo_direct).
+//
+// Glass/metal: skip (same policy as lo_direct — their Lo_emit drives).
+fn lo_analyticNEE(
+  pos:      vec3f,
+  normal:   vec3f,
+  geoNormal: vec3f,
+  albedo:   vec3f,
+  rough:    f32,
+  metal:    f32,
+  wo:       vec3f,
+  isGlass:  bool,
+  isMetal:  bool,
+) -> vec3f {
+  if (isGlass || isMetal) { return vec3f(0.0); }
+  let count = arrayLength(&analytic_lights) / 16u;
+  if (count == 0u) { return vec3f(0.0); }
+  var Lo = vec3f(0.0);
+  for (var li = 0u; li < count; li++) {
+    let base = li * 16u;
+    let lightPos  = analytic_lights[base + 0u].xyz;
+    let lightLe   = analytic_lights[base + 4u].xyz;      // pre-multiplied color×intensity
+    let lightDir  = analytic_lights[base + 8u].xyz;      // toward-light direction (spot axis); (0,0,0) = point
+    let cosInner  = analytic_lights[base + 8u].w;        // 1.0 for point
+    let cosOuter  = analytic_lights[base + 12u].x;       // 0.0 for point
+
+    let toL  = lightPos - pos;
+    let dist = length(toL);
+    if (dist < 1e-4) { continue; }
+    let wi   = toL / dist;
+    let nDotL = dot(normal, wi);
+    if (nDotL <= 0.0) { continue; }
+
+    // Spot cone attenuation. For a point (cosInner=1, cosOuter=0):
+    //   cosTheta = dot(-lightDir, wi) but lightDir=(0,0,0) so we skip cone.
+    //   cone = 1.0 for points (omnidirectional).
+    var cone = 1.0;
+    let hasSpot = dot(lightDir, lightDir) > 0.01;
+    if (hasSpot) {
+      let cosTheta = dot(-lightDir, wi);
+      if (cosTheta <= cosOuter) { continue; }
+      cone = smoothstep(cosOuter, cosInner, cosTheta);
+    }
+
+    // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
+    let occ = traceSceneAny(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    if (occ) { continue; }
+
+    // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
+    let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
+    let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
+    Lo += lightLe * brdf * nDotL * cone * invDist2;
+  }
+  return Lo;
 }
 
 // --- Direct lighting (ReSTIR DI) ---
@@ -529,6 +612,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
   let Lo_emitterGlow = lo_emitterGlow(primaryHit.indices.w);
   let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
+  // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
+  // No PDF contamination: these are disjoint from the emitters[] stream.
+  let Lo_analyticNEE = lo_analyticNEE(pos, normal, geoNormal, albedo, rough, metal, wo, isGlass, isMetal);
   // T5 — stained-glass-specific terms now live in stainedGlassShade.wgsl.ts
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
   // ubo.stainedGlassFlags bit is set (default OFF — generic scenes get zero
@@ -584,7 +670,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // is summed at full magnitude.
   // Lo_emitterGlow (self-emission) joins Lo_emit OUTSIDE the AO term — emission
   // is not occluded by ambient occlusion.
-  let directRadiance = Lo_emit + Lo_emitterGlow + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao;
+  // H41 — Lo_analyticNEE is in the direct channel (same firefly-clamp tier as Lo_direct).
+  let directRadiance = Lo_emit + Lo_emitterGlow + (Lo_direct + Lo_analyticNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

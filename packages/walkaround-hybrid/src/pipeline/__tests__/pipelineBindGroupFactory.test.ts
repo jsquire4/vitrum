@@ -42,6 +42,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+      analyticLightsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -100,6 +101,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+      analyticLightsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -176,6 +178,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+      analyticLightsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -239,6 +242,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
+      analyticLightsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),

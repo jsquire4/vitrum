@@ -143,6 +143,12 @@ export class ProbeUpdatePass {
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
 
+  // H18 Stage 2 — packed EmitterTri array for area-emitter NEE in the probe kernel.
+  // Each EmitterTri is 80 bytes (5 × vec4f) matching the RC probeRayCast layout.
+  // Updated via setEmitterTris() from HybridEngine after BVH rebuild.
+  private _emitterTrisData: Float32Array = new Float32Array(0);
+  private _emitterTrisCount = 0;
+
   constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
     this._bvh  = bvh;
     this._grid = grid;
@@ -198,6 +204,34 @@ export class ProbeUpdatePass {
    */
   setGlassMixScale(value: number): void {
     this._glassMixScale = value;
+  }
+
+  /**
+   * H18 Stage 2 — supply rect/disc area-emitter triangles for per-probe NEE.
+   *
+   * Called by HybridEngine after each BVH rebuild (setScene / updateEmitter).
+   * The emitter layout matches the RC probeRayCast EmitterTri struct
+   * (5 × vec4f = 80 bytes per tri):
+   *   [0..2]  vA.xyz  + pad
+   *   [4..6]  vB.xyz  + pad
+   *   [8..10] vC.xyz  + pad
+   *   [12..14] normal.xyz + area
+   *   [16..18] Le.rgb + pad
+   *
+   * Pass an empty array (or omit the call) for sun-only scenes — the shader
+   * guards on emitterCount == 0 so those scenes are byte-identical with the
+   * pre-H18 path.
+   *
+   * @param tris Packed 80-byte-stride Float32Array (20 floats per emitter).
+   * @param count Number of emitter triangles in `tris`.
+   */
+  setEmitterTris(tris: Float32Array, count: number): void {
+    this._emitterTrisData = tris;
+    this._emitterTrisCount = count;
+    // If the GPU state is already initialised, re-upload immediately.
+    if (this._gpu) {
+      this._uploadEmitterTris(this._gpu.device);
+    }
   }
 
   /**
@@ -345,6 +379,9 @@ export class ProbeUpdatePass {
       borderVisUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
       rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf: makeBuffer(4, RO),
+      // H18 — placeholder (16 bytes); real data uploaded by setEmitterTris().
+      emitterTrisBuf:  makeBuffer(16, RO),
+      emitterTrisCount: 0,
       linearSampler,
     };
     return true;
@@ -460,6 +497,7 @@ export class ProbeUpdatePass {
       this._uploadMaterials(device, [...(materials ?? [])] as PbrScalarSource[]);
     }
     this._uploadLights(device);
+    this._uploadEmitterTris(device);  // H18 — area-emitter NEE tris
     this._uploadGridParams(device);
     this._uploadFrameParams(device);
     this._uploadBlendParams(device);
@@ -549,7 +587,11 @@ export class ProbeUpdatePass {
     const u = new Uint32Array([
       params.bvhMode === 'tlas' ? 1 : 0,
       params.tlasNodeCount,
-      0,
+      // H18 Stage 2 — emitter triangle count (WGSL DdgiTraceParams.emitterTriCount).
+      // Use the TypeScript-side _emitterTrisCount (not gpu.emitterTrisCount which is
+      // updated by _uploadEmitterTris called after this). Both writes go to the GPU
+      // queue in the same frame so the shader sees a consistent (bvhMode, emitterTriCount).
+      this._emitterTrisCount,
       0,
     ]);
     device.queue.writeBuffer(this._gpu!.traceParamsBuf, 0, u);
@@ -585,6 +627,28 @@ export class ProbeUpdatePass {
   private _uploadLights(device: GPUDevice): void {
     const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul);
     device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
+  }
+
+  /** H18 Stage 2 — upload the packed emitter-tri array (or keep a dummy if count==0). */
+  private _uploadEmitterTris(device: GPUDevice): void {
+    const gpu = this._gpu!;
+    const count = this._emitterTrisCount;
+    const data  = this._emitterTrisData;
+    if (count === 0) {
+      // Sun-only scene: keep the existing 16-byte dummy; update the count only.
+      gpu.emitterTrisCount = 0;
+      return;
+    }
+    const needed = data.byteLength;
+    if (gpu.emitterTrisBuf.size < needed) {
+      gpu.emitterTrisBuf.destroy();
+      gpu.emitterTrisBuf = device.createBuffer({
+        size: needed,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    device.queue.writeBuffer(gpu.emitterTrisBuf, 0, data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
+    gpu.emitterTrisCount = count;
   }
 
   private _uploadGridParams(device: GPUDevice): void {
@@ -738,6 +802,7 @@ export class ProbeUpdatePass {
     g.traceParamsBuf.destroy();
     g.materialsBuf.destroy();
     g.lightsBuf.destroy();
+    g.emitterTrisBuf.destroy();  // H18
     g.gridParamsBuf.destroy();
     g.frameParamsBuf.destroy();
     g.blendParamsBuf.destroy();

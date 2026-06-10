@@ -195,6 +195,52 @@ export async function allocateGraph(
     device.queue.writeBuffer(uniformBuf, 0, packLayerUniform(layer, tensorDimsMap, H, W));
     uniformWriteCount++;
 
+    // H28 — ReLU in-place aliasing fix:
+    // When a relu layer lists the same name as both input and output (e.g.
+    // `inputs: ['enc1_feat'], output: 'enc1_feat'`), `buildBindGroup` would
+    // assign the SAME GPU buffer to binding 0 (read) AND binding 3 (read_write),
+    // which is undefined behavior in WebGPU (aliased storage bindings with
+    // mixed access modes). Fix: allocate a distinct `${layer.name}_out` buffer
+    // for the relu output, build the bind group with that as binding 3, then
+    // remap `tensors` so downstream layers reading `layer.output` see the
+    // relu-written buffer. This is host-only; no WGSL changes are required.
+    if (layer.kind === 'relu' && layer.inputs[0] === layer.output) {
+      const inName  = layer.inputs[0]!;
+      const outKey  = `${layer.name}_out`;
+      const srcTb   = tensors.get(inName);
+      if (srcTb) {
+        const floatCount = srcTb.dims.H * srcTb.dims.W * srcTb.dims.C;
+        const outBuf = device.createBuffer({
+          label: `neural/${outKey}`,
+          size: floatCount * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
+        // Do NOT push to allocatedBuffers — the buffer lives in tensors and
+        // will be destroyed via tensors cleanup.  Consistent with other tensors.
+        const outTb: TensorBuffer = { buf: outBuf, dims: srcTb.dims, label: `neural/${outKey}` };
+        // Temporarily inject the distinct output tensor so buildBindGroup picks
+        // it up as binding 3 while keeping the original for binding 0.
+        tensors.set(outKey, outTb);
+        // Swap the output name → outKey for this layer's bind-group build.
+        const patchedLayer = { ...layer, output: outKey };
+        const { bindGroup, bufKeys } = buildBindGroup(
+          device, pipeline, patchedLayer, weightsByName, uniformBuf,
+          tensors, placeholderBuf, allocatedBuffers,
+        );
+        // Remap: downstream layers reading `inName` (= `layer.output`) should
+        // now see the relu-written buffer.
+        tensors.set(inName, outTb);
+        layerStates[i] = {
+          layerName:      layer.name,
+          pipeline,
+          uniformBuf,
+          cachedBindGroup: bindGroup,
+          cachedBufKeys:   bufKeys,
+        };
+        continue;
+      }
+    }
+
     const { bindGroup, bufKeys } = buildBindGroup(
       device, pipeline, layer, weightsByName, uniformBuf,
       tensors, placeholderBuf, allocatedBuffers,

@@ -144,6 +144,14 @@ export interface HybridEngineFrameTelemetry {
   debugTimings: Array<{ t: number; ms: number }>;
   debugSurface: EngineDebugSurface;
   dbg: HybridEngineFrameDiag | null;
+  /**
+   * Returns the current active-denoiser state for `FrameStats.denoiserState`
+   * population. Called once per frame only when there are `frameSubs`
+   * subscribers. The pipeline exposes this via
+   * `WalkaroundGPUPipeline.getActiveDenoiserState()`; null = pipeline not yet
+   * initialised.
+   */
+  getDenoiserState: () => import('./pipeline/denoisers/index.js').DenoiserState | null;
 }
 
 /** Engine state flags, device handle, and per-frame tuning. */
@@ -450,6 +458,7 @@ function emitFrameTelemetry(
     const gpu = pipeline.lastGpuTimings;
     const gpuTotal = gpu?.['total'];
     const memBreakdown = deps.telemetry.debugSurface.estimatedGpuMemoryBytes?.() ?? undefined;
+    const denoiserState = deps.telemetry.getDenoiserState();
     const stats: FrameStats = {
       frameTimeMs: dt,
       ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
@@ -457,6 +466,19 @@ function emitFrameTelemetry(
       spp: 1,
       ...(memBreakdown
         ? { gpuMemoryBytes: memBreakdown, estimatedGpuMemoryBytes: memBreakdown.total }
+        : {}),
+      // Populate denoiserState when the active denoiser has a state.
+      // `reason` is normalised to null (the core contract field) when absent.
+      ...(denoiserState != null
+        ? {
+            denoiserState: {
+              status: denoiserState.status,
+              reason: denoiserState.reason ?? null,
+              ...(denoiserState.retryable !== undefined
+                ? { retryable: denoiserState.retryable }
+                : {}),
+            },
+          }
         : {}),
     };
     for (const sub of deps.telemetry.frameSubs) {

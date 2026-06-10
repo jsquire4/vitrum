@@ -175,6 +175,14 @@ export class DDGI {
     this._pass.setLights(lights);
   }
 
+  /**
+   * H18 Stage 2 — supply rect/disc area-emitter triangles for per-probe NEE.
+   * Forwarded to ProbeUpdatePass.setEmitterTris(). Call after each BVH rebuild.
+   */
+  setEmitterTris(tris: Float32Array, count: number): void {
+    this._pass.setEmitterTris(tris, count);
+  }
+
   // ── Forwarding façade — callers go through DDGI, not DDGI.pass/probeGrid ──
 
   /**

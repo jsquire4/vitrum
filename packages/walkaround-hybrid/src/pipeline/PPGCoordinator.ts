@@ -336,6 +336,12 @@ export class PPGCoordinator implements PipelineSubsystem {
 
     for (let dTreeIdx = 0; dTreeIdx < activeCells; dTreeIdx++) {
       const dTree = sTree.dTrees[dTreeIdx]!;
+
+      // ── Step 1: assign leaf flux from GPU readback ────────────────────────
+      // Interior nodes in the GPU atomic buffer are never written (the update
+      // kernel descends to a leaf, then atomicAdd to that leaf's slot). So we
+      // only set flux for leaf nodes here; interior node flux will be computed
+      // by the bottom-up propagation pass below.
       let totalFlux = 0;
       const nodeLimit = Math.min(dTree.nodes.length, maxDTreeNodesPerCell);
       for (let nodeIdx = 0; nodeIdx < nodeLimit; nodeIdx++) {
@@ -343,10 +349,48 @@ export class PPGCoordinator implements PipelineSubsystem {
         const node = dTree.nodes[nodeIdx]!;
         // `rawFlux` only spans the active prefix; slots within it are dense.
         const flux = (rawFlux[slot] ?? 0) / PPGCoordinator._FLUX_SCALE;
-        node.flux = flux;
-        if (node.isLeaf) totalFlux += flux;
+        if (node.isLeaf) {
+          node.flux = flux;
+          totalFlux += flux;
+        } else {
+          // Interior node: zero out first; the propagation pass fills it.
+          node.flux = 0;
+        }
       }
+      // Nodes beyond nodeLimit are untouched (already zero or from a prior cycle;
+      // they are orphaned after refinement and dropped by compactDTree).
       dTree.totalFlux = totalFlux;
+
+      // ── Step 2: bottom-up interior-flux propagation (H25) ────────────────
+      // The GPU sampler (ppgDTreeSampleLeafBase in ppgPdf.wgsl) reads child
+      // flux at `cBase + 4u` to do proportional CDF descent at EVERY interior
+      // node. If an interior node's children are themselves interior (depth > 1
+      // tree), those interior children need subtree sums for the descent to
+      // work. The BFS layout produced by buildSubtree / compactDTree guarantees:
+      //   parent at index p → children at firstChild, firstChild+1, ..+3
+      //   and children always appear AFTER their parent.
+      // So a single REVERSE pass over nodes[] propagates subtree sums bottom-up.
+      //
+      // We also apply the same propagation BEFORE dTreeSample/dTreePdf calls in
+      // the CPU oracle (dTree.ts) so the oracle agrees with the GPU path — the
+      // oracle was previously green-while-wrong because it shared the same bug
+      // (interior node flux = 0 → uniform fall-back → leaf-selection biased to
+      // the last child). After this pass both paths see the correct subtree sums.
+      for (let nodeIdx = dTree.nodes.length - 1; nodeIdx >= 0; nodeIdx--) {
+        const node = dTree.nodes[nodeIdx]!;
+        if (node.isLeaf || node.firstChild < 0) continue;
+        // Interior: accumulate children's flux (which may itself be a subtree sum
+        // if the children are interior, since we scan in reverse = bottom-up).
+        let childrenFlux = 0;
+        for (let ci = 0; ci < 4; ci++) {
+          const childIdx = node.firstChild + ci;
+          if (childIdx < dTree.nodes.length) {
+            childrenFlux += dTree.nodes[childIdx]!.flux;
+          }
+        }
+        node.flux = childrenFlux;
+      }
+
       refineDTree(dTree);
     }
 

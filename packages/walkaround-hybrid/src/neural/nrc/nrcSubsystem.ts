@@ -140,6 +140,10 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _recordsBuf!: GPUBuffer;  // self-training records (read_write)
   private _cfgUbo!: GPUBuffer;      // NrcCfgUBO
   private _recordReadback!: GPUBuffer; // MAP_READ staging for the record gather
+  // H27 — per-slot atomic claim flags (one u32 per recordCap slot). Prevents
+  // torn records when two invocations alias to the same slot.  Cleared at the
+  // start of each active frame via clearSlotClaims().
+  private _slotClaimsBuf!: GPUBuffer;
   private _bindGroup!: GPUBindGroup;
 
   // ── Hash-grid TABLE training (the trainable encoding). ──
@@ -275,6 +279,19 @@ export class NrcSubsystem implements PipelineSubsystem {
     u[8] = this._recordStride >>> 0;
     d.queue.writeBuffer(this._cfgUbo, 0, ab);
 
+    // ── H27 — per-slot atomic claim flags (one u32 per recordCap slot). ──
+    // The GPU shader uses atomicCompareExchangeWeak at @group(4) @binding(6)
+    // to ensure only the first invocation to claim a slot writes its record
+    // (preventing torn records when two pixels alias to the same slot).
+    // The host clears this buffer to zero each frame via clearSlotClaims().
+    this._slotClaimsBuf = d.createBuffer({
+      label: 'nrc-slot-claims',
+      size: Math.max(16, cfg.recordCap * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    // Initialize to all-zeros (all slots unclaimed).
+    d.queue.writeBuffer(this._slotClaimsBuf, 0, new Uint32Array(cfg.recordCap));
+
     // ── The @group(4) bind group. nrcWeights/nrcBiases are the trainer's f32
     //    MASTER buffers (always full-precision regardless of useF16). ──
     this._bindGroup = d.createBindGroup({
@@ -287,6 +304,7 @@ export class NrcSubsystem implements PipelineSubsystem {
         { binding: 3, resource: { buffer: this._levelsBuf } },
         { binding: 4, resource: { buffer: this._recordsBuf } },
         { binding: 5, resource: { buffer: this._cfgUbo } },
+        { binding: 6, resource: { buffer: this._slotClaimsBuf } },
       ],
     });
 
@@ -301,6 +319,19 @@ export class NrcSubsystem implements PipelineSubsystem {
   /** The `@group(4)` NRC bind group the gi-ris NRC pipeline binds at slot 4. */
   bindGroup(): GPUBindGroup {
     return this._bindGroup;
+  }
+
+  /**
+   * Clear the per-slot claim buffer to zero so every slot is available for this
+   * frame's NRC records. Must be called BEFORE the gi-ris NRC pass runs each
+   * frame (or at the start of each training window).
+   *
+   * H27 first-writer-wins: the GPU shader uses atomicCompareExchangeWeak against
+   * this buffer — a 0-value means unclaimed, 1 means claimed. Writing zeros here
+   * resets all slots so the shader can claim them fresh each frame.
+   */
+  clearSlotClaims(encoder: GPUCommandEncoder): void {
+    encoder.clearBuffer(this._slotClaimsBuf);
   }
 
   /** Copy this frame's gathered records into the MAP_READ staging buffer. Called
@@ -377,6 +408,7 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._recordsBuf?.destroy();
     this._recordReadback?.destroy();
     this._cfgUbo?.destroy();
+    this._slotClaimsBuf?.destroy();
     // The hash-grid TABLE trainer owns its ~8 GPU buffers (grad scatter/finalize,
     // Adam moments, pos staging, persistent UBOs); release them now. dispose() is
     // idempotent + safe if init never ran.

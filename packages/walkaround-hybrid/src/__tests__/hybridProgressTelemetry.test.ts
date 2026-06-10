@@ -248,6 +248,7 @@ function makeFrameDeps(opts: {
       debugTimings: [],
       debugSurface: { estimatedGpuMemoryBytes: () => undefined } as unknown as HybridEngineFrameDeps['telemetry']['debugSurface'],
       dbg: null,
+      getDenoiserState: () => null,
     },
     dims: { width: 64, height: 64, internalWidth: 64, internalHeight: 64 },
     control: {

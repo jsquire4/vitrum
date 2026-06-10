@@ -45,6 +45,35 @@ export interface FrameStats {
    * as `gpuMemoryBytes.total`.
    */
   readonly gpuMemoryBytes?: GpuMemoryBreakdown;
+  /**
+   * Current denoiser lifecycle state. Present when a denoiser is
+   * configured; absent (`undefined`) when no denoiser option was passed to
+   * the engine constructor.
+   *
+   * `status` values:
+   *  - `'ready'`      — denoiser is active and producing filtered output.
+   *  - `'warming-up'` — async backend (OIDN model, neural weights) is
+   *                     still loading; raw HDR is returned this frame.
+   *  - `'in-flight'`  — async denoiser inference is running; previous
+   *                     denoised frame (if any) is displayed this frame.
+   *  - `'fallback'`   — denoiser was configured but is currently
+   *                     pass-through (e.g. first frame before OIDN
+   *                     inference completes, or no InferenceGraph).
+   *  - `'failed'`     — a non-recoverable or retryable error occurred;
+   *                     see `reason`. `retryable` distinguishes transient
+   *                     from permanent failures.
+   *  - `'disabled'`   — denoiser option is present but resolves to no-op
+   *                     (e.g. no OIDN model URL supplied).
+   *
+   * Union is intentionally aligned with the `DenoiserState` type in
+   * `walkaround-hybrid/src/pipeline/denoisers/index.ts` (extended with
+   * `'disabled'` for backends that omit per-frame denoising entirely).
+   */
+  readonly denoiserState?: {
+    readonly status: 'ready' | 'warming-up' | 'in-flight' | 'fallback' | 'failed' | 'disabled';
+    readonly reason: string | null;
+    readonly retryable?: boolean;
+  };
 }
 
 /** Progress event surfaced via {@link Engine.onProgress}.  The discriminator

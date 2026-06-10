@@ -63,6 +63,17 @@ export const PPG_MIS_ALPHA = 0.5;
 export const PPG_MAX_SPATIAL_CELLS = 16_384;
 
 /**
+ * Default number of sTree spatial cells used by allocatePPGResources when
+ * the host does not supply `maxSpatialCells`. Placed beside the ceiling
+ * constant so both are visible in one location.
+ *
+ * H29 — also re-exported from ppgUpdate.wgsl.ts as `PPG_DEFAULT_SPATIAL_CELLS`
+ * (the plan calls for it beside the builder); this copy here keeps it available
+ * from the pure-constants module without importing the WGSL-builder file.
+ */
+export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
+
+/**
  * ReSTIR-GI reservoir stride — number of u32 elements per reservoir in the
  * flat array<u32> buffer. Single source of truth shared between:
  *   - `createRestirGIFrameResources.ts` (used to compute the buffer byte size)

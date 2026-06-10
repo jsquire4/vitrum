@@ -94,9 +94,11 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
 describe('BACKEND_PROMISE_LEDGER["walkaround-hybrid"] structural self-consistency', () => {
   const ledger = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
 
-  it('point and spot emitters are graded "approximate" (DDGI-only, no ReSTIR-DI term)', () => {
-    expect(ledger.supportDetails.emitters.point).toBe('approximate');
-    expect(ledger.supportDetails.emitters.spot).toBe('approximate');
+  it('point and spot emitters are graded "native" (H41 additive analytic NEE in shade.wgsl)', () => {
+    // H41 — promoted from 'approximate' (DDGI-only) to 'native' (additive
+    // analytic NEE loop with inverse-square + spot cone falloff + shadow rays).
+    expect(ledger.supportDetails.emitters.point).toBe('native');
+    expect(ledger.supportDetails.emitters.spot).toBe('native');
   });
 
   it('rect-area, disc-area, directional, mesh-area emitters are "native"', () => {

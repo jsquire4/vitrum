@@ -182,7 +182,9 @@ struct ProbeRay {
 struct DdgiTraceParams {
   bvhMode: u32,
   tlasNodeCount: u32,
-  _pad0: u32,
+  // H18 Stage 2 — number of valid emitter triangles in ddgiEmitterTris (0 = sun-only
+  // scene; guard gates the NEE loop so sun-only scenes are byte-identical with pre-H18).
+  emitterTriCount: u32,
   _pad1: u32,
 }
 
@@ -200,6 +202,13 @@ struct DdgiTraceParams {
 
 @group(1) @binding(0) var<uniform> materials:     array<MaterialEntry, ${maxMaterials}>;
 @group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
+// H18 Stage 2 — packed area-emitter triangles for per-probe NEE (same layout as
+// the RC probeRayCast rc_emitters). Stride: 80 bytes / 20 f32 per tri.
+//   [0..2]  vA.xyz + pad    [4..6]  vB.xyz + pad    [8..10] vC.xyz + pad
+//   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + pad
+// emitterCount (uniform in lights) is reused for the area-emitter count. A
+// dedicated u32 is cheaper than a second UBO; it lives in DdgiTraceParams.
+@group(1) @binding(2) var<storage, read> ddgiEmitterTris: array<vec4f>;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
 @group(2) @binding(1) var<storage, read>       activeProbes: array<u32>;
@@ -363,6 +372,72 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
 }
 
 // -----------------------------------------------------------------
+// H18 Stage 2 — Area-emitter NEE for probe rays
+//
+// One deterministic sample per emitter triangle (same "sum-all, weight by area"
+// pattern as RC probeRayCast.wgsl rcEmitterNEE). Gated on
+// ddgiTrace.emitterTriCount > 0 so sun-only scenes are byte-identical.
+//
+// Estimator (area form, pdf = 1/area ⇒ 1/pdf = area):
+//   Lo += (albedo/π) · Le · (cosSurf · cosLight / dist²) · area · vis
+// Shadow test: opaque first-hit only (glass tint ignored — DDGI is a coarse
+// cache). Bias via the same gridParams.spacing-derived normal offset as the
+// sun path.
+// -----------------------------------------------------------------
+fn pcgHashToF32Ddgi(seed: u32) -> f32 {
+  // Avalanche hash → float in [0, 1)
+  var s = seed;
+  s = s ^ (s >> 17u);
+  s = s * 0xBF324C81u;
+  s = s ^ (s >> 13u);
+  s = s * 0x9C7493ADu;
+  s = s ^ (s >> 15u);
+  return f32(s >> 8u) * (1.0 / 16777216.0);
+}
+
+fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
+  let count = ddgiTrace.emitterTriCount;
+  if (count == 0u) { return vec3f(0.0); }
+  let normalBias = gridParams.spacing * 0.001;
+  var Lo = vec3f(0.0);
+  for (var ei: u32 = 0u; ei < count; ei = ei + 1u) {
+    // Decode the 5-vec4f EmitterTri entry (80 bytes = 20 f32 = 5 vec4f).
+    let base = ei * 5u;
+    let vA  = ddgiEmitterTris[base + 0u].xyz;
+    let vB  = ddgiEmitterTris[base + 1u].xyz;
+    let vC  = ddgiEmitterTris[base + 2u].xyz;
+    let nrm = ddgiEmitterTris[base + 3u].xyz;
+    let area = ddgiEmitterTris[base + 3u].w;
+    let Le   = ddgiEmitterTris[base + 4u].xyz;
+
+    // Jittered uniform area sample (deterministic per emitter index).
+    let s0 = pcgHashToF32Ddgi(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
+    let s1 = pcgHashToF32Ddgi(seed0 * 7919u ^ (ei * 0x85EBCA6Bu + 0x2u));
+    let su = sqrt(s0);
+    let pos = (1.0 - su) * vA + (su * (1.0 - s1)) * vB + (su * s1) * vC;
+
+    let toL     = pos - hitPos;
+    let dist2   = max(dot(toL, toL), 1e-8);
+    let dist    = sqrt(dist2);
+    let wi      = toL / dist;
+    let cosSurf  = dot(n, wi);
+    let cosLight = dot(nrm, -wi);   // front-face only (one-sided emitter)
+    if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
+
+    // Opaque shadow test — stop just short of the light sample.
+    var sRay: Ray;
+    sRay.origin    = hitPos + n * normalBias;
+    sRay.direction = wi;
+    let sHit = bvhTraceFirstHit(sRay);
+    if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }
+
+    let G = (cosSurf * cosLight) / dist2;
+    Lo = Lo + albedo * 0.31831 * Le * G * area;   // 0.31831 = 1/π
+  }
+  return Lo;
+}
+
+// -----------------------------------------------------------------
 // Probe world position from flat index
 // -----------------------------------------------------------------
 fn probeWorldPos(probeIdx: u32) -> vec3f {
@@ -468,8 +543,15 @@ fn probeUpdateRays(
           hit.barycoord.z * n2
         ) * hit.side;
 
-        // Direct lighting.
-        let direct = evalDirectLighting(hitWorldPos, smoothNormal);
+        // Direct lighting: analytic sun/fixture lights.
+        let direct_analytic = evalDirectLighting(hitWorldPos, smoothNormal);
+        // H18 Stage 2 — area-emitter NEE. Guard on emitterTriCount>0 is inside the
+        // helper; emitter-less scenes get vec3f(0) at zero cost.
+        let direct_emitter = ddgiEmitterNEE(
+          hitWorldPos, smoothNormal, mat.baseColor,
+          frameParams.frameIndex ^ (probeIdx * 0x9E3779B9u) ^ rayIdx,
+        );
+        let direct = direct_analytic + direct_emitter;
 
         // Previous-frame indirect feedback: sample the irradiance atlas at the
         // hit position so each frame folds in one more diffuse bounce; the

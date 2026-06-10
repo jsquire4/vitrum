@@ -77,6 +77,8 @@ export function dispatchProbeUpdateRaysPass(
     entries: [
       { binding: 0, resource: { buffer: gpu.materialsBuf } },
       { binding: 1, resource: { buffer: gpu.lightsBuf } },
+      // H18 Stage 2 — area-emitter NEE triangles (dummy 16-byte buf when count==0).
+      { binding: 2, resource: { buffer: gpu.emitterTrisBuf } },
     ],
   });
   const bg2 = gpu.device.createBindGroup({

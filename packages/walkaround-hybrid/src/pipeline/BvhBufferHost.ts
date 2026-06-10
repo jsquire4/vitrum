@@ -6,6 +6,10 @@
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { createDummyStorageBuffer, uploadBuffer, uploadBufferPadded } from './resourceManager.js';
 import {
+  packAnalyticPointSpotEmitters,
+} from '../restir/bvhSceneHelpers.js';
+import type { Scene } from '@vitrum/core';
+import {
   uploadBeerTexture,
   refreshBeerTexture,
   type BeerTexture,
@@ -40,6 +44,10 @@ export interface SceneBindGroupResources {
   tlasBlasRootsBuffer: GPUBuffer;
   tlasInstanceWorldToLocalBuffer: GPUBuffer;
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  /** H41 — packed point/spot emitter buffer for shade analytic NEE
+   *  (binding 13). 64-byte-stride (4 × vec4f). A 16-byte placeholder is
+   *  bound when the scene has no point/spot emitters (count = 0 in UBO). */
+  analyticLightsBuffer: GPUBuffer;
 }
 
 /** `GPUBufferUsage.STORAGE` — literal avoids top-level `GPUBufferUsage` (Node vitest). */
@@ -68,6 +76,8 @@ export class BvhBufferHost {
   private _emitterCount = 0;
   private _emitterCdfBuffer: GPUBuffer | null = null;
   private _lightTreeBuffer: GPUBuffer | null = null;
+  /** H41 — packed point/spot analytic lights buffer (binding 13). */
+  private _analyticLightsBuffer: GPUBuffer | null = null;
 
   /**
    * Extra bytes appended to the light-tree storage buffer to hold the ReGIR
@@ -89,7 +99,7 @@ export class BvhBufferHost {
     return this._bvhNodesBuffer != null;
   }
 
-  uploadInitial(device: GPUDevice, bvhBuffers: SceneBVHBuffers): void {
+  uploadInitial(device: GPUDevice, bvhBuffers: SceneBVHBuffers, scene?: Scene): void {
     this._bvhNodesBuffer = uploadBuffer(device, bvhBuffers.bvhNodes.cpuData, STORAGE);
     this._bvhIndexBuffer = uploadBuffer(device, bvhBuffers.bvhIndex.cpuData, STORAGE);
     this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
@@ -112,7 +122,26 @@ export class BvhBufferHost {
     // zeroed at the tail). `_regirGridBytes == 0` ⇒ exactly `uploadBuffer`.
     this._lightTreeBuffer = uploadBufferPadded(
       device, bvhBuffers.lightTree.cpuData, this._regirGridBytes, STORAGE);
+    // H41 — analytic point/spot lights buffer (binding 13). A 16-byte placeholder
+    // (count=0) is uploaded when the scene has no point/spot emitters, so the
+    // bind group is always valid. Count is stored in WalkaroundUBO (not here).
+    const analyticPacked = scene != null
+      ? packAnalyticPointSpotEmitters(scene)
+      : { data: new Float32Array(16), count: 0 };
+    this._analyticLightsBuffer = uploadBuffer(device, analyticPacked.data.buffer as ArrayBuffer, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers);
+  }
+
+  /**
+   * H41 — re-upload the analytic lights buffer when emitters change.
+   * Called from `updateEmitters` when point/spot emitters may have changed.
+   */
+  updateAnalyticLights(device: GPUDevice, scene: Scene): void {
+    const packed = packAnalyticPointSpotEmitters(scene);
+    if (this._analyticLightsBuffer != null) {
+      this._analyticLightsBuffer.destroy();
+    }
+    this._analyticLightsBuffer = uploadBuffer(device, packed.data.buffer as ArrayBuffer, STORAGE);
   }
 
   /** RIS-only light-tree storage buffer (group 3 binding 0). Always non-null
@@ -150,6 +179,7 @@ export class BvhBufferHost {
       tlasBlasRootsBuffer: this._tlasBlasRootsBuffer!,
       tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer!,
       tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer!,
+      analyticLightsBuffer: this._analyticLightsBuffer!,
     };
   }
 
@@ -317,6 +347,7 @@ export class BvhBufferHost {
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     this._lightTreeBuffer?.destroy();
+    this._analyticLightsBuffer?.destroy();
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
     this._bvhBeerTexture = null;
@@ -326,6 +357,7 @@ export class BvhBufferHost {
     this._emitterBuffer = null;
     this._emitterCdfBuffer = null;
     this._lightTreeBuffer = null;
+    this._analyticLightsBuffer = null;
   }
 
   private _destroyTlasBuffers(): void {

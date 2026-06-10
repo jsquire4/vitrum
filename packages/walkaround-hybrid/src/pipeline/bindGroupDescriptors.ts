@@ -178,6 +178,11 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // camera (the real-time analogue of pt-webgpu camera-visible emitters).
       // Shade-only; the other primary passes declare a subset of the layout.
       { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade-only)' },
+      // H41 — analytic point/spot emitters for shade NEE (separate from the
+      // RIS area-emitter pool). A 16-byte placeholder is bound when the scene
+      // has no point/spot emitters; the count is in WalkaroundUBO.analyticLightCount
+      // so the shade loop is a no-op for pure area-emitter scenes.
+      { binding: 13, kind: 'storage-ro', note: 'analytic_lights (H41 point/spot NEE; 64-byte stride; shade-only)' },
     ],
   },
   {

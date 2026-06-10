@@ -229,23 +229,56 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       // TERMINATED into the cache: the MLP prediction REPLACES the DDGI suffix
       // estimate. Below threshold the DDGI estimate is kept verbatim, so a
       // sub-threshold region is bit-identical to the OFF pass.
-      var runningSum: f32 = a0term;
+      //
+      // H26 seeding fix: runningSum starts at 0.0 (Müller 2021 §5). The
+      // previous seed of a0term was a tautology: nrcAccumulateSpread adds
+      // the bounce-edge segment term to runningSum, then squares it for a(x).
+      // Seeding with a0term made a(x) depend on a0term even before the first
+      // bounce edge was measured — the threshold a(x) > c·a0 fired
+      // immediately on the primary hit (k=0), turning every pixel into a
+      // cache query. The correct seeding (0.0) means only the bounce edge's
+      // spread term matters, matching the oracle in spreadTermination.ts.
+      var runningSum: f32 = 0.0;
       let cosArrive = max(1e-4, abs(dot(ns, -wi)));
       let pSrcBounce = max(cosTheta * INV_PI, 1e-12);
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
       if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC)) {
         let xsAlbedo = xsMat.rgb;
-        // The packed material payload carries no roughness, and gi-ris already
-        // excludes glass/metal suffix surfaces above — the reconnection vertex
-        // is a diffuse-ish wall. Use a fixed diffuse roughness so the query and
-        // the training record encode the SAME surface feature.
+        // The packed material payload carries no roughness (materialDecode.wgsl
+        // packs only RGB888 + transmission4 + isMetal1 — no roughness channel).
+        // gi-ris already excludes glass/metal suffix surfaces, so xs is a
+        // diffuse-ish wall. xsRough=1.0 (full diffuse) is correct here: it
+        // encodes the SAME feature the query sees, which is what matters for
+        // self-training consistency. A per-vertex roughness would require a BVH
+        // attribute extension; tracked as a future improvement.
         let xsRough = 1.0;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).
         Lo = nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo);
-        // Self-training record (Müller §5): teach the cache the DDGI estimate
-        // the path would otherwise have carried. Deterministic per-pixel slot.
-        nrcWriteRecord(pixelIdxGi % nrcCfg.recordCap, xs, ns, -wi, xsRough, xsAlbedo, ddgiLo);
+        // H27 — improved self-training target (Müller §5):
+        // Replace bare DDGI irradiance (ddgiLo) with direct-sun + one-DDGI-bounce
+        // combined Lo. This gives the NRC a physically grounded training signal that
+        // includes direct sunlight at xs — not just diffuse irradiance from probes.
+        //   directLo = (sun_contrib + DDGI_irradiance) × albedo × (1/π)
+        // Shadow test: trace from xs toward sunDirection; skip if occluded.
+        let sunDir = normalize(ubo.sunDirection);
+        let sunNdotL = max(0.0, dot(ns, sunDir));
+        var sunContrib = vec3f(0.0);
+        if (sunNdotL > 1e-4) {
+          let shadowOrig = xs + ns * NORMAL_BIAS_GI;
+          let occluded = traceSceneAny(
+            ubo.bvhMode, ubo.tlasNodeCount,
+            &bvh_index, &bvh_position, &bvh,
+            &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+            &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+            shadowOrig, sunDir, 1e20, ubo.triIntersectEpsilon, true,
+          );
+          if (!occluded) {
+            sunContrib = vec3f(ubo.sunIntensity * sunNdotL);
+          }
+        }
+        let directLo = (sunContrib + irrAtXs) * xsAlbedo * INV_PI;
+        nrcWriteRecord(pixelIdxGi % nrcCfg.recordCap, xs, ns, -wi, xsRough, xsAlbedo, directLo);
       } else {
         Lo = ddgiLo;
       }

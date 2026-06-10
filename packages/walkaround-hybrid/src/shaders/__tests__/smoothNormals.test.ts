@@ -233,8 +233,9 @@ describe('WS1 scene bind-group storage budget', () => {
       (e) => e.kind === 'storage-ro' || e.kind === 'storage-rw',
     ).length;
     // Scene group's own storage buffers. The shade pass adds 4 frame-group
-    // storage buffers + 1 RC cascade0 = 5 → 11 + 5 = 16, exactly the floor.
-    expect(storageCount).toBeLessThanOrEqual(11);
+    // storage buffers → 12 + 4 = 16, exactly the WebGPU storage-buffer floor.
+    // H41 (analytic-NEE binding 13) raised the scene-group count from 11→12.
+    expect(storageCount).toBeLessThanOrEqual(12);
   });
 });
 

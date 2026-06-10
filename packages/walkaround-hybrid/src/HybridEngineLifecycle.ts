@@ -51,6 +51,10 @@ import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
+import {
+  collectRectAreaEmitterTrisFromCore,
+  packEmitterTrisForDDGI,
+} from './restir/bvhSceneHelpers.js';
 import type { Scene } from '@vitrum/core';
 
 /**
@@ -531,6 +535,20 @@ export class PipelineInitCoordinator {
         // host passed an `opts.lights` sun, drop the host sun (scene wins) so
         // DDGI doesn't double-count the sun. See `mergeDDGILightsDedupSun`.
         host.ddgi.setLights(mergeDDGILightsDedupSun(host.ctorLights, ddgiSceneLights));
+      }
+      // H18 Stage 2 — supply area-emitter NEE triangles for the probe-ray kernel.
+      // Reuses the same geometry that ReSTIR-DI uses for its emitter CDF. Count=0
+      // (sun-only scenes) is a no-op: the ddgiEmitterNEE shader guard skips the
+      // emitter loop when emitterTriCount == 0, keeping sun-only scenes byte-identical.
+      if (sceneForSun != null) {
+        const emitterTris = collectRectAreaEmitterTrisFromCore(sceneForSun);
+        const packed = packEmitterTrisForDDGI(emitterTris);
+        host.ddgi.setEmitterTris(packed.data, packed.count);
+        // H41 — upload the analytic point/spot lights buffer for shade NEE.
+        // Must be called BEFORE publishPipeline (pipeline still held locally here).
+        // The uploadInitial placeholder is zero-count; this uploads the real data
+        // so the first rendered frame sees point/spot lights.
+        pipeline?.updateAnalyticLights(sceneForSun);
       }
 
       host.publishPipeline(pipeline);

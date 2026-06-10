@@ -155,6 +155,11 @@ export function getNrcBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBi
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      // H27 — per-slot atomic claim flags (one u32 per recordCap slot). The
+      // host clears this buffer to zero each frame. The GPU shader uses
+      // atomicCompareExchangeWeak to claim a slot before writing the record,
+      // preventing torn records when two invocations alias to the same slot.
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ],
   });
   return cache.nrc;

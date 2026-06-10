@@ -73,6 +73,10 @@ import {
   type SceneBVHBuffers,
 } from './restir/bvhCore.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
+import {
+  collectRectAreaEmitterTrisFromCore,
+  packEmitterTrisForDDGI,
+} from './restir/bvhSceneHelpers.js';
 import { solveSkin } from '@vitrum/core';
 import type { ModelWeights } from './neural/weights.js';
 import {
@@ -1462,6 +1466,18 @@ export class HybridEngine implements Engine {
     this._ddgi.setLights(
       orientDdgiSunLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights), this._primaryLightDir),
     );
+    // H18 Stage 2 — supply area-emitter NEE triangles to the probe-ray kernel.
+    // Reuses the same collectRectAreaEmitterTrisFromCore output that ReSTIR uses
+    // for its emitter CDF, so DDGI and ReSTIR see identical geometry. Count=0
+    // (sun-only scenes) produces a no-op via the ddgiEmitterNEE guard.
+    const emitterTris = collectRectAreaEmitterTrisFromCore(this._renderScene);
+    const packed = packEmitterTrisForDDGI(emitterTris);
+    this._ddgi.setEmitterTris(packed.data, packed.count);
+    // H41 — re-upload the analytic point/spot lights buffer for shade NEE.
+    // Called here because _syncDdgiLightsFromCoreScene is invoked after any
+    // emitter change (both initial scene load via HybridEngineLifecycle and
+    // fast-update via updateEmitter). No-op when pipeline is not yet initialized.
+    this._pipeline?.updateAnalyticLights(this._renderScene);
     this._ddgi.invalidateProbeCache();
   }
 
@@ -1960,6 +1976,7 @@ export class HybridEngine implements Engine {
         debugTimings: self._debugTimings,
         debugSurface: self.debug,
         dbg: self._cfg.debug ? self._dbg : null,
+        getDenoiserState: () => self._pipeline?.getActiveDenoiserState() ?? null,
       },
       dims: {
         width: self._width,

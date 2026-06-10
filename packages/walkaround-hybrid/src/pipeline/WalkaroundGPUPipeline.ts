@@ -35,6 +35,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
+import type { Scene } from '@vitrum/core';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
@@ -962,6 +963,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._accumFrameIndex;
   }
 
+  /**
+   * Return the current {@link DenoiserState} from the active denoiser.
+   * Returns `null` before the pipeline is initialised (no active denoiser).
+   * Consumed by the frame telemetry path to populate
+   * `FrameStats.denoiserState` without exposing the private `_activeDenoiser`.
+   */
+  getActiveDenoiserState(): import('./denoisers/index.js').DenoiserState | null {
+    return this._activeDenoiser?.state() ?? null;
+  }
+
   /** Temporal-accumulator EMA weight α (history blend `1-α` per frame).
    *  The effective convergence window is ≈ `1/α` frames (α=0.01 ⇒ ~100).
    *  Target denominator for the `'denoiser-converge'` progress metric. */
@@ -1304,6 +1315,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // the coordinator so the next frame's UBO carries the right offset (and drop
     // ReGIR if the tree went degenerate). No-op when ReGIR is off.
     this._regir.refreshAfterEmitterRebuild(bvhBuffers);
+  }
+
+  /**
+   * H41 — Re-upload the analytic point/spot lights buffer when the scene's
+   * emitters change (setScene / updateEmitter). Called by HybridEngine
+   * after each emitter rebuild, in both the init path and the fast-update path.
+   * No-op before `initialize` (safe to call early; `_bvhHost.initialized`
+   * guards the upload).
+   */
+  updateAnalyticLights(scene: Scene): void {
+    if (!this._bvhHost.initialized) return;
+    this._bvhHost.updateAnalyticLights(this._device, scene);
   }
 
   /**

@@ -16,6 +16,14 @@ export function packDDGIProbeLights(
   const data = new Float32Array(headerSize + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS);
   const udata = new Uint32Array(data.buffer);
   const active = lights.filter((l) => l.on);
+  // H18 Stage 1 — warn on truncation so hosts know lights beyond the cap are dropped.
+  if (active.length > MAX_DDGI_PROBE_LIGHTS) {
+    console.warn(
+      `[DDGI] packDDGIProbeLights: scene has ${active.length} active lights but the DDGI probe ` +
+      `shader supports at most ${MAX_DDGI_PROBE_LIGHTS}. Lights beyond this cap are silently ` +
+      `ignored for probe-update GI. Reduce your light count or raise MAX_DDGI_PROBE_LIGHTS.`,
+    );
+  }
   udata[0] = Math.min(active.length, MAX_DDGI_PROBE_LIGHTS);
 
   active.slice(0, MAX_DDGI_PROBE_LIGHTS).forEach((l, i) => {
