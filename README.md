@@ -46,10 +46,11 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | ----------------------------- | --------------------------- | -------------------------- |
 | **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
 | **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
-| **Light types**               | point / dir / area / sky    | point / dir / area / sky   |
-| **Materials**                 | PBR + transmission          | PBR + clearcoat + transmission + spectral hero-MIS |
-| **Caustics**                  | none (DDGI only)            | manifold-NEE (opt-in)      |
-| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild; instance-count not yet) | camera ✓ / lights ✓ / mesh ✓ (topology + instance-count via rebuild) |
+| **Light types**               | point/dir/area/sky (point+spot via DDGI only — approximate direct) | point / dir / area / sky   |
+| **Materials**                 | PBR + transmission          | PBR + transmission; spectral hero-λ lit (hero-λ tint over RGB — achromatic-flat reflectance); clearcoat/sheen unsupported |
+| **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      |
+| **BDPT**                      | not applicable              | option exists; inert (no host driver) — road-to-100 |
+| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (all patches via rebuild) |
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |
 
@@ -105,10 +106,12 @@ This is the design choice that makes the library survive Canvas remount, route c
 
 ## Examples
 
-The former Three.js examples were removed with the THREE cutover. Current smoke
-and acceptance fixtures live under `tools/reference-renders/` and
-`tools/benchmark-runner/`; new examples should be built against the core
-`Scene` contract.
+The Three.js example apps (`examples/`) were removed with the THREE cutover (`e14000c`).
+Current smoke and acceptance fixtures live under `tools/reference-renders/` and
+`tools/benchmark-runner/`. New examples should speak the reference-render capture protocol
+(`VITRUM_CAPTURE_READY` + URL params) and be built against the `@vitrum/core` `Scene`
+contract — see `plan/h-remediation-plan-2026-06-09.md` §7 (H57) for the planned example
+scaffolding.
 
 ## Architecture
 

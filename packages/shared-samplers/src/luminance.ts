@@ -1,10 +1,10 @@
 /**
- * Canonical Rec.709 luminance helper. THREE-independent.
+ * Canonical Rec.709 luminance helper.
  *
- * The TS canonical lives here so shared-denoisers and pt-webgl can import
- * without taking a THREE peer dep. `three-bindings/src/math.ts:luminance`
- * is the THREE-coupled equivalent with an extra `intensity` multiplier
- * needed by the light-packing path; both forms share this base.
+ * The TS canonical lives here so shared-denoisers, pt-webgl2, and pt-webgpu
+ * can import without taking external host-adapter deps. The `intensity`-
+ * multiplied form used by the stained-glass light-packing path is the
+ * caller's responsibility (multiply after calling this function).
  *
  * For the WGSL canonical, see `./wgsl/luminance.wgsl.ts` (`LUMINANCE_WGSL`
  * exported from package index). Most WGSL consumers across walkaround-hybrid

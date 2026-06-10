@@ -1,5 +1,11 @@
 /**
  * Pack analytic H-channel came geometry into std140-aligned UBO arrays.
+ *
+ * @reserved The `CamePackedUBO` output format is defined for the host-app
+ * stained-glass pipeline. No vitrum backend currently consumes these packed
+ * arrays directly — the host application is responsible for uploading them
+ * to its own shader UBO. A future first-class h-channel-came backend path
+ * (road-to-100) may consume this layout directly when that feature lands.
  */
 
 export interface CameSegment {

@@ -27,10 +27,11 @@
  * The overall sum error is < 1e-3 relative to 4π for all those grid sizes.
  *
  * Used by:
- *   - `walkaroundDiffuseLighting.ts` — receiver irradiance normalization
- *     (replaces the uniform `4π/N` constant with per-bin Ω_i).
- *   - `cascadeMerge.wgsl.ts` — merge-integral weighting (WGSL inline variant;
- *     see `octCellSolidAngle` function in that shader).
+ *   - `cascadeMergeWeights.test.ts` (walkaround-hybrid) — verifies that the
+ *     WGSL `octCellSolidAngle` 1-quad approximation agrees with this SUB=16
+ *     numerical integral within 5%.
+ *   - `cascadeMerge.wgsl.ts` — merge-integral weighting via the WGSL inline
+ *     `octCellSolidAngle` 1-quad variant (see that file for the GPU form).
  */
 
 /** Number of sub-cells per axis used for the numerical integration. */

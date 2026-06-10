@@ -268,6 +268,17 @@ export class RCDispatcher {
    * Dispatch the cascade compute pipeline for one frame.
    * Pipelines and bind groups are compiled/created lazily on the first call
    * (or after `dispose()`).
+   *
+   * **Important — bind-group invalidation:** if `opts.bvhMode` changes between
+   * calls (merged ↔ tlas), or if the AABB / probe-origin bounds change in a way
+   * that requires different buffer bindings, the caller MUST call
+   * `invalidateBindings()` BEFORE the next `dispatchFrameRaw()` call. Failing to
+   * do so leaves the old bind groups bound against the new (different) pipeline
+   * layout, which produces silent GPU validation errors or undefined rendering.
+   *
+   * `RCSubsystem.refitCascadeBounds()` already calls `invalidateBindings()` when
+   * the scene AABB changes; callers that construct `RCDispatcher` directly are
+   * responsible for calling it on `bvhMode` or buffer-set transitions.
    */
   dispatchFrameRaw(opts: RCDispatchOptsRaw): void {
     const device = opts.device;

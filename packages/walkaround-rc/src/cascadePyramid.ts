@@ -3,10 +3,10 @@
  *
  * Cascade dimensions are derived from Sannikov 2023, "Radiance Cascades: A
  * Novel Approach to Calculating Global Illumination", with deliberate
- * Cornell/WebGPU performance reductions. Runtime buffer allocation for the
- * legacy THREE/TSL receiver path lives in `src/three/cascadePyramidThree.ts`;
- * this module stays free of `three/webgpu` so package-root imports remain
- * raw-runtime safe.
+ * Cornell/WebGPU performance reductions. This module is free of `three/webgpu`
+ * so package-root imports remain raw-runtime safe. TSL-side receiver helpers
+ * (`GIReceiver`, `buildWalkaroundLightingNode`) are in `@vitrum/walkaround-hybrid`
+ * — there is no `src/three/` subpath in this package.
  */
 
 // Performance budget: total compute invocations <= 200K for 30fps on RTX-class hardware

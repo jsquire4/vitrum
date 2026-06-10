@@ -20,7 +20,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SURFACE_TEXTURE_ID,
-  VITRUM_USER_DATA_KEYS,
   packCameUBO,
 } from '../src/index.js';
 import type { CameNode, CameSegment } from '../src/index.js';
@@ -51,35 +50,6 @@ describe('SURFACE_TEXTURE_ID — wire-level texture enum', () => {
 
   it('starts at 0 (smooth is the default/zero glass surface)', () => {
     expect(SURFACE_TEXTURE_ID.smooth).toBe(0);
-  });
-});
-
-describe('VITRUM_USER_DATA_KEYS — Three.js userData bridge strings', () => {
-  it('pins every key string exactly (these are the host↔engine contract)', () => {
-    expect(VITRUM_USER_DATA_KEYS).toEqual({
-      DISPERSION_ABBE: 'vitrumDispersionAbbeNumber',
-      SCATTERING_COEFF: 'vitrumScatteringCoefficient',
-      SCATTERING_RGB: 'vitrumScatteringCoefficientRGB',
-      SCATTERING_ANISO: 'vitrumScatteringAnisotropy',
-      SPECTRAL_ATTEN: 'vitrumSpectralAttenuation',
-      THIN_FILM_STACK: 'vitrumThinFilmStack',
-      FRONT_LAYER: 'vitrumFrontLayer',
-      BACK_LAYER: 'vitrumBackLayer',
-      DICHROIC_REFLECTANCE_LUT: 'vitrumDichroicReflectanceLUT',
-      DICHROIC_TRANSMITTANCE_LUT: 'vitrumDichroicTransmittanceLUT',
-      LIGHT_ANGULAR_DIAMETER: 'vitrumLightAngularDiameter',
-    });
-  });
-
-  it('namespaces every key under the "vitrum" prefix (collision avoidance)', () => {
-    for (const v of Object.values(VITRUM_USER_DATA_KEYS)) {
-      expect(v.startsWith('vitrum')).toBe(true);
-    }
-  });
-
-  it('uses unique values (no two logical keys collapse to the same userData slot)', () => {
-    const vals = Object.values(VITRUM_USER_DATA_KEYS);
-    expect(new Set(vals).size).toBe(vals.length);
   });
 });
 

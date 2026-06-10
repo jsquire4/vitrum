@@ -1,41 +1,41 @@
 # @vitrum/walkaround-rc
 
 Radiance Cascades subsystem: cascade pyramid layout, raw WebGPU dispatch, and
-raw WGSL shader strings. Optional THREE/TSL receiver helpers live at
-`@vitrum/walkaround-rc/three`.
+raw WGSL shader strings.
 
 Reference: Sannikov 2023, "Radiance Cascades: A Novel Approach to Calculating
 Global Illumination."
 
 ## Status
 
-Pre-1.0. Hoisted out of `@vitrum/walkaround-hybrid/src/rc/` on 2026-05-18
-(W8 follow-up). Composition with DDGI / ReSTIR-GI happens in
-`@vitrum/walkaround-hybrid` via `HybridEngineRC`; this package owns the RC
-algorithm itself.
+GPU-validated (2026-06-07). The cascade-zero light-model gaps (RC only sampled
+sun + emissive + env, never the abstract rect-area emitter list) were fully fixed:
+- **PART A (`596c341`):** `shade.wgsl` gates RC confidence weight `cRc` on
+  RC-has-energy — an empty cascade forces `cRc = 0` so ReSTIR-GI retains full
+  weight.
+- **PART B (`1e893fa`):** RC probe-ray hits now run one-sample-per-emitter NEE
+  (`rcEmitterNEE`) against the world-space rect-area emitter tris.
+
+Behavioral validation: CPU-brute-force oracle (tree-shape-invariant, 100% vs
+ground truth) for merged-BVH traversal; GPU-proven HARM → NEUTRAL → BENEFICIAL
+arc for the emitter-NEE fix; two-scene RC acceptance gate
+(`tools/reference-renders/rc-gate-2026-06-07/`).
 
 ## Root Surface
 
-- `RCDispatcher` - raw-WebGPU dispatch driver for the cascade compute passes.
-- `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` - default cascade pyramid
+- `RCDispatcher` — raw-WebGPU dispatch driver for the cascade compute passes.
+- `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
   sizes. Hosts can override per-engine via
   `HybridEngineOptions.cascadeDims: readonly CascadeDim[]`.
-- `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` - raw WGSL strings for host
+- `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` — raw WGSL strings for host
   inspection or headless WGSL-compile testing.
-- `computeOctahedralSolidAngles` - pure CPU helper used by cascade-merge math.
+- `computeOctahedralSolidAngles` — pure CPU helper used by cascade-merge math.
 
-## THREE Bridge Surface
-
-Import these from `@vitrum/walkaround-rc/three`:
-
-- `allocateCascades` / `disposeCascades` / `fillCascadeDebug` - cascade
-  allocation helpers backed by `StorageBufferAttribute`.
-- `CascadeBufferManager` - per-engine cascade buffer ownership for TSL hosts.
-- `GIReceiver` - `NodeMaterial` wrapper that samples cascade-0 from the TSL side.
-- `buildWalkaroundLightingNode` - TSL diffuse-lighting node for hosts composing
-  the receiver into a larger material graph.
-
-The bridge requires `three/webgpu` and `three/tsl`; the package root does not.
+There is no THREE bridge subpath. The package root is raw-runtime safe; it has
+no `three` or `three/webgpu` peer dependency. TSL-side receiver helpers
+(`GIReceiver`, `buildWalkaroundLightingNode`) remain in
+`@vitrum/walkaround-hybrid` — composition happens at the engine level, not in
+this subsystem package.
 
 ## Design Principles
 
@@ -46,7 +46,12 @@ raw-WebGPU path.
 
 ## Testing
 
-- `__tests__/rcSolidAngles.test.ts` - CPU-only unit tests for the octahedral
+- `__tests__/rcSolidAngles.test.ts` — CPU-only unit tests for the octahedral
   solid-angle table.
-- `__tests__/rc-bindings.test.ts` - host-side dispatcher and bridge structural
-  smoke tests with a fake GPU device.
+- `__tests__/rcKernelMath.test.ts` — pure math invariants (cascade geometry,
+  uniform packing).
+- `__tests__/cascadeDimsOverride.test.ts` — per-engine cascade dimension override.
+- `__tests__/packageRootBoundary.test.ts` — verifies no three/webgpu import
+  leaks from the package root.
+- `__tests__/rcBehavior.gpu.test.ts` — GPU-gated behavioral smoke (requires
+  WebGPU; skipped in CI without adapter).

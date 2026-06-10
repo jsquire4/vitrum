@@ -52,24 +52,33 @@ const layoutEntry: GPUBindGroupLayoutEntry = {
 uses explicit indices. The convention adopted here (matching parameter order in the
 `wgslFn` kernel signature):
 
-**Cast pass bindings** (one bind group per cascade):
-| binding | name          | access         | WGSL type                             |
-|---------|---------------|----------------|---------------------------------------|
-| 0       | bvh           | read-only      | `array<BVHNode>`                      |
-| 1       | geom_index    | read-only      | `array<vec3u>`                        |
-| 2       | geom_position | read-only      | `array<vec3f>`                        |
-| 3       | materials     | read-only      | `array<MaterialEntry>`                |
-| 4       | triMatId      | read-only      | `array<u32>`                          |
-| 5       | cascadeOut    | read_write     | `array<vec4f>`                        |
-| 6       | envMap        | texture        | `texture_2d<f32>`                     |
-| 7       | envSampler    | sampler        | `sampler`                             |
-| 8       | u_arr         | read-only      | `array<CascadeUniforms>`              |
+**Cast pass bindings** (one bind group per cascade) — current as of 2026-06-07:
+| binding | name                    | access         | WGSL type                             |
+|---------|-------------------------|----------------|---------------------------------------|
+| 0       | bvh                     | read-only      | `array<BVHNode>`                      |
+| 1       | geom_index              | read-only      | `array<vec3u>`                        |
+| 2       | geom_position           | read-only      | `array<vec3f>`                        |
+| 3       | materials               | read-only      | `array<MaterialEntry>`                |
+| 4       | triMatId                | read-only      | `array<u32>`                          |
+| 5       | cascadeOut              | read_write     | `array<vec4f>`                        |
+| 6       | envMap                  | texture        | `texture_2d<f32>`                     |
+| 7       | envSampler              | sampler        | `sampler`                             |
+| 8       | u_arr (CascadeUniforms) | read-only      | `array<CascadeUniforms>`              |
+| 9       | tlasNodes               | read-only      | `array<BVHNode>` (TLAS; dummy if merged) |
+| 10      | tlasInstanceIndices     | read-only      | `array<u32>` (TLAS instance indices)  |
+| 11      | tlasBlasRoots           | read-only      | `array<u32>` (TLAS BLAS root offsets) |
+| 12      | tlasWorldToLocal        | read-only      | `array<vec4f>` (TLAS instance xforms) |
+| 13      | tlasLocalToWorld        | read-only      | `array<vec4f>` (TLAS instance xforms) |
+| 14      | rc_emitters             | read-only      | `array<EmitterTri>` (rect-area NEE)   |
+
+Bindings 9-13 (TLAS) are always present but hold 32-byte dummy buffers in merged-BVH
+mode (`bvhMode=0`). Binding 14 holds an 80-byte zero placeholder when `emitterCount=0`.
 
 **Merge pass bindings** (one bind group per merge step):
-| binding | name         | access         | WGSL type          |
-|---------|--------------|----------------|--------------------|
-| 0       | upperCascade | read-only      | `array<vec4f>`     |
-| 1       | lowerCascade | read_write     | `array<vec4f>`     |
+| binding | name         | access         | WGSL type              |
+|---------|--------------|----------------|------------------------|
+| 0       | upperCascade | read-only      | `array<vec4f>`         |
+| 1       | lowerCascade | read_write     | `array<vec4f>`         |
 | 2       | m_arr        | read-only      | `array<MergeUniforms>` |
 
 **Subtlety — BVH buffers shared across passes**: In TSL, the BVH `storage()` nodes are

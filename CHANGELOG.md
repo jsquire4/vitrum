@@ -6,8 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+
+- **`@vitrum/pt-webgl` (fork-backed WebGL2 backend) removed (`e14000c`, 2026-06-09).**
+  The package, its GLSL/fork entry point, and all Three.js bridge subpaths were deleted
+  as part of the complete THREE-decouple. **Replacement:** `@vitrum/pt-webgl2` is the
+  native WebGL2 path tracer with the same contract surface and no Three.js dependency.
+- **`@vitrum/three-bindings` removed (`e14000c`, 2026-06-09).** The Three.js scene-graph
+  adapter package (`sceneFromThreeJS`, `loadGltfScene`, `VITRUM_USER_DATA_KEYS`, etc.)
+  was deleted. Host adapters belong outside the core runtime graph; the material extension
+  fields they mapped are now first-class fields on `@vitrum/core` `MaterialSpec`.
+- **`@vitrum/three-gpu-pathtracer` (fork) removed (`e14000c`, 2026-06-09).** The forked
+  upstream shader library is no longer in the dependency graph; `@vitrum/pt-webgl2` uses
+  its own native GLSL shaders.
+- **`examples/` Three.js example apps removed (`e14000c`, 2026-06-09).** The former
+  Three.js-coupled example apps (hero-viewer, hero-lighting-designer, hero-product-viz,
+  neural-denoiser, cornell-box) were deleted. Acceptance fixtures now live under
+  `tools/reference-renders/` and `tools/benchmark-runner/`.
+- **Three.js bridge subpaths removed.** The `@vitrum/walkaround-hybrid/three`,
+  `@vitrum/walkaround-rc/three`, and Three.js-coupled entry points are gone. The raw
+  WebGPU compute paths are the only dispatch paths. TSL-side helpers (`applyDDGIShading`,
+  `GIReceiver`) remain as optional Three.js coupling points in `walkaround-hybrid`.
+
 ### Fixed
 
+- **pt-webgl2 analytic lights (H1/H4, `5f81433`, 2026-06-09):** `lights.count` was
+  never uploaded to the GLSL shader; all point/spot/rect/disc-area lights were silently
+  inert (only mesh-area emitters lit anything via the emissive fold). Fixed by adding
+  `GlProgram.setUint` + uploading `lights.count` each frame. Residual MIS bias on
+  multi-light scenes with unequal powers is documented (H4 follow-up: stored selection
+  pdf needed for full correctness).
+- **pt-webgl2 spectral CMF upload (H2, `7e7b0c5`, 2026-06-09):** CIE CMF tables, CDFs,
+  and integrals were never uploaded; spectral mode rendered all-black. Fixed by uploading
+  CIE X/Y/Z tables each frame when the spectral feature flag is set.
+- **pt-webgl2 backgroundAlpha upload (H3, `16430a8`, 2026-06-09):** `backgroundAlpha`
+  was never uploaded; directly visible sky/HDRI environments accumulated nothing (black
+  sky). Fixed by uploading `backgroundAlpha = 1.0` each frame.
+- **pt-webgl2 BDPT crash fix (H5, `940c886`, 2026-06-09):** `bdpt:true` caused a crash
+  via binding an unbound `usampler2D`. Fixed by dummy-binding the texture when BDPT is
+  off. BDPT itself remains inert (no host driver called); `causticStrategy:'bdpt'` now
+  gates off honestly with a warning.
+- **pt-webgl2 env intensity (H6, `f2b20b7`, 2026-06-09):** HDRI `environment.intensity`
+  was ignored. Fixed by reading `environment.intensity ?? 1` before upload.
+- **pt-webgl2 frameTimeMs + dummy-texture leak (H7, `c7d4661`, 2026-06-09):** `frameTimeMs`
+  was returning 0 (hardcoded) instead of the actual elapsed time; `dispose()` was not
+  releasing the placeholder 2D and 2D-array dummy textures. Both fixed.
 - **DDGI coloured-bounce now Lambertian (2026-06-07, `8aa444a`):** the DDGI probe-ray bounce shading was over-estimating bounce energy by ~π/albedo (~4× at ρ=0.85) and zeroing colour bleed by storing irradiance E directly. The producer-side bounce surface now applies its own Lambertian BRDF — `radiance = (direct + indirect) · baseColor / π` (`probeUpdateRays.wgsl.ts`) — restoring M7's (e66429d) Change 3 in corrected form while keeping Changes 1/2/4/5. Producer (bounce surface) and receiver (shaded point) are two different surfaces' BRDFs; both are required. GPU-validated vs a CPU f64 path-trace anchor (dzn RTX-4090 + lavapipe): coloured-wall residual 23–34% (this form) vs 244–365% for the prior white-bounce model. Evidence: `wsl-gpu/captures/queue-2026-06-07/ddgi-white-bounce/RESULTS.md`. The axis-aligned octahedral-sampling under-read it surfaced is tracked separately (open; not this fix).
 - **RC out-of-light-model regime — full fix (2026-06-07):** Radiance Cascades sampled only sun + emissive geometry + environment, never the abstract rect-area emitter list, so a rect-area-only scene produced all-zero cascades — and the RC⊕ReSTIR-GI confidence MIS then handed RC its weight on the host toggle alone, letting an empty cascade REPLACE the correct ReSTIR-GI indirect with zero (darkened/black indirect). Two parts:
   - **PART A (`596c341`):** `shade.wgsl` now gates the RC confidence weight `cRc` on RC-has-energy (`select(0, 1, Lo_rc > 1e-6)`) — an empty cascade forces `cRc = 0` so ReSTIR-GI keeps full weight. Bit-identical when RC is off (rcWeight=0 AND Lo_rc=0) or on-with-energy (gate=1, blend unchanged).
