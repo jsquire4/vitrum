@@ -1,5 +1,7 @@
 import type {
   BackendTexture,
+  CapturedFrame,
+  CaptureFrameOptions,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -35,7 +37,10 @@ import {
   ADJOINT_FIELD_EMISSIVE,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
-import { readOidnInputsFromTextures } from './denoise/rgba16fReadback.js';
+import {
+  readOidnInputsFromTextures,
+  readRgba16fTextureToF32,
+} from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
   buildPackedScene,
@@ -50,7 +55,7 @@ import {
   packLiteEnvTexture,
   packLiteEnvCdfTexture,
 } from './scene/litePackedTextures.js';
-import { type ScenePackResult } from '@vitrum/shared-bvh';
+import { type ScenePackResult, pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { packFrameParams } from './frameParamsPacker.js';
 import { SceneMutationRouter } from './sceneMutationRouter.js';
@@ -608,11 +613,27 @@ class PTEngineWebGPU implements Engine {
     return PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES;
   }
 
-  // ── Debug introspection (T3.G followup) ────────────────────────────────
-  // Experimental backend exposes only the GPU-memory estimate for now — atlas
-  // / BVH / pick / denoiser-toggle hooks are walkaround-hybrid concepts
-  // that don't apply to a brute-force compute path tracer.
+  // ── Debug introspection (T3.G followup + #30 pickPrimitive) ──────────────
+  // Atlas / BVH / denoiser-toggle hooks are walkaround-hybrid concepts that
+  // don't apply to a brute-force compute path tracer. GPU-memory estimate
+  // and CPU click-to-pick (pickPrimitive) are both wired.
   readonly debug: EngineDebugSurface = {
+    // T3.G #30 — CPU ray-cast pick using the retained scene + last-frame camera.
+    // Returns null before the first renderFrame (no camera) or on a miss.
+    pickPrimitive: (x: number, y: number): string | null => {
+      const scene = this.#scene;
+      const last = this.#lastFrameInput;
+      if (scene == null || last == null) return null;
+      const w = last.viewport.width;
+      const h = last.viewport.height;
+      const cam: PickCamera = {
+        viewMatrix: last.viewMatrix,
+        projMatrix: last.projMatrix,
+        cameraPosition: last.cameraPosition,
+      };
+      return pickPrimitiveCpu(scene, cam, x, y, w, h);
+    },
+
     estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
       const gpu = this.#gpu;
       const W = gpu.accumWidth;
@@ -1344,6 +1365,34 @@ class PTEngineWebGPU implements Engine {
     dispatch('vitrum.pt-webgpu.restirPt.temporal', gpu.rptTemporalPipeline!, gpu.rptTemporalGroup0!);
     dispatch('vitrum.pt-webgpu.restirPt.spatial', gpu.rptSpatialPipeline!, gpu.rptSpatialGroup0!);
     dispatch('vitrum.pt-webgpu.restirPt.resolve', gpu.rptResolvePipeline!, gpu.rptResolveGroup0!);
+  }
+
+  /**
+   * Capture the engine's rendered output as a host-side CPU Float32 RGBA image.
+   *
+   * `colorSpace:'linear'` (default) reads `accumTexture` — the rgba16float
+   * texture written by `accumulateFrame` that stores the per-pixel Welford
+   * running mean (accum.xyz / accum.w).  This is linear-light HDR radiance in
+   * scene units, identical to what OIDN / the present pass consumes.
+   *
+   * `colorSpace:'output'` reads `presentTexture` — the rgba16float texture
+   * written by the present pass (tonemap + OETF).
+   *
+   * Returns `null` before the first frame (accumTexture not yet allocated).
+   * Pipeline stall: submits a GPU→CPU copyTextureToBuffer + mapAsync; use
+   * for debugging/export, not per-frame readback.
+   */
+  async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
+    const colorSpace = opts?.colorSpace ?? 'linear';
+    const gpu = this.#gpu;
+    const texture = colorSpace === 'output' ? gpu.presentTexture : gpu.accumTexture;
+    if (texture == null) return null;
+    const width = gpu.accumWidth;
+    const height = gpu.accumHeight;
+    if (width <= 0 || height <= 0) return null;
+    const rgba = await readRgba16fTextureToF32(this.#device, texture, width, height);
+    if (rgba == null) return null;
+    return { width, height, rgba };
   }
 
   /**

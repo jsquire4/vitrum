@@ -37,6 +37,8 @@
 
 import type {
   AnalyticShape,
+  CapturedFrame,
+  CaptureFrameOptions,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -80,6 +82,10 @@ import {
   packEmitterTrisForDDGI,
 } from './restir/bvhSceneHelpers.js';
 import { solveSkin } from '@vitrum/core';
+import {
+  alignedTextureCopyBytesPerRow,
+  float16BitsToFloat32,
+} from '@vitrum/shared-denoisers';
 import type { ModelWeights } from './neural/weights.js';
 import {
   transformRefit,
@@ -502,6 +508,63 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
   const preset = resolveQualityPreset(effectiveQualityTier);
 
   return deriveHybridEngineConfig(opts, preset);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// captureFrame GPU→CPU readback helper (walkaround-hybrid)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Read a single rgba16float GPUTexture to a Float32 RGBA array, row-major,
+ * top-left origin. Returns `null` if dimensions are invalid. Pipeline stall
+ * (copyTextureToBuffer + mapAsync).
+ *
+ * Module-private: only called by HybridEngine.captureFrame for 'linear'.
+ */
+async function readRgba16fWalkaround(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+): Promise<Float32Array | null> {
+  if (width <= 0 || height <= 0) return null;
+  const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8); // 4 ch × 2 B per f16
+  const readSize = bytesPerRow * height;
+  const staging = device.createBuffer({
+    label: 'vitrum.walkaround-hybrid.captureFrame.staging',
+    size: readSize,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = device.createCommandEncoder({
+      label: 'vitrum.walkaround-hybrid.captureFrame.encoder',
+    });
+    encoder.copyTextureToBuffer(
+      { texture },
+      { buffer: staging, bytesPerRow },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const src = new DataView(staging.getMappedRange().slice(0));
+    staging.unmap();
+    // Decode rgba16float → float32 RGBA, 4 channels per pixel.
+    const out = new Float32Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      const rowOff = y * bytesPerRow;
+      for (let x = 0; x < width; x++) {
+        const texOff = rowOff + x * 8;
+        const di = (y * width + x) * 4;
+        out[di]     = float16BitsToFloat32(src.getUint16(texOff,     true));
+        out[di + 1] = float16BitsToFloat32(src.getUint16(texOff + 2, true));
+        out[di + 2] = float16BitsToFloat32(src.getUint16(texOff + 4, true));
+        out[di + 3] = float16BitsToFloat32(src.getUint16(texOff + 6, true));
+      }
+    }
+    return out;
+  } finally {
+    staging.destroy();
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2041,6 +2104,47 @@ export class HybridEngine implements Engine {
       width: this._internalWidth,
       height: this._internalHeight,
     };
+  }
+
+  /**
+   * Capture the engine's rendered output as a host-side CPU Float32 RGBA image,
+   * row-major, top-left origin.
+   *
+   * `colorSpace:'linear'` (default) reads `resolvedTexture` — the post-denoiser,
+   * pre-tonemap rgba16float output (the same texture exposed by
+   * `getProgressiveSeedTexture()`). This is linear-light HDR radiance in scene
+   * units, suitable for tone-mapping, EXR export, or luminance checks.
+   *
+   * `colorSpace:'output'` rejects with a clear error: the walkaround backend
+   * writes its final display output directly to the host's swap-chain texture
+   * (a `GPUTextureView` supplied by the host each frame via
+   * `FrameInput.swapChainView`). There is no engine-owned display-referred
+   * buffer to read back. To capture the tonemapped image, the host can render
+   * one frame to a `GPUTexture` it owns and read that back independently.
+   *
+   * Returns `null` before the first frame (resolvedTexture not yet allocated).
+   * Pipeline stall: submits copyTextureToBuffer + mapAsync; use for
+   * debugging/export, not per-frame readback.
+   */
+  async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
+    const colorSpace = opts?.colorSpace ?? 'linear';
+    if (colorSpace === 'output') {
+      throw new Error(
+        '[vitrum/walkaround-hybrid] captureFrame({ colorSpace: \'output\' }) is not supported: ' +
+        'the walkaround backend writes its display output directly to the host\'s swap-chain ' +
+        'texture (FrameInput.swapChainView) — there is no engine-owned tonemapped buffer to ' +
+        'read back. Use colorSpace: \'linear\' (default) to capture the pre-tonemap HDR output, ' +
+        'or capture the swap-chain texture on the host side.',
+      );
+    }
+    const seedResult = this.getProgressiveSeedTexture();
+    if (seedResult == null) return null;
+    const { width, height } = seedResult;
+    if (width <= 0 || height <= 0) return null;
+    const texture = seedResult.texture as unknown as GPUTexture;
+    const rgba = await readRgba16fWalkaround(this._device, texture, width, height);
+    if (rgba == null) return null;
+    return { width, height, rgba };
   }
 
   // ── Resize ─────────────────────────────────────────────────────────────

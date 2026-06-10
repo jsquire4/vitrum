@@ -1,6 +1,9 @@
 import type {
+  CapturedFrame,
+  CaptureFrameOptions,
   Engine,
   EngineCapabilities,
+  EngineDebugSurface,
   EngineError,
   EngineFactory,
   EngineState,
@@ -20,6 +23,7 @@ import {
   patchPrimitiveInScene,
 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
@@ -110,6 +114,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
   #samplesAccumulated = 0;
+  /** Last-frame input retained for the debug click-to-pick surface (T3.G #30). */
+  #lastFrameInput: FrameInput | null = null;
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
   #onErrorSubs = new Set<(e: EngineError) => void>();
@@ -239,6 +245,25 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#scene;
   }
 
+  // ── Debug introspection (T3.G #30) ────────────────────────────────────────
+  // CPU click-to-pick using the retained scene + last-frame camera matrices.
+  // Returns null before the first renderFrame (no camera) or on a miss.
+  readonly debug: EngineDebugSurface = {
+    pickPrimitive: (x: number, y: number): string | null => {
+      const scene = this.#scene;
+      const last = this.#lastFrameInput;
+      if (scene == null || last == null) return null;
+      const w = last.viewport.width;
+      const h = last.viewport.height;
+      const cam: PickCamera = {
+        viewMatrix: last.viewMatrix,
+        projMatrix: last.projMatrix,
+        cameraPosition: last.cameraPosition,
+      };
+      return pickPrimitiveCpu(scene, cam, x, y, w, h);
+    },
+  };
+
   addPrimitive(primitive: ScenePrimitive): void {
     this.#guardLive('addPrimitive');
     if (this.#scene == null) {
@@ -302,6 +327,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#guardLive('renderFrame');
+    // Retain camera for the debug click-to-pick surface (T3.G #30).
+    this.#lastFrameInput = input;
     // Context-loss guard: the GL device is no longer usable. Return a safe skipped
     // output (allowed by the contract — the host owns the device-lost recovery path).
     if (this.#contextLost) {
@@ -352,6 +379,35 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp, frameTimeMs);
   }
 
+  /**
+   * Capture the engine's rendered output as a host-side CPU Float32 RGBA image,
+   * row-major, top-left origin (GL's bottom-left is flipped here).
+   *
+   * `colorSpace:'linear'` (default) reads the RGBA32F accumulation FBO — the
+   * running mean of all accumulated path-trace samples (linear-light HDR,
+   * scene radiance units). Requires EXT_color_buffer_float (enforced at engine
+   * creation; always present when the engine is alive).
+   *
+   * `colorSpace:'output'` reads the RGBA32F present FBO — the tonemapped output
+   * written by the present pass (tonemap + optional OETF). The present FBO uses
+   * RGBA32F (not RGBA8) so readPixels uses the same FLOAT path without a format
+   * change.
+   *
+   * Returns `null` before the first frame (FBO not yet allocated).
+   * Synchronous (WebGL readPixels is always synchronous — no async stall). Wraps
+   * in a resolved Promise to match the cross-backend contract.
+   */
+  async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
+    const colorSpace = opts?.colorSpace ?? 'linear';
+    const rgba = this.#gpu.readPixelsRgba32f(colorSpace === 'output' ? 'output' : 'linear');
+    if (rgba == null) return null;
+    return {
+      width: this.#gpu.accumDims.width,
+      height: this.#gpu.accumDims.height,
+      rgba,
+    };
+  }
+
   reset(): void {
     this.#samplesAccumulated = 0;
     this.#gpu.clearAccum();
@@ -381,6 +437,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#sceneTextures = null;
     this.#scene = null;
     this.#geoPack = null;
+    this.#lastFrameInput = null;
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
     this.#onErrorSubs.clear();

@@ -1,4 +1,5 @@
 export * from './aabb.js';
+export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
 export { validateBvhEncoding } from './validateBvhEncoding.js';

@@ -3,6 +3,36 @@ import {
 } from '@vitrum/shared-denoisers';
 import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
 
+/**
+ * Row-major rgba16float GPU buffer → interleaved RGBA Float32, top-left origin.
+ *
+ * The GPU readback buffer has `bytesPerRow` padding per row (256-byte aligned);
+ * this function strips the padding and unpacks all four channels as Float32.
+ * Row 0 maps to the top of the image (WebGPU uses top-left origin natively, so
+ * no flip is needed here — unlike the WebGL2 path which uses bottom-left origin).
+ */
+export function rgba16fBufferToRgbaF32(
+  src: ArrayBuffer,
+  bytesPerRow: number,
+  width: number,
+  height: number,
+): Float32Array {
+  const dst = new Float32Array(width * height * 4);
+  const view = new DataView(src);
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * bytesPerRow;
+    for (let x = 0; x < width; x++) {
+      const texOff = rowOff + x * 8; // 4 channels × 2 bytes per f16
+      const dstIdx = (y * width + x) * 4;
+      dst[dstIdx]     = f16ToF32(view.getUint16(texOff,     true));
+      dst[dstIdx + 1] = f16ToF32(view.getUint16(texOff + 2, true));
+      dst[dstIdx + 2] = f16ToF32(view.getUint16(texOff + 4, true));
+      dst[dstIdx + 3] = f16ToF32(view.getUint16(texOff + 6, true));
+    }
+  }
+  return dst;
+}
+
 /** Row-major rgba16float → interleaved RGB Float32 (OIDN layout). */
 export function rgba16fBufferToRgbF32(
   src: ArrayBuffer,
@@ -178,5 +208,56 @@ export async function readOidnInputsFromTextures(
     // Destroy any buffers that weren't already cleaned up in the happy path
     // (e.g. when mapAsync rejects due to device loss or OOM).
     for (const buf of created) safeDestroy(buf);
+  }
+}
+
+/**
+ * GPU → CPU readback of a single rgba16float texture as a Float32 RGBA array,
+ * row-major, top-left origin.
+ *
+ * Used by `captureFrame` in the pt-webgpu backend — reads `accumTexture` (the
+ * Welford running-mean linear HDR radiance, written by `accumulateFrame`) for
+ * `colorSpace:'linear'`, or `presentTexture` (the tonemapped output, written by
+ * the present pass) for `colorSpace:'output'`.
+ *
+ * Returns `null` when `width` or `height` is ≤ 0 (engine not yet initialised).
+ */
+export async function readRgba16fTextureToF32(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+): Promise<Float32Array | null> {
+  if (width <= 0 || height <= 0) return null;
+
+  const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8); // 4 ch × 2 B per f16
+  const readSize = bytesPerRow * height;
+
+  const stagingBuffer = device.createBuffer({
+    label: 'vitrum.pt-webgpu.captureFrame.staging',
+    size: readSize,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = device.createCommandEncoder({
+      label: 'vitrum.pt-webgpu.captureFrame.encoder',
+    });
+    encoder.copyTextureToBuffer(
+      { texture },
+      { buffer: stagingBuffer, bytesPerRow },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await stagingBuffer.mapAsync(GPUMapMode.READ);
+    const result = rgba16fBufferToRgbaF32(
+      stagingBuffer.getMappedRange().slice(0),
+      bytesPerRow,
+      width,
+      height,
+    );
+    stagingBuffer.unmap();
+    return result;
+  } finally {
+    stagingBuffer.destroy();
   }
 }

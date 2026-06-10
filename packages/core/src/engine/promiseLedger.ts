@@ -28,6 +28,12 @@ export interface BackendMethodPromises {
   /** Whether the backend implements `Engine.onError()` — the GPU/runtime
    *  error subscription.  All three shipping backends wire this. */
   readonly onError: boolean;
+  /**
+   * Whether the backend implements `Engine.captureFrame()` — the GPU→CPU
+   * pixel readback that returns a {@link CapturedFrame} (linear HDR RGBA
+   * Float32, top-left origin).  All three shipping backends implement this.
+   */
+  readonly captureFrame: boolean;
 }
 
 export interface FrameInputPromises {
@@ -299,6 +305,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       getScene: true,
       // GPU error surface: device.uncapturederror (throttled) + device.lost.
       onError: true,
+      // GPU→CPU pixel readback: resolvedTexture for 'linear'; 'output' rejects
+      // (swap-chain write, no engine-owned display buffer to read back).
+      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: false,
@@ -378,6 +387,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       getScene: true,
       // Context-lost surface: webglcontextlost canvas event.
       onError: true,
+      // GPU→CPU pixel readback: accum FBO (RGBA32F, rows flipped to top-left)
+      // for 'linear'; present FBO for 'output'.
+      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,
@@ -447,6 +459,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       getScene: true,
       // GPU error surface: device.uncapturederror (throttled) + device.lost.
       onError: true,
+      // GPU→CPU pixel readback: accumTexture (rgba16float decoded to f32) for
+      // 'linear'; presentTexture (rgba16float) for 'output'.
+      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,

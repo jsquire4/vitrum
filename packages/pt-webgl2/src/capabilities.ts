@@ -75,6 +75,8 @@ export function buildCapabilities(
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     causticStrategy,
+    // T3.G #30 — this backend exposes debug.pickPrimitive (CPU ray-cast click-to-pick).
+    debugSurface: true,
     ...(features.size > 0 ? { experimentalFeatures: features } : {}),
     supportDetails: {
       ...PT_WEBGL2_BASE_SUPPORT_DETAILS,

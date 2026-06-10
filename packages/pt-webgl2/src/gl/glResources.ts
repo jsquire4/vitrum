@@ -429,6 +429,11 @@ export class GlResources {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  /** Current accumulation dimensions (0×0 before first ensureAccumResources). */
+  get accumDims(): { readonly width: number; readonly height: number } {
+    return { width: this.#accumWidth, height: this.#accumHeight };
+  }
+
   /**
    * The tonemapped present texture (the output of the most-recent present pass).
    * Always points to the presentTex (RGBA32F) written by #runPresentPass after
@@ -824,5 +829,62 @@ export class GlResources {
     this.#quad.draw(gl);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * CPU readback of the HDR accumulation or present FBO, row-flipped to
+   * top-left origin (WebGL uses bottom-left, so row 0 in `readPixels` is the
+   * BOTTOM of the image).
+   *
+   * `source:'linear'` reads the RGBA32F accumulation FBO — the running mean of
+   * all accumulated path-trace samples (linear-light HDR, scene radiance units).
+   * EXT_color_buffer_float is required (enforced by resolveWebGl2TraceTier; the
+   * engine never reaches this point without it).
+   *
+   * `source:'output'` reads the present FBO — the RGBA32F tonemapped output
+   * written by #runPresentPass. Note: the present FBO texture is RGBA32F even
+   * though the present target is conceptually display-referred (the texture was
+   * created by createColorTexture which always uses RGBA32F).
+   *
+   * Returns `null` when the requested FBO has not been allocated yet (before
+   * the first frame).
+   */
+  readPixelsRgba32f(source: 'linear' | 'output'): Float32Array | null {
+    const w = this.#accumWidth;
+    const h = this.#accumHeight;
+    if (w <= 0 || h <= 0) return null;
+    const gl = this.#gl;
+
+    let fbo: WebGLFramebuffer | null = null;
+    if (source === 'output') {
+      fbo = this.#presentFbo;
+    } else {
+      // 'linear': use the ping-pong read slot (Regime 2) or the primary accum FBO.
+      if (this.#blend != null) {
+        const [a, b] = this.#blend;
+        fbo = (this.#blendReadIndex === 0 ? a : b).fbo;
+      } else {
+        fbo = this.#accum?.fbo ?? null;
+      }
+    }
+    if (fbo == null) return null;
+
+    const pixels = new Float32Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // WebGL readPixels writes bottom-left origin (row 0 = bottom).
+    // Flip vertically so row 0 = top (the captureFrame contract: top-left origin).
+    const rowBytes = w * 4;
+    const tmp = new Float32Array(rowBytes);
+    for (let top = 0, bot = h - 1; top < bot; top++, bot--) {
+      const topOff = top * rowBytes;
+      const botOff = bot * rowBytes;
+      tmp.set(pixels.subarray(topOff, topOff + rowBytes));
+      pixels.copyWithin(topOff, botOff, botOff + rowBytes);
+      pixels.set(tmp, botOff);
+    }
+    return pixels;
   }
 }

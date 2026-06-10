@@ -91,6 +91,14 @@ describe('backend promise ledger', () => {
     }
   });
 
+  it('pins captureFrame: true for all three shipping backends (item 31 — pixel readback)', () => {
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.methodPromises.captureFrame).toBe(true);
+      expect(typeof rec.methodPromises.captureFrame).toBe('boolean');
+      void id;
+    }
+  });
+
   it('pins walkaround mutation fidelity rows that differ from the boolean patch surface', () => {
     const rec = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
 

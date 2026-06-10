@@ -37,6 +37,57 @@ export * from './factory.js';
 export * from './promiseLedger.js';
 
 // ────────────────────────────────────────────────────────────────────────────
+// captureFrame — pixel readback contract
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Options for {@link Engine.captureFrame}.
+ *
+ * `colorSpace` selects the source texture:
+ *   - `'linear'` (default) — reads the HDR accumulator / pre-tonemap source.
+ *     PT backends read the running-mean accumulation buffer; the walkaround
+ *     backend reads `resolvedTexture` (the post-denoise, pre-tonemap output).
+ *     The result is linear-light RGBA in scene radiance units (not display-
+ *     referred), suitable for tone-mapping, EXR export, or luminance checks.
+ *   - `'output'` — reads the tonemapped, OETF-encoded present output where one
+ *     exists (pt-webgl2 `#presentFbo`, pt-webgpu `presentTexture`).  The
+ *     walkaround backend rejects with a clear message because it writes directly
+ *     to the host's swap-chain texture (not an engine-owned buffer it can read
+ *     back).
+ */
+export interface CaptureFrameOptions {
+  readonly colorSpace?: 'linear' | 'output';
+}
+
+/**
+ * The result of {@link Engine.captureFrame}: a host-side CPU copy of the
+ * engine's rendered output.
+ *
+ * **Layout convention:**
+ *   - `rgba` is row-major, top-left origin (row 0 = top of the image).
+ *   - Each pixel is four contiguous `Float32` values: R, G, B, A.
+ *   - Stride is `width × 4` float32s per row (no padding).
+ *   - For `colorSpace: 'linear'` (default) the values are linear-light HDR;
+ *     they may exceed [0, 1]. For `colorSpace: 'output'` the values are
+ *     display-referred (tonemapped + OETF where applicable).
+ *
+ * **Pipeline stall:** `captureFrame` submits a GPU → CPU readback and waits
+ * for the GPU to finish. It stalls the render loop for the duration of the
+ * copy. Use it for debugging, export, or test assertions — NOT per-frame.
+ */
+export interface CapturedFrame {
+  /** Physical pixel width of the captured image. */
+  readonly width: number;
+  /** Physical pixel height of the captured image. */
+  readonly height: number;
+  /**
+   * Linear-HDR (or display-referred when `colorSpace:'output'`) RGBA pixels,
+   * row-major, top-left origin. Length is `width × height × 4`.
+   */
+  readonly rgba: Float32Array;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Engine — the public façade
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -323,6 +374,41 @@ export interface Engine {
    *  inverse-rendering path omit this method entirely; hosts MUST typeof-check
    *  before calling. See {@link InverseSessionOptions}. */
   createInverseSession?(opts: InverseSessionOptions): InverseSession;
+
+  // ── Pixel readback ───────────────────────────────────────────────────────
+
+  /**
+   * Capture the engine's rendered output as a host-side CPU {@link CapturedFrame}
+   * (linear-HDR RGBA Float32, row-major, top-left origin).
+   *
+   * **Source textures per backend:**
+   *   - `@vitrum/pt-webgpu` `colorSpace:'linear'` — reads `accumTexture`
+   *     (rgba16float, the Welford running-mean accumulator written by
+   *     `accumulateFrame`).  This is the canonical HDR source: every sample
+   *     landed here, and it is what OIDN / the present pass reads.
+   *     `colorSpace:'output'` reads `presentTexture` (rgba16float, the
+   *     tonemapped output written by the present pass after each frame).
+   *   - `@vitrum/pt-webgl2` `colorSpace:'linear'` — reads the RGBA32F
+   *     accumulation FBO via `gl.readPixels`.  `colorSpace:'output'` reads
+   *     the RGBA32F present FBO (the tonemapped output).  Rows are flipped
+   *     from GL's bottom-left origin to top-left before returning.
+   *   - `@vitrum/walkaround-hybrid` `colorSpace:'linear'` — reads
+   *     `resolvedTexture` (rgba16float, the post-denoiser, pre-tonemap output;
+   *     the same texture exposed by `getProgressiveSeedTexture()`).
+   *     `colorSpace:'output'` rejects: the walkaround backend writes directly
+   *     to the host's swap-chain texture (an engine-external buffer), so there
+   *     is no engine-owned display-referred surface to read back.
+   *
+   * **Pipeline stall:** submits a GPU → CPU readback and waits for the GPU.
+   * Use for debugging, export, or test assertions — NOT per-frame.
+   *
+   * Returns `null` before the first frame has been rendered (no source
+   * texture allocated yet). Optional: a minimal backend that cannot implement
+   * readback omits this method; hosts MUST `typeof`-check before calling.
+   *
+   * @param opts - `colorSpace: 'linear'` (default) or `'output'`.
+   */
+  captureFrame?(opts?: CaptureFrameOptions): Promise<CapturedFrame | null>;
 
   // ── Experimental / backend-specific result buffers ───────────────────────
 

@@ -13,7 +13,7 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type { Engine, EngineError, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 
@@ -214,6 +214,13 @@ export interface AttachVitrumHandle {
   /** Stop the RAF loop, disconnect the ResizeObserver, unsubscribe from
    *  document.visibilitychange, and dispose the engine. Idempotent. */
   dispose(): void;
+  /**
+   * Passthrough to `engine.captureFrame(opts)`. Returns `null` when the
+   * engine has not yet rendered a frame or when the underlying engine does
+   * not implement `captureFrame`. See {@link Engine.captureFrame} for the
+   * full contract, source-texture documentation, and pipeline-stall warning.
+   */
+  captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null>;
 }
 
 export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVitrumHandle> {
@@ -423,6 +430,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       try { unsubProgress?.(); } catch {}
       try { unsubEngineError?.(); } catch {}
       try { engine.dispose(); } catch {}
+    },
+    captureFrame: (opts?: CaptureFrameOptions) => {
+      if (typeof engine.captureFrame !== 'function') return Promise.resolve(null);
+      return engine.captureFrame(opts);
     },
   };
 }
