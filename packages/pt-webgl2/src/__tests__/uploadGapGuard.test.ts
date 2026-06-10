@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { createMockGl } from './mockGl.js';
@@ -240,6 +240,83 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     // (i.e. the H1/H2/H3 asserts above are meaningful, not vacuously true).
     const rec = await renderAndRecord(sceneNoEmitters());
     expect(rec.has('uniformThatDoesNotExist')).toBe(false);
+  });
+
+  // ── Item 22 — DOF × equirectangular regime guard ────────────────────────────
+  //
+  // Thin-lens DOF applied to equirectangular projection is physically undefined:
+  // the aperture offset in camera space has no consistent meaning for a full-sphere
+  // projection.  The engine must (a) warn once and (b) force FEATURE_DOF=0 (i.e.
+  // physicalCamera.focusDistance is NOT uploaded) even when dof is supplied.
+
+  it('item22: equirect + dof emits a console.warn naming the regime mismatch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await renderAndRecord(sceneNoEmitters(), {
+        cameraType: 'equirectangular',
+        dof: { focusDistance: 5, bokehSize: 2 },
+      });
+      const equirectDofWarns = warn.mock.calls.filter((a) =>
+        String(a[0]).includes('equirectangular'),
+      );
+      expect(equirectDofWarns.length).toBeGreaterThan(0);
+      expect(String(equirectDofWarns[0]![0])).toContain('dof');
+      expect(String(equirectDofWarns[0]![0])).toContain('pt-webgl2');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('item22: equirect + dof forces FEATURE_DOF=0 — physicalCamera.focusDistance is NOT uploaded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rec = await renderAndRecord(sceneNoEmitters(), {
+        cameraType: 'equirectangular',
+        dof: { focusDistance: 5, bokehSize: 2 },
+      });
+      // Even though dof was supplied, the engine must NOT upload the DOF uniform
+      // (FEATURE_DOF must be 0 — same as if dof were absent).
+      expect(rec.has('physicalCamera.focusDistance')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('item22: orthographic + dof is accepted (FEATURE_DOF=1, no warn)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rec = await renderAndRecord(sceneNoEmitters(), {
+        cameraType: 'orthographic',
+        dof: { focusDistance: 5, bokehSize: 2 },
+      });
+      // Orthographic DOF is physically coherent (tilt-shift model); no warn, DOF on.
+      const equirectWarns = warn.mock.calls.filter((a) =>
+        String(a[0]).includes('equirectangular'),
+      );
+      expect(equirectWarns).toHaveLength(0);
+      expect(rec.has('physicalCamera.focusDistance')).toBe(true);
+      expect(rec.get('physicalCamera.focusDistance')).toBe(5);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('item22: perspective + dof is accepted (FEATURE_DOF=1, no warn)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rec = await renderAndRecord(sceneNoEmitters(), {
+        cameraType: 'perspective',
+        dof: { focusDistance: 10, bokehSize: 1.5 },
+      });
+      const equirectWarns = warn.mock.calls.filter((a) =>
+        String(a[0]).includes('equirectangular'),
+      );
+      expect(equirectWarns).toHaveLength(0);
+      expect(rec.has('physicalCamera.focusDistance')).toBe(true);
+      expect(rec.get('physicalCamera.focusDistance')).toBe(10);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('H6: environmentRotation is identity for rotationY=0 (zero-rotation invariant)', async () => {

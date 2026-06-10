@@ -7,7 +7,11 @@ import {
   deserializeGIState,
   type GIStateSnapshot,
   type RestirGISnapshot,
+  type PpgSnapshot,
 } from '../src/giStateSnapshot.js';
+import { serialiseSTree } from '../src/ppg/serialise.js';
+import { buildSTree, splitOverflowLeaves } from '../src/ppg/sTree.js';
+import { dTreeAccumulateFlux } from '../src/ppg/dTree.js';
 
 function makeSnapshot(): GIStateSnapshot {
   const irrW = 6, irrH = 8, visW = 10, visH = 12;
@@ -150,5 +154,130 @@ describe('GI state snapshot serialization', () => {
     // Drop the last reservoir buffer's worth of bytes so the section under-runs.
     const truncated = full.slice(0, full.byteLength - s.restirGI.spatial.byteLength);
     expect(() => deserializeGIState(truncated)).toThrow(/ReSTIR-GI reservoir/);
+  });
+
+  // ── v3 backward-compat: v3 buffers accepted, ppg absent (cold start) ───────
+  it('accepts a v3 (no PPG section) buffer and returns ppg:undefined', () => {
+    const s = makeSnapshot();
+    const buf = serializeGIState(s);
+    // v3 snapshots have no SECTION_PPG bit, so deserialising returns ppg:undefined.
+    // Confirm that the current serializer produces v4 and the v3 path is via
+    // hand-patching the version word down to 3 (same layout, only section flags differ).
+    // Since no v3 snaps exist in the wild yet, we simulate one by writing version=3.
+    new DataView(buf).setUint32(4, 3, true);
+    const back = deserializeGIState(buf);
+    expect(back.ppg).toBeUndefined();
+    // Core fields still decoded correctly.
+    expect(back.dims).toEqual(s.dims);
+  });
+});
+
+// ── PPG snapshot section (v4) ────────────────────────────────────────────────
+
+/**
+ * Build a multi-cell STree with non-trivial directional distributions,
+ * then serialise it to a PpgSnapshot. Mirrors the real coordinator path.
+ */
+function makePpgSnapshot(maxSpatialCells = 1024): PpgSnapshot {
+  const sceneBounds = { min: [-5, -5, -5] as [number, number, number], max: [5, 5, 5] as [number, number, number] };
+  const sTree = buildSTree(sceneBounds);
+
+  // Accumulate flux into the root dTree so refineDTree has signal to split.
+  const rootDTree = sTree.dTrees[0]!;
+  for (let i = 0; i < 200; i++) {
+    dTreeAccumulateFlux(rootDTree, [i / 200, 0.25], 1.0 + i * 0.01);
+  }
+  // Force a split by manually bumping sampleCount above the default threshold.
+  sTree.nodes[0]!.sampleCount = 50_000;
+  splitOverflowLeaves(sTree, 12_000, maxSpatialCells);
+
+  const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(sTree);
+  return {
+    maxSpatialCells,
+    sTreeBuf,
+    dTreeBuf,
+    dTreeOffsets,
+    sceneBoundsMin: sceneBounds.min,
+    sceneBoundsMax: sceneBounds.max,
+  };
+}
+
+describe('GI state snapshot v4 PPG section', () => {
+  it('round-trips the PPG section byte-identically (sTreeBuf, dTreeBuf, dTreeOffsets)', () => {
+    const ppg = makePpgSnapshot();
+    const s = { ...makeSnapshot(), ppg };
+    const back = deserializeGIState(serializeGIState(s));
+    expect(back.ppg).toBeDefined();
+    const p = back.ppg!;
+    expect(p.maxSpatialCells).toBe(ppg.maxSpatialCells);
+    expect(Array.from(p.sTreeBuf)).toEqual(Array.from(ppg.sTreeBuf));
+    expect(Array.from(p.dTreeBuf)).toEqual(Array.from(ppg.dTreeBuf));
+    expect(Array.from(p.dTreeOffsets)).toEqual(Array.from(ppg.dTreeOffsets));
+    expect(p.sceneBoundsMin).toEqual(ppg.sceneBoundsMin);
+    expect(p.sceneBoundsMax).toEqual(ppg.sceneBoundsMax);
+  });
+
+  it('re-serialization after round-trip is byte-identical (mirror DDGI atlas pattern)', () => {
+    const ppg = makePpgSnapshot();
+    const s = { ...makeSnapshot(), ppg };
+    const first  = serializeGIState(s);
+    const back   = deserializeGIState(first);
+    const second = serializeGIState(back);
+    expect(second.byteLength).toBe(first.byteLength);
+    expect(Array.from(new Uint8Array(second))).toEqual(Array.from(new Uint8Array(first)));
+  });
+
+  it('PPG section is absent when ppg is not provided (DDGI-only payload)', () => {
+    const s = makeSnapshot(); // no ppg
+    const back = deserializeGIState(serializeGIState(s));
+    expect(back.ppg).toBeUndefined();
+  });
+
+  it('coexists with ReSTIR-GI section: both sections round-trip correctly', () => {
+    const ppg = makePpgSnapshot();
+    const s = { ...makeSnapshot(), restirGI: makeRestirSection(), ppg };
+    const back = deserializeGIState(serializeGIState(s));
+    // DDGI intact.
+    expect(Array.from(back.irrData)).toEqual(Array.from(s.irrData));
+    // ReSTIR-GI intact.
+    expect(back.restirGI).toBeDefined();
+    expect(Array.from(back.restirGI!.current)).toEqual(Array.from(s.restirGI.current));
+    // PPG intact.
+    expect(back.ppg).toBeDefined();
+    expect(Array.from(back.ppg!.sTreeBuf)).toEqual(Array.from(ppg.sTreeBuf));
+    expect(Array.from(back.ppg!.dTreeOffsets)).toEqual(Array.from(ppg.dTreeOffsets));
+  });
+
+  it('correctly sizes the buffer: header + atlases + restirGI + PPG blobs', () => {
+    const ppg = makePpgSnapshot();
+    const restirGI = makeRestirSection();
+    const s = { ...makeSnapshot(), restirGI, ppg };
+    const buf = serializeGIState(s);
+    const reservoirBytes = 20 + restirGI.current.byteLength + restirGI.previous.byteLength + restirGI.spatial.byteLength;
+    const ppgBytes = 48 /* PPG_SUBHEADER_BYTES */ + ppg.sTreeBuf.byteLength + ppg.dTreeBuf.byteLength + ppg.dTreeOffsets.byteLength;
+    expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength + reservoirBytes + ppgBytes);
+  });
+
+  it('rejects a PPG blob truncated below its declared size', () => {
+    const ppg = makePpgSnapshot();
+    const s = { ...makeSnapshot(), ppg };
+    const full = serializeGIState(s);
+    // Drop enough bytes to truncate the dTreeOffsets blob.
+    const truncated = full.slice(0, full.byteLength - ppg.dTreeOffsets.byteLength);
+    expect(() => deserializeGIState(truncated)).toThrow(/PPG tree data/);
+  });
+
+  it('rejects a PPG blob where dTreeOffsets length does not match declared dTreeCount', () => {
+    // Build a valid snapshot, then corrupt the dTreeCount field in the sub-header.
+    const ppg = makePpgSnapshot();
+    const s = { ...makeSnapshot(), ppg };
+    const buf = serializeGIState(s);
+    // The PPG sub-header starts at HEADER_BYTES(64) + irrBytes + visBytes.
+    const irrBytes = s.irrW * s.irrH * 8;
+    const visBytes = s.visW * s.visH * 8;
+    const ppgSubheaderOffset = 64 + irrBytes + visBytes; // no ReSTIR section in this snapshot
+    // Field [2] (offset +8 from sub-header start) is dTreeCount.
+    new DataView(buf).setUint32(ppgSubheaderOffset + 8, ppg.dTreeOffsets.length + 99, true);
+    expect(() => deserializeGIState(buf)).toThrow(/dTreeOffsets length/);
   });
 });

@@ -66,6 +66,7 @@ const EXPECTATION_TABLE = {
   "pt/bdpt":              { expected: "ok" },
   "pt/caustic-manifold":  { expected: "ok" },
   "pt/caustic-photon":    { expected: "ok" }, // R7a-3 fixed: capacity 32 fits default maxStorageBufferBindingSize
+  "pt/spectral+photon":  { expected: "ok" }, // item 21: spectral×photon-map gather fix (heroLambda passed to sppmGather)
   "pt/lite-tier":         { expected: "ok" },
   "pt/restirPtReuse":     {
     expected: "known-residual",
@@ -102,6 +103,7 @@ const PT_CONFIGS = [
   { label: "pt/bdpt",             eng: { bdpt: true },                        scene: {} },
   { label: "pt/caustic-manifold", eng: { causticStrategy: "manifold-nee" },   scene: {} },
   { label: "pt/caustic-photon",   eng: { causticStrategy: "photon-map" },     scene: {} },
+  { label: "pt/spectral+photon",  eng: { spectral: true, causticStrategy: "photon-map" }, scene: {} },
   { label: "pt/lite-tier",        eng: { traceTier: "lite" },                 scene: {} },
   { label: "pt/restirPtReuse",    eng: { restirPtReuse: true },               scene: {} },
   { label: "pt/skinned-mesh",     eng: {},                                    scene: { skinned: true } },

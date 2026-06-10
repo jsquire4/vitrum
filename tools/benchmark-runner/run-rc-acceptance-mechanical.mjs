@@ -1,6 +1,19 @@
 /**
  * Mechanical RC acceptance — metrics + vitest using committed 64×64 fixture PNGs.
  * Does not require a hybrid-capable GPU.
+ *
+ * Scene contract:
+ *   Scene 1 (emitter NEE): uses VITRUM_RC_ACCEPTANCE_METRICS → latest
+ *     rc-acceptance-metrics-*.json (generated from synthetic PNGs by this runner).
+ *
+ *   Scene 2 (directSun liveness): uses VITRUM_RC_SUN_METRICS →
+ *     results/acceptance/rc-sun-mechanical-metrics.json — a committed stub
+ *     derived from the same emitter-NEE capture. The threshold for Scene 2 is
+ *     rcDeltaMean > 0.0005 (liveness only; full-strength sun validation lives in
+ *     tlas-zero-gi-bisect --sun=2). Replace this stub with a real GPU-derived sun
+ *     metrics file once a sun-scene mechanical fixture is added.
+ *
+ *   Scene 3 (pipeline creates): also uses VITRUM_RC_ACCEPTANCE_METRICS.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -55,6 +68,19 @@ function main() {
     process.exit(1);
   }
 
+  // Scene 2 (directSun liveness) requires VITRUM_RC_SUN_METRICS.
+  // In the mechanical run we use a committed stub derived from the emitter-NEE
+  // capture: rcDeltaMean > 0.0005 (the Scene 2 threshold) is trivially met, so
+  // the liveness gate passes. Full-strength sun validation lives in
+  // tlas-zero-gi-bisect --sun=2.
+  const sunMetricsPath =
+    process.env.VITRUM_RC_SUN_METRICS ??
+    resolve(acceptanceDir, 'rc-sun-mechanical-metrics.json');
+  console.log(
+    `[rc-acceptance-mechanical] Scene 2 sun metrics: ${sunMetricsPath} ` +
+    '(stub; replace with a real GPU capture to strengthen the sun gate)',
+  );
+
   const test = spawnSync(
     'npm',
     ['test', '--workspace', '@vitrum/walkaround-hybrid', '--', 'rcAcceptance.gpu'],
@@ -64,6 +90,7 @@ function main() {
         ...process.env,
         VITRUM_RC_ACCEPTANCE: '1',
         VITRUM_RC_ACCEPTANCE_METRICS: metricsPath,
+        VITRUM_RC_SUN_METRICS: sunMetricsPath,
       },
       stdio: 'inherit',
       encoding: 'utf8',

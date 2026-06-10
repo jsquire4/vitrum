@@ -236,6 +236,127 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 11, 0)]).toBe(1.0);
   });
 
+  // D3 — ao/lightMap/bumpMap transforms at texels 87/89/91 (item 26).
+  //
+  // The packer writes ao/lightMap/bumpMap id + scalars at texels 85/86, and their
+  // UV-transform mat3s at texels 87 (aoMapTransform), 89 (lightMapTransform), 91
+  // (bumpMapTransform), 2 texels per mat3 (see writeTransform + readTextureTransform
+  // in material_struct.glsl.js). The GLSL decoder reads:
+  //   m.aoMapTransform   = readTextureTransform(tex, i + 87u)
+  //   m.lightMapTransform = readTextureTransform(tex, i + 89u)
+  //   m.bumpMapTransform  = readTextureTransform(tex, i + 91u)
+  //
+  // All prior tests passed layerOf=undefined → aoLayer/lightMapLayer/bumpLayer are
+  // always -1 → writeTransform is never called → texels 87..92 stay 0.  This test
+  // exercises the non-trivial path: supply a layerOf map that assigns real atlas
+  // layers and non-identity UvTransforms, then assert the exact float values that
+  // readTextureTransform will read on the GPU.
+  //
+  // writeTransform encoding (verified against material_struct.glsl.js):
+  //   texel k   row1: (sx·cos, sx·sin, offsetX, 0)
+  //   texel k+1 row2: (−sy·sin, sy·cos, offsetY, 0)
+  // readTextureTransform unpacks:
+  //   col0 = (row1.r, row2.r, 0) = (sx·cos, −sy·sin, 0)
+  //   col1 = (row1.g, row2.g, 0) = (sx·sin,  sy·cos, 0)
+  //   col2 = (row1.b, row2.b, 1) = (offsetX, offsetY, 1)
+  it('D3 item26: ao/lightMap/bumpMap transforms are packed at texels 87/89/91', () => {
+    // Three distinct opaque handles — layerOf maps each to a real layer.
+    const aoHandle    = {};
+    const lightHandle = {};
+    const bumpHandle  = {};
+
+    const layerOf = new Map<unknown, number>([
+      [aoHandle,    2],
+      [lightHandle, 4],
+      [bumpHandle,  7],
+    ]);
+
+    // Non-identity transforms for each map so the assertion can distinguish them.
+    // aoMap:    scale=[2,3], offset=[0.1,0.2], rotation=0 → row1=(2,0,0.1,0), row2=(0,3,0.2,0)
+    // lightMap: scale=[1,1], offset=[0,0],     rotation=Math.PI/2 →
+    //           row1=(cos(π/2)≈0, sin(π/2)≈1, 0, 0), row2=(-sin(π/2)≈-1, cos(π/2)≈0, 0, 0)
+    // bumpMap:  scale=[0.5,0.5], offset=[0.25,0.75], rotation=0 →
+    //           row1=(0.5, 0, 0.25, 0), row2=(0, 0.5, 0.75, 0)
+    const m: MaterialSpec = {
+      baseColor: [0.5, 0.5, 0.5],
+      roughness: 0.5,
+      metallic: 0.0,
+      aoMap:      { handle: aoHandle,    transform: { scale: [2, 3],     offset: [0.1, 0.2] } },
+      lightMap:   { handle: lightHandle, transform: { rotation: Math.PI / 2 } },
+      bumpMap:    { handle: bumpHandle,  transform: { scale: [0.5, 0.5], offset: [0.25, 0.75] } },
+    };
+
+    const out = packMaterialsTexture([m], layerOf);
+    const d = out.data;
+
+    // ── Texel 85: aoMap / lightMap / bumpMap ids + envMapIntensity ──────────
+    expect(d[texel(0, 85, 0)]).toBe(2);  // aoLayer
+    expect(d[texel(0, 85, 1)]).toBe(4);  // lightMapLayer
+    expect(d[texel(0, 85, 2)]).toBe(7);  // bumpLayer
+    expect(d[texel(0, 85, 3)]).toBe(1);  // envMapIntensity default
+
+    // ── Texels 86: aoMapIntensity / lightMapIntensity / bumpScale / pad ─────
+    expect(d[texel(0, 86, 0)]).toBe(1);  // aoMapIntensity default
+    expect(d[texel(0, 86, 1)]).toBe(1);  // lightMapIntensity default
+    expect(d[texel(0, 86, 2)]).toBe(1);  // bumpScale default
+
+    // ── Texels 87/88: aoMapTransform (scale=[2,3], offset=[0.1,0.2], r=0) ──
+    // row1 = (sx·cos, sx·sin, offsetX, 0) = (2·1, 2·0, 0.1, 0) = (2, 0, 0.1, 0)
+    expect(d[texel(0, 87, 0)]).toBeCloseTo(2,   6);  // row1.r = sx·cos
+    expect(d[texel(0, 87, 1)]).toBeCloseTo(0,   6);  // row1.g = sx·sin
+    expect(d[texel(0, 87, 2)]).toBeCloseTo(0.1, 6);  // row1.b = offsetX
+    expect(d[texel(0, 87, 3)]).toBe(0);               // row1.a = 0 (pad)
+    // row2 = (−sy·sin, sy·cos, offsetY, 0) = (0, 3, 0.2, 0)
+    expect(d[texel(0, 88, 0)]).toBeCloseTo(0,   6);  // row2.r = −sy·sin
+    expect(d[texel(0, 88, 1)]).toBeCloseTo(3,   6);  // row2.g = sy·cos
+    expect(d[texel(0, 88, 2)]).toBeCloseTo(0.2, 6);  // row2.b = offsetY
+    expect(d[texel(0, 88, 3)]).toBe(0);               // row2.a = 0 (pad)
+
+    // ── Texels 89/90: lightMapTransform (scale=[1,1], offset=[0,0], r=π/2) ─
+    // row1 = (cos(π/2), sin(π/2), 0, 0) ≈ (0, 1, 0, 0)
+    expect(d[texel(0, 89, 0)]).toBeCloseTo(0,  5);   // cos(π/2) ≈ 0
+    expect(d[texel(0, 89, 1)]).toBeCloseTo(1,  6);   // sin(π/2) ≈ 1
+    expect(d[texel(0, 89, 2)]).toBeCloseTo(0,  6);   // offsetX = 0
+    // row2 = (−sin(π/2), cos(π/2), 0, 0) ≈ (−1, 0, 0, 0)
+    expect(d[texel(0, 90, 0)]).toBeCloseTo(-1, 6);   // −sin(π/2) ≈ −1
+    expect(d[texel(0, 90, 1)]).toBeCloseTo(0,  5);   // cos(π/2) ≈ 0
+    expect(d[texel(0, 90, 2)]).toBeCloseTo(0,  6);   // offsetY = 0
+
+    // ── Texels 91/92: bumpMapTransform (scale=[0.5,0.5], offset=[0.25,0.75], r=0) ─
+    // row1 = (0.5, 0, 0.25, 0)
+    expect(d[texel(0, 91, 0)]).toBeCloseTo(0.5,  6); // sx·cos
+    expect(d[texel(0, 91, 1)]).toBeCloseTo(0,    6); // sx·sin
+    expect(d[texel(0, 91, 2)]).toBeCloseTo(0.25, 6); // offsetX
+    // row2 = (0, 0.5, 0.75, 0)
+    expect(d[texel(0, 92, 0)]).toBeCloseTo(0,    6); // −sy·sin
+    expect(d[texel(0, 92, 1)]).toBeCloseTo(0.5,  6); // sy·cos
+    expect(d[texel(0, 92, 2)]).toBeCloseTo(0.75, 6); // offsetY
+  });
+
+  it('D3 item26: ao/lightMap/bumpMap transforms stay zero when layerOf is undefined (no atlas)', () => {
+    // This is the guard for the existing behavior: without a layerOf map, all three
+    // map ids are -1, writeTransform is never called, and texels 87..92 remain 0
+    // (the GLSL skips reading them when the map id == -1 → identity fallback).
+    const m: MaterialSpec = {
+      baseColor: [0.5, 0.5, 0.5],
+      roughness: 0.5,
+      metallic: 0.0,
+      aoMap:    { handle: {}, transform: { scale: [2, 3] } },
+      lightMap: { handle: {}, transform: { scale: [4, 5] } },
+      bumpMap:  { handle: {}, transform: { scale: [6, 7] } },
+    };
+    // No layerOf → all layers resolve to -1 → writeTransform not called.
+    const d = packMaterialsTexture([m]).data;
+    // Map ids at texel 85 must be -1 (unmapped).
+    expect(d[texel(0, 85, 0)]).toBe(-1); // aoLayer
+    expect(d[texel(0, 85, 1)]).toBe(-1); // lightMapLayer
+    expect(d[texel(0, 85, 2)]).toBe(-1); // bumpLayer
+    // Transform rows at 87/89/91 stay 0 (writeTransform was not called).
+    expect(d[texel(0, 87, 0)]).toBe(0); // aoMapTransform row1.r
+    expect(d[texel(0, 89, 0)]).toBe(0); // lightMapTransform row1.r
+    expect(d[texel(0, 91, 0)]).toBe(0); // bumpMapTransform row1.r
+  });
+
   it('multiple materials are packed at their MATERIAL_PIXELS-strided offsets', () => {
     const a: MaterialSpec = { baseColor: [1, 0, 0], roughness: 1, metallic: 0 };
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };

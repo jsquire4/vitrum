@@ -140,8 +140,15 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-10: Wave B — aniso GGX + env half + shadePrologue rewrites
     // (kernel.wgsl.ts + shadePrologue.wgsl.ts modified); restirPtResolve.wgsl.ts
     // comment-only fix (stale "diffuse-cosine proxy" → integrand-matching target; item 18).
-    expect(digest).toBe('6752fac33c5d4b1f88f68f66a30c4cffc59af14d6b637c7a98a8869093fbc57b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(301764);
+    // Re-pinned 2026-06-10: item 21 — spectral × photon-map regime fix.
+    // photonMapContribution gains heroLambda param; sppmGather gains heroLambda and
+    // applies spectralEmissionAtHero(flux.rgb, heroLambda) at gather time in spectral
+    // mode (same treatment as all other RGB emission sources: rect/point/spot/mesh
+    // lights and env). Non-spectral path (spectralEnabled=0): fluxOut = flux.rgb —
+    // byte-identical to the pre-fix behaviour. RENDER-CHANGING on spectral+photon-map
+    // scenes; other caustic strategies and non-spectral paths unaffected.
+    expect(digest).toBe('9cba4e4d3db7b0bab9720ae54a5b34113ef09aa0a3c386725100228d8eba1779');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(303549);
   });
 });
 

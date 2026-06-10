@@ -49,7 +49,9 @@ function reconstructExpected(
   u[FrameParamsSlot.triangleCount] = sb.triangleCount >>> 0;
   u[FrameParamsSlot.maxBounces] = config.activeBounces >>> 0;
   u[FrameParamsSlot.bvhNodeCount] = sb.bvhNodeCount >>> 0;
-  u[FrameParamsSlot.analyticCount] = sb.analyticCount >>> 0;
+  // Item 24 — zero analyticCount on lite tier (mirrors frameParamsPacker.ts).
+  u[FrameParamsSlot.analyticCount] =
+    config.traceTier === 'lite' ? 0 : sb.analyticCount >>> 0;
   u[FrameParamsSlot.pointLightCount] = sb.pointLightCount >>> 0;
   u[FrameParamsSlot.spotLightCount] = sb.spotLightCount >>> 0;
   u[FrameParamsSlot.rectAreaLightCount] = sb.rectAreaLightCount >>> 0;
@@ -230,6 +232,17 @@ const MATRIX: ReadonlyArray<{
     height: 256,
   },
   {
+    // Item 24 — lite tier must zero analyticCount even when sb.analyticCount > 0.
+    // The lite kernel has no analytic-primitive path; a phantom count would be an
+    // unused-but-wrong value in the UBO. Full-tier path is unaffected.
+    name: 'lite tier zeros analyticCount (item 24)',
+    config: makeConfig({ traceTier: 'lite' }),
+    sb: makeSceneInputs({ analyticCount: 5 }),
+    input: makeInput(),
+    width: 320,
+    height: 240,
+  },
+  {
     name: 'manifold-nee caustics + lighttree forced off via flag',
     config: makeConfig({ causticStrategy: 'manifold-nee', lightTreeImportanceSampling: false }),
     sb: makeSceneInputs(),
@@ -303,6 +316,32 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     const ab = packFrameParams(makeConfig(), makeSceneInputs({ environmentHdriRotationY: rotY }), makeInput(), 800, 600);
     const f = new Float32Array(ab);
     expect(f[FrameParamsSlot.environmentTint + 3]).toBeCloseTo(rotY, 6);
+  });
+
+  it('item 24 — lite tier writes analyticCount=0 regardless of sb.analyticCount', () => {
+    // The lite kernel has no analytic-primitive path; writing the real analyticCount
+    // would leave a phantom count that a future lite-kernel change could misread.
+    // Verify that packFrameParams zeros it on lite tier and that full tier is unaffected.
+    const liteAb = packFrameParams(
+      makeConfig({ traceTier: 'lite' }),
+      makeSceneInputs({ analyticCount: 7 }),
+      makeInput(),
+      400,
+      300,
+    );
+    const liteU = new Uint32Array(liteAb);
+    expect(liteU[FrameParamsSlot.analyticCount]).toBe(0);
+
+    // Full tier must still write the real count.
+    const fullAb = packFrameParams(
+      makeConfig({ traceTier: 'full' }),
+      makeSceneInputs({ analyticCount: 7 }),
+      makeInput(),
+      400,
+      300,
+    );
+    const fullU = new Uint32Array(fullAb);
+    expect(fullU[FrameParamsSlot.analyticCount]).toBe(7);
   });
 
   it('frozen literal golden for the canonical baseline input', () => {

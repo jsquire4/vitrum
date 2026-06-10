@@ -206,6 +206,16 @@ fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32) {
 // Returns the radiance estimate = sum(BRDF(wi) × flux_i × kernel(dist)) / (pi × r²).
 // The kernel is a simple disk test (1 if dist < r, 0 otherwise — the Hachisuka
 // standard kernel, consistent with the π r² denominator).
+//
+// Item 21 — spectral × photon-map regime fix:
+// Photons store RGB flux; the eye path carries a hero-λ throughput. In spectral
+// mode we must resolve the photon flux at the hero wavelength at gather time,
+// exactly like all other RGB emission sources (rect lights, point lights, env —
+// all use spectralEmissionAtHero). The gather conversion mirrors the NEE half:
+//   fluxOut = select(flux.rgb, spectralEmissionAtHero(flux.rgb, heroLambda), spectralEnabled)
+// Non-spectral path (spectralEnabled=0): fluxOut = flux.rgb — byte-identical.
+// The heroLambda parameter carries the per-path hero wavelength from the kernel
+// (already sampled by sampleHeroWavelengthMIS / params.heroLambdaNm).
 fn sppmGather(
   pos: vec3f,
   normal: vec3f,
@@ -214,6 +224,7 @@ fn sppmGather(
   roughness: f32,
   metallic: f32,
   throughput: vec3f,
+  heroLambda: f32,
 ) -> vec3f {
   let r = sppmStats.currentRadius;
   let r2 = r * r;
@@ -238,8 +249,15 @@ fn sppmGather(
           let nDotL = max(dot(normal, -ph.incidentDir.xyz), 0.0);
           if (nDotL <= 1e-6) { continue; }
           let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz);
+          // Item 21 — spectral mode: resolve the stored RGB flux at the eye path's
+          // hero wavelength before gathering. This mirrors the NEE half where every
+          // other RGB emission source (rect/point/spot lights, env) applies
+          // spectralEmissionAtHero. Non-spectral path uses flux.rgb directly —
+          // byte-identical to the pre-fix behaviour.
+          let fluxRgb = ph.flux.rgb;
+          let fluxOut = select(fluxRgb, spectralEmissionAtHero(fluxRgb, heroLambda), params.spectralEnabled != 0u);
           // Flat disk kernel: 1 / (π r²) area normalisation.
-          acc = acc + throughput * brdf * ph.flux.rgb * nDotL / max(PI * r2, 1e-12);
+          acc = acc + throughput * brdf * fluxOut * nDotL / max(PI * r2, 1e-12);
         }
       }
     }

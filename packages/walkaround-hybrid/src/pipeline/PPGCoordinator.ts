@@ -19,7 +19,7 @@ import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { buildSTree, splitOverflowLeaves } from '../ppg/sTree.js';
 import { refineDTree } from '../ppg/dTree.js';
-import { serialiseSTree } from '../ppg/serialise.js';
+import { serialiseSTree, deserialiseSTree, type SerialisedSTree } from '../ppg/serialise.js';
 import { PPG_MIS_ALPHA, PPG_FLUX_DECAY } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
 import { allocatePPGResources, type FrameResources } from './resourceManager.js';
@@ -282,6 +282,113 @@ export class PPGCoordinator implements PipelineSubsystem {
       .finally(() => {
         this._fluxReadbackInFlight = false;
       });
+  }
+
+  /**
+   * Export the current CPU sTree + per-cell dTree guiding distribution as flat
+   * serialised buffers (the same wire format `_uploadTree` sends to the GPU).
+   *
+   * Returns `null` when PPG is disabled or not yet initialised (the caller
+   * should treat a null return as "no PPG section in snapshot").
+   *
+   * The returned `SerialisedSTree` plus `maxSpatialCells` and `sceneBounds`
+   * are the three pieces `GIStateSnapshot.ppg` stores.
+   */
+  exportSTree(): (SerialisedSTree & {
+    maxSpatialCells: number;
+    sceneBoundsMin: readonly [number, number, number];
+    sceneBoundsMax: readonly [number, number, number];
+  }) | null {
+    if (!this._enabled || !this._sTree) return null;
+    const serialised = serialiseSTree(this._sTree);
+    const maxSpatialCells = this._maxSpatialCells ?? 1_024; // PPG_DEFAULT_SPATIAL_CELLS
+    return {
+      ...serialised,
+      maxSpatialCells,
+      sceneBoundsMin: [
+        this._sceneAABB.min[0], this._sceneAABB.min[1], this._sceneAABB.min[2],
+      ] as const,
+      sceneBoundsMax: [
+        this._sceneAABB.max[0], this._sceneAABB.max[1], this._sceneAABB.max[2],
+      ] as const,
+    };
+  }
+
+  /**
+   * Restore a PPG snapshot into the live coordinator, replacing the current
+   * sTree with the deserialised snapshot tree and immediately re-uploading it
+   * to the GPU buffers so guided sampling picks up the restored distribution
+   * on the very next frame.
+   *
+   * Compatibility checks:
+   *   1. `maxSpatialCells` must match the live coordinator's cap (stored as
+   *      `_maxSpatialCells`; default 1 024 when unset). A mismatch means the
+   *      dTreeIndex values in the snapshot's sTree nodes may be out-of-bounds
+   *      for the live GPU buffer allocation — reject loudly.
+   *   2. `sceneBoundsMin/Max` must match `_sceneAABB` within ε=1e-3 so a
+   *      snapshot trained on a different scene's geometry is rejected before
+   *      its guiding distribution poisons the live training.
+   *
+   * Returns `false` and prints a warning for any mismatch, `true` on success.
+   *
+   * No-op (returns false) when PPG is disabled or not yet initialised —
+   * the importGIState caller treats false as "PPG restore skipped" and
+   * continues with the atlas-only success.
+   */
+  importSTree(
+    snapshot: {
+      maxSpatialCells: number;
+      sTreeBuf: Float32Array;
+      dTreeBuf: Float32Array;
+      dTreeOffsets: Uint32Array;
+      sceneBoundsMin: readonly [number, number, number];
+      sceneBoundsMax: readonly [number, number, number];
+    },
+    frameResources: FrameResources,
+  ): boolean {
+    if (!this._enabled) return false;
+
+    // ── Compatibility: maxSpatialCells ───────────────────────────────────────
+    const liveCap = this._maxSpatialCells ?? 1_024;
+    if (snapshot.maxSpatialCells !== liveCap) {
+      console.warn(
+        `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
+        `snapshot=${snapshot.maxSpatialCells}, live=${liveCap}. ` +
+        `PPG restore rejected; guided sampling will restart cold.`,
+      );
+      return false;
+    }
+
+    // ── Compatibility: scene bounds ──────────────────────────────────────────
+    const eps = 1e-3;
+    const sb = this._sceneAABB;
+    const boundsOk =
+      Math.abs(snapshot.sceneBoundsMin[0] - sb.min[0]) <= eps &&
+      Math.abs(snapshot.sceneBoundsMin[1] - sb.min[1]) <= eps &&
+      Math.abs(snapshot.sceneBoundsMin[2] - sb.min[2]) <= eps &&
+      Math.abs(snapshot.sceneBoundsMax[0] - sb.max[0]) <= eps &&
+      Math.abs(snapshot.sceneBoundsMax[1] - sb.max[1]) <= eps &&
+      Math.abs(snapshot.sceneBoundsMax[2] - sb.max[2]) <= eps;
+    if (!boundsOk) {
+      console.warn(
+        `[PPGCoordinator] importSTree: scene-bounds mismatch — snapshot covers a different ` +
+        `scene geometry. PPG restore rejected; guided sampling will restart cold.`,
+      );
+      return false;
+    }
+
+    // ── Deserialise and install ──────────────────────────────────────────────
+    const restored = deserialiseSTree(snapshot, {
+      min: snapshot.sceneBoundsMin,
+      max: snapshot.sceneBoundsMax,
+    });
+    this._sTree = restored;
+
+    // Upload the restored tree to the GPU so the very next frame samples from
+    // the recovered distribution. `_uploadTree` already guards on PPG buffers
+    // being allocated and on `_enabled`.
+    this._uploadTree(frameResources);
+    return true;
   }
 
   dispose(): void {

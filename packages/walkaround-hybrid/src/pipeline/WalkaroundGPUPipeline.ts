@@ -911,6 +911,30 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return true;
   }
 
+  /**
+   * Export the current PPG sTree + per-cell dTree guiding distribution as flat
+   * buffers. Returns null when PPG is disabled or not yet initialised.
+   *
+   * Delegates to {@link PPGCoordinator.exportSTree}; exists here so HybridEngine
+   * can call it through the pipeline reference without needing to reach inside
+   * the coordinator directly.
+   */
+  exportPPGSTree(): ReturnType<PPGCoordinator['exportSTree']> {
+    if (!this._initialized) return null;
+    return this._ppg.exportSTree();
+  }
+
+  /**
+   * Restore a PPG snapshot into the live coordinator + GPU buffers. Returns
+   * false when PPG is disabled, not initialised, or the snapshot is incompatible.
+   *
+   * Delegates to {@link PPGCoordinator.importSTree} with the live FrameResources.
+   */
+  importPPGSTree(snapshot: Parameters<PPGCoordinator['importSTree']>[0]): boolean {
+    if (!this._initialized) return false;
+    return this._ppg.importSTree(snapshot, this._res);
+  }
+
   /** copyBufferToBuffer (size is a multiple of 4) → MAP_READ → unpadded Uint32Array. */
   async #readbackReservoir(device: GPUDevice, src: GPUBuffer): Promise<Uint32Array> {
     const bytes = src.size; // already 4-aligned (stride is 30 u32; floor is 256)

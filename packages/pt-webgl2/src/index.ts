@@ -131,7 +131,10 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // Flag-plumbing audit (2026-06-10): cameraType + dof are now real options.
     this.#cameraType =
       opts.cameraType === 'orthographic' ? 1 : opts.cameraType === 'equirectangular' ? 2 : 0;
-    this.#dof = opts.dof;
+    // Item 22 — DOF × equirect guard: force DOF off for equirectangular (the factory
+    // already warns; here we make the engine actually ignore it so FEATURE_DOF=0
+    // even if the host passes dof). Orthographic + dof is left intact (coherent model).
+    this.#dof = opts.cameraType === 'equirectangular' ? undefined : opts.dof;
     this.#traceTier = traceTier;
     this.#supportsAuxBuffers = traceTier === 'full';
     // Additive HDR accumulation needs EXT_float_blend; otherwise the alpha-composite
@@ -516,6 +519,26 @@ export const createPTEngine_WebGL2: EngineFactory<
       `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 has no denoiser pipeline. ` +
         'There are no OIDN, SVGF, or any other post-process denoiser passes wired in this backend. ' +
         'Degrading to no-denoise (denoiserState will report "disabled").',
+    );
+  }
+  // Item 22 — DOF × equirectangular regime guard (trust-remediation-plan §22).
+  // Thin-lens DOF applied to equirectangular projection is physically undefined:
+  // the blur direction has no meaning per sphere region (the GLSL DOF block
+  // translates ray.origin by an aperture sample in camera space, but the equirect
+  // ray directions span the full sphere — there is no consistent focal plane).
+  // Silently generating blurry/incorrect output is worse than ignoring the option,
+  // so we force DOF off for equirect and warn once so the host is not surprised.
+  //
+  // Orthographic + DOF is left as-is: the GLSL produces tilt-shift-style focus
+  // (focalPoint = fixed point on the -Z frustum; new ray.direction = focalPoint -
+  // shifted_origin) which is physically coherent — parallel projections plus an
+  // aperture offset is the standard orthographic-camera DOF model.
+  if (opts.cameraType === 'equirectangular' && opts.dof != null) {
+    console.warn(
+      '[vitrum/pt-webgl2] dof is ignored when cameraType is "equirectangular". ' +
+        'Thin-lens depth of field is physically undefined for full-sphere equirectangular ' +
+        'projection (blur direction has no meaning per sphere region). ' +
+        'The engine will render without DOF. Remove the dof option to suppress this warning.',
     );
   }
   const traceTier = resolveWebGl2TraceTier(gl, opts.traceTier);

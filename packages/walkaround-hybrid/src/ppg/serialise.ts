@@ -75,7 +75,7 @@
  * (https://tom94.net/data/publications/mueller17practical/mueller17practical.pdf)
  */
 
-import type { DTree, STree } from './types.js';
+import type { DTree, DTreeNode, STree, STreeNode } from './types.js';
 
 /** f32 stride for a serialised dTree node (must match WGSL DTREE_NODE_STRIDE). */
 export const DTREE_NODE_F32 = 8;
@@ -295,6 +295,122 @@ export function serialiseSTree(sTree: STree, maxDTreeNodesPerCell?: number): Ser
   }
 
   return { sTreeBuf, dTreeBuf, dTreeOffsets: offsets };
+}
+
+/**
+ * Reconstruct a CPU-side `DTree` from a flat `Float32Array` produced by
+ * {@link serialiseDTree}.
+ *
+ * Used by {@link deserialiseSTree} to restore the per-cell dTrees when
+ * importing a PPG snapshot. The inverse faithfully recovers every field that
+ * was packed by `serialiseDTree`; `depth` is not stored in the flat layout so
+ * it is recovered from the tree topology (root=0, child=parent+1 by BFS level).
+ *
+ * `depth` is informational for the CPU; the GPU traversal never reads it. We
+ * derive it with a single BFS pass over the recovered nodes array.
+ */
+export function deserialiseDTree(buf: Float32Array): DTree {
+  const nodeCount = Math.floor(buf[0] ?? 0);
+  const totalFlux = buf[2] ?? 0;
+  const nodes: DTreeNode[] = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const base = DTREE_HEADER_F32 + i * DTREE_NODE_F32;
+    const isLeafFlag = (buf[base + 7] ?? 0) > 0.5;
+    const firstChildRaw = buf[base + 6] ?? -1;
+    nodes.push({
+      isLeaf: isLeafFlag,
+      u0: buf[base + 0] ?? 0,
+      v0: buf[base + 1] ?? 0,
+      u1: buf[base + 2] ?? 1,
+      v1: buf[base + 3] ?? 1,
+      flux: buf[base + 4] ?? 0,
+      solidAngle: buf[base + 5] ?? 0,
+      // firstChild stored as f32; -1 sentinel for leaves (serialiseDTree
+      // writes −1.0 for leaves / clamped interior).
+      firstChild: isLeafFlag ? -1 : Math.round(firstChildRaw),
+      depth: 0, // filled in the BFS pass below
+    });
+  }
+  // BFS pass to recover depths (root = 0; children = parent.depth + 1).
+  if (nodes.length > 0) {
+    nodes[0]!.depth = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i]!;
+      if (!n.isLeaf && n.firstChild >= 0) {
+        const childDepth = n.depth + 1;
+        for (let ci = 0; ci < 4; ci++) {
+          const cidx = n.firstChild + ci;
+          if (cidx < nodes.length) nodes[cidx]!.depth = childDepth;
+        }
+      }
+    }
+  }
+  return { nodes, totalFlux };
+}
+
+/**
+ * Reconstruct a CPU-side `STree` from the flat buffers produced by
+ * {@link serialiseSTree}.
+ *
+ * Round-trip contract: `deserialiseSTree(serialiseSTree(sTree))` produces an
+ * `STree` whose `serialiseSTree` output is byte-identical to the original (the
+ * serialised form is the canonical wire format; f32 precision is the only loss
+ * and matches the GPU's view of the tree). See the round-trip test in
+ * `giStateSnapshot.test.ts`.
+ *
+ * `sceneBounds` must be supplied separately (it is not stored inside the node
+ * buffers — the buffers only carry per-node AABBs) and is preserved verbatim
+ * in the returned `STree`.
+ *
+ * @param s             Output of {@link serialiseSTree} (GPU-ready buffers).
+ * @param sceneBounds   World-space AABB of the whole scene (from the snapshot).
+ */
+export function deserialiseSTree(
+  s: SerialisedSTree,
+  sceneBounds: { min: readonly [number, number, number]; max: readonly [number, number, number] },
+): STree {
+  const { sTreeBuf, dTreeBuf, dTreeOffsets } = s;
+  const NS = Math.floor(sTreeBuf[0] ?? 0);
+  const NDT = Math.floor(sTreeBuf[1] ?? 0);
+
+  // Recover sTree nodes.
+  const nodes: STreeNode[] = [];
+  for (let i = 0; i < NS; i++) {
+    const base = STREE_HEADER_F32 + i * STREE_NODE_F32;
+    const splitAxisRaw = Math.round(sTreeBuf[base + 7] ?? -1);
+    const splitAxis: 0 | 1 | 2 | -1 =
+      splitAxisRaw === 0 ? 0 : splitAxisRaw === 1 ? 1 : splitAxisRaw === 2 ? 2 : -1;
+    nodes.push({
+      aabb: {
+        min: [sTreeBuf[base + 0] ?? 0, sTreeBuf[base + 1] ?? 0, sTreeBuf[base + 2] ?? 0],
+        max: [sTreeBuf[base + 4] ?? 0, sTreeBuf[base + 5] ?? 0, sTreeBuf[base + 6] ?? 0],
+      },
+      splitAxis,
+      splitValue: sTreeBuf[base + 3] ?? 0,
+      leftChild: Math.round(sTreeBuf[base + 8] ?? -1),
+      rightChild: Math.round(sTreeBuf[base + 9] ?? -1),
+      dTreeIndex: Math.round(sTreeBuf[base + 10] ?? -1),
+      sampleCount: 0, // accumulators are volatile; start fresh on restore
+    });
+  }
+
+  // Recover per-cell dTrees using their start offsets.
+  const dTrees: DTree[] = [];
+  for (let k = 0; k < NDT; k++) {
+    const off = dTreeOffsets[k] ?? 0;
+    const nodeCount = Math.floor(dTreeBuf[off] ?? 0);
+    const slice = dTreeBuf.subarray(off, off + DTREE_HEADER_F32 + nodeCount * DTREE_NODE_F32);
+    dTrees.push(deserialiseDTree(new Float32Array(slice)));
+  }
+
+  return {
+    nodes,
+    dTrees,
+    sceneBounds: {
+      min: [sceneBounds.min[0], sceneBounds.min[1], sceneBounds.min[2]],
+      max: [sceneBounds.max[0], sceneBounds.max[1], sceneBounds.max[2]],
+    },
+  };
 }
 
 /**

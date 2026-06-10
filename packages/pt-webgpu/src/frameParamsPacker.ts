@@ -112,7 +112,15 @@ export function packFrameParams(
   paramsU32[FrameParamsSlot.triangleCount] = sb.triangleCount >>> 0;
   paramsU32[FrameParamsSlot.maxBounces] = config.activeBounces >>> 0;
   paramsU32[FrameParamsSlot.bvhNodeCount] = sb.bvhNodeCount >>> 0;
-  paramsU32[FrameParamsSlot.analyticCount] = sb.analyticCount >>> 0;
+  // Item 24 — analytic × lite phantom count: the lite kernel has no analytic
+  // primitive path (no group-1 analyticHeaders/Params/LocalToWorld/WorldToLocal
+  // bindings, no analytic intersection loop). Writing the real analyticCount on
+  // lite tier would leave a phantom count in the UBO that a future lite-kernel
+  // change could accidentally read and misinterpret. Zero it here at pack time so
+  // the UBO never exposes an analytic count to a kernel that cannot use it.
+  // Full-tier path: uses the real sb.analyticCount — byte-identical to prior behaviour.
+  paramsU32[FrameParamsSlot.analyticCount] =
+    config.traceTier === 'lite' ? 0 : sb.analyticCount >>> 0;
   paramsU32[FrameParamsSlot.pointLightCount] = sb.pointLightCount >>> 0;
   paramsU32[FrameParamsSlot.spotLightCount] = sb.spotLightCount >>> 0;
   paramsU32[FrameParamsSlot.rectAreaLightCount] = sb.rectAreaLightCount >>> 0;

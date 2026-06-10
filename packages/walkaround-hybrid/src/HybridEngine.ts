@@ -1633,28 +1633,44 @@ export class HybridEngine implements Engine {
     // (The RC subsystem carries no cross-frame state — it regenerates every
     // cascade from the BVH each frame — so there is nothing to persist for RC.)
     const restirGI = (await this._pipeline?.exportRestirGIReservoirs(this._device)) ?? undefined;
+    // Also snapshot the PPG (Müller 2017) adaptive sTree / dTree guiding
+    // distribution so a restore can resume guided sampling immediately from the
+    // converged distribution instead of rebuilding the guide from cold. The PPG
+    // section is OPTIONAL — a null return (PPG disabled or not yet initialised)
+    // simply omits the section; importGIState treats its absence as a cold start.
+    const ppgRaw = this._pipeline?.exportPPGSTree() ?? null;
+    const ppg = ppgRaw != null ? {
+      maxSpatialCells: ppgRaw.maxSpatialCells,
+      sTreeBuf: ppgRaw.sTreeBuf,
+      dTreeBuf: ppgRaw.dTreeBuf,
+      dTreeOffsets: ppgRaw.dTreeOffsets,
+      sceneBoundsMin: ppgRaw.sceneBoundsMin,
+      sceneBoundsMax: ppgRaw.sceneBoundsMax,
+    } : undefined;
     return {
       dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
       origin: [grid.worldOrigin.x, grid.worldOrigin.y, grid.worldOrigin.z],
       spacing: grid.worldSpacing,
       ...atlas,
       ...(restirGI ? { restirGI } : {}),
+      ...(ppg ? { ppg } : {}),
     };
   }
 
   /**
    * Restore a previously {@link exportGIState}-ed snapshot into the live GI state
    * (seeds the temporal blend, so rendering continues from it instead of
-   * re-converging). Restores both the DDGI probe atlases AND — when the snapshot
-   * carries them (v2+) and the pipeline is live — the ReSTIR-GI temporal
-   * reservoirs.
+   * re-converging). Restores the DDGI probe atlases AND — when the snapshot
+   * carries them — the ReSTIR-GI temporal reservoirs (v2+) and the PPG
+   * sTree/dTree guiding distribution (v4+).
    *
    * Returns false (no-op) if the atlases aren't allocated or the snapshot's atlas
    * dims don't match the current grid. When a reservoir section is present, the
    * restore also fails (returns false) if the reservoir grid/size doesn't match
    * the live pipeline — so a partial (atlas-only) restore is never silently
-   * reported as a full success. A v1 snapshot (no reservoir section) restores the
-   * atlases and returns the atlas result unchanged.
+   * reported as a full success. A v3 snapshot (no PPG section) restores the
+   * atlases + reservoirs and returns the atlas+reservoir result unchanged; PPG
+   * starts cold without error.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
     // Validate grid origin, spacing, and dims before touching GPU buffers.
@@ -1682,10 +1698,29 @@ export class HybridEngine implements Engine {
     }
     const atlasOk = this._ddgi.pass.importAtlasData(this._device, snapshot);
     if (!atlasOk) return false;
-    if (snapshot.restirGI == null) return true; // v1 / no reservoir section — atlas-only restore
+    if (snapshot.restirGI == null) {
+      // v3 (or earlier) / no reservoir section — atlas-only restore.
+      // PPG section absent at this point means cold start; not a failure.
+      if (snapshot.ppg != null) {
+        // Best-effort: try to restore the PPG guide even without ReSTIR-GI.
+        this._pipeline?.importPPGSTree(snapshot.ppg);
+      }
+      return true;
+    }
     // A reservoir section is present: require it to restore too, else report
     // failure rather than a misleadingly-partial success.
-    return this._pipeline?.importRestirGIReservoirs(this._device, snapshot.restirGI) ?? false;
+    const reservoirOk = this._pipeline?.importRestirGIReservoirs(this._device, snapshot.restirGI) ?? false;
+    if (!reservoirOk) return false;
+    // PPG section (v4+): restore is best-effort — a PPG mismatch (different
+    // maxSpatialCells or scene bounds) causes a warm log + cold restart rather
+    // than failing the whole importGIState call. The DDGI probes and ReSTIR-GI
+    // reservoirs are already restored at this point; losing only the PPG guide
+    // is not a correctness failure (guided sampling falls back to cosine until
+    // the next training window converges).
+    if (snapshot.ppg != null) {
+      this._pipeline?.importPPGSTree(snapshot.ppg);
+    }
+    return true;
   }
 
   /**

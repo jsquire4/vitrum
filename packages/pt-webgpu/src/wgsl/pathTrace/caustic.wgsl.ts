@@ -916,9 +916,13 @@ fn photonMapContribution(
   metallic: f32,
   transmission: f32,
   throughput: vec3f,
+  heroLambda: f32,
 ) -> vec3f {
   // Delegate entirely to the SPPM grid gather (reads from @group(4) bindings
   // written by the photon-emission pre-pass this frame).
-  return sppmGather(hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+  // Item 21: pass heroLambda so the gather can resolve RGB photon flux at the
+  // eye path's hero wavelength in spectral mode (spectralEmissionAtHero applied
+  // per photon at gather time — same treatment as all other RGB emission sources).
+  return sppmGather(hitPos, normal, wo, baseColor, roughness, metallic, throughput, heroLambda);
 }
 `;

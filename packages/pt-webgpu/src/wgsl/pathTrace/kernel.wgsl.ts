@@ -836,6 +836,9 @@ ${transmissiveBlock}
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
+      // Item 21: heroLambda is passed so the SPPM gather can spectralise each
+      // photon's RGB flux at the eye path's hero wavelength in spectral mode.
+      // Non-spectral path (spectralEnabled=0): heroLambda is unused → byte-identical.
       radiance = radiance + photonMapContribution(
         &rng,
         hitPos,
@@ -846,6 +849,7 @@ ${transmissiveBlock}
         metallic,
         transmission,
         throughputAtVertex,
+        heroLambda,
       );
     }
 
