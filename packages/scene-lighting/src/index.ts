@@ -6,7 +6,10 @@
  * scene-lighting values that each renderer uploads to its own UBO or light
  * representation.
  *
- * Currently consumed by the native path-tracing and walkaround renderers.
+ * Consumed by host applications and tools that need lighting-state primitives
+ * (e.g. time-of-day sun position, sky params, intensity tables). The runtime
+ * backends do not import this package directly — they receive pre-computed
+ * lighting values via their own EngineOptions / UBO upload paths.
  */
 
 export * from './sunGeometry.js';

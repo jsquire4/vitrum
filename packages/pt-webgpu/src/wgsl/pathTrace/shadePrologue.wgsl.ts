@@ -196,11 +196,14 @@ export const SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL =
 export const SHADE_PROLOGUE_AO_APPLY_FULL =
   `\n    baseColor = baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);`;
 
-/** D3 — light map: add the baked OUTGOING radiance to emissive (camera-visible /
- *  emissive-on-hit only, via the prevSampleAllowsAreaMis gate below). 0 when no
- *  lightMap → byte-identical. Adds to the emission var so it never enters NEE. */
+/** D3 — light map: add the baked OUTGOING radiance to emissive at camera-visible
+ *  (primary hit, bounce == 0) ONLY — matching pt-webgl2's pathDepth==0 semantic.
+ *  Adding it on post-refraction bounces would double-count the baked light that the
+ *  refracted-through surface already contributes at the primary hit; camera-only is
+ *  the conservative, double-count-proof choice. 0 when no lightMap → byte-identical.
+ *  Adds to the emission var so it never enters NEE. */
 export const SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL =
-  `\n    emissive = emissive + sampleLightMapRadiance(matId, hit.triIndex, hit.baryVW);`;
+  `\n    emissive = emissive + select(vec3f(0.0), sampleLightMapRadiance(matId, hit.triIndex, hit.baryVW), bounce == 0u);`;
 
 /** D3 — bump map: perturb the shading normal by the height-field gradient
  *  (applied AFTER the normal map so the two compose). Returns the normal unchanged

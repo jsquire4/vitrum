@@ -35,7 +35,9 @@ export const lights_struct = /* glsl */`
 		float distance;
 		float coneCos;
 		float penumbraCos;
-		int iesProfile;
+		// iesProfile slot (s5.g) is reserved padding in the 6-texel layout; IES
+		// profiles are not supported by the @vitrum/core contract and were never
+		// uploaded. The slot stays zero (unwritten) so the byte layout is stable.
 
 	};
 
@@ -70,7 +72,7 @@ export const lights_struct = /* glsl */`
 			l.coneCos = s4.a;
 
 			l.penumbraCos = s5.r;
-			l.iesProfile = int( round( s5.g ) );
+			// s5.g is reserved padding (iesProfile slot, always -1 — IES not supported).
 
 		} else {
 
@@ -80,7 +82,6 @@ export const lights_struct = /* glsl */`
 
 			l.coneCos = 0.0;
 			l.penumbraCos = 0.0;
-			l.iesProfile = - 1;
 
 		}
 

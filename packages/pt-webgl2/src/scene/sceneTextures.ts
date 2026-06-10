@@ -68,9 +68,9 @@ export interface UploadedSceneTextures {
   readonly envTotalSum: number;
   readonly envWidth: number;
   readonly envHeight: number;
-  // material texture atlas + IES profiles (optional)
+  // material texture atlas (optional)
   readonly textures2DArray: WebGLTexture | null;
-  readonly iesProfiles: WebGLTexture | null;
+  // iesProfiles removed — IES profiles are not in the @vitrum/core contract.
   readonly triangleCount: number;
   destroy(): void;
 }

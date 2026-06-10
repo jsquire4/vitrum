@@ -11,8 +11,9 @@
  * ════════════════════════════════════════════════════════════════════════════
  * The reconstruction (and WHY it uses the FULL BRDF, not the proxy target)
  * ════════════════════════════════════════════════════════════════════════════
- * The reservoir's W was finalised as W = w_sum/p̂ where p̂ is the diffuse-cosine
- * resampling PROXY (restirPtTargetAt). The producer's candidate weight was
+ * The reservoir's W was finalised as W = w_sum/p̂ where p̂ is the
+ * INTEGRAND-MATCHING target (restirPtTargetAt: luminance of the real unshadowed
+ * reconnection contribution — evaluateBrdf·cos·Lo; B3). The producer's candidate weight was
  * w = p̂/p_src (p_src = the REAL visible-vertex BSDF sampling pdf, stored as
  * rCur.pdfSrc). So W = 1/p_src for the chosen sample, and the unbiased
  * single-bounce contribution is:

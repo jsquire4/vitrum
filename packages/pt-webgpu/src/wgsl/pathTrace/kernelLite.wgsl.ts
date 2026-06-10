@@ -351,6 +351,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       fresnel,
       thinFilmTransmitTint,
       isTranslucent,
+      0.0, // anisotropy — lite tier has no aniso texture bindings; always isotropic
+      0.0, // anisotropyRotation
     );
     ray.origin = bs.newRayOrigin;
     ray.direction = bs.newRayDir;

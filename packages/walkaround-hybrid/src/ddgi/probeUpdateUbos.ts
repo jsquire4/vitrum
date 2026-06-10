@@ -4,7 +4,6 @@
 import { defineUbo } from '@vitrum/shared-samplers';
 
 export const PROBE_RAY_STRIDE_BYTES = 64;
-export const DDGI_BORDER_UBO_BYTES = 32;
 
 export const DDGI_BORDER_UBO = defineUbo([
   { name: 'numProbes',   type: 'u32' },
@@ -16,6 +15,13 @@ export const DDGI_BORDER_UBO = defineUbo([
   { name: 'gridDimZ',    type: 'u32' },
   { name: '_pad1',       type: 'u32' },
 ] as const);
+
+/**
+ * Byte size of the DDGI border-update UBO — derived from the UBO definition so
+ * this constant stays in sync with the field list above (no hand-maintenance). Item 18d.
+ * Current layout: 8 × u32 (4 bytes each) = 32 bytes, rounded to max(4,4) = 32.
+ */
+export const DDGI_BORDER_UBO_BYTES: number = DDGI_BORDER_UBO.sizeBytes;
 
 export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   { name: 'randomRotation', type: 'vec3f' },
@@ -38,7 +44,15 @@ export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   // environmentSample.wgsl (H6 RY(-rotY) world→map lookup).
   { name: 'hasEnv',         type: 'u32'   },   // was _pad3
   { name: 'envRotationY',   type: 'f32'   },   // was _pad4 — repurposed (same 4-byte slot)
-  { name: 'envIntensity',   type: 'f32'   },   // new; UBO grows by 4 bytes (was 48 → 52, next 64-byte boundary unchanged)
+  // Item 18d: the real UBO byte size is DDGI_FRAME_PARAMS_UBO.sizeBytes (computed by defineUbo).
+  // Field offsets (std140/WGSL §14.4.4, maxAlign=16):
+  //   randomRotation  @ 0   (vec3f, align=16, size=12) → cursor 12
+  //   frameIndex      @ 12  (u32,   size=4) → 16  totalProbes  @ 16 → 20  probesPerFrame @ 20 → 24
+  //   _pad0 @ 24 → 28  _pad1 @ 28 → 32  skyTint @ 32 (vec3f, align=16) → 44  skyIrradiance @ 44 → 48
+  //   glassMixScale @ 48 → 52  indirectFeedback @ 52 → 56  hasEnv @ 56 → 60
+  //   envRotationY @ 60 → 64  envIntensity @ 64 → 68
+  //   structSize = alignUp(68, 16) = 80 bytes.  (Wave 4 grew from the pre-hasEnv 64 bytes to 80.)
+  { name: 'envIntensity',   type: 'f32'   },
 ] as const);
 
 export const DDGI_BLEND_PARAMS_UBO = defineUbo([

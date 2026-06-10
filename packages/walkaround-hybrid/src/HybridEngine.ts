@@ -1016,7 +1016,11 @@ export class HybridEngine implements Engine {
         'spot',
         'mesh-area',
       ]),
-      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
+      // procedural-sky degrades via resolveHybridEnvironment to scalar tint (mode:
+      // 'procedural-sky-approx'); turbidity/rayleigh/mie are not sampled (warn emitted).
+      // 'approximate' grade in the ledger; included here so the ledger→capabilities
+      // consistency check passes. Item 18c.
+      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
       presentationMode:          'swapchain-required',
       supportDetails:            BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails,
       experimentalFeatures:      new Set(['svgf-real-conservative-objid']),
@@ -1803,9 +1807,9 @@ export class HybridEngine implements Engine {
    * `extensions['walkaround-hybrid'].resolveEnvironmentMap` when a host supplies
    * a precomputed average for opaque handles. Rotation and directional sky
    * distribution remain unsupported here; full environment-map sampling is a
-   * converged-PT backend capability. A `procedural-sky` env (not in this
-   * backend's `supportedEnvironmentKinds`) is approximated as diffuse sky
-   * scalars with a one-time warning.
+   * converged-PT backend capability. A `procedural-sky` env is accepted with
+   * 'approximate' grade (Item 18c, ledger update) — degraded to diffuse sky scalars
+   * via resolveHybridEnvironment (turbidity/rayleigh/mie not sampled; warn emitted).
    *
    * After {@link dispose} this is a safe no-op (matches the runtime-update
    * siblings + the `@vitrum/engine` facade's `'noop'` disposed-behaviour for
@@ -1872,9 +1876,10 @@ export class HybridEngine implements Engine {
    *  - `hdri` → raw numeric payloads / host extension resolvers can provide
    *    diffuse `skyTint` + `skyIrradiance`; opaque handles without a resolver
    *    fall back to intensity-only.
-   *  - `procedural-sky` → best-effort `skyIrradiance: intensity ?? 1` + a
-   *    one-time `console.warn` (this kind is outside `supportedEnvironmentKinds`
-   *    here — full procedural sky is a converged-PT-backend feature).
+   *  - `procedural-sky` → 'approximate' grade (grade promoted from 'unsupported',
+   *    Item 18c): skyTint/skyIrradiance derived from sun direction + mieCoefficient
+   *    heuristic via resolveHybridEnvironment (mode: 'procedural-sky-approx');
+   *    turbidity/rayleigh/mie are NOT sampled; a one-time console.warn is emitted.
    */
   private _skyScalarsFromEnvironment(
     env: SceneEnvironment,

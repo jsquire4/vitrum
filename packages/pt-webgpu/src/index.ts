@@ -789,6 +789,17 @@ class PTEngineWebGPU implements Engine {
         );
       }
       // B12 — HDRI environments are now supported via texture packing; no warn needed.
+      // Item 19 — lite tier only packs the FIRST directional emitter into the
+      // liteLightTex (packLiteLightTexture uses a single directional slot at index 0).
+      // Multiple directionals are silently truncated to 1; warn so the host is aware.
+      const directionalEmitters = scene.emitters.filter((e) => e.kind === 'directional');
+      if (directionalEmitters.length >= 2) {
+        console.warn(
+          `[vitrum/pt-webgpu] Lite tier: scene contains ${directionalEmitters.length} directional emitter(s) — ` +
+            `lite tier renders only the first directional; the remaining ${directionalEmitters.length - 1} will be silently ignored. ` +
+            'Use the full tier for multi-directional lighting.',
+        );
+      }
     }
     this.#repackScene(scene, { warnOnEmpty: true });
   }

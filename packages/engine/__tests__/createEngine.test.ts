@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension } from '../src/createEngine.js';
+import { auditSceneNeedsTlas } from '@vitrum/core';
 
 describe('pickBackend', () => {
   it('returns pt-webgl2 for quality on single-mesh scenes', () => {
@@ -90,5 +91,46 @@ describe('deriveScaleDefaults', () => {
   it('temporalAccumAlpha is scene-scale-independent', () => {
     expect(deriveScaleDefaults(0.01).temporalAccumAlpha).toBe(0.01);
     expect(deriveScaleDefaults(100).temporalAccumAlpha).toBe(0.01);
+  });
+});
+
+// Item 15 — tlasAudit.recommendation is load-bearing in createEngine's warn path.
+// These tests verify that auditSceneNeedsTlas returns both recommendation + detail,
+// and that createEngine gates its TLAS warn on the recommendation field (not a
+// re-derived needsTlas check), so the recommendation is a consumed field, not dead.
+describe('tlasAudit.recommendation is consumed by createEngine warn gate', () => {
+  function makeMeshScene(primitiveCount: number) {
+    const prims = Array.from({ length: primitiveCount }, (_, i) => ({
+      kind: 'mesh' as const,
+      id: `m${i}`,
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [0.5, 0.5, 0.5] as [number, number, number], roughness: 0.5, metallic: 0 },
+    }));
+    return { primitives: prims, emitters: [] as [], environment: { kind: 'none' as const } };
+  }
+
+  it('single-mesh scene: recommendation=merged-bvh-ok, detail=single-BVH suffix', () => {
+    const audit = auditSceneNeedsTlas(makeMeshScene(1));
+    expect(audit.recommendation).toBe('merged-bvh-ok');
+    expect(audit.detail).toMatch(/single merged bvh/i);
+    expect(audit.needsTlas).toBe(false);
+  });
+
+  it('multi-mesh scene: recommendation=prefer-tlas-backend, detail names counts', () => {
+    const audit = auditSceneNeedsTlas(makeMeshScene(2));
+    expect(audit.recommendation).toBe('prefer-tlas-backend');
+    // The detail string is the message createEngine emits — it must name the primitive
+    // count and point to a TLAS-capable backend so the host knows what to do.
+    expect(audit.detail).toMatch(/2 mesh/i);
+    expect(audit.detail).toMatch(/walkaround-hybrid|pt-webgpu/i);
+    expect(audit.needsTlas).toBe(true);
+  });
+
+  it('recommendation and needsTlas are consistent (needsTlas ↔ recommend prefer-tlas)', () => {
+    const single = auditSceneNeedsTlas(makeMeshScene(1));
+    const multi  = auditSceneNeedsTlas(makeMeshScene(3));
+    expect(single.needsTlas).toBe(single.recommendation === 'prefer-tlas-backend');
+    expect(multi.needsTlas).toBe(multi.recommendation   === 'prefer-tlas-backend');
   });
 });

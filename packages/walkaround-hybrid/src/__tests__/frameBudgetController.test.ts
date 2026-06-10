@@ -318,4 +318,53 @@ describe('FrameBudgetController — control law', () => {
     expect(DEFAULT_FRAME_BUDGET_CONFIG.minResolutionFactor).toBe(0.5); // = low preset
     expect(DEFAULT_FRAME_BUDGET_CONFIG.maxResolutionFactor).toBe(1.0); // = ultra preset
   });
+
+  // ── tickFrameBudget application pin (item 13) ─────────────────────────────
+  // The FrameBudgetDecision contract is what HybridEngine.tickFrameBudget uses
+  // to call setPpgDispatchInterval and setDdgiUpdateDivisor.  These tests pin
+  // that every decision includes ppgDispatchInterval (the field tickFrameBudget
+  // forwards to setPpgDispatchInterval) and that the adaptPpgDispatchInterval
+  // gate correctly suppresses PPG lever motion when disabled.
+
+  it('every decision includes ppgDispatchInterval (contract for tickFrameBudget application)', () => {
+    // Verify the decision object always has the ppgDispatchInterval field so
+    // HybridEngine.tickFrameBudget can unconditionally forward it.
+    const c = new FrameBudgetController(FAST);
+    const d0 = c.snapshot();
+    expect(d0).toHaveProperty('ppgDispatchInterval');
+    expect(typeof d0.ppgDispatchInterval).toBe('number');
+
+    const d1 = c.update(40); // over budget
+    expect(d1).toHaveProperty('ppgDispatchInterval');
+    const d2 = c.update(4);  // under budget
+    expect(d2).toHaveProperty('ppgDispatchInterval');
+    const d3 = c.update(16); // on-target
+    expect(d3).toHaveProperty('ppgDispatchInterval');
+  });
+
+  it('adaptPpgDispatchInterval:false (default) — ppgDispatchInterval is always minPpgDispatchInterval and never moves', () => {
+    // When PPG adaptation is gated off (the default, matching engines without
+    // PPG), ppgDispatchInterval must stay at the min regardless of budget
+    // pressure.  HybridEngine.enableFrameBudget sets the gate from
+    // cfg.ppgEnabled, so this pin ensures a non-PPG engine never gets
+    // its PPG knob moved.
+    const c = new FrameBudgetController({
+      ...FAST,
+      adaptPpgDispatchInterval: false,
+      minPpgDispatchInterval: 1,
+      maxPpgDispatchInterval: 4,
+    }, { resolutionFactor: 0.5, ddgiStride: 32, ppgDispatchInterval: 1 });
+
+    for (let i = 0; i < 20; i++) {
+      const d = c.update(40); // sustained over-budget
+      expect(d.ppgDispatchInterval).toBe(1);
+      // Only ddgi-stride-up is permissible (resolution already floored).
+      expect(d.action).not.toBe('ppg-interval-up');
+    }
+    for (let i = 0; i < 20; i++) {
+      const d = c.update(4);  // sustained under-budget
+      expect(d.ppgDispatchInterval).toBe(1);
+      expect(d.action).not.toBe('ppg-interval-down');
+    }
+  });
 });

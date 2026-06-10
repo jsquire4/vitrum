@@ -253,6 +253,71 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  // Item 19 — lite tier warns when scene has ≥2 directional emitters (first-only rendering).
+  it('lite tier: setScene warns when scene contains ≥2 directional emitters (item 19)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [
+        { kind: 'directional', id: 'd1', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'directional', id: 'd2', direction: [1, -1, 0], color: [0.8, 0.9, 1], intensity: 0.5 },
+      ],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) => c.includes('directional') && c.includes('2'))).toBe(true);
+    expect(calls.some((c) => c.includes('lite') || c.includes('Lite'))).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  // Item 19 — exactly 1 directional does NOT trigger the multi-directional warn.
+  it('lite tier: setScene does NOT warn for exactly 1 directional emitter', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [
+        { kind: 'directional', id: 'd1', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
+      ],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    // Must NOT warn about first-only directional rendering for a single-directional scene.
+    expect(calls.some((c) => c.includes('first directional') || c.includes('directional') && c.includes('only'))).toBe(false);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   // B12 — HDRI environments no longer warn (supported via texture packing).
   it('lite tier: setScene does NOT warn for hdri environment (B12 supported)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

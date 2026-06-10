@@ -19,6 +19,7 @@
  */
 
 import { buildHybridLayersBindGroup } from './bindGroupBuilders.js';
+import { RC_PARAMS_BYTE_SIZE } from '../rc/rcParamsLayout.generated.js';
 import {
   buildDDGIPlaceholderUBO,
   type FrameResources,
@@ -137,7 +138,7 @@ export class DDGIBindingState implements PipelineSubsystem {
     if (this._rcParamsBuffer === null) {
       this._rcParamsBuffer = this._device.createBuffer({
         label: 'rc-params-ubo',
-        size: 64,
+        size: RC_PARAMS_BYTE_SIZE,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     }
@@ -158,7 +159,7 @@ export class DDGIBindingState implements PipelineSubsystem {
     if (this._rcParamsPlaceholder === null) {
       this._rcParamsPlaceholder = this._device.createBuffer({
         label: 'rc-params-placeholder',
-        size: 64,
+        size: RC_PARAMS_BYTE_SIZE,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });

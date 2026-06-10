@@ -52,8 +52,16 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // (RGBA32F point/spot/rect-area packed data). NEE loops added in kernelLite.wgsl.ts for
     // point/spot/rect-area + env importance sampling in connectLite.wgsl.ts.
     // RENDER-CHANGING for lite scenes with those lights; A/B pending V28-B.
-    expect(digest).toBe('7a937acc7292be01941821abe927676517917cfb4c016f1a3a42768723e24b0b');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(119133);
+    // Re-pinned R7b 2026-06-10: anisotropic GGX (Item 7) + envMapIntensity escape-half
+    // (Item 8) + lightMap camera-only gate (Item 9). bsdf.wgsl.ts gained aniso GGX
+    // functions (sampleGgxVndfAnisTangent / evalBrdfSpecAnisotropic / brdfAnisotropicSpecPdf
+    // + extended evaluateBrdfFull / brdfDirectionalPdfFull / sampleNextBounceDirection
+    // signatures). kernelLite.wgsl.ts passes 0.0, 0.0 for the aniso params (lite tier
+    // has no aniso texture bindings — always isotropic). shadePrologue.wgsl.ts
+    // gates lightMap to bounce==0 (litePrologue unchanged). RENDER-CHANGING for
+    // full-tier aniso materials; A/B pending V28-B.
+    expect(digest).toBe('f1b0699e3cfdd99370cd928d12b16b8facfe811279c04f7fc49f263c0d071e68');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(130829);
   });
 });
 

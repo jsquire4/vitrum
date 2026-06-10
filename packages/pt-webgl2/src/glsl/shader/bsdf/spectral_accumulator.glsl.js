@@ -183,7 +183,16 @@ export const spectral_accumulator = /* glsl */`
 		float y = sampleCmfY( lambda );
 		float z = sampleCmfZ( lambda );
 
+		// H2-class upload-gap guard: if uYCmfIntegral was never uploaded (defaults to 0)
+		// the old max(..., 1e-6) floor silently turned a missing-uniform bug into extreme
+		// overbright. Fail loud instead: return black so the missing upload is obvious,
+		// not blinding. The 1e-3 threshold is well above any legitimate tiny integral
+		// (CIE Y integral ~106.857) and well below any real CMF table value.
+		if ( uYCmfIntegral < 1e-3 ) return vec3( 0.0 );
+
 		float scalarThroughput = throughput.r;
+		// pdfLambda floor (1e-6) guards against legitimate near-zero wavelength densities
+		// at the edges of the CMF support (not the same issue as the uYCmfIntegral guard).
 		float weight = scalarThroughput / max( pdfLambda * uYCmfIntegral, 1e-6 );
 		vec3 xyz = vec3( x, y, z ) * weight;
 

@@ -41,9 +41,10 @@ export const bsdf_functions = /* glsl */`
 		float retro = rr * ( fl + fv + fl * fv * ( rr - 1.0f ) );
 		float lambert = ( 1.0f - 0.5f * fl ) * ( 1.0f - 0.5f * fv );
 
-		// TODO: subsurface approx?
-
-		// float F = evaluateFresnelWeight( dot( wo, wh ), surf.eta, surf.f0 );
+		// Subsurface scattering is handled by the dedicated sssSample() path (Sprint 7),
+		// gated by surf.sssSigmaT > 0 and the TRANSLUCENT_BIT. A diffuse sub-surface
+		// approximation inside diffuseEval would double-count with that path and is not
+		// needed; this note is resolved.
 		float F = disneyFresnel( wo, wi, wh, surf.f0, surf.eta, surf.metalness );
 		color = ( 1.0 - F ) * transFactor * metalFactor * wi.z * surf.color * ( retro + lambert ) / PI;
 
@@ -135,49 +136,6 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-
-	// transmission
-	/*
-	float transmissionEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, inout vec3 color ) {
-
-		// See section 4.2 in https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf
-
-		float filteredRoughness = surf.filteredRoughness;
-		float eta = surf.eta;
-		bool frontFace = surf.frontFace;
-		bool thinFilm = surf.thinFilm;
-
-		color = surf.transmission * surf.color;
-
-		float denom = pow( eta * dot( wi, wh ) + dot( wo, wh ), 2.0 );
-		return ggxPDF( wo, wh, filteredRoughness ) / denom;
-
-	}
-
-	vec3 transmissionDirection( vec3 wo, SurfaceRecord surf ) {
-
-		float filteredRoughness = surf.filteredRoughness;
-		float eta = surf.eta;
-		bool frontFace = surf.frontFace;
-
-		// sample ggx vndf distribution which gives a new normal
-		vec3 halfVector = ggxDirection(
-			wo,
-			vec2( filteredRoughness ),
-			rand2( 13 )
-		);
-
-		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
-		if ( surf.thinFilm ) {
-
-			lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
-
-		}
-
-		return normalize( lightDirection );
-
-	}
-	*/
 
 	// Transmission / refraction (GGX microfacet BTDF).
 	// PDF follows Walter et al., EGSR07 §4.2 — consistent with half-vector Jacobians
@@ -488,7 +446,6 @@ export const bsdf_functions = /* glsl */`
 
 		float metalness = surf.metalness;
 		float transmission = surf.transmission;
-		// float fEstimate = evaluateFresnelWeight( dot( wo, wh ), surf.eta, surf.f0 );
 		float fEstimate = disneyFresnel( wo, wi, wh, surf.f0, surf.eta, surf.metalness );
 
 		float transSpecularProb = mix( max( 0.25, fEstimate ), 1.0, metalness );

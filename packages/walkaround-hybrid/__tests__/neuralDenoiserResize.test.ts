@@ -221,7 +221,9 @@ describe('NeuralDenoiser WGSL extraction byte-identity (Issue 2)', () => {
     expect(NEURAL_PACK_WGSL).toMatch(/@compute\s+@workgroup_size\s*\(\s*256/);
     expect(NEURAL_PACK_WGSL).toMatch(/fn\s+main\s*\(/);
     expect(NEURAL_PACK_WGSL).toMatch(/noisyOut\[base/);
-    expect(NEURAL_PACK_WGSL).toMatch(/normalize\s*\(nd\s*\*\s*2\.0\s*-\s*1\.0\)/);
+    // The bare normalize(nd * 2.0 - 1.0) is gone — replaced by the NaN-guard
+    // (item 12): select(normalize(nd_remapped), fallback, dot-length-check).
+    expect(NEURAL_PACK_WGSL).toMatch(/normalize\s*\(\s*nd_remapped\s*\)/);
   });
 
   it('NEURAL_UNPACK_WGSL contains the unpack entry-point declaration', () => {

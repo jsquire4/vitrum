@@ -38,7 +38,7 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Emitters: directional, point, spot, rect-area, disc-area, mesh-area | Supported |
 | Environment: none, hdri | Supported (HDRI requires raw `{width, height, data}` RGB float payload) |
 | Spectral hero-wavelength (`spectral: true`) | Lit, achromatic-flat until Jakob coefficient upload (H2 partial) |
-| Bidirectional path tracing (`bdpt: true`) | Compiles; light-subpath passes not yet host-driven — renders unidirectionally (see H5) |
+| Bidirectional path tracing (`bdpt: true`) | Supported (A5, 2026-06-10): light-subpath passes are host-driven; renders bidirectionally. ANGLE (Chromium WebGL) disables BDPT via the `EXT_disjoint_timer_query` gate — unidirectional fallback on ANGLE drivers. See H5 for the ANGLE workaround. |
 | `backgroundAlpha` | Supported (0 = transparent background; <1 forces alpha-composite regime) |
 | Analytic lights NEE (`lights.count`) | Supported (H1 fix) |
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
@@ -47,9 +47,9 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 
 ## Known gaps
 
-- **BDPT inert-but-safe**: `bdpt: true` compiles the kernels and prevents the unbound-sampler crash, but the light-subpath generation passes are not yet orchestrated by the host. The frame renders unidirectionally. Full driver tracked in `items_to_fix §H5`.
+- **BDPT on ANGLE (Chromium/WebGL) drivers**: BDPT is implemented and host-driven (A5). On ANGLE-based drivers (Chromium WebGL) the light-subpath passes are disabled at runtime via a driver detection gate; the frame renders unidirectionally on those adapters. Non-ANGLE OpenGL/WebGL2 (Firefox, Safari, native drivers) runs full BDPT. Tracked in `items_to_fix §H5`.
 - **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid does not yet consume `rotationY` (no-op, documented).
-- **Mesh-area emitters: no NEE**: mesh-area lights are visible via emissive fold (direct hit lighting) but not sampled via NEE (explicit connection to triangle lights). Tracked in `items_to_fix §H`.
+- **Mesh-area NEE**: mesh-area emitters are sampled via explicit triangle-light NEE (B4, 2026-06-10) — area-weighted random triangle selection with shadow ray. Also visible via emissive fold on direct camera hits.
 - **Spectral: achromatic-flat**: spectral mode traces the hero-wavelength path and reconstructs RGB via CIE CMF tables (H2 fix), but Jakob–Hanika material coefficients are not yet uploaded so spectral reflectance is a uniform tint over RGB. Tracked in road-to-100.
 
 ## Minimal usage snippet

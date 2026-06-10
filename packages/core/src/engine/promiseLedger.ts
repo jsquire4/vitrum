@@ -230,7 +230,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // by setting the DDGI sun-intensity multiplier to 1. ReSTIR-DI harvests no
     // directional emitter, so there is no DI double-count.
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
-    supportedEnvironmentKinds: ['none', 'hdri'],
+    // procedural-sky degrades to a scalar tint + irradiance via resolveHybridEnvironment
+    // (mode: 'procedural-sky-approx'; turbidity/rayleigh/mieDirectionalG are ignored;
+    // a warn is emitted). Promoted 'unsupported' → 'approximate' so the ledger matches
+    // what the code actually does (silent degrade with warn ≠ hard drop).
+    supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'swapchain-required',
     supportDetails: {
@@ -252,7 +256,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         // CDFs at runtime via resolveHybridEnvironment → updateDirectionalEnvironment.
         // Promoted approximate→native. Radiometric A/B pending V28-B.
         hdri: 'native',
-        'procedural-sky': 'unsupported',
+        // resolveHybridEnvironment handles procedural-sky (mode: 'procedural-sky-approx'):
+        // turbidity/rayleigh/mieDirectionalG are not sampled; skyTint + skyIrradiance scalars
+        // are derived from the sun direction + mieCoefficient heuristic; a warn is emitted.
+        // 'approximate' is the honest grade — the backend degrades with signal, not silently.
+        'procedural-sky': 'approximate',
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       mutations: {

@@ -410,6 +410,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var firstHitNormal = vec3f(0.0, 1.0, 0.0);
   var firstHitAlbedo = vec3f(0.0);
   var firstHitDepth = 0.0;
+  // Item 8 — carry the LAST shaded surface's envMapIntensity into the BSDF-escape
+  // env pickup (the no-hit branch below). The NEE half already applies the same
+  // factor (materialEnvMapIntensity(matId) at line ~755), so scaling the escape
+  // half makes both MIS halves consistent — envMapIntensity≠1 scenes no longer
+  // diverge between backends. Camera-visible env (no prior hit, bounce=0 escape)
+  // stays unscaled (initialized to 1.0 below). Ref: pt-webgl2 state.envMapIntensity.
+  var lastEnvMapIntensity = 1.0;
 ${mediumStateDecls}
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
@@ -432,11 +439,20 @@ ${mediumStateDecls}
       // quantity. RGB mode: env color unchanged → byte-identical.
       let envRgb = sampleEnvironmentColor(ray.direction);
       let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
-      radiance = radiance + throughput * envContribution;
+      // Item 8 — apply the last shaded surface's envMapIntensity to this BSDF-escape
+      // env pickup, matching the scale already applied in the NEE half (~line 755).
+      // lastEnvMapIntensity is 1.0 for camera-visible env (bounce=0, no prior hit).
+      radiance = radiance + throughput * envContribution * lastEnvMapIntensity;
       break;
     }
 
 ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL)}
+    // Item 8 — record this surface's envMapIntensity for the forward env escape
+    // pickup on the NEXT iteration (mirrors pt-webgl2 state.envMapIntensity update).
+    lastEnvMapIntensity = materialEnvMapIntensity(matId);
+    // Item 7 — per-hit anisotropy (used in NEE eval/pdf + sampleNextBounceDirection).
+    let anisoStrength = materialAnisotropy(matId, hit.triIndex, hit.baryVW);
+    let anisoRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);
     let throughputAtVertex = throughput;
 ${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
@@ -533,7 +549,8 @@ ${transmissiveBlock}
             // zero-default → identical to evaluateBrdf when all scalars are 0.
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, sampleDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             // A3 — spectralise the directional irradiance at the hero λ (RGB unchanged).
             let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
@@ -565,7 +582,8 @@ ${transmissiveBlock}
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             // Ranged-decay falloff: pow(max(dist,1), -ptDecay). decay=0 → attenuation=1;
             // decay=2 → physical inverse-square (matches rad/dist2 at dist≥1).
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
@@ -610,7 +628,8 @@ ${transmissiveBlock}
               let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
               let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
               // A3 — spectralise the spot radiance at the hero λ (RGB unchanged).
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
@@ -638,7 +657,8 @@ ${transmissiveBlock}
           if (nDotL > 0.0) {
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
@@ -646,7 +666,8 @@ ${transmissiveBlock}
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
-                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                anisoStrength, anisoRotation);
               // MIS balances the per-light AREA-sampling pdf against the BRDF pdf
               // (the engine's emissive-BRDF hit is added unweighted at line 183,
               // so the NEE MIS uses p_area ALONE — NOT p_select·p_area). The light
@@ -690,7 +711,8 @@ ${transmissiveBlock}
           if (nDotL > 0.0) {
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             let lightNormal = safe_normalize(cross(b - a, c - a));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
@@ -698,7 +720,8 @@ ${transmissiveBlock}
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
-                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                anisoStrength, anisoRotation);
               // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see
               // the rect-area branch. Keeps the converged mean independent of the
               // selection pdf (tree-vs-uniform means match), variance differs.
@@ -735,23 +758,22 @@ ${transmissiveBlock}
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              anisoStrength, anisoRotation);
             // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
             // rect-area branch. Mean stays independent of the selection pdf.
             // A3 — spectralise the env radiance at the hero λ (RGB mode unchanged).
-            // D3 — per-material envMapIntensity scales the env contribution at THIS
-            // surface's NEE/connect path. ASYMMETRY (documented): the miss-shader
-            // env hit (a BSDF-sampled bounce that escapes to the environment) does
-            // NOT know the last surface material cheaply, so it is NOT scaled there.
-            // Scaling only the NEE/connect path means a non-unit envMapIntensity is
-            // applied to the explicit env-light connection but not to the implicit
-            // BSDF-sampled env escape; for the common case (envMapIntensity used as
-            // an artistic IBL dial on a surface's reflections) the NEE term is the
-            // dominant, lower-variance contribution. envMapIntensity == 1 (default)
-            // ⇒ scale == 1 ⇒ byte-identical. Ref: THREE.envMapIntensity.
+            // D3 / Item 8 — per-material envMapIntensity scales both MIS halves:
+            // this explicit env NEE/connect path uses materialEnvMapIntensity(matId),
+            // and the BSDF-escape env pickup (the no-hit branch above) uses
+            // lastEnvMapIntensity (updated from matId each hit). Both halves now
+            // carry the same scale → no MIS divergence when envMapIntensity≠1.
+            // envMapIntensity == 1 (default) ⇒ scale == 1 ⇒ byte-identical.
+            // Ref: THREE.envMapIntensity; pt-webgl2 state.envMapIntensity pattern.
             let envScale = materialEnvMapIntensity(matId);
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envScale;
             let misWeight = powerHeuristic(envPdf, brdfPdf);
@@ -841,6 +863,8 @@ ${transmissiveBlock}
       fresnel,
       thinFilmTransmitTint,
       isTranslucent,
+      anisoStrength,
+      anisoRotation,
     );
     ray.origin = bs.newRayOrigin;
     ray.direction = bs.newRayDir;

@@ -14,7 +14,7 @@ export const direct_light_contribution_function = /*glsl*/`
 			bool foundFrontFacingLightSample = false;
 			for ( int attempt = 0; attempt < 4; attempt ++ ) {
 
-				lightRec = randomLightSample( lights.tex, iesProfiles, lights.count, rayOrigin, rand3( 6 + attempt ) );
+				lightRec = randomLightSample( lights.tex, lights.count, rayOrigin, rand3( 6 + attempt ) );
 				bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, lightRec.direction ) < 0.0;
 				if ( ! isSampleBelowSurface ) {
 

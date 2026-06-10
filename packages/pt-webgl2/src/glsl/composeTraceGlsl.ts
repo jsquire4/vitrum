@@ -191,7 +191,8 @@ const UNIFORM_DECLS = /* glsl */ `
 					uniform float environmentIntensity;
 
 					// lighting
-					uniform sampler2DArray iesProfiles;
+					// iesProfiles removed — IES profiles are not in the @vitrum/core contract;
+					// the packer always writes -1 to the reserved s5.g slot.
 					uniform LightsInfo lights;
 
 					// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per

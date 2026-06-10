@@ -327,8 +327,9 @@ describe('environmentPacking — Preetham procedural sky bake', () => {
     const scene: Scene = {
       primitives: [],
       emitters: [],
-      // Cast: the TS type requires all fields, but real-world @ts-nocheck hosts omit them.
-      environment: { kind: 'procedural-sky', sunDirection: [0.5, 1.0, 0.3] } as Scene['environment'],
+      // Cast via unknown: the TS type requires all fields, but real-world
+      // @ts-nocheck hosts omit them — this pins the runtime NaN guard.
+      environment: { kind: 'procedural-sky', sunDirection: [0.5, 1.0, 0.3] } as unknown as Scene['environment'],
     };
     const p = environmentParams(scene);
     expect(p.hasHdri).toBe(true);

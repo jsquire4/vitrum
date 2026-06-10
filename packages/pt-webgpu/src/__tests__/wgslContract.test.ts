@@ -137,8 +137,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // (Item-1: invalidateGroup3BindGroup now also nulls pathTraceBindGroup so
     // buildBindGroups rebuilds ALL groups after placeholder→real buffer swap).
     // RENDER-CHANGING for photon-map + bdpt:true; off-path byte-identical.
-    expect(digest).toBe('aa3bce982b4b57f75acf8d6d44f4230d39b79fa84ad8cfb5244702fdb134a624');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(288698);
+    // Re-pinned 2026-06-10: Wave B — aniso GGX + env half + shadePrologue rewrites
+    // (kernel.wgsl.ts + shadePrologue.wgsl.ts modified); restirPtResolve.wgsl.ts
+    // comment-only fix (stale "diffuse-cosine proxy" → integrand-matching target; item 18).
+    expect(digest).toBe('6752fac33c5d4b1f88f68f66a30c4cffc59af14d6b637c7a98a8869093fbc57b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(301764);
   });
 });
 

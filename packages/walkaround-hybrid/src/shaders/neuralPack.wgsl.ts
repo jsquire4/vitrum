@@ -47,7 +47,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n = textureLoad(noisyTex, vec2i(i32(x), i32(y)), 0).rgb;
   let a = textureLoad(albedoTex, vec2i(i32(x), i32(y)), 0).rgb;
   let nd = textureLoad(normalDepthTex, vec2i(i32(x), i32(y)), 0).xyz;
-  let nrm = normalize(nd * 2.0 - 1.0);
+  // Guard against zero-length normal vectors (sky pixels, background, or
+  // un-rendered regions write (0,0,0) into the normal buffer).  Calling
+  // normalize(vec3f(0)) produces a NaN per the WGSL spec, which propagates
+  // silently into the inference buffers and causes undefined denoiser output.
+  // When the remapped vector has no length we fall back to the geometric-up
+  // direction (0,1,0) — a valid, well-conditioned normal that keeps the
+  // denoiser stable over sky pixels.
+  let nd_remapped = nd * 2.0 - 1.0;
+  let nrm = select(normalize(nd_remapped), vec3f(0.0, 1.0, 0.0), dot(nd_remapped, nd_remapped) < 1e-6);
   let base = p * 3u;
   noisyOut[base + 0u] = n.r;
   noisyOut[base + 1u] = n.g;

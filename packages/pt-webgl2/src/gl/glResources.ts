@@ -687,7 +687,8 @@ export class GlResources {
     // for inactive samplers, so binding a dummy where there's no scene data is safe.
     const d2d = this.#dummyTex2D();
     const d2a = this.#dummyTex2DArray();
-    prog.bindTexture('iesProfiles', scene.iesProfiles ?? d2a, gl.TEXTURE_2D_ARRAY);
+    // iesProfiles binding removed — IES profiles are not in the @vitrum/core contract
+    // and the uniform was removed from the GLSL (item 20).
     prog.bindTexture('textures', scene.textures2DArray ?? d2a, gl.TEXTURE_2D_ARRAY);
     prog.bindTexture('backgroundMap', d2d);
     prog.bindTexture('sobolTexture', d2d);

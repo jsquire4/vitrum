@@ -23,15 +23,6 @@ export const light_sampling_functions = /* glsl */`
 
 	}
 
-	float getPhotometricAttenuation( sampler2DArray iesProfiles, int iesProfile, vec3 posToLight, vec3 lightDir, vec3 u, vec3 v ) {
-
-		float cosTheta = dot( posToLight, lightDir );
-		float angle = acos( cosTheta ) / PI;
-
-		return texture2D( iesProfiles, vec3( angle, 0.0, iesProfile ) ).r;
-
-	}
-
 	struct LightRecord {
 
 		vec3 point;
@@ -135,7 +126,7 @@ export const light_sampling_functions = /* glsl */`
 
 	}
 
-	LightRecord randomSpotLightSample( Light light, sampler2DArray iesProfiles, vec3 rayOrigin, vec2 ruv ) {
+	LightRecord randomSpotLightSample( Light light, vec3 rayOrigin, vec2 ruv ) {
 
 		float radius = light.radius * sqrt( ruv.x );
 		float theta = ruv.y * 2.0 * PI;
@@ -158,10 +149,7 @@ export const light_sampling_functions = /* glsl */`
 		vec3 direction = toLight / max( dist, EPSILON );
 		float cosTheta = dot( direction, normal );
 
-		float spotAttenuation = light.iesProfile != - 1 ?
-			getPhotometricAttenuation( iesProfiles, light.iesProfile, direction, normal, u, v ) :
-			getSpotAttenuation( light.coneCos, light.penumbraCos, cosTheta );
-
+		float spotAttenuation = getSpotAttenuation( light.coneCos, light.penumbraCos, cosTheta );
 		float distanceAttenuation = getDistanceAttenuation( dist, light.distance, light.decay );
 		LightRecord lightRec;
 		lightRec.type = light.type;
@@ -262,7 +250,7 @@ export const light_sampling_functions = /* glsl */`
 		return distSq / ( totalEmissiveArea * max( abs( cosLight ), EPSILON ) );
 	}
 
-	LightRecord randomLightSample( sampler2D lights, sampler2DArray iesProfiles, uint lightCount, vec3 rayOrigin, vec3 ruv ) {
+	LightRecord randomLightSample( sampler2D lights, uint lightCount, vec3 rayOrigin, vec3 ruv ) {
 
 		LightRecord result;
 
@@ -312,7 +300,7 @@ export const light_sampling_functions = /* glsl */`
 
 		if ( light.type == SPOT_LIGHT_TYPE ) {
 
-			result = randomSpotLightSample( light, iesProfiles, rayOrigin, ruv.yz );
+			result = randomSpotLightSample( light, rayOrigin, ruv.yz );
 
 		} else if ( light.type == POINT_LIGHT_TYPE ) {
 

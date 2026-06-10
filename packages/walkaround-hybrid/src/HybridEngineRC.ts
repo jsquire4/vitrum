@@ -46,6 +46,7 @@ import {
   type RestirBvhSnapshot,
 } from './restir/restirBvhSnapshot.js';
 import type { PipelineSubsystem } from './pipeline/PipelineSubsystem.js';
+import { RC_PARAMS_BYTE_SIZE, RCParamsOffset } from './rc/rcParamsLayout.generated.js';
 
 interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;
@@ -104,17 +105,33 @@ export function packRCParams(
   rcWeight:         number,
   enabled:          boolean,
 ): ArrayBuffer {
-  const buf = new ArrayBuffer(64);
+  // Use the generated layout constants (RC_PARAMS_BYTE_SIZE, RCParamsOffset) so
+  // this packer is the single source of truth for the wire format and the codegen
+  // test can verify both independently.
+  const buf = new ArrayBuffer(RC_PARAMS_BYTE_SIZE);
   const f = new Float32Array(buf);
   const u = new Uint32Array(buf);
-  f[0] = probeOriginWorld[0]; f[1] = probeOriginWorld[1]; f[2] = probeOriginWorld[2];
-  f[3] = rcWeight;
-  f[4] = roomSize[0]; f[5] = roomSize[1]; f[6] = roomSize[2];
-  u[7] = enabled ? 1 : 0;
-  u[8] = probeCount[0]; u[9] = probeCount[1]; u[10] = probeCount[2];
-  u[11] = raysPerProbe;
-  u[12] = Math.max(1, Math.round(Math.sqrt(raysPerProbe))); // rayGridSize
-  // u[13..15] pad (already zero from ArrayBuffer init).
+  // probeOriginWorld: vec3f at byte 0 → f32 words [0..2]
+  f[RCParamsOffset.probeOriginWorld / 4 + 0] = probeOriginWorld[0];
+  f[RCParamsOffset.probeOriginWorld / 4 + 1] = probeOriginWorld[1];
+  f[RCParamsOffset.probeOriginWorld / 4 + 2] = probeOriginWorld[2];
+  // rcWeight: f32 at byte 12 → f32 word [3]
+  f[RCParamsOffset.rcWeight / 4] = rcWeight;
+  // roomSize: vec3f at byte 16 → f32 words [4..6]
+  f[RCParamsOffset.roomSize / 4 + 0] = roomSize[0];
+  f[RCParamsOffset.roomSize / 4 + 1] = roomSize[1];
+  f[RCParamsOffset.roomSize / 4 + 2] = roomSize[2];
+  // enabled: u32 at byte 28 → u32 word [7]
+  u[RCParamsOffset.enabled / 4] = enabled ? 1 : 0;
+  // probeCount: vec3u at byte 32 → u32 words [8..10]
+  u[RCParamsOffset.probeCount / 4 + 0] = probeCount[0];
+  u[RCParamsOffset.probeCount / 4 + 1] = probeCount[1];
+  u[RCParamsOffset.probeCount / 4 + 2] = probeCount[2];
+  // raysPerProbe: u32 at byte 44 → u32 word [11]
+  u[RCParamsOffset.raysPerProbe / 4] = raysPerProbe;
+  // rayGridSize: u32 at byte 48 → u32 word [12]  (sqrt of raysPerProbe, ≥1)
+  u[RCParamsOffset.rayGridSize / 4] = Math.max(1, Math.round(Math.sqrt(raysPerProbe)));
+  // bytes 52..63 (_pad0/1/2): already zero from ArrayBuffer init.
   return buf;
 }
 

@@ -54,8 +54,8 @@ export const PPG_DTREE_INITIAL_DEPTH = 2;
  * `misAlpha` UBO field).
  *
  * Set to 0.5 (equal guide/cosine weighting). A variance-reduction-driven
- * adaptive update is described in the paper; that variant is tracked in
- * plan/sprint-ppg-rebuild-future.md.
+ * adaptive update is described in the paper (Müller §3.4); that variant is
+ * tracked in plan/road-to-100.md (PPG adaptive alpha, future work).
  */
 export const PPG_MIS_ALPHA = 0.5;
 

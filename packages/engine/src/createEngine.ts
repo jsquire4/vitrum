@@ -199,7 +199,10 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
     aabb.triangleCount,
     tlasAudit.needsTlas,
   );
-  if (tlasAudit.needsTlas && backend === 'pt-webgl2') {
+  // When the audit recommends a TLAS-capable backend but we resolved to pt-webgl2
+  // (the only merged-BVH backend), surface the recommendation + detail so the host
+  // can switch to walkaround-hybrid or pt-webgpu for correct instancing behaviour.
+  if (tlasAudit.recommendation === 'prefer-tlas-backend' && backend === 'pt-webgl2') {
     console.warn(`[vitrum/createEngine] ${tlasAudit.detail}`);
   }
 

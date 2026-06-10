@@ -100,7 +100,7 @@ export const bdpt_light_subpath = /* glsl */`
 			// Pick a random area light / emitter via the existing light sampling CDF.
 			// Use seeds 50–52 (isolated from eye-path seeds 0–30).
 			LightRecord lightRec = randomLightSample(
-				lights.tex, iesProfiles, lights.count,
+				lights.tex, lights.count,
 				vec3( 0.0 ),   // origin is irrelevant for emitter-surface sampling
 				rand3( 50 )
 			);

@@ -121,6 +121,16 @@ describe('composeTraceGlsl', () => {
     expect(subpathDef).toBeLessThan(main);
   });
 
+  it('item 11: CMF upload-gap guard — wavelengthToRGB returns 0 when uYCmfIntegral < 1e-3', () => {
+    // The guard prevents the old 1e-6 floor from turning a missing-CMF upload into
+    // extreme overbright instead of an obvious black. Pin the guard text so it cannot
+    // be removed without this test failing.
+    expect(src).toContain('if ( uYCmfIntegral < 1e-3 ) return vec3( 0.0 );');
+    // The normal pdf floor (1e-6) for legitimate near-zero wavelength densities must
+    // still be present — it's a different guard from the upload-gap check.
+    expect(src).toContain('max( pdfLambda * uYCmfIntegral, 1e-6 )');
+  });
+
   it('B4: mesh-area triangle-light NEE is always compiled in (decl + sampler + branch)', () => {
     // The mesh-NEE path is feature-independent (no #define gate) — it self-gates on
     // uMeshLightCount at runtime. The uniforms, the type id, the sampler helper, and
@@ -133,6 +143,14 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('float meshAreaLightForwardPdf(');
     // The forward-emission MIS site and the NEE branch both reference the count gate.
     expect(src).toContain('uMeshLightCount != 0u');
+  });
+
+  it('item 20: iesProfiles uniform is absent from the composed shader (IES removed)', () => {
+    // IES profiles are not in the @vitrum/core contract and were always null.
+    // The uniform, the struct field, and getPhotometricAttenuation are all deleted.
+    expect(src).not.toContain('uniform sampler2DArray iesProfiles');
+    expect(src).not.toContain('getPhotometricAttenuation');
+    expect(src).not.toContain('iesProfile !=');
   });
 
   it('flag-plumbing: camera-type + DOF GLSL gates are present (host-controllable)', () => {

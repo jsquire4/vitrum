@@ -136,7 +136,6 @@ export function buildSceneTextures(
     envWidth: env.map?.width ?? 0,
     envHeight: env.map?.height ?? 0,
     textures2DArray,
-    iesProfiles: null,
     triangleCount: merged.triangleCount,
     destroy(): void {
       if (destroyed) return;

@@ -49,7 +49,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **Light types**               | point/dir/area/sky (point+spot via DDGI only — approximate direct) | point / dir / area / sky   |
 | **Materials**                 | PBR + transmission          | PBR + transmission; spectral hero-λ lit (hero-λ tint over RGB — achromatic-flat reflectance); clearcoat/sheen unsupported |
 | **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      |
-| **BDPT**                      | not applicable              | option exists; inert (no host driver) — road-to-100 |
+| **BDPT**                      | not applicable              | implemented + host-driven (A5); ANGLE/Chromium falls back to unidirectional |
 | **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (all patches via rebuild) |
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |

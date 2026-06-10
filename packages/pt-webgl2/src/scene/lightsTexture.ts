@@ -13,7 +13,7 @@
 //   s2 = (u-vector.xyz, power)
 //   s3 = (v-vector.xyz, area)
 //   s4 = (radius, decay, distance, coneCos)        — spot/point only
-//   s5 = (penumbraCos, iesProfile, 0, 0)           — spot/point only
+//   s5 = (penumbraCos, reserved, 0, 0)              — spot/point only (s5.g was IES, now padding)
 //
 // Light types (must match the GLSL `#define`s):
 //   RECT_AREA = 0, CIRC_AREA = 1, SPOT = 2, DIR = 3, POINT = 4
@@ -77,7 +77,7 @@ function tangentBasis(n: Vec3): { t: Vec3; b: Vec3 } {
  * THREE light objects.
  *
  * Unmappable / approximated fields vs the THREE source (documented for the caller):
- *  - IES profiles: core has no IES handle → `iesProfile = -1` always.
+ *  - IES profiles: removed (not in @vitrum/core contract). s5.g is reserved padding.
  *  - Spot `radius`: core `SpotEmitter` has no soft-source radius → 0 (area = 0).
  *  - `disc-area` (CIRC_AREA): core gives centre+normal+radius; the in-plane
  *    (u, v) axes are synthesized from a deterministic tangent basis, each
@@ -198,9 +198,10 @@ export function packLightsTexture(
         data[base + k++] = l.decay ?? 2;
         data[base + k++] = l.distance ?? 0;
         data[base + k++] = Math.cos(l.angle);
-        // s5: penumbraCos / iesProfile / 0 / 0
+        // s5: penumbraCos / (reserved padding) / 0 / 0
+        // s5.g was the IES profile slot — IES is removed; padding zero keeps layout stable.
         data[base + k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
-        data[base + k++] = -1; // no IES profile in the core contract
+        k += 1; // s5.g reserved padding (IES removed)
         break;
       }
       case 'point': {

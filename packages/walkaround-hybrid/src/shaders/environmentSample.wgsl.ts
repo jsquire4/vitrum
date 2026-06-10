@@ -10,7 +10,8 @@
  * Bindings (scene group(1), appended after the B1 bvh_material at binding 14):
  *   @binding(15) env_map         rgba16float  : unit-intensity radiance (.rgb) +
  *                                               per-texel solid-angle pdf (.a)
- *   @binding(16) env_marginal    r32float     : 1×H inverse-CDF (random→row v)
+ *   @binding(16) env_marginal    r32float     : H×1 inverse-CDF (random→row v;
+ *                                               width=H height=1; textureLoad x=row y=0)
  *   @binding(17) env_conditional r32float     : W×H inverse-CDF (random→col u)
  *   @binding(18) env_sampler     sampler      : (declared for completeness; the
  *                                               lookups use textureLoad, not sample)
@@ -115,7 +116,8 @@ fn envImportanceSample(rng: ptr<function, u32>) -> EnvSample {
   let w = i32(envParams.width);
   let h = i32(envParams.height);
 
-  // Marginal: random → row centre v (stored in .r of the 1×H marginal texture).
+  // Marginal: random → row centre v (stored in .r of the H×1 marginal texture;
+  // width=H height=1, so textureLoad x=row y=0).
   let xiV = rand_f32(rng);
   let row = clamp(i32(floor(xiV * f32(h))), 0, h - 1);
   let vCenter = textureLoad(env_marginal, vec2i(row, 0), 0).r;

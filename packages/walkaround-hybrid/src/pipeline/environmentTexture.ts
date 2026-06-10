@@ -81,8 +81,18 @@ export function createPlaceholderEnvironment(device: GPUDevice): EnvironmentText
   return { map, marginal, conditional, sampler, paramsBuffer };
 }
 
-/** Write directional env data into an existing resource set, resizing the
- *  textures if dimensions changed (returns the possibly-new set). */
+/** Write directional env data into an existing resource set.
+ *
+ *  When the new dimensions match the existing textures (a rotation / intensity
+ *  update, or a repeated upload of the same-resolution env), the three GPU
+ *  textures are reused in-place via `writeTexture` — no destroy + recreate.
+ *  Reuse preserves the GPUTexture object identities, which means the scene
+ *  bind-group cache key (which includes the env texture views) is unchanged
+ *  and the bind group is reused without invalidation.
+ *
+ *  When dimensions change (first upload from a 1×1 placeholder, or a
+ *  different-resolution env), the old textures are destroyed and new ones
+ *  allocated at the correct size. */
 export function uploadEnvironment(
   device: GPUDevice,
   prev: EnvironmentTextures,
@@ -91,14 +101,28 @@ export function uploadEnvironment(
   intensity: number,
 ): EnvironmentTextures {
   const { width, height } = data;
-  // Recreate textures sized to the map (placeholder was 1×1). The sampler +
-  // params buffer are reused.
-  prev.map.destroy();
-  prev.marginal.destroy();
-  prev.conditional.destroy();
-  const map = createTex(device, 'vitrum.env.map', width, height, 'rgba16float');
-  const marginal = createTex(device, 'vitrum.env.marginal', height, 1, 'r32float');
-  const conditional = createTex(device, 'vitrum.env.conditional', width, height, 'r32float');
+
+  // Probe the existing texture dimensions. GPUTexture exposes .width / .height
+  // as read-only properties (WebGPU spec §GPUTexture).  We compare against the
+  // required map dimensions; if they match we write in-place.
+  const prevW = (prev.map as unknown as { width: number }).width ?? 0;
+  const prevH = (prev.map as unknown as { height: number }).height ?? 0;
+  const dimsMatch = prevW === width && prevH === height;
+
+  let map        = prev.map;
+  let marginal   = prev.marginal;
+  let conditional = prev.conditional;
+
+  if (!dimsMatch) {
+    // Dimensions changed — destroy the old textures and allocate new ones at
+    // the required size.  Sampler + params buffer are always reused.
+    prev.map.destroy();
+    prev.marginal.destroy();
+    prev.conditional.destroy();
+    map        = createTex(device, 'vitrum.env.map',         width,  height, 'rgba16float');
+    marginal   = createTex(device, 'vitrum.env.marginal',    height, 1,      'r32float');
+    conditional = createTex(device, 'vitrum.env.conditional', width,  height, 'r32float');
+  }
 
   // env_map: rgba16float ← Float32 RGBA. WebGPU writeTexture accepts a Float32
   // source for rgba16float? No — the bytes must already be half-float. We convert
@@ -111,8 +135,10 @@ export function uploadEnvironment(
     { width, height, depthOrArrayLayers: 1 },
   );
 
-  // env_marginal: r32float, 1×H? The texture is height×1 (W=height, H=1). The
-  // marginal Float32Array is height×4 (RGBA); extract .r into a height-long row.
+  // env_marginal: r32float, H×1 (width=height, height=1).
+  // The WGSL consumer reads: textureLoad(env_marginal, vec2i(row, 0), 0)
+  // where row ∈ [0, H), confirming the marginal is H wide and 1 tall.
+  // The marginal Float32Array is height×4 (RGBA); extract .r into a height-long row.
   const marginalR = extractR(data.marginal, height);
   device.queue.writeTexture(
     { texture: marginal },

@@ -12,15 +12,25 @@ import {
 import { buildDirectionalEnv } from '../../environment/equirectDirectional.js';
 
 interface WriteBufferCall { offset: number; data: ArrayBuffer; }
-function mockDevice() {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyMockFn = ReturnType<typeof vi.fn<any, any>>;
+interface MockTexture { format: string; width: number; height: number; destroy: AnyMockFn; createView: AnyMockFn; }
+function mockDevice(texDims?: { width: number; height: number }) {
   const writeBufferCalls: WriteBufferCall[] = [];
   const writeTextureCalls: unknown[] = [];
   const device = {
-    createTexture: vi.fn((d: { format: string }) => ({
-      format: d.format,
-      destroy: vi.fn(),
-      createView: vi.fn(() => ({})),
-    })),
+    createTexture: vi.fn((d: { format: string; size: { width: number; height: number } }) => {
+      const tex: MockTexture = {
+        format: d.format,
+        // Use explicitly provided dims when the mock needs to simulate a
+        // same-size existing texture (for the reuse test).
+        width:  texDims?.width  ?? d.size.width,
+        height: texDims?.height ?? d.size.height,
+        destroy: vi.fn(),
+        createView: vi.fn(() => ({})),
+      };
+      return tex;
+    }),
     createSampler: vi.fn(() => ({})),
     createBuffer: vi.fn((d: { size: number }) => ({ size: d.size, destroy: vi.fn() })),
     queue: {
@@ -87,5 +97,69 @@ describe('environmentTexture — B3 directional IBL host', () => {
     expect((env.map as unknown as { format: string }).format).toBe('rgba16float');
     expect((env.marginal as unknown as { format: string }).format).toBe('r32float');
     expect((env.conditional as unknown as { format: string }).format).toBe('r32float');
+  });
+
+  // ── Item 17b: same-size reuse (write-in-place, no destroy+recreate) ─────────
+
+  it('same-size re-upload reuses the existing GPUTexture objects (no destroy)', () => {
+    // Build a mock device whose createTexture reports width=4 / height=2 so the
+    // existing textures appear to already be the right size.
+    const { device } = mockDevice({ width: 4, height: 2 });
+    let env = createPlaceholderEnvironment(device);
+    const data = buildDirectionalEnv({
+      width: 4, height: 2, stride: 3,
+      data: new Float32Array(4 * 2 * 3).fill(0.5),
+    })!;
+    const mapBefore = env.map;
+    const marginalBefore = env.marginal;
+    const conditionalBefore = env.conditional;
+
+    env = uploadEnvironment(device, env, data, 0.1, 1.5);
+
+    // The GPUTexture objects must be the same references — not destroyed and
+    // recreated — because the dimensions already match.
+    expect(env.map).toBe(mapBefore);
+    expect(env.marginal).toBe(marginalBefore);
+    expect(env.conditional).toBe(conditionalBefore);
+
+    // destroy() must NOT have been called on the old textures.
+    expect((mapBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
+    expect((marginalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
+    expect((conditionalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
+  });
+
+  it('different-size re-upload destroys old textures and creates new ones', () => {
+    // Default mock: createTexture reports whatever size it was asked for.
+    // The placeholder will report 1×1; the upload asks for 4×2 → mismatch → recreate.
+    const { device } = mockDevice();
+    let env = createPlaceholderEnvironment(device);
+    const data = buildDirectionalEnv({
+      width: 4, height: 2, stride: 3,
+      data: new Float32Array(4 * 2 * 3).fill(0.5),
+    })!;
+    const mapBefore = env.map;
+
+    env = uploadEnvironment(device, env, data, 0, 1);
+
+    // The old map must have been destroyed.
+    expect((mapBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalled();
+    // And a new one was created at the larger size.
+    expect(env.map).not.toBe(mapBefore);
+  });
+
+  it('marginal texture is H wide and 1 tall (H×1 convention, matching WGSL textureLoad(…, vec2i(row, 0)))', () => {
+    // Pin the marginal allocation convention — H×1, not 1×H — so a future
+    // refactor cannot silently swap the dimensions and break the WGSL consumer.
+    const { device } = mockDevice();
+    let env = createPlaceholderEnvironment(device);
+    const w = 4; const h = 2;
+    const data = buildDirectionalEnv({
+      width: w, height: h, stride: 3,
+      data: new Float32Array(w * h * 3).fill(0.5),
+    })!;
+    env = uploadEnvironment(device, env, data, 0, 1);
+    const marginal = env.marginal as unknown as { width: number; height: number };
+    expect(marginal.width).toBe(h);   // H wide
+    expect(marginal.height).toBe(1);  // 1 tall
   });
 });

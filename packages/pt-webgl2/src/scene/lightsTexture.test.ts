@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type {
   DirectionalEmitter,
+  DiscAreaEmitter,
   PointEmitter,
   RectAreaEmitter,
 } from '@vitrum/core';
@@ -122,5 +123,90 @@ describe('packLightsTexture', () => {
     expect(empty.lightCount).toBe(0);
     expect(empty.dim).toBe(1);
     expect(empty.data.length).toBe(4);
+  });
+});
+
+// ── Item 10: disc-area (CIRC_AREA) packer structural test ─────────────────────
+// Disc-area emitters pack as CIRC_AREA_LIGHT_TYPE = 1 (same 6-texel slot, not a
+// rect approximation). The GLSL `randomAreaLightSample` and `intersectLightAtIndex`
+// both branch on CIRC_AREA_LIGHT_TYPE — this test asserts the type field is 1 and
+// that the packed (u, v) basis spans the full diameter (matching what the GLSL
+// `randomAreaLightSample` expects: r ∈ [0, 0.5] within the disc radius).
+describe('packLightsTexture — disc-area (CIRC_AREA) structural test', () => {
+  const disc: DiscAreaEmitter = {
+    id: 'disc',
+    kind: 'disc-area',
+    color: [1.0, 0.5, 0.0],
+    intensity: 4,
+    position: [0, 2, 0],
+    normal: [0, 1, 0],   // world-up; tangent basis deterministic from this
+    radius: 1.5,
+  };
+
+  const data = packLightsTexture([disc]);
+
+  it('emits exactly 1 light as CIRC_AREA_LIGHT_TYPE = 1', () => {
+    expect(data.lightCount).toBe(1);
+    // s0.a = type; CIRC_AREA = 1
+    expect(texel(data.data, 0, 0, 3)).toBe(1);
+  });
+
+  it('packs the disc position into s0.xyz', () => {
+    expect(texel(data.data, 0, 0, 0)).toBe(0);
+    expect(texel(data.data, 0, 0, 1)).toBe(2);
+    expect(texel(data.data, 0, 0, 2)).toBe(0);
+  });
+
+  it('packs intensity into s1.a', () => {
+    expect(texel(data.data, 0, 1, 3)).toBe(4);
+  });
+
+  it('packs u/v vectors with length = full diameter (2 × radius)', () => {
+    // The GLSL sampler uses: randomPos = pos + u * x + v * y where x,y ∈ [-0.5, 0.5].
+    // So |u| and |v| must both equal 2 * radius = 3.
+    const ux = texel(data.data, 0, 2, 0);
+    const uy = texel(data.data, 0, 2, 1);
+    const uz = texel(data.data, 0, 2, 2);
+    const lenU = Math.hypot(ux, uy, uz);
+    expect(lenU).toBeCloseTo(2 * disc.radius, 5);
+
+    const vx = texel(data.data, 0, 3, 0);
+    const vy = texel(data.data, 0, 3, 1);
+    const vz = texel(data.data, 0, 3, 2);
+    const lenV = Math.hypot(vx, vy, vz);
+    expect(lenV).toBeCloseTo(2 * disc.radius, 5);
+  });
+
+  it('packs area = π * radius² (π/4 × (2r)² from the rect correction)', () => {
+    // area = |u × v| * (π/4) = (2r)² * (π/4) = π * r²
+    const area = texel(data.data, 0, 3, 3);
+    expect(area).toBeCloseTo(Math.PI * disc.radius * disc.radius, 4);
+  });
+
+  it('packs power = luminance(color) * intensity * π * r²', () => {
+    const lum = 0.2126 * 1.0 + 0.7152 * 0.5 + 0.0722 * 0.0;
+    const expected = lum * disc.intensity * Math.PI * disc.radius * disc.radius;
+    expect(texel(data.data, 0, 2, 3)).toBeCloseTo(expected, 4);
+  });
+});
+
+// ── Item 10: GLSL structural test — CIRC_AREA handling in composed shader ─────
+// Verifies that the composed program text contains the CIRC_AREA_LIGHT_TYPE branch
+// in both the intersection and sampling functions. This pins the GLSL-level handling
+// so the CIRC path cannot be silently deleted.
+describe('composeTraceGlsl — CIRC_AREA_LIGHT_TYPE is handled in both sample + isect', () => {
+  it('has CIRC_AREA_LIGHT_TYPE #define and both GLSL branch sites', async () => {
+    const { composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
+    const { DEFAULT_TRACE_FEATURES } = await import('../featureTypes.js');
+    const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+
+    // Type definition
+    expect(src).toContain('#define CIRC_AREA_LIGHT_TYPE 1');
+
+    // Intersection branch (intersectsCircle in intersectLightAtIndex)
+    expect(src).toContain('light.type == CIRC_AREA_LIGHT_TYPE && intersectsCircle(');
+
+    // Sampling branch (randomAreaLightSample disc path)
+    expect(src).toContain('light.type == CIRC_AREA_LIGHT_TYPE');
   });
 });

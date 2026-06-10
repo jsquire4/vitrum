@@ -279,6 +279,199 @@ fn evalSheenLobe(
   return sheen * sheenColor * d * vis;
 }
 
+// ── Item 7 — Anisotropic GGX (Heitz 2018 VNDF generalisation) ────────────────
+//
+// Standard anisotropic formulation with Burley aspect ratio convention:
+//   aspect  = sqrt(1 - 0.9 · anisotropy)
+//   αx = roughness² / aspect     (stretches ALONG tangent T)
+//   αy = roughness² · aspect     (compresses along bitangent B)
+// When anisotropy == 0, aspect = 1, αx == αy == roughness² → isotropic.
+//
+// Anisotropic GGX NDF:
+//   D_aniso(h) = 1 / (π · αx · αy · ((hT/αx)² + (hB/αy)² + hN²)²)
+//
+// Anisotropic Smith G1 (height-correlated form):
+//   Λ_aniso(v) = (-1 + sqrt(1 + (vT·αx)² + (vB·αy)²) / vN)) / 2    (λ function)
+//   G1_aniso(v) = 1 / (1 + Λ_aniso(v))
+//              = 2·vN / (vN + sqrt(vN² + (vT·αx)² + (vB·αy)²))
+//
+// Anisotropic VNDF sample (Heitz 2018 Algorithm 1, ellipsoidal stretch):
+//   Stretch wo by (αx, αy) then apply the same hemisphere projection as the
+//   isotropic case; unstretch the result by (αx, αy).
+//
+// Tangent frame: buildOnb(normal, &t, &b), then rotated by anisotropyRotation
+//   t' = cos(rot)·t + sin(rot)·b
+//   b' = -sin(rot)·t + cos(rot)·b
+// Rotation aligns the anisotropy direction with the author's intent.
+//
+// Refs: Heitz 2018 JCGT 7(4) — "Sampling the GGX Distribution of Visible
+//       Normals"; Burley 2012 Disney BRDF §3 (aspect/roughness parameterisation).
+//
+// GUARD (zero-anisotropy invariant):
+// Every aniso function is gated on anisotropy > 0. Callers check the scalar first
+// and fall back to the existing isotropic path for zero-anisotropy materials, so
+// pre-existing renders are NUMERICALLY IDENTICAL when anisotropy == 0.
+
+fn ggxDAnis(hT: f32, hB: f32, hN: f32, ax: f32, ay: f32) -> f32 {
+  let d = (hT / ax) * (hT / ax) + (hB / ay) * (hB / ay) + hN * hN;
+  return 1.0 / max(PI * ax * ay * d * d, 1e-10);
+}
+
+fn smithG1Anis(vT: f32, vB: f32, vN: f32, ax: f32, ay: f32) -> f32 {
+  let vN2 = max(vN * vN, 1e-10);
+  let numer = 2.0 * vN;
+  let denom = vN + sqrt(vN2 + (vT * ax) * (vT * ax) + (vB * ay) * (vB * ay));
+  return numer / max(denom, 1e-6);
+}
+
+// Anisotropic VNDF sample — all vectors in surface TANGENT SPACE (N = +Z, T = +X, B = +Y).
+// Input wo in tangent space; ax, ay = per-axis alpha. Returns the sampled half-vector h.
+// Follows Heitz 2018 Algorithm 1, §3 (ellipsoidal stretch + unit-sphere projection).
+fn sampleGgxVndfAnisTangent(wo: vec3f, ax: f32, ay: f32, rng: ptr<function, u32>) -> vec3f {
+  // Step 1: stretch wo into the unit-roughness configuration.
+  let Vh = safe_normalize(vec3f(ax * wo.x, ay * wo.y, wo.z));
+  // Step 2: ONB around Vh (Frisvad-style, same as isotropic).
+  let lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+  let T1 = select(
+    vec3f(1.0, 0.0, 0.0),
+    vec3f(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq),
+    lensq > 1e-10,
+  );
+  let T2 = cross(Vh, T1);
+  // Step 3: sample point on unit disc with polar mapping, project onto hemisphere.
+  let u1 = rand_f32(rng);
+  let u2 = rand_f32(rng);
+  let r   = sqrt(u1);
+  let phi = 2.0 * PI * u2;
+  let t1  = r * cos(phi);
+  var t2  = r * sin(phi);
+  let s   = 0.5 * (1.0 + Vh.z);
+  t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
+  // Step 4: reproject onto hemisphere, ANISOTROPICALLY unstretch.
+  let Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+  return safe_normalize(vec3f(ax * Nh.x, ay * Nh.y, max(1e-6, Nh.z)));
+}
+
+// Anisotropic glossy reflection sampler in WORLD SPACE.
+// Tangent frame t, b come from the caller (buildOnb then rotated by anisotropyRotation).
+// Returns a BsdfSample consistent with the anisotropic eval+pdf triple.
+fn glossyReflectionSampleAnisotropic(
+  rng: ptr<function, u32>,
+  wo: vec3f,
+  n: vec3f,
+  t: vec3f,
+  b: vec3f,
+  roughness: f32,
+  anisotropy: f32,
+) -> BsdfSample {
+  let alpha = max(roughness * roughness, 0.001);
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  // Transform wo into tangent space (T=+X, B=+Y, N=+Z).
+  let woLocal = vec3f(dot(wo, t), dot(wo, b), dot(wo, n));
+  let hLocal  = sampleGgxVndfAnisTangent(woLocal, ax, ay, rng);
+  let hWorld  = safe_normalize(hLocal.x * t + hLocal.y * b + hLocal.z * n);
+  let wi      = safe_normalize(reflect(-wo, hWorld));
+
+  var result: BsdfSample;
+  result.wi = wi;
+  let nDotV = max(dot(n, wo), 1e-6);
+  let nDotL = max(dot(n, wi), 0.0);
+  if (nDotL <= 1e-5) {
+    result.pdf = 0.0;
+    result.value = vec3f(0.0);
+  } else {
+    // Anisotropic VNDF PDF:  p(wi) = D_aniso(h) · G1_aniso(wo) / (4 · NdotV)
+    let hT = dot(hWorld, t);
+    let hB = dot(hWorld, b);
+    let hN = max(dot(hWorld, n), 0.0);
+    let woT = dot(wo, t);
+    let woB = dot(wo, b);
+    let woN = max(dot(wo, n), 1e-6);
+    let d   = ggxDAnis(hT, hB, hN, ax, ay);
+    let g1  = smithG1Anis(woT, woB, woN, ax, ay);
+    result.pdf = (d * g1) / max(4.0 * nDotV, 1e-6);
+    // Anisotropic BRDF kernel (no nDotL): D·G1(wo)·G1(wi)·F / (4·NdotV·NdotL)
+    // F is NOT included here (caller applies Fresnel at throughput level, same as
+    // the isotropic path in glossyReflectionSample). We return D·G1(wo)·G1(wi) /
+    // (4·NdotV·NdotL) as 'value' — identical role to the isotropic (d*g)/(4*NdotV*NdotL).
+    let wiT = dot(wi, t);
+    let wiB = dot(wi, b);
+    let wiN = max(dot(wi, n), 1e-6);
+    let g1i = smithG1Anis(wiT, wiB, wiN, ax, ay);
+    result.value = vec3f((d * g1 * g1i) / max(4.0 * nDotV * nDotL, 1e-6));
+  }
+  return result;
+}
+
+// Evaluate anisotropic GGX specular BRDF kernel (WITHOUT nDotL).
+// Returns the anisotropic Cook-Torrance specular BRDF kernel D·G·F/(4·NdotV·NdotL).
+// Requires the pre-rotated tangent frame (t, b) aligned to the anisotropy direction.
+fn evalBrdfSpecAnisotropic(
+  f0: vec3f,
+  roughness: f32,
+  anisotropy: f32,
+  normal: vec3f,
+  t: vec3f,
+  b: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let nDotV = max(dot(normal, wo), 1e-6);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wo + wi);
+  let vDotH = max(dot(wo, h), 1e-6);
+  let f = fresnelSchlick(vDotH, f0);
+  let alpha = max(roughness * roughness, 1e-3);
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  let hT = dot(h, t);
+  let hB = dot(h, b);
+  let hN = max(dot(h, normal), 0.0);
+  let woT = dot(wo, t);
+  let woB = dot(wo, b);
+  let woN = max(dot(wo, normal), 1e-6);
+  let wiT = dot(wi, t);
+  let wiB = dot(wi, b);
+  let wiN = max(dot(wi, normal), 1e-6);
+  let d = ggxDAnis(hT, hB, hN, ax, ay);
+  let g = smithG1Anis(woT, woB, woN, ax, ay) * smithG1Anis(wiT, wiB, wiN, ax, ay);
+  return (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+}
+
+// Anisotropic VNDF reflection PDF (for brdfDirectionalPdf).
+// D_aniso(h) · G1_aniso(wo) / (4 · NdotV), matching glossyReflectionSampleAnisotropic.
+fn brdfAnisotropicSpecPdf(
+  roughness: f32,
+  anisotropy: f32,
+  normal: vec3f,
+  t: vec3f,
+  b: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> f32 {
+  let nDotV = max(dot(normal, wo), 1e-6);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wo + wi);
+  let alpha = max(roughness * roughness, 1e-3);
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  let hT = dot(h, t);
+  let hB = dot(h, b);
+  let hN = max(dot(h, normal), 0.0);
+  let woT = dot(wo, t);
+  let woB = dot(wo, b);
+  let woN = max(dot(wo, normal), 1e-6);
+  let d   = ggxDAnis(hT, hB, hN, ax, ay);
+  let g1  = smithG1Anis(woT, woB, woN, ax, ay);
+  return (d * g1) / max(4.0 * nDotV, 1e-6);
+}
+
 // ── H52 extended BRDF evaluation (base + clearcoat + sheen + iridescence) ─────
 // evaluateBrdfFull: adds the three Disney extension lobes to the base Cook-Torrance
 // BRDF.  Returns the BRDF kernel (WITHOUT nDotL); callers multiply by nDotL once.
@@ -306,6 +499,8 @@ fn evaluateBrdfFull(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
@@ -322,16 +517,36 @@ fn evaluateBrdfFull(
   );
 
   let f = fresnelSchlick(vDotH, f0);
-  let alpha = max(roughness * roughness, 1e-3);
-  let d = ggxD(nDotH, alpha);
-  let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
-  let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
   let kd = (vec3f(1.0) - f) * (1.0 - metallic);
   let diff = kd * baseColor * INV_PI;
-  // B9 — Kulla-Conty multiscatter energy compensation (restores the energy the
-  // single-scatter Smith GGX lobe drops at high roughness; zero at low roughness
-  // → smooth surfaces unchanged). f0 tints the extra bounces for coloured metals.
-  let ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+
+  // Item 7 — anisotropic GGX specular lobe.
+  // When anisotropy == 0 the guard falls through to the isotropic Cook-Torrance path
+  // (byte-identical render for zero-anisotropy materials).
+  var spec: vec3f;
+  var ms: vec3f;
+  if (anisotropy > 1e-4) {
+    // Build tangent frame and rotate by anisotropyRotation.
+    var tanT: vec3f;
+    var tanB: vec3f;
+    buildOnb(normal, &tanT, &tanB);
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let anisoT = c * tanT + s * tanB;
+    let anisoB = -s * tanT + c * tanB;
+    spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+    // B9 — Kulla-Conty for anisotropic path: use the isotropic E LUT as an
+    // approximation (the LUT is rotationally symmetric; anisotropy changes the
+    // per-direction albedo distribution but the average E(μ) stays similar).
+    ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+  } else {
+    let alpha = max(roughness * roughness, 1e-3);
+    let d = ggxD(nDotH, alpha);
+    let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+    spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+    // B9 — Kulla-Conty multiscatter energy compensation.
+    ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+  }
   let base = diff + spec + ms;
 
   // Additive extension lobes (each returns BRDF kernel, no nDotL factor).
@@ -362,8 +577,46 @@ fn brdfDirectionalPdfFull(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
 ) -> f32 {
-  let basePdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  // Item 7 — when anisotropic, replace the isotropic specular PDF with the
+  // anisotropic VNDF PDF. The diffuse/trans lobe probabilities stay identical.
+  var basePdf: f32;
+  if (anisotropy > 1e-4) {
+    // Compute lobe probabilities (same as brdfDirectionalPdf).
+    let wiDotN = dot(normal, wi);
+    let woDotN = dot(normal, wo);
+    let nDotV = max(woDotN, 0.0);
+    if (nDotV <= 1e-5) { return 0.0; }
+    let h = safe_normalize(wi + wo);
+    let vDotH = max(dot(wo, h), 1e-6);
+    let f0 = mix(vec3f(0.04), baseColor, metallic);
+    let fresnel = fresnelSchlick(vDotH, f0);
+    let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+    let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
+    let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
+    let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
+    let specProb = baseSpecProb / sumProb;
+    let diffProb = baseDiffProb / sumProb;
+    let sameHemisphere = wiDotN * woDotN > 0.0;
+    if (!sameHemisphere) { return 0.0; }
+    let nDotL = max(wiDotN, 0.0);
+    if (nDotL <= 1e-5) { return 0.0; }
+    // Build rotated tangent frame.
+    var tanT: vec3f;
+    var tanB: vec3f;
+    buildOnb(normal, &tanT, &tanB);
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let anisoT = c * tanT + s * tanB;
+    let anisoB = -s * tanT + c * tanB;
+    let pdfSpec = brdfAnisotropicSpecPdf(roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+    let pdfDiff = nDotL * INV_PI;
+    basePdf = diffProb * pdfDiff + specProb * pdfSpec;
+  } else {
+    basePdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  }
   // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
   let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, wi);
   // Sheen PDF approximation: cosine-hemisphere (v1 accepted bias — see evalSheenLobe).
@@ -599,11 +852,23 @@ fn sampleNextBounceDirection(
   fresnel: vec3f,
   thinFilmTransmitTint: vec3f,
   isTranslucent: bool,
+  anisotropy: f32,
+  anisotropyRotation: f32,
 ) -> BounceSample {
   // Build surface-tangent ONB once; shared by both glossy-reflect call sites.
+  // Item 7 — if anisotropic, rotate the tangent frame by anisotropyRotation so
+  // both tangent and bitangent align with the authored anisotropy direction.
   var tanT: vec3f;
   var tanB: vec3f;
   buildOnb(normal, &tanT, &tanB);
+  if (anisotropy > 1e-4) {
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let newT = c * tanT + s * tanB;
+    let newB = -s * tanT + c * tanB;
+    tanT = newT;
+    tanB = newB;
+  }
 
   var result: BounceSample;
   result.sampledDir = vec3f(0.0);
@@ -629,7 +894,13 @@ fn sampleNextBounceDirection(
       // (the refract branch is never taken when R == 1).
       let wo = -incomingDir; // eye-side direction
       result.newRayOrigin = hitPos + normal * 1e-3;
-      let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      // Item 7 — use anisotropic sampler when anisotropy > 0.
+      var bs: BsdfSample;
+      if (anisotropy > 1e-4) {
+        bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+      } else {
+        bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      }
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
       result.sampleAllowsAreaMis = true;
@@ -637,10 +908,21 @@ fn sampleNextBounceDirection(
       //   f·cosθ / p_VNDF = [D·G·F / (4·NdotV·NdotL)] · NdotL
       //                    / [D·G1(wo) / (4·NdotV)]
       //                    = F · G1(wi)
-      // The Fresnel branch probability R is the partition weight, so the
-      // throughput multiplier is F · G1(wi) / R.
+      // MC estimator: F · G1(wi) / R (same derivation for iso and aniso paths;
+      // only the G1 function differs). nDotL = dot(n, wi).
       let nDotL = max(dot(normal, result.sampledDir), 0.0);
-      let g1Wi = smithG1(nDotL, roughness);
+      var g1Wi: f32;
+      if (anisotropy > 1e-4) {
+        let alpha = max(roughness * roughness, 1e-3);
+        let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+        let ax = max(alpha / aspect, 1e-4);
+        let ay = max(alpha * aspect, 1e-4);
+        let wiT = dot(result.sampledDir, tanT);
+        let wiB = dot(result.sampledDir, tanB);
+        g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), ax, ay);
+      } else {
+        g1Wi = smithG1(nDotL, roughness);
+      }
       // B9 — multiscatter energy boost on the sampled specular reflection. The
       // VNDF sampler covers single-scatter only; scale by the Kulla-Conty factor
       // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
@@ -704,23 +986,35 @@ fn sampleNextBounceDirection(
   let xi2 = rand_f32(rng);
   if (xi2 < specProb) {
     // Glossy specular reflection — Heitz 2018 VNDF.
-    // Ref: Heitz 2018 VNDF Algorithm 1 (see glossyReflectionSample).
-    // MC estimator for VNDF sampling collapses to F · G1(wi). Without the
-    // G1(wi) factor (or with the NDF half-vector PDF) grazing reflections
-    // are over-estimated; see brdfDirectionalPdf for the matching PDF.
+    // Item 7 — use anisotropic sampler when anisotropy > 0; isotropic otherwise.
+    // The tangent frame (tanT, tanB) is already rotated by anisotropyRotation above.
     let wo = -incomingDir;
     result.newRayOrigin = hitPos + normal * 1e-3;
-    let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
-    result.sampledDir = bs.wi;
-    result.newRayDir = bs.wi;
+    var bs2: BsdfSample;
+    if (anisotropy > 1e-4) {
+      bs2 = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+    } else {
+      bs2 = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+    }
+    result.sampledDir = bs2.wi;
+    result.newRayDir = bs2.wi;
     result.sampleAllowsAreaMis = true;
-    let nDotL = max(dot(normal, result.sampledDir), 0.0);
-    let g1Wi = smithG1(nDotL, roughness);
+    let nDotL2 = max(dot(normal, result.sampledDir), 0.0);
+    var g1Wi2: f32;
+    if (anisotropy > 1e-4) {
+      let alpha = max(roughness * roughness, 1e-3);
+      let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+      let ax = max(alpha / aspect, 1e-4);
+      let ay = max(alpha * aspect, 1e-4);
+      g1Wi2 = smithG1Anis(dot(result.sampledDir, tanT), dot(result.sampledDir, tanB), max(nDotL2, 1e-6), ax, ay);
+    } else {
+      g1Wi2 = smithG1(nDotL2, roughness);
+    }
     // B9 — multiscatter energy boost on the sampled specular reflection (see the
     // dielectric-reflection branch above).
     let nDotVcc = max(dot(normal, wo), 0.0);
     let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
-    result.throughputMul = fresnel * g1Wi * msBoost / max(specProb, 1e-4);
+    result.throughputMul = fresnel * g1Wi2 * msBoost / max(specProb, 1e-4);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
     let bs = cosineHemisphereSample(rng, normal);

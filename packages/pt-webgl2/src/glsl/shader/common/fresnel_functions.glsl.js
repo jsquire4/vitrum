@@ -57,6 +57,17 @@ export const fresnel_functions = /* glsl */`
 
 	}
 
+	// evaluateFresnel — Schlick Fresnel with total-internal-reflection guard.
+	// Used by specularEval (bsdf_functions.glsl.js) for coloured specular lobes.
+	//
+	// The former "blown out pixels" concern (evaluateFresnelWeight) was a
+	// pre-B9 artefact: the single-scatter specular lobe was not energy-compensated,
+	// so rough metals/dielectrics drained energy and compensating heuristics were
+	// needed.  Since B9 (Kulla-Conty ggxMultiscatter), specularEval adds the
+	// multi-bounce lobe back in; the base Schlick evaluation is now correct with no
+	// overbright. The getLobeWeights branch that picks between diffuse/specular/
+	// transmission uses disneyFresnel (below) rather than evaluateFresnel, so the
+	// two code paths remain independent and consistent.
 	vec3 evaluateFresnel( float cosTheta, float eta, vec3 f0, vec3 f90 ) {
 
 		if ( totalInternalReflection( cosTheta, eta ) ) {
@@ -68,20 +79,6 @@ export const fresnel_functions = /* glsl */`
 		return schlickFresnel( cosTheta, f0, f90 );
 
 	}
-
-	// TODO: disney fresnel was removed and replaced with this fresnel function to better align with
-	// the glTF but is causing blown out pixels. Should be revisited
-	// float evaluateFresnelWeight( float cosTheta, float eta, float f0 ) {
-
-	// 	if ( totalInternalReflection( cosTheta, eta ) ) {
-
-	// 		return 1.0;
-
-	// 	}
-
-	// 	return schlickFresnel( cosTheta, f0 );
-
-	// }
 
 	// https://schuttejoe.github.io/post/disneybsdf/
 	float disneyFresnel( vec3 wo, vec3 wi, vec3 wh, float f0, float eta, float metalness ) {

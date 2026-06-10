@@ -2,9 +2,9 @@
  * bdptVertex.ts — BDPT path vertex type definitions for CPU↔GPU exchange.
  *
  * Defines the canonical BDPTVertex record that the CPU library packs and the
- * fork's WebGL2 GLSL kernels read/write via texture ping-pong. Every field is
- * placed at a fixed float offset so both sides agree on the layout without any
- * additional negotiation.
+ * @vitrum/pt-webgl2 native GLSL kernels read/write via texture ping-pong. Every
+ * field is placed at a fixed float offset so both sides agree on the layout
+ * without any additional negotiation.
  *
  * GPU texture layout — 3 RGBA32F texels per vertex (12 floats, 48 bytes):
  *
@@ -26,7 +26,7 @@
  *   base + 10 → throughput[2]  (path weight accumulated to this vertex, blue)
  *   base + 11 → pdfRev         (reverse PDF — used by MIS weight computation)
  *
- * In the fork's GLSL the texture is written from the light-subpath pass as:
+ * In the pt-webgl2 native GLSL the texture is written from the light-subpath pass as:
  *
  *   layout(location = 0) out vec4 gVertex0;  // position.xyz, kind
  *   layout(location = 1) out vec4 gVertex1;  // normal.xyz, pdfFwd
@@ -54,7 +54,7 @@ export const BDPT_KIND_EYE = 1 as const;
 /** Placeholder kind used for explicit connection vertices (rare / debug use). */
 export const BDPT_KIND_CONNECTION = 2 as const;
 
-/** Invalid / uninitialized vertex — GLSL uses this to skip a texture slot. */
+/** Invalid / uninitialized vertex — the GLSL connection pass uses this to skip a texture slot. */
 export const BDPT_KIND_INVALID = 3 as const;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ export const BDPT_MAX_LIGHT_BOUNCES = 3;
  * Maximum eye-subpath bounces.
  *
  * Tied to the engine's `maxBounces` option in `@vitrum/core/engine.ts`. The
- * default value of 12 matches `EngineOptions.maxBounces`; the fork reads a
+ * default value of 12 matches `EngineOptions.maxBounces`; pt-webgl2 reads a
  * uniform `uBDPTMaxEyeBounces` set from this constant.
  */
 export const BDPT_MAX_EYE_BOUNCES = 12;
@@ -98,7 +98,7 @@ export const BDPT_MAX_EYE_BOUNCES = 12;
 /**
  * A single vertex along a BDPT path (light or eye subpath).
  *
- * Encoded into a 3-texel RGBA32F row for texture ping-pong storage in WebGL2.
+ * Encoded into a 3-texel RGBA32F row for texture ping-pong storage in pt-webgl2.
  * See the module-level comment for the exact float-offset mapping.
  */
 export interface BDPTVertex {
@@ -109,7 +109,7 @@ export interface BDPTVertex {
    *   0 = BDPT_KIND_LIGHT       (light subpath vertex)
    *   1 = BDPT_KIND_EYE         (eye subpath vertex)
    *   2 = BDPT_KIND_CONNECTION  (connection vertex, debug)
-   *   3 = BDPT_KIND_INVALID     (empty slot — skip in GLSL)
+   *   3 = BDPT_KIND_INVALID     (empty slot — skip in the GLSL connection pass)
    */
   readonly kind: 0 | 1 | 2 | 3;
   /** Shading normal at the vertex, unit-length. */
@@ -142,7 +142,7 @@ export interface BDPTVertex {
  * The target Float32Array must have capacity for at least `offset + 12` floats.
  * No bounds checking is performed for performance (mirrors the GPU convention).
  *
- * Layout (see module header for GLSL correspondence):
+ * Layout (see module header for pt-webgl2 GLSL correspondence):
  *   [offset +  0] = position.x
  *   [offset +  1] = position.y
  *   [offset +  2] = position.z
