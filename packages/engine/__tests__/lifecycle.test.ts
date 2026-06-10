@@ -22,12 +22,11 @@ describe('@vitrum/engine/lifecycle', () => {
     expect(typeof mod.attachVitrum).toBe('function');
   });
 
-  it('the React entry module exists (loaded lazily — tsx transform required for runtime)', () => {
-    // The tsx file isn't transformed in the default vitest config; this
-    // test verifies the module path resolves at file-system level.
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const tsx = path.resolve(__dirname, '..', 'src', 'react', 'VitrumCanvas.tsx');
-    expect(fs.existsSync(tsx)).toBe(true);
+  it('the React entry exports VitrumCanvas (H54 — tsx transform wired in vitest.config.ts)', async () => {
+    // vitest.config.ts now sets esbuild: { jsx: 'automatic' } so .tsx files
+    // transform correctly. Verify the export resolves at runtime, not just
+    // at file-system level.
+    const reactEntry = await import('../src/react/index.js');
+    expect(typeof reactEntry.VitrumCanvas).toBe('object'); // React.forwardRef returns an object
   });
 });

@@ -27,7 +27,7 @@ import { GlResources } from './gl/glResources.js';
 import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
-import { invertMat4 } from './mat4.js';
+import { invertMat4, makeRotationYMat4 } from './mat4.js';
 import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
 
@@ -331,11 +331,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       cameraWorldMatrix,
       invProjectionMatrix,
       environmentIntensity: this.#sceneTextures?.envMap != null ? envIntensity : 0,
-      // environment.rotationY is NOT yet honoured here — and it is ignored by EVERY
-      // current backend (no rotationY→matrix convention is wired in pt-webgpu either,
-      // verified 2026-06-09). That is a cross-backend contract gap (a convention must
-      // be chosen + applied consistently), tracked separately, not a pt-webgl2 fix.
-      environmentRotation: IDENTITY_MAT4,
+      // H6 FIX (2026-06-09): honour HdriEnvironment.rotationY (CCW env dome rotation
+      // around +Y, radians).  Convention: a world-space direction `d` looks up the
+      // UNROTATED map at `RY(−rotationY) * d`, so the uniform matrix is
+      // makeRotationYMat4(−rotationY).  The GLSL then evaluates:
+      //   envRotation3x3 = mat3(environmentRotation)   → RY(−rotationY)
+      //   lookupDir      = envRotation3x3 * worldDir   → RY(−rotationY) * d ✓
+      // rotationY = 0 → identity → byte-identical to the pre-H6 IDENTITY_MAT4 path.
+      environmentRotation: (env?.kind === 'hdri' && env.rotationY != null && env.rotationY !== 0)
+        ? makeRotationYMat4(-(env.rotationY))
+        : IDENTITY_MAT4,
       spectralEnabled: this.#spectralEnabled,
       causticStrategy: caustic,
       mneeMaxIterations: this.#mneeMaxIterations,

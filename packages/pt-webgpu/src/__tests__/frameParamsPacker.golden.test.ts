@@ -95,7 +95,8 @@ function reconstructExpected(
   f[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
   f[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
   f[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
-  f[FrameParamsSlot.environmentTint + 3] = 0;
+  // H6: environmentTint.w now carries environmentHdriRotationY (was hardcoded 0).
+  f[FrameParamsSlot.environmentTint + 3] = sb.environmentHdriRotationY;
   f[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
   f[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
   f[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];
@@ -131,6 +132,7 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     environmentSunDirection: [0.0, 1.0, 0.0],
     environmentSunStrength: 3.5,
     environmentHdriIntensity: 1.0,
+    environmentHdriRotationY: 0,
     ...over,
   };
 }
@@ -280,6 +282,21 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(() => packFrameParams(makeConfig(), makeSceneInputs(), singularInput, 800, 600)).toThrow(
       /non-invertible/,
     );
+  });
+
+  it('H6 zero-rotation invariant: environmentTint.w = 0 when environmentHdriRotationY = 0', () => {
+    // rotationY = 0 must write 0.0 to environmentTint.w — byte-identical to the
+    // pre-H6 hardcoded 0 that was there before.
+    const ab = packFrameParams(makeConfig(), makeSceneInputs({ environmentHdriRotationY: 0 }), makeInput(), 800, 600);
+    const f = new Float32Array(ab);
+    expect(f[FrameParamsSlot.environmentTint + 3]).toBe(0);
+  });
+
+  it('H6 packer writes non-zero environmentHdriRotationY to environmentTint.w', () => {
+    const rotY = Math.PI / 4; // 45°
+    const ab = packFrameParams(makeConfig(), makeSceneInputs({ environmentHdriRotationY: rotY }), makeInput(), 800, 600);
+    const f = new Float32Array(ab);
+    expect(f[FrameParamsSlot.environmentTint + 3]).toBeCloseTo(rotY, 6);
   });
 
   it('frozen literal golden for the canonical baseline input', () => {

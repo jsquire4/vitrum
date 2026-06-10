@@ -546,6 +546,7 @@ export class SceneMutationRouter {
           environmentSunDirection: packed.sunDirection,
           environmentSunStrength: packed.sunStrength,
           environmentHdriIntensity: packed.hdriIntensity,
+          environmentHdriRotationY: packed.hdriRotationY,
           environmentMapWidth: packed.hdriWidth,
           environmentMapHeight: packed.hdriHeight,
           hasEnvironmentMap: packed.hasHdri,

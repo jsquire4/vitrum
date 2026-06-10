@@ -86,8 +86,8 @@ written in characterization mode first, flipped to enforcement when H1 lands).
 #### H5 — `bdpt: true` never driven → **DECISION D1** (rec: gate off; driver = roadmap item)
 - Option A files: `options.ts`, `index.ts`, `capabilities.ts`, `promiseLedger.ts`, dummy-bind for `uBdptLightPathTex` if FEATURE_BDPT can still compile. · **Effort:** A=S, B=L, C=S.
 
-#### H6 — env `intensity`/`rotationY`
-- **Fix:** read `environment.intensity ?? 1` (keep the `envMap != null ? : 0` outer gate); add `makeRotationYMat4` to `mat4.ts`; thread via existing `FrameUniforms.environmentRotation`. GLSL already consumes both. · **Effort:** S · no render change at defaults.
+#### H6 — env `intensity`/`rotationY` — **DONE 2026-06-09**
+- **Implemented:** `makeRotationYMat4` added to `packages/pt-webgl2/src/mat4.ts`; wired in `index.ts` as `environmentRotation: makeRotationYMat4(-(env.rotationY))` (caller passes -rotationY per CCW convention). pt-webgpu: packed into `params.environmentTint.w`; `rotateYNeg`/`rotateYPos` helpers added to `connect.wgsl.ts`; plumbed through `environmentPacking.ts` → `uploadSceneBuffers.ts` → `sceneMutationRouter.ts` → `frameParamsPacker.ts`. Zero-rotation invariant: `rotationY=0` produces identity/zeros → byte-identical pre-H6. Core JSDoc updated. All tests + typechecks green. WGSL SHA re-pinned (242294 chars).
 
 #### H7 — cluster
 - **H7-a additive regime → DECISION D3** [LEAD: investigate before touching — do NOT treat as a one-char flip].

@@ -12,6 +12,14 @@ interface EnvironmentParams {
    * gated by the procedural-sky sun strength.
    */
   readonly hdriIntensity: number;
+  /**
+   * H6: HDRI environment rotation around the world +Y axis, in radians (default 0).
+   * Uploaded to `params.environmentTint.w` (the previously-zero .w lane of
+   * environmentTint — no layout change).  The WGSL lookups apply rotateYNeg by this
+   * value before UV indexing, and rotateYPos after CDF sampling.
+   * Non-HDRI environments keep this at 0 (rotationY does not apply to procedural sky).
+   */
+  readonly hdriRotationY: number;
   readonly hdriWidth: number;
   readonly hdriHeight: number;
   readonly hasHdri: boolean;
@@ -29,6 +37,7 @@ function emptyEnvironmentParams(): EnvironmentParams {
     sunDirection: [0, 1, 0],
     sunStrength: 0,
     hdriIntensity: 0,
+    hdriRotationY: 0,
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,
@@ -65,7 +74,8 @@ function buildProceduralSkyEnvironmentParams(
     tint: [0.9 * tintBoost * intensity, 0.95 * intensity, 1.0 * intensity],
     sunDirection: sunDir,
     sunStrength: Math.max(0, intensity),
-    hdriIntensity: 0,  // No HDRI present for procedural-sky
+    hdriIntensity: 0,     // No HDRI present for procedural-sky
+    hdriRotationY: 0,     // rotationY applies to HDRI only; no-op for procedural-sky
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,
@@ -126,6 +136,8 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       cdf[0] = 0;
       cdf[pixelCount] = 1;
       const hdriIntensity = scene.environment.intensity ?? 1;
+      // H6: pass rotationY through; default 0 (identity rotation).
+      const hdriRotationY = scene.environment.rotationY ?? 0;
       return {
         tint: [1, 1, 1],
         sunDirection: [0, 1, 0],
@@ -134,6 +146,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
         // The HDRI radiance uses its own hdriIntensity lane (→ params.environmentHdriIntensity).
         sunStrength: 0,
         hdriIntensity,
+        hdriRotationY,
         hdriWidth: width,
         hdriHeight: height,
         hasHdri: true,
@@ -148,6 +161,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     sunDirection: [0, 1, 0],
     sunStrength: 0,
     hdriIntensity: 0,
+    hdriRotationY: 0,
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,

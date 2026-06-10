@@ -1616,6 +1616,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       frameParity: this._frameCount & 1,
     });
 
+    // H26 — update the NRC camera pdf every frame so the a0 primary footprint
+    // reflects the current projection + internal render resolution.  No-op when
+    // NRC is off (_nrc is null in the default pipeline). The write is a cheap
+    // 4-byte queue.writeBuffer; it must happen before the gi-ris NRC pass runs.
+    this._nrc?.updateCameraPixelPdf(inputs.camera.projMatrix, this._width, this._height);
+
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._resourceCache.textureView(this._res.common.placeholderTexture);
 

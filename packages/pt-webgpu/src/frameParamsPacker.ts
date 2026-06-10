@@ -41,6 +41,14 @@ export interface FrameParamsSceneInputs {
    *  Written to params.environmentHdriIntensity so the equirect lookup is not
    *  gated by the procedural-sky sun-strength lane. */
   readonly environmentHdriIntensity: number;
+  /**
+   * H6: HDRI dome CCW Y-rotation in radians (default 0).
+   * Packed into params.environmentTint.w (the previously-zero .w lane — no layout
+   * change).  The WGSL equirect lookup rotates the direction by -rotationY before UV;
+   * the importance sampler rotates the CDF-sampled direction by +rotationY.
+   * Zero means no rotation: byte-identical to pre-H6 behaviour.
+   */
+  readonly environmentHdriRotationY: number;
 }
 
 /**
@@ -151,7 +159,10 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
   paramsF32[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
   paramsF32[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
-  paramsF32[FrameParamsSlot.environmentTint + 3] = 0;
+  // H6: environmentTint.w was always 0 (unused). It now carries environmentHdriRotationY
+  // so the WGSL equirect helpers can apply the CCW Y-rotation without a new UBO field.
+  // rotationY = 0 → writes 0.0 → WGSL cos(0)=1, sin(0)=0 → identity → zero-rotation invariant.
+  paramsF32[FrameParamsSlot.environmentTint + 3] = sb.environmentHdriRotationY;
   paramsF32[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
   paramsF32[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
   paramsF32[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];

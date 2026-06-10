@@ -75,6 +75,8 @@ export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingCont
     uniform1i: (loc, v) => rec(loc, v),
     uniform1f: (loc, v) => rec(loc, v),
     uniform1fv: (loc, v) => rec(loc, v),
+    // H6: matrix uniform recorder (environmentRotation + camera matrices).
+    uniformMatrix4fv: (loc, _transpose, v) => rec(loc, v),
   };
 
   const target: Record<string, unknown> = {};

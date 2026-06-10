@@ -48,7 +48,7 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 ## Known gaps
 
 - **BDPT inert-but-safe**: `bdpt: true` compiles the kernels and prevents the unbound-sampler crash, but the light-subpath generation passes are not yet orchestrated by the host. The frame renders unidirectionally. Full driver tracked in `items_to_fix §H5`.
-- **`rotationY` ignored**: environment rotation is not yet wired to a matrix on any backend. Tracked cross-backend.
+- **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid does not yet consume `rotationY` (no-op, documented).
 - **Mesh-area emitters: no NEE**: mesh-area lights are visible via emissive fold (direct hit lighting) but not sampled via NEE (explicit connection to triangle lights). Tracked in `items_to_fix §H`.
 - **Spectral: achromatic-flat**: spectral mode traces the hero-wavelength path and reconstructs RGB via CIE CMF tables (H2 fix), but Jakob–Hanika material coefficients are not yet uploaded so spectral reflectance is a uniform tint over RGB. Tracked in road-to-100.
 

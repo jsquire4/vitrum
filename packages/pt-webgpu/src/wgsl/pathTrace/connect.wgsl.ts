@@ -46,6 +46,38 @@ struct EnvironmentLookup {
   pdf: f32,
 };
 
+// H6 (2026-06-09) — Y-axis rotation helpers for the HDRI environment dome.
+//
+// Convention (matches HdriEnvironment.rotationY JSDoc and the pt-webgl2 mat4):
+//   A CCW rotationY of the environment dome means a world-space direction d
+//   looks up the UNROTATED map at rotateY(d, -rotationY).
+//   The CDF-sampled direction (in unrotated-map space) is rotated by +rotationY
+//   to yield the world-space light direction.
+//
+// rotationY is stored in params.environmentTint.w (the previously-zero .w lane).
+// rotationY = 0 => cos=1, sin=0 => both helpers return dir unchanged (zero-rotation
+// invariant: output is byte-identical to the pre-H6 code).
+//
+// rotateYNeg(dir, rotY) = RY(-rotY) * dir:
+//   x' =  cos(rotY)*x - sin(rotY)*z
+//   y' =  y
+//   z' =  sin(rotY)*x + cos(rotY)*z
+fn rotateYNeg(dir: vec3f, rotY: f32) -> vec3f {
+  let c = cos(rotY);
+  let s = sin(rotY);
+  return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
+}
+
+// rotateYPos(dir, rotY) = RY(+rotY) * dir:
+//   x' =  cos(rotY)*x + sin(rotY)*z
+//   y' =  y
+//   z' = -sin(rotY)*x + cos(rotY)*z
+fn rotateYPos(dir: vec3f, rotY: f32) -> vec3f {
+  let c = cos(rotY);
+  let s = sin(rotY);
+  return vec3f(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
+}
+
 fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {
     return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
@@ -54,8 +86,13 @@ fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (dims.x == 0u || dims.y == 0u) {
     return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
   }
-  let phi = atan2(dir.z, dir.x);
-  let theta = acos(clamp(dir.y, -1.0, 1.0));
+  // H6: rotate the lookup direction by -rotationY so the unrotated map is
+  // sampled at the correct texel for a CCW-rotated environment dome.
+  // rotationY = 0 → rotateYNeg is identity → zero-rotation invariant.
+  let rotY = params.environmentTint.w;
+  let lookupDir = rotateYNeg(dir, rotY);
+  let phi = atan2(lookupDir.z, lookupDir.x);
+  let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
   let u = fract(phi * INV_2PI + 0.5);
   let v = clamp(theta * INV_PI, 0.0, 0.999999);
   let x = min(u32(floor(u * f32(dims.x))), dims.x - 1u);
@@ -113,9 +150,14 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   let phi = (u - 0.5) * (2.0 * PI);
   let theta = v * PI;
   let sinTheta = sin(theta);
-  let dir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+  // dir is in unrotated-map space (the CDF is built from the unrotated map).
+  let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
   let texel = environmentMapTexels[idx];
-  result.wi = safe_normalize(dir);
+  // H6: rotate the map-space sample direction by +rotationY to get the world-space
+  // light direction for a CCW-rotated environment dome.
+  // rotationY = 0 → rotateYPos is identity → zero-rotation invariant.
+  let rotY = params.environmentTint.w;
+  result.wi = safe_normalize(rotateYPos(mapDir, rotY));
   result.value = texel.rgb * max(params.environmentHdriIntensity, 0.0);
   result.pdf = max(texel.w, 1e-8);
   return result;

@@ -95,6 +95,12 @@ interface PackedSceneData {
    * by the procedural-sky sun-strength lane.
    */
   readonly environmentHdriIntensity: number;
+  /**
+   * H6: HDRI dome rotation around the world +Y axis, radians (default 0).
+   * Packed into `params.environmentTint.w` (the previously-zero .w lane — no layout
+   * change).  Zero means no rotation (identity). Non-HDRI environments always supply 0.
+   */
+  readonly environmentHdriRotationY: number;
   readonly environmentMapWidth: number;
   readonly environmentMapHeight: number;
   readonly hasEnvironmentMap: boolean;
@@ -443,6 +449,7 @@ export function buildPackedScene(
     environmentSunDirection: environment.sunDirection,
     environmentSunStrength: environment.sunStrength,
     environmentHdriIntensity: environment.hdriIntensity,
+    environmentHdriRotationY: environment.hdriRotationY,
     environmentMapWidth: environment.hdriWidth,
     environmentMapHeight: environment.hdriHeight,
     hasEnvironmentMap: environment.hasHdri,
@@ -781,6 +788,7 @@ interface MutableSceneBufferFields {
   environmentSunDirection: readonly [number, number, number];
   environmentSunStrength: number;
   environmentHdriIntensity: number;
+  environmentHdriRotationY: number;
   environmentMapWidth: number;
   environmentMapHeight: number;
   hasEnvironmentMap: boolean;
@@ -1053,6 +1061,7 @@ export function applyEnvironmentMutation(
     readonly environmentSunDirection: readonly [number, number, number];
     readonly environmentSunStrength: number;
     readonly environmentHdriIntensity: number;
+    readonly environmentHdriRotationY: number;
     readonly environmentMapWidth: number;
     readonly environmentMapHeight: number;
     readonly hasEnvironmentMap: boolean;
@@ -1063,6 +1072,7 @@ export function applyEnvironmentMutation(
   mutable.environmentSunDirection = next.environmentSunDirection;
   mutable.environmentSunStrength = next.environmentSunStrength;
   mutable.environmentHdriIntensity = next.environmentHdriIntensity;
+  mutable.environmentHdriRotationY = next.environmentHdriRotationY;
   mutable.environmentMapWidth = next.environmentMapWidth;
   mutable.environmentMapHeight = next.environmentMapHeight;
   mutable.hasEnvironmentMap = next.hasEnvironmentMap;

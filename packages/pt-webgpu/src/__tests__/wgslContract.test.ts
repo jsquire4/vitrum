@@ -66,8 +66,14 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // MATERIAL_VEC4_STRIDE bumped 23→26. Zero-default invariant: all lobes
     // short-circuit when their scalar is 0 → pre-H52 scenes are numerically identical.
     // RENDER-CHANGING on clearcoat/sheen/iridescence materials.
-    expect(digest).toBe('20465e36cefb2d8fd6981ef45dd3ed6a24dea84136310a14db8336ce8070df94');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(240384);
+    // Re-pinned 2026-06-09: H6 — HdriEnvironment.rotationY implemented in pt-webgpu.
+    // rotateYNeg + rotateYPos helpers added to connect.wgsl.ts; environmentLookup
+    // rotates dir by -rotationY before UV; sampleEnvironmentImportance rotates the
+    // CDF-sampled direction by +rotationY. rotationY=0 → identity (zero-rotation invariant).
+    // Packed into params.environmentTint.w (no layout change). RENDER-CHANGING on HDRI scenes
+    // with non-zero rotationY; rotationY=0 byte-identical to pre-H6.
+    expect(digest).toBe('080662d86bac21f527a76bb7d08db1461128d9be2c71cc0ca469fc3ee83c756e');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(242294);
   });
 });
 

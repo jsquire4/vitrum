@@ -135,11 +135,16 @@ struct NrcLevelDesc {
 
 struct NrcCfgUBO {
   aabbMin    : vec3f,
-  spreadC    : f32,    // Müller §5 termination constant c
+  spreadC    : f32,           // Müller §5 termination constant c
   aabbMax    : vec3f,
-  recordCap  : u32,    // max training records this frame (record buffer capacity)
-  recordStride : u32,  // f32s per record = NRC_IN_W + OUT_W
-  _pad0 : u32, _pad1 : u32, _pad2 : u32,
+  recordCap  : u32,           // max training records this frame (record buffer capacity)
+  recordStride    : u32,      // f32s per record = NRC_IN_W + OUT_W
+  // H26 — camera per-pixel solid-angle pdf (host-updated every frame).
+  // For a pinhole camera: pdf = cot²(fovY/2) · W · H / 4.
+  // Used as the primary-edge pdf in nrcSegmentSpreadTerm so a0 is the
+  // correct Müller camera footprint instead of the old hard-coded 1.0.
+  cameraPixelPdf  : f32,
+  _pad1 : u32, _pad2 : u32,
 }
 
 @group(4) @binding(0) var<storage, read>       nrcWeights : array<f32>;

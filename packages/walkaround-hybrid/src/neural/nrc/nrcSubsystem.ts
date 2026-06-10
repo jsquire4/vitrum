@@ -277,6 +277,11 @@ export class NrcSubsystem implements PipelineSubsystem {
     f[4] = aabbMax[0]; f[5] = aabbMax[1]; f[6] = aabbMax[2];
     u[7] = cfg.recordCap >>> 0;
     u[8] = this._recordStride >>> 0;
+    // f[9] = cameraPixelPdf — initialised to 1.0 (pinhole, unit resolution).
+    // Updated every frame by updateCameraPixelPdf() once the host supplies
+    // the camera projection matrix and render resolution.  1.0 is the safe
+    // fallback used by the old hard-coded path.
+    f[9] = 1.0;
     d.queue.writeBuffer(this._cfgUbo, 0, ab);
 
     // ── H27 — per-slot atomic claim flags (one u32 per recordCap slot). ──
@@ -332,6 +337,36 @@ export class NrcSubsystem implements PipelineSubsystem {
    */
   clearSlotClaims(encoder: GPUCommandEncoder): void {
     encoder.clearBuffer(this._slotClaimsBuf);
+  }
+
+  /**
+   * Update the per-pixel camera solid-angle pdf in the NRC config UBO.
+   * Must be called once per frame (or after every resize) BEFORE the gi-ris
+   * NRC pass runs so the WGSL a0 footprint uses the correct camera pdf instead
+   * of the hard-coded 1.0 fallback.
+   *
+   * For a pinhole camera with a column-major perspective projection matrix:
+   *   - projMatrix[5] = 1/tan(fovY/2)  (the y-focal-length element)
+   *   - Pixel solid angle ≈ 4·tan²(fovY/2) / (W·H) = 4 / (projMatrix[5]² · W · H)
+   *   - Camera pdf = 1 / solidAngle = projMatrix[5]² · W · H / 4
+   *
+   * @param projMatrix  Column-major 4×4 perspective matrix (element [5] = cotfovY).
+   * @param renderWidth  Render resolution width in pixels (internal, not CSS).
+   * @param renderHeight Render resolution height in pixels (internal, not CSS).
+   */
+  updateCameraPixelPdf(
+    projMatrix: Float32Array | readonly number[],
+    renderWidth: number,
+    renderHeight: number,
+  ): void {
+    // projMatrix[5] (column-major) = element at row 1, col 1 = 1/tan(fovY/2).
+    const cotFovY = projMatrix[5] ?? 1.0;
+    const pdf = Math.max(1e-6, (cotFovY * cotFovY * renderWidth * renderHeight) / 4);
+    const tmp = new Float32Array(1);
+    tmp[0] = pdf;
+    // Byte offset 36 = f32 index 9 in the UBO (after aabbMin, spreadC, aabbMax,
+    // recordCap, recordStride — see nrcQuery.wgsl NrcCfgUBO layout).
+    this._device.queue.writeBuffer(this._cfgUbo, 36, tmp);
   }
 
   /** Copy this frame's gathered records into the MAP_READ staging buffer. Called

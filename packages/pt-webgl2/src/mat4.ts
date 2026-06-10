@@ -1,9 +1,61 @@
 // mat4 — column-major 4×4 linear algebra for the THREE-free WebGL2 path tracer.
 //
+// H6 (2026-06-09): added makeRotationYMat4 for the HDRI environment rotation
+// convention.  The matrix is used as:
+//
+//   envRotation3x3 = mat3(environmentRotation)
+//   lookupDir = envRotation3x3 * worldDir
+//
+// So to look up the unrotated map at the direction that corresponds to a CCW
+// rotationY of the environment, the matrix must rotate worldDir by −rotationY
+// (i.e. CW by rotationY).  makeRotationYMat4(radians) builds a standard
+// column-major RY(radians) matrix; the caller passes −rotationY.  See the
+// sign-convention proof in the JSDoc below.
+//
 // @vitrum/core exports only asMat4/isMat4 (no invert), and pt-webgpu's invert
 // lives in its own package, so the 4×4 inverse is kept here. Matrices are
 // column-major (three.js / WebGL convention), matching `FrameInput.viewMatrix` /
 // `projMatrix`.
+
+/**
+ * Build a column-major 4×4 rotation matrix around the world +Y axis by
+ * `radians` (counter-clockwise when viewed from above, i.e. from +Y).
+ *
+ * Sign-convention proof for H6 rotationY:
+ *   The GLSL shader computes `envRotation3x3 = mat3(environmentRotation)` and
+ *   then evaluates `envRotation3x3 * worldDir` before the equirect UV lookup.
+ *   A CCWH `rotationY` of the *environment* means a world-space direction `d`
+ *   should sample the UNROTATED map at `RY(−rotationY) * d`.  Therefore the
+ *   caller supplies `makeRotationYMat4(−rotationY)` so that:
+ *
+ *     envRotation3x3 * d = RY(−rotationY) * d    ✓ correct unrotated-map UV
+ *
+ *   Column-major layout (WebGL convention, same as gl-matrix / Three.js):
+ *
+ *     [ cos θ   0   sin θ   0 ]   stored as columns:
+ *     [  0      1    0      0 ]   col0 = [cos,-0, sin, 0]  wait, Y-rot is:
+ *     [-sin θ   0   cos θ   0 ]   col0 = [cos, 0,-sin, 0]
+ *     [  0      0    0      1 ]   col1 = [0,   1,  0,  0]
+ *                                 col2 = [sin, 0, cos, 0]
+ *                                 col3 = [0,   0,  0,  1]
+ *
+ *   Flat column-major index order: [0..3]=col0, [4..7]=col1, [8..11]=col2, [12..15]=col3.
+ *
+ * Verification (θ = π/2):
+ *   RY(π/2) * (1,0,0) = (cos 90°, 0, −sin 90°) = (0, 0, −1)   ✓
+ *   i.e. +X maps to −Z after a 90° CCW-Y rotation.
+ */
+export function makeRotationYMat4(radians: number): Float32Array {
+  const c = Math.cos(radians);
+  const s = Math.sin(radians);
+  // Column-major: [col0 | col1 | col2 | col3]
+  return new Float32Array([
+    c, 0, -s, 0,   // col0
+    0, 1,  0, 0,   // col1
+    s, 0,  c, 0,   // col2
+    0, 0,  0, 1,   // col3
+  ]);
+}
 
 /**
  * Invert a column-major 4×4 matrix via cofactor expansion. Returns `null` when

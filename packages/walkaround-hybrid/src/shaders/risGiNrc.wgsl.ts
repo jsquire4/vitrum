@@ -179,11 +179,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
   // ── NRC: primary-vertex footprint a0 (Müller §5). The primary edge is
-  // camera→primary hit; its spread term uses the primary ray pdf (pinhole
-  // camera → 1) and the primary-hit |cosθ|. a0 = (first-segment term)². The
-  // bounce edge's spread is compared against c·a0 to decide cache termination.
+  // camera→primary hit; its spread term uses the camera's per-pixel
+  // solid-angle pdf (nrcCfg.cameraPixelPdf — host-computed each frame from
+  // the projection matrix and render resolution; see NrcSubsystem.updateCameraPixelPdf)
+  // and the primary-hit |cosθ|. a0 = (first-segment term)². The bounce edge's
+  // spread is compared against c·a0 to decide cache termination.
+  //
+  // H26 camera-pdf fix: previously this used pdf=1.0 (pinhole unit-resolution
+  // fallback). The Müller-correct value is the camera's per-pixel solid-angle
+  // pdf = cot²(fovY/2)·W·H/4, which grows with resolution and FOV narrowing.
+  // A tighter a0 (higher pdf → smaller spread term) means the bounce edges must
+  // grow MORE before termination fires — correctly modelling the narrower camera
+  // footprint at higher resolution or zoom.
   let cosThetaPrimary = max(1e-4, abs(dot(normal, primaryRay.direction)));
-  let a0term = nrcSegmentSpreadTerm(hit.dist, 1.0, cosThetaPrimary);
+  let a0term = nrcSegmentSpreadTerm(hit.dist, nrcCfg.cameraPixelPdf, cosThetaPrimary);
   let a0 = a0term * a0term;
 
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {

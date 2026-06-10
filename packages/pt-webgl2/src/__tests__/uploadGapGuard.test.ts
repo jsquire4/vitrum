@@ -103,4 +103,46 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     const rec = await renderAndRecord(sceneNoEmitters());
     expect(rec.has('uniformThatDoesNotExist')).toBe(false);
   });
+
+  it('H6: environmentRotation is identity for rotationY=0 (zero-rotation invariant)', async () => {
+    // Zero-rotation invariant: when rotationY is absent (default), the uploaded
+    // environmentRotation matrix must equal the identity — byte-identical behaviour
+    // to the pre-H6 IDENTITY_MAT4 constant.
+    const scene: Scene = {
+      ...sceneNoEmitters(),
+      environment: { kind: 'hdri', hdri: {}, intensity: 1 },
+    };
+    const rec = await renderAndRecord(scene);
+    const mat = rec.get('environmentRotation');
+    expect(mat).toBeDefined();
+    expect(ArrayBuffer.isView(mat)).toBe(true);
+    const f = new Float32Array((mat as Float32Array).buffer, (mat as Float32Array).byteOffset, 16);
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    for (let i = 0; i < 16; i++) {
+      expect(f[i]).toBeCloseTo(identity[i]!, 10);
+    }
+  });
+
+  it('H6: environmentRotation is non-identity for rotationY=π/2', async () => {
+    // When rotationY = π/2, the matrix must be RY(−π/2) (not identity).
+    // The packer uses makeRotationYMat4(-rotationY).
+    // For RY(-π/2): cos(-π/2)=0, sin(-π/2)=-1.
+    // Column-major: col0=[0,0,1,0], col1=[0,1,0,0], col2=[-1,0,0,0], col3=[0,0,0,1].
+    // Check: m[0]=cos=0, m[2]=-sin=1, m[8]=sin=-1, m[10]=cos=0.
+    const scene: Scene = {
+      ...sceneNoEmitters(),
+      environment: { kind: 'hdri', hdri: {}, intensity: 1, rotationY: Math.PI / 2 },
+    };
+    const rec = await renderAndRecord(scene);
+    const mat = rec.get('environmentRotation');
+    expect(mat).toBeDefined();
+    expect(ArrayBuffer.isView(mat)).toBe(true);
+    const f = new Float32Array((mat as Float32Array).buffer, (mat as Float32Array).byteOffset, 16);
+    // Must differ from identity (i.e. the rotation was applied).
+    expect(Math.abs(f[0]! - 1)).toBeGreaterThan(0.5); // cos(-π/2)=0, not 1
+    // col0[0] = cos(-π/2) ≈ 0
+    expect(f[0]).toBeCloseTo(0, 5);
+    // col2[0] = sin(-π/2) ≈ -1  (index 8)
+    expect(f[8]).toBeCloseTo(-1, 5);
+  });
 });

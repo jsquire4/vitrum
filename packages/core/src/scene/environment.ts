@@ -22,6 +22,32 @@ export interface HdriEnvironment {
   readonly kind: 'hdri';
   readonly hdri: EnvironmentMapRef;
   readonly intensity?: number;            // default 1
+  /**
+   * Counter-clockwise rotation of the environment dome around the world +Y axis,
+   * in radians (default 0).
+   *
+   * **Convention:** a world-space direction `d` samples the *unrotated* map at
+   * the direction `rotateY(d, -rotationY)`.  Equivalently, the CDF-sampled
+   * importance direction (generated from the unrotated CDF) is rotated by
+   * `+rotationY` to produce the corresponding world-space light direction.
+   *
+   * **Per-backend support:**
+   * - `pt-webgl2` — IMPLEMENTED: builds a column-major 4×4 rotation matrix
+   *   (`makeRotationYMat4(-rotationY)`) and uploads it as the GLSL
+   *   `environmentRotation` uniform.  The shader applies `mat3(environmentRotation)
+   *   * worldDir` before the equirect UV lookup, i.e. it rotates the lookup
+   *   direction by `−rotationY` — exactly the convention above.
+   * - `pt-webgpu` — IMPLEMENTED: packs the angle into
+   *   `params.environmentTint.w`; the WGSL `environmentLookup` helper rotates
+   *   the lookup direction by `−rotationY` before computing UV, and
+   *   `sampleEnvironmentImportance` rotates the CDF-sampled direction by
+   *   `+rotationY` to yield the world-space sample direction.
+   * - `walkaround-hybrid` — DOCUMENTED NO-OP: the backend reduces the HDRI to a
+   *   non-directional scalar tint (solid-angle-weighted average colour).
+   *   Directional structure — and therefore any rotation of it — is not
+   *   representable in the walkaround GI model.  `rotationY` is silently ignored
+   *   and a warning is emitted via the environment-resolve path.
+   */
   readonly rotationY?: number;            // radians, default 0
 }
 
