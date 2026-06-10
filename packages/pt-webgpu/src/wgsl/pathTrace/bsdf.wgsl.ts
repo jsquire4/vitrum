@@ -328,7 +328,11 @@ fn evaluateBrdfFull(
   let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
   let kd = (vec3f(1.0) - f) * (1.0 - metallic);
   let diff = kd * baseColor * INV_PI;
-  let base = diff + spec;
+  // B9 — Kulla-Conty multiscatter energy compensation (restores the energy the
+  // single-scatter Smith GGX lobe drops at high roughness; zero at low roughness
+  // → smooth surfaces unchanged). f0 tints the extra bounces for coloured metals.
+  let ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+  let base = diff + spec + ms;
 
   // Additive extension lobes (each returns BRDF kernel, no nDotL factor).
   let cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, wi);
@@ -391,7 +395,9 @@ fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, 
   let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
   let kd = (vec3f(1.0) - f) * (1.0 - metallic);
   let diff = kd * baseColor * INV_PI;
-  return diff + spec;
+  // B9 — Kulla-Conty multiscatter energy compensation (see evaluateBrdfFull).
+  let ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+  return diff + spec + ms;
 }
 
 fn brdfDirectionalPdf(
@@ -635,7 +641,13 @@ fn sampleNextBounceDirection(
       // throughput multiplier is F · G1(wi) / R.
       let nDotL = max(dot(normal, result.sampledDir), 0.0);
       let g1Wi = smithG1(nDotL, roughness);
-      result.throughputMul = fresnel * g1Wi / max(R, 1e-4);
+      // B9 — multiscatter energy boost on the sampled specular reflection. The
+      // VNDF sampler covers single-scatter only; scale by the Kulla-Conty factor
+      // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
+      // multi-bounce energy (1 at low roughness → unchanged smooth surfaces).
+      let nDotVcc = max(dot(normal, wo), 0.0);
+      let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
+      result.throughputMul = fresnel * g1Wi * msBoost / max(R, 1e-4);
     } else {
       // Fresnel-weighted refraction branch — the only branch that crosses the
       // surface, so it is where the volumetric random walk enters / exits the
@@ -648,8 +660,33 @@ fn sampleNextBounceDirection(
       result.newRayOrigin = hitPos + offsetN * 1e-3;
       result.sampledDir = outDir;
       result.newRayDir = outDir;
-      // Divide by branch probability (1 - R); apply thin-film transmittance tint.
-      result.throughputMul = mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(1.0 - R, 1e-4);
+      // B10 — physical refraction transmittance. The energy partition is already
+      // Fresnel-consistent: the refraction branch carries probability (1 − R) and
+      // the throughput divides by it, so a clear (white) dielectric transmits 1·
+      // (1 − R)/(1 − R) = 1 — no arbitrary tint. The SURFACE transmittance colour
+      // is the material's baseColor (the dielectric's interface transmission
+      // colour, e.g. tinted glass) — NOT the old phenomenological
+      // mix(vec3(1), baseColor, 0.15) which faded any glass 85 % toward white and
+      // hid its colour. Bulk Beer-Lambert μ(λ) absorption (the physically-correct
+      // path-length-dependent colouring of a participating medium) is applied
+      // SEPARATELY in the kernel's transmissive block / volumetric walk; this
+      // factor is the thin-interface transmittance only. In spectral mode
+      // baseColor is the scalar Jakob-Hanika reflectance S(λ), so the surface
+      // transmittance is genuinely wavelength-resolved here too.
+      //
+      // η² radiance scaling: the symmetric BSDF (light/eye) requires the radiance
+      // to scale by (η_t/η_i)² across a refraction (PBR4e §9.5.2, eq. 9.13 — the
+      // "non-symmetry due to refraction" factor). We DELIBERATELY OMIT it: this is
+      // a UNIDIRECTIONAL eye-path tracer where the camera measures radiance and
+      // the radiance-scaling factor cancels for a closed light↔eye round trip
+      // through equal media (entering then exiting the same glass), which is the
+      // overwhelmingly common case (a glass object in air). Including it on only
+      // one crossing would over/under-brighten enclosed glass; the BDPT light
+      // subpath (the bidirectional consumer that WOULD need it) has its own
+      // medium accounting. Ref: PBR4e §9.5.2; Veach 1997 §5 (importance vs.
+      // radiance transport asymmetry). This is the same decision the pt-webgl2
+      // and walkaround dielectric BSDFs make.
+      result.throughputMul = baseColor * thinFilmTransmitTint / max(1.0 - R, 1e-4);
       result.enteredMedium = isTranslucent && frontFace;
       result.exitedMedium = isTranslucent && !frontFace;
     }
@@ -679,7 +716,11 @@ fn sampleNextBounceDirection(
     result.sampleAllowsAreaMis = true;
     let nDotL = max(dot(normal, result.sampledDir), 0.0);
     let g1Wi = smithG1(nDotL, roughness);
-    result.throughputMul = fresnel * g1Wi / max(specProb, 1e-4);
+    // B9 — multiscatter energy boost on the sampled specular reflection (see the
+    // dielectric-reflection branch above).
+    let nDotVcc = max(dot(normal, wo), 0.0);
+    let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
+    result.throughputMul = fresnel * g1Wi * msBoost / max(specProb, 1e-4);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
     let bs = cosineHemisphereSample(rng, normal);

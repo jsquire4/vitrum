@@ -1,5 +1,5 @@
 import type { MaterialSpec } from '@vitrum/core';
-import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX } from '@vitrum/shared-samplers';
+import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX, rgbToSpectralCoefficients } from '@vitrum/shared-samplers';
 
 const THIN_FILM_LAYER_LIMIT = 8;
 const SPECTRAL_SAMPLE_COUNT = 32;
@@ -24,6 +24,17 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   23 clearcoat, clearcoatRoughness, sheen, sheenRoughness              ← H52
  *   24 sheenColor.rgb, iridescence                                       ← H52
  *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax, 0 (pad)  ← H52
+ *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm), hasSpectralReflectance flag  ← A3
+ *
+ * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
+ * Hanika 2019 RGB→spectrum upsampling coefficients for the material's baseColor,
+ * solved ONCE at pack time. In spectral mode the GPU evaluates the sigmoid
+ * reflectance S(λ) = sigmoid(c0 + c1·λ + c2·λ²) at the hero wavelength to carry a
+ * genuine SCALAR spectral reflectance through the path (replacing the RGB→
+ * luminance tint). The .w flag is 1 when the coefficients are valid (always, for
+ * every material — black collapses to S≈0 via the solver's pure-black shortcut).
+ * spectralEnabled=false ignores this vec4 entirely (RGB path byte-identical).
+ * Ref: Jakob & Hanika 2019 (shared-samplers/jakobHanika.ts).
  *
  * WS4: vec4 #22 (`MATERIAL_VEC4_STRIDE` bumped 22 → 23) carries the RGB
  * absorption coefficient σ_a derived from `attenuationColor`/`attenuationDistance`
@@ -38,7 +49,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  * skipped when it is 0).
  * Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
  */
-const MATERIAL_VEC4_STRIDE = 26;
+const MATERIAL_VEC4_STRIDE = 27;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light wavelength range, canonical from shared-samplers/cieCmf.
@@ -234,6 +245,23 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
   const iridescenceMin = Math.max(finite(iridescenceRange[0] ?? 100, 100), 0);
   const iridescenceMax = Math.max(finite(iridescenceRange[1] ?? 400, 400), 0);
   packed.push(iridescenceIor, iridescenceMin, iridescenceMax, 0);
+
+  // A3 — vec4 #26: Jakob & Hanika 2019 RGB→spectrum upsampling coefficients for
+  // the material's baseColor (linear sRGB → 3-coefficient sigmoid polynomial),
+  // solved ONCE here at pack time. In spectral mode the GPU evaluates
+  //   S(λ) = sigmoid(c0 + c1·λ + c2·λ²)
+  // at the hero wavelength to get a genuine scalar spectral reflectance, carried
+  // through the path instead of an RGB→luminance tint. .w = 1 (coefficients
+  // always valid; pure black resolves to S≈0 via the solver's shortcut). The RGB
+  // path never reads this vec4, so spectralEnabled=false stays byte-identical.
+  // Ref: Jakob & Hanika 2019, "A Low-Dimensional Function Space for Efficient
+  //      Spectral Upsampling" (shared-samplers/jakobHanika.ts).
+  const [specC0, specC1, specC2] = rgbToSpectralCoefficients(
+    finite(base[0] ?? 0),
+    finite(base[1] ?? 0),
+    finite(base[2] ?? 0),
+  );
+  packed.push(finite(specC0), finite(specC1), finite(specC2), 1);
 
   return packed;
 }

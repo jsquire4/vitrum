@@ -423,6 +423,28 @@ class PTEngineWebGPU implements Engine {
       //   • No pt-webgpu-bdpt in experimentalFeatures even when bdpt:true was
       //     passed at construction (BDPT requires the full-tier group-2 layout).
       //
+      // B12 (Wave B) — lite-tier fidelity cliff, BINDING-BUDGET PROOF.
+      // The lite tier targets adapters reporting maxStorageBuffersPerShaderStage
+      // as low as 8 (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE). The lite
+      // group-0 layout already consumes 7 storage buffers (bindings 2,3,4,5,6,7,8
+      // = accum, positions, indices, triMaterialIds, materials, bvhNodes,
+      // normals), leaving exactly ONE free storage-buffer slot under the 8 cap.
+      //   • HDRI importance sampling needs TWO storage buffers (environmentMapTexels
+      //     + environmentMapCdf) → 7 + 2 = 9 > 8. It does NOT fit as storage
+      //     buffers. The viable route is TEXTURE-based packing (the equirect as a
+      //     sampled texture_2d<f32> + the marginal/conditional CDF rows in a second
+      //     sampled texture — neither counts against the storage-buffer budget),
+      //     which is a dedicated pipeline (texture upload + CDF-in-texture sampler
+      //     + a capability flip) requiring constrained-hardware GPU validation; it
+      //     is tracked as the B12 follow-up rather than shipped half-wired here.
+      //   • Area-light BSDF MIS needs ONE storage buffer (rectAreaLights) → 7 + 1
+      //     = 8, which fits exactly but leaves zero headroom and is bundled with
+      //     the same lite-pipeline plumbing + GPU validation as the HDRI route.
+      // Until that pipeline lands the lite tier honestly advertises procedural-sky
+      // + directional only (the pt-webgpu-lite-tier experimental flag marks the
+      // degraded tier). The budget arithmetic is PINNED by the liteTierBindingBudget
+      // test in webgpuLimits.test.ts.
+      //
       // For the full tier the capability is derived from PT_WEBGPU_SUPPORT so
       // the declared set and the ingestion/packer behavior stay in sync.
       supportedAnalyticShapes: this.#traceTier === 'lite'

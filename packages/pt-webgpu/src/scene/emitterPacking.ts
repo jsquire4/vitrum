@@ -552,6 +552,26 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
   const powers: number[] = [];
   const centroids: Vec3[] = [];
   const aabbs: { min: Vec3; max: Vec3 }[] = [];
+  // B8 — per-emitter orientation cones, in lockstep with powers/centroids/aabbs.
+  // `undefined` ⇒ full-sphere (no orientation culling). Point lights + the env /
+  // directional slots stay undefined (isotropic / no spatial orientation);
+  // spotlights and single-sided area lights get an oriented cone.
+  type ConeEntry = { axis: readonly [number, number, number]; thetaO?: number; thetaE?: number } | undefined;
+  const cones: ConeEntry[] = [];
+  const HEMISPHERE = Math.PI / 2; // one-sided cosine emission lobe (area lights)
+  // Spotlights: a forward beam. We don't carry the spot half-angle in the walked
+  // record, so use a conservative wide-ish lobe (≈60°) — it still culls the rear
+  // hemisphere (the common, high-value case) without over-tightening selection.
+  const SPOT_LOBE = Math.PI / 3;
+  const norm3 = (v: Vec3): readonly [number, number, number] => {
+    const l = Math.hypot(v[0], v[1], v[2]);
+    return l > 1e-12 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
+  };
+  const cross3 = (a: Vec3, b: Vec3): Vec3 => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
 
   // Track the union AABB of positional lights for the non-positional slots.
   let uMinX = Infinity, uMinY = Infinity, uMinZ = Infinity;
@@ -574,14 +594,25 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
   // centroid / AABB derivation stays here because it is light-tree-specific.
   for (const e of walkPositionalEmitters(packed)) {
     switch (e.kind) {
-      case 'point':
-      case 'spot': {
-        // Point + spot: delta lights at `position`, AABB collapses to the point.
+      case 'point': {
+        // Point: isotropic delta light at `position`, AABB collapses to the point.
         const p = e.position;
         extend(p);
         powers.push(emitterPower(e.radiance, { kind: 'delta' }));
         centroids.push(p);
         aabbs.push(pointAabb(p));
+        cones.push(undefined); // isotropic — full sphere
+        break;
+      }
+      case 'spot': {
+        // Spot: delta light at `position` with a forward beam along `axis`. B8 —
+        // orient the cone along the beam so the light tree culls points behind it.
+        const p = e.position;
+        extend(p);
+        powers.push(emitterPower(e.radiance, { kind: 'delta' }));
+        centroids.push(p);
+        aabbs.push(pointAabb(p));
+        cones.push({ axis: norm3(e.axis), thetaO: 0, thetaE: SPOT_LOBE });
         break;
       }
       case 'rect': {
@@ -598,6 +629,9 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
         powers.push(emitterPower(e.radiance, { kind: 'area', area }));
         centroids.push(p);
         aabbs.push({ min, max });
+        // B8 — rect-area light emits from one side along its geometric normal
+        // (u × v). Single-sided cosine lobe ⇒ thetaE = π/2 (hemisphere).
+        cones.push({ axis: norm3(cross3(u, v)), thetaO: 0, thetaE: HEMISPHERE });
         break;
       }
       case 'mesh': {
@@ -614,6 +648,12 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
         powers.push(emitterPower(e.radiance, { kind: 'area', area }));
         centroids.push(centroid);
         aabbs.push({ min, max });
+        // B8 — mesh-area triangle emits from one side along (B−A)×(C−A): the WGSL
+        // mesh-area NEE is one-sided (cosLight = max(dot(lightNormal, -wi), 0) >
+        // 0 gate, kernel.wgsl), so a hemisphere lobe along the geometric normal
+        // exactly matches the lit region — culling the dark back side is a pure
+        // unbiased win.
+        cones.push({ axis: norm3(cross3([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]])), thetaO: 0, thetaE: HEMISPHERE });
         break;
       }
     }
@@ -636,6 +676,12 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
     powers.unshift(directionalPower);
     centroids.unshift(unionCentroid);
     aabbs.unshift({ min: unionMin, max: unionMax });
+    // B8 — the directional / env slots have no spatial position (infinitely far),
+    // so their AABB is the whole lit region and the descent floors out the dist²
+    // term; they compete by power alone. Leave them full-sphere (undefined) — an
+    // orientation cone for an infinitely-distant emitter would only mis-cull. The
+    // directional unshift goes to index 0 to match the kernel walk.
+    cones.unshift(undefined);
   }
   if (hasEnv) {
     // Env radiance proxy: the dome tint scaled by the dome brightness (sun
@@ -649,7 +695,8 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
     powers.push(emitterPower(envRad, { kind: 'delta' }));
     centroids.push(unionCentroid);
     aabbs.push({ min: unionMin, max: unionMax });
+    cones.push(undefined); // env dome — full sphere
   }
 
-  return { powers, centroids, aabbs };
+  return { powers, centroids, aabbs, cones };
 }

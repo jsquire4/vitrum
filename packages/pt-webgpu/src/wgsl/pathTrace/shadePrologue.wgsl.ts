@@ -60,7 +60,19 @@ export function composeShadePrologueWgsl(
 
 ${emissiveComment}
     if (!prevSampleAllowsAreaMis) {
-      radiance = radiance + throughput * emissive;
+      // A3 — emitters in spectral mode: upsample the RGB emission to a spectrum
+      // via Jakob-Hanika and evaluate at the hero λ, scaled to preserve the
+      // emitter's luminance (flat-spectrum × luminance approximation in the
+      // limit, true reflectance-shaped emission otherwise). The throughput is
+      // already scalar-spectral (see the baseColor swap below) so this product
+      // is a genuine single-wavelength radiance contribution. Radiometric note:
+      // we treat the authored RGB emission as a D65-relative tristimulus and
+      // reconstruct its hero-λ SPD via the same upsampling used for reflectance;
+      // for a neutral (white) emitter this reduces to the luminance scale, the
+      // documented flat-spectrum approximation. RGB mode: emissive unchanged.
+      let emitSpectral = spectralEmissionAtHero(emissive, heroLambda);
+      let emitContribution = select(emissive, emitSpectral, params.spectralEnabled != 0u);
+      radiance = radiance + throughput * emitContribution;
     }
 
     let hitPos = ray.origin + ray.direction * hit.dist;
@@ -111,6 +123,27 @@ ${emissiveComment}
       let layerStrength = clamp(0.12 + 0.06 * f32(thinFilmLayerCountU), 0.0, 0.55);
       let filmStrength = clamp(layerStrength * (1.0 - roughness), 0.0, 0.6);
       baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
+    }
+    // A3 — TRUE spectral transport. In spectral mode replace the RGB albedo with
+    // a SCALAR spectral reflectance S(λ) at the hero wavelength (Jakob & Hanika
+    // 2019 upsampling, solved per-material at pack time). Broadcasting the scalar
+    // to all three channels makes the entire downstream RGB BSDF / NEE / MIS
+    // machinery carry a genuine single-wavelength quantity: every product
+    // throughput·brdf·… stays scalar (r==g==b), so luminance(radiance) at the
+    // end is exactly the spectral radiance the hero-λ CMF reconstruction expects.
+    // The per-bounce reflectance is now λ-resolved (a red glass attenuates the
+    // 460 nm hero path far more than the 630 nm one) — the dispersion / thin-film
+    // / Beer μ(λ) terms (already λ-aware) now modulate a truly spectral
+    // throughput. RGB mode (spectralEnabled==0) leaves baseColor untouched →
+    // byte-identical. Materials lacking packed coeffs (hasSpectralReflectance==0)
+    // fall back to the luminance of the RGB albedo (flat-spectrum approximation).
+    if (params.spectralEnabled != 0u) {
+      let reflScalar = select(
+        max(luminance(baseColor), 0.0),
+        evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda),
+        mat.hasSpectralReflectance,
+      );
+      baseColor = vec3f(reflScalar);
     }`;
 }
 

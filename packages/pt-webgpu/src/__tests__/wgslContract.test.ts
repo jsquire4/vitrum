@@ -81,16 +81,31 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // `if (params.bdptEnabled != 0u)` so a bdpt:false RUNTIME render is byte-identical
     // (the WGSL STRING changes, hence this re-pin; the OFF runtime path does not).
     // RENDER-CHANGING on bdpt:true scenes; equal-spp variance + caustic A/Bs → V28.
-    expect(digest).toBe('3d678055007aeca99d3fc1ca6416c0856954b3a75eee6c5d106cdaa29baf0864');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(250628);
+    // Re-pinned 2026-06-10: Wave B — A3 (true spectral transport: baseColor
+    // Jakob-Hanika spectral reflectance carried scalar-spectral at the hero λ;
+    // emitters/env/lights spectralised via spectralEmissionAtHero; MATERIAL_VEC4_STRIDE
+    // bumped 26→27 for the spectral-coeff vec4 #26), B9 (Kulla-Conty GGX multiscatter
+    // energy compensation in evaluateBrdf/Full + the sampled-spec boost), B10 (physical
+    // refraction transmittance = baseColor, replacing mix(vec3(1),baseColor,0.15)).
+    // spectralEnabled=false RGB path is byte-identical at RUNTIME (the WGSL string
+    // changes via the always-present select()s, hence this re-pin); B9/B10 are
+    // RENDER-CHANGING on rough-metal / glass scenes → V28 A/Bs.
+    // Re-pinned 2026-06-10 for B8 (light-tree orientation cones): the shared
+    // light-tree traversal WGSL grew the node stride 12→16 and gained the
+    // lt_coneFactor culling term (+2024 chars). Default-path RUNTIME is byte-
+    // identical for unoriented scenes (full-sphere cone ⇒ factor ≡ 1); oriented
+    // emitters (spot / single-sided area) get tighter SELECTION pdf only (the pdf
+    // is divided out — unbiased) → V28 oriented-emitter A/B.
+    expect(digest).toBe('a5c3cb929c331f0f722620eb61385c208ad79d13d10c1a08de300f1f5d836f2d');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(269962);
   });
 });
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
-    // H52 bumped the stride 23 → 26 (new vec4s #23–#25 carry clearcoat/sheen/
-    // iridescence Disney extension lobes). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 26u;');
+    // A3 bumped the stride 26 → 27 (new vec4 #26 carries the baseColor Jakob-Hanika
+    // spectral-reflectance sigmoid coeffs). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 27u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
   });
@@ -140,11 +155,16 @@ describe('pt-webgpu WGSL material contract', () => {
     // The emissive add must appear EXACTLY ONCE and be the gated form (wrapped in
     // the `if (!prevSampleAllowsAreaMis)` block). A second/unconditional add would
     // double-count emissive against the analytic connection once re-attached.
-    const emissiveAdds = (PT_WEBGPU_TRACE_WGSL.match(/radiance = radiance \+ throughput \* emissive;/g) ?? []).length;
+    // A3: the added quantity is `emitContribution` (= emissive in RGB mode,
+    // spectralEmissionAtHero(emissive,λ) in spectral mode) — still a single gated
+    // add, still double-count-free.
+    const emissiveAdds = (PT_WEBGPU_TRACE_WGSL.match(/radiance = radiance \+ throughput \* emitContribution;/g) ?? []).length;
     expect(emissiveAdds).toBe(1);
-    // The gated form: the `if (!prevSampleAllowsAreaMis) {` immediately precedes
-    // the (only) emissive add — confirming it is inside the gate.
-    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/if \(!prevSampleAllowsAreaMis\) \{\s*\n\s*radiance = radiance \+ throughput \* emissive;/);
+    // The select that produces emitContribution falls back to the RGB emissive
+    // when spectral mode is off (the byte-identical-RGB guarantee).
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let emitContribution = select(emissive, emitSpectral, params.spectralEnabled != 0u);',
+    );
   });
 
   it('contains active strategy-specific caustic paths', () => {

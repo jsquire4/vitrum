@@ -32,14 +32,26 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-09: H52 — clearcoat/sheen/iridescence lobes + MATERIAL_VEC4_STRIDE
     // 23→26. Lite composes the same material.wgsl.ts and bsdf.wgsl.ts.
     // Zero-default invariant: render-neutral for materials without these extension fields.
-    expect(digest).toBe('230602816caf398e32a3a8f018a4b7e938d4bd752265f3eb563ef3608e8f983e');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(90953);
+    // Re-pinned 2026-06-10: Wave B — A3 (true spectral transport: baseColor
+    // Jakob-Hanika spectral reflectance + spectralEmissionAtHero for emitters/env;
+    // MATERIAL_VEC4_STRIDE 26→27), B9 (Kulla-Conty GGX multiscatter in the shared
+    // bsdf module), B10 (physical refraction transmittance = baseColor). Lite
+    // composes the same material.wgsl.ts + bsdf.wgsl.ts + shadePrologue. The RGB
+    // (spectralEnabled=false) runtime path is byte-identical; B9/B10 are
+    // render-changing on rough-metal/glass lite scenes (→ V28).
+    // Re-pinned 2026-06-10 for B8 (light-tree orientation cones): the shared
+    // light-tree traversal WGSL the lite tier composes grew the node stride 12→16
+    // and gained the lt_coneFactor culling term. Default-path RUNTIME byte-
+    // identical for unoriented scenes (full-sphere cone ⇒ factor ≡ 1); oriented
+    // emitters get tighter SELECTION pdf only (divided out — unbiased).
+    expect(digest).toBe('337a0a0c78a403bbcd3d47e7ae6e7f1618e689c94bcfd128e4c03e417e6de321');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(107888);
   });
 });
 
 describe('pt-webgpu lite WGSL contract', () => {
   it('uses the reduced binding layout (no motion / TLAS / light buffers)', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 26u;'); // H52: 23 → 26
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 27u;'); // A3: 26 → 27
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('motionVectorsTexture');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');

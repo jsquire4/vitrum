@@ -32,6 +32,29 @@ export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
 export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
 
 /**
+ * B12 — lite-tier binding-budget proof (fidelity cliff arithmetic, PINNED by the
+ * liteTierBindingBudget test). The lite group-0 layout binds exactly these many
+ * storage buffers today: accum(2), positions(3), indices(4), triMaterialIds(5),
+ * materials(6), bvhNodes(7), normals(8) = 7. Under the lite cap of 8
+ * (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) that leaves ONE free
+ * storage-buffer slot.
+ *   • HDRI importance sampling = environmentMapTexels + environmentMapCdf = 2
+ *     storage buffers → 7 + 2 = 9 > 8 → does NOT fit as storage buffers (the
+ *     texture-packing route — equirect + CDF rows in sampled textures — is the
+ *     B12 follow-up; sampled textures do not count against this budget).
+ *   • Area-light BSDF MIS = rectAreaLights = 1 storage buffer → 7 + 1 = 8 → fits
+ *     exactly but with zero headroom, and needs the same lite-pipeline plumbing
+ *     + constrained-hardware GPU validation as the HDRI route.
+ * These three constants make the cliff arithmetic explicit and machine-checkable
+ * so a future change that frees/consumes a lite storage-buffer slot trips the pin.
+ */
+export const PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE = 7;
+/** Storage buffers an HDRI importance sampler would add to the lite layout. */
+export const PT_WEBGPU_LITE_HDRI_STORAGE_BUFFERS_NEEDED = 2;
+/** Storage buffers area-light BSDF MIS would add to the lite layout. */
+export const PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED = 1;
+
+/**
  * Full tier uses 5 storage textures per stage, all in group 0 (output +
  * G-buffer aux). The former group-2 BDPT light-path storage texture is now a
  * storage buffer (see {@link PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP}), so

@@ -27,7 +27,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(104); // H52: MATERIAL_FLOAT_STRIDE 92 → 104 (clearcoat/sheen/iridescence)
+    expect(packed.materials.length).toBe(108); // A3: MATERIAL_FLOAT_STRIDE 104 → 108 (baseColor Jakob-Hanika spectral coeffs)
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
@@ -159,17 +159,66 @@ describe('H52 Disney extension lobe packing', () => {
   });
 });
 
+// ── A3 — baseColor Jakob-Hanika spectral coefficient packing (vec4 #26) ──────
+describe('A3 spectral reflectance coefficient packing', () => {
+  const SPEC_OFFSET = 26 * 4; // 104
+
+  it('packs Jakob-Hanika coeffs c0,c1,c2 + flag=1 in vec4 #26', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.6, 0.2, 0.1], roughness: 0.5, metallic: 0,
+    } as never);
+    expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
+    // The three coeffs are finite raw-nm sigmoid-polynomial coefficients.
+    expect(Number.isFinite(packed[SPEC_OFFSET + 0]!)).toBe(true);
+    expect(Number.isFinite(packed[SPEC_OFFSET + 1]!)).toBe(true);
+    expect(Number.isFinite(packed[SPEC_OFFSET + 2]!)).toBe(true);
+    expect(packed[SPEC_OFFSET + 3]).toBe(1); // hasSpectralReflectance flag
+  });
+
+  it('round-trips a neutral grey to a flat spectrum (≈ albedo at all λ)', () => {
+    // A neutral grey albedo must upsample to a near-flat reflectance whose
+    // CMF integral reproduces the grey — the flat-spectrum invariant the GPU
+    // hero-λ transport relies on. We verify the coefficients reproduce ~0.5.
+    const grey = 0.5;
+    const packed = materialToPackedVec4s({
+      baseColor: [grey, grey, grey], roughness: 0.5, metallic: 0,
+    } as never);
+    const c0 = packed[SPEC_OFFSET + 0]!;
+    const c1 = packed[SPEC_OFFSET + 1]!;
+    const c2 = packed[SPEC_OFFSET + 2]!;
+    const evalS = (lam: number): number => {
+      const x = c0 + c1 * lam + c2 * lam * lam;
+      return 0.5 + x / (2 * Math.sqrt(1 + x * x));
+    };
+    // Sample across the visible band; a neutral grey should be near-flat.
+    for (const lam of [420, 500, 580, 660, 720]) {
+      expect(evalS(lam)).toBeGreaterThan(0.35);
+      expect(evalS(lam)).toBeLessThan(0.65);
+    }
+  });
+
+  it('pure black packs the solver shortcut (S≈0)', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0, 0, 0], roughness: 0.5, metallic: 0,
+    } as never);
+    const c0 = packed[SPEC_OFFSET + 0]!;
+    const x = c0 + packed[SPEC_OFFSET + 1]! * 550 + packed[SPEC_OFFSET + 2]! * 550 * 550;
+    const s = 0.5 + x / (2 * Math.sqrt(1 + x * x));
+    expect(s).toBeLessThan(0.05);
+  });
+});
+
 // ── Material stride consistency gate (TS vs WGSL lockstep) ───────────────────
 // MATERIAL_VEC4_STRIDE is a constant that exists in two places:
-//   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 26, exported as
-//      MATERIAL_FLOAT_STRIDE = 104)
-//   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 26u;)
+//   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 27, exported as
+//      MATERIAL_FLOAT_STRIDE = 108)
+//   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 27u;)
 // If they diverge, every material read in the GPU kernel is silently misaligned.
 // This test checks both sources agree, and that the TS float-stride is exactly
 // 4× the WGSL vec4-stride.
 describe('material stride consistency (TS vs WGSL lockstep)', () => {
-  it('MATERIAL_FLOAT_STRIDE equals 26 * 4 = 104 (H52 bumped 23→26)', () => {
-    expect(MATERIAL_FLOAT_STRIDE).toBe(104);
+  it('MATERIAL_FLOAT_STRIDE equals 27 * 4 = 108 (A3 bumped 26→27)', () => {
+    expect(MATERIAL_FLOAT_STRIDE).toBe(108);
   });
 
   it('WGSL MATERIAL_VEC4_STRIDE constant matches TS stride / 4', () => {

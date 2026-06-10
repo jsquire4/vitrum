@@ -53,7 +53,15 @@ export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16;
 export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
-const MATERIAL_VEC4_STRIDE = 23u;
+// MUST match the canonical MATERIAL_VEC4_STRIDE (material.wgsl.ts / materialPacking.ts).
+// This adjoint pass reads the SAME materials storage buffer the forward kernel
+// uploads, so its per-material stride must equal the forward stride or every
+// matId>0 material read is misaligned. Was a stale 23u (the stride at the time
+// this pass was written); the forward stride has since grown (WS4, H52, A3=27).
+// Repointed to 27u with the A3 bump (matId=0 is unaffected since 0*stride=0, so
+// the existing single-material adjoint tests stay green; this fixes the latent
+// misalignment for multi-material inverse fits).
+const MATERIAL_VEC4_STRIDE = 27u;
 
 struct AdjointParams {
   invViewProj: mat4x4f,

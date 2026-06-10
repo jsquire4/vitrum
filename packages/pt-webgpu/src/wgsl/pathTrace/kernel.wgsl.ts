@@ -420,7 +420,13 @@ ${mediumStateDecls}
       hit = traceClosest(ray, 1e-4, INFINITY);
     }
     if (!hit.didHit) {
-      radiance = radiance + throughput * sampleEnvironmentColor(ray.direction);
+      // A3 — environment radiance in spectral mode: upsample the RGB env to a
+      // hero-λ spectral value (same approximation as emitters) so the throughput
+      // (already scalar-spectral) times the env stays a single-wavelength
+      // quantity. RGB mode: env color unchanged → byte-identical.
+      let envRgb = sampleEnvironmentColor(ray.direction);
+      let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
+      radiance = radiance + throughput * envContribution;
       break;
     }
 
@@ -529,7 +535,9 @@ ${transmissiveBlock}
             // decay=2 → physical inverse-square (matches rad/dist2 at dist≥1).
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-            directLi = throughput * brdf * nDotL * rad * attenuation * lightSelectInvPdf;
+            // A3 — spectralise the light radiance at the hero λ (RGB unchanged).
+            let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
+            directLi = throughput * brdf * nDotL * radOut * attenuation * lightSelectInvPdf;
           }
         }
         current = current + 1u;
@@ -569,7 +577,9 @@ ${transmissiveBlock}
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-              directLi = throughput * brdf * nDotL * softness * srad * attenuation * lightSelectInvPdf;
+              // A3 — spectralise the spot radiance at the hero λ (RGB unchanged).
+              let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
+              directLi = throughput * brdf * nDotL * softness * sradOut * attenuation * lightSelectInvPdf;
             }
           }
         }
@@ -614,7 +624,9 @@ ${transmissiveBlock}
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-                directLi = throughput * brdf * nDotL * rr * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
+                // A3 — spectralise the rect-area radiance at the hero λ.
+                let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
+                directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
               }
             }
           }
@@ -658,7 +670,9 @@ ${transmissiveBlock}
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-                directLi = throughput * brdf * nDotL * mr * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
+                // A3 — spectralise the mesh-area radiance at the hero λ.
+                let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
+                directLi = throughput * brdf * nDotL * mrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
               }
             }
           }
@@ -692,8 +706,10 @@ ${transmissiveBlock}
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
             // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
             // rect-area branch. Mean stays independent of the selection pdf.
+            // A3 — spectralise the env radiance at the hero λ (RGB mode unchanged).
+            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = throughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8) * lightSelectInvPdf;
+            directLi = throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8) * lightSelectInvPdf;
           }
         }
       }

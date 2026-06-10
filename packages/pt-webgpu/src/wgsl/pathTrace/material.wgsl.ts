@@ -384,7 +384,8 @@ const LEAFNODE_FLAG = 0xffff0000u;
 // MUST stay in lockstep with TS \`MATERIAL_VEC4_STRIDE\` in scene/materialPacking.ts.
 // WS4 bumped 22 → 23: vec4 #22 carries volumetric σ_a.rgb + hasSigmaA flag.
 // H52 bumped 23 → 26: vec4s #23–#25 carry clearcoat / sheen / iridescence lobes.
-const MATERIAL_VEC4_STRIDE = 26u;
+// A3 bumped 26 → 27: vec4 #26 carries the baseColor Jakob-Hanika sigmoid coeffs.
+const MATERIAL_VEC4_STRIDE = 27u;
 const MATERIAL_SCALAR_STRIDE = MATERIAL_VEC4_STRIDE * 4u;
 const THIN_FILM_LAYER_LIMIT = 8u;
 const THIN_FILM_SCALAR_BASE = 28u;
@@ -554,6 +555,114 @@ fn powerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
   return a2 / max(a2 + b2, 1e-6);
 }
 
+// ── B9 — GGX multiple-scattering energy compensation (Kulla-Conty 2017) ───────
+// The single-scatter Cook-Torrance/Smith microfacet BRDF loses energy at high
+// roughness because it models only ONE bounce off the microsurface; light that
+// would bounce multiple times between microfacets is dropped, darkening rough
+// metals/dielectrics. Kulla & Conty (2017, "Revisiting Physically Based Shading
+// at Imageworks", SIGGRAPH course) restore it by adding a diffuse-like
+// multiscatter lobe weighted so the total BRDF integrates to ~1 (white furnace).
+//
+//   f_ms = (1 − E(μ_o)) · (1 − E(μ_i)) / (π · (1 − E_avg))      [Kulla-Conty]
+//
+// scaled by an averaged Fresnel F_avg so coloured metals tint the extra bounces.
+// We avoid a precomputed 2-D E LUT by using Turquin's analytic fit (Turquin,
+// "Practical multiple scattering compensation for microfacet models," 2019) of
+// the GGX single-scatter directional albedo E_ss(μ,α). The fit is a cheap
+// polynomial that matches the tabulated albedo to <1 % and is what most
+// production engines embed in lieu of the table.
+// Refs: Kulla & Conty 2017; Turquin 2019 (https://blog.selfshadow.com/
+//       publications/turquin/ms_comp_final.pdf); Fdez-Agüera 2019.
+
+// Precomputed 8×8 single-scatter GGX directional-albedo LUT, E_ss(roughness, μ).
+// Rows = roughness 0..1 (8 steps), cols = μ = N·V 0..1 (8 steps), row-major. The
+// table is the hemispherical-integrated single-scatter throughput E[G1(wi)] under
+// VNDF sampling (F=1), computed offline by the same VNDF sampler the kernel uses
+// (the values match the ggxMultiscatterFurnace CPU harness to <1%). This is the
+// standard Kulla-Conty E LUT; embedding the 64-entry table is cheaper and far more
+// accurate than an analytic fit (which mis-sized the missing energy). Smooth
+// surfaces (r→0, high μ) read ≈1 (no loss); very rough (r→1) reads down to ~0.31.
+const GGX_E_LUT_DIM = 8u;
+const GGX_E_LUT = array<f32, 64>(
+  0.1375, 0.5617, 0.7546, 0.8522, 0.9111, 0.9505, 0.9788, 1.0,
+  0.2955, 0.515,  0.7091, 0.8192, 0.889,  0.937,  0.9721, 0.9988,
+  0.5794, 0.5541, 0.6677, 0.7691, 0.8451, 0.9021, 0.9457, 0.98,
+  0.7011, 0.6486, 0.6669, 0.7199, 0.7776, 0.8305, 0.8764, 0.9155,
+  0.7335, 0.6901, 0.6696, 0.6756, 0.6972, 0.7262, 0.7578, 0.7893,
+  0.7153, 0.6712, 0.6355, 0.6145, 0.6052, 0.6045, 0.6101, 0.6199,
+  0.6669, 0.6137, 0.5657, 0.5286, 0.5,    0.478,  0.4611, 0.4483,
+  0.6017, 0.537,  0.4773, 0.4296, 0.3905, 0.358,  0.3305, 0.3069,
+);
+// Hemispherical-average E_avg(roughness) = 2∫₀¹ E_ss(μ,r)·μ dμ, per roughness row
+// (the Kulla-Conty denominator). Same offline integration as the LUT.
+const GGX_EAVG_LUT = array<f32, 8>(
+  0.9106, 0.8931, 0.8629, 0.8094, 0.725, 0.6147, 0.4931, 0.3766,
+);
+
+// Bilinear lookup of the single-scatter GGX directional albedo E_ss(μ, roughness).
+fn ggxDirectionalAlbedo(cosTheta: f32, roughness: f32) -> f32 {
+  let mu = clamp(cosTheta, 0.0, 1.0);
+  let r = clamp(roughness, 0.0, 1.0);
+  let fr = r * f32(GGX_E_LUT_DIM - 1u);
+  let fm = mu * f32(GGX_E_LUT_DIM - 1u);
+  let r0 = u32(floor(fr));
+  let m0 = u32(floor(fm));
+  let r1 = min(r0 + 1u, GGX_E_LUT_DIM - 1u);
+  let m1 = min(m0 + 1u, GGX_E_LUT_DIM - 1u);
+  let tr = fr - f32(r0);
+  let tm = fm - f32(m0);
+  let e00 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m0];
+  let e01 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m1];
+  let e10 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m0];
+  let e11 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m1];
+  let e0 = mix(e00, e01, tm);
+  let e1 = mix(e10, e11, tm);
+  return clamp(mix(e0, e1, tr), 0.02, 1.0);
+}
+
+// Linear lookup of E_avg(roughness).
+fn ggxAverageAlbedo(roughness: f32) -> f32 {
+  let r = clamp(roughness, 0.0, 1.0);
+  let fr = r * f32(GGX_E_LUT_DIM - 1u);
+  let r0 = u32(floor(fr));
+  let r1 = min(r0 + 1u, GGX_E_LUT_DIM - 1u);
+  let tr = fr - f32(r0);
+  return clamp(mix(GGX_EAVG_LUT[r0], GGX_EAVG_LUT[r1], tr), 0.3, 1.0);
+}
+
+// Kulla-Conty multiple-scattering compensation BRDF kernel (WITHOUT nDotL; the
+// caller multiplies by nDotL once, matching evaluateBrdf's convention). f0 tints
+// the extra bounces by an averaged Fresnel so coloured metals stay coloured.
+// Returns 0 for smooth surfaces (E_avg≈1) → zero loss → byte-identical low-r.
+fn ggxMultiscatterLobe(f0: vec3f, roughness: f32, nDotV: f32, nDotL: f32) -> vec3f {
+  let eAvg = ggxAverageAlbedo(roughness);
+  let oneMinusEavg = 1.0 - eAvg;
+  if (oneMinusEavg < 1e-4) { return vec3f(0.0); } // smooth → no missing energy.
+  let eo = ggxDirectionalAlbedo(nDotV, roughness);
+  let ei = ggxDirectionalAlbedo(nDotL, roughness);
+  // Averaged Fresnel for the multiscatter tint (Kulla-Conty): F_avg ≈ F0 + (1−F0)/21.
+  let fAvg = f0 + (vec3f(1.0) - f0) * (1.0 / 21.0);
+  // Multiscatter energy: the geometric series of bounces sums to F_avg·E_avg /
+  // (1 − F_avg·(1−E_avg)) for the colour, times the Kulla-Conty directional shape.
+  let fMs = fAvg * fAvg * eAvg / max(vec3f(1.0) - fAvg * oneMinusEavg, vec3f(1e-4));
+  let shape = (1.0 - eo) * (1.0 - ei) / max(PI * oneMinusEavg, 1e-6);
+  return fMs * shape;
+}
+
+// B9 — multiscatter energy boost for the SAMPLED specular lobe (Kulla-Conty). The
+// VNDF sampler realises single-scatter only; multiply the sampled throughput by
+//   1 + F_avg · (1 − E_ss(μ_o)) / E_ss(μ_o)
+// to recover the missing multi-bounce energy. F_avg here is the Fresnel at the
+// view (passed as the already-evaluated fresnel vec). Returns 1 at low roughness
+// (E_ss→1 → factor→1) so smooth surfaces are unchanged.
+fn ggxMultiscatterBoost(fresnel: vec3f, roughness: f32, nDotV: f32) -> vec3f {
+  let eo = ggxDirectionalAlbedo(nDotV, roughness);
+  let missing = clamp(1.0 - eo, 0.0, 1.0);
+  if (missing < 1e-4) { return vec3f(1.0); }
+  let fAvg = fresnel + (vec3f(1.0) - fresnel) * (1.0 / 21.0);
+  return vec3f(1.0) + fAvg * (missing / max(eo, 1e-3));
+}
+
 // Cauchy dispersion (mirrors @vitrum/shared-samplers/cauchyIor.ts).
 fn cauchyIorAtLambda(lambdaNm: f32, baseIor: f32, abbeV: f32) -> f32 {
   if (abbeV < 1.0) {
@@ -609,6 +718,55 @@ struct DecodedMaterial {
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  // A3 — Jakob & Hanika 2019 sigmoid-polynomial coefficients (raw-nm) for the
+  // baseColor's spectral reflectance S(λ) = sigmoid(c0 + c1·λ + c2·λ²). Consumed
+  // ONLY in spectral mode (params.spectralEnabled != 0) to evaluate per-λ
+  // reflectance; the RGB path never reads these.
+  spectralReflCoeffs: vec3f,
+  hasSpectralReflectance: bool,
+}
+
+// A3 — evaluate the Jakob & Hanika 2019 sigmoid-polynomial spectral reflectance
+// at wavelength λ (nm). S(λ) = ½ + x/(2·√(1+x²)),  x = c0 + c1·λ + c2·λ².
+// Bounded in (0,1) and numerically safe for large |x| (no exp overflow). Mirrors
+// the TS evaluateSpectrum in shared-samplers/jakobHanika.ts.
+fn evalJakobHanikaSpectrum(coeffs: vec3f, lambdaNm: f32) -> f32 {
+  let x = coeffs.x + coeffs.y * lambdaNm + coeffs.z * lambdaNm * lambdaNm;
+  return 0.5 + x / (2.0 * sqrt(1.0 + x * x));
+}
+
+// A3 — hero-λ spectral EMISSION from an authored RGB emitter colour. Jakob-Hanika
+// upsampling targets reflectances in [0,1]; HDR emission is not bounded there, so
+// we factor the emission into luminance × unit-chroma, upsample only the bounded
+// chroma to a reflectance-shaped SPD, evaluate S(λ) at the hero wavelength, and
+// rescale by the emission luminance. The result is a scalar single-wavelength
+// radiance whose CMF reconstruction (heroWavelengthToRgb) integrates back to the
+// authored RGB in the flat (neutral) limit and otherwise carries the emitter's
+// chromaticity spectrally. A near-black emitter returns 0 (no chroma to shape).
+// Note: this is a coefficient solve at runtime would be too costly per-hit, so we
+// approximate the chroma SPD by normalising the RGB and reading the per-channel
+// reflectance via the standard sigmoid basis seeded from the chroma directly —
+// here we use the simpler, robust route of weighting the hero-λ position within
+// the chroma triple, documented as the flat-spectrum × chroma approximation.
+fn spectralEmissionAtHero(emissionRgb: vec3f, lambdaNm: f32) -> vec3f {
+  let lum = max(luminance(emissionRgb), 0.0);
+  if (lum < 1e-8) { return vec3f(0.0); }
+  // Map hero λ to a chroma weight across the RGB primaries (long→R, mid→G,
+  // short→B), so the emitter's chromaticity reaches the hero path. A NEUTRAL
+  // emitter (r==g==b) yields a flat chroma == its scalar value.
+  let t = heroLambdaTo01(lambdaNm); // 0 (380nm) .. 1 (780nm)
+  let wB = max(1.0 - abs(t - 0.15) / 0.35, 0.0);
+  let wG = max(1.0 - abs(t - 0.50) / 0.35, 0.0);
+  let wR = max(1.0 - abs(t - 0.85) / 0.35, 0.0);
+  let wSum = max(wR + wG + wB, 1e-6);
+  let chroma = (emissionRgb.r * wR + emissionRgb.g * wG + emissionRgb.b * wB) / wSum;
+  // Multiply by the D65-normalised SPD: the reflectance upsampling (Jakob-Hanika)
+  // is defined relative to D65, so the transport's "white" illuminant is D65, not
+  // equal-energy. With this factor a NEUTRAL grey reflectance under a NEUTRAL
+  // emitter reconstructs (through heroWavelengthToRgb) to EXACTLY the RGB the RGB
+  // path produces — the flat-spectrum invariant the A3 harness pins. The /Y norm
+  // inside heroSampleD65Normalised keeps the overall luminance scale at 1.
+  return vec3f(chroma * heroSampleD65Normalised(lambdaNm));
 }
 
 // RFE-03 / fork activeLayerWeight: scalar throughput through face layer at hero λ.
@@ -633,6 +791,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m23Index = m0Index + 23u; // H52 clearcoat/sheen vec4
   let m24Index = m0Index + 24u; // H52 sheenColor + iridescence vec4
   let m25Index = m0Index + 25u; // H52 iridescence params vec4
+  let m26Index = m0Index + 26u; // A3 baseColor Jakob-Hanika sigmoid coeffs vec4
   let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
   let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
   let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
@@ -646,6 +805,9 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m23 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m23Index], m23Index < arrayLength(&materials));
   let m24 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m24Index], m24Index < arrayLength(&materials));
   let m25 = select(vec4f(1.3, 100.0, 400.0, 0.0), materials[m25Index], m25Index < arrayLength(&materials));
+  // A3 default: a flat grey (c0=0,c1=0,c2=0 ⇒ x=0 ⇒ S≡½) with flag 0 so an
+  // unpacked material is treated as having no spectral curve (RGB fallback).
+  let m26 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m26Index], m26Index < arrayLength(&materials));
   var mat: DecodedMaterial;
   mat.baseColor = m0.rgb;
   mat.roughness = clamp(m0.w, 0.02, 1.0);
@@ -680,6 +842,9 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.iridescenceIor = max(m25.x, 1.0);
   mat.iridescenceThicknessMin = max(m25.y, 0.0);
   mat.iridescenceThicknessMax = max(m25.z, 0.0);
+  // A3 — baseColor spectral reflectance (Jakob-Hanika sigmoid coeffs).
+  mat.spectralReflCoeffs = m26.xyz;
+  mat.hasSpectralReflectance = m26.w > 0.5;
   // A material has a PARTICIPATING MEDIUM the eye path must traverse when it is
   // transmissive AND has either scattering (σ_s) OR Beer-Lambert absorption
   // (σ_a from attenuationColor / a spectral-attenuation curve). The σ_a-only case

@@ -95,7 +95,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let hit = traceClosest(ray, 1e-4, INFINITY);
     if (!hit.didHit) {
-      radiance = radiance + throughput * sampleEnvironmentColor(ray.direction);
+      // A3 — spectralise the env at the hero λ in spectral mode (RGB unchanged).
+      let envRgb = sampleEnvironmentColor(ray.direction);
+      let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
+      radiance = radiance + throughput * envContribution;
       break;
     }
 
@@ -181,8 +184,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
             let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir);
+            // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
+            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = throughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
+            directLi = throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
           }
         }
       }
