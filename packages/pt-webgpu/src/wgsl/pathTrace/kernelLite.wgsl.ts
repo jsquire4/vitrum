@@ -140,11 +140,25 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     let f0 = mix(vec3f(0.04), baseColor, metallic);
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
+    // B12 — lite-tier NEE: directional + env/sky + point + spot + rect-area.
+    // Point/spot/rect data is loaded from liteLightTex (binding 14) via textureLoad.
+    // Counts come from the UBO (params.pointLightCount / spotLightCount / rectAreaLightCount).
+    // liteLightTex layout (1-row, consecutive vec4 texels):
+    //   [0, pointLightCount*3):                   point records  (3 texels/light)
+    //   [pointLightCount*3, +spotLightCount*4):    spot records   (4 texels/light)
+    //   [that offset, +rectAreaLightCount*4):      rect records   (4 texels/light)
+    let litePtBase = 0u;
+    let liteSpBase = params.pointLightCount * 3u;
+    let liteRcBase = liteSpBase + params.spotLightCount * 4u;
+
     var lightCount = 0u;
     if (params.lightDir.w > 1e-6) {
       lightCount = lightCount + 1u;
     }
-    if (params.environmentSun.w > 1e-6) {
+    lightCount = lightCount + params.pointLightCount;
+    lightCount = lightCount + params.spotLightCount;
+    lightCount = lightCount + params.rectAreaLightCount;
+    if (hasEnvironmentMap() || params.environmentSun.w > 1e-6) {
       lightCount = lightCount + 1u;
     }
     if (lightCount > 0u) {
@@ -163,7 +177,108 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         }
         current = current + 1u;
       }
-      if (params.environmentSun.w > 1e-6 && current == picked) {
+      // B12 — point lights (delta; stride 3 texels: pos, rad, [dist, decay, 0, 0]).
+      for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
+        if (current == picked) {
+          let base = litePtBase + pi * 3u;
+          let lp  = textureLoad(liteLightTex, vec2i(i32(base),      0), 0).xyz;
+          let rad = textureLoad(liteLightTex, vec2i(i32(base + 1u), 0), 0).rgb;
+          let extra = textureLoad(liteLightTex, vec2i(i32(base + 2u), 0), 0);
+          let ptMaxDist = extra.x;
+          let ptDecay   = extra.y;
+          let toPoint = lp - hitPos;
+          let dist2 = max(dot(toPoint, toPoint), 1e-5);
+          let dist = sqrt(dist2);
+          if (ptMaxDist > 0.0 && dist > ptMaxDist) {
+            current = current + 1u;
+            continue;
+          }
+          let wi = toPoint / dist;
+          let pointShadowRay = Ray(hitPos + normal * 1e-3, wi);
+          if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+            let nDotL = max(0.0, dot(normal, wi));
+            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
+            let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
+            directLi = throughput * brdf * nDotL * radOut * attenuation;
+          }
+        }
+        current = current + 1u;
+      }
+      // B12 — spot lights (delta; stride 4 texels: pos, dir+cosOuter, rad+cosInner, [dist,decay,0,0]).
+      for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
+        if (current == picked) {
+          let sb2 = liteSpBase + si * 4u;
+          let spos   = textureLoad(liteLightTex, vec2i(i32(sb2),      0), 0).xyz;
+          let saxis  = textureLoad(liteLightTex, vec2i(i32(sb2 + 1u), 0), 0);
+          let sradW  = textureLoad(liteLightTex, vec2i(i32(sb2 + 2u), 0), 0);
+          let spExtra = textureLoad(liteLightTex, vec2i(i32(sb2 + 3u), 0), 0);
+          let spotDir  = safe_normalize(saxis.xyz);
+          let cosOuter = saxis.w;
+          let cosInner = sradW.w;
+          let srad     = sradW.rgb;
+          let spMaxDist = spExtra.x;
+          let spDecay   = spExtra.y;
+          let toSpot = spos - hitPos;
+          let dist2 = max(dot(toSpot, toSpot), 1e-5);
+          let dist = sqrt(dist2);
+          if (spMaxDist > 0.0 && dist > spMaxDist) {
+            current = current + 1u;
+            continue;
+          }
+          let wi = toSpot / dist;
+          let coneCos = dot(-wi, spotDir);
+          if (coneCos >= cosOuter) {
+            let spotShadowRay = Ray(hitPos + normal * 1e-3, wi);
+            if (!traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+              let nDotL = max(0.0, dot(normal, wi));
+              let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
+              let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
+              let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+              let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
+              directLi = throughput * brdf * nDotL * softness * sradOut * attenuation;
+            }
+          }
+        }
+        current = current + 1u;
+      }
+      // B12 — rect-area lights (area; stride 4 texels: rpos, ru, rv, rr).
+      // MIS: power heuristic between area-sample pdf and BRDF pdf.
+      for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
+        if (current == picked) {
+          let rb2 = liteRcBase + ri * 4u;
+          let rpos = textureLoad(liteLightTex, vec2i(i32(rb2),      0), 0).xyz;
+          let ru   = textureLoad(liteLightTex, vec2i(i32(rb2 + 1u), 0), 0).xyz;
+          let rv   = textureLoad(liteLightTex, vec2i(i32(rb2 + 2u), 0), 0).xyz;
+          let rr   = textureLoad(liteLightTex, vec2i(i32(rb2 + 3u), 0), 0).rgb;
+          let u = rand_f32(&rng) * 2.0 - 1.0;
+          let v = rand_f32(&rng) * 2.0 - 1.0;
+          let lpos = rpos + ru * u + rv * v;
+          let toLight = lpos - hitPos;
+          let dist2 = max(dot(toLight, toLight), 1e-6);
+          let dist = sqrt(dist2);
+          let wi = toLight / dist;
+          let nDotL = max(dot(normal, wi), 0.0);
+          if (nDotL > 0.0) {
+            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let lightNormal = safe_normalize(cross(ru, rv));
+            let cosLight = max(dot(lightNormal, -wi), 0.0);
+            if (cosLight > 0.0) {
+              let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+              let lightPdf = dist2 / max(cosLight * area, 1e-6);
+              let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+              let misWeight = powerHeuristic(lightPdf, brdfPdf);
+              let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+                let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
+                directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6);
+              }
+            }
+          }
+        }
+        current = current + 1u;
+      }
+      if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && current == picked) {
         var envDir = vec3f(0.0, 1.0, 0.0);
         var envColor = vec3f(0.0);
         var envPdf = 0.0;

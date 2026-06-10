@@ -47,8 +47,13 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-10: caustic point/spot stride fix (H1-class) + shared light-stride constants
     // (POINT_LIGHT_VEC4_STRIDE / SPOT_LIGHT_VEC4_STRIDE added to material.wgsl.ts, composed in both
     // full and lite tiers). The lite-tier render is unchanged — caustic is not in the lite path.
-    expect(digest).toBe('d4c47952d7ae0a0831ef88480a42e59a39c7e1047831d5c55281cb3424bf5752');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(108215);
+    // Re-pinned 2026-06-10: B12 — lite-tier light/env texture packing. New texture bindings (12-14):
+    // liteEnvTex (RGBA32F env radiance+pdf), liteEnvCdfTex (RGBA32F env CDF), liteLightTex
+    // (RGBA32F point/spot/rect-area packed data). NEE loops added in kernelLite.wgsl.ts for
+    // point/spot/rect-area + env importance sampling in connectLite.wgsl.ts.
+    // RENDER-CHANGING for lite scenes with those lights; A/B pending V28-B.
+    expect(digest).toBe('7a937acc7292be01941821abe927676517917cfb4c016f1a3a42768723e24b0b');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(119133);
   });
 });
 

@@ -81,6 +81,12 @@ struct FrameParams {
   invViewProj: mat4x4f,
   viewProj: mat4x4f,
   prevViewProj: mat4x4f,
+  // N-directional expansion: total packed directional count read from the
+  // directionalLights storage buffer (group 1 binding 10). The kernel loops
+  // over params.directionalLightCount records. A single-directional scene keeps
+  // directionalLightCount=1 and directionalLights[0] byte-identical to the old
+  // lightDir single path (gate unchanged).
+  directionalLightCount: u32,
 };
 
 @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
@@ -101,7 +107,39 @@ const INVALID_TLAS_INSTANCE_INDEX = 0xffffffffu;
 }
 
 /** Bindings 0–11: core mesh path trace + G-buffer aux (≤8 storage buffers, ≤4 storage textures). */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL = frameParamsGroup0Bindings('', '');
+const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_BASE_WGSL = frameParamsGroup0Bindings('', '');
+
+/**
+ * B12 — lite-tier texture bindings (12–14): sampled texture_2d<f32> slots for
+ * packed HDRI env radiance+CDF and analytic light data.  These use
+ * `maxSampledTexturesPerShaderStage` (≥ 16, WebGPU baseline) — a SEPARATE budget
+ * from `maxStorageBuffersPerShaderStage` (= 8 on capped adapters).  No sampler
+ * is needed: all access is via `textureLoad` (integer-coordinate fetch).
+ *
+ * Binding 12 — liteEnvTex     : RGBA32F envWidth×envHeight, .rgb = HDR radiance,
+ *                                .a = pdf per steradian (mirrors texel.w in the
+ *                                full-tier environmentMapTexels storage buffer).
+ * Binding 13 — liteEnvCdfTex  : RGBA32F envWidth×envHeight, .r = normalised CDF
+ *                                value for pixel (y*W+x) — used for importance
+ *                                sampling.  cdf[0]=0 is implicit.
+ * Binding 14 — liteLightTex   : RGBA32F liteLightTexWidth×1, packed point/spot/
+ *                                rect-area light records (same float layout as the
+ *                                full-tier pointLights/spotLights/rectAreaLights
+ *                                storage buffers; loaded via integer texel index).
+ */
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */ `
+@group(0) @binding(12) var liteEnvTex:    texture_2d<f32>;
+@group(0) @binding(13) var liteEnvCdfTex: texture_2d<f32>;
+@group(0) @binding(14) var liteLightTex:  texture_2d<f32>;
+`;
+
+/**
+ * Lite-tier group-0 bindings: base (0–11) + B12 texture slots (12–14).
+ * Used in the composed lite trace shader.
+ */
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL =
+  PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_BASE_WGSL +
+  PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = frameParamsGroup0Bindings(
   ' // UBO-plumbed (D12); default metre-scale',
@@ -110,7 +148,7 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = framePara
 @group(0) @binding(13) var<storage, read_write> varianceMomentsBuffer: array<vec4f>;`,
 );
 
-/** Group 1 — analytics + env + area lights (10 storage buffers; adapters ≥10/stage). */
+/** Group 1 — analytics + env + area lights + directional lights (11 storage buffers; adapters ≥11/stage). */
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> analyticHeaders: array<vec4f>;
 @group(1) @binding(1) var<storage, read> analyticParams: array<vec4f>;
@@ -122,6 +160,12 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl *
 @group(1) @binding(7) var<storage, read> spotLights: array<vec4f>;
 @group(1) @binding(8) var<storage, read> rectAreaLights: array<vec4f>;
 @group(1) @binding(9) var<storage, read> meshAreaLights: array<vec4f>;
+// N-directional: packed directional light records.
+// Stride = 2 vec4f (8 floats) per directional:
+//   [di*2+0]: towardLight.xyz, angularDiameter
+//   [di*2+1]: irradiance.rgb,  mean_irradiance
+// directionalLightCount records total; an empty scene binds a 16-byte placeholder.
+@group(1) @binding(10) var<storage, read> directionalLights: array<vec4f>;
 `;
 
 /** Group 2 — TLAS instance table (5 storage buffers) + BDPT light-path scratch

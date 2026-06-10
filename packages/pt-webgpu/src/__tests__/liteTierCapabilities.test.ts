@@ -1,7 +1,11 @@
 /**
  * H12 — lite-tier capabilities truth: the lite kernel only binds directional
- * lighting and procedural-sky; analytic shapes, HDRI, area-light emitters, and
- * BDPT are absent from the lite bind layout.
+ * lighting and procedural-sky; analytic shapes, BDPT, disc-area, and mesh-area
+ * emitters are absent from the lite bind layout.
+ *
+ * B12 (2026-06-10) — point/spot/rect-area emitters and HDRI environments are now
+ * supported on the lite tier via texture packing (liteLightTex, liteEnvTex,
+ * liteEnvCdfTex). Tests updated to reflect genuine support.
  *
  * Also covers the contract-honesty fix: lite-tier supportDetails must reflect
  * the actual lite binding budget (not the full-tier ledger).
@@ -56,27 +60,30 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: supportedEmitterKinds contains only directional', async () => {
+  // B12 — point/spot/rect-area now supported via texture packing.
+  it('lite tier: supportedEmitterKinds contains directional + point + spot + rect-area', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const kinds = engine.capabilities.supportedEmitterKinds;
     expect(kinds.has('directional')).toBe(true);
-    expect(kinds.has('point')).toBe(false);
-    expect(kinds.has('spot')).toBe(false);
-    expect(kinds.has('rect-area')).toBe(false);
+    expect(kinds.has('point')).toBe(true);
+    expect(kinds.has('spot')).toBe(true);
+    expect(kinds.has('rect-area')).toBe(true);
+    // disc-area and mesh-area remain unsupported (no NEE path in lite kernel).
     expect(kinds.has('disc-area')).toBe(false);
     expect(kinds.has('mesh-area')).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: supportedEnvironmentKinds is none + procedural-sky only (no hdri)', async () => {
+  // B12 — HDRI environment now supported via texture packing.
+  it('lite tier: supportedEnvironmentKinds includes hdri (B12)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const envs = engine.capabilities.supportedEnvironmentKinds;
     expect(envs?.has('none')).toBe(true);
     expect(envs?.has('procedural-sky')).toBe(true);
-    expect(envs?.has('hdri')).toBe(false);
+    expect(envs?.has('hdri')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });
@@ -100,25 +107,28 @@ describe('H12: lite-tier capabilities truth', () => {
     engine.dispose();
   });
 
-  it('lite tier: supportDetails emitters shows only directional as native, others unsupported', async () => {
+  // B12 — point/spot/rect-area upgraded to 'native'.
+  it('lite tier: supportDetails emitters shows point/spot/rect-area as native (B12)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const sd = engine.capabilities.supportDetails!;
     expect(sd.emitters.directional).toBe('native');
-    expect(sd.emitters.point).toBe('unsupported');
-    expect(sd.emitters.spot).toBe('unsupported');
-    expect(sd.emitters['rect-area']).toBe('unsupported');
+    expect(sd.emitters.point).toBe('native');
+    expect(sd.emitters.spot).toBe('native');
+    expect(sd.emitters['rect-area']).toBe('native');
+    // disc-area and mesh-area remain unsupported.
     expect(sd.emitters['disc-area']).toBe('unsupported');
     expect(sd.emitters['mesh-area']).toBe('unsupported');
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: supportDetails environments shows hdri as unsupported', async () => {
+  // B12 — HDRI env upgraded to 'native'.
+  it('lite tier: supportDetails environments shows hdri as native (B12)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const sd = engine.capabilities.supportDetails!;
-    expect(sd.environments.hdri).toBe('unsupported');
+    expect(sd.environments.hdri).toBe('native');
     expect(sd.environments.none).toBe('native');
     // procedural-sky is heuristic tint (not a full Preetham model), so 'approximate'
     expect(sd.environments['procedural-sky']).not.toBe('unsupported');
@@ -184,7 +194,8 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when scene contains non-directional emitters', async () => {
+  // B12 — point emitters no longer warn (they are now supported via texture packing).
+  it('lite tier: setScene does NOT warn for point/spot/rect-area emitters (B12 supported)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
     warn.mockClear();
@@ -204,15 +215,46 @@ describe('H12: lite-tier capabilities truth', () => {
     try {
       engine.setScene(scene);
     } catch {
-      /* GPU stubs may throw after the warn — that's expected */
+      /* GPU stubs may throw — expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('point') && c.includes('Lite tier'))).toBe(true);
+    // Must NOT warn that point lights are unsupported.
+    expect(calls.some((c) => c.includes('point') && c.toLowerCase().includes('unsupported'))).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when scene has an hdri environment', async () => {
+  // B12 — disc-area and mesh-area still warn (no NEE path in lite kernel).
+  it('lite tier: setScene warns when scene contains disc-area or mesh-area emitters', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [{ kind: 'disc-area', id: 'd', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1 }],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) => c.includes('disc-area') && c.includes('Lite tier'))).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  // B12 — HDRI environments no longer warn (supported via texture packing).
+  it('lite tier: setScene does NOT warn for hdri environment (B12 supported)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
     warn.mockClear();
@@ -232,10 +274,11 @@ describe('H12: lite-tier capabilities truth', () => {
     try {
       engine.setScene(scene);
     } catch {
-      /* GPU stubs may throw after the warn — that's expected */
+      /* GPU stubs may throw — expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('hdri') && c.includes('Lite tier'))).toBe(true);
+    // Must NOT warn that hdri is unsupported.
+    expect(calls.some((c) => c.includes('hdri') && c.toLowerCase().includes('unsupported'))).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

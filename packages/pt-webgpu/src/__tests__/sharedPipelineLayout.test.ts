@@ -162,8 +162,8 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(g0m.get(13)!.buffer?.type).toBe('storage'); // varianceMoments (read_write)
     for (const e of g0!.entries) expect(e.visibility).toBe(COMPUTE);
 
-    // Group 1 — 10 read-only storage buffers.
-    expect(g1!.entries).toHaveLength(10);
+    // Group 1 — 11 read-only storage buffers (binding 10 = directionalLights, N-directional expansion).
+    expect(g1!.entries).toHaveLength(11);
     for (const e of g1!.entries) {
       expect(e.buffer?.type).toBe('read-only-storage');
       expect(e.visibility).toBe(COMPUTE);
@@ -205,7 +205,8 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(gpu.bindGroupLayout).not.toBeNull();
   });
 
-  it('lite tier: single-group explicit layout (bindings 0..11), no group 1/2/3, no bdpt pipeline', () => {
+  // B12 — bindings 12/13/14 added for liteEnvTex + liteEnvCdfTex + liteLightTex.
+  it('lite tier: single-group explicit layout (bindings 0..14), no group 1/2/3, no bdpt pipeline', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'lite', false);
     gpu.ensurePipeline();
@@ -220,6 +221,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(gpu.bdptSubpathPipeline).toBeNull();
 
     const [g0] = stub.createdLayouts;
-    expect(g0!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    // B12 — bindings 12/13/14 are the lite texture slots (liteEnvTex, liteEnvCdfTex, liteLightTex).
+    expect(g0!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 });

@@ -51,8 +51,8 @@ describe('H14-C: getRestirPtResultBuffer on the Engine contract', () => {
   it('returns null before the first successful frame even when restirPtReuse:true on a full-tier device', async () => {
     const fullDevice = {
       limits: {
-        // A4 (SPPM): full tier needs 30 storage buffers; restirPtReuse adds 4 → 34.
-        maxStorageBuffersPerShaderStage: 34,
+        // N-directional (2026-06-10): full tier needs 31 storage buffers (was 30); restirPtReuse adds 4 → 35.
+        maxStorageBuffersPerShaderStage: 35,
         maxStorageTexturesPerShaderStage: 8,
       },
       createCommandEncoder: vi.fn(),

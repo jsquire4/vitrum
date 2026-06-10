@@ -6,6 +6,8 @@ import {
   PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE,
   PT_WEBGPU_LITE_HDRI_STORAGE_BUFFERS_NEEDED,
   PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED,
+  PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE,
+  PT_WEBGPU_SAMPLED_TEXTURES_BASELINE,
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   mergeAdapterRequiredLimits,
@@ -104,5 +106,21 @@ describe('B12 lite-tier binding-budget proof', () => {
     expect(
       PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE + PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED,
     ).toBe(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE); // 7 + 1 = 8 == cap
+  });
+
+  // B12 — sampled texture budget proof (separate from storage-buffer limit).
+  it('B12: lite sampled textures fit the WebGPU baseline maxSampledTexturesPerShaderStage', () => {
+    // 3 sampled textures (liteEnvTex + liteEnvCdfTex + liteLightTex) vs baseline ≥ 16.
+    expect(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE).toBe(3);
+    expect(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE).toBeLessThanOrEqual(PT_WEBGPU_SAMPLED_TEXTURES_BASELINE);
+  });
+
+  it('B12: lite WGSL declares the proven number of group-0 sampled texture bindings', () => {
+    // Count `@group(0) @binding(N) var <name>: texture_2d<f32>` declarations added by B12.
+    // Use \s+ after the colon to handle alignment spacing in the source.
+    const texDecls = (
+      PT_WEBGPU_TRACE_LITE_WGSL.match(/@group\(0\) @binding\(\d+\) var \w+:\s+texture_2d<f32>/g) ?? []
+    ).length;
+    expect(texDecls).toBe(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE); // 3
   });
 });

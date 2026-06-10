@@ -22,6 +22,8 @@ export interface FrameParamsSceneInputs {
   readonly triangleCount: number;
   readonly bvhNodeCount: number;
   readonly analyticCount: number;
+  /** N-directional: total packed directional count (kernel loops this many storage-buffer records). */
+  readonly directionalLightCount: number;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
@@ -144,6 +146,8 @@ export function packFrameParams(
   const lightTreeOn = config.traceTier === 'full' && sb.lightTreeEnabled && config.lightTreeImportanceSampling;
   paramsU32[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
   paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
+  // N-directional: kernel loops this many records from the directionalLights storage buffer.
+  paramsU32[FrameParamsSlot.directionalLightCount] = sb.directionalLightCount >>> 0;
   // H14-E: HDRI intensity lives in its own f32 slot (slot 31 = environmentHdriIntensity),
   // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
   // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).

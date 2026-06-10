@@ -131,5 +131,7 @@ oracle-matched results. DDGI irradiance migrated to L2 SH (3×3 cells, seam-free
 for the subsystem source.
 
 **Open items:** glossy/specular surfaces currently get no indirect GI (DDGI atlas
-sampling is diffuse-only; road-to-100 B1). HDRI reduced to scalar tint, no directional
-IBL. See `plan/road-to-100.md`.
+sampling is diffuse-only; road-to-100 B1). HDRI is fully directional-IBL-capable
+(importance-sampled DI NEE candidate in the RIS loop + DDGI probe misses, 2026-06-10,
+`caab499`; ledger grade `native`). `updateEnvironment` rebuilds directional CDFs at
+runtime; scalar-tint fallback active when no env map is loaded. See `plan/road-to-100.md`.

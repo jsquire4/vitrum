@@ -9,6 +9,20 @@ import {
 } from '../bdpt/flatEmitterWalk.js';
 
 /**
+ * Directional light layout (2 vec4 = 8 floats, N-directional expansion):
+ *   vec4 0: direction.xyz (normalized toward light), angularDiameter (radians)
+ *   vec4 1: irradiance.rgb, mean_irradiance
+ *   angularDiameter = 0 ⟹ perfect delta directional (historical exact path, byte-identical).
+ *   mean_irradiance = (r+g+b)/3 — cached for the kernel gate (lightDir.w analog).
+ *
+ * Directional[0] is ALSO mirrored into the frame-UBO lightDir/cameraPos.w lanes for
+ * backward compatibility with the single-directional path read by in-medium NEE.
+ * For N > 1, lights [1..N-1] are read ONLY from this storage buffer; the kernel
+ * loops params.directionalLightCount records.
+ */
+export const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
+
+/**
  * Point light layout (3 vec4 = 12 floats, H51-D):
  *   vec4 0: position.xyz, 0
  *   vec4 1: radiance.rgb, 0
@@ -45,12 +59,33 @@ type PackedMeshAreaTriangle = {
   readonly radiance: Vec3;
 };
 
+/**
+ * Mesh-area NEE triangle cap — prevents a large emissive mesh from producing an
+ * unbounded GPU buffer (16 floats × 4 bytes per triangle) and an oversized CPU
+ * light-tree build (O(N log N)).
+ *
+ * Cap = 65 536 triangles ≈ 4 MB buffer + a still-manageable light tree.
+ *
+ * Rationale:
+ *   - A 1M-triangle emissive mesh = 64 MB buffer + slow tree build per setScene.
+ *   - Dropped triangles still emit via the BSDF/forward path (energy not lost,
+ *     only NEE efficiency for the dropped fraction).
+ *   - Selection: LARGEST-AREA-FIRST — drops the lowest-contribution triangles,
+ *     biasing NEE variance minimally (small triangles contribute little power).
+ *     Energy-proportional is equivalent but requires per-emitter irradiance
+ *     sorting; area is the simpler and correct proxy for same-radiance emitters.
+ *   - Warn ONCE per emitter that exceeds the cap.
+ */
+export const MESH_AREA_LIGHT_TRI_CAP = 65536;
+
 export interface PackedEmitterArrays {
   readonly warnings: string[];
+  readonly directionalLightCount: number;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
   readonly meshAreaLightCount: number;
+  readonly directionalLightsData: Float32Array;
   readonly pointLightsData: Float32Array;
   readonly spotLightsData: Float32Array;
   readonly rectAreaLightsData: Float32Array;
@@ -292,6 +327,45 @@ function packMeshAreaTriangles(
 
 export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   const warnings: string[] = [];
+
+  // N-directional packing — all directional emitters go into a flat storage-buffer
+  // array. The first directional[0] is ALSO mirrored into the frame-UBO lightDir
+  // and cameraPos.w lanes by frameParamsPacker.ts (backward-compat, in-medium NEE).
+  const directionalLights: number[] = [];
+  let directionalLightCount = 0;
+  for (const e of scene.emitters) {
+    if (e.kind !== 'directional') continue;
+    const x = e.direction[0];
+    const y = e.direction[1];
+    const z = e.direction[2];
+    const len = Math.hypot(x, y, z);
+    // Normalize direction toward the light (convention: direction points AT the light,
+    // incoming light direction is -direction, but for NEE we want the "toward light" vec).
+    // Core contract: direction points AT the light → incoming is -direction.
+    // In NEE we fire a ray TOWARD the light, so the direction to the light is: -dir/len.
+    const ndx = len < 1e-8 ? 0 : -x / len;
+    const ndy = len < 1e-8 ? 1 : -y / len;
+    const ndz = len < 1e-8 ? 0 : -z / len;
+    const ad = e.angularDiameter;
+    const angularDiameter = ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+    const scale = e.intensity;
+    const irrR = e.color[0] * scale;
+    const irrG = e.color[1] * scale;
+    const irrB = e.color[2] * scale;
+    const meanIrr = (irrR + irrG + irrB) / 3;
+    // vec4 0: towardLight.xyz, angularDiameter
+    directionalLights.push(ndx, ndy, ndz, angularDiameter);
+    // vec4 1: irradiance.rgb, mean_irradiance
+    directionalLights.push(irrR, irrG, irrB, meanIrr);
+    directionalLightCount += 1;
+  }
+  const directionalLightsData = packedFloatData(
+    directionalLights,
+    directionalLightCount,
+    DIRECTIONAL_LIGHT_FLOAT_STRIDE,
+    'directional-light',
+  );
+
   const pointLights: number[] = [];
   let pointLightCount = 0;
   for (const e of scene.emitters) {
@@ -421,14 +495,34 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     meshAreaTriangles.push(...packMeshAreaTriangles(syntheticEmitter, scene, warnings));
   }
 
+  // Mesh-area NEE cap: cap the total triangle count to MESH_AREA_LIGHT_TRI_CAP.
+  // Strategy: LARGEST-AREA-FIRST (keeps the highest-contribution triangles for NEE;
+  // dropped triangles still emit via the BSDF/forward path — energy is not lost,
+  // only NEE efficiency for the dropped fraction).
+  let cappedTriangles = meshAreaTriangles;
+  if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
+    warnings.push(
+      `@vitrum/pt-webgpu: mesh-area NEE triangle count (${meshAreaTriangles.length}) exceeds cap ` +
+        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} largest-area triangles. ` +
+        `Dropped triangles still emit via the BSDF/forward path (no energy loss, NEE-only efficiency reduction).`,
+    );
+    // Sort descending by triangle area; keep the first MESH_AREA_LIGHT_TRI_CAP.
+    const withArea = meshAreaTriangles.map((tri) => ({
+      tri,
+      area: meshTriangleArea(tri.triA, tri.triB, tri.triC),
+    }));
+    withArea.sort((a, b) => b.area - a.area);
+    cappedTriangles = withArea.slice(0, MESH_AREA_LIGHT_TRI_CAP).map((e) => e.tri);
+  }
+
   const meshAreaLights: number[] = [];
-  for (const tri of meshAreaTriangles) {
+  for (const tri of cappedTriangles) {
     pushVec4(meshAreaLights, tri.triA);
     pushVec4(meshAreaLights, tri.triB);
     pushVec4(meshAreaLights, tri.triC);
     pushVec4(meshAreaLights, tri.radiance);
   }
-  const meshAreaLightCount = meshAreaTriangles.length;
+  const meshAreaLightCount = cappedTriangles.length;
   const meshAreaLightsData = packedFloatData(
     meshAreaLights,
     meshAreaLightCount,
@@ -438,10 +532,12 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
 
   return {
     warnings,
+    directionalLightCount,
     pointLightCount,
     spotLightCount,
     rectAreaLightCount,
     meshAreaLightCount,
+    directionalLightsData,
     pointLightsData,
     spotLightsData,
     rectAreaLightsData,
@@ -596,17 +692,38 @@ export function buildLightTreeInputForScene(
   precomputed?: { packed?: PackedEmitterArrays; envSummary?: EnvSummaryForTree },
 ): LightTreeBuildInput {
   const packed = precomputed?.packed ?? packEmitterArrays(scene);
-  const dirIrr = defaultDirectionalIrradiance(scene);
-  // Mirror the kernel's directional NEE gate EXACTLY: the kernel iterates the
-  // directional slot iff `params.lightDir.w > 1e-6`, where `lightDir.w` is the
-  // mean of `directionalIrradiance` = `defaultDirectionalIrradiance(scene)`. With
-  // no directional emitter that default is [0,0,0] (V22 fix), so the mean is 0,
-  // the kernel skips the directional slot, AND we omit its tree leaf — keeping
-  // the tree's leaf order in lockstep with the kernel walk. Deriving
-  // `hasDirectional` from the SAME `dirIrr` the kernel sees (rather than from a
-  // separate "directional emitter exists?" check) is what guarantees the two
-  // never disagree on whether the directional leaf is present. (V22.)
-  const hasDirectional = (dirIrr[0] + dirIrr[1] + dirIrr[2]) / 3 > 1e-6;
+  // N-directional expansion: build one tree leaf PER directional emitter (matching
+  // the kernel's loop `for (var di = 0u; di < params.directionalLightCount; di++)`).
+  // Each leaf uses the per-directional irradiance as the power proxy; a directional
+  // with mean_irradiance ≤ 1e-6 is silently skipped (matches the kernel's inner gate
+  // `if (d_meanIrr > 1e-6)`). The leaves for directionals[0..N-1] are inserted at
+  // the FRONT of the arrays (indices 0..N-1) in walk order, exactly mirroring the
+  // kernel's `current` counter which starts at 0.
+  //
+  // NOTE: directionals deliberately stay OUTSIDE the light tree's spatial structure
+  // (they are given the union-AABB of positional lights so the distance term floors
+  // out and they compete by power alone — the original V22 rationale). Keeping them
+  // outside a separate "directional group" is sound: an infinitely-distant
+  // directional has no meaningful proximity, so a power-only selection is correct
+  // and unbiased (the 1/p_select compensates). This matches the existing single-
+  // directional behaviour and extends cleanly to N.
+  const directionalLeaves: { power: number; dir: readonly [number, number, number] }[] = [];
+  for (let di = 0; di < packed.directionalLightCount; di++) {
+    const base = di * DIRECTIONAL_LIGHT_FLOAT_STRIDE;
+    const irrR = packed.directionalLightsData[base + 4] ?? 0;
+    const irrG = packed.directionalLightsData[base + 5] ?? 0;
+    const irrB = packed.directionalLightsData[base + 6] ?? 0;
+    const meanIrr = (irrR + irrG + irrB) / 3;
+    if (meanIrr <= 1e-6) continue; // kernel gate: skip black/absent directionals
+    directionalLeaves.push({
+      power: emitterPower([irrR, irrG, irrB], { kind: 'delta' }),
+      dir: [irrR, irrG, irrB], // kept for potential future per-directional diagnostics
+    });
+  }
+
+  // For backward-compat gates in buildLightTreeInputForScene (lightDir.w was the
+  // single gate); now we check the packed array directly.
+  const hasDirectional = directionalLeaves.length > 0;
 
   // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
   // > 1e-6`, both derived from the SAME `environmentParams` the GPU uploads.
@@ -652,10 +769,8 @@ export function buildLightTreeInputForScene(
 
   // Deferred non-positional pushes (need the union AABB computed first). We record
   // their target index so the leaf order matches the kernel walk exactly.
-  let directionalPower = 0;
-  if (hasDirectional) {
-    directionalPower = emitterPower(dirIrr, { kind: 'delta' });
-  }
+  // For N directionals the deferred power array matches directionalLeaves in order.
+  const directionalPowers = directionalLeaves.map((l) => l.power);
 
   // Positional selectable lights, in the EXACT walk order shared with the BDPT
   // emitter-pick oracle (point[8] → spot[12] → rect[16] → mesh[16]). The stride
@@ -738,19 +853,22 @@ export function buildLightTreeInputForScene(
   ];
 
   // The directional + env leaves must occupy the SAME positions the kernel walk
-  // assigns them: directional is index 0 (before point lights), env is LAST. We
-  // built the positional leaves in [point, spot, rect, mesh] order above; now
+  // assigns them: directionals are indices 0..N-1 (before point lights), env is LAST.
+  // We built the positional leaves in [point, spot, rect, mesh] order above; now
   // splice the non-positional slots into the correct ends.
+  //
+  // For N directionals we unshift all N leaves in REVERSE order (unshift prepends
+  // one-at-a-time, so the last unshift ends up at index 0 — we reverse so directional[0]
+  // lands at index 0, directional[1] at index 1, etc.).
   if (hasDirectional) {
-    powers.unshift(directionalPower);
-    centroids.unshift(unionCentroid);
-    aabbs.unshift({ min: unionMin, max: unionMax });
-    // B8 — the directional / env slots have no spatial position (infinitely far),
-    // so their AABB is the whole lit region and the descent floors out the dist²
-    // term; they compete by power alone. Leave them full-sphere (undefined) — an
-    // orientation cone for an infinitely-distant emitter would only mis-cull. The
-    // directional unshift goes to index 0 to match the kernel walk.
-    cones.unshift(undefined);
+    for (let di = directionalPowers.length - 1; di >= 0; di--) {
+      powers.unshift(directionalPowers[di]!);
+      centroids.unshift(unionCentroid);
+      aabbs.unshift({ min: unionMin, max: unionMax });
+      // B8 — directional slots have no spatial position (infinitely far);
+      // full-sphere (undefined) — an orientation cone would only mis-cull.
+      cones.unshift(undefined);
+    }
   }
   if (hasEnv) {
     // Env radiance proxy: the dome tint scaled by the dome brightness (sun

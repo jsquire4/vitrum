@@ -5,7 +5,9 @@
  */
 /**
  * Full tier uses 4 bind groups (WS2 added group 3); peak storage buffers in any
- * one group is 10 (group 1: analytics + env + area lights). Group 2 carries 7
+ * one group is 11 (group 1: analytics + env + area lights + directionalLights).
+ * N-directional expansion (2026-06-10) added binding 10 = directionalLights to
+ * group 1, raising the per-group peak from 10 to 11. Group 2 carries 7
  * storage buffers (5 TLAS + the BDPT light-path scratch buffer + the BDPT
  * eye-stack scratch buffer); the light-path was an `rgba32float` read_write
  * storage TEXTURE but core WebGPU rejects that format for read_write storage
@@ -18,16 +20,14 @@
  * contract is per-STAGE, so the exported full-tier request uses the aggregate
  * storage-buffer count below; this per-group peak remains useful for layout audits.
  */
-export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 10;
+export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
 
 /**
  * Full-tier storage-buffer bindings visible to the compute stage.
- * A4 (SPPM): +2 for group-3 sppmPhotonCells (binding 6) + sppmCellCounters
- * (binding 7) — both read_write storage. sppmStats (binding 8) is uniform and
- * does NOT count against this limit.
- * 28 → 30. Total: g0(8) + g1(10) + g2(7) + g3(5) = 30.
+ * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
+ * Total: g0(8) + g1(11) + g2(7) + g3(5) = 31.
  */
-export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 30;
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 31;
 
 /** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
@@ -46,21 +46,34 @@ export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
  * materials(6), bvhNodes(7), normals(8) = 7. Under the lite cap of 8
  * (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) that leaves ONE free
  * storage-buffer slot.
- *   • HDRI importance sampling = environmentMapTexels + environmentMapCdf = 2
- *     storage buffers → 7 + 2 = 9 > 8 → does NOT fit as storage buffers (the
- *     texture-packing route — equirect + CDF rows in sampled textures — is the
- *     B12 follow-up; sampled textures do not count against this budget).
- *   • Area-light BSDF MIS = rectAreaLights = 1 storage buffer → 7 + 1 = 8 → fits
- *     exactly but with zero headroom, and needs the same lite-pipeline plumbing
- *     + constrained-hardware GPU validation as the HDRI route.
- * These three constants make the cliff arithmetic explicit and machine-checkable
- * so a future change that frees/consumes a lite storage-buffer slot trips the pin.
+ *
+ * B12 RESOLUTION (2026-06-10): light data and HDRI env are packed as sampled
+ * texture_2d<f32> (bindings 12–14 in group-0). Sampled textures are counted from
+ * maxSampledTexturesPerShaderStage (WebGPU baseline ≥ 16), NOT the storage-buffer
+ * budget. Post-B12 the lite layout uses:
+ *   • 7 storage buffers (unchanged — still 1 free slot, zero headroom).
+ *   • 3 sampled textures (new, drawn from a separate ≥16 budget):
+ *     – liteEnvTex (binding 12): W×H RGBA32F env radiance + pdf.
+ *     – liteEnvCdfTex (binding 13): W×H RGBA32F env marginal/conditional CDF.
+ *     – liteLightTex (binding 14): 1×N RGBA32F point/spot/rect-area packed data.
+ * The storage-buffer constants below (IN_USE, HDRI_NEEDED, AREA_LIGHT_NEEDED)
+ * remain intact so the cliff arithmetic is machine-checkable and any future
+ * storage-buffer consumption trips the pin.
  */
 export const PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE = 7;
-/** Storage buffers an HDRI importance sampler would add to the lite layout. */
+/** Storage buffers an HDRI importance sampler *would* add as storage buffers (proof it doesn't fit). */
 export const PT_WEBGPU_LITE_HDRI_STORAGE_BUFFERS_NEEDED = 2;
-/** Storage buffers area-light BSDF MIS would add to the lite layout. */
+/** Storage buffers area-light BSDF MIS *would* add as storage buffers (proof it barely fits with 0 headroom). */
 export const PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED = 1;
+
+/**
+ * B12 — sampled textures added to the lite layout (drawn from maxSampledTexturesPerShaderStage,
+ * NOT the storage-buffer budget). Value = 3: liteEnvTex + liteEnvCdfTex + liteLightTex.
+ * The WebGPU baseline guarantee is maxSampledTexturesPerShaderStage ≥ 16.
+ */
+export const PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE = 3;
+/** WebGPU baseline minimum for maxSampledTexturesPerShaderStage (spec §3.6.2). */
+export const PT_WEBGPU_SAMPLED_TEXTURES_BASELINE = 16;
 
 /**
  * Full tier uses 5 storage textures per stage, all in group 0 (output +

@@ -117,8 +117,17 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // bsdfEnvironmentConnectionContribution; spectralEmissionAtHero + materialEnvMapIntensity
     // applied in BSDF half of MIS pair; qPdfSrc gathered in restirPtSpatial (was passing W not pdfSrc).
     // tonemap/spectral RENDER-CHANGING, A/B pending V28-B.
-    expect(digest).toBe('cc158496c8984c30f5066aeea7c6e66bef7ee1b2acde9547bde233afb9f36544');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(283013);
+    // Re-pinned 2026-06-10: N-directional emitter packing — kernel's single
+    // "if (params.lightDir.w > 1e-6)" block replaced by a loop over
+    // directionalLights[] storage buffer (N records, stride 2 vec4f);
+    // params.directionalLightCount carries the count; group(1) binding(10) wired.
+    // 1-directional scenes byte-identical at runtime (loop iterates once with
+    // the same irradiance/dir data). RENDER-CHANGING only for multi-directional
+    // scenes; single-directional A/B invariant. Mesh-area NEE cap
+    // (MESH_AREA_LIGHT_TRI_CAP=65536, largest-area-first) added to emitterPacking.ts
+    // — no WGSL change, cap is applied on the host side during packing.
+    expect(digest).toBe('8e7cb7944c32225bc36e83c55dfb4dbfcfa0916fabc7e8fdc29b9f806ead7159');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(285885);
   });
 });
 
@@ -285,7 +294,8 @@ describe('pt-webgpu WGSL material contract', () => {
     // sub-struct (T14-followup); the per-frame dispatch (`setBindGroup(2, …)`)
     // stays in index.ts. Both halves of the host↔WGSL lockstep are asserted.
     const gpuResourcesSource = readFileSync(resolve(here, '../gpuResources.ts'), 'utf8');
-    expect(limitsSource).toMatch(/PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP\s*=\s*10/);
+    // Updated to 11 for N-directional expansion: directionalLights buffer added at group(1) binding(10).
+    expect(limitsSource).toMatch(/PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP\s*=\s*11/);
     expect(indexSource).toContain('selectPtWebgpuTraceTier');
     expect(gpuResourcesSource).toContain('pathTrace.bindgroup2.full');
     expect(gpuResourcesSource).toContain('{ binding: 0, resource: { buffer: sb.tlasNodesBuffer } }');

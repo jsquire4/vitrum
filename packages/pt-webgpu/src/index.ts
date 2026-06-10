@@ -44,6 +44,11 @@ import {
   PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
+import {
+  packLiteLightTexture,
+  packLiteEnvTexture,
+  packLiteEnvCdfTexture,
+} from './scene/litePackedTextures.js';
 import { type ScenePackResult } from '@vitrum/shared-bvh';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { packFrameParams } from './frameParamsPacker.js';
@@ -448,35 +453,30 @@ class PTEngineWebGPU implements Engine {
       // H12 — lite-tier capabilities reflect what the lite kernel ACTUALLY binds:
       //   • No analytic shapes (group-1 is not bound on the lite layout; the
       //     analytic geometry/params/localToWorld/worldToLocal buffers are absent).
-      //   • Emitters: directional only (params-UBO lane lightDir.xyzw; verified in
-      //     kernelLite.wgsl.ts:341-342 — pointLights/spotLights/rectAreaLights
-      //     are group-1 bindings that the lite tier does not declare).
-      //   • Environments: none + procedural-sky only (lite connectLite module is
-      //     procedural-sky only; no HDRI sampling buffer in group-1).
+      //   • Emitters: directional + point + spot + rect-area (B12 — texture-packed).
+      //     Disc-area and mesh-area remain unsupported (no NEE path in lite kernel).
+      //   • Environments: none + procedural-sky + hdri (B12 — texture-packed).
       //   • No pt-webgpu-bdpt in experimentalFeatures even when bdpt:true was
       //     passed at construction (BDPT requires the full-tier group-2 layout).
       //
-      // B12 (Wave B) — lite-tier fidelity cliff, BINDING-BUDGET PROOF.
+      // B12 (Wave B) — lite-tier fidelity cliff, SHIPPED.
       // The lite tier targets adapters reporting maxStorageBuffersPerShaderStage
       // as low as 8 (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE). The lite
       // group-0 layout already consumes 7 storage buffers (bindings 2,3,4,5,6,7,8
       // = accum, positions, indices, triMaterialIds, materials, bvhNodes,
       // normals), leaving exactly ONE free storage-buffer slot under the 8 cap.
-      //   • HDRI importance sampling needs TWO storage buffers (environmentMapTexels
-      //     + environmentMapCdf) → 7 + 2 = 9 > 8. It does NOT fit as storage
-      //     buffers. The viable route is TEXTURE-based packing (the equirect as a
-      //     sampled texture_2d<f32> + the marginal/conditional CDF rows in a second
-      //     sampled texture — neither counts against the storage-buffer budget),
-      //     which is a dedicated pipeline (texture upload + CDF-in-texture sampler
-      //     + a capability flip) requiring constrained-hardware GPU validation; it
-      //     is tracked as the B12 follow-up rather than shipped half-wired here.
-      //   • Area-light BSDF MIS needs ONE storage buffer (rectAreaLights) → 7 + 1
-      //     = 8, which fits exactly but leaves zero headroom and is bundled with
-      //     the same lite-pipeline plumbing + GPU validation as the HDRI route.
-      // Until that pipeline lands the lite tier honestly advertises procedural-sky
-      // + directional only (the pt-webgpu-lite-tier experimental flag marks the
-      // degraded tier). The budget arithmetic is PINNED by the liteTierBindingBudget
-      // test in webgpuLimits.test.ts.
+      //
+      // B12 resolution: light data and HDRI env packed as sampled texture_2d<f32>
+      // (bindings 12-14 in group-0, type = 'texture' not 'buffer' — counted from
+      // maxSampledTexturesPerShaderStage ≥ 16, NOT the storage-buffer budget).
+      //   • liteLightTex (binding 14): 1×N RGBA32F, point (3 vec4/light) + spot
+      //     (4 vec4/light) + rect-area (4 vec4/light) packed contiguously.
+      //   • liteEnvTex (binding 12): W×H RGBA32F, .rgb = HDR radiance, .a = pdf/sr.
+      //   • liteEnvCdfTex (binding 13): W×H RGBA32F, .r = marginal/conditional CDF
+      //     value at pixel i+1 (2D layout to avoid 8192-width limit).
+      // Budget arithmetic post-B12: 7 storage buffers (unchanged) + 3 sampled
+      // textures (new, drawn from a separate ≥16 budget). The budget arithmetic is
+      // PINNED by the liteTierBindingBudget test in webgpuLimits.test.ts.
       //
       // For the full tier the capability is derived from PT_WEBGPU_SUPPORT so
       // the declared set and the ingestion/packer behavior stay in sync.
@@ -484,17 +484,21 @@ class PTEngineWebGPU implements Engine {
         ? new Set<import('@vitrum/core').AnalyticShape>()
         : new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
       supportedEmitterKinds: this.#traceTier === 'lite'
-        ? new Set<import('@vitrum/core').SceneEmitter['kind']>(['directional'])
+        // B12 — point/spot/rect-area now supported via lite texture packing (liteLightTex).
+        ? new Set<import('@vitrum/core').SceneEmitter['kind']>(['directional', 'point', 'spot', 'rect-area'])
         : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
       supportedPrimitiveKinds: new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
       supportedEnvironmentKinds: this.#traceTier === 'lite'
-        ? new Set<import('@vitrum/core').Scene['environment']['kind']>(['none', 'procedural-sky'])
+        // B12 — HDRI env now supported via lite texture packing (liteEnvTex + liteEnvCdfTex).
+        ? new Set<import('@vitrum/core').Scene['environment']['kind']>(['none', 'procedural-sky', 'hdri'])
         : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
       presentationMode: 'offscreen-texture',
       // H12 — lite-tier supportDetails must reflect what group-0 ACTUALLY binds,
       // not the full-tier ledger. Group-0 lite omits group-1 (analytic, env, lights)
-      // and group-2 (TLAS, BDPT). Only directional emitters and procedural-sky
-      // environments are operative; all others get 'unsupported' here.
+      // and group-2 (TLAS, BDPT). Disc-area and mesh-area emitters, analytic primitives,
+      // and analytic shapes remain unsupported (no NEE path for those in the lite kernel).
+      // B12 — point/spot/rect-area upgraded to 'native' (texture-packed NEE).
+      // B12 — hdri upgraded to 'native' (liteEnvTex + liteEnvCdfTex importance sampling).
       supportDetails:
         this.#traceTier === 'lite'
           ? {
@@ -506,16 +510,16 @@ class PTEngineWebGPU implements Engine {
               },
               emitters: {
                 directional: 'native',
-                point: 'unsupported',
-                spot: 'unsupported',
-                'rect-area': 'unsupported',
+                point: 'native',
+                spot: 'native',
+                'rect-area': 'native',
                 'disc-area': 'unsupported',
                 'mesh-area': 'unsupported',
               },
               environments: {
                 none: 'native',
                 'procedural-sky': 'native',
-                hdri: 'unsupported',
+                hdri: 'native',
               },
               analyticShapes: {
                 sphere: 'unsupported',
@@ -760,11 +764,11 @@ class PTEngineWebGPU implements Engine {
       throw new Error('setScene: engine is disposed');
     }
     if (this.#traceTier === 'lite') {
-      // Warn when the scene contains content the lite tier cannot bind.
-      // The lite tier binds only group-0 (mesh BVH, directional emitter via
-      // UBO lane, procedural-sky). Analytic primitives, non-directional emitters,
-      // and HDRI environments are silently dropped at runtime; surface them here
-      // so hosts can make an informed choice.
+      // Warn when the scene contains content the lite tier cannot handle.
+      // B12 — point/spot/rect-area emitters and HDRI environments are now
+      // supported via texture packing (liteLightTex, liteEnvTex, liteEnvCdfTex).
+      // Remaining unsupported: analytic primitives (group-1 absent), disc-area
+      // and mesh-area emitters (no NEE path in lite kernel).
       const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
       if (analyticPrimitives.length > 0) {
         console.warn(
@@ -773,25 +777,20 @@ class PTEngineWebGPU implements Engine {
             'These will be silently ignored.',
         );
       }
-      const unsupportedEmitters = scene.emitters.filter((e) => e.kind !== 'directional');
+      // B12 — only disc-area and mesh-area are unsupported on lite; point/spot/rect-area
+      // are now handled via texture-packed NEE (liteLightTex).
+      const unsupportedEmitters = scene.emitters.filter(
+        (e) => e.kind === 'disc-area' || e.kind === 'mesh-area',
+      );
       if (unsupportedEmitters.length > 0) {
         const kinds = [...new Set(unsupportedEmitters.map((e) => e.kind))].join(', ');
         console.warn(
           `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
-            'only directional emitters are supported on the lite tier (group-1 light buffers are absent). ' +
+            'disc-area and mesh-area emitters are not supported on the lite tier (no NEE path in lite kernel). ' +
             'These will be silently ignored.',
         );
       }
-      if (
-        scene.environment.kind !== 'none' &&
-        scene.environment.kind !== 'procedural-sky'
-      ) {
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene environment kind '${scene.environment.kind}' is not supported — ` +
-            'only none and procedural-sky are operative on the lite tier (HDRI sampling buffers are absent). ' +
-            'Falling back to procedural sky.',
-        );
-      }
+      // B12 — HDRI environments are now supported via texture packing; no warn needed.
     }
     this.#repackScene(scene, { warnOnEmpty: true });
   }
@@ -813,6 +812,29 @@ class PTEngineWebGPU implements Engine {
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
+    // B12 — lite-tier: pack point/spot/rect light data + env into textures
+    // (group-0 bindings 12–14).  No-op on the full tier (uploadLiteTextures is
+    // a no-op when traceTier !== 'lite').
+    if (this.#traceTier === 'lite') {
+      const lightTex = packLiteLightTexture(
+        packed.pointLightsData,
+        packed.spotLightsData,
+        packed.rectAreaLightsData,
+      );
+      const envTex = packLiteEnvTexture(
+        packed.environmentMapTexels,
+        packed.environmentMapWidth,
+        packed.environmentMapHeight,
+        packed.hasEnvironmentMap,
+      );
+      const cdfTex = packLiteEnvCdfTexture(
+        packed.environmentMapCdf,
+        packed.environmentMapWidth,
+        packed.environmentMapHeight,
+        packed.hasEnvironmentMap,
+      );
+      this.#gpu.uploadLiteTextures(lightTex, envTex, cdfTex);
+    }
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
     if (this.#bdpt && this.#traceTier === 'full') {
@@ -932,6 +954,10 @@ class PTEngineWebGPU implements Engine {
       (this.#traceTier === 'full' && gpu.motionVectorsView == null) ||
       gpu.accumBuffer == null ||
       (this.#traceTier === 'full' && gpu.varianceMomentsBuffer == null) ||
+      // B12 — lite-tier texture views must be present before rendering.
+      (this.#traceTier === 'lite' && gpu.liteEnvTextureView == null) ||
+      (this.#traceTier === 'lite' && gpu.liteEnvCdfTextureView == null) ||
+      (this.#traceTier === 'lite' && gpu.liteLightTextureView == null) ||
       gpu.paramsBuffer == null ||
       gpu.computePipeline == null ||
       gpu.bindGroupLayout == null ||

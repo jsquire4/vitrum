@@ -130,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(283013); // re-pinned 2026-06-10: A4 real SPPM — SPPM_GROUP4_BINDINGS_WGSL added, caustic gather moved out of megakernel. RENDER-CHANGING for causticStrategy:'photon-map'. Re-pinned 2026-06-10: pt-webgpu tonemap dials + spectral MIS connection halves + rpt spatial pdfSrc — tonemap/spectral RENDER-CHANGING, A/B pending V28-B.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(285885); // re-pinned 2026-06-10: N-directional emitter packing + mesh-area NEE cap — single-directional scenes byte-identical at runtime, kernel loops params.directionalLightCount records from directionalLights[] storage buffer.
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
@@ -293,18 +293,18 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
 
   it('ON: full-tier request throws if the device was not acquired with the reuse buffer floor', async () => {
     const rec = emptyRecorder();
-    // 30 = PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE (A4: was 28, +2 SPPM).
-    // 34 = PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE (30 + 4 RPT).
-    // Use 30 so the device is full-tier (30 ≥ 30) but below the restirPtReuse floor (30 < 34),
+    // 31 = PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE (N-directional +1: was 30, now 31).
+    // 35 = PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE (31 + 4 RPT).
+    // Use 31 so the device is full-tier (31 ≥ 31) but below the restirPtReuse floor (31 < 35),
     // ensuring the thrown error is the buffer-floor error, not the lite-tier error.
     const device = {
       ...makeFullTierDevice(rec),
-      limits: { maxStorageBuffersPerShaderStage: 30, maxStorageTexturesPerShaderStage: 8 },
+      limits: { maxStorageBuffersPerShaderStage: 31, maxStorageTexturesPerShaderStage: 8 },
     } as unknown as GPUDevice;
     await expect(createPTEngine_WebGPU({
       device,
       restirPtReuse: true,
-    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 34/);
+    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 35/);
   });
 });
 

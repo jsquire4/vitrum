@@ -444,9 +444,11 @@ ${transmissiveBlock}
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     var lightCount = 0u;
-    if (params.lightDir.w > 1e-6) {
-      lightCount = lightCount + 1u;
-    }
+    // N-directional: count each directional with non-zero mean irradiance.
+    // The storage-buffer record already packs mean_irradiance in [di*2+1].w;
+    // directionalLightCount is the total records (only packed when meanIrr > 1e-6
+    // at pack time, so every record here is a real light).
+    lightCount = lightCount + params.directionalLightCount;
     lightCount = lightCount + params.pointLightCount;
     lightCount = lightCount + params.spotLightCount;
     lightCount = lightCount + params.rectAreaLightCount;
@@ -496,19 +498,46 @@ ${transmissiveBlock}
       }
       var current = 0u;
       var directLi = vec3f(0.0);
-      if (params.lightDir.w > 1e-6) {
+      // N-directional loop: each record in directionalLights[] is 2 vec4f:
+      //   [di*2+0]: towardLight.xyz, angularDiameter
+      //   [di*2+1]: irradiance.rgb,  mean_irradiance
+      // N-directional: replaces the single "if (params.lightDir.w > 1e-6)" path;
+      // the first directional (di=0) is byte-identical for single-directional scenes
+      // because the packer mirrors directional[0] into lightDir for in-medium NEE.
+      for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
         if (current == picked) {
-          let lightDir = safe_normalize(params.lightDir.xyz);
-          let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
+          let dBase = di * 2u;
+          let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
+          let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
+          var sampleDir = safe_normalize(dDirAD.xyz);
+          // D3 soft-sun cone sampling — reuses the same cone logic as the
+          // original single-directional path (angularDiameter > 0 ⟹ sample a
+          // uniformly-random direction within the solid-angle cone).
+          let angDiam = dDirAD.w;
+          if (angDiam > 0.0) {
+            let cosHalfAngle = cos(angDiam * 0.5);
+            let xi1 = rand_f32(&rng);
+            let xi2 = rand_f32(&rng);
+            let cosTheta = mix(cosHalfAngle, 1.0, xi1);
+            let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+            let phi = 6.28318530718 * xi2;
+            let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
+            let basisY = normalize(cross(sampleDir, tangentX));
+            let basisX = cross(basisY, sampleDir);
+            sampleDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * sampleDir);
+          }
+          let shadowRay = Ray(hitPos + normal * 1e-3, sampleDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-            let nDotL = max(0.0, dot(normal, lightDir));
+            let nDotL = max(0.0, dot(normal, sampleDir));
             // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
             // zero-default → identical to evaluateBrdf when all scalars are 0.
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, sampleDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax);
+            // A3 — spectralise the directional irradiance at the hero λ (RGB unchanged).
+            let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-            directLi = throughput * brdf * nDotL * params.lightDir.w * lightSelectInvPdf;
+            directLi = throughput * brdf * nDotL * dIrrOut * lightSelectInvPdf;
           }
         }
         current = current + 1u;

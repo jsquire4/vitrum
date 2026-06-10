@@ -303,6 +303,7 @@ describe('applyEmitterCountMutation — Item 2d: directionalAngularDiameter sync
     } as unknown as UploadedSceneBuffers;
 
     applyEmitterCountMutation(stubSb, {
+      directionalLightCount: 1,
       pointLightCount: 1,
       spotLightCount: 0,
       rectAreaLightCount: 0,
@@ -330,6 +331,7 @@ describe('applyEmitterCountMutation — Item 2d: directionalAngularDiameter sync
     } as unknown as UploadedSceneBuffers;
 
     applyEmitterCountMutation(stubSb, {
+      directionalLightCount: 0,
       pointLightCount: 0,
       spotLightCount: 0,
       rectAreaLightCount: 0,

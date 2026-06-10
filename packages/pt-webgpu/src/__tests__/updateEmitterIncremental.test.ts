@@ -80,9 +80,12 @@ describe('pt-webgpu incremental emitter updates', () => {
     // Light count is unchanged by this material-only patch, so the light-tree
     // buffer is rewritten in place — no new GPU buffer is allocated.
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
-    // Dynamic emitter buffers only upload populated light classes. This scene
-    // has one point light plus the WS2 light-tree re-upload (the tree's leaf
-    // powers depend on the patched emitter's radiance).
-    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 2);
+    // Dynamic emitter buffers upload all populated light classes.  This scene
+    // has a directional + a point light, so uploadEmitterArrays writes both
+    // (directional data is re-written even though only the point changed — the
+    // per-class optimization is future work tracked separately). The WS2
+    // light-tree is also re-uploaded because the patched emitter's radiance
+    // changes the leaf powers.  Total: directional(1) + point(1) + lightTree(1) = 3.
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 3);
   });
 });

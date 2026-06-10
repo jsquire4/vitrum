@@ -114,6 +114,9 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'invViewProj: mat4x4f',
       'viewProj: mat4x4f',
       'prevViewProj: mat4x4f',
+      // N-directional: packed directional count field added after prevViewProj.
+      // Slot 96 (byte 384 + 4 = 388), the first scalar after the three mat4x4f blocks.
+      'directionalLightCount: u32',
     ]);
   });
 
@@ -195,8 +198,16 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     const f32Count = fields.filter((f) => /:\s*f32\b/.test(f)).length;
     const vec4Count = fields.filter((f) => /:\s*vec4f\b/.test(f)).length;
     const mat4Count = fields.filter((f) => /:\s*mat4x4f\b/.test(f)).length;
-    const bytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
-    expect(bytes).toBe(FRAME_PARAMS_BYTE_SIZE);
+    // Raw field sum (no inter-field alignment or struct-end padding). WGSL structs are
+    // additionally padded to a multiple of their largest member's alignment (16 bytes
+    // for mat4x4f). The cross-check in frameParamsSlotCrossCheck.test.ts applies the
+    // full WGSL alignment rules; this test verifies the raw sum is close to and within
+    // FRAME_PARAMS_BYTE_SIZE so stale fields are caught without false-failing on padding.
+    const rawBytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
+    // FRAME_PARAMS_BYTE_SIZE is the properly-padded size; raw < padded is expected
+    // when the struct ends with a scalar (trailing u32 adds 4B raw but 16B padded).
+    expect(rawBytes).toBeLessThanOrEqual(FRAME_PARAMS_BYTE_SIZE);
+    expect(rawBytes).toBeGreaterThan(FRAME_PARAMS_BYTE_SIZE - 16); // at most 16B of end-padding
     expect(FRAME_PARAMS_BYTE_SIZE).toBeLessThanOrEqual(512);
   });
 });

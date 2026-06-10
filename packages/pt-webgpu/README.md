@@ -71,16 +71,13 @@ Caustic truthfulness: `causticStrategy: 'manifold-nee'` is the **validated
 reference** caustic path — GPU-A/B'd against a forward-traced oracle it recovers
 ~98.7% of the true caustic energy, fires on 99.4% of caustic pixels, and is
 scale-invariant (no world-unit magic constant). `causticStrategy: 'photon-map'`
-is an **approximate / stylized** density-estimation mode, NOT a radiometric
-reference: against the same oracle it recovers only ~21% of the true caustic
-energy and fires on ~1% of caustic pixels, carries a hardcoded world-unit gather
-radius (`gatherRadius = 0.35`, ~6× firing-rate swing under a radiometrically-null
-scene rescale) and a flat brightness fudge (`1 + 0.25·transmission`, ~20% of its
-reported energy). It is reported through `capabilities.experimentalFeatures` as
-`pt-webgpu-photon-map-approximate`. Use `'manifold-nee'` for fidelity; reach for
-`'photon-map'` only as a cheap, clearly-approximate alternative. Evidence:
-GPU A/B dzn RTX-4090, 2026-06-07,
-`wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.
+is now a **real SPPM (stochastic progressive photon mapping)** path (Hachisuka &
+Jensen 2009; 2026-06-10, commit `06910e2`): persistent spatial hash grid in
+group-3 bindings 6–8, photon-emission pass from point/spot lights through the BVH,
+camera-hit gather with α=2/3 progressive radius shrink seeded from the scene AABB.
+The prior per-pixel 32-photon approximation with hardcoded `gatherRadius=0.35` and
+`×1.25` brightness fudge is gone. Full-tier only (warn+degrade on lite). Radiometric
+A/B vs forward-traced oracle pending V28-B.
 
 The **lite** tier exists only as a **CI / SwiftShader fallback** (often **10** /
 **4** limits in headless Chromium on Linux). WSL2 without GPU passthrough frequently
@@ -113,6 +110,7 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 - Packed materials (layers, thin-film stack, spectral grid, dispersion Abbe)
 - Bounded multi-emitter direct lighting (full tier)
 - Analytic shapes, procedural sky + HDRI (full tier)
+- **Skinned-mesh pose solving (2026-06-10):** `solveSkin` runs at ingestion + re-runs on `bones`/morphTargets patches. Ledger grade `skinned-mesh: 'native'`.
 - `updatePrimitive` / `updateEmitter` incremental APIs (see ledger)
 - Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS
 - Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. The walk is **compiled out when BDPT is enabled** (the BDPT light subpath has no medium logic — energy-conservation gate), falling back to per-channel Beer-Lambert absorption. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
@@ -126,12 +124,13 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 
 ## Known limitations
 
+- **BEHAVIOR CHANGE (2026-06-10):** this backend previously returned raw linear HDR in `primaryRadiance`. The contract default (`aces` tonemap @ exposure 1.0 @ sRGB output) now applies. Adjoint/OIDN readbacks remain linear. To get raw HDR: `quality: { tonemap: 'none', outputColorSpace: 'linear' }`.
 - **Lite tier** disables TLAS, analytic shapes, HDRI texel buffers, point/spot/area lights,
   motion vectors, and caustic strategies regardless of scene content.
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` (same vertex count) patch in place; vertex/index-count and instance-count changes are absorbed via a targeted BLAS/TLAS repack (`incrementalPatchSupport.topology: true`).
-- **No texture maps:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling in either native PT backend — textured PBR is a road-to-100 item for both `pt-webgpu` and `pt-webgl2`.
+- **No texture maps on pt-webgpu:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling in pt-webgpu — textured PBR is a road-to-100 item for this backend. Note: `@vitrum/pt-webgl2` *does* have a native texture atlas (`texturesArray.ts`, `sampler2DArray`); the two backends are not yet at texture-map parity.
 - **`denoiser: 'oidn-final'` is NOT turnkey** — vitrum ships neither of the two required host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`, e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer dep installed in the host application. Missing either produces a clear error at construction time.
 ## Polish commands
 

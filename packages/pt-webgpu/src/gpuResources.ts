@@ -24,6 +24,7 @@
 
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
+import type { LiteLightTexData, LiteEnvTexData, LiteEnvCdfData } from './scene/litePackedTextures.js';
 import {
   composePtWebgpuTraceWgsl,
   composePtWebgpuCompositeTraceWgsl,
@@ -186,6 +187,27 @@ export class GpuResources {
 
   /** true if the SPPM buffers have been allocated at full size (not placeholder). */
   sppmBuffersReady = false;
+
+  // ── B12 — Lite-tier packed textures (group-0 bindings 12–14) ─────────────────
+  /**
+   * B12 — env radiance+pdf texture (binding 12), RGBA32F, envWidth×envHeight.
+   * 1×1 black placeholder when no HDRI/sky is loaded.  Lite tier only; null on full.
+   */
+  liteEnvTexture: GPUTexture | null = null;
+  liteEnvTextureView: GPUTextureView | null = null;
+  /**
+   * B12 — env CDF texture (binding 13), RGBA32F (.r = CDF entry), envWidth×envHeight.
+   * 1×1 zero placeholder when no HDRI/sky is loaded.  Lite tier only; null on full.
+   */
+  liteEnvCdfTexture: GPUTexture | null = null;
+  liteEnvCdfTextureView: GPUTextureView | null = null;
+  /**
+   * B12 — light data texture (binding 14), RGBA32F, liteLightTexWidth×1.
+   * Packs point/spot/rect-area light records contiguously.  1×1 black placeholder
+   * when the scene has no such lights.  Lite tier only; null on full.
+   */
+  liteLightTexture: GPUTexture | null = null;
+  liteLightTextureView: GPUTextureView | null = null;
 
   /** Bytes per ReservoirPTHero (36 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
    *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
@@ -457,7 +479,15 @@ export class GpuResources {
       storageTexture: storageTex,
     });
 
-    // Group 0 — bindings 0..11 (lite) / 0..13 (full). Mirrors material.wgsl.ts.
+    // Helper for sampled texture_2d<f32> bindings (B12 lite-tier textures).
+    const sampledTex = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: VIS,
+      texture: { sampleType: 'float', viewDimension: '2d' },
+    });
+
+    // Group 0 — bindings 0..11 (both tiers) + 12..14 (lite texture slots) / 12..13 (full).
+    // Mirrors material.wgsl.ts.
     const group0Entries: GPUBindGroupLayoutEntry[] = [
       tex(0), // outputTexture (storage texture, write)
       buf(1, uniform), // params (uniform)
@@ -477,6 +507,14 @@ export class GpuResources {
         tex(12), // motionVectorsTexture
         buf(13, rw), // varianceMomentsBuffer (read_write)
       );
+    } else {
+      // B12 — lite-tier sampled texture bindings 12–14.
+      // Uses maxSampledTexturesPerShaderStage (≥ 16 baseline), NOT storage buffers.
+      group0Entries.push(
+        sampledTex(12), // liteEnvTex    — RGBA32F env radiance+pdf
+        sampledTex(13), // liteEnvCdfTex — RGBA32F (.r = CDF entry)
+        sampledTex(14), // liteLightTex  — RGBA32F packed light data
+      );
     }
     this.bindGroupLayout = this.#device.createBindGroupLayout({
       label: `vitrum.pt-webgpu.layout.group0.${this.#traceTier}`,
@@ -488,7 +526,7 @@ export class GpuResources {
       // Group 1 — 10 read-only storage buffers (analytics + env + area lights).
       this.bindGroupLayout1 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group1.full',
-        entries: Array.from({ length: 10 }, (_unused, binding) => buf(binding, ro)),
+        entries: Array.from({ length: 11 }, (_unused, binding) => buf(binding, ro)),
       });
       // Group 2 — TLAS table (5 read-only) + BDPT light-path + eye-stack (read_write).
       this.bindGroupLayout2 = this.#device.createBindGroupLayout({
@@ -1047,6 +1085,10 @@ export class GpuResources {
       { binding: 9, resource: this.normalDepthView! },
       { binding: 10, resource: this.albedoView! },
       { binding: 11, resource: this.varianceView! },
+      // B12 — lite-tier texture bindings 12–14 (sampled, not storage).
+      { binding: 12, resource: this.liteEnvTextureView! },
+      { binding: 13, resource: this.liteEnvCdfTextureView! },
+      { binding: 14, resource: this.liteLightTextureView! },
     ];
     const fullGroup0Entries: GPUBindGroupEntry[] = [
       ...liteEntries,
@@ -1064,6 +1106,8 @@ export class GpuResources {
       { binding: 7, resource: { buffer: sb.spotLightsBuffer } },
       { binding: 8, resource: { buffer: sb.rectAreaLightsBuffer } },
       { binding: 9, resource: { buffer: sb.meshAreaLightsBuffer } },
+      // N-directional: directionalLights storage buffer (group 1 binding 10).
+      { binding: 10, resource: { buffer: sb.directionalLightsBuffer } },
     ];
     const fullGroup2Entries: GPUBindGroupEntry[] = [
       { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
@@ -1393,6 +1437,81 @@ export class GpuResources {
     return true;
   }
 
+  // ── B12 — Lite-tier texture upload ──────────────────────────────────────────
+
+  /**
+   * B12 — (Re)allocate and upload the lite-tier packed textures for the current
+   * scene.  Called from `index.ts` after `uploadSceneBuffers` (full or incremental
+   * rebuild) whenever the trace tier is `'lite'`.
+   *
+   * Destroys any previously-allocated lite textures before re-creating them so
+   * the bind group always holds fresh views.  Invalidates the cached group-0 bind
+   * group so `buildBindGroups` will rebuild it with the new texture views.
+   *
+   * No-op on the full tier (lite textures are null/unused there).
+   */
+  uploadLiteTextures(
+    lightData: LiteLightTexData,
+    envData:   LiteEnvTexData,
+    cdfData:   LiteEnvCdfData,
+  ): void {
+    if (this.#traceTier !== 'lite') return;
+
+    // Destroy previous textures.
+    this.liteEnvTexture?.destroy();
+    this.liteEnvCdfTexture?.destroy();
+    this.liteLightTexture?.destroy();
+
+    // Create and upload env radiance+pdf texture (envWidth × envHeight, RGBA32F).
+    this.liteEnvTexture = this.#device.createTexture({
+      label: 'vitrum.pt-webgpu.lite.envTex',
+      size: { width: envData.width, height: envData.height, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.#device.queue.writeTexture(
+      { texture: this.liteEnvTexture },
+      // Cast: packed texels are always new Float32Array() with a plain ArrayBuffer.
+      envData.texels as unknown as Float32Array<ArrayBuffer>,
+      { bytesPerRow: envData.width * 16, rowsPerImage: envData.height },
+      { width: envData.width, height: envData.height },
+    );
+    this.liteEnvTextureView = this.liteEnvTexture.createView();
+
+    // Create and upload env CDF texture (envWidth × envHeight, RGBA32F, .r = CDF).
+    this.liteEnvCdfTexture = this.#device.createTexture({
+      label: 'vitrum.pt-webgpu.lite.envCdfTex',
+      size: { width: cdfData.width, height: cdfData.height, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.#device.queue.writeTexture(
+      { texture: this.liteEnvCdfTexture },
+      cdfData.data as unknown as Float32Array<ArrayBuffer>,
+      { bytesPerRow: cdfData.width * 16, rowsPerImage: cdfData.height },
+      { width: cdfData.width, height: cdfData.height },
+    );
+    this.liteEnvCdfTextureView = this.liteEnvCdfTexture.createView();
+
+    // Create and upload light data texture (liteLightTexWidth × 1, RGBA32F).
+    this.liteLightTexture = this.#device.createTexture({
+      label: 'vitrum.pt-webgpu.lite.lightTex',
+      size: { width: lightData.width, height: 1, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.#device.queue.writeTexture(
+      { texture: this.liteLightTexture },
+      lightData.data as unknown as Float32Array<ArrayBuffer>,
+      { bytesPerRow: lightData.width * 16, rowsPerImage: 1 },
+      { width: lightData.width, height: 1 },
+    );
+    this.liteLightTextureView = this.liteLightTexture.createView();
+
+    // Invalidate group-0 so buildBindGroups picks up the new texture views.
+    this.pathTraceBindGroup = null;
+  }
+
   /**
    * Invalidate the group-3 bind group (which now includes the SPPM bindings
    * at 6/7/8) when the SPPM buffers are reallocated.  Called by
@@ -1560,5 +1679,15 @@ export class GpuResources {
     this.bindGroupLayout3 = null;
     this.#disposeReservoirResources();
     this.#disposeSppmResources();
+    // B12 — lite-tier textures (no-op on full tier since they are null).
+    this.liteEnvTexture?.destroy();
+    this.liteEnvTexture = null;
+    this.liteEnvTextureView = null;
+    this.liteEnvCdfTexture?.destroy();
+    this.liteEnvCdfTexture = null;
+    this.liteEnvCdfTextureView = null;
+    this.liteLightTexture?.destroy();
+    this.liteLightTexture = null;
+    this.liteLightTextureView = null;
   }
 }

@@ -27,6 +27,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
   POINT_LIGHT_FLOAT_STRIDE,
   SPOT_LIGHT_FLOAT_STRIDE,
   RECT_AREA_LIGHT_FLOAT_STRIDE,
@@ -56,6 +57,24 @@ function extractWgslStride(wgsl: string, pattern: RegExp): number | null {
   const vec4Count = parseInt(m[1], 10);
   return vec4Count * 4;
 }
+
+// ─── N-directional stride (new item) ─────────────────────────────────────────
+// The kernel addresses directionalLights[] with `dBase = di * 2u` (2 vec4f = 8 floats).
+// DIRECTIONAL_LIGHT_FLOAT_STRIDE on the host must be 8 to stay in sync.
+describe('N-directional stride consistency: TS constant ↔ WGSL dBase index', () => {
+  it('DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8 (2 vec4f)', () => {
+    expect(DIRECTIONAL_LIGHT_FLOAT_STRIDE).toBe(8);
+  });
+
+  it('WGSL kernel uses dBase = di * 2u, matching 8-float / 4-float-per-vec4 = 2 vec4f', () => {
+    // The WGSL stride is not a named constant but is implicit in the index expression.
+    // This test pins it so a future edit to the loop cannot silently break alignment.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dBase = di * 2u');
+    // Specifically: the loop reads `directionalLights[dBase]` and `directionalLights[dBase + 1u]`
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dDirAD = directionalLights[dBase]');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dIrrMean = directionalLights[dBase + 1u]');
+  });
+});
 
 describe('H51-D emitter stride consistency: TS pack ↔ TS walk ↔ WGSL', () => {
   it('point light stride agrees across all three sources', () => {

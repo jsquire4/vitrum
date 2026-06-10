@@ -30,6 +30,7 @@ import {
   packEmitterArrays,
   type EnvSummaryForTree,
   type PackedEmitterArrays,
+  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
 } from './emitterPacking.js';
 
 // 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally
@@ -82,6 +83,10 @@ interface PackedSceneData {
   readonly directionalIrradiance: readonly [number, number, number];
   /** D3 — soft-sun angular diameter (radians); 0 = exact delta directional. */
   readonly directionalAngularDiameter: number;
+  /** N-directional: total count of directional emitters with non-zero irradiance. */
+  readonly directionalLightCount: number;
+  /** N-directional: packed flat array, DIRECTIONAL_LIGHT_FLOAT_STRIDE (8) floats per entry. */
+  readonly directionalLightsData: Float32Array;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
@@ -144,6 +149,8 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly analyticWorldToLocalBuffer: GPUBuffer;
   readonly environmentMapTexelsBuffer: GPUBuffer;
   readonly environmentMapCdfBuffer: GPUBuffer;
+  /** N-directional: GPU storage buffer, group(1) binding(10). */
+  readonly directionalLightsBuffer: GPUBuffer;
   readonly pointLightsBuffer: GPUBuffer;
   readonly spotLightsBuffer: GPUBuffer;
   readonly rectAreaLightsBuffer: GPUBuffer;
@@ -497,6 +504,8 @@ export function buildPackedScene(
     directionalLight: defaultDirectionalLight(scene),
     directionalIrradiance: defaultDirectionalIrradiance(scene),
     directionalAngularDiameter: defaultDirectionalAngularDiameter(scene),
+    directionalLightCount: emitArrays.directionalLightCount,
+    directionalLightsData: emitArrays.directionalLightsData,
     pointLightCount: emitArrays.pointLightCount,
     spotLightCount: emitArrays.spotLightCount,
     rectAreaLightCount: emitArrays.rectAreaLightCount,
@@ -837,6 +846,7 @@ interface MutableSceneBufferFields {
   triangleCount: number;
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
   // Emitter counts + directional aggregate (updateEmitter fast path).
+  directionalLightCount: number;
   pointLightCount: number;
   spotLightCount: number;
   rectAreaLightCount: number;
@@ -896,10 +906,12 @@ function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBuffe
  * updateEmitter path when dynamic emitter expansion changes byte lengths.
  */
 interface MutableEmitterBufferHandles {
+  directionalLightsBuffer: GPUBuffer;
   pointLightsBuffer: GPUBuffer;
   spotLightsBuffer: GPUBuffer;
   rectAreaLightsBuffer: GPUBuffer;
   meshAreaLightsBuffer: GPUBuffer;
+  directionalLightsData: Float32Array;
   pointLightsData: Float32Array;
   spotLightsData: Float32Array;
   rectAreaLightsData: Float32Array;
@@ -940,6 +952,7 @@ function asMutableSceneBufferBlasHandles(sb: UploadedSceneBuffers): MutableBlasB
 export function applyEmitterCountMutation(
   sb: UploadedSceneBuffers,
   next: {
+    readonly directionalLightCount: number;
     readonly pointLightCount: number;
     readonly spotLightCount: number;
     readonly rectAreaLightCount: number;
@@ -951,6 +964,7 @@ export function applyEmitterCountMutation(
   },
 ): void {
   const mutable = asMutableSceneBuffers(sb);
+  mutable.directionalLightCount = next.directionalLightCount;
   mutable.pointLightCount = next.pointLightCount;
   mutable.spotLightCount = next.spotLightCount;
   mutable.rectAreaLightCount = next.rectAreaLightCount;
@@ -1008,6 +1022,17 @@ export function uploadEmitterArrays(
   let reallocated = false;
   reallocated = uploadOrReallocateEmitterBuffer(
     device,
+    sb.directionalLightsBuffer,
+    sb.directionalLightsData,
+    packed.directionalLightsData,
+    'vitrum.pt-webgpu.scene.directionalLights',
+    (buffer, data) => {
+      handles.directionalLightsBuffer = buffer;
+      handles.directionalLightsData = data;
+    },
+  ) || reallocated;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
     sb.pointLightsBuffer,
     sb.pointLightsData,
     packed.pointLightsData,
@@ -1051,6 +1076,7 @@ export function uploadEmitterArrays(
     },
   ) || reallocated;
   applyEmitterCountMutation(sb, {
+    directionalLightCount: packed.directionalLightCount,
     pointLightCount: packed.pointLightCount,
     spotLightCount: packed.spotLightCount,
     rectAreaLightCount: packed.rectAreaLightCount,
@@ -1192,6 +1218,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const analyticWorldToLocalBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticWorldToLocal', packed.analyticWorldToLocal);
   const environmentMapTexelsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapTexels', packed.environmentMapTexels);
   const environmentMapCdfBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapCdf', packed.environmentMapCdf);
+  const directionalLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.directionalLights', packed.directionalLightsData);
   const pointLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.pointLights', packed.pointLightsData);
   const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
@@ -1253,6 +1280,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     analyticWorldToLocalBuffer,
     environmentMapTexelsBuffer,
     environmentMapCdfBuffer,
+    directionalLightsBuffer,
     pointLightsBuffer,
     spotLightsBuffer,
     rectAreaLightsBuffer,
@@ -1290,6 +1318,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       analyticWorldToLocalBuffer.destroy();
       environmentMapTexelsBuffer.destroy();
       environmentMapCdfBuffer.destroy();
+      uploaded.directionalLightsBuffer.destroy();
       uploaded.pointLightsBuffer.destroy();
       uploaded.spotLightsBuffer.destroy();
       uploaded.rectAreaLightsBuffer.destroy();
@@ -1324,6 +1353,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
         uploaded.analyticHeadersBuffer, uploaded.analyticParamsBuffer,
         uploaded.analyticLocalToWorldBuffer, uploaded.analyticWorldToLocalBuffer,
         uploaded.environmentMapTexelsBuffer, uploaded.environmentMapCdfBuffer,
+        uploaded.directionalLightsBuffer,
         uploaded.pointLightsBuffer, uploaded.spotLightsBuffer, uploaded.rectAreaLightsBuffer,
         uploaded.meshAreaLightsBuffer, uploaded.lightTreeBuffer,
         uploaded.tlasNodesBuffer, uploaded.tlasInstanceIndicesBuffer, uploaded.tlasBlasRootsBuffer,

@@ -239,6 +239,8 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     // Probe: empty packed (no lights at all).
     const emptyPacked = {
       warnings: [],
+      directionalLightCount: 0,
+      directionalLightsData: new Float32Array(0),
       pointLightCount: 0,
       spotLightCount: 0,
       rectAreaLightCount: 0,
