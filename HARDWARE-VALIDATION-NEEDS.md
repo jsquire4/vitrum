@@ -6,6 +6,70 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 
 ---
 
+> ## 🔴 V28 — §H remediation validation worksheet (2026-06-09; the CURRENT top-priority GPU session)
+>
+> The §H remediation (items_to_fix.md §H, commits `b09acaf..` on local main) landed ~50 fixes;
+> **12 are render-changing and unit/oracle-tested but NOT yet GPU-validated.** This is the validator's
+> run order. House rules: every A/B against an INDEPENDENT reference (CPU oracle / cross-backend /
+> analytic — never a same-lineage golden, the F-TLAS1 lesson); harnesses live in `~/projects/wsl-gpu`
+> (lavapipe oracle + dzn/RTX-4090); the webgl2-capture pattern to clone is
+> `wsl-gpu/webgl2-capture/run-ptwebgl2-h1.mjs`.
+>
+> **STEP 0 — compile gate (FIRST, it's free):** `git push` fires the pre-push T1 smoke = the first naga
+> compile of ALL new WGSL: DDGI probe-ray emitter NEE (`probeUpdateRays.wgsl.ts`), walkaround analytic
+> NEE (`shade.wgsl.ts` binding 13), Disney lobes (`bsdf.wgsl.ts`, material stride 23→26), glass-aware
+> `traceTlasAny`, pt-webgpu spot/point stride bumps, env-rotationY helpers, NRC atomics. **EXPECT the T1
+> hybrid goldens to move** (the smoke Cornell is rect-area-lit → H18's DDGI emitter NEE adds energy by
+> design). Do NOT re-pin against the old goldens — re-seed only after the smoke's own CPU brute-force
+> oracles stay 100% (`t1-smoke.mjs` runDdgiOracle / runRcMergedOracle / runRestirTlasOracle). If the
+> smoke fails with an `await import(...)` error it's a stale hardcoded oracle path, not a regression.
+>
+> **STEP 1 — walkaround radiometric A/Bs (dzn + lavapipe cross-check):**
+> 1. **H18 DDGI emitter NEE** — rect-area-only enclosed Cornell, sun OFF, env none: DDGI indirect was
+>    structurally 0 → must now be >0 and near the CPU f64 probe-irradiance anchor (extend
+>    `ddgi-uniform-energy-ab.ts` with an emitter-lit case). Sun-only scene must be BYTE-IDENTICAL
+>    to pre-fix (emitterCount=0 guard).
+> 2. **H41-A point/spot direct** — point-lit + spot-lit (penumbra>0) Cornells: walkaround direct now has
+>    sharp shadows + falloff; cross-backend A/B vs pt-webgpu. Rect-area-only scene byte-identical.
+> 3. **H15 UVs + H23 mesh-area Le** — textured-wall Cornell (real baseColorMap): walkaround now samples
+>    real UVs (was the single UV(0,0) texel); reference = pt-webgl2/pt-webgpu same scene. Mesh-area
+>    emitter (color×intensity on a NON-emissive mesh): black→lit, Le matches the emitter spec.
+> 4. **H17 skin + H19 normals** — translated merged-mode skinned cube (CPU `solveSkin` is the reference):
+>    no more doubled translation. `updatePrimitive({transform})` rotation: smooth normals follow
+>    (compare vs a full-rebuild render of the same state).
+> 5. **H16 invalidate** — `updateLighting({primaryLightDir})` mid-run: GI re-converges within ~one
+>    stride window (8 frames), not hundreds (frame-series luma trace).
+>
+> **STEP 2 — pt-webgpu A/Bs:**
+> 6. **H13 delta-refraction MIS** — glass-sphere Cornell, converged: energy conserved vs high-spp
+>    pre-fix reference + CPU brute-force; corrected transmissive MIS weighting, no energy explosion.
+> 7. **H14-E HDRI/sun decouple** — HDRI env with sun intensity 0: sky lit (was black); HDRI+sun: unchanged.
+> 8. **H51-D spot/point params** — penumbra sweep (hard→smooth edge) + point distance/decay falloff;
+>    `distance=0` byte-identical to pre-fix.
+> 9. **H52 Disney lobes** — clearcoat + sheen + iridescence panels: cross-backend A/B vs pt-webgl2
+>    (already renders these scalars); **zero-lobe scene must be numerically identical to pre-fix**.
+> 10. **H6 rotationY** — one HDRI at rotationY 0 / π/2 / π on BOTH PT backends: dome rotates
+>    consistently across backends; rotationY=0 byte-identical.
+>
+> **STEP 3 — traversal + opt-in subsystems:**
+> 11. **H32 TLAS glass shadows** — glass slab between rect light and floor, TLAS mode (≥2 meshes):
+>    `skipGlass` shadow rays no longer hard-occluded by glass; merged-mode parity; add the case to the
+>    restir-tlas CPU brute-force oracle.
+> 12. **H25–H29 PPG/NRC/neural** — (a) PPG: re-run the V17 harness on the occluded/indirect-dominant
+>    scene — interior-flux propagation should let guiding localize (doubles as the road-to-100 A2 gate);
+>    (b) NRC/V20: composed `risGiNrc` on lavapipe with the corrected spread predicate + camera pdf +
+>    one-bounce target — the cache must fire selectively, not at bounce 1 everywhere;
+>    (c) **H28**: on a real adapter, `denoiser:'neural'` (random weights) must create its bind groups
+>    with NO validation errors (optionally revert the layerResourceAllocator commit once to capture the
+>    pre-fix validation error for the record).
+>
+> **STEP 4 — re-seed + close out:** after PASSes, re-capture the moved T1 goldens + any reference
+> renders on DDGI-indirect/textured/emitter-lit paths; update this V28 block per item (PASS/INSPECT +
+> artifact paths); flip the "PENDING GPU VALIDATION" line in items_to_fix.md §H. Anything that FAILS:
+> file it in §H with evidence — fix the physics, never the gate (2026-06-04 lesson).
+
+---
+
 > ## ⚡ G-sweep GPU capture results (2026-06-06, wsl-gpu harness — lavapipe oracle + dzn/RTX-4090; artifacts: `wsl-gpu/captures/g-sweep-2026-06-06/`)
 > - **G-P0.1 ReSTIR smooth-normal reuse — PASS.** Sphere-in-Cornell, linear-HDR `direct` tap: reuse-on vs RIS-only (temporal+spatial patched to pass-through) |Δ| = 3.17% (1.1σ — consistent with 0); discrimination control (castPrimary geometric-normal revert) = 34.98% (11.7σ) bias on the same estimator. `wsl-gpu/tests/g-p01-restir-reuse.mjs`.
 > - **G-P0.2 DDGI Lambertian energy — PASS.** Real producer chain (ProbeUpdatePass → blend → exported `DDGI_SAMPLE_WGSL` → albedo/π receiver), analytic f64 sky-irradiance reference: 6/6 gated interior normals in [0.95,1.05] (0.970–0.996), lavapipe + dzn agree <0.1%; literal uniform-L (+Y) check 0.98. Residual ~2% = 192-ray quadrature. Note: octahedral border-wrap puts cardinal-axis normals on cell edges (−Y 1.057 / −Z 0.933) — atlas property, not a π error. `wsl-gpu/scripts/ddgi-uniform-energy-ab.ts`.
