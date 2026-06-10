@@ -12,8 +12,14 @@
 //   - MAX_TEXTURE_SIZE >= 8192 : the square data textures (BVH nodes, vertex
 //     attributes) the full pack packs into.
 //
-// `lite` is the graceful-degradation tier (single-output, smaller textures,
-// fewer bounces, no HDRI) for low-cap contexts.
+// `lite` tier: disables the auxiliary G-buffer outputs (gNormalDepth and gAlbedo
+// at MRT attachments 1 and 2) by setting supportsAuxBuffers=false. This means
+// FrameRendered.normalDepth and .albedo are null — denoising and post-processing
+// that depend on those buffers have no input. The path-tracing kernel itself (all
+// bounces, full BSDF sampling, spectral, all texture maps, all emitter types) runs
+// UNCHANGED in lite tier — there is no bounce/texture/feature cap below `full`.
+// `lite` is the graceful-degradation tier for contexts where MAX_DRAW_BUFFERS < 3
+// or MAX_TEXTURE_IMAGE_UNITS < 12 or MAX_TEXTURE_SIZE < 8192.
 //
 // `WebGl2TraceTier` is owned here (the tier-selection module) and re-exported by
 // src/options.ts, so there is a single source of truth for the union.

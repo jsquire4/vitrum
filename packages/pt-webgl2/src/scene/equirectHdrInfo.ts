@@ -94,7 +94,19 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
     typeof src.length !== 'number' ||
     src.length < width * height * 3
   ) {
-    // HDRI without usable CPU pixel data → null grids (host falls back).
+    // H7 (2026-06-09): warn explicitly so the host knows the HDRI was silently
+    // dropped. Without this, a missing/incorrectly-shaped HDRI payload results in
+    // a flat-black environment with no error signal (a frequent source of confusion
+    // during host integration). The EMPTY_ENV fallback is intentional — the
+    // integrator's uniform/procedural-sky path takes over.
+    console.warn(
+      '[pt-webgl2] HDRI environment is present (kind="hdri") but has no usable CPU pixel data. ' +
+        'pt-webgl2 requires a raw {width, height, data} RGB float payload (or use the ' +
+        'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
+        'The environment will be ignored (EMPTY_ENV fallback). ' +
+        `Received hdri handle: ${String(hdri)}, width=${width}, height=${height}, ` +
+        `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`,
+    );
     return EMPTY_ENV;
   }
 

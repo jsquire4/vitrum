@@ -164,8 +164,8 @@ export function packMaterialsTexture(
     const iridescence = m.iridescence ?? 0.0;
     const iridescenceIor = m.iridescenceIor ?? 1.3;
     const iridThicknessRange = m.iridescenceThicknessRange ?? [100, 400];
-    const specularColor: Vec3 = DEFAULT_SPECULAR_COLOR; // core has no specularColor field
-    const specularIntensity = 1.0; // core has no specularIntensity field; fork default 1
+    const specularColor: Vec3 = m.specularColor ?? DEFAULT_SPECULAR_COLOR;
+    const specularIntensity = m.specularIntensity ?? 1.0;
     const attenuationColor: Vec3 = m.attenuationColor ?? DEFAULT_ATTENUATION_COLOR;
     const attenuationDistance = m.attenuationDistance ?? Infinity;
     const thickness = m.thickness ?? 0.0;

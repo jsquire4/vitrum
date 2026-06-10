@@ -306,7 +306,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // ── internals ──────────────────────────────────────────────────────────────
 
   #traceFeatures(): TraceFeatures {
-    return { ...DEFAULT_TRACE_FEATURES, bdpt: this.#bdpt, additiveAccum: this.#regime === 'additive' };
+    return { ...DEFAULT_TRACE_FEATURES, bdpt: this.#bdpt };
   }
 
   #frameUniforms(input: FrameInput, bounces: number, w: number, h: number): FrameUniforms {

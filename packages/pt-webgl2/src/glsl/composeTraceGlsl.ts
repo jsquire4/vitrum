@@ -752,8 +752,18 @@ const RENDER_MAIN = /* glsl */ `
 							#endif
 
 							// RFE-05 strategy behavior hook:
-							// strategy 1 => deterministic refractive-chain connection walk.
-							// strategy 2 => deterministic cone-traced caustic density estimate.
+							// strategy 1 ('manifold-nee') => deterministic refraction-walk heuristic.
+							//   NOT the Newton-solve MNEE of pt-webgpu. Walks the refracted chain,
+							//   treats escape-to-environment as reachedLight=true, adds
+							//   throughput * color * pow(dot(walkDir,-rayDir), 10) as a focus weight.
+							//   No constraint manifold, no Newton solver — a heuristic approximation.
+							//   Port of the real pt-webgpu MNEE is a road-to-100 fidelity item.
+							// strategy 2 ('photon-map') => deterministic cone-traced density estimate.
+							//   Casts 8 cone sample rays, uses an inverse-distance kernel for hits and
+							//   adds 1.0 for escaped rays (no-hit). Known approximation: the escaped-ray
+							//   energy-add (~21% energy bias at typical cone sizes) is a deliberate
+							//   trade-off for visual clarity over physical accuracy, not a full
+							//   bidirectional photon map.
 							if ( uCausticStrategy > 0 && surf.transmission > 0.0 ) {
 								if ( uCausticStrategy == 1 ) {
 									// Skip manifold mode on rough refractive surfaces: the fixed-step

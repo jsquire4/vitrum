@@ -166,3 +166,59 @@ describe('BVH texture adapter — packed textures traverse correctly (vs brute f
     expect(hits).toBeGreaterThan(0); // the sweep actually hits geometry (the test isn't vacuous)
   });
 });
+
+// H8 — dev-mode materialIndex aliasing invariant assertion.
+// A vertex shared by two triangles with DIFFERENT material ids produces non-deterministic
+// GLSL reads. The assertion catches this bug class at pack time in non-production runs.
+describe('packBvhTextureData — H8 materialIndex aliasing invariant', () => {
+  it('does NOT throw when all triangles sharing a vertex use the SAME material id', () => {
+    // Two triangles that share 2 vertices (v0,v2) — both belong to material 0.
+    const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+    const positions = new Float32Array([
+      0, 0, 0, 0, 0, 0,   // v0
+      1, 0, 0, 0, 0, 0,   // v1
+      1, 1, 0, 0, 0, 0,   // v2
+      0, 1, 0, 0, 0, 0,   // v3
+    ]);
+    const triMaterialIds = new Uint32Array([0, 0]); // both tris → material 0 ✓
+    const mockPack = {
+      bvhNodes: new Float32Array([
+        -1, -1, -1, 0, 2, 2, 0,  // node 0 boundsMin/Max stubs
+        0xffff0000 | 2, 0,        // leaf: 2 tris starting at 0
+      ]).slice(0, 8),
+      positions,
+      indices,
+      triangleCount: 2,
+      vertexCount: 4,
+      positionStrideFloats: 6,
+      bvhIndexStride: 3,
+      triMaterialId: triMaterialIds,
+    } as unknown as Parameters<typeof packBvhTextureData>[0];
+    expect(() => packBvhTextureData(mockPack)).not.toThrow();
+  });
+
+  it('THROWS in dev mode when a vertex is shared by triangles with DIFFERENT material ids', () => {
+    // Triangle 0: v0,v1,v2 → material 0. Triangle 1: v2,v3,v0 → material 1.
+    // v0 (shared) gets material 0 from tri-0, then material 1 from tri-1 → CONFLICT.
+    const indices = new Uint32Array([0, 1, 2, 2, 3, 0]);
+    const positions = new Float32Array([
+      0, 0, 0, 0, 0, 0,  // v0
+      1, 0, 0, 0, 0, 0,  // v1
+      1, 1, 0, 0, 0, 0,  // v2
+      0, 1, 0, 0, 0, 0,  // v3
+    ]);
+    const triMaterialIds = new Uint32Array([0, 1]); // CONFLICT at v0 and v2
+    const mockPack = {
+      bvhNodes: new Float32Array(8),
+      positions,
+      indices,
+      triangleCount: 2,
+      vertexCount: 4,
+      positionStrideFloats: 6,
+      bvhIndexStride: 3,
+      triMaterialId: triMaterialIds,
+    } as unknown as Parameters<typeof packBvhTextureData>[0];
+    // NODE_ENV is 'test' in vitest → assertion fires.
+    expect(() => packBvhTextureData(mockPack)).toThrow(/vertex.*material ids/i);
+  });
+});

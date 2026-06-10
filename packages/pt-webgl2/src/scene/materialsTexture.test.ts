@@ -184,6 +184,37 @@ describe('packMaterialsTexture — 85px RGBA32F byte layout', () => {
     expect(d[texel(0, 27, 3)]).toBeCloseTo(1.0, 6);
   });
 
+  // H49 — specularColor and specularIntensity (glTF KHR_materials_specular).
+  // The packer previously hardcoded DEFAULT_SPECULAR_COLOR=[1,1,1] and 1.0 with
+  // false "core has no field" comments; core/material.ts:225,232 has both fields.
+  it('H49: specularColor and specularIntensity are packed from the MaterialSpec', () => {
+    const m: MaterialSpec = {
+      baseColor: [0.8, 0.8, 0.8],
+      roughness: 0.5,
+      metallic: 0.0,
+      specularColor: [1, 0, 0],
+      specularIntensity: 0.5,
+    };
+    const d = packMaterialsTexture([m]).data;
+    // s10.rgb = specularColor; s10.a = specularColorMap id = -1.
+    expect(d[texel(0, 10, 0)]).toBeCloseTo(1.0, 6); // red
+    expect(d[texel(0, 10, 1)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, 10, 2)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, 10, 3)]).toBe(-1);
+    // s11.r = specularIntensity; s11.g = specularIntensityMap=-1.
+    expect(d[texel(0, 11, 0)]).toBeCloseTo(0.5, 6);
+    expect(d[texel(0, 11, 1)]).toBe(-1);
+  });
+
+  it('H49 defaults: absent specularColor → [1,1,1]; absent specularIntensity → 1.0', () => {
+    const m: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 0.5, metallic: 0.0 };
+    const d = packMaterialsTexture([m]).data;
+    expect(d[texel(0, 10, 0)]).toBe(1.0);
+    expect(d[texel(0, 10, 1)]).toBe(1.0);
+    expect(d[texel(0, 10, 2)]).toBe(1.0);
+    expect(d[texel(0, 11, 0)]).toBe(1.0);
+  });
+
   it('multiple materials are packed at their MATERIAL_PIXELS-strided offsets', () => {
     const a: MaterialSpec = { baseColor: [1, 0, 0], roughness: 1, metallic: 0 };
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };

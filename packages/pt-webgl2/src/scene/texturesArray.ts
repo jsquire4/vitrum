@@ -108,10 +108,21 @@ export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtl
   if (handles.length === 0) return null;
 
   // Read pixels; drop unreadable handles (their map id stays -1).
+  // H7 (2026-06-09): warn on each silently-dropped handle so the host knows which
+  // texture assets were skipped. An unreadable handle means the texture sampling
+  // will use the default (flat/no texture) for the corresponding map.
   const pixels: { handle: unknown; px: RawPixels }[] = [];
   for (const handle of handles) {
     const px = readHandlePixels(handle);
-    if (px != null) pixels.push({ handle, px });
+    if (px != null) {
+      pixels.push({ handle, px });
+    } else {
+      console.warn(
+        '[pt-webgl2] texture handle is not readable (no raw {width,height,data} or DataTexture-shaped image); ' +
+          'the texture map will be ignored and the material will render without it. ' +
+          `Handle: ${String(handle)}`,
+      );
+    }
   }
   if (pixels.length === 0) return null;
 
