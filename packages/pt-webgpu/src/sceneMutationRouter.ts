@@ -19,6 +19,7 @@ import {
 import { invertMat4 } from './math/mat4.js';
 import {
   applyEnvironmentMutation,
+  packFoldedMaterialEntry,
   rebuildLightTreeForScene,
   rebuildTlasForSceneTransforms,
   uploadEmitterArrays,
@@ -44,6 +45,7 @@ import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPa
 import {
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
+  hasMeshAreaEmitterForPrimitive,
   packEmitterArrays,
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
@@ -73,6 +75,8 @@ export interface MutationHost {
   setGeoPack(pack: ScenePackResult): void;
   invalidateBindGroups(): void;
   supportedAnalyticShapes(): ReadonlySet<string>;
+  /** Whether camera-visible emitters (emissive fold) is enabled for this engine instance. */
+  cameraVisibleEmitters(): boolean;
   /** Full scene repack (engine-internal: destroys buffers + re-inits BDPT). */
   repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void;
   /** Public setScene entry — the fall-through for every fast-path miss. */
@@ -89,6 +93,15 @@ interface FastPathCommit {
   readonly invalidateBindGroups: boolean;
   /** Warnings to drain after committing (empty for the no-warning handlers). */
   readonly warnings: readonly string[];
+  /**
+   * H11 — when `true` the commit moved world-space vertex positions or transforms,
+   * so mesh-area emitter triangles may have shifted. The common-commit code will
+   * re-run `packEmitterArrays` + re-upload the emitter arrays when the patched
+   * primitive is backed by a mesh-area emitter. Set by geometry (1, 2), instanced-
+   * topology (4), and transform (5) fast paths; NOT set by analytic-transform (3)
+   * or material-only (6) patches.
+   */
+  readonly reshapedWorldPositions?: boolean;
 }
 
 export class SceneMutationRouter {
@@ -202,6 +215,7 @@ export class SceneMutationRouter {
           geoPack: rebuilt.pack,
           invalidateBindGroups: true,
           warnings: rebuilt.pack.warnings,
+          reshapedWorldPositions: true,
         };
       },
       // 2) topology-resize: a (skinned-)mesh's vertex/index COUNT changed. Rebuild
@@ -233,6 +247,7 @@ export class SceneMutationRouter {
           geoPack: rebuilt.pack,
           invalidateBindGroups: true,
           warnings: rebuilt.pack.warnings,
+          reshapedWorldPositions: true,
         };
       },
       // 3) analytic-transform: in-place rewrite of one analytic primitive's
@@ -314,6 +329,7 @@ export class SceneMutationRouter {
           geoPack: rebuilt.pack,
           invalidateBindGroups: true,
           warnings: rebuilt.pack.warnings,
+          reshapedWorldPositions: true,
         };
       },
       // 5) transform-only: rebuild the TLAS from the patched world transforms and
@@ -344,9 +360,12 @@ export class SceneMutationRouter {
           tlasNodeCount: Math.floor(tlas.tlasNodes.length / 8),
           primitiveTlasBindings: sb.primitiveTlasBindings,
         });
-        return { invalidateBindGroups: false, warnings: tlas.warnings };
+        return { invalidateBindGroups: false, warnings: tlas.warnings, reshapedWorldPositions: true };
       },
       // 6) material-only: in-place rewrite of one material slot.
+      // H10 — also re-applies the emissive fold when cameraVisibleEmitters is on
+      // and this primitive is backed by a mesh-area emitter, so a roughness/color
+      // patch on the primitive doesn't lose the fold that was applied at setScene.
       () => {
         const sceneBuffers = host.getSceneBuffers();
         if (!canFastPathMaterialPatch(patch) || sceneBuffers == null) return null;
@@ -357,7 +376,13 @@ export class SceneMutationRouter {
         );
         const primitive = nextScene.primitives.find((p) => p.id === id);
         if (materialIndex == null || primitive == null) return null;
-        const packed = materialToPackedVec4s(primitive.material);
+        // Use packFoldedMaterialEntry so the fold is preserved when cameraVisibleEmitters
+        // is on — a plain materialToPackedVec4s call would strip the fold from the slot.
+        const packed = packFoldedMaterialEntry(
+          primitive,
+          nextScene,
+          host.cameraVisibleEmitters(),
+        );
         if (packed.length !== MATERIAL_FLOAT_STRIDE) return null;
         const materialData = new Float32Array(packed);
         const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
@@ -379,6 +404,29 @@ export class SceneMutationRouter {
       if (commit == null) continue;
       if (commit.geoPack != null) host.setGeoPack(commit.geoPack);
       if (commit.invalidateBindGroups) host.invalidateBindGroups();
+      // H11 — when a geometry/transform fast path moved world-space vertex positions
+      // or transforms, and the patched primitive is backed by a mesh-area emitter,
+      // the GPU meshAreaLightsBuffer is stale (it holds pre-move world-space
+      // triangle vertices). Re-run packEmitterArrays + upload to keep NEE in sync.
+      const sceneBuffersForEmitters = host.getSceneBuffers();
+      if (
+        commit.reshapedWorldPositions &&
+        sceneBuffersForEmitters != null &&
+        hasMeshAreaEmitterForPrimitive(nextScene, id)
+      ) {
+        const emitterPacked = packEmitterArrays(nextScene);
+        const emittersReallocated = uploadEmitterArrays(device, sceneBuffersForEmitters, emitterPacked, {
+          directionalLight: defaultDirectionalLight(nextScene),
+          directionalIrradiance: defaultDirectionalIrradiance(nextScene),
+        });
+        const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffersForEmitters, nextScene);
+        if (emittersReallocated || lightTreeReallocated) {
+          host.invalidateBindGroups();
+        }
+        for (const w of emitterPacked.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${w}`);
+        }
+      }
       host.setSceneState(nextScene);
       for (const warning of commit.warnings) {
         console.warn(`[vitrum/pt-webgpu] ${warning}`);
@@ -409,6 +457,46 @@ export class SceneMutationRouter {
       const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffers, nextScene);
       if (lightsReallocated || lightTreeReallocated) {
         host.invalidateBindGroups();
+      }
+      // H10 — emissive-fold desync fix: when cameraVisibleEmitters is on and the
+      // patched emitter is a mesh-area emitter, re-write the material slot of the
+      // backed primitive so the kernel's emissive-on-hit term stays in sync with
+      // the emitter's new color/intensity. Without this, a color patch to the
+      // emitter leaves the material slot stale until the next full repack.
+      if (host.cameraVisibleEmitters()) {
+        const updatedEmitter = nextScene.emitters.find((e) => e.id === id);
+        if (updatedEmitter?.kind === 'mesh-area') {
+          const backedPrimitive = nextScene.primitives.find(
+            (p) => p.id === updatedEmitter.meshId,
+          );
+          if (backedPrimitive != null && backedPrimitive.kind !== 'analytic') {
+            const matIndex = materialIndexForPrimitive(
+              nextScene,
+              backedPrimitive.id,
+              host.supportedAnalyticShapes(),
+            );
+            if (matIndex != null) {
+              const foldedPacked = packFoldedMaterialEntry(
+                backedPrimitive,
+                nextScene,
+                true,
+              );
+              if (foldedPacked.length === MATERIAL_FLOAT_STRIDE) {
+                const materialData = new Float32Array(foldedPacked);
+                const floatOffset = matIndex * MATERIAL_FLOAT_STRIDE;
+                const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
+                device.queue.writeBuffer(
+                  sceneBuffers.materialsBuffer,
+                  byteOffset,
+                  materialData.buffer,
+                  materialData.byteOffset,
+                  materialData.byteLength,
+                );
+                sceneBuffers.materials.set(materialData, floatOffset);
+              }
+            }
+          }
+        }
       }
       host.setSceneState(nextScene);
       for (const warning of packed.warnings) {
@@ -457,6 +545,7 @@ export class SceneMutationRouter {
           environmentTint: packed.tint,
           environmentSunDirection: packed.sunDirection,
           environmentSunStrength: packed.sunStrength,
+          environmentHdriIntensity: packed.hdriIntensity,
           environmentMapWidth: packed.hdriWidth,
           environmentMapHeight: packed.hdriHeight,
           hasEnvironmentMap: packed.hasHdri,

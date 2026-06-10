@@ -211,19 +211,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
 
   // Single-bounce direct lighting, summed deterministically over all point lights.
+  // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
   var gBaseColor = vec3f(0.0);
   var gRough = 0.0;
   for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
-    let lp = pointLights[pi * 2u].xyz;
-    let rad = pointLights[pi * 2u + 1u].rgb;
+    let lp = pointLights[pi * 3u].xyz;
+    let rad = pointLights[pi * 3u + 1u].rgb;
+    let ptExtra = pointLights[pi * 3u + 2u];
+    let ptMaxDist = ptExtra.x;
+    let ptDecay   = ptExtra.y;
     let toPoint = lp - pos;
     let dist2 = max(dot(toPoint, toPoint), 1e-5);
     let dist = sqrt(dist2);
+    if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
     let wi = toPoint / dist;
     let nDotL = max(0.0, dot(n, wi));
     if (nDotL <= 0.0) { continue; }
     if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-    let Li = rad / dist2;
+    let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
+    let Li = rad * attenuation;
     // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
     gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
     // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.

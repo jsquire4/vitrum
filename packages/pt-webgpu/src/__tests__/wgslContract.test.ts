@@ -56,8 +56,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // branch now returns 0.0 (delta lobe; prior finite cosine·η² was wrong —
     // did not match the deterministic Snell sampler in sampleNextBounceDirection).
     // RENDER-CHANGING on transmissive scenes; A/B required before compositing.
-    expect(digest).toBe('7fd7052a9067675cdeebdeee69f682824f91e64c03c8bed5ad22e77a918c1985');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(218633);
+    // Re-pinned 2026-06-09: H14-E/H14-B/H51-D — HDRI gets its own intensity lane
+    // (environmentHdriIntensity, f32 slot 31, replaces _padAuto0); H14-B adds spot
+    // loop to restirPtProducer; H51-D bumps point stride 8→12 + spot stride 12→16
+    // (penumbra+distance+decay). RENDER-CHANGING on HDRI + spot/point scenes; A/B required.
+    expect(digest).toBe('fe41d34f0aa5ef4aedeaaf0c6e13a02e99dd6ee64092341144902bf5362edb25');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(220870);
   });
 });
 

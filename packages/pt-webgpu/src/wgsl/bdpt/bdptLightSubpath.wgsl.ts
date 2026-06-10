@@ -54,14 +54,16 @@ fn bdptEmitterPower(flatIdx: u32) -> f32 {
   }
   for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
     if (cur == flatIdx) {
-      let rad = pointLights[pi * 2u + 1u].rgb;
+      // H51-D: stride 3; radiance is at slot 1
+      let rad = pointLights[pi * 3u + 1u].rgb;
       return bdptLightLuminance(rad);
     }
     cur = cur + 1u;
   }
   for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
     if (cur == flatIdx) {
-      let sb = si * 3u;
+      // H51-D: stride 4; radiance is at slot 2 (.rgb)
+      let sb = si * 4u;
       let srad = spotLights[sb + 2u].rgb;
       return bdptLightLuminance(srad);
     }
@@ -164,8 +166,9 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
   }
   for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
     if (cur == flat) {
-      let pos = pointLights[pi * 2u].xyz;
-      let rad = pointLights[pi * 2u + 1u].rgb;
+      // H51-D: stride 3; position at slot 0, radiance at slot 1
+      let pos = pointLights[pi * 3u].xyz;
+      let rad = pointLights[pi * 3u + 1u].rgb;
       bdptFinishBounce0(col, pos, vec3f(0.0, 1.0, 0.0), rad, discretePdf, rng);
       return;
     }
@@ -173,7 +176,8 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
   }
   for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
     if (cur == flat) {
-      let sb = si * 3u;
+      // H51-D: stride 4; position at slot 0, dir+cosOuter at slot 1, radiance+cosInner at slot 2
+      let sb = si * 4u;
       let spos = spotLights[sb].xyz;
       let saxis = spotLights[sb + 1u];
       let srad = spotLights[sb + 2u].rgb;

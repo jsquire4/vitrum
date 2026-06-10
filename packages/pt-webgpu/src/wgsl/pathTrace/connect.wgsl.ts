@@ -66,7 +66,7 @@ fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   }
   let texel = environmentMapTexels[idx];
   return EnvironmentLookup(
-    texel.rgb * max(params.environmentSun.w, 0.0),
+    texel.rgb * max(params.environmentHdriIntensity, 0.0),
     max(texel.w, 1e-8),
   );
 }
@@ -116,7 +116,7 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   let dir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
   let texel = environmentMapTexels[idx];
   result.wi = safe_normalize(dir);
-  result.value = texel.rgb * max(params.environmentSun.w, 0.0);
+  result.value = texel.rgb * max(params.environmentHdriIntensity, 0.0);
   result.pdf = max(texel.w, 1e-8);
   return result;
 }

@@ -8,11 +8,26 @@ import {
   walkPositionalEmitters,
 } from '../bdpt/flatEmitterWalk.js';
 
-/** vec4 pairs per point light: position, radiance */
-const POINT_LIGHT_FLOAT_STRIDE = 8;
-const SPOT_LIGHT_FLOAT_STRIDE = 12;
-const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
-const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
+/**
+ * Point light layout (3 vec4 = 12 floats, H51-D):
+ *   vec4 0: position.xyz, 0
+ *   vec4 1: radiance.rgb, 0
+ *   vec4 2: distance, decay, 0, 0
+ *   distance = 0 ⟹ no cutoff (infinite range); decay = 0 ⟹ no falloff.
+ */
+export const POINT_LIGHT_FLOAT_STRIDE = 12;
+
+/**
+ * Spot light layout (4 vec4 = 16 floats, H51-D):
+ *   vec4 0: position.xyz, 0
+ *   vec4 1: direction.xyz, cos(outerAngle)
+ *   vec4 2: radiance.rgb, cos(innerAngle)   — innerAngle = outerAngle·(1−penumbra)
+ *   vec4 3: distance, decay, 0, 0
+ *   distance = 0 ⟹ no cutoff; decay = 0 ⟹ no falloff.
+ */
+export const SPOT_LIGHT_FLOAT_STRIDE = 16;
+export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
+export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 
 /**
  * Disc emitters lower into mesh-area triangle records so the existing WGSL
@@ -271,6 +286,10 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
       e.color[1] * e.intensity,
       e.color[2] * e.intensity,
     ]);
+    // H51-D: distance (0 = no cutoff) + decay (0 = no falloff)
+    const ptDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
+    const ptDecay = typeof e.decay === 'number' ? e.decay : 2;
+    pointLights.push(ptDist, ptDecay, 0, 0);
     pointLightCount += 1;
   }
   const pointLightsData = packedFloatData(
@@ -288,13 +307,25 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     const len = Math.hypot(d[0], d[1], d[2]);
     const dir: readonly [number, number, number] =
       len < 1e-8 ? [0, -1, 0] : [d[0] / len, d[1] / len, d[2] / len];
+    // H51-D: penumbra [0,1] defines the soft inner cone.
+    // innerAngle = outerAngle * (1 − penumbra).
+    // cos(innerAngle) > cos(outerAngle) ⟹ smoothstep from inner→outer.
+    const penumbra = Math.min(1, Math.max(0, e.penumbra ?? 0));
+    const outerAngle = e.angle;
+    const innerAngle = outerAngle * (1 - penumbra);
+    const cosOuter = Math.cos(outerAngle);
+    const cosInner = Math.cos(innerAngle);
     pushVec4(spotLights, [e.position[0], e.position[1], e.position[2]]);
-    pushVec4(spotLights, [dir[0], dir[1], dir[2]], Math.cos(e.angle));
+    pushVec4(spotLights, [dir[0], dir[1], dir[2]], cosOuter);
     pushVec4(spotLights, [
       e.color[0] * e.intensity,
       e.color[1] * e.intensity,
       e.color[2] * e.intensity,
-    ]);
+    ], cosInner);
+    // H51-D: distance (0 = no cutoff) + decay (0 = no falloff, 2 = physical)
+    const spDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
+    const spDecay = typeof e.decay === 'number' ? e.decay : 2;
+    spotLights.push(spDist, spDecay, 0, 0);
     spotLightCount += 1;
   }
   const spotLightsData = packedFloatData(
@@ -337,6 +368,43 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     if (emitter.kind !== 'mesh-area') continue;
     meshAreaTriangles.push(...packMeshAreaTriangles(emitter, scene, warnings));
   }
+
+  // H14-A: synthesize an implicit mesh-area emitter for every mesh-like primitive
+  // whose material has non-zero emissive energy (luminance > 0) AND that has NO
+  // explicit `mesh-area` emitter already pointing to it. Without this synthesis,
+  // the emissive primitive is invisible to NEE/BDPT because the light loops never
+  // enumerate it — the kernel's emissive-on-hit term fires, but there's no sampled
+  // contribution from direct-lighting estimators.
+  //
+  // Guard: explicit emitters take priority — if a `mesh-area` emitter already
+  // references this primitive we skip it (no double-counting). Disc-area emitters
+  // that were lowered above are also excluded.
+  const explicitMeshAreaIds = new Set<string>(
+    scene.emitters
+      .filter((e) => e.kind === 'mesh-area' || e.kind === 'disc-area')
+      .map((e) => (e as { meshId?: string }).meshId ?? '')
+      .filter(Boolean),
+  );
+  for (const primitive of scene.primitives) {
+    if (primitive.kind === 'analytic') continue;
+    if (explicitMeshAreaIds.has(primitive.id)) continue;
+    const em = primitive.material.emissive ?? [0, 0, 0];
+    const ei = primitive.material.emissiveIntensity ?? 1;
+    const emR = em[0] * ei;
+    const emG = em[1] * ei;
+    const emB = em[2] * ei;
+    if (luminance(emR, emG, emB) < 1e-6) continue;
+    // Synthesize a virtual mesh-area emitter carrying the material's emissive radiance.
+    const syntheticEmitter: Extract<Scene['emitters'][number], { kind: 'mesh-area' }> = {
+      kind: 'mesh-area',
+      id: `__implicit__${primitive.id}`,
+      meshId: primitive.id,
+      color: [emR, emG, emB],
+      intensity: 1,
+    };
+    meshAreaTriangles.push(...packMeshAreaTriangles(syntheticEmitter, scene, warnings));
+  }
+
   const meshAreaLights: number[] = [];
   for (const tri of meshAreaTriangles) {
     pushVec4(meshAreaLights, tri.triA);
@@ -382,6 +450,28 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
 //   - Shirley, Smits, Wang, Zimmerman 1996, "Monte Carlo Techniques for Direct
 //     Lighting Calculations", ACM TOG (power-weighted light-list partition).
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * H11 — Returns `true` if `scene` contains a `mesh-area` (or lowered `disc-area`)
+ * emitter whose `meshId` matches `primitiveId`.
+ *
+ * Used by the geometry/transform fast paths in `SceneMutationRouter` to detect
+ * when moving a primitive's vertices/transform also shifts a mesh-area emitter's
+ * world-space triangles — in which case `packEmitterArrays` must be re-run and
+ * re-uploaded so the GPU NEE data stays in sync.
+ *
+ * Disc-area emitters are lowered into the mesh-triangle section at pack time, so
+ * they are treated as mesh-area emitters for the staleness check.
+ */
+export function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string): boolean {
+  for (const e of scene.emitters) {
+    if (e.kind !== 'mesh-area' && e.kind !== 'disc-area') continue;
+    // Both kinds carry a `meshId` on the SceneEmitter type.
+    const meshId = (e as { meshId?: string }).meshId;
+    if (meshId === primitiveId) return true;
+  }
+  return false;
+}
 
 /** The core positional area-emitter kinds (carry a finite area for the power term). */
 export const AREA_LIGHT_KINDS: ReadonlySet<string> = new Set([

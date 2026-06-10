@@ -86,6 +86,29 @@ export class OIDNFinalDispatcher {
     return this.#core.isInFlight();
   }
 
+  /**
+   * Current denoiser state for `FrameStats.denoiserState` population.
+   *
+   * Derives status from the core state machine:
+   *  - `'in-flight'`  — async inference cycle is running.
+   *  - `'failed'`     — last cycle threw; `reason` = error message; retryable.
+   *  - `'ready'`      — last cycle succeeded and the result is available.
+   *  - `'fallback'`   — no inference has completed yet (first frame).
+   */
+  getState(): { status: 'ready' | 'in-flight' | 'fallback' | 'failed'; reason: string | null; retryable?: boolean } {
+    const lastError = this.#core.getLastError();
+    if (lastError !== null) {
+      return { status: 'failed', reason: lastError, retryable: true };
+    }
+    if (this.#core.isInFlight()) {
+      return { status: 'in-flight', reason: null };
+    }
+    if (this.#core.getLatestDenoised() !== null) {
+      return { status: 'ready', reason: null };
+    }
+    return { status: 'fallback', reason: 'waiting for first OIDN inference' };
+  }
+
   invalidate(): void {
     this.#core.invalidate();
   }

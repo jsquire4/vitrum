@@ -363,6 +363,7 @@ class PTEngineWebGPU implements Engine {
       },
       invalidateBindGroups: () => this.#gpu.invalidateBindGroups(),
       supportedAnalyticShapes: () => this.#supportedAnalyticShapes(),
+      cameraVisibleEmitters: () => this.#cameraVisibleEmitters,
       repackScene: (scene, opts) => this.#repackScene(scene, opts),
       setScene: (scene) => this.setScene(scene),
       reset: () => this.reset(),
@@ -604,10 +605,14 @@ class PTEngineWebGPU implements Engine {
     if (hasFrameSubs) {
       const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
       const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+      const denoiserState = this.#postDenoiser != null
+        ? this.#postDenoiser.getState()
+        : { status: 'disabled' as const, reason: null };
       this.#emitFrameStats({
         frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
         spp,
         ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+        denoiserState,
       });
     }
     if (hasProgressSubs) {

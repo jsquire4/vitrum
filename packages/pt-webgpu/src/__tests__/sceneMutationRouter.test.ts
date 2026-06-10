@@ -77,6 +77,7 @@ function makeHost(over: Partial<HostState> = {}) {
     setGeoPack: calls.setGeoPack,
     invalidateBindGroups: calls.invalidateBindGroups,
     supportedAnalyticShapes: calls.supportedAnalyticShapes,
+    cameraVisibleEmitters: () => false,
     repackScene: calls.repackScene,
     setScene: calls.setScene,
     reset: calls.reset,

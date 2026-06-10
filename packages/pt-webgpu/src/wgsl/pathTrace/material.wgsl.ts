@@ -69,7 +69,11 @@ struct FrameParams {
   bdptMaxEyeDepth: u32,
   lightTreeEnabled: u32,
   lightTreeNodeCount: u32,
-  _padAuto0: u32,
+  // H14-E: HDRI radiance intensity multiplier — separate from environmentSun.w
+  // (which drives the procedural-sky sun-strength gate). f32 occupies the same
+  // slot (31) formerly held by _padAuto0. Equirect lookup uses this lane so a
+  // pure-HDRI scene with sun.w=0 does not silently produce a black environment.
+  environmentHdriIntensity: f32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,

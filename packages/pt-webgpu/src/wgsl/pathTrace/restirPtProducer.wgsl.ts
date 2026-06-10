@@ -182,20 +182,59 @@ fn rptDirectAtVertex(
     }
   }
   // Point lights (delta): full weight, no MIS.
+  // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
   for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
-    let base = pi * 2u;
+    let base = pi * 3u;
     let lp = pointLights[base].xyz;
     let rad = pointLights[base + 1u].rgb;
+    let ptExtra = pointLights[base + 2u];
+    let ptMaxDist = ptExtra.x;
+    let ptDecay   = ptExtra.y;
     let toPoint = lp - pos;
     let dist2 = max(dot(toPoint, toPoint), 1e-5);
     let dist = sqrt(dist2);
+    if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
     let wi = toPoint / dist;
     let nDotL = max(0.0, dot(normal, wi));
     if (nDotL > 0.0) {
       let shadowRay = Ray(pos + normal * 1e-3, wi);
       if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
         let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-        contrib = contrib + suffixThroughput * brdf * nDotL * (rad / dist2);
+        contrib = contrib + suffixThroughput * brdf * nDotL * rad * attenuation;
+      }
+    }
+  }
+  // Spot lights (delta): full weight, no MIS.
+  // H14-B + H51-D: mirrors kernel NEE; stride 4 (4 vec4 = 16 f32).
+  for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
+    let sb = si * 4u;
+    let spos = spotLights[sb].xyz;
+    let saxis = spotLights[sb + 1u];
+    let sradW = spotLights[sb + 2u];
+    let spExtra = spotLights[sb + 3u];
+    let spotDir = safe_normalize(saxis.xyz);
+    let cosOuter = saxis.w;
+    let cosInner = sradW.w;
+    let srad = sradW.rgb;
+    let spMaxDist = spExtra.x;
+    let spDecay   = spExtra.y;
+    let toSpot = spos - pos;
+    let dist2 = max(dot(toSpot, toSpot), 1e-5);
+    let dist = sqrt(dist2);
+    if (spMaxDist > 0.0 && dist > spMaxDist) { continue; }
+    let wi = toSpot / dist;
+    let coneCos = dot(-wi, spotDir);
+    if (coneCos >= cosOuter) {
+      let nDotL = max(0.0, dot(normal, wi));
+      if (nDotL > 0.0) {
+        let shadowRay = Ray(pos + normal * 1e-3, wi);
+        if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+          let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
+          let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
+          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+          contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
+        }
       }
     }
   }

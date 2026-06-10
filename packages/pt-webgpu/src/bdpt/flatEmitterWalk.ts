@@ -3,8 +3,11 @@
  *
  * pt-webgpu's selectable-light enumeration order is fixed:
  *
- *   directional? · point[stride8] · spot[stride12] · rect-area[stride16]
+ *   directional? · point[stride12] · spot[stride16] · rect-area[stride16]
  *     · mesh-triangle-area[stride16] · env?
+ *
+ * H51-D bumped the strides: point 8→12 (added distance/decay vec4),
+ * spot 12→16 (added penumbra inner-cone cosine in slot 2.w + distance/decay vec4).
  *
  * Disc-area emitters are lowered by emitterPacking.ts into the mesh-triangle
  * section as an equal-area fan, so the stride walk still mirrors the GPU kernel
@@ -25,15 +28,19 @@
  * produces, so the flat index alignment is single-sourced here.
  *
  * The packed arrays consumed here are exactly the `packEmitterArrays` output the
- * GPU uploads, so the strides below (8/12/16/16) are the load-bearing layout
+ * GPU uploads, so the strides below are the load-bearing layout
  * contract — they are NOT free to change without the matching WGSL change.
  */
 
 export type Vec3 = [number, number, number];
 
-/** Float strides of the four positional packed-light arrays (vec4 pairs). */
-export const POINT_LIGHT_STRIDE = 8;
-export const SPOT_LIGHT_STRIDE = 12;
+/**
+ * Float strides of the four positional packed-light arrays (floats per light).
+ * H51-D: point 8→12 (position, radiance, [distance, decay, 0, 0]);
+ *        spot  12→16 (position, dir+cosOuter, radiance+cosInner, [distance, decay, 0, 0]).
+ */
+export const POINT_LIGHT_STRIDE = 12;
+export const SPOT_LIGHT_STRIDE = 16;
 export const RECT_AREA_LIGHT_STRIDE = 16;
 export const MESH_AREA_LIGHT_STRIDE = 16;
 
@@ -88,7 +95,7 @@ const v3 = (a: ArrayLike<number>, o: number): Vec3 => [a[o]!, a[o + 1]!, a[o + 2
 
 /**
  * Yield every positional selectable light in the EXACT pt-webgpu walk order:
- * point[stride8] → spot[stride12] → rect[stride16] → mesh[stride16].
+ * point[stride12] → spot[stride16] → rect[stride16] → mesh[stride16].
  *
  * The directional slot precedes this sequence and the env slot follows it; those
  * are appended by callers because their per-consumer handling differs. The flat
@@ -98,6 +105,7 @@ export function* walkPositionalEmitters(
   sb: PositionalEmitterArrays,
 ): Generator<PositionalEmitter> {
   for (let i = 0; i < sb.pointLightCount; i += 1) {
+    // H51-D stride 12: position(0..2), _(3), radiance(4..6), _(7), [distance(8), decay(9), 0, 0]
     const o = i * POINT_LIGHT_STRIDE;
     yield {
       kind: 'point',
@@ -107,6 +115,7 @@ export function* walkPositionalEmitters(
     };
   }
   for (let i = 0; i < sb.spotLightCount; i += 1) {
+    // H51-D stride 16: position(0..2), _(3), axis(4..6), cosOuter(7), radiance(8..10), cosInner(11), [dist(12), decay(13), 0, 0]
     const o = i * SPOT_LIGHT_STRIDE;
     yield {
       kind: 'spot',

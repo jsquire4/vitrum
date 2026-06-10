@@ -105,7 +105,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'bdptMaxEyeDepth: u32',
       'lightTreeEnabled: u32',
       'lightTreeNodeCount: u32',
-      '_padAuto0: u32',
+      'environmentHdriIntensity: f32',
       'cameraPos: vec4f',
       'lightDir: vec4f',
       'environmentTint: vec4f',

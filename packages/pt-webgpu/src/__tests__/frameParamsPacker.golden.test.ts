@@ -81,6 +81,8 @@ function reconstructExpected(
     config.traceTier === 'full' && sb.lightTreeEnabled && config.lightTreeImportanceSampling;
   u[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
   u[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
+  // H14-E: HDRI intensity in its own slot (slot 31), separate from environmentSun.w.
+  f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
   f[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
   f[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
@@ -128,6 +130,7 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     environmentTint: [0.95, 0.97, 1.0],
     environmentSunDirection: [0.0, 1.0, 0.0],
     environmentSunStrength: 3.5,
+    environmentHdriIntensity: 1.0,
     ...over,
   };
 }

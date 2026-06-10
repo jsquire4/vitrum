@@ -5,6 +5,13 @@ interface EnvironmentParams {
   readonly tint: readonly [number, number, number];
   readonly sunDirection: readonly [number, number, number];
   readonly sunStrength: number;
+  /**
+   * H14-E: HDRI radiance intensity multiplier, separate from `sunStrength`.
+   * `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
+   * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT
+   * gated by the procedural-sky sun strength.
+   */
+  readonly hdriIntensity: number;
   readonly hdriWidth: number;
   readonly hdriHeight: number;
   readonly hasHdri: boolean;
@@ -21,6 +28,7 @@ function emptyEnvironmentParams(): EnvironmentParams {
     tint: [1, 1, 1],
     sunDirection: [0, 1, 0],
     sunStrength: 0,
+    hdriIntensity: 0,
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,
@@ -57,6 +65,7 @@ function buildProceduralSkyEnvironmentParams(
     tint: [0.9 * tintBoost * intensity, 0.95 * intensity, 1.0 * intensity],
     sunDirection: sunDir,
     sunStrength: Math.max(0, intensity),
+    hdriIntensity: 0,  // No HDRI present for procedural-sky
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,
@@ -116,10 +125,15 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       }
       cdf[0] = 0;
       cdf[pixelCount] = 1;
+      const hdriIntensity = scene.environment.intensity ?? 1;
       return {
         tint: [1, 1, 1],
         sunDirection: [0, 1, 0],
-        sunStrength: scene.environment.intensity ?? 1,
+        // H14-E: sunStrength drives the procedural-sky sun gate (environmentSun.w).
+        // For a pure-HDRI scene, set sun.w to 0 so the sky NEE branch doesn't fire.
+        // The HDRI radiance uses its own hdriIntensity lane (→ params.environmentHdriIntensity).
+        sunStrength: 0,
+        hdriIntensity,
         hdriWidth: width,
         hdriHeight: height,
         hasHdri: true,
@@ -133,6 +147,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     tint: [1, 1, 1],
     sunDirection: [0, 1, 0],
     sunStrength: 0,
+    hdriIntensity: 0,
     hdriWidth: 0,
     hdriHeight: 0,
     hasHdri: false,

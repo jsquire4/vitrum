@@ -37,6 +37,10 @@ export interface FrameParamsSceneInputs {
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
+  /** H14-E: HDRI-only intensity lane — separate from environmentSunStrength.
+   *  Written to params.environmentHdriIntensity so the equirect lookup is not
+   *  gated by the procedural-sky sun-strength lane. */
+  readonly environmentHdriIntensity: number;
 }
 
 /**
@@ -128,6 +132,10 @@ export function packFrameParams(
   const lightTreeOn = config.traceTier === 'full' && sb.lightTreeEnabled && config.lightTreeImportanceSampling;
   paramsU32[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
   paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
+  // H14-E: HDRI intensity lives in its own f32 slot (slot 31 = environmentHdriIntensity),
+  // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
+  // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).
+  paramsF32[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
   paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
   paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];

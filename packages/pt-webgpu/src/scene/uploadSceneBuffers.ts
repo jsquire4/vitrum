@@ -87,6 +87,14 @@ interface PackedSceneData {
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
+  /**
+   * H14-E: HDRI radiance intensity multiplier — separate from `environmentSunStrength`
+   * (which drives the procedural-sky sun gate, `environmentSun.w`).
+   * Value = `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
+   * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT gated
+   * by the procedural-sky sun-strength lane.
+   */
+  readonly environmentHdriIntensity: number;
   readonly environmentMapWidth: number;
   readonly environmentMapHeight: number;
   readonly hasEnvironmentMap: boolean;
@@ -255,6 +263,45 @@ export interface BuildPackedSceneOptions {
   readonly cameraVisibleEmitters?: boolean;
 }
 
+/**
+ * H10 — Pack the GPU material floats for `primitive`, applying the emissive
+ * fold when `cameraVisibleEmitters` is true AND the primitive is the mesh
+ * referenced by a mesh-area emitter in `scene`.
+ *
+ * The fold re-attaches `emitter.color * emitter.intensity` onto the
+ * primitive's emissive channel (emissiveIntensity=1) so the kernel's
+ * emissive-on-hit term produces radiance equal to the NEE sample. Without
+ * the fold, camera-visible emitters look dark when hit directly.
+ *
+ * Used by: `buildPackedScene` (full pack) + `updateEmitter`/material fast
+ * paths in `SceneMutationRouter` (incremental patch). Sharing the same code
+ * prevents the desync described in H10.
+ */
+export function packFoldedMaterialEntry(
+  primitive: { id: string; material: MaterialSpec },
+  scene: Scene,
+  cameraVisibleEmitters: boolean,
+): number[] {
+  if (cameraVisibleEmitters) {
+    for (const emitter of scene.emitters) {
+      if (emitter.kind !== 'mesh-area') continue;
+      if (emitter.meshId !== primitive.id) continue;
+      // Pre-multiply intensity so `emissive · emissiveIntensity` == NEE radiance.
+      const foldedMat = {
+        ...primitive.material,
+        emissive: [
+          emitter.color[0] * emitter.intensity,
+          emitter.color[1] * emitter.intensity,
+          emitter.color[2] * emitter.intensity,
+        ] as [number, number, number],
+        emissiveIntensity: 1,
+      };
+      return materialToPackedVec4s(foldedMat);
+    }
+  }
+  return materialToPackedVec4s(primitive.material);
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
@@ -266,34 +313,12 @@ export function buildPackedScene(
   // subset and `warnings` carries one message per dropped node.
   const { supported: scene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
 
-  // Camera-visible emitters: when a scene represents an emissive mesh as a
-  // `mesh-area` emitter and keeps the primitive material non-emissive, re-attach
-  // the emitter's radiance (`color · intensity`, EXACTLY the value mesh-area NEE
-  // samples — emitterPacking.ts:173-176) onto the referenced primitive's
-  // material `emissive`. The kernel's emissive-on-hit term is gated to the
-  // non-MIS paths, so this does not double-count against NEE. Keyed by
-  // `emitter.meshId` → primitive `id`.
-  const emissiveByMeshId = new Map<string, { emissive: [number, number, number]; intensity: number }>();
-  if (options.cameraVisibleEmitters === true) {
-    for (const emitter of scene.emitters) {
-      if (emitter.kind !== 'mesh-area') continue;
-      emissiveByMeshId.set(emitter.meshId, {
-        emissive: [emitter.color[0], emitter.color[1], emitter.color[2]],
-        intensity: emitter.intensity,
-      });
-    }
-  }
-  const packMaterial = (primitive: { id: string; material: MaterialSpec }): number[] => {
-    const reattach = emissiveByMeshId.get(primitive.id);
-    // Pre-multiply intensity into emissive and set emissiveIntensity=1 so the
-    // kernel decode (`emissive · emissiveIntensity`) reproduces `color · intensity`
-    // exactly, matching the NEE radiance regardless of the primitive's own
-    // (zeroed) emissiveIntensity.
-    const mat = reattach == null
-      ? primitive.material
-      : { ...primitive.material, emissive: reattach.emissive.map((c) => c * reattach.intensity) as [number, number, number], emissiveIntensity: 1 };
-    return materialToPackedVec4s(mat);
-  };
+  // Camera-visible emitters: delegate to the shared packFoldedMaterialEntry helper
+  // (H10). This ensures the fold logic is identical across the full pack and the
+  // incremental fast-path patches in SceneMutationRouter.
+  const cameraVisible = options.cameraVisibleEmitters === true;
+  const packMaterial = (primitive: { id: string; material: MaterialSpec }): number[] =>
+    packFoldedMaterialEntry(primitive, scene, cameraVisible);
 
   const materials: number[] = [];
   // Ordered MaterialSpec list, matId-aligned with `materials` (P2): drives the
@@ -417,6 +442,7 @@ export function buildPackedScene(
     environmentTint: environment.tint,
     environmentSunDirection: environment.sunDirection,
     environmentSunStrength: environment.sunStrength,
+    environmentHdriIntensity: environment.hdriIntensity,
     environmentMapWidth: environment.hdriWidth,
     environmentMapHeight: environment.hdriHeight,
     hasEnvironmentMap: environment.hasHdri,
@@ -754,6 +780,7 @@ interface MutableSceneBufferFields {
   environmentTint: readonly [number, number, number];
   environmentSunDirection: readonly [number, number, number];
   environmentSunStrength: number;
+  environmentHdriIntensity: number;
   environmentMapWidth: number;
   environmentMapHeight: number;
   hasEnvironmentMap: boolean;
@@ -1025,6 +1052,7 @@ export function applyEnvironmentMutation(
     readonly environmentTint: readonly [number, number, number];
     readonly environmentSunDirection: readonly [number, number, number];
     readonly environmentSunStrength: number;
+    readonly environmentHdriIntensity: number;
     readonly environmentMapWidth: number;
     readonly environmentMapHeight: number;
     readonly hasEnvironmentMap: boolean;
@@ -1034,6 +1062,7 @@ export function applyEnvironmentMutation(
   mutable.environmentTint = next.environmentTint;
   mutable.environmentSunDirection = next.environmentSunDirection;
   mutable.environmentSunStrength = next.environmentSunStrength;
+  mutable.environmentHdriIntensity = next.environmentHdriIntensity;
   mutable.environmentMapWidth = next.environmentMapWidth;
   mutable.environmentMapHeight = next.environmentMapHeight;
   mutable.hasEnvironmentMap = next.hasEnvironmentMap;

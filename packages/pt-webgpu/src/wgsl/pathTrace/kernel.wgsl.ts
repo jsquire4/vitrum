@@ -402,44 +402,69 @@ ${transmissiveBlock}
       }
       for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
         if (current == picked) {
-          let base = pi * 2u;
+          // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
+          let base = pi * 3u;
           let lp = pointLights[base].xyz;
           let rad = pointLights[base + 1u].rgb;
+          let ptExtra = pointLights[base + 2u];
+          let ptMaxDist = ptExtra.x;  // 0 = no cutoff
+          let ptDecay   = ptExtra.y;  // 0 = no falloff, 2 = physical inverse-square
           let toPoint = lp - hitPos;
           let dist2 = max(dot(toPoint, toPoint), 1e-5);
           let dist = sqrt(dist2);
+          // Distance cutoff: skip if ptMaxDist > 0 and hit is beyond it.
+          if (ptMaxDist > 0.0 && dist > ptMaxDist) {
+            current = current + 1u;
+            continue;
+          }
           let wi = toPoint / dist;
           let pointShadowRay = Ray(hitPos + normal * 1e-3, wi);
           if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            // Ranged-decay falloff: pow(max(dist,1), -ptDecay). decay=0 → attenuation=1;
+            // decay=2 → physical inverse-square (matches rad/dist2 at dist≥1).
+            let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-            directLi = throughput * brdf * nDotL * (rad / dist2) * lightSelectInvPdf;
+            directLi = throughput * brdf * nDotL * rad * attenuation * lightSelectInvPdf;
           }
         }
         current = current + 1u;
       }
       for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
         if (current == picked) {
-          let sb = si * 3u;
+          // H51-D: stride 4 (4 vec4 = 16 f32): position, dir+cosOuter, radiance+cosInner, [distance, decay, 0, 0]
+          let sb = si * 4u;
           let spos = spotLights[sb].xyz;
           let saxis = spotLights[sb + 1u];
-          let srad = spotLights[sb + 2u].rgb;
+          let sradW = spotLights[sb + 2u];  // .rgb = radiance, .w = cosInner
+          let spExtra = spotLights[sb + 3u];
           let spotDir = safe_normalize(saxis.xyz);
           let cosOuter = saxis.w;
+          let cosInner = sradW.w;  // cosInner >= cosOuter (inner cone is narrower)
+          let srad = sradW.rgb;
+          let spMaxDist = spExtra.x;  // 0 = no cutoff
+          let spDecay   = spExtra.y;  // 0 = no falloff, 2 = physical inverse-square
           let toSpot = spos - hitPos;
           let dist2 = max(dot(toSpot, toSpot), 1e-5);
           let dist = sqrt(dist2);
+          // Distance cutoff: skip if spMaxDist > 0 and hit is beyond it.
+          if (spMaxDist > 0.0 && dist > spMaxDist) {
+            current = current + 1u;
+            continue;
+          }
           let wi = toSpot / dist;
           let coneCos = dot(-wi, spotDir);
           if (coneCos >= cosOuter) {
             let spotShadowRay = Ray(hitPos + normal * 1e-3, wi);
             if (!traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
               let nDotL = max(0.0, dot(normal, wi));
-              let softness = smoothstep(cosOuter, 1.0, coneCos);
+              // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
+              let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
+              let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
               let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-              directLi = throughput * brdf * nDotL * softness * (srad / dist2) * lightSelectInvPdf;
+              directLi = throughput * brdf * nDotL * softness * srad * attenuation * lightSelectInvPdf;
             }
           }
         }

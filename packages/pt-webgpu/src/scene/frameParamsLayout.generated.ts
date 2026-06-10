@@ -34,7 +34,12 @@ export const FrameParamsSlot = {
   bdptMaxEyeDepth: 28,
   lightTreeEnabled: 29,
   lightTreeNodeCount: 30,
-  _padAuto0: 31,
+  /** H14-E: HDRI radiance intensity multiplier — separate from environmentSun.w
+   *  (which drives the procedural-sky sun strength). Both lanes are f32.
+   *  Value = scene.environment.intensity ?? 1 when an HDRI is present; 0 otherwise.
+   *  The WGSL equirect lookup uses this lane so the HDRI is NOT silently zeroed
+   *  when environmentSun.w is 0. */
+  environmentHdriIntensity: 31,
   cameraPos: 32,
   lightDir: 36,
   environmentTint: 40,
@@ -76,7 +81,7 @@ export const FRAME_PARAMS_WGSL_FIELDS = [
   'bdptMaxEyeDepth: u32',
   'lightTreeEnabled: u32',
   'lightTreeNodeCount: u32',
-  '_padAuto0: u32',
+  'environmentHdriIntensity: f32',
   'cameraPos: vec4f',
   'lightDir: vec4f',
   'environmentTint: vec4f',

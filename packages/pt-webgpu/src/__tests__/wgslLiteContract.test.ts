@@ -26,8 +26,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // writes the invalid sentinel, so this is render-neutral for lite.
     // Re-pinned 2026-06-09: H13/D4 — brdfDirectionalPdf opposite-hemisphere
     // branch now returns 0.0 (delta lobe). Lite composes the same bsdf module.
-    expect(digest).toBe('afecce34de159efe257c7aba3e189f20d671919cb51e9039cec8a986f87bcf5c');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73509);
+    // Re-pinned 2026-06-09: H14-E — _padAuto0 renamed to environmentHdriIntensity (f32)
+    // in the FrameParams struct; lite composes the same material.wgsl.ts.
+    // Render-neutral for lite (lite never reads HDRI fields).
+    expect(digest).toBe('a8c9854c4af31f9d4efa74f8153f067e9dc3269e6ae88368c100902a02678ca5');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73844);
   });
 });
 
