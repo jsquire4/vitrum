@@ -9,7 +9,7 @@
 // (addPrimitive / removePrimitive / updatePrimitive / updateEmitter /
 // updateEnvironment + the 6 first-eligible-wins fast paths).
 import type { Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asMat4, solveSkin } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
   fingerprintTlasBuffers,
@@ -43,6 +43,7 @@ import {
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
 import {
+  defaultDirectionalAngularDiameter,
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
   hasMeshAreaEmitterForPrimitive,
@@ -102,6 +103,15 @@ interface FastPathCommit {
    * or material-only (6) patches.
    */
   readonly reshapedWorldPositions?: boolean;
+  /**
+   * Item 2c — when `true` the material fast path wrote an emissive-field change
+   * (emissive / emissiveIntensity). The common-commit code will re-run
+   * `packEmitterArrays` + `rebuildLightTreeForScene` so the implicit `__implicit__`
+   * NEE emitter (H14-A) picks up the new radiance. Without this the NEE sampling
+   * distribution diverges from the camera-hit emissive value until the next full
+   * repack.
+   */
+  readonly changedEmissiveField?: boolean;
 }
 
 export class SceneMutationRouter {
@@ -162,7 +172,64 @@ export class SceneMutationRouter {
     // captures that invariant for the type checker.
     const currentScene = host.getScene()!;
     const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
-    const nextScene = patchPrimitiveInScene(currentScene, id, patch);
+
+    // Item 1 — bones patch: when the host submits updated bone matrices (and/or
+    // boneInverses/morphWeights) on a skinned-mesh, re-solve the skin and
+    // rewrite the patch as a { positions, normals } geometry update so the
+    // existing geometry fast paths (in-place BLAS refit or topology-resize)
+    // handle the upload. This is the same pattern walkaround-hybrid uses in
+    // applyGpuSkinnedRefit: solveSkin → updatePrimitive({ positions, normals }).
+    //
+    // A patch containing `bones` (or `boneInverses` or `morphWeights`) triggers
+    // the resolution. The solved positions/normals are merged INTO the patch
+    // (overriding any explicit positions/normals the caller also supplied) and
+    // the bones* fields are stripped so only the geometry change is forwarded —
+    // the scene-state update (patchPrimitiveInScene below) still captures the
+    // new bones so future solveSkin calls use the correct matrices.
+    let resolvedPatch = patch;
+    const hasBonesPatch =
+      currentPrimitive?.kind === 'skinned-mesh' &&
+      ('bones' in patch || 'boneInverses' in patch || 'morphWeights' in patch);
+    if (hasBonesPatch && currentPrimitive?.kind === 'skinned-mesh') {
+      // Build the "next" state of the skinned-mesh to solve against.
+      const nextPrim = {
+        ...currentPrimitive,
+        ...(patch as Partial<typeof currentPrimitive>),
+      };
+      try {
+        const solved = solveSkin(nextPrim);
+        // Strip bone-only keys and inject solved geometry.
+        const { bones: _b, boneInverses: _bi, morphWeights: _mw, ...restPatch } = patch as {
+          bones?: unknown; boneInverses?: unknown; morphWeights?: unknown;
+          [k: string]: unknown;
+        };
+        resolvedPatch = {
+          ...restPatch,
+          positions: solved.positions,
+          normals: solved.normals,
+        } as Partial<ScenePrimitive>;
+      } catch (err) {
+        console.warn(
+          `[vitrum/pt-webgpu] solveSkin failed for updatePrimitive("${id}"); falling back to setScene. ${err}`,
+        );
+        // Fall through to full setScene at the tail.
+      }
+    }
+
+    // Build nextScene using the FULL merged patch: new bones (from `patch`) plus
+    // solved positions/normals (from `resolvedPatch`). This ensures:
+    //   (a) rebuildPrimitiveBlas sees solved positions, not rest-pose.
+    //   (b) The committed scene state stores the new bone matrices so future
+    //       solveSkin calls start from the correct bone pose.
+    // For non-bones patches, resolvedPatch === patch, so this is a no-op.
+    const mergedPatch: Partial<ScenePrimitive> = hasBonesPatch
+      ? { ...patch, ...(resolvedPatch as Partial<ScenePrimitive>) }
+      : patch;
+    const nextScene = patchPrimitiveInScene(currentScene, id, mergedPatch);
+    // The fast-path eligibility checks use only the geometry portion (solved
+    // positions/normals, no bone keys) so they correctly classify the update
+    // as a geometry-refit rather than an unrecognised bones-only patch.
+    const fastPathPatch = resolvedPatch;
 
     // The incremental fast paths, in FIRST-ELIGIBLE-WINS order (geometry →
     // topology-resize → analytic-transform → instanced-topology → transform →
@@ -181,7 +248,7 @@ export class SceneMutationRouter {
           currentPrimitive == null ||
           geoPack == null ||
           sceneBuffers == null ||
-          !canFastPathGeometryPatch(currentPrimitive, patch)
+          !canFastPathGeometryPatch(currentPrimitive, fastPathPatch)
         ) {
           return null;
         }
@@ -230,7 +297,7 @@ export class SceneMutationRouter {
           currentPrimitive == null ||
           geoPack == null ||
           sceneBuffers == null ||
-          !canFastPathTopologyResizePatch(currentPrimitive, patch)
+          !canFastPathTopologyResizePatch(currentPrimitive, fastPathPatch)
         ) {
           return null;
         }
@@ -258,7 +325,7 @@ export class SceneMutationRouter {
           currentPrimitive == null ||
           currentPrimitive.kind !== 'analytic' ||
           sceneBuffers == null ||
-          !canFastPathTransformPatch(currentPrimitive, patch)
+          !canFastPathTransformPatch(currentPrimitive, fastPathPatch)
         ) {
           return null;
         }
@@ -308,7 +375,7 @@ export class SceneMutationRouter {
           currentPrimitive == null ||
           geoPack == null ||
           sceneBuffers == null ||
-          !canFastPathInstancedTopologyPatch(currentPrimitive, patch)
+          !canFastPathInstancedTopologyPatch(currentPrimitive, fastPathPatch)
         ) {
           return null;
         }
@@ -339,7 +406,7 @@ export class SceneMutationRouter {
         if (
           currentPrimitive == null ||
           sceneBuffers == null ||
-          !canFastPathTransformPatch(currentPrimitive, patch)
+          !canFastPathTransformPatch(currentPrimitive, fastPathPatch)
         ) {
           return null;
         }
@@ -366,9 +433,12 @@ export class SceneMutationRouter {
       // H10 — also re-applies the emissive fold when cameraVisibleEmitters is on
       // and this primitive is backed by a mesh-area emitter, so a roughness/color
       // patch on the primitive doesn't lose the fold that was applied at setScene.
+      // Item 2c — when the patch changes emissive/emissiveIntensity, set
+      // `changedEmissiveField` so the common-commit code re-packs the implicit
+      // mesh-area emitter and rebuilds the light tree.
       () => {
         const sceneBuffers = host.getSceneBuffers();
-        if (!canFastPathMaterialPatch(patch) || sceneBuffers == null) return null;
+        if (!canFastPathMaterialPatch(fastPathPatch) || sceneBuffers == null) return null;
         const materialIndex = materialIndexForPrimitive(
           nextScene,
           id,
@@ -395,7 +465,12 @@ export class SceneMutationRouter {
           materialData.byteLength,
         );
         sceneBuffers.materials.set(materialData, floatOffset);
-        return { invalidateBindGroups: false, warnings: [] };
+        // Item 2c — detect emissive-field changes so the implicit NEE emitter
+        // (H14-A) is re-packed with the new radiance.
+        const mat = (fastPathPatch as unknown as { material?: Record<string, unknown> }).material ?? {};
+        const changedEmissiveField =
+          'emissive' in mat || 'emissiveIntensity' in mat;
+        return { invalidateBindGroups: false, warnings: [], changedEmissiveField };
       },
     ];
 
@@ -408,9 +483,12 @@ export class SceneMutationRouter {
       // or transforms, and the patched primitive is backed by a mesh-area emitter,
       // the GPU meshAreaLightsBuffer is stale (it holds pre-move world-space
       // triangle vertices). Re-run packEmitterArrays + upload to keep NEE in sync.
+      // Item 2c — also re-pack when the material fast path changed emissive fields
+      // (even without geometric movement) so the implicit NEE emitter (H14-A) sees
+      // the new radiance and the light-tree importance weights are updated.
       const sceneBuffersForEmitters = host.getSceneBuffers();
       if (
-        commit.reshapedWorldPositions &&
+        (commit.reshapedWorldPositions || commit.changedEmissiveField) &&
         sceneBuffersForEmitters != null &&
         hasMeshAreaEmitterForPrimitive(nextScene, id)
       ) {
@@ -418,6 +496,7 @@ export class SceneMutationRouter {
         const emittersReallocated = uploadEmitterArrays(device, sceneBuffersForEmitters, emitterPacked, {
           directionalLight: defaultDirectionalLight(nextScene),
           directionalIrradiance: defaultDirectionalIrradiance(nextScene),
+          directionalAngularDiameter: defaultDirectionalAngularDiameter(nextScene),
         });
         const lightTreeReallocated = rebuildLightTreeForScene(device, sceneBuffersForEmitters, nextScene);
         if (emittersReallocated || lightTreeReallocated) {
@@ -449,6 +528,7 @@ export class SceneMutationRouter {
       const lightsReallocated = uploadEmitterArrays(device, sceneBuffers, packed, {
         directionalLight: defaultDirectionalLight(nextScene),
         directionalIrradiance: defaultDirectionalIrradiance(nextScene),
+        directionalAngularDiameter: defaultDirectionalAngularDiameter(nextScene),
       });
       // WS2 — the light tree's powers/positions depend on the emitters, so
       // rebuild + re-upload it (reallocating + invalidating bind groups if the

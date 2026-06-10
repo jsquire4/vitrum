@@ -93,7 +93,7 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new IndirectCombinePass(stubPipeline));
   reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
   reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
-  reg.register(new CompositePass(stubRenderPipeline));
+  reg.register(new CompositePass(stubRenderPipeline, stubUboRef));
   reg.register(new PPGUpdatePass(stubPipeline));
   reg.register(new ReGIRBuildPass(
     stubPipeline,
@@ -136,6 +136,7 @@ type PipelineUboRefShape = {
   _sampleBudgetUboRef: object;
   _sampleCountUboRef: object;
   _resolveUboRef: object;
+  _compositeUboRef: object;
   readonly _perPassUboRefs: readonly object[];
 };
 
@@ -224,13 +225,16 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
     const sampleBudget = { buf: 'sample-budget' };
     const sampleCount = { buf: 'sample-count' };
     const resolve = { buf: 'resolve' };
+    const composite = { buf: 'composite' };
     pipeline._atrousIndirectUboRef = atrousIndirect;
     pipeline._accumUboRef = accum;
     pipeline._sampleBudgetUboRef = sampleBudget;
     pipeline._sampleCountUboRef = sampleCount;
     pipeline._resolveUboRef = resolve;
+    pipeline._compositeUboRef = composite;
 
-    expect(pipeline._perPassUboRefs).toEqual([accum, sampleBudget, sampleCount, resolve]);
+    // 2026-06-10: composite UBO added (tonemap/exposure/outputColorSpace per-frame dials).
+    expect(pipeline._perPassUboRefs).toEqual([accum, sampleBudget, sampleCount, resolve, composite]);
     expect(pipeline._perPassUboRefs).not.toContain(atrousIndirect);
   });
 });

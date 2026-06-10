@@ -101,8 +101,14 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // (POINT_LIGHT_VEC4_STRIDE=3u / SPOT_LIGHT_VEC4_STRIDE=4u added to material.wgsl.ts; three MNEE
     // point-light loops + photon-map point/spot seeds now use them; spot-axis negation removed from
     // photon seeding). RENDER-CHANGING for multi-light caustic scenes, A/B pending V28-B.
-    expect(digest).toBe('ba43b8b28b1be223df6b0c859a9a7cc70954dea53d71d31b33dd76d787d40856');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(279842);
+    // Re-pinned 2026-06-10: BDPT light-subpath estimator coherence — stored throughput/pdfFwd now
+    // describe the traced segment (was a sampled-then-discarded direction): scatter direction is
+    // now sampled at prevPos from the REAL BSDF (woAtPrev as outgoing), traced, and used for
+    // throughput (f·cos/pdf) + pdfFwd; pdfRev(prevCol) is patched to pdfFwd (PBRT RandomWalk
+    // convention); the dead "nextDir" sampling at newPos is removed. RENDER-CHANGING for bdpt:true,
+    // A/B pending V28-B.
+    expect(digest).toBe('655393a819f4eb7faab3aa9fcda54e322c7113f811e9692670cb953b746ba94f');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(282637);
   });
 });
 

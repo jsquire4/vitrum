@@ -59,6 +59,7 @@ function baseInputs(): PipelineFrameInputs {
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
     // nrcEnabled deliberately omitted in the OFF case → must default to 0.
     nrc: {},
+    composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   } as PipelineFrameInputs;
 }
 

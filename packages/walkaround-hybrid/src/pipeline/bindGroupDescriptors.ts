@@ -319,6 +319,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'tex', note: 'final blit source' },
       { binding: 1, kind: 'sampler:nf', note: 'composite sampler' },
+      { binding: 2, kind: 'uniform', note: 'CompositeUniforms (tonemapMode, exposure, outputColorSpace)' },
     ],
   },
 ];

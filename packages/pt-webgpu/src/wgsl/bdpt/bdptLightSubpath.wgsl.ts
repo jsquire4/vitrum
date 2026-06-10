@@ -341,6 +341,9 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let v0prev = bdptLightPath[bdptLightPathIndex(prevCol, 0u)];
   let v1prev = bdptLightPath[bdptLightPathIndex(prevCol, 1u)];
   let v2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
+  // Row 3 of prevCol: .xyz = woAtPrev (outgoing direction at prevPos toward the
+  // vertex before it), .w = prevMatId (< 0 for emitter, >= 0 for surface).
+  let v3prev = bdptLightPath[bdptLightPathIndex(prevCol, 3u)];
   if (v0prev.w == BDPT_KIND_INVALID) {
     bdptWriteInvalid(col);
     continue;
@@ -348,14 +351,79 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let prevPos = v0prev.xyz;
   let prevNormal = v1prev.xyz;
   let prevThroughput = v2prev.xyz;
-  let hemi = cosineHemisphereSample(&rng, prevNormal);
-  let scatterDir = hemi.wi;
-  let cosScatter = max(dot(prevNormal, scatterDir), 0.0);
-  let pdfScatter = hemi.pdf;
-  if (pdfScatter <= 0.0) {
+  let woAtPrev = v3prev.xyz;    // outgoing direction at prevPos (toward its own predecessor)
+  let prevMatId = v3prev.w;     // < 0 = emitter vertex, >= 0 = surface vertex
+
+  // ── BDPT light-subpath estimator coherence: stored throughput/pdfFwd now
+  // describe the traced segment (was a sampled-then-discarded direction),
+  // 2026-06-10 — RENDER-CHANGING for bdpt:true, A/B pending V28-B.
+  //
+  // The fix: sample ONE direction at prevPos from the REAL BSDF (not the old
+  // two-step: cosine-hemisphere trace + discard + real-BSDF sample at newPos).
+  // That same direction is used to (a) extend the path (trace) and (b) compute
+  // the stored throughput update (f·|cos|/pdf of the traced segment) and pdfFwd
+  // (the generation density of the traced segment). Following PBRT §16.3,
+  // pdfRev(prevCol) is then patched to the sampled-direction pdf (reciprocal
+  // BSDF convention: rev density at k = fwd density at k used to reach k+1).
+  //
+  // For the emitter vertex (prevMatId < 0) the cosine-hemisphere direction
+  // already describes the emitter emission profile; we keep it for emitter→1st
+  // and apply the BSDF-throughput correction below instead of the old approach.
+  var scatterDir = vec3f(0.0);
+  var pdfScatter = 0.0;
+  var fPrev = vec3f(0.0);
+  var cosPrev = 0.0;
+
+  if (prevMatId < 0.0) {
+    // Emitter vertex: sample cosine hemisphere about prevNormal (= emitter
+    // surface or direction normal). The emitter throughput already carries the
+    // emitted radiance scaled by the emitter pdf; the cosine hemisphere scatter
+    // here represents the direction-distribution component.
+    let hemi = cosineHemisphereSample(&rng, prevNormal);
+    scatterDir = hemi.wi;
+    pdfScatter = hemi.pdf;
+    cosPrev = max(dot(prevNormal, scatterDir), 0.0);
+    // Lambertian f = 1/π, but the emitter vertex absorbs the full f·cos/pdf of
+    // the emitter-surface scatter into the already-stored emitThroughput (see
+    // bdptFinishBounce0: emitThroughput = emitRad * cosEmit / pdfJoint). For the
+    // extension, that emitThroughput is prevThroughput and we scatter from the
+    // emitter face with pdf = pdfHemi; so the correction here is just
+    // f·cos/pdf = (1/π)·cosEmit / (cosEmit/π) = 1.0. Hence fPrev = vec3f(1.0).
+    fPrev = vec3f(1.0);
+  } else {
+    // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
+    // the direction that brought the path to prevPos from its predecessor).
+    let prevMat = decodeMaterial(u32(prevMatId));
+    let prevBc = prevMat.baseColor;
+    let prevRough = max(prevMat.roughness, 0.02);
+    let prevMetal = prevMat.metallic;
+    var prevTanT: vec3f;
+    var prevTanB: vec3f;
+    buildOnb(prevNormal, &prevTanT, &prevTanB);
+    let cosOPrev = max(dot(prevNormal, woAtPrev), 0.0);
+    let f0Prev = mix(vec3f(0.04), prevBc, prevMetal);
+    let fresPrev = fresnelSchlick(cosOPrev, f0Prev);
+    let specProbPrev = clamp(mix(0.04, 0.96, max(luminance(fresPrev), prevMetal)), 0.04, 0.96);
+    var sampledDir = vec3f(0.0);
+    if (rand_f32(&rng) < specProbPrev) {
+      let gs = glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough);
+      sampledDir = gs.wi;
+    } else {
+      let cs = cosineHemisphereSample(&rng, prevNormal);
+      sampledDir = cs.wi;
+    }
+    scatterDir = sampledDir;
+    pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
+                                    prevNormal, woAtPrev, scatterDir);
+    cosPrev = max(dot(prevNormal, scatterDir), 0.0);
+    fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir);
+  }
+
+  if (pdfScatter <= 1e-8 || cosPrev <= 1e-5) {
     bdptWriteInvalid(col);
     continue;
   }
+
   var ray: Ray;
   ray.origin = prevPos + prevNormal * 1e-4;
   ray.direction = scatterDir;
@@ -378,57 +446,33 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let newNormal = safe_normalize(hit.normal);
   // Front-relative shading normal at the new vertex (toward the incoming light dir).
   let nsFront = select(-newNormal, newNormal, dot(newNormal, -scatterDir) > 0.0);
+  // Outgoing direction at newPos toward the previous vertex (= -scatterDir).
+  let woLp = -scatterDir;
 
-  // ── A9 — REAL BSDF light-subpath extension (glossy/specular, not Lambertian) ──
-  // Sample the NEXT light-path direction from the visible-vertex BSDF (the same
-  // diffuse/glossy partition the eye path + the ReSTIR-PT producer use), so a
-  // glossy/metallic light-path vertex carries the correct lobe + pdf. The stored
-  // pdfFwd/pdfRev are the REAL brdfDirectionalPdf (SA measure; the §10.3 connection
-  // sweep converts SA→area via ConvertDensity, so NO baked-in geometry term here).
-  // The throughput is the unbiased BSDF MC estimator f·cos/pdf.
-  let woLp = -scatterDir;                        // outgoing toward the previous vertex
-  let bc = mat.baseColor;
-  let rough = max(mat.roughness, 0.02);
-  let metal = mat.metallic;
-  var tanT: vec3f;
-  var tanB: vec3f;
-  buildOnb(nsFront, &tanT, &tanB);
-  let cosOlp = max(dot(nsFront, woLp), 0.0);
-  let f0lp = mix(vec3f(0.04), bc, metal);
-  let freslp = fresnelSchlick(cosOlp, f0lp);
-  let specProbRaw = clamp(mix(0.04, 0.96, max(luminance(freslp), metal)), 0.04, 0.96);
-  let specProb = specProbRaw;
-  var nextDir = vec3f(0.0);
-  if (rand_f32(&rng) < specProb) {
-    let gs = glossyReflectionSample(&rng, woLp, nsFront, tanT, tanB, rough);
-    nextDir = gs.wi;
-  } else {
-    let cs = cosineHemisphereSample(&rng, nsFront);
-    nextDir = cs.wi;
-  }
-  let cosNext = dot(nsFront, nextDir);
-  if (cosNext <= 1e-5) {
-    bdptWriteInvalid(col);
-    continue;
-  }
-  // The REAL forward directional pdf (mixture: spec·glossy + diff·cosine) — the
-  // density that produced nextDir, used as pdfFwd in the §10.3 MIS sweep.
-  let pdfFwd = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, woLp, nextDir);
-  if (pdfFwd <= 1e-8) {
-    bdptWriteInvalid(col);
-    continue;
-  }
-  let fLp = evaluateBrdf(bc, rough, metal, nsFront, woLp, nextDir);
-  // Light-path throughput: carry the prefix throughput · f·cos/pdf of THIS bounce.
-  let newThroughput = prevThroughput * fLp * cosNext / pdfFwd;
-  // pdfRev: the reverse directional density at THIS vertex toward the previous
-  // vertex (swap wo↔wi in brdfDirectionalPdf) — the §10.3 sweep needs the true
-  // non-symmetric reverse for a glossy lobe (Lambertian was symmetric).
-  let toPrev = safe_normalize(prevPos - newPos);
-  let pdfRev = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, nextDir, toPrev);
+  // Throughput update: carry the prefix throughput * f·|cos|/pdf of THIS traced
+  // segment. pdfFwd = generation density of scatterDir at prevPos (SA measure,
+  // no baked-in geometry term — the §10.3 ConvertDensity handles SA→area).
+  let pdfFwd = pdfScatter;
+  let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;
+
+  // pdfRev at col (Lambertian placeholder): the true value requires knowing the
+  // NEXT scatter direction (which isn't known until col+1 is built). We store a
+  // Lambertian placeholder here and PATCH it when col+1 is built (the PBRT
+  // RandomWalk convention: prev.pdfRev = pdf_of_scatter_at_prev). For the
+  // deepest vertex (no further extension) the placeholder is used directly;
+  // the §10.3 connection overrides pdfRev at L_c and L_{c-1} anyway.
+  let pdfRevPlaceholder = max(dot(nsFront, woLp), 0.0) * INV_PI;
+
+  // PATCH pdfRev of prevCol = pdfFwd (PBRT convention: once we know the traced
+  // direction from prevPos, the reverse density at prevPos = pdfScatter because
+  // for a reciprocal BSDF the density of the reverse edge = fwd density of the
+  // forward edge). This corrects all interior light vertices for deeper connections.
+  let old_r2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
+  bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);
+
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(newPos, 0.0);
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(nsFront, pdfFwd);
-  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(newThroughput, pdfRev);
+  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(newThroughput, pdfRevPlaceholder);
   // A9 — record the reached vertex's matId + wo toward the previous light vertex so
   // the §10.3 connection evaluates the REAL light-vertex BSDF (glossy/metallic).
   bdptWriteLvBsdf(col, f32(matIdx), woLp);

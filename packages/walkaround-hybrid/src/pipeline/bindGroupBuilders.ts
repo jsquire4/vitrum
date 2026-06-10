@@ -417,10 +417,12 @@ export function buildCompositeBindGroup(
   cache: BGLCache,
   texView: GPUTextureView,
   compositeSampler: GPUSampler,
+  compositeUbo: GPUBuffer,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'composite', getCompositeBindGroupLayout(device, cache), [
-    texView,            // 0
-    compositeSampler,   // 1
+    texView,                      // 0 — denoised HDR source
+    compositeSampler,             // 1 — (nearest, unfilterable-float)
+    { buffer: compositeUbo },     // 2 — CompositeUniforms (tonemap/exposure/colorspace)
   ]);
 }
 

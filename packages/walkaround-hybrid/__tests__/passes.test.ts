@@ -190,7 +190,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
   });
 
   it('CompositePass: depends on resolve; render pipeline exposed', () => {
-    const p = new CompositePass(stubRenderPipeline);
+    const p = new CompositePass(stubRenderPipeline, stubUboRef);
     expect(p.id).toBe('composite');
     expect(p.dependencies).toEqual(['resolve']);
     expect(p.pipeline).toBe(stubRenderPipeline);
@@ -224,7 +224,7 @@ describe('Pass entries — topological registration', () => {
     reg.register(new IndirectCombinePass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
     reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
-    reg.register(new CompositePass(stubRenderPipeline));
+    reg.register(new CompositePass(stubRenderPipeline, stubUboRef));
     reg.register(new PPGUpdatePass(stubPipeline));
     expect(reg.size()).toBe(18);
     const order = reg.sortedPasses().map((p) => p.id);

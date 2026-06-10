@@ -27,15 +27,19 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEyeStackStore');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEyeStackSetFwd');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptMaxEyeDepth');
-    // A9 — the light subpath now samples the REAL BSDF (glossy/specular, not
-    // Lambertian-only) and stores bare SOLID-ANGLE pdfs (no baked-in geometry term):
-    // pdfFwd/pdfRev are brdfDirectionalPdf, not the cosine-lobe cosθ/π.
+    // BDPT light-subpath estimator coherence (2026-06-10): the scatter direction
+    // sampled at prevPos is the SAME direction used to extend the path (trace),
+    // compute the throughput update (f·|cos|/pdf of the traced segment), and store
+    // pdfFwd (generation density of the traced segment). The old two-step
+    // (cosine-hemisphere trace + discard + real-BSDF sample at newPos) is gone.
+    // pdfFwd/pdfRev are real BSDF directional pdfs (SA measure), no baked-in G.
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let pdfFwd = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, woLp, nextDir);',
+      'pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let pdfRev = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, nextDir, toPrev);',
-    );
+    // pdfFwd at the new vertex = the scatter pdf at prevPos for the traced direction.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let pdfFwd = pdfScatter;');
+    // pdfRev(prevCol) is patched to pdfFwd after the trace (PBRT RandomWalk convention).
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);');
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/pdfFwd = pdfScatter \* max\(gTerm/);
     // The §10.3 connection evaluates the REAL light-vertex BSDF (4-row light path).
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 4u;');

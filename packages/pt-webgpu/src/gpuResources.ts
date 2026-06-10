@@ -251,6 +251,23 @@ export class GpuResources {
   }
 
   /**
+   * Item 2e — Clear all allocated ReSTIR-PT reservoir buffers (Cur/Prev/Spatial)
+   * when the scene changes or the engine resets so stale temporal history from a
+   * previous scene does not bleed into the new one. No-op when the buffers have
+   * not yet been allocated. Called by `index.ts reset()` and full setScene.
+   */
+  clearReservoirBuffers(): void {
+    if (this.rptReservoirCur == null) return;
+    const encoder = this.#device.createCommandEncoder({
+      label: 'vitrum.pt-webgpu.restirPt.clearReservoirs',
+    });
+    encoder.clearBuffer(this.rptReservoirCur);
+    if (this.rptReservoirPrev != null) encoder.clearBuffer(this.rptReservoirPrev);
+    if (this.rptReservoirSpatial != null) encoder.clearBuffer(this.rptReservoirSpatial);
+    this.#device.queue.submit([encoder.finish()]);
+  }
+
+  /**
    * (Re)allocate the accum + aux textures and the accum / varianceMoments
    * buffers to the requested dims. Returns `true` if a recreate happened (which
    * means the caller must reset its sample counter — the prior inline version

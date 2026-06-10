@@ -447,7 +447,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     reg.register(new IndirectCombinePass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUbo));
     reg.register(new ResolvePass(stubPipeline, stubUbo, false));
-    reg.register(new CompositePass(stubRender));
+    reg.register(new CompositePass(stubRender, stubUbo));
 
     const active = reg.activePasses({ denoiserMode: 'atrous-variance', ppgEnabled: false });
     const labels: string[] = [];

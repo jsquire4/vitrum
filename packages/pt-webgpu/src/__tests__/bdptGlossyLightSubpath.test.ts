@@ -16,14 +16,22 @@ import { BdptLightPathBufferWebGPU } from '../bdpt/bdptLightPathBufferWebGPU.js'
 
 describe('A9 — glossy/specular BDPT light subpath', () => {
   it('samples the REAL BSDF (glossy partition + cosine diffuse), not Lambertian-only', () => {
-    // The extension must use glossyReflectionSample on the spec lobe + cosine on
-    // the diffuse lobe, and the throughput is f·cos/pdf with the REAL BSDF.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('glossyReflectionSample(&rng, woLp, nsFront, tanT, tanB, rough)');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let fLp = evaluateBrdf(bc, rough, metal, nsFront, woLp, nextDir);');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fLp * cosNext / pdfFwd;');
-    // pdfFwd/pdfRev are the REAL brdfDirectionalPdf (SA), not the cosine cosθ/π.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, woLp, nextDir);');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfRev = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, nextDir, toPrev);');
+    // BDPT light-subpath estimator coherence (2026-06-10): the scatter direction
+    // is sampled at the PREVIOUS vertex (prevPos) using its stored outgoing direction
+    // (woAtPrev), and that SAME direction is used to extend the path (trace) AND
+    // to compute the stored throughput / pdfFwd. The old two-step
+    // (cosine-hemisphere trace + discard + real-BSDF sample at newPos) is gone.
+    // The BSDF is sampled at prevPos: glossy lobe via glossyReflectionSample,
+    // diffuse lobe via cosineHemisphereSample.
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough)');
+    // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir)');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;');
+    // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter;');
+    // pdfRev(prevCol) is patched = pdfFwd (PBRT RandomWalk convention).
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);');
   });
 
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {

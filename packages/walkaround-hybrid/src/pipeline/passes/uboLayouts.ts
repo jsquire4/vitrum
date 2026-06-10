@@ -68,3 +68,22 @@ export const SAMPLE_BUDGET_UBO = defineUbo([
 export const SAMPLE_COUNT_UBO = defineUbo([
   { name: 'sampleCount', type: 'u32' },
 ] as const);
+
+/**
+ * `CompositeUniforms` (mirrors composite.wgsl.ts `CompositeUniforms` struct):
+ * u32 tonemapMode + f32 exposure + u32 outputColorSpace + u32 _pad = 16 B.
+ *
+ * tonemapMode indices match `TONEMAP_MODE_INDEX` from `@vitrum/shared-samplers`:
+ *   0 = aces (default — historical hardcoded curve), 1 = agx, 2 = reinhard,
+ *   3 = linear (clamped), 4 = none (raw HDR, no operator).
+ *
+ * outputColorSpace: 0 = srgb (default — apply OETF), 1 = linear (skip OETF).
+ *
+ * Wired 2026-06-10: tonemap/exposure/outputColorSpace contract fields live.
+ */
+export const COMPOSITE_UBO = defineUbo([
+  { name: 'tonemapMode',       type: 'u32' },
+  { name: 'exposure',          type: 'f32' },
+  { name: 'outputColorSpace',  type: 'u32' },
+  { name: '_pad',              type: 'u32' },
+] as const);

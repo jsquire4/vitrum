@@ -316,11 +316,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportDetails: {
       primitives: {
         mesh: 'native',
-        // Interim (plan/v1-closure-plan-2026-06-10.md): pt-webgl2 ingests
-        // skinned-mesh as a rest-pose mesh — bones/skinIndices/skinWeights/
-        // morphTargets are never read; the packer uses rest-pose positions only.
-        // Real pose solving lands in Wave 2 of plan/v1-closure-plan-2026-06-10.md.
-        'skinned-mesh': 'approximate',
+        // 2026-06-10 (Wave 2): pt-webgl2 solves the pose at ingestion via core
+        // `solveSkin` (bones + bindMatrix + morph targets; see
+        // scene/solveSkinPrimitives.ts); `updatePrimitive({bones})` re-solves
+        // through the full-rebuild path. Promoted approximate→native.
+        'skinned-mesh': 'native',
         'instanced-mesh': 'native',
         // Analytic primitives are warned-and-skipped in the current slice.
         // The authored scene is cached for param/shape patches, but ingestion
@@ -385,12 +385,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportDetails: {
       primitives: {
         mesh: 'native',
-        // Interim (plan/v1-closure-plan-2026-06-10.md): pt-webgpu ingests
-        // skinned-mesh as a rest-pose mesh — bones/skinIndices/skinWeights/
-        // morphTargets are never read by the packer; it consumes rest-pose
-        // positions only. Real pose solving lands in Wave 2 of
-        // plan/v1-closure-plan-2026-06-10.md.
-        'skinned-mesh': 'approximate',
+        // 2026-06-10 (Wave 2): pt-webgpu solves the pose at ingestion via core
+        // `solveSkin` (bones + bindMatrix + morph targets; see
+        // scene/uploadSceneBuffers.ts applySolveSkinToScene) and re-solves on
+        // `updatePrimitive({bones})` via the mutation router's bones fast path.
+        // Promoted approximate→native.
+        'skinned-mesh': 'native',
         'instanced-mesh': 'native',
         analytic: 'native',
       },

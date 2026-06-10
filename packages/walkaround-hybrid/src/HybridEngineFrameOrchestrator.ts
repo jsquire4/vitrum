@@ -11,6 +11,7 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
+import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { DDGI } from './ddgi/DDGI.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -747,6 +748,22 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     },
     nrc: {
       nrcEnabled: deps.filter.nrcEnabled,
+    },
+    // 2026-06-10 — FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
+    // Defaults: 'aces' (mode 0), exposure 1.0, 'srgb' (colorSpace 0) — preserving
+    // the historical hardcoded behavior bit-for-bit when quality fields are unset.
+    //
+    // Default-vs-contract audit: frame.ts defaults are 'aces' + 1.0 + 'srgb' — all
+    // matching the historical composite behavior, so there is NO tension between the
+    // contract default and the prior hardcoded path.
+    //
+    // outputColorSpace: 'display-p3' is not in the contract ('srgb' | 'linear' only),
+    // so no console.warn needed here. If a future extension adds 'display-p3', wire it
+    // to a warn-once + fallback to 'srgb' at this boundary.
+    composite: {
+      tonemapMode:      TONEMAP_MODE_INDEX[input.quality?.tonemap ?? 'aces'],
+      exposure:         input.quality?.exposure ?? 1.0,
+      outputColorSpace: input.quality?.outputColorSpace === 'linear' ? 1 : 0,
     },
   });
 

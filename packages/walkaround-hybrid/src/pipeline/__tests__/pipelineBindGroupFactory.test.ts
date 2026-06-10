@@ -83,7 +83,7 @@ describe('pipelineBindGroupFactory', () => {
 
   it('buildCompositePresentBindGroup delegates to buildCompositeBindGroup', () => {
     const tex = { createView: vi.fn(() => ({})) } as unknown as GPUTexture;
-    const bg = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, {} as GPUSampler);
+    const bg = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, {} as GPUSampler, {} as GPUBuffer);
     expect(bg).toEqual({ label: 'composite' });
     expect(tex.createView).toHaveBeenCalled();
   });
@@ -314,8 +314,9 @@ describe('pipelineBindGroupFactory', () => {
     const tex = { createView: vi.fn(() => ({})) } as unknown as GPUTexture;
     const sampler = {} as GPUSampler;
 
-    const first = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, resourceCache);
-    const second = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, resourceCache);
+    const compositeUbo = {} as GPUBuffer;
+    const first = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, compositeUbo, resourceCache);
+    const second = buildCompositePresentBindGroup({} as GPUDevice, {}, tex, sampler, compositeUbo, resourceCache);
 
     expect(second).toBe(first);
     expect(tex.createView).toHaveBeenCalledTimes(1);

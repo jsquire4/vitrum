@@ -102,6 +102,56 @@ function f32Copy(values: ArrayLike<number>): Float32Array {
   return new Float32Array(values);
 }
 
+/**
+ * Compute the inverse-transpose of the upper-3×3 of a column-major 4×4
+ * matrix. Returns the 9 elements in column-major order as a flat array
+ * [c0r0, c0r1, c0r2, c1r0, c1r1, c1r2, c2r0, c2r1, c2r2].
+ *
+ * Required for correct normal transformation under non-uniform scale:
+ *   n_world = normalize( (M^{-T}) * n_local )
+ * where M is the upper-3×3. Under uniform scale or pure rotation the
+ * inverse-transpose equals the rotation part — this path is always correct.
+ *
+ * Singular guard: if det ≈ 0 the matrix cannot be inverted (degenerate
+ * scale), so we fall back to the raw rotation submatrix (upper-3×3 of M)
+ * and let the normalization step handle any length change.
+ */
+function mat3InverseTransposeFromMat4(m: ArrayLike<number>): Float32Array {
+  // Column-major extraction of upper-3×3.
+  const m00 = m[0]!; const m10 = m[1]!; const m20 = m[2]!;
+  const m01 = m[4]!; const m11 = m[5]!; const m21 = m[6]!;
+  const m02 = m[8]!; const m12 = m[9]!; const m22 = m[10]!;
+
+  // Cofactor matrix (transposed inverse numerator).
+  const c00 = m11 * m22 - m21 * m12;
+  const c01 = m20 * m12 - m10 * m22;
+  const c02 = m10 * m21 - m20 * m11;
+  const c10 = m21 * m02 - m01 * m22;
+  const c11 = m00 * m22 - m20 * m02;
+  const c12 = m20 * m01 - m00 * m21;
+  const c20 = m01 * m12 - m11 * m02;
+  const c21 = m10 * m02 - m00 * m12;
+  const c22 = m00 * m11 - m10 * m01;
+
+  const det = m00 * c00 + m01 * c01 + m02 * c02;
+
+  if (Math.abs(det) < 1e-12) {
+    // Degenerate scale — fall back to the raw upper-3×3 (rotation part).
+    // normalize() in the caller will unit-length the result.
+    return new Float32Array([m00, m10, m20, m01, m11, m21, m02, m12, m22]);
+  }
+
+  const invDet = 1 / det;
+  // The inverse-transpose of M3 is the cofactor matrix / det (no extra
+  // transpose needed because cofactor rows are already the transposed-inverse
+  // columns).
+  return new Float32Array([
+    c00 * invDet, c01 * invDet, c02 * invDet,
+    c10 * invDet, c11 * invDet, c12 * invDet,
+    c20 * invDet, c21 * invDet, c22 * invDet,
+  ]);
+}
+
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
   0, 1, 0, 0,
@@ -233,15 +283,19 @@ function refitBvhNodesAndUploadSlice(
 }
 
 /**
- * H19 — apply a 3×3 rotation matrix (upper-left of a 4×4 column-major Mat4)
- * to the per-vertex world-space normals in `bvhNormals.cpuData`, writing only
- * the affected `[baseVertex, baseVertex + sliceVerts)` range, then upload the
- * updated slice to the GPU via `pipeline.refreshBvhNormalsSlice`.
+ * H19 — apply the inverse-transpose of the upper-3×3 of a 4×4 column-major
+ * matrix (the transform delta) to the per-vertex world-space normals in
+ * `bvhNormals.cpuData`, writing only the affected
+ * `[baseVertex, baseVertex + sliceVerts)` range, then upload the updated
+ * slice to the GPU via `pipeline.refreshBvhNormalsSlice`.
  *
- * The normal buffer is stride-4 (vec4f, .w=0 unused). The rotation is the
- * upper-3×3 of the provided 4×4 column-major matrix (same convention as
- * `matrixWorld`). Skipped when `pipeline` is null (init in flight) or when
- * `bvh.bvhNormals` is absent.
+ * The inverse-transpose is required for correct normal transformation under
+ * non-uniform scale (raw upper-3×3 would mis-orient normals perpendicular
+ * to scaled axes). Under uniform scale or pure rotation the
+ * inverse-transpose equals the rotation part — the path is always correct.
+ *
+ * The normal buffer is stride-4 (vec4f, .w=0 unchanged).
+ * Skipped when `pipeline` is null (init in flight).
  */
 function rotateNormalsAndUploadSlice(
   bvh: SceneBVHBuffers,
@@ -253,18 +307,25 @@ function rotateNormalsAndUploadSlice(
   if (!pipeline) return;
   const NORM_STRIDE = 4; // vec4f per vertex (.w unused)
   const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
-  // Column-major upper-3×3 of rotMat4.
-  const r00 = rotMat4[0]!; const r10 = rotMat4[1]!; const r20 = rotMat4[2]!;
-  const r01 = rotMat4[4]!; const r11 = rotMat4[5]!; const r21 = rotMat4[6]!;
-  const r02 = rotMat4[8]!; const r12 = rotMat4[9]!; const r22 = rotMat4[10]!;
+  // Inverse-transpose of the upper-3×3 for correct normal transform under
+  // non-uniform scale. Falls back to the raw submatrix when degenerate.
+  const it = mat3InverseTransposeFromMat4(rotMat4);
+  const r00 = it[0]!; const r10 = it[1]!; const r20 = it[2]!;
+  const r01 = it[3]!; const r11 = it[4]!; const r21 = it[5]!;
+  const r02 = it[6]!; const r12 = it[7]!; const r22 = it[8]!;
   for (let v = 0; v < sliceVerts; v++) {
     const off = (baseVertex + v) * NORM_STRIDE;
     const nx = normalsF32[off]!;
     const ny = normalsF32[off + 1]!;
     const nz = normalsF32[off + 2]!;
-    normalsF32[off]     = r00 * nx + r01 * ny + r02 * nz;
-    normalsF32[off + 1] = r10 * nx + r11 * ny + r12 * nz;
-    normalsF32[off + 2] = r20 * nx + r21 * ny + r22 * nz;
+    let wx = r00 * nx + r01 * ny + r02 * nz;
+    let wy = r10 * nx + r11 * ny + r12 * nz;
+    let wz = r20 * nx + r21 * ny + r22 * nz;
+    const len = Math.sqrt(wx * wx + wy * wy + wz * wz);
+    if (len > 1e-12) { wx /= len; wy /= len; wz /= len; }
+    normalsF32[off]     = wx;
+    normalsF32[off + 1] = wy;
+    normalsF32[off + 2] = wz;
     // .w unchanged (always 0)
   }
   const byteOffset = baseVertex * NORM_STRIDE * 4;
@@ -275,9 +336,12 @@ function rotateNormalsAndUploadSlice(
 
 /**
  * H19 — write caller-supplied local-space normals into the bvhNormals buffer
- * after applying matrixWorld (upper-3×3 only, then normalize), then upload
- * the slice. Handles the positions-patch path where the host supplies new
- * normals alongside new positions.
+ * after applying the inverse-transpose of matrixWorld's upper-3×3, then
+ * normalizing and uploading the slice. Handles the positions-patch path where
+ * the host supplies new normals alongside new positions.
+ *
+ * Using the inverse-transpose is required for correctness under non-uniform
+ * scale (plain upper-3×3 would tilt normals away from the geometric surface).
  *
  * `localNormals` is stride-3 (same convention as MeshPrimitive.normals).
  * The output is stride-4 (vec4f, .w=0).
@@ -293,10 +357,12 @@ function writeTransformedNormalsAndUploadSlice(
   if (!pipeline) return;
   const NORM_STRIDE = 4;
   const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
-  // Column-major upper-3×3 of matrixWorld.
-  const r00 = matrixWorld[0]!; const r10 = matrixWorld[1]!; const r20 = matrixWorld[2]!;
-  const r01 = matrixWorld[4]!; const r11 = matrixWorld[5]!; const r21 = matrixWorld[6]!;
-  const r02 = matrixWorld[8]!; const r12 = matrixWorld[9]!; const r22 = matrixWorld[10]!;
+  // Inverse-transpose of the upper-3×3 for correct normal transform under
+  // non-uniform scale. Falls back to the raw submatrix when degenerate.
+  const it = mat3InverseTransposeFromMat4(matrixWorld);
+  const r00 = it[0]!; const r10 = it[1]!; const r20 = it[2]!;
+  const r01 = it[3]!; const r11 = it[4]!; const r21 = it[5]!;
+  const r02 = it[6]!; const r12 = it[7]!; const r22 = it[8]!;
   for (let v = 0; v < sliceVerts; v++) {
     const lx = localNormals[v * 3]!;
     const ly = localNormals[v * 3 + 1]!;
@@ -1045,12 +1111,49 @@ export function materialPatch(
     count: bvh.bvhBeerColors.count,
   };
 
-  const indexByteOffset = range.triStart * 16;
+  // Decide whether to upload a slice or the full bvhIndex buffer.
+  //
+  // `packBVHIndexWFromCore` already re-packed all triangles sharing the
+  // edited material slot(s) into the full CPU `indexView`. The GPU upload
+  // must cover ALL triangles whose bvhIndex.w changed — not just this
+  // primitive's range. If the edited material slot is shared by triangles
+  // outside [triStart, triStart+triCount), uploading only the primitive's
+  // slice would leave the GPU with a stale bvhIndex.w for those triangles
+  // until the next full rebuild.
+  //
+  // Strategy:
+  //  - Fast path (exclusive slot): the edited slot(s) are used only by this
+  //    primitive → slice upload stays cheap.
+  //  - Slow path (shared slot): any edited slot is used by at least one
+  //    triangle outside the primitive's range → upload the whole bvhIndex.
+  //
+  // Detection: scan triMaterialIds once; if any triangle outside the
+  // primitive's range carries one of `matIds`, the slot is shared.
+  const triStart = range.triStart;
+  const triEnd = range.triStart + range.triCount;
+  const totalTris = triMaterialIds.length;
+  let slotIsShared = false;
+  for (let t = 0; t < totalTris && !slotIsShared; t++) {
+    if (t >= triStart && t < triEnd) continue; // inside patched primitive — skip
+    if (matIds.has(triMaterialIds[t]!)) slotIsShared = true;
+  }
+
+  const indexSlice = slotIsShared
+    ? // Shared slot: upload the entire bvhIndex so all affected triangles
+      // (inside + outside this primitive) get the updated bvhIndex.w.
+      { byteOffset: 0, data: bvh.bvhIndex.cpuData.slice(0) }
+    : // Exclusive slot: only this primitive's triangles were affected; the
+      // slice upload is correct and avoids transferring the whole buffer.
+      (() => {
+        const indexByteOffset = triStart * 16;
+        return {
+          byteOffset: indexByteOffset,
+          data: bvh.bvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
+        };
+      })();
+
   ctx.pipeline.refreshBvhMaterialSlice(
-    {
-      byteOffset: indexByteOffset,
-      data: bvh.bvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
-    },
+    indexSlice,
     // WS1 — beer is a texture: re-upload the full beer data (a contiguous tri
     // slice is not a rectangular texture region unless it spans full rows).
     { data: bvh.bvhBeerColors.cpuData, triCount: bvh.bvhBeerColors.count },

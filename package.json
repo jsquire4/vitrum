@@ -29,7 +29,8 @@
     "benchmark:rc-acceptance-mechanical": "npm run benchmark:rc-acceptance-mechanical --workspace @vitrum/benchmark-runner",
     "capture:diff": "node ./tools/reference-renders/diff-baselines.mjs",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present",
-    "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs"
+    "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs",
+    "shader-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/shader-gate/gate.mjs"
   },
   "engines": {
     "node": ">=20"

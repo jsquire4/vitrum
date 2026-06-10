@@ -28,6 +28,7 @@ import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
+import { solveSkinPrimitives } from './solveSkinPrimitives.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 
 export interface SceneTexturesBuild {
@@ -60,9 +61,18 @@ export function buildSceneTextures(
   //      (surf.emission). Without this the Cornell light renders black.
   const ptScene = foldMeshAreaEmittersIntoMaterials(supported);
 
+  // (1c) Skinning pre-pass: replace each skinned-mesh's rest-pose
+  //      positions/normals with CPU-solved posed geometry so the BVH +
+  //      attribute packers see the actual deformed mesh.  Fast-path: if no
+  //      skinned-mesh primitives exist, ptScene is returned unchanged.
+  //      When a host later calls updatePrimitive(id, { bones: newBones })
+  //      the full setScene rebuild re-runs this pass — no separate incremental
+  //      path required (pt-webgl2 updatePrimitive always rebuilds wholesale).
+  const skinnedScene = solveSkinPrimitives(ptScene);
+
   // (2) merged world-space tri stream + single-root BVH (stride 4 = the form the
   //     BVH texture adapter and attribute array both index).
-  const merged = mergeWorldSpaceFromCore(ptScene, { positionStride: 4 });
+  const merged = mergeWorldSpaceFromCore(skinnedScene, { positionStride: 4 });
 
   // (3) BVH data textures (+ per-tri materialIndex)
   const bvhData = packBvhTextureData(merged);

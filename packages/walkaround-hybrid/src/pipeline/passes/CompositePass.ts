@@ -8,15 +8,21 @@
  * {@link PassDispatchContext}. The abstraction is encoder-agnostic — this
  * pass and every compute pass implement the same interface so the
  * orchestrator iterates them uniformly.
+ *
+ * Per-frame tonemap/exposure/outputColorSpace dials are written into a
+ * 16-byte CompositeUniforms UBO (see `COMPOSITE_UBO` in uboLayouts.ts) and
+ * forwarded via `inputs.composite`. Defaults (mode=0/aces, exposure=1.0,
+ * colorSpace=0/srgb) preserve the historical behavior exactly.
  */
 
-import { buildCompositeBindGroup } from '../bindGroupBuilders.js';
+import { buildCompositeBindGroup, type UboRef } from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { COMPOSITE_UBO } from './uboLayouts.js';
 
 export class CompositePass implements Pass {
   readonly id = 'composite' as const;
@@ -24,9 +30,11 @@ export class CompositePass implements Pass {
   readonly passLabels: readonly PassLabel[] = ['composite'];
 
   private readonly _pipeline: GPURenderPipeline;
+  private readonly _uboRef: UboRef;
 
-  constructor(pipeline: GPURenderPipeline) {
+  constructor(pipeline: GPURenderPipeline, uboRef: UboRef) {
     this._pipeline = pipeline;
+    this._uboRef = uboRef;
   }
 
   /** Exposed so {@link WalkaroundGPUPipeline.presentLastFrame} can reuse
@@ -43,11 +51,27 @@ export class CompositePass implements Pass {
 
   dispatch(ctx: PassDispatchContext): void {
     const { device, encoder, bglCache, resources, inputs, renderTimestampWrites } = ctx;
+    const uboBuffer = this._uboRef.buf;
+    if (uboBuffer == null) return;
+
+    // Pack CompositeUniforms: tonemapMode (u32), exposure (f32),
+    // outputColorSpace (u32), _pad (u32). Defaults: aces(0), 1.0, srgb(0).
+    const c = inputs.composite;
+    const compositeUboBytes = new ArrayBuffer(COMPOSITE_UBO.sizeBytes);
+    COMPOSITE_UBO.pack(new DataView(compositeUboBytes), 0, {
+      tonemapMode:      c.tonemapMode,
+      exposure:         c.exposure,
+      outputColorSpace: c.outputColorSpace,
+      _pad:             0,
+    });
+    device.queue.writeBuffer(uboBuffer, 0, compositeUboBytes);
+
     const finalTex = resources.common.resolvedTexture;
     const bg = buildCompositeBindGroup(
       device, bglCache,
       finalTex.createView(),
       resources.common.compositeSampler,
+      uboBuffer,
     );
     const tsComp = renderTimestampWrites('composite');
     const pass = encoder.beginRenderPass({

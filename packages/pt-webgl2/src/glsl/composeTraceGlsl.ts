@@ -344,8 +344,36 @@ const RENDER_MAIN = /* glsl */ `
 						// Sprint 10c — dedicated light-subpath draw (one column per dispatch).
 						if ( uBdptLightSubpathPass != 0 ) {
 
+							// BDPT subpath RNG made row-independent (one coherent path per vertex
+							// column), 2026-06-10 — RENDER-CHANGING for bdpt:true only; off-path
+							// byte-identical.
+							//
+							// The texture is 3 rows × N columns. Three fragments (one per row)
+							// cooperate to write one vertex: row 0 = position|kind, row 1 =
+							// normal|pdfFwd, row 2 = throughput|pdfRev (see bdpt_light_subpath.glsl.js).
+							// The original rng_initialize(gl_FragCoord.xy, seed) seeded with the
+							// Y coordinate, so each of the three fragments at column C traced a
+							// *different* random subpath and stored ONE row from that path — the
+							// assembled "vertex" mixed position, normal/pdf, and throughput from
+							// three independent random subpaths, making BDPT connections garbage.
+							//
+							// Fix: re-initialize with a y-flattened coordinate so all three
+							// fragments at the same column trace the identical subpath. The row
+							// routing (bdptRow == 0/1/2 below) then writes consistent rows from
+							// the same path. The main-entry rng_initialize(gl_FragCoord.xy, seed)
+							// above is left untouched — the eye pass still seeds with the full
+							// (x,y) pixel coordinate as before.
+							rng_initialize( vec2( gl_FragCoord.x, 0.0 ), seed );
+
 							envRotation3x3 = mat3( environmentRotation );
 							invEnvRotation3x3 = inverse( envRotation3x3 );
+							// NOTE: lightsDenom is not read by the subpath kernel — writeLightSubpathVertex
+							// uses the lights texture directly (randomLightSample) and does not consult
+							// lightsDenom. The assignment below is retained for completeness and to keep
+							// the variable initialised in case a future subpath extension reads it;
+							// it intentionally omits the mesh-light slot (subpath uses analytic lights
+							// only). If/when mesh-area NEE is added to the subpath, align with the eye
+							// pass formula at the bottom of this function that includes uMeshLightCount.
 							lightsDenom =
 								( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
 									float( lights.count ) :

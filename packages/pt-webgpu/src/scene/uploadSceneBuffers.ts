@@ -1,11 +1,13 @@
 import {
   asMat4,
   partitionSceneBySupport,
+  solveSkin,
   type AnalyticShape,
   type MaterialSpec,
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
+  type SkinnedMeshPrimitive,
   type SupportSets,
 } from '@vitrum/core';
 import {
@@ -311,6 +313,43 @@ export function packFoldedMaterialEntry(
   return materialToPackedVec4s(primitive.material);
 }
 
+/**
+ * Item 1 — run solveSkin (CPU LBS) on every skinned-mesh primitive that carries
+ * bone data, replacing rest-pose positions/normals with the solved deformed pose.
+ * Primitives without bones (or with no skin data) are returned unchanged.
+ *
+ * morphTargets ARE handled by solveSkin (morph-blend is applied before LBS when
+ * morphTargets + morphWeights are present). There is no remaining morphTarget gap
+ * for the solver: solveSkin handles both position and normal morph deltas.
+ *
+ * Returns a new scene whose skinned-mesh primitives carry solved positions/normals
+ * so that packSceneFromCore (which reads primitive.positions directly) uses the
+ * correct deformed geometry.
+ */
+function applySolveSkinToScene(scene: Scene): Scene {
+  let anyChanged = false;
+  const nextPrimitives = scene.primitives.map((p) => {
+    if (p.kind !== 'skinned-mesh') return p;
+    const boneCount = p.bones.length / 16;
+    if (boneCount === 0) return p; // no bones — rest pose is correct
+    try {
+      const solved = solveSkin(p);
+      anyChanged = true;
+      // Return a structural override: only positions + normals change; all other
+      // fields (uvs, indices, skinIndices, skinWeights, bones, …) are preserved
+      // so downstream packs (emitters, BVH) see the full primitive data.
+      return { ...p, positions: solved.positions, normals: solved.normals } as SkinnedMeshPrimitive;
+    } catch (err) {
+      console.warn(
+        `[vitrum/pt-webgpu] solveSkin failed for primitive "${p.id}"; using rest pose. ${err}`,
+      );
+      return p;
+    }
+  });
+  if (!anyChanged) return scene;
+  return { ...scene, primitives: nextPrimitives };
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
@@ -320,7 +359,11 @@ export function buildPackedScene(
   // replacing the hand-rolled boolean-chain skip+warn that previously lived
   // here. `partitionSceneBySupport` is pure; `scene` below is the supported
   // subset and `warnings` carries one message per dropped node.
-  const { supported: scene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
+  const { supported: filteredScene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
+  // Item 1 — apply CPU LBS to skinned-mesh primitives so packSceneFromCore uses
+  // solved (deformed) positions instead of rest-pose. morphTargets are also
+  // handled by solveSkin (blend applied before LBS).
+  const scene = applySolveSkinToScene(filteredScene);
 
   // Camera-visible emitters: delegate to the shared packFoldedMaterialEntry helper
   // (H10). This ensures the fold logic is identical across the full pack and the
@@ -787,6 +830,8 @@ interface MutableSceneBufferFields {
   meshAreaLightCount: number;
   directionalLight: readonly [number, number, number];
   directionalIrradiance: readonly [number, number, number];
+  /** D3 — Item 2d: angular diameter must be kept in sync on incremental emitter patches. */
+  directionalAngularDiameter: number;
   // Environment fields (updateEnvironment fast path).
   environmentTint: readonly [number, number, number];
   environmentSunDirection: readonly [number, number, number];
@@ -888,6 +933,8 @@ export function applyEmitterCountMutation(
     readonly meshAreaLightCount: number;
     readonly directionalLight: readonly [number, number, number];
     readonly directionalIrradiance: readonly [number, number, number];
+    /** Item 2d — D3 soft-sun angular diameter in radians (0 = delta directional). */
+    readonly directionalAngularDiameter: number;
   },
 ): void {
   const mutable = asMutableSceneBuffers(sb);
@@ -897,6 +944,9 @@ export function applyEmitterCountMutation(
   mutable.meshAreaLightCount = next.meshAreaLightCount;
   mutable.directionalLight = next.directionalLight;
   mutable.directionalIrradiance = next.directionalIrradiance;
+  // Item 2d — angular diameter must be kept in sync so frameParamsPacker packs
+  // the correct value after an incremental directional-emitter patch.
+  mutable.directionalAngularDiameter = next.directionalAngularDiameter;
 }
 
 function storageBufferMinByteLength(data: ArrayBufferView): number {
@@ -937,6 +987,8 @@ export function uploadEmitterArrays(
   nextDirectional: {
     readonly directionalLight: readonly [number, number, number];
     readonly directionalIrradiance: readonly [number, number, number];
+    /** Item 2d — D3 soft-sun angular diameter; default 0 (delta directional). */
+    readonly directionalAngularDiameter?: number;
   },
 ): boolean {
   const handles = asMutableSceneBufferEmitterHandles(sb);
@@ -992,6 +1044,7 @@ export function uploadEmitterArrays(
     meshAreaLightCount: packed.meshAreaLightCount,
     directionalLight: nextDirectional.directionalLight,
     directionalIrradiance: nextDirectional.directionalIrradiance,
+    directionalAngularDiameter: nextDirectional.directionalAngularDiameter ?? 0,
   });
   return reallocated;
 }

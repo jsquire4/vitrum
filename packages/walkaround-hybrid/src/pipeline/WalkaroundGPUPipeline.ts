@@ -134,6 +134,7 @@ interface RegisterPassesDeps {
   accumUboRef: UboRef;
   resolveUboRef: UboRef;
   atrousIndirectUboRef: UboRef;
+  compositeUboRef: UboRef;
   indirectAccumPingPongRef: PingPongRef;
   regir: ReGIRCoordinator;
   bglCache: BGLCache;
@@ -209,7 +210,7 @@ function registerPasses(
   registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
   registry.register(new TemporalAccumPass(compiled.accumPipeline, deps.accumUboRef));
   registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef, deps.checkerboard));
-  const compositePass = new CompositePass(compiled.compositePipeline);
+  const compositePass = new CompositePass(compiled.compositePipeline, deps.compositeUboRef);
   registry.register(compositePass);
   // PPG update pass — only register when the pipeline compiled successfully.
   // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
@@ -591,6 +592,17 @@ export interface PipelineFrameNrc {
   nrcEnabled?: number;
 }
 
+/** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
+export interface PipelineFrameComposite {
+  /** Tonemap operator mode index — matches TONEMAP_MODE_INDEX from
+   *  @vitrum/shared-samplers: 0=aces(default) 1=agx 2=reinhard 3=linear 4=none. */
+  tonemapMode: number;
+  /** Linear-exposure multiplier applied before the tonemap operator. Default: 1.0. */
+  exposure: number;
+  /** Output color space: 0 = srgb (default, OETF applied), 1 = linear (OETF skipped). */
+  outputColorSpace: number;
+}
+
 /**
  * Per-frame inputs to {@link WalkaroundGPUPipeline.renderFrame}.
  *
@@ -618,6 +630,8 @@ export interface PipelineFrameInputs {
   bvh: PipelineFrameBvh;
   /** NRC cache gate (optional; absent ⇒ OFF, bit-identical). */
   nrc: PipelineFrameNrc;
+  /** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
+  composite: PipelineFrameComposite;
 }
 
 export class WalkaroundGPUPipeline implements BvhUpdateSink {
@@ -786,12 +800,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
   private _sampleCountUboRef:  UboRef = { buf: undefined };
   private _resolveUboRef:      UboRef = { buf: undefined };
+  /** Tonemap / exposure / outputColorSpace per-frame UBO for the composite pass
+   *  (2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace). */
+  private _compositeUboRef:    UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
       this._accumUboRef,
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
+      this._compositeUboRef,
     ];
   }
 
@@ -1241,6 +1259,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
     this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
     this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
+    // 2026-06-10 — per-frame composite UBO (tonemap/exposure/outputColorSpace).
+    this._compositeUboRef.buf    = d.createBuffer({ label: 'composite-ubo',     size: 16, usage: U });
 
     // ── Pass registry: instantiate + register all non-denoiser passes ────
     // Order of registration is irrelevant; the registry topologically sorts.
@@ -1256,6 +1276,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       accumUboRef: this._accumUboRef,
       resolveUboRef: this._resolveUboRef,
       atrousIndirectUboRef: this._atrousIndirectUboRef,
+      compositeUboRef: this._compositeUboRef,
       indirectAccumPingPongRef: this._indirectAccumPingPongRef,
       regir: this._regir,
       bglCache: this._bglCache,
@@ -1538,11 +1559,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   presentLastFrame(swapChainView: GPUTextureView): void {
     if (!this._initialized) return;
     const d = this._device;
+    const compositeUbo = this._compositeUboRef.buf;
+    if (compositeUbo == null) return;
     const bgComposite = buildCompositePresentBindGroup(
       d,
       this._bglCache,
       this._res.common.resolvedTexture,
       this._res.common.compositeSampler,
+      compositeUbo,
       this._resourceCache,
     );
     const compositePass = this._compositePass;

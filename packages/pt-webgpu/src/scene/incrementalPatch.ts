@@ -59,13 +59,59 @@ export function analyticIndexForPrimitive(
   return null;
 }
 
-/** Material-only patch: `material` present and no other facet keys touched. */
+/**
+ * The material fields that contain TextureRef handles. A patch that changes any
+ * of these fields must go through a full repack because the GPU texture arrays
+ * (`materialTexDescriptorsBuffer`, sRGB/linear texture_2d_arrays) are not
+ * incrementally writeable — only the packed float scalars are.
+ *
+ * Keep this list in sync with `MaterialMapFields` in `@vitrum/core`.
+ */
+const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
+  'baseColorMap',
+  'normalMap',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'displacementMap',
+  'lightMap',
+]);
+
+/**
+ * Material-only patch: `material` present and no other facet keys touched.
+ *
+ * Item 2a — texture-map fields (TextureRef: baseColorMap, normalMap, etc.) are
+ * NOT eligible for the material fast path because the fast path only rewrites
+ * the packed float scalars in `materialsBuffer`. Texture-map changes require a
+ * full repack so `materialTexDescriptorsBuffer` and the GPU texture_2d_arrays
+ * are rebuilt. Any patch whose `material` contains a TextureRef field falls
+ * through to `setScene`.
+ */
 export function canFastPathMaterialPatch(
   patch: Partial<ScenePrimitive>,
 ): patch is Partial<ScenePrimitive> & { material: ScenePrimitive['material'] } {
   if (patch.material == null) return false;
   for (const key of Object.keys(patch)) {
     if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
+  }
+  // Reject if any TextureRef field is present in the material patch.
+  const mat = patch.material as unknown as Record<string, unknown>;
+  for (const field of Object.keys(mat)) {
+    if (TEXTURE_MAP_FIELDS.has(field)) return false;
   }
   return true;
 }

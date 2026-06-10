@@ -128,7 +128,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     envSampler: sampler, envParamsBuffer: buf,
   }),
   ubo: (d, c) => buildUboBindGroup(d, c, buf, view, view),
-  composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler),
+  composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler, buf),
   sampleBudget: (d, c) => buildSampleBudgetBindGroup(d, c, view, view, buf, buf),
   resolve: (d, c) => buildResolveBindGroup(d, c, buf, view, view, view, view),
   motionVectors: (d, c) => buildMotionVectorsBindGroup(d, c, view, view, buf),

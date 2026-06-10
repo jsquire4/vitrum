@@ -1128,6 +1128,9 @@ class PTEngineWebGPU implements Engine {
     this.#postDenoiser?.invalidate();
     this.#samplesAccumulated = 0;
     this.#gpu.clearAccumBuffer();
+    // Item 2e — clear ReSTIR-PT reservoir history so stale temporal samples from
+    // the previous scene do not bleed into the new one. No-op if not allocated.
+    this.#gpu.clearReservoirBuffers();
   }
 
   /**

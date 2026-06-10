@@ -10,10 +10,13 @@
  *   Texel(col, 1):  normal.xyz   | pdfFwd  (forward PDF, SOLID-ANGLE measure)
  *   Texel(col, 2):  throughput.rgb | pdfRev (radiance weight; reverse SA PDF)
  *
- * Each draw call renders into a 3-attachment MRT target at column uBdptVertexCol
- * (0…BDPT_MAX_LIGHT_BOUNCES-1). The host ping-pongs: "write" target = current
- * frame's texture; "read" target (uBdptLightPathTex) = previous frame's texture.
- * For bounce k=0 the read texture is irrelevant (emitter vertex; no prior bounce).
+ * Each draw call renders into a single 3-row × N-column render target at column
+ * uBdptVertexCol (0…BDPT_MAX_LIGHT_BOUNCES-1). Three fragments (one per row) at
+ * the same column cooperate: all three trace the SAME subpath (RNG seeded with
+ * vec2(gl_FragCoord.x, 0.0) — row-independent) and each writes one row of the
+ * vertex. The host ping-pongs: "write" target = current frame's texture; "read"
+ * target (uBdptLightPathTex) = previous frame's texture. For bounce k=0 the read
+ * texture is irrelevant (emitter vertex; no prior bounce).
  *
  * pdfFwd / pdfRev are stored in SOLID-ANGLE measure with NO baked-in geometry
  * term: the full Veach §10.3 connection sweep (bdpt_connection.glsl.js) converts

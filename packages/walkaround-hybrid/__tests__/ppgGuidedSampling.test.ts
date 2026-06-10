@@ -347,6 +347,7 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
     nrc: {},
+    composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   };
 
   function captureUBO(ppg?: { enabled: boolean; mixAlpha: number }): ArrayBuffer {

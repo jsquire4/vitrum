@@ -13,8 +13,17 @@
  *
  * No vertex buffer required — vertex positions are computed from vertex_index
  * in the vertex shader.
+ *
+ * Tonemap operators via `vitrumTonemap` from `@vitrum/shared-samplers`:
+ *   mode 0 = aces (default — historical Narkowicz 2015 filmic curve)
+ *   mode 1 = agx (Wrensch minimal log2 sigmoid)
+ *   mode 2 = reinhard (x / (1+x) per channel)
+ *   mode 3 = linear (exposure + clamp only)
+ *   mode 4 = none (raw HDR, no operator)
+ * Wired 2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace live.
  */
 
+import { tonemapWgsl } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 // The vertex shader emits a [0,1]² screen UV (location 0) alongside the
@@ -49,34 +58,23 @@ fn vertMain(@builtin(vertex_index) idx: u32) -> CompositeVaryings {
 }
 `;
 
-export const COMPOSITE_FRAG_WGSL = /* wgsl */ `
+export function buildCompositFragWgsl(): string {
+  return /* wgsl */ `
 @group(0) @binding(0) var denoisedTex: texture_2d<f32>;
+@group(0) @binding(1) var _compositeSampler: sampler;
 
-// Linear → sRGB conversion (IEC 61966-2-1, the standard gamma curve).
-// Applies to the denoised linear HDR output before writing to the swap-chain.
-// Without this the display shows linear values interpreted by the monitor as
-// gamma-encoded, making mid-tones ~5× too dark (0.5 linear = 0.22 display).
-fn linearToSRGB(c: vec3f) -> vec3f {
-  // Piece-wise sRGB transfer function:
-  //   c ≤ 0.0031308 → 12.92 × c
-  //   c > 0.0031308 → 1.055 × c^(1/2.4) − 0.055
-  let cutoff = vec3f(0.0031308);
-  let lo = c * 12.92;
-  let hi = pow(max(c, cutoff), vec3f(1.0 / 2.4)) * 1.055 - 0.055;
-  return select(hi, lo, c <= cutoff);
+// CompositeUniforms — per-frame tonemap/exposure/outputColorSpace dials.
+// tonemapMode: 0=aces(default) 1=agx 2=reinhard 3=linear(clamped) 4=none.
+// outputColorSpace: 0=srgb(default, apply OETF) 1=linear(skip OETF).
+struct CompositeUniforms {
+  tonemapMode:      u32,
+  exposure:         f32,
+  outputColorSpace: u32,
+  _pad:             u32,
 }
+@group(0) @binding(2) var<uniform> compositeParams: CompositeUniforms;
 
-// ACES filmic tone mapping — Narkowicz 2015 RRT+ODT fit, applied per-channel.
-// Matches three.js's ACESFilmicToneMapping (the R3F default that PT and raster
-// inherit). Same curve as src/.../tone_mapping/aces.glsl.js in three.js.
-fn acesFilm(rgb: vec3f) -> vec3f {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((rgb * (a * rgb + b)) / (rgb * (c * rgb + d) + e), vec3f(0.0), vec3f(1.0));
-}
+${tonemapWgsl()}
 
 @fragment
 fn fragMain(in: CompositeVaryings) -> @location(0) vec4f {
@@ -103,17 +101,28 @@ fn fragMain(in: CompositeVaryings) -> @location(0) vec4f {
   let px = vec2u(min(in.uv * dims, dims - vec2f(1.0)));
   let hdr = textureLoad(denoisedTex, px, 0).rgb;
 
-  // Per-channel ACES at exposure 1.0 — matches three.js's R3F default
-  // toneMapping=ACESFilmic + toneMappingExposure=1.0 that PT and raster use.
-  let tonemapped = acesFilm(max(vec3f(0.0), hdr));
+  // Apply exposure + tonemap operator selected per-frame by
+  // FrameQualitySettings.tonemap (default: aces, mode=0) and .exposure
+  // (default: 1.0). vitrumTonemap is the GPU twin of applyTonemap() in
+  // @vitrum/shared-samplers (kept in lockstep by shared-samplers tests).
+  let tonemapped = vitrumTonemap(max(vec3f(0.0), hdr), compositeParams.tonemapMode, compositeParams.exposure);
 
-  // Apply sRGB gamma encoding before writing to the 8-bit swap-chain.
-  // The swap-chain format is bgra8unorm (NOT bgra8unorm-srgb), so the GPU
-  // does NOT auto-convert on store — we must apply the curve manually.
-  let srgb = linearToSRGB(tonemapped);
-  return vec4f(srgb, 1.0);
+  // outputColorSpace: 0=srgb (default) → apply the IEC 61966-2-1 OETF before
+  // writing to the 8-bit swap-chain (bgra8unorm is NOT auto-converted by the
+  // GPU). outputColorSpace: 1=linear → skip the OETF, write raw tonemapped
+  // linear values (useful for HDR/linear pipeline hosts or screenshot capture).
+  // The sRGB OETF (vt_linearToSrgb) is defined in the vitrumTonemap block above.
+  if (compositeParams.outputColorSpace == 0u) {
+    return vec4f(vt_linearToSrgb(tonemapped), 1.0);
+  }
+  return vec4f(tonemapped, 1.0);
 }
 `;
+}
+
+/** Lazily-built fragment source (built once; the tonemap WGSL block is
+ *  a fixed string so this is stable across the lifetime of the module). */
+export const COMPOSITE_FRAG_WGSL: string = buildCompositFragWgsl();
 
 /** W1-R6 — declarative include-graph entries. Vert and frag are
  *  independent shader modules; neither prepends COMMON_WGSL. */

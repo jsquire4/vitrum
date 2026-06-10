@@ -121,6 +121,7 @@ export function buildCompositePresentBindGroup(
   cache: BGLCache,
   resolvedTexture: GPUTexture,
   compositeSampler: GPUSampler,
+  compositeUbo: GPUBuffer,
   resourceCache?: PipelineResourceCache,
 ): GPUBindGroup {
   const build = (): GPUBindGroup => buildCompositeBindGroup(
@@ -128,10 +129,11 @@ export function buildCompositePresentBindGroup(
     cache,
     resourceCache?.textureView(resolvedTexture) ?? resolvedTexture.createView(),
     compositeSampler,
+    compositeUbo,
   );
   return resourceCache?.bindGroup(
     'present:composite',
-    [resolvedTexture, compositeSampler],
+    [resolvedTexture, compositeSampler, compositeUbo],
     build,
   ) ?? build();
 }
