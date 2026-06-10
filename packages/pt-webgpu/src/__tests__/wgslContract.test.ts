@@ -97,8 +97,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // emitters (spot / single-sided area) get tighter SELECTION pdf only (the pdf
     // is divided out — unbiased) → V28 oriented-emitter A/B.
     // Re-pinned 2026-06-10: D3 reserved-field consumption (ao/light/bump/env/anisotropy maps) + backtick escape fix — RENDER-CHANGING, A/B pending V28-B
-    expect(digest).toBe('85eee9fe6b134490a3cff123bfca7e181bf2697bce425e739596e914deab1676');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(279018);
+    // Re-pinned 2026-06-10: caustic point/spot stride fix (H1-class) + shared light-stride constants
+    // (POINT_LIGHT_VEC4_STRIDE=3u / SPOT_LIGHT_VEC4_STRIDE=4u added to material.wgsl.ts; three MNEE
+    // point-light loops + photon-map point/spot seeds now use them; spot-axis negation removed from
+    // photon seeding). RENDER-CHANGING for multi-light caustic scenes, A/B pending V28-B.
+    expect(digest).toBe('ba43b8b28b1be223df6b0c859a9a7cc70954dea53d71d31b33dd76d787d40856');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(279842);
   });
 });
 

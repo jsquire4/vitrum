@@ -44,8 +44,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // and gained the lt_coneFactor culling term. Default-path RUNTIME byte-
     // identical for unoriented scenes (full-sphere cone ⇒ factor ≡ 1); oriented
     // emitters get tighter SELECTION pdf only (divided out — unbiased).
-    expect(digest).toBe('337a0a0c78a403bbcd3d47e7ae6e7f1618e689c94bcfd128e4c03e417e6de321');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(107888);
+    // Re-pinned 2026-06-10: caustic point/spot stride fix (H1-class) + shared light-stride constants
+    // (POINT_LIGHT_VEC4_STRIDE / SPOT_LIGHT_VEC4_STRIDE added to material.wgsl.ts, composed in both
+    // full and lite tiers). The lite-tier render is unchanged — caustic is not in the lite path.
+    expect(digest).toBe('d4c47952d7ae0a0831ef88480a42e59a39c7e1047831d5c55281cb3424bf5752');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(108215);
   });
 });
 

@@ -184,10 +184,12 @@ export interface MaterialSpec {
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;
   /** Ambient occlusion map (glTF occlusionTexture).
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer (road-to-100 texture tier). */
   readonly aoMap?: TextureRef;
   /** Ambient occlusion strength multiplier. Default 1.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer. */
   readonly aoMapIntensity?: number;
   readonly clearcoatMap?: TextureRef;
   readonly clearcoatRoughnessMap?: TextureRef;
@@ -201,10 +203,12 @@ export interface MaterialSpec {
   readonly specularColorMap?: TextureRef;     // glTF KHR_materials_specular (RGB = specularColor)
   readonly specularIntensityMap?: TextureRef; // glTF KHR_materials_specular (A = specularFactor)
   /** Height-field normal perturbation map.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer (road-to-100 texture tier). */
   readonly bumpMap?: TextureRef;
   /** Bump perturbation scale. Default 1.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer. */
   readonly bumpScale?: number;
   /** Vertex displacement height map.
    *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
@@ -216,10 +220,12 @@ export interface MaterialSpec {
    *  @reserved Accepted; not yet consumed by any backend. */
   readonly displacementBias?: number;
   /** Baked diffuse irradiance / light map (additive to emissive).
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer (road-to-100 texture tier). */
   readonly lightMap?: TextureRef;
   /** Light map intensity multiplier. Default 1.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   *  remaining non-consumer. */
   readonly lightMapIntensity?: number;
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
@@ -252,8 +258,8 @@ export interface MaterialSpec {
    * Environment/IBL specular intensity multiplier. Scales the contribution of
    * image-based-lighting reflections. Default 1.
    *
-   * @reserved Accepted by the contract; not yet consumed by any backend.
-   * road-to-100 item (IBL specular tier).
+   * Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
+   * remaining non-consumer (road-to-100 item, IBL specular tier).
    */
   readonly envMapIntensity?: number;
 
@@ -363,8 +369,9 @@ export interface MaterialSpec {
    * Anisotropic specular highlight strength ∈ [0, 1].
    * 0 = isotropic (default); 1 = fully anisotropic.
    *
-   * @reserved Accepted by the contract; not yet consumed by any backend.
-   * Planned for the stained-glass rendering pipeline (road-to-100 D3).
+   * pt-webgpu packs this into the material descriptor and defines
+   * `materialAnisotropy()` in the WGSL; the kernel does not yet call that
+   * helper (road-to-100 D3). pt-webgl2 and walkaround-hybrid are non-consumers.
    *
    * Reference: glTF KHR_materials_anisotropy.
    */
@@ -374,8 +381,10 @@ export interface MaterialSpec {
    * Rotation of the anisotropic highlight in radians ∈ [0, π].
    * Only meaningful when `anisotropy` > 0.
    *
-   * @reserved Accepted by the contract; not yet consumed by any backend.
-   * Planned alongside `anisotropy` (road-to-100 D3).
+   * pt-webgpu packs this into the material descriptor and defines
+   * `materialAnisotropyRotation()` in the WGSL; the kernel does not yet call
+   * that helper (road-to-100 D3). pt-webgl2 and walkaround-hybrid are
+   * non-consumers.
    *
    * Reference: glTF KHR_materials_anisotropy.
    */

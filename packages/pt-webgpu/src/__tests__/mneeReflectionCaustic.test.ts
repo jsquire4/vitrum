@@ -33,11 +33,15 @@ describe('MNEE reflection caustic — kernel wiring (Phase I.1)', () => {
     );
   });
 
-  it('iterates point lights with the documented stride-2 packing (pos, radiance)', () => {
-    // pointLights[base].xyz = position, pointLights[base+1].rgb = radiance/intensity,
-    // stride 2 — the SAME layout the kernel NEE + photon pass read (material.wgsl.ts
-    // @group(1) @binding(6), emitterPacking.ts POINT_LIGHT_FLOAT_STRIDE = 8 floats).
-    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lbase = li * 2u;');
+  it('iterates point lights with the correct stride via POINT_LIGHT_VEC4_STRIDE (H51-D / H1-class fix)', () => {
+    // H51-D bumped the point stride to 3 vec4f (12 floats): [pos, radiance, dist+decay].
+    // caustic.wgsl.ts previously used the stale stride-2 literal (`li * 2u`), which
+    // read position/radiance from the wrong vec4f slots for lights 1+. The fix
+    // uses POINT_LIGHT_VEC4_STRIDE (=3u, declared in material.wgsl.ts, composed
+    // before caustic) — a shared constant that is parity-tested in emitterStride.test.ts.
+    // caustic point/spot stride fix (H1-class), 2026-06-10.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).not.toContain('let lbase = li * 2u;');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lbase = li * POINT_LIGHT_VEC4_STRIDE;');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lightPos = pointLights[lbase].xyz;');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lightI = pointLights[lbase + 1u].rgb;');
   });

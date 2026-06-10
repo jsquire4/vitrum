@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import type { PTEngineWebGL2Options } from '../index.js';
@@ -202,6 +202,52 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     const scene = e.getScene?.();
     expect(scene?.environment.kind).toBe('hdri');
     expect(e._debugSceneTex?.envMap).toBe(true);
+  });
+
+  // Contract-honesty: EngineOptions.denoiser must not be silently ignored.
+  // pt-webgl2 has no denoiser pipeline; non-null non-'none' values must warn once.
+  it("denoiser: 'none' and absent denoiser are both silent", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await createPTEngine_WebGL2({ ...opts(), denoiser: 'none' });
+      await createPTEngine_WebGL2(opts()); // absent
+      const denoiserWarns = warn.mock.calls.filter((args) =>
+        String(args[0]).includes('denoiser'),
+      );
+      expect(denoiserWarns).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("denoiser: 'oidn-final' emits exactly one console.warn naming the value", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await createPTEngine_WebGL2({ ...opts(), denoiser: 'oidn-final' });
+      const denoiserWarns = warn.mock.calls.filter((args) =>
+        String(args[0]).includes('denoiser'),
+      );
+      expect(denoiserWarns).toHaveLength(1);
+      expect(String(denoiserWarns[0]![0])).toContain('oidn-final');
+      expect(String(denoiserWarns[0]![0])).toContain('pt-webgl2');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("denoiser: 'svgf-real' emits exactly one console.warn naming the value", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await createPTEngine_WebGL2({ ...opts(), denoiser: 'svgf-real' });
+      const denoiserWarns = warn.mock.calls.filter((args) =>
+        String(args[0]).includes('denoiser'),
+      );
+      expect(denoiserWarns).toHaveLength(1);
+      expect(String(denoiserWarns[0]![0])).toContain('svgf-real');
+      expect(String(denoiserWarns[0]![0])).toContain('pt-webgl2');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('addPrimitive and removePrimitive rebuild, validate ids, and allow an empty scene', async () => {

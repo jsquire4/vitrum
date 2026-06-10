@@ -30,7 +30,8 @@ export {
   HYBRID_WEBGPU_REQUIRED_FEATURES,
 } from './pipeline/WalkaroundGPUPipeline.js';
 
-// Optional THREE/TSL bridge exports live at `@vitrum/walkaround-hybrid/three`.
+// THREE/TSL bridge subpath (`@vitrum/walkaround-hybrid/three`) was removed;
+// no runtime three dependency remains in this package.
 
 // Neural-denoiser host wiring surface (kept public for example hosts).
 export {

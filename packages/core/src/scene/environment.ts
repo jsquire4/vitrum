@@ -42,11 +42,13 @@ export interface HdriEnvironment {
    *   the lookup direction by `−rotationY` before computing UV, and
    *   `sampleEnvironmentImportance` rotates the CDF-sampled direction by
    *   `+rotationY` to yield the world-space sample direction.
-   * - `walkaround-hybrid` — DOCUMENTED NO-OP: the backend reduces the HDRI to a
-   *   non-directional scalar tint (solid-angle-weighted average colour).
-   *   Directional structure — and therefore any rotation of it — is not
-   *   representable in the walkaround GI model.  `rotationY` is silently ignored
-   *   and a warning is emitted via the environment-resolve path.
+   * - `walkaround-hybrid` — PARTIAL: the scene-load path builds equirect
+   *   importance-sampling inverse-CDFs (sinθ-weighted, rotationY-aware) and
+   *   rotates directional IBL samples by `+rotationY`. However full directional
+   *   IBL is not yet complete (no env NEE call site, DDGI probe misses still use
+   *   a procedural gradient); the environment contributes only as an approximate
+   *   tint until the Wave-4 env pillar lands. `rotationY` is wired into the CDF
+   *   build and is NOT silently ignored.
    */
   readonly rotationY?: number;            // radians, default 0
 }

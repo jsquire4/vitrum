@@ -652,8 +652,11 @@ export interface HybridEngineOptions extends EngineOptions {
    * (16 384); raise this only for dense, complex scenes where 1 024 cells are
    * insufficient for guided sampling coverage.
    *
-   * Note: this option has no effect until H25/A2 (spatial sTree splitting) lands;
-   * the current PPG implementation uses a single global cell regardless of this cap.
+   * This cap is **active**: `PPGCoordinator` calls `splitOverflowLeaves` with
+   * this value as the hard ceiling, so the CPU sTree and the GPU flux/dTree
+   * buffers always stay in lockstep. Raising this value allocates larger GPU
+   * buffers; lowering it suppresses splits earlier, saving VRAM at the cost of
+   * coarser spatial guidance.
    */
   readonly ppgMaxSpatialCells?: number;
 

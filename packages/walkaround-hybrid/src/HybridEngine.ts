@@ -107,6 +107,7 @@ import { FrameBudgetController } from './FrameBudgetController.js';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
+import { collectUnconsumedMaterialFields } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import {
@@ -538,6 +539,10 @@ export class HybridEngine implements Engine {
   /** Fires environment-resolution warnings at most once per engine instance
    *  (see {@link _skyScalarsFromEnvironment}). */
   private _proceduralSkyWarned = false;
+  /** Tracks which unconsumed-material-field sets have already been warned about
+   *  (keyed by sorted join of the field names). Prevents duplicate console.warn
+   *  calls across incremental `setScene` calls with the same ignored fields. */
+  private _warnedMaterialFields = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -958,13 +963,12 @@ export class HybridEngine implements Engine {
       // primitive). Kept in sync with the walkaround-hybrid row in
       // @vitrum/core's BACKEND_PROMISE_LEDGER.
       supportsAddRemovePrimitive: true,
-      // FrameRendered surfaces the always-allocated G-buffers (normalDepth +
-      // demodulated albedo, both rgba16float full-res, + motionVectors rg32float)
-      // via the pipeline's getAuxBufferTextures(), so a host can drive an external
-      // denoiser (OIDN) / post chain off them. Variance is intentionally NOT
-      // exposed: it's the RG32F Welford buffer (≠ the contract's RGBA32F) and only
-      // exists on the variance-denoiser paths.
-      supportsAuxBuffers:        true,
+      // supportsAuxBuffers is false: the contract flag means variance AND
+      // motionVectors are exposed; walkaround never exposes variance from its
+      // FrameOutput wiring (the Welford buffer is internal, not in FrameOutput).
+      // Kept in sync with the walkaround-hybrid ledger row in @vitrum/core's
+      // BACKEND_PROMISE_LEDGER (plan/v1-closure-plan-2026-06-10.md).
+      supportsAuxBuffers:        false,
       // The post-denoise resolvedTexture is exposed via getProgressiveSeedTexture()
       // as the seed source for progressive walkaround→PT handoff (P8).
       supportsProgressiveSeedSource: true,
@@ -1088,6 +1092,26 @@ export class HybridEngine implements Engine {
     for (const warning of warnings) {
       console.warn(`[vitrum/walkaround-hybrid] ${warning}`);
     }
+
+    // Warn once per distinct set of unconsumed material fields so hosts know
+    // which Material properties this backend silently ignores (e.g. texture
+    // maps, Disney scalars). The warn-once key is the sorted field list so
+    // incremental `setScene` calls with the same ignored set don't spam.
+    const unconsumed = collectUnconsumedMaterialFields(
+      scene.primitives as unknown as ReadonlyArray<{ readonly kind: string; readonly material?: Record<string, unknown> }>,
+    );
+    if (unconsumed.length > 0) {
+      const key = unconsumed.join(',');
+      if (!this._warnedMaterialFields.has(key)) {
+        this._warnedMaterialFields.add(key);
+        console.warn(
+          `[vitrum/walkaround-hybrid] setScene: the following material fields are ` +
+          `supplied but not consumed by this backend: ${unconsumed.join(', ')}. ` +
+          `See consumedMaterialFields.ts for the full allowlist.`,
+        );
+      }
+    }
+
     this._lastScene = scene;
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
 

@@ -110,6 +110,23 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 13, 3)]).toBe(1); // FrontSide (no transmission)
   });
 
+  // Contract-honesty: emissiveIntensity default must be 1.0, not 0.0.
+  // pt-webgpu (materialTextures.ts) and walkaround-hybrid both default to 1.0;
+  // a host that sets emissive:[r,g,b] without emissiveIntensity expects a visible
+  // emitter. Pinned here so a regression renders BLACK, not just changes a number.
+  it('emissiveIntensity defaults to 1.0 when absent (matches pt-webgpu + walkaround)', () => {
+    const emissive: MaterialSpec = {
+      baseColor: [0, 0, 0],
+      roughness: 1.0,
+      metallic: 0.0,
+      emissive: [0.8, 0.6, 0.4],
+      // emissiveIntensity intentionally absent
+    };
+    const d = packMaterialsTexture([emissive]).data;
+    // s2.a = emissiveIntensity (sample 2, channel 3).
+    expect(d[texel(0, 2, 3)]).toBe(1.0);
+  });
+
   it('scatteringCoefficient sets the TRANSLUCENT flag bit (s14.a) and s15 SSS drives', () => {
     const sss: MaterialSpec = {
       baseColor: [1, 1, 1],

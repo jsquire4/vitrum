@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { disposeSharedWebGPUDevice } from '../src/sharedWebGpuDevice.js';
 import { runBmfrWebGPU } from '../src/bmfrWebGPU.js';
 import { runSVGFRealWebGPU } from '../src/svgfRealWebGPU.js';
+import { runHdrLuminanceBilateralWebGPU } from '../src/hdrLuminanceBilateralWebGPU.js';
 
 const hasWebGpu =
   typeof navigator !== 'undefined' &&
@@ -32,6 +33,26 @@ describe.skipIf(!hasWebGpu)('exported WebGPU denoiser execution smokes', () => {
       width,
       height,
       atrousIterations: 1,
+      reuseSharedWebGpuDevice: true,
+    });
+
+    expect(out.length).toBe(width * height * 3);
+    expectFinitePrefix(out, 12);
+  });
+
+  it('executes runHdrLuminanceBilateralWebGPU and returns finite RGB', async () => {
+    const width = 8;
+    const height = 8;
+    const rgb = Float32Array.from({ length: width * height * 3 }, (_, i) => {
+      const channel = i % 3;
+      return channel === 0 ? 0.4 : channel === 1 ? 0.3 : 0.2;
+    });
+
+    const out = await runHdrLuminanceBilateralWebGPU({
+      rgb,
+      width,
+      height,
+      sigmaLuminance: 0.06,
       reuseSharedWebGpuDevice: true,
     });
 
@@ -72,6 +93,16 @@ describe.skipIf(!hasWebGpu)('exported WebGPU denoiser execution smokes', () => {
 });
 
 describe('exported WebGPU denoiser availability', () => {
+  it.skipIf(hasWebGpu)('runHdrLuminanceBilateralWebGPU throws when WebGPU is missing', async () => {
+    await expect(
+      runHdrLuminanceBilateralWebGPU({
+        rgb: new Float32Array(12),
+        width: 2,
+        height: 2,
+      }),
+    ).rejects.toThrow(/WebGPU not available/);
+  });
+
   it.skipIf(hasWebGpu)('runSVGFRealWebGPU throws when WebGPU is missing', async () => {
     await expect(
       runSVGFRealWebGPU({

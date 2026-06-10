@@ -216,7 +216,7 @@ fn pointLightReflectionCaustic(
   var contribution = vec3f(0.0);
   for (var li = 0u; li < 16u; li = li + 1u) {
     if (li >= pointCount) { break; }
-    let lbase = li * 2u;
+    let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
@@ -415,7 +415,7 @@ fn pointLightRefractionCaustic(
   var contribution = vec3f(0.0);
   for (var li = 0u; li < 16u; li = li + 1u) {
     if (li >= pointCount) { break; }
-    let lbase = li * 2u;
+    let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
@@ -638,7 +638,7 @@ fn pointLightGlassSlabCaustic(
   var contribution = vec3f(0.0);
   for (var li = 0u; li < 16u; li = li + 1u) {
     if (li >= pointCount) { break; }
-    let lbase = li * 2u;
+    let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
@@ -944,7 +944,7 @@ fn photonMapContribution(
     if (params.pointLightCount > 0u) {
       if (pick >= current && pick < current + params.pointLightCount) {
         let pointIdx = pick - current;
-        let pointBase = pointIdx * 2u;
+        let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE;
         photonOrigin = pointLights[pointBase].xyz;
         photonDir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
         photonFlux = pointLights[pointBase + 1u].rgb;
@@ -954,7 +954,7 @@ fn photonMapContribution(
     }
     if (params.spotLightCount > 0u && pick >= current && pick < current + params.spotLightCount) {
       let spotIdx = pick - current;
-      let spotBase = spotIdx * 3u;
+      let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE;
       photonOrigin = spotLights[spotBase].xyz;
       let coneXi = vec2f(rand_f32(rng), rand_f32(rng));
       let cosMin = spotLights[spotBase + 1u].w;
@@ -962,7 +962,12 @@ fn photonMapContribution(
       let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
       let phi = 2.0 * PI * coneXi.y;
       let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-      let spotAxis = safe_normalize(-spotLights[spotBase + 1u].xyz);
+      // spotLights[spotBase+1].xyz is the forward emission axis (direction the spot
+      // points -- identical to kernel.wgsl spotDir = safe_normalize(saxis.xyz)).
+      // Photons must travel in the FORWARD direction, so NO negation here.
+      // (The prior negation emitted photons backward -- away from the lit region
+      // -- making spot-light photon-map contributions always zero.)
+      let spotAxis = safe_normalize(spotLights[spotBase + 1u].xyz);
       var t: vec3f;
       var b: vec3f;
       buildOnb(spotAxis, &t, &b);

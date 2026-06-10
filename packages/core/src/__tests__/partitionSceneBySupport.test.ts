@@ -165,6 +165,107 @@ describe('partitionSceneBySupport', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('fallbackMesh: converts analytic to MeshPrimitive when analytic kind is unsupported', () => {
+    // Scene has one analytic with a fallbackMesh; the backend does not accept 'analytic'.
+    const fallback = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'sphere-with-fallback',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          material: { baseColor: [1, 0, 0], roughness: 0.3, metallic: 0 },
+          fallbackMesh: fallback,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const { supported, warnings } = partitionSceneBySupport(scene, {
+      ...ALL_SUPPORTED,
+      supportedPrimitiveKinds: new Set<Scene['primitives'][number]['kind']>(['mesh']),
+    });
+
+    // Converted to mesh, NOT dropped.
+    expect(supported.primitives).toHaveLength(1);
+    expect(supported.primitives[0]!.kind).toBe('mesh');
+    expect(supported.primitives[0]!.id).toBe('sphere-with-fallback');
+    // Warning still emitted.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/sphere-with-fallback/);
+    expect(warnings[0]).toMatch(/fallbackMesh/);
+  });
+
+  it('fallbackMesh: converts analytic to MeshPrimitive when analytic SHAPE is unsupported', () => {
+    // The kind 'analytic' is accepted, but the specific shape 'capsule' is not.
+    const fallback = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    };
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'capsule-with-fallback',
+          shape: 'capsule',
+          params: new Float32Array([0, 0, 0, 0, 1, 0, 0.5]),
+          material: { baseColor: [0, 1, 0], roughness: 0.4, metallic: 0 },
+          fallbackMesh: fallback,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const { supported, warnings } = partitionSceneBySupport(scene, {
+      ...ALL_SUPPORTED,
+      // sphere is fine, capsule is not
+      supportedAnalyticShapes: new Set<AnalyticShape>(['sphere', 'box']),
+    });
+
+    expect(supported.primitives).toHaveLength(1);
+    expect(supported.primitives[0]!.kind).toBe('mesh');
+    expect(supported.primitives[0]!.id).toBe('capsule-with-fallback');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/capsule-with-fallback/);
+    expect(warnings[0]).toMatch(/fallbackMesh/);
+  });
+
+  it('fallbackMesh absent: unsupported analytic is still dropped', () => {
+    // Analytic shape 'capsule' is unsupported, and there is NO fallbackMesh.
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'capsule-no-fallback',
+          shape: 'capsule',
+          params: new Float32Array([0, 0, 0, 0, 1, 0, 0.5]),
+          material: { baseColor: [0, 1, 0], roughness: 0.4, metallic: 0 },
+          // fallbackMesh intentionally absent
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const { supported, warnings } = partitionSceneBySupport(scene, {
+      ...ALL_SUPPORTED,
+      supportedAnalyticShapes: new Set<AnalyticShape>(['sphere', 'box']),
+    });
+
+    // No fallbackMesh → dropped as before.
+    expect(supported.primitives).toHaveLength(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/capsule-no-fallback/);
+    expect(warnings[0]).toMatch(/not supported/);
+  });
+
   it('does not mutate the input scene (pure helper)', () => {
     const scene = makeScene();
     const primCountBefore = scene.primitives.length;

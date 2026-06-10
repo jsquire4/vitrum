@@ -156,7 +156,10 @@ export function packMaterialsTexture(
     const roughness = m.roughness ?? 0.0;
     const ior = m.ior ?? 1.5; // THREE's default f0=0.04 ⇒ ior 1.5
     const transmission = m.transmission ?? 0.0;
-    const emissiveIntensity = m.emissiveIntensity ?? 0.0;
+    // Contract default: pt-webgpu (materialTextures.ts) and walkaround-hybrid both
+    // default emissiveIntensity to 1.0 when the field is absent; 0.0 would silently
+    // black-out any emissive material whose host did not explicitly set the field.
+    const emissiveIntensity = m.emissiveIntensity ?? 1.0;
     const emissive: Vec3 = m.emissive ?? [0.0, 0.0, 0.0];
     const normalScale = m.normalScale ?? 1.0; // core carries a scalar; fork stores (x,y)
     const clearcoat = m.clearcoat ?? 0.0;

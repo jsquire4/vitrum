@@ -24,6 +24,7 @@ import type { ScenePrimitive, AnalyticShape } from './primitives.js';
 import type { SceneEmitter } from './emitters.js';
 import type { SceneEnvironment } from './environment.js';
 import type { Scene } from './index.js';
+import { analyticPrimitiveToMesh } from './analyticToMesh.js';
 
 /** The capability facets `partitionSceneBySupport` consults. Structurally a
  *  subset of {@link EngineCapabilities} so a backend can pass `this.capabilities`
@@ -55,6 +56,11 @@ export interface PartitionedScene {
  *  - A primitive is kept when its `kind` is in `supportedPrimitiveKinds`
  *    (or the set is omitted) AND, for `analytic` primitives, its `shape` is in
  *    `supportedAnalyticShapes` (or that set is omitted).
+ *  - When an `analytic` primitive is unsupported (kind or shape) AND it carries
+ *    a `fallbackMesh`, the primitive is converted to a `MeshPrimitive` via
+ *    `analyticPrimitiveToMesh` and placed in the supported partition instead of
+ *    being dropped (provided `mesh` is itself supported or no kind restriction
+ *    is declared). A warning is still emitted documenting the conversion.
  *  - An emitter is kept when its `kind` is in `supportedEmitterKinds` (or the
  *    set is omitted).
  *  - The environment is always carried through; an unsupported `kind` only
@@ -63,27 +69,49 @@ export interface PartitionedScene {
 export function partitionSceneBySupport(scene: Scene, caps: SupportSets): PartitionedScene {
   const warnings: string[] = [];
 
-  const primitives = scene.primitives.filter((primitive) => {
+  // Whether a MeshPrimitive could be placed in the supported partition.
+  const meshKindAccepted =
+    caps.supportedPrimitiveKinds == null || caps.supportedPrimitiveKinds.has('mesh');
+
+  const primitives = scene.primitives.flatMap((primitive): ScenePrimitive[] => {
+    // ── Kind check ──────────────────────────────────────────────────────────
     if (
       caps.supportedPrimitiveKinds != null &&
       !caps.supportedPrimitiveKinds.has(primitive.kind)
     ) {
+      // Analytic with fallbackMesh: convert to mesh if mesh is accepted.
+      if (primitive.kind === 'analytic' && primitive.fallbackMesh != null && meshKindAccepted) {
+        warnings.push(
+          `Scene primitive "${primitive.id}" (analytic kind) is not supported by this backend; ` +
+          `converting via fallbackMesh to a MeshPrimitive.`,
+        );
+        return [analyticPrimitiveToMesh(primitive)];
+      }
       warnings.push(
         `Scene primitive "${primitive.id}" (${primitive.kind}) is not supported by this backend; skipping.`,
       );
-      return false;
+      return [];
     }
+    // ── Shape check (analytic only) ──────────────────────────────────────────
     if (
       primitive.kind === 'analytic' &&
       caps.supportedAnalyticShapes != null &&
       !caps.supportedAnalyticShapes.has(primitive.shape)
     ) {
+      // Shape unsupported but fallbackMesh present and mesh kind accepted.
+      if (primitive.fallbackMesh != null && meshKindAccepted) {
+        warnings.push(
+          `Scene primitive "${primitive.id}" (analytic shape "${primitive.shape}") is not supported by this backend; ` +
+          `converting via fallbackMesh to a MeshPrimitive.`,
+        );
+        return [analyticPrimitiveToMesh(primitive)];
+      }
       warnings.push(
         `Scene primitive "${primitive.id}" (analytic shape "${primitive.shape}") is not supported by this backend; skipping.`,
       );
-      return false;
+      return [];
     }
-    return true;
+    return [primitive];
   });
 
   const emitters = scene.emitters.filter((emitter) => {

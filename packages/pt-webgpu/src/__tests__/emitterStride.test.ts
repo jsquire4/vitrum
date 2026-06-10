@@ -18,6 +18,11 @@
  * extract it by looking for the kernel loop pattern:
  *   - point: `let base = pi * Nu`  → N vec4f per light → stride = N * 4
  *   - spot:  `let sb = si * Nu`   → N vec4f per light → stride = N * 4
+ *
+ * Also pins POINT_LIGHT_VEC4_STRIDE / SPOT_LIGHT_VEC4_STRIDE constants
+ * (shared WGSL constants in material.wgsl.ts, used by caustic.wgsl.ts at the
+ * five H1-class sites) against the TS packer strides so the caustic cannot
+ * drift from the kernel. Mirror of pt-webgl2 materialStrideParity.test.ts.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -105,5 +110,58 @@ describe('H51-D emitter stride consistency: TS pack ↔ TS walk ↔ WGSL', () =>
     expect(SPOT_COS_INNER_FLOAT_OFFSET).toBeLessThan(SPOT_LIGHT_FLOAT_STRIDE);
     expect(SPOT_DISTANCE_FLOAT_OFFSET).toBeLessThan(SPOT_LIGHT_FLOAT_STRIDE);
     expect(SPOT_DECAY_FLOAT_OFFSET).toBeLessThan(SPOT_LIGHT_FLOAT_STRIDE);
+  });
+});
+
+// ─── WGSL shared-constant parity: caustic point/spot stride fix (H1-class) ───
+//
+// caustic.wgsl.ts uses POINT_LIGHT_VEC4_STRIDE / SPOT_LIGHT_VEC4_STRIDE at five
+// sites (3 MNEE point loops + photon-map point seed + photon-map spot seed).
+// These constants are declared in material.wgsl.ts (composed before caustic) and
+// must stay in lockstep with the TS packer.  If either drifts, the caustic reads
+// garbage light positions/radiances → incorrect/black caustics (the H1/H41 class).
+// caustic point/spot stride fix (H1-class) + shared light-stride constants,
+// 2026-06-10 — RENDER-CHANGING for multi-light caustic scenes, A/B pending V28-B
+describe('WGSL light-stride constants ↔ TS packer parity (caustic H1-class fix)', () => {
+  it('POINT_LIGHT_VEC4_STRIDE in composed WGSL equals POINT_LIGHT_FLOAT_STRIDE / 4', () => {
+    const m = PT_WEBGPU_TRACE_WGSL.match(/const POINT_LIGHT_VEC4_STRIDE\s*=\s*(\d+)u/);
+    expect(m).not.toBeNull();
+    const wgslVec4Stride = Number(m![1]);
+    // POINT_LIGHT_FLOAT_STRIDE is in floats (12); dividing by 4 gives vec4f count (3).
+    expect(wgslVec4Stride).toBe(POINT_LIGHT_FLOAT_STRIDE / 4);
+  });
+
+  it('SPOT_LIGHT_VEC4_STRIDE in composed WGSL equals SPOT_LIGHT_FLOAT_STRIDE / 4', () => {
+    const m = PT_WEBGPU_TRACE_WGSL.match(/const SPOT_LIGHT_VEC4_STRIDE\s*=\s*(\d+)u/);
+    expect(m).not.toBeNull();
+    const wgslVec4Stride = Number(m![1]);
+    // SPOT_LIGHT_FLOAT_STRIDE is in floats (16); dividing by 4 gives vec4f count (4).
+    expect(wgslVec4Stride).toBe(SPOT_LIGHT_FLOAT_STRIDE / 4);
+  });
+
+  it('caustic MNEE point loops use POINT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
+    // Three MNEE loops (reflection/refraction/glass-slab) must all reference the
+    // shared constant — no residual bare `li * 2u` or similar stale literal.
+    expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let lbase\s*=\s*li\s*\*\s*2u/);
+    const strideUses = (PT_WEBGPU_TRACE_WGSL.match(/let lbase\s*=\s*li\s*\*\s*POINT_LIGHT_VEC4_STRIDE/g) ?? []).length;
+    expect(strideUses).toBe(3);
+  });
+
+  it('caustic photon-map point seed uses POINT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let pointBase\s*=\s*pointIdx\s*\*\s*2u/);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE');
+  });
+
+  it('caustic photon-map spot seed uses SPOT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let spotBase\s*=\s*spotIdx\s*\*\s*3u/);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE');
+  });
+
+  it('caustic photon spot-axis has no negation (forward emission axis, not backward)', () => {
+    // The packed spot direction is the FORWARD emission axis. Negating it before
+    // building the ONB emits photons backward (away from the lit region) → zero
+    // spot-light photon contributions. The fix: use the packed direction directly.
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let spotAxis = safe_normalize(-spotLights[spotBase + 1u].xyz)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let spotAxis = safe_normalize(spotLights[spotBase + 1u].xyz)');
   });
 });

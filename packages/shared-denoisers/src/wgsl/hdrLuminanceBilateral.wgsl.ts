@@ -33,10 +33,11 @@ struct BilateralParams {
 
 @compute @workgroup_size(8, 8, 1)
 fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(texIn);
-  if (gid.x >= u32(dims.x) || gid.y >= u32(dims.y)) {
+  let dimsU = textureDimensions(texIn);   // vec2<u32> — used for the u32 early-out only
+  if (gid.x >= dimsU.x || gid.y >= dimsU.y) {
     return;
   }
+  let dims = vec2<i32>(dimsU);            // i32 copy — used in signed neighbour arithmetic
   let p0 = vec2<i32>(i32(gid.x), i32(gid.y));
   let c0 = textureLoad(texIn, p0, 0).rgb;
   let L0 = luminance(c0);

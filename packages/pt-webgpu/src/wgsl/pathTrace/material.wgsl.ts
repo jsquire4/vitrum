@@ -534,6 +534,11 @@ const THIN_FILM_LAYER_LIMIT = 8u;
 const THIN_FILM_SCALAR_BASE = 28u;
 const SPECTRAL_SCALAR_BASE = 52u;
 const SPECTRAL_SAMPLE_COUNT = 32u;
+// MUST stay in lockstep with TS POINT_LIGHT_FLOAT_STRIDE / SPOT_LIGHT_FLOAT_STRIDE
+// in scene/emitterPacking.ts (H51-D: 3 vec4 / 4 vec4).  Caustic + photon-map loops
+// use these so the stride lives in one place rather than being repeated at five sites.
+const POINT_LIGHT_VEC4_STRIDE = 3u;
+const SPOT_LIGHT_VEC4_STRIDE = 4u;
 
 // Shared BSDF / light-sample triple. Bundles the {direction, pdf, value}
 // outputs every sampler in this kernel produces, so callers can hand a single

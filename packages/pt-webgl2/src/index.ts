@@ -438,6 +438,17 @@ export const createPTEngine_WebGL2: EngineFactory<
       `createPTEngine_WebGL2: maxSamplesPerPixel must be >= 1 (got ${opts.maxSamplesPerPixel})`,
     );
   }
+  // H-denoiser: pt-webgl2 has no denoiser pipeline (no OIDN/SVGF passes wired).
+  // Any non-null, non-'none' denoiser request degrades to no-denoiser with a clear
+  // warn so the host is not silently surprised. Mirrors the pt-webgpu warn pattern
+  // (packages/pt-webgpu/src/index.ts — `opts.denoiser != null && !== 'none'`).
+  if (opts.denoiser != null && opts.denoiser !== 'none') {
+    console.warn(
+      `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 has no denoiser pipeline. ` +
+        'There are no OIDN, SVGF, or any other post-process denoiser passes wired in this backend. ' +
+        'Degrading to no-denoise (denoiserState will report "disabled").',
+    );
+  }
   const traceTier = resolveWebGl2TraceTier(gl, opts.traceTier);
   const slot = makeStateSlot();
   const engine = new PTEngineWebGL2(opts, slot, traceTier);

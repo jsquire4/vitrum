@@ -206,11 +206,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
-    // FrameRendered surfaces normalDepth + demodulated albedo (rgba16float) +
-    // motionVectors (rg32float) from the always-allocated G-buffer; hosts can
-    // drive an external denoiser / post chain off them. (Variance is the RG32F
-    // Welford buffer, not the contract's RGBA32F, so it's not exposed.)
-    supportsAuxBuffers: true,
+    // Interim (plan/v1-closure-plan-2026-06-10.md): walkaround-hybrid surfaces
+    // normalDepth and motionVectors, but NOT variance — the contract's
+    // supportsAuxBuffers flag means variance AND motionVectors, and variance is
+    // never exposed from walkaround's FrameOutput wiring. Flipped to false until
+    // the variance buffer is wired (Wave 2 or later).
+    supportsAuxBuffers: false,
     accumulates: false,
     // The render-scene path ingests mesh / skinned-mesh / instanced-mesh;
     // analytic primitives are accepted in the authored scene and converted to
@@ -315,7 +316,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportDetails: {
       primitives: {
         mesh: 'native',
-        'skinned-mesh': 'native',
+        // Interim (plan/v1-closure-plan-2026-06-10.md): pt-webgl2 ingests
+        // skinned-mesh as a rest-pose mesh — bones/skinIndices/skinWeights/
+        // morphTargets are never read; the packer uses rest-pose positions only.
+        // Real pose solving lands in Wave 2 of plan/v1-closure-plan-2026-06-10.md.
+        'skinned-mesh': 'approximate',
         'instanced-mesh': 'native',
         // Analytic primitives are warned-and-skipped in the current slice.
         // The authored scene is cached for param/shape patches, but ingestion
@@ -380,7 +385,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportDetails: {
       primitives: {
         mesh: 'native',
-        'skinned-mesh': 'native',
+        // Interim (plan/v1-closure-plan-2026-06-10.md): pt-webgpu ingests
+        // skinned-mesh as a rest-pose mesh — bones/skinIndices/skinWeights/
+        // morphTargets are never read by the packer; it consumes rest-pose
+        // positions only. Real pose solving lands in Wave 2 of
+        // plan/v1-closure-plan-2026-06-10.md.
+        'skinned-mesh': 'approximate',
         'instanced-mesh': 'native',
         analytic: 'native',
       },
@@ -388,7 +398,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       environments: {
         none: 'native',
         hdri: 'native',
-        'procedural-sky': 'native',
+        // Interim (plan/v1-closure-plan-2026-06-10.md): the procedural-sky env
+        // uses a heuristic RGB tint derived from mieCoefficient only; turbidity,
+        // rayleigh, and mieDirectionalG are silently ignored. A full Preetham
+        // model is planned for Wave 2. Demoted from 'native' to 'approximate'.
+        'procedural-sky': 'approximate',
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
       mutations: {

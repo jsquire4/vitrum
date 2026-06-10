@@ -139,10 +139,14 @@ describe('backend promise ledger', () => {
     });
     expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
 
+    // procedural-sky is 'approximate': heuristic tint, not a full Preetham
+    // model (turbidity/rayleigh/mieDirectionalG are ignored). Interim per
+    // plan/v1-closure-plan-2026-06-10.md; promote to 'native' when the
+    // Preetham implementation lands in Wave 2.
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.environments).toEqual({
       none: 'native',
       hdri: 'native',
-      'procedural-sky': 'native',
+      'procedural-sky': 'approximate',
     });
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportedEnvironmentKinds).toEqual(['none', 'hdri', 'procedural-sky']);
   });

@@ -68,10 +68,13 @@ export interface BmfrWebGPUOptions {
   readonly height: number;
 
   /**
-   * World-space position per pixel (row-major XYZ, length W*H*3). REQUIRED for
-   * a meaningful fit — BMFR's feature matrix is dominated by the position
-   * columns. When omitted, the kernel sees a flat z=0 plane and the regression
-   * degrades to a normal-only fit (still valid, but loses the spatial term).
+   * World-space position per pixel (row-major XYZ, length W*H*3). Required for
+   * any denoising to occur — BMFR's feature matrix is dominated by the position
+   * columns and the upload helper sets validity `.w = 0` for every pixel when
+   * this is absent. The kernel treats `.w <= 0` as a sky/miss sentinel and
+   * passes the pixel through unfiltered, so omitting worldPosRgb results in a
+   * full-image passthrough (no denoising). A normal-only fit path is not
+   * implemented.
    */
   readonly worldPosRgb?: Float32Array;
   /**
