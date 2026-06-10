@@ -44,9 +44,16 @@ import type { HybridEngineOptions } from './HybridEngineOptions.js';
  * directly.
  */
 export interface Tunables {
-  /** Audit M12 — emitter geometry-term distance² floor. Default 0.01. */
+  /** Audit M12 — emitter geometry-term distance² floor. Default 0.01.
+   *  B15 scale-aware: SCALES ×s² with the scene diagonal ratio
+   *  s = D_scene/D_cornell (it is a length², so it must grow with scene scale to
+   *  remain the same fraction of the characteristic distance). Host override
+   *  via `tuning.emitterDist2Floor` is absolute (never scaled). */
   readonly emitterDist2Floor: number;
-  /** Audit B4 — per-channel HDR clamp on the direct radiance channel. Default 4.0. */
+  /** Audit B4 — per-channel HDR clamp on the direct radiance channel. Default 4.0.
+   *  B15 scale-aware: SCALES ×1/s² (radiance magnitude from a fixed-intensity
+   *  emitter ∝ 1/d², d ∝ D_scene). Host override via `tuning.directFireflyClamp`
+   *  is absolute. */
   readonly directFireflyClamp: number;
   /** Audit B1 — stained-glass caustic boost. Default 1.0 (no boost). */
   readonly causticBoost: number;
@@ -74,9 +81,15 @@ export interface Tunables {
   readonly triIntersectEpsilon: number;
   /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale. Default 0.7. */
   readonly glassMixScale: number;
-  /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap. Default 16.0. */
+  /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap. Default 16.0.
+   *  B15: NOT scaled by scene scale — this is a UNITLESS variance-bounding RIS
+   *  weight cap, not a radiometric magnitude, so scene scale does not change the
+   *  statistics it bounds. */
   readonly restirGiWCap: number;
-  /** 2026-05-18 sweep — DDGI irradiance clamp at the ReSTIR-GI reconnection vertex. Default 5.0. */
+  /** 2026-05-18 sweep — DDGI irradiance clamp at the ReSTIR-GI reconnection vertex. Default 5.0.
+   *  B15 scale-aware: SCALES ×1/s² (peak irradiance from a fixed-intensity
+   *  emitter ∝ 1/d², d ∝ D_scene). Host override via `tuning.restirGiIrrClamp`
+   *  is absolute (never scaled). */
   readonly restirGiIrrClamp: number;
   /** 2026-05-18 sweep — ReSTIR-GI temporal previous-frame M clamp. Default 50. */
   readonly restirGiMClamp: number;
@@ -126,6 +139,14 @@ interface TunableDefinition<K extends keyof Tunables = keyof Tunables> {
  * from, (b) the PipelineFrameInputs key the per-frame splat lands on, and
  * (c) the Cornell-baseline default. Adding a row + the matching fields on
  * the two interfaces is the only edit needed to ship a new tunable.
+ *
+ * B15 (2026-06-10): three of these defaults are SCENE-SCALE-AWARE. The values
+ * here remain the Cornell baselines; `HybridEngineScaleAwareClamps` derives the
+ * per-scene default from the scene's world diagonal at `setScene` (×1/s² for
+ * the radiance/irradiance clamps `restirGiIrrClamp`/`directFireflyClamp`, ×s²
+ * for the `emitterDist2Floor` length²; `restirGiWCap` is unitless and NOT
+ * scaled). Host overrides are always absolute. See each knob's JSDoc above and
+ * `HybridEngineScaleAwareClamps.ts` for the full derivation.
  */
 export const TUNABLE_DEFINITIONS: readonly TunableDefinition[] = Object.freeze([
   { key: 'emitterDist2Floor',          audit: 'M12', default: 0.01 },

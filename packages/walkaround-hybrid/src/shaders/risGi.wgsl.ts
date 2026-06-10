@@ -255,10 +255,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
       Lo = irrAtXs * xsMat.rgb * INV_PI;
     } else {
-      // Sky miss — sample the engine's sky as a direct contribution.
+      // Sky miss — the GI ray escaped the scene. B3: sample the directional IBL
+      // map along wi (rotationY-aware) as the reconnection radiance; envRadiance
+      // falls back to the scalar skyTint × skyIrradiance with no HDRI bound
+      // (no-HDRI byte-identity: the cosine RIS shortcut below is unchanged).
       xs = pos + wi * RECONNECT_MAX_DIST;
       ns = -wi;
-      Lo = ubo.skyTint * ubo.skyIrradiance;
+      Lo = envRadiance(wi);
     }
 
     // p̂ at the visible point for this candidate (the RIS target function —
@@ -369,5 +372,5 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const RIS_GI_MODULE: WgslModule = {
   name: 'risGi',
   source: RIS_GI_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf', 'environmentSample'],
 };

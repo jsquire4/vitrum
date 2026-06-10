@@ -190,6 +190,17 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // A texture (not a storage buffer) so it does NOT count against the
       // maxStorageBuffersPerShaderStage=16 shade-pass floor.
       { binding: 14, kind: 'tex:uint', note: 'bvh_material (per-tri roughness+metalness, r32uint texture)' },
+      // B3 (road-to-100) — directional IBL. The equirect radiance map + the PBRT
+      // 2D-distribution importance CDFs are TEXTURES (not storage buffers) so the
+      // scene group stays at the 16-storage shade-pass floor (same rationale as
+      // bvh_beer/bvh_material). A 1×1 placeholder + envParams.hasEnv=0 is bound for
+      // non-HDRI scenes (the WGSL falls back to the scalar sky → byte-identical).
+      // Only ris/risGi/shade reference these; the other passes declare a subset.
+      { binding: 15, kind: 'tex', note: 'env_map (directional IBL radiance .rgb + per-texel solid-angle pdf .a, rgba16float)' },
+      { binding: 16, kind: 'tex', note: 'env_marginal (1×H inverse-CDF, r32float; random→row v)' },
+      { binding: 17, kind: 'tex', note: 'env_conditional (W×H inverse-CDF, r32float; random→col u)' },
+      { binding: 18, kind: 'sampler:nf', note: 'env_sampler (declared for completeness; lookups use textureLoad)' },
+      { binding: 19, kind: 'uniform', note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 416B)' },
     ],
   },
   {

@@ -127,6 +127,12 @@ export class ProbeUpdatePass {
   // hosts override via HybridEngineOptions.glassMixScale.
   private _glassMixScale = 0.7;
 
+  // H46-A — DDGI indirect-feedback gate (maxBounces semantics for this regime).
+  // true (default) = fold the previous-frame irradiance atlas into the bounce
+  // radiance (infinite-bounce diffuse EMA; maxBounces >= 2). false = direct-only
+  // probes (maxBounces == 1). Set from HybridEngine._cfg.maxBounces.
+  private _indirectFeedback = true;
+
   // Phase-0 productization — DDGI round-robin probe-update divisor. The ray
   // pass + the blend pass MUST agree on `probesPerFrame = ceil(total/N)`, so
   // both pack functions read this single field. Default 4 reproduces the
@@ -204,6 +210,19 @@ export class ProbeUpdatePass {
    */
   setGlassMixScale(value: number): void {
     this._glassMixScale = value;
+  }
+
+  /**
+   * H46-A — set the DDGI indirect-feedback gate from the engine's `maxBounces`.
+   *
+   * `maxBounces == 1` ⇒ `false` (direct-only probes: each probe carries one
+   * bounce of direct light, no infinite-bounce EMA). `maxBounces >= 2` ⇒ `true`
+   * (the default multi-bounce diffuse equilibrium). This is the only control
+   * surface `maxBounces` has on the walkaround stack: it is NOT a path-tracer
+   * bounce cap — the realtime DDGI/ReSTIR passes have a fixed pass-graph budget.
+   */
+  setIndirectFeedback(enabled: boolean): void {
+    this._indirectFeedback = enabled;
   }
 
   /**
@@ -666,6 +685,7 @@ export class ProbeUpdatePass {
       skyIrradiance: this._skyIrradiance,
       glassMixScale: this._glassMixScale,
       updateDivisor: this._probeUpdateDivisor,
+      indirectFeedback: this._indirectFeedback,
     });
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }

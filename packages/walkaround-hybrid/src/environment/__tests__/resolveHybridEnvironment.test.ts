@@ -53,6 +53,7 @@ describe('resolveHybridEnvironment', () => {
     const resolved = resolveHybridEnvironment({
       kind: 'hdri',
       intensity: 0.5,
+      rotationY: 0.7,
       hdri: {
         width: 2,
         height: 1,
@@ -64,8 +65,27 @@ describe('resolveHybridEnvironment', () => {
     });
 
     expect(resolved.mode).toBe('hdri-raw-average');
+    // Scalar-tint fallback is UNCHANGED (the B3 directional payload is additive).
     expectVecClose(resolved.skyTint, [0.5, 1, 0.25]);
     expect(resolved.skyIrradiance).toBeCloseTo(1);
+    // B3 — a non-black raw map now also yields a directional IBL payload.
+    expect(resolved.directional).toBeDefined();
+    expect(resolved.directional!.width).toBe(2);
+    expect(resolved.directional!.height).toBe(1);
+    expect(resolved.directional!.map).toHaveLength(2 * 1 * 4);
+    expect(resolved.directional!.totalWeight).toBeGreaterThan(0);
+    expect(resolved.rotationY).toBeCloseTo(0.7);
+    expect(resolved.directionalIntensity).toBeCloseTo(0.5);
+    expect(resolved.warnings.join('\n')).toContain('directional IBL map');
+  });
+
+  it('keeps the scalar-only fallback (no directional) for an all-black raw map', () => {
+    const resolved = resolveHybridEnvironment({
+      kind: 'hdri',
+      hdri: { width: 2, height: 2, data: new Float32Array(2 * 2 * 3) },
+    });
+    expect(resolved.mode).toBe('hdri-raw-average');
+    expect(resolved.directional).toBeUndefined();
     expect(resolved.warnings.join('\n')).toContain('solid-angle-weighted average');
   });
 

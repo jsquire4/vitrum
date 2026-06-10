@@ -21,6 +21,14 @@ import {
 } from './bvhEmissiveTexture.js';
 import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
 import { PipelineResourceCache } from './PipelineResourceCache.js';
+import {
+  createPlaceholderEnvironment,
+  uploadEnvironment,
+  clearEnvironment,
+  disposeEnvironment,
+  type EnvironmentTextures,
+} from './environmentTexture.js';
+import type { DirectionalEnvData } from '../environment/equirectDirectional.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -52,6 +60,13 @@ export interface SceneBindGroupResources {
    *  (binding 13). 64-byte-stride (4 × vec4f). A 16-byte placeholder is
    *  bound when the scene has no point/spot emitters (count = 0 in UBO). */
   analyticLightsBuffer: GPUBuffer;
+  /** B3 — directional IBL resources (bindings 15-19). Placeholders + hasEnv=0
+   *  for non-HDRI scenes (scalar-tint fallback). */
+  envMapTextureView: GPUTextureView;
+  envMarginalTextureView: GPUTextureView;
+  envConditionalTextureView: GPUTextureView;
+  envSampler: GPUSampler;
+  envParamsBuffer: GPUBuffer;
 }
 
 /** `GPUBufferUsage.STORAGE` — literal avoids top-level `GPUBufferUsage` (Node vitest). */
@@ -86,6 +101,9 @@ export class BvhBufferHost {
   private _lightTreeBuffer: GPUBuffer | null = null;
   /** H41 — packed point/spot analytic lights buffer (binding 13). */
   private _analyticLightsBuffer: GPUBuffer | null = null;
+  /** B3 — directional IBL resources (bindings 15-19). Placeholder until a raw
+   *  HDRI is supplied via updateEnvironment. */
+  private _env: EnvironmentTextures | null = null;
 
   /**
    * Extra bytes appended to the light-tree storage buffer to hold the ReGIR
@@ -141,7 +159,36 @@ export class BvhBufferHost {
       ? packAnalyticPointSpotEmitters(scene)
       : { data: new Float32Array(16), count: 0 };
     this._analyticLightsBuffer = uploadBuffer(device, analyticPacked.data.buffer as ArrayBuffer, STORAGE);
+    // B3 — directional IBL placeholder (hasEnv=0). updateEnvironment swaps in the
+    // real map+CDFs when a raw HDRI is resolved (the WGSL falls back to the scalar
+    // sky while this is the placeholder → no-HDRI byte-identity).
+    if (this._env == null) {
+      this._env = createPlaceholderEnvironment(device);
+    }
     this._uploadTlasBuffers(device, bvhBuffers);
+  }
+
+  /**
+   * B3 — swap the directional IBL resources. `data == null` resets to the no-HDRI
+   * placeholder (hasEnv=0). Safe to call before `uploadInitial` (lazily creates
+   * the placeholder first). After a swap the caller MUST invalidate the cached
+   * scene bind group (the texture views changed) — WalkaroundGPUPipeline does
+   * this via its scene-bind-group rebuild on setScene/updateEnvironment.
+   */
+  updateEnvironment(
+    device: GPUDevice,
+    data: DirectionalEnvData | null,
+    rotationY: number,
+    intensity: number,
+  ): void {
+    if (this._env == null) {
+      this._env = createPlaceholderEnvironment(device);
+    }
+    if (data == null) {
+      this._env = clearEnvironment(device, this._env);
+    } else {
+      this._env = uploadEnvironment(device, this._env, data, rotationY, intensity);
+    }
   }
 
   /**
@@ -193,6 +240,11 @@ export class BvhBufferHost {
       tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer!,
       tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer!,
       analyticLightsBuffer: this._analyticLightsBuffer!,
+      envMapTextureView: this._resourceCache.textureView(this._env!.map),
+      envMarginalTextureView: this._resourceCache.textureView(this._env!.marginal),
+      envConditionalTextureView: this._resourceCache.textureView(this._env!.conditional),
+      envSampler: this._env!.sampler,
+      envParamsBuffer: this._env!.paramsBuffer,
     };
   }
 
@@ -259,7 +311,7 @@ export class BvhBufferHost {
     // emitterIndex → emitter array mapping (and powers) changed with them.
     // Re-pad for the ReGIR grid region (zeroed; the grid-build pass refills it
     // next frame). The tree node count may have changed, so the grid region's
-    // float offset (lightTreeNodeCount × 12) is recomputed by the pipeline.
+    // float offset (lightTreeNodeCount × LIGHT_TREE_FLOATS_PER_NODE = ×16) is recomputed by the pipeline.
     this._lightTreeBuffer = uploadBufferPadded(
       device, bvhBuffers.lightTree.cpuData, this._regirGridBytes, STORAGE);
   }
@@ -381,6 +433,7 @@ export class BvhBufferHost {
     this._emitterCdfBuffer?.destroy();
     this._lightTreeBuffer?.destroy();
     this._analyticLightsBuffer?.destroy();
+    if (this._env != null) { disposeEnvironment(this._env); this._env = null; }
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
     this._bvhBeerTexture = null;

@@ -159,7 +159,17 @@ struct FrameParams {
   // 2026-05-18 sweep — glass-transmission perceptual mix scale.  Written
   // by ProbeUpdatePass._uploadFrameParams from HybridEngineOptions.glassMixScale.
   glassMixScale:  f32,
-  _pad2: u32, _pad3: u32, _pad4: u32,
+  // H46-A — DDGI indirect-feedback gate (maxBounces semantics for this regime).
+  // 1u = the previous-frame irradiance-atlas read is folded into the bounce
+  // surface's outgoing radiance (the infinite-bounce diffuse EMA — the default
+  // maxBounces >= 2 behaviour). 0u = DIRECT-ONLY probes: the indirect term is
+  // dropped so each probe carries one bounce of direct light only (maxBounces
+  // == 1). Written by ProbeUpdatePass._uploadFrameParams from
+  // HybridEngine._cfg.maxBounces. NOTE: this is NOT a path-tracer bounce cap —
+  // it gates the diffuse multi-bounce feedback loop of the DDGI atlas. (Was the
+  // inert _pad2 slot; byte size unchanged.)
+  indirectFeedback: u32,
+  _pad3: u32, _pad4: u32,
 }
 
 // -----------------------------------------------------------------
@@ -654,7 +664,12 @@ fn probeUpdateRays(
         // atlas border confound) vs 244–365% for white-bounce on coloured
         // walls. Metals are still treated as diffuse reflectors here — DDGI
         // probes carry a diffuse-only bounce model by construction.
-        var radiance = (direct + indirect) * mat.baseColor * (1.0 / PI);
+        // H46-A — maxBounces gate: when indirectFeedback is 0 (maxBounces == 1)
+        // the probe carries direct-only light (one bounce: light -> bounce
+        // surface -> probe), dropping the previous-frame atlas read that the
+        // EMA otherwise converges into the infinite-bounce diffuse equilibrium.
+        let indirectGated = select(vec3f(0.0), indirect, frameParams.indirectFeedback != 0u);
+        var radiance = (direct + indirectGated) * mat.baseColor * (1.0 / PI);
 
         if ((mat.flags & 1u) != 0u) {
           // Glass: add transmitted environment contribution.

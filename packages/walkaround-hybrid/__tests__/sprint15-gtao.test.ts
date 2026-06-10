@@ -60,6 +60,16 @@ describe('Sprint 15 — GTAO WGSL', () => {
     expect(GTAO_WGSL).toContain('projNormal');
     expect(GTAO_WGSL).toContain('projNormalLen');
   });
+
+  it('B6: reconstructs a PER-PIXEL view axis (no constant central-pixel approximation)', () => {
+    // The slice integral's viewAxis is the per-pixel camera→pixel ray, derived
+    // from tan(fov/2) + aspect, not the old constant (0,0,-1).
+    expect(GTAO_WGSL).toContain('pixViewAxis');
+    expect(GTAO_WGSL).toContain('gtao_ubo.tanFovHalf');
+    expect(GTAO_WGSL).toContain('let viewAxis = pixViewAxis');
+    // The constant view axis must be gone from the slice loop.
+    expect(GTAO_WGSL).not.toContain('let viewAxis = vec3f(0.0, 0.0, -1.0)');
+  });
 });
 
 describe('Sprint 15 — GTAO upsample WGSL', () => {

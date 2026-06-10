@@ -97,6 +97,10 @@ import {
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
+import {
+  deriveScaleAwareClamps,
+  type ScaleAwareHostExplicit,
+} from './HybridEngineScaleAwareClamps.js';
 import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import { FrameBudgetController } from './FrameBudgetController.js';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
@@ -712,6 +716,20 @@ export class HybridEngine implements Engine {
   /** Dev A/B — mirrors `engine.debug.setDenoiserEnabled` (default on). */
   private _denoiserPassEnabled = true;
 
+  // ── B15 — scene-scale-aware radiometric clamp defaults ──────────────────
+  /** Per-knob flags: did the HOST explicitly set this clamp? Host overrides are
+   *  NEVER scaled (an explicit tuning value passes through verbatim). Captured
+   *  once at construction from the options. */
+  private readonly _clampHostExplicit: ScaleAwareHostExplicit;
+  /** Scene-scale-derived per-frame tunables (B15). Computed at `setScene` from
+   *  the scene's world diagonal; `null` before the first scene (falls back to
+   *  the Cornell-baseline `_cfg.tunables`). At Cornell scale this is
+   *  byte-identical to `_cfg.tunables` (the law short-circuits at ratio 1). */
+  private _scaledTunables: Tunables | null = null;
+  /** Scene-scale-derived `indirectFireflyClamp` (B15). `null` ⇒ use the
+   *  `_cfg.indirectFireflyClamp` baseline. */
+  private _scaledIndirectFireflyClamp: readonly [number, number, number] | null = null;
+
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
   private _bvhBuffers:  SceneBVHBuffers | null       = null;
@@ -812,15 +830,34 @@ export class HybridEngine implements Engine {
     const cfg = parseHybridEngineOptions(opts);
     this._cfg = cfg;
 
-    // H46 — non-default maxBounces: walkaround shaders have a fixed bounce budget;
-    // the value is forwarded to capabilities but does NOT gate the DDGI bounce path.
-    // Wire into DDGI feedback control is deferred (road-to-100 D15-A).
-    if (cfg.maxBounces !== 4) {
+    // B15 — capture which radiometric clamps the HOST set explicitly. These
+    // bypass scene-scale scaling (an explicit override is absolute). None of
+    // the three scalar clamps has a subsystem sub-object, so `opts.tuning` is
+    // the only override path; `indirectFireflyClamp` is its own top-level field.
+    this._clampHostExplicit = {
+      restirGiIrrClamp:     opts.tuning?.restirGiIrrClamp !== undefined,
+      directFireflyClamp:   opts.tuning?.directFireflyClamp !== undefined,
+      emitterDist2Floor:    opts.tuning?.emitterDist2Floor !== undefined,
+      indirectFireflyClamp: opts.indirectFireflyClamp !== undefined,
+    };
+
+    // H46-A — maxBounces now drives a REAL control surface on this realtime
+    // stack: the DDGI indirect-feedback gate. The walkaround engine does NOT
+    // path-trace, so maxBounces is NOT a per-ray bounce cap here — it has exactly
+    // two regimes: 1 ⇒ DIRECT-ONLY probes (the DDGI atlas folds in one bounce of
+    // direct light per probe and the infinite-bounce diffuse EMA is disabled);
+    // >= 2 ⇒ the full multi-bounce diffuse equilibrium (the default; the atlas
+    // EMA converges to infinite diffuse bounces). Intermediate/large values
+    // (2, 3, 4, …) are all identical to the default >= 2 regime because the EMA
+    // converges to the bounce limit regardless of the integer value — only the
+    // 1-vs-many distinction is meaningful. Warn only when the value cannot be
+    // honoured as authored (== 0 or negative is treated as direct-only).
+    if (cfg.maxBounces < 1) {
       console.warn(
-        `[HybridEngine] maxBounces=${cfg.maxBounces} is not the default (4). ` +
-        `The walkaround shaders use a fixed bounce budget; this value is reflected ` +
-        `in capabilities.maxBounces but does not yet gate the DDGI indirect path ` +
-        `(road-to-100 D15-A).`,
+        `[HybridEngine] maxBounces=${cfg.maxBounces} is < 1 and is treated as ` +
+        `1 (direct-only DDGI probes). The walkaround engine is not a path tracer; ` +
+        `maxBounces gates the DDGI diffuse multi-bounce feedback (1 = direct-only, ` +
+        `>= 2 = infinite-bounce diffuse equilibrium), not a per-ray bounce count.`,
       );
     }
     // H46 — causticStrategy: walkaround always reports 'none' in capabilities.
@@ -865,6 +902,11 @@ export class HybridEngine implements Engine {
     this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
     this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);
+    // H46-A — gate the DDGI indirect-feedback (multi-bounce diffuse EMA) on the
+    // engine's maxBounces. maxBounces == 1 ⇒ direct-only probes; >= 2 ⇒ the
+    // infinite-bounce equilibrium (default). Construction-immutable, and the
+    // ProbeUpdatePass is created once (never recreated), so one call persists.
+    this._ddgi.setIndirectFeedback(this._cfg.maxBounces >= 2);
     this._ctorLights = opts.lights ?? [];
     if (this._ctorLights.length > 0) {
       this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
@@ -927,6 +969,11 @@ export class HybridEngine implements Engine {
       supportsProgressiveSeedSource: true,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
+      // H46-A — echoes the authored value. SEMANTICS for this realtime stack:
+      // this is NOT a path-tracer per-ray bounce cap. 1 ⇒ direct-only DDGI
+      // probes; >= 2 ⇒ infinite-bounce diffuse equilibrium (the atlas EMA). All
+      // values >= 2 behave identically (the EMA converges regardless of the
+      // integer). See the construction-site gate `setIndirectFeedback`.
       maxBounces:                this._cfg.maxBounces,
       supportedAnalyticShapes:   new Set<AnalyticShape>(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
       // BVH + DDGI ingest via a render-scene view. Mesh/skinned/instanced-mesh
@@ -1042,6 +1089,15 @@ export class HybridEngine implements Engine {
     }
     this._lastScene = scene;
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
+
+    // B15 — derive scene-scale-aware radiometric clamp DEFAULTS from the new
+    // scene's world diagonal. Uses the render-scene view (analytic primitives
+    // already meshed) so the AABB is computed over real positions. At Cornell
+    // scale the law short-circuits to byte-identical defaults; host-explicit
+    // clamps pass through un-scaled. These feed the per-frame deps below (NOT
+    // the UBO layout — the UBO stays frozen; only the host-computed VALUES move).
+    this._applyScaleAwareClamps();
+
     // W8 Phase 2: rebuild the RC BVH + cascade buffers after async ReSTIR
     // BVH publish via the core-native path.
 
@@ -1058,6 +1114,42 @@ export class HybridEngine implements Engine {
    *  post-dispose read. */
   getScene(): Scene | null {
     return this._lastScene;
+  }
+
+  /**
+   * B15 — recompute the scene-scale-aware radiometric clamp defaults from the
+   * current `_renderScene`'s world diagonal and cache them on
+   * `_scaledTunables` / `_scaledIndirectFireflyClamp` (read by the per-frame
+   * deps builders). Pure host-side arithmetic — no GPU, no UBO-layout change.
+   *
+   * INVARIANTS:
+   *   • At Cornell scale (diagonal ≈ {@link CORNELL_DIAGONAL}) the result is
+   *     byte-identical to the `_cfg` baselines (the law short-circuits at
+   *     scaleRatio == 1).
+   *   • Host-explicit clamps (`_clampHostExplicit[knob]`) pass through un-scaled.
+   *
+   * Called from `setScene` (the only diagonal-changing entry — add/remove/
+   * topology-patch routes all funnel through `setScene`, so a single hook here
+   * keeps the scaled defaults in sync with the live geometry).
+   */
+  private _applyScaleAwareClamps(): void {
+    const result = deriveScaleAwareClamps(this._renderScene, {
+      baseTunables: this._cfg.tunables,
+      baseIndirectFireflyClamp: this._cfg.indirectFireflyClamp,
+      hostExplicit: this._clampHostExplicit,
+    });
+    this._scaledTunables = result.tunables;
+    this._scaledIndirectFireflyClamp = result.indirectFireflyClamp;
+    if (this._cfg.verbose && Math.abs(result.scaleRatio - 1) > 1e-6) {
+      console.log(
+        `[HybridEngine] B15 scale-aware clamps: sceneDiagonal=${result.sceneDiagonal.toFixed(3)} ` +
+        `(×${result.scaleRatio.toFixed(3)} vs Cornell) → ` +
+        `restirGiIrrClamp=${result.tunables.restirGiIrrClamp.toExponential(3)}, ` +
+        `directFireflyClamp=${result.tunables.directFireflyClamp.toExponential(3)}, ` +
+        `emitterDist2Floor=${result.tunables.emitterDist2Floor.toExponential(3)} ` +
+        `(host-explicit knobs un-scaled).`,
+      );
+    }
   }
 
   // ── updatePrimitive — geometry-change path ─────────────────────────────
@@ -1358,14 +1450,16 @@ export class HybridEngine implements Engine {
    * ReSTIR-emitter arrays correctly by construction rather than hand-rolling a
    * multi-array compaction.
    *
-   * **Empty-scene behaviour (H20 / decision D8):** Removing the LAST primitive
-   * routes through `setScene` with an empty primitives array. The engine
-   * transitions to `'ready'` state (no pipeline / BVH allocated) but
-   * `renderFrame` returns a SKIP output on every call — the empty scene DOES NOT
-   * present a frame (neither sky nor background). To observe the skip counter you
-   * must construct the engine with `debug: true` and read
-   * `window.__WALKAROUND__.dbg.skipNoBvh`. A sky-only present path is tracked as
-   * a road-to-100 item.
+   * **Empty-scene behaviour (H20 / H20-A):** Removing the LAST primitive routes
+   * through `setScene` with an empty primitives array. The engine transitions to
+   * `'ready'` state (no pipeline / BVH allocated) and `renderFrame` now presents
+   * a flat SKY-ONLY frame (`skyTint × skyIrradiance`) via a single device-level
+   * clear render pass, returning a genuine `kind:'rendered'` FrameOutput rather
+   * than skipping (H20-A). The walkaround sky is a scalar tint on this stack, so
+   * a flat fill is the radiometrically-faithful empty-scene background. The
+   * dispatched-frame counter (`window.__WALKAROUND__.dbg.framesDispatched`)
+   * advances for sky-only frames; `skipNoSwapView` still increments when the host
+   * provides no swap-chain view.
    *
    * Contract semantics honored:
    *   • A missing `id` throws BEFORE any mutation — the membership check runs
@@ -1478,6 +1572,10 @@ export class HybridEngine implements Engine {
     // emitter change (both initial scene load via HybridEngineLifecycle and
     // fast-update via updateEmitter). No-op when pipeline is not yet initialized.
     this._pipeline?.updateAnalyticLights(this._renderScene);
+    // B3 — push the scene's directional IBL map+CDFs to the pipeline (or reset to
+    // the no-HDRI placeholder). Called here so both the initial scene load and any
+    // emitter/scene fast-update re-resolve the env; no-op before pipeline init.
+    this._applyDirectionalEnvironment(this._renderScene.environment ?? { kind: 'none' });
     this._ddgi.invalidateProbeCache();
   }
 
@@ -1698,6 +1796,11 @@ export class HybridEngine implements Engine {
     // null mid-init (the accum-reset flag is applied once the pipeline exists).
     this._ddgi.invalidateProbeCache();
     this._pipeline?.requestAccumReset();
+
+    // B3 — push the directional IBL map+CDFs to the pipeline (or reset to the
+    // no-HDRI placeholder). Independent of the sky scalars above, which remain
+    // the WGSL fallback when no directional data is present.
+    this._applyDirectionalEnvironment(nextEnv);
   }
 
   /**
@@ -1735,6 +1838,31 @@ export class HybridEngine implements Engine {
       ...(resolved.skyTint !== undefined ? { skyTint: resolved.skyTint } : {}),
       ...(resolved.skyIrradiance !== undefined ? { skyIrradiance: resolved.skyIrradiance } : {}),
     };
+  }
+
+  /**
+   * B3 — resolve the directional IBL payload (PBRT 2D distribution) from the
+   * environment and push it to the pipeline's scene-group env resources. A
+   * raw pixel-backed HDRI yields the directional map+CDFs; everything else
+   * (opaque handle, procedural sky, none, all-black map) resets the pipeline
+   * to the no-HDRI placeholder so the WGSL scalar-sky fallback runs (no-HDRI
+   * byte-identity). No-op when the pipeline is not yet initialized — setScene's
+   * init path calls this AFTER the pipeline exists.
+   */
+  private _applyDirectionalEnvironment(env: SceneEnvironment): void {
+    if (this._pipeline == null) return;
+    const resolved = resolveHybridEnvironment(env, {
+      extensions: this._environmentResolverExtensions,
+    });
+    if (resolved.directional !== undefined) {
+      this._pipeline.updateDirectionalEnvironment(
+        resolved.directional,
+        resolved.rotationY ?? 0,
+        resolved.directionalIntensity ?? 1,
+      );
+    } else {
+      this._pipeline.updateDirectionalEnvironment(null, 0, 0);
+    }
   }
 
   // ── Progressive handoff seed source ──────────────────────────────────────
@@ -1947,7 +2075,10 @@ export class HybridEngine implements Engine {
    *  compact and makes a new tuple knob a single edit. */
   private _denoiserFilterDeps(): HybridDenoiserFilterDeps {
     return {
-      indirectFireflyClamp: this._cfg.indirectFireflyClamp,
+      // B15 — scene-scale-aware default (falls back to the Cornell baseline
+      // before the first setScene). Host overrides already pass through verbatim
+      // (deriveScaleAwareClamps leaves host-explicit knobs un-scaled).
+      indirectFireflyClamp: this._scaledIndirectFireflyClamp ?? this._cfg.indirectFireflyClamp,
       atrousDirectSigmas: this._cfg.atrousDirectSigmas,
       atrousIndirectSigmas: this._cfg.atrousIndirectSigmas,
       stainedGlassFlags: this._cfg.stainedGlassFlags,
@@ -2019,7 +2150,9 @@ export class HybridEngine implements Engine {
         ddgiOn: self._ddgiOn,
         isLayerEnabled: (layer) => self._layerEnabled.get(layer) ?? true,
         device: self._device,
-        tunables: self._cfg.tunables,
+        // B15 — scene-scale-aware tunables (falls back to the Cornell baseline
+        // before the first setScene; byte-identical at Cornell scale).
+        tunables: self._scaledTunables ?? self._cfg.tunables,
         rcWeight: self._rcWeight,
       },
     };

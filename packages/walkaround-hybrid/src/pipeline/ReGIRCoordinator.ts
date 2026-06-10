@@ -21,16 +21,15 @@
  * only the grid region. See `regir.wgsl` for the full rationale.
  */
 
-import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
+import { REGIR_FLOATS_PER_SURVIVOR, LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { RegirUboState } from './uboUpdater.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
-/** Light-tree node stride in floats — must match `LIGHT_TREE_FLOATS_PER_NODE`
- *  in shared-samplers and `LIGHT_TREE_STRIDE` in lightTree.wgsl. The grid
- *  region begins immediately after the packed tree nodes. */
-const LIGHT_TREE_FLOATS_PER_NODE = 12;
+// Light-tree node stride in floats = `LIGHT_TREE_FLOATS_PER_NODE` (imported from
+// shared-samplers — single source of truth; B8 grew it 12→16). The grid region
+// of the combined buffer begins immediately after the packed tree nodes.
 
 /** Host-facing ReGIR config (resolved from {@link HybridEngineOptions}). */
 export interface ReGIRConfig {
@@ -64,7 +63,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
   /** Uniform cubic cell size (max axis span / cellsPerAxis). */
   private _cellSize = 1;
   private _dims: [number, number, number] = [0, 0, 0];
-  /** Float offset of the grid region in the combined buffer = nodeCount × 12. */
+  /** Float offset of the grid region in the combined buffer = nodeCount × LIGHT_TREE_FLOATS_PER_NODE (16). */
   private _gridFloatOffset = 0;
 
   constructor(config: ReGIRConfig) {

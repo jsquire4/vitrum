@@ -44,6 +44,11 @@ describe('pipelineBindGroupFactory', () => {
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
       analyticLightsBuffer: {} as GPUBuffer,
+      envMapTextureView: {} as GPUTextureView,
+      envMarginalTextureView: {} as GPUTextureView,
+      envConditionalTextureView: {} as GPUTextureView,
+      envSampler: {} as GPUSampler,
+      envParamsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -104,6 +109,11 @@ describe('pipelineBindGroupFactory', () => {
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
       analyticLightsBuffer: {} as GPUBuffer,
+      envMapTextureView: {} as GPUTextureView,
+      envMarginalTextureView: {} as GPUTextureView,
+      envConditionalTextureView: {} as GPUTextureView,
+      envSampler: {} as GPUSampler,
+      envParamsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -182,6 +192,11 @@ describe('pipelineBindGroupFactory', () => {
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
       analyticLightsBuffer: {} as GPUBuffer,
+      envMapTextureView: {} as GPUTextureView,
+      envMarginalTextureView: {} as GPUTextureView,
+      envConditionalTextureView: {} as GPUTextureView,
+      envSampler: {} as GPUSampler,
+      envParamsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
@@ -247,6 +262,11 @@ describe('pipelineBindGroupFactory', () => {
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
       analyticLightsBuffer: {} as GPUBuffer,
+      envMapTextureView: {} as GPUTextureView,
+      envMarginalTextureView: {} as GPUTextureView,
+      envConditionalTextureView: {} as GPUTextureView,
+      envSampler: {} as GPUSampler,
+      envParamsBuffer: {} as GPUBuffer,
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),

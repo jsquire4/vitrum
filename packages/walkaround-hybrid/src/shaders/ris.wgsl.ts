@@ -133,10 +133,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
-    // skyTint × skyIrradiance from UBO (computeLightingState); replaces
-    // hardcoded sky color.
+    // B3 — directional IBL: when a pixel-backed HDRI is bound, sample the ACTUAL
+    // map along the camera ray (rotationY-aware); envRadiance falls back to the
+    // scalar skyTint × skyIrradiance when no map is present (no-HDRI byte-identity).
     storeReservoirDI_rw(&currentReservoir, pixelIdx, emptyReservoirDI());
-    let skyColor = ubo.skyTint * ubo.skyIrradiance;
+    let skyColor = envRadiance(primaryRay.direction);
     textureStore(hdrColorOut, pix, vec4f(skyColor, 1.0));
     return;
   }
@@ -251,6 +252,95 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     updateReservoirDI(&r, lid, xiTri, w, &rng);
   }
 
+  // --- M_BRDF candidate(s): GGX-VNDF-sampled BSDF candidate (B16) ────────────
+  // The M_LIGHT loop importance-samples the EMITTERS; it under-samples the cases
+  // where the BSDF lobe is narrow (glossy/metal) and concentrated away from the
+  // emitter's solid angle, so a light-only RIS pool is high-variance on shiny
+  // surfaces. This loop adds a BSDF-sampled candidate per pixel (talk-of-the-
+  // trade light+BSDF MIS-style multi-strategy RIS): draw wi ∝ GGX-VNDF, find
+  // which emitter triangle that ray hits, and fold the resulting on-emitter
+  // sample into the SAME reservoir with the SAME (lid, xi) representation.
+  //
+  // UNBIASEDNESS (the load-bearing detail): RIS over heterogeneous candidate
+  // strategies is unbiased as long as each candidate's WRS weight divides the
+  // SHARED target p̂ by the SOURCE pdf of the strategy that generated it, all in
+  // ONE measure. The light candidates use AREA measure (p = selPmf·pdfArea); the
+  // BRDF candidate samples wi in SOLID-ANGLE measure, so we convert its pdf to
+  // area measure via the geometry Jacobian  p_area = p_sa · dist² / cosθ_light.
+  // p̂ is IDENTICAL to the light candidates (luminance(Le·brdf·G)), so the chosen
+  // sample's W finalisation (restir_di_compute_phat_from_surface) is unchanged —
+  // the BRDF candidate is just another contributor to w_sum / M.
+  //
+  // DIFFUSE-DEFAULT NON-BIAS: for a rough Lambertian (rough≈0.85) the VNDF lobe
+  // is broad; the candidate still has the CORRECT source pdf so it cannot bias
+  // the estimate. It adds at most M_BRDF=1 to r.M, which the unbiased estimator
+  // already accounts for in W = w_sum/(M·p̂). It changes the rng stream + the
+  // numeric result vs the pre-B16 kernel (this is a RENDER-CHANGING DI quality
+  // improvement, NOT a byte-identity-preserving change — see V28 B16 A/B).
+  let emCountB = arrayLength(&emitters);
+  for (var bi = 0u; bi < M_BRDF; bi++) {
+    // Draw a BSDF direction (VNDF) and its solid-angle pdf.
+    let wiB = ggxSampleVndf(normal, wo, roughness, &rng);
+    let nDotLB = dot(normal, wiB);
+    if (nDotLB <= 1e-6) { continue; }
+    let pdfSa = ggxVndfReflectionPdf(normal, wo, wiB, roughness);
+    if (pdfSa <= 1e-8) { continue; }
+
+    // Intersect the BSDF ray against every emitter triangle; keep the nearest
+    // forward hit (emitter counts are small in these scenes — a linear test is
+    // cheaper than recovering the emitter index from a full BVH closest-hit and
+    // inverting its barycentrics). The hit barycentrics map directly to the
+    // (lid, xi) the reservoir + visibility stage already understand.
+    let brdfOrig = pos + geoNormal * 1e-3;
+    var bestT = 1e30;
+    var bestLid = 0u;
+    var bestXi = vec2f(0.0);
+    var bestLe = vec3f(0.0);
+    var bestNl = vec3f(0.0);
+    var found = false;
+    for (var li = 0u; li < emCountB; li++) {
+      let eb = emitters[li];
+      let it = intersectTriangle(brdfOrig, wiB, eb.vA, eb.vB, eb.vC, ubo.triIntersectEpsilon);
+      if (!it.didHit || it.dist <= 1e-4 || it.dist >= bestT) { continue; }
+      // The emitter must face the incoming ray (front side emits).
+      if (dot(eb.normal, wiB) >= 0.0) { continue; }
+      bestT = it.dist;
+      bestLid = li;
+      // Invert sampleEmitterPoint: weights (u,v,w) = (1−s, s·xi.y, s·(1−xi.y))
+      // with s = sqrt(xi.x). barycoord.(x,y,z) are the (A,B,C) vertex weights.
+      let bA = it.barycoord.x;
+      let bB = it.barycoord.y;
+      let bC = it.barycoord.z;
+      let sInv = clamp(1.0 - bA, 0.0, 1.0);
+      let xiX = sInv * sInv;
+      let bcSum = max(bB + bC, 1e-8);
+      let xiY = clamp(bB / bcSum, 0.0, 1.0);
+      bestXi = vec2f(xiX, xiY);
+      bestLe = eb.Le;
+      bestNl = eb.normal;
+      found = true;
+    }
+    if (!found) { continue; }
+
+    // Shared target p̂ = luminance(Le · brdf · G), evaluated for the on-emitter
+    // sample the BSDF ray landed on — IDENTICAL form to the M_LIGHT candidates.
+    let hitPos = brdfOrig + wiB * bestT;
+    let toLB = hitPos - pos;
+    let dist2B = max(dot(toLB, toLB), 1e-8);
+    let nlDotLB = max(0.0, dot(-bestNl, wiB));
+    if (nlDotLB < 1e-6) { continue; }
+    let Gb = emitterGeometry(nlDotLB, dist2B, ubo.emitterDist2Floor);
+    let brdfB = evalGGX(albedo, roughness, metalness, normal, wo, wiB);
+    let pHatB = luminance(bestLe * brdfB * Gb);
+
+    // Convert the BSDF solid-angle pdf to AREA measure so it shares the
+    // light candidates' measure:  p_area = p_sa · dist² / cosθ_light.
+    let pAreaB = pdfSa * dist2B / max(nlDotLB, 1e-6);
+    let pXb = max(1e-15, pAreaB);
+    let wB = select(0.0, pHatB / pXb, pHatB > 0.0);
+    updateReservoirDI(&r, bestLid, bestXi, wB, &rng);
+  }
+
   // --- Visibility test on chosen candidate ---
   if (r.M > 0u && r.w_sum > 0.0) {
     let lid = r.lightId;
@@ -315,5 +405,8 @@ export const RIS_MODULE: WgslModule = {
   // `sampleLightTree` (lightTreeEnabled path) + `regir_sample_cell`
   // (regirEnabled path) both read it. The composer emits
   // `common, restirPHat, lightTree, regir, ris`.
-  requires: ['restirPHat', 'regir'],
+  // B3 — environmentSample adds the scene-group env bindings (15-19) + the
+  // directional lookup/importance helpers; ordered after restirPHat→common so
+  // WalkaroundUBO/safe_normalize/rand_f32 are in scope.
+  requires: ['restirPHat', 'regir', 'environmentSample'],
 };

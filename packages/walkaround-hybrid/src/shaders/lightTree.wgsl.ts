@@ -3,7 +3,8 @@
  *
  * Wires the CPU-built `@vitrum/shared-samplers` light tree (Shirley 1996 median
  * split, power-as-cost) into the GPU RIS candidate loop. The tree is serialised
- * by `packLightTreeForGPU` (12 f32 / node) and uploaded as a flat `array<f32>`
+ * by `packLightTreeForGPU` (16 f32 / node — B8 grew it from 12 for the
+ * orientation cone) and uploaded as a flat `array<f32>`
  * storage buffer at `@group(3) @binding(0)` — a RIS-ONLY bind group, separate
  * from the shared `scene` group, so the heavier shade pass (which already sits
  * at the `maxStorageBuffersPerShaderStage = 16` full-tier floor) is unaffected.
@@ -23,11 +24,12 @@
  * zeroed placeholder node, never dereferenced (the caller branches on the gate
  * first).
  *
- * Layout per node (flat f32, stride 12), identical to `packLightTreeForGPU`:
+ * Layout per node (flat f32, stride 16), identical to `packLightTreeForGPU`:
  *   [0] emitterIndex (-1 internal)  [1] totalPower
  *   [2] leftChild (-1 leaf)         [3] rightChild (-1 leaf)
  *   [4..6] aabbMin.xyz              [7..9] aabbMax.xyz
- *   [10..11] padding
+ *   [10..12] cone.axis.xyz          [13] cos(thetaO)  [14] cos(thetaO+thetaE)
+ *   [15] padding
  *
  * References:
  *   - Estévez & Kulla 2018 — distance-weighted importance descent.

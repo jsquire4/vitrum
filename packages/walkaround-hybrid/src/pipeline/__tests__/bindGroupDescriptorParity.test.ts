@@ -123,6 +123,9 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
     analyticLightsBuffer: buf,
+    // B3 — directional IBL env resources (bindings 15-19).
+    envMapTextureView: view, envMarginalTextureView: view, envConditionalTextureView: view,
+    envSampler: sampler, envParamsBuffer: buf,
   }),
   ubo: (d, c) => buildUboBindGroup(d, c, buf, view, view),
   composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler),

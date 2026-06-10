@@ -177,11 +177,30 @@ const REGIR_FLOATS_PER_SURVIVOR: u32 = 2u;
 @group(0) @binding(1) var<storage, read>       emittersRW:  array<EmitterTri>;
 @group(0) @binding(2) var<uniform>             ubo:         WalkaroundUBO;
 
-const REGIR_BUILD_STRIDE: u32 = 12u; // light-tree node stride (must match LIGHT_TREE_STRIDE)
+const REGIR_BUILD_STRIDE: u32 = 16u; // light-tree node stride (must match LIGHT_TREE_STRIDE; B8 12→16)
 
 fn rb_dist2ToAabb(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
   let d = max(max(bmin - p, vec3f(0.0)), p - bmax);
   return dot(d, d);
+}
+
+// B8 — orientation-cone factor, mirroring lt_coneFactor (lightTree.wgsl) so the
+// ReGIR grid-build descent culls oriented emitters identically to the RIS
+// read-path descent. Full-sphere node (axis length 0) ⇒ 1 (no culling).
+fn rb_coneFactor(axis: vec3f, cosThetaO: f32, cosThetaOE: f32, p: vec3f, c: vec3f) -> f32 {
+  let al = dot(axis, axis);
+  if (al < 1e-12) { return 1.0; }
+  let dv = p - c;
+  let dl2 = dot(dv, dv);
+  if (dl2 < 1e-12) { return 1.0; }
+  let d = dv * inverseSqrt(dl2);
+  let a = axis * inverseSqrt(al);
+  let cosTheta = dot(a, d);
+  if (cosTheta < cosThetaOE) { return 0.0; }
+  if (cosTheta >= cosThetaO) { return 1.0; }
+  let sinTheta  = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  let sinThetaO = sqrt(max(0.0, 1.0 - cosThetaO * cosThetaO));
+  return max(0.0, cosTheta * cosThetaO + sinTheta * sinThetaO);
 }
 
 fn rb_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
@@ -190,7 +209,11 @@ fn rb_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
   let bmin = vec3f(regirGridRW[base + 4u], regirGridRW[base + 5u], regirGridRW[base + 6u]);
   let bmax = vec3f(regirGridRW[base + 7u], regirGridRW[base + 8u], regirGridRW[base + 9u]);
   let d2 = max(rb_dist2ToAabb(p, bmin, bmax), dist2Floor);
-  return power / d2;
+  let axis = vec3f(regirGridRW[base + 10u], regirGridRW[base + 11u], regirGridRW[base + 12u]);
+  let cosThetaO  = regirGridRW[base + 13u];
+  let cosThetaOE = regirGridRW[base + 14u];
+  let center = 0.5 * (bmin + bmax);
+  return (power / d2) * rb_coneFactor(axis, cosThetaO, cosThetaOE, p, center);
 }
 
 // Light-tree descent reading the tree region of the combined buffer. Mirrors

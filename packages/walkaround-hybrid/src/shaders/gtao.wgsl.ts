@@ -117,6 +117,35 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   // Decode world-space surface normal from G-buffer (stored as n*0.5+0.5).
   let surfNormal = normalize(center.xyz * 2.0 - 1.0);
 
+  // ── B6 — per-pixel view axis from the inverse perspective projection ──────
+  //
+  // Previously the slice integral used a CONSTANT viewAxis = (0,0,-1) (the
+  // "central-pixel approximation"): exact for orthographic and at the screen
+  // centre, but increasingly wrong toward the edges of a wide-FOV perspective
+  // frame, where the true camera→pixel ray tilts away from the optical axis.
+  // That mis-tilt skews the projected-normal angle γ (n) and therefore the
+  // hemisphere the slice integral covers, biasing edge/wide-FOV AO.
+  //
+  // Reconstruct the camera→pixel ray analytically (no matrix needed — a
+  // standard perspective frustum is fully determined by tan(fov_y/2) and the
+  // aspect ratio, which we derive from the G-buffer dimensions):
+  //   uv     = (fullPx + 0.5) / fullDims                 (pixel centre, [0,1])
+  //   ndc    = uv*2 - 1                                   ([-1,1], y flipped:
+  //            screen-y points down, view-y up)
+  //   viewDir = normalize(ndc.x·tanFovHalf·aspect,
+  //                       -ndc.y·tanFovHalf, -1)         (camera → pixel)
+  // At the screen centre ndc≈0 ⇒ viewDir = (0,0,-1), so the centre-pixel result
+  // is BYTE-IDENTICAL to the old constant. Off-axis pixels now integrate the
+  // correct tilted hemisphere; the improvement grows with FOV and eccentricity.
+  let aspect = f32(fullDims.x) / max(f32(fullDims.y), 1.0);
+  let uv = (vec2f(fullPx) + vec2f(0.5)) / vec2f(fullDims);
+  let ndc = uv * 2.0 - vec2f(1.0);
+  let pixViewAxis = normalize(vec3f(
+    ndc.x * gtao_ubo.tanFovHalf * aspect,
+    -ndc.y * gtao_ubo.tanFovHalf,
+    -1.0,
+  ));
+
   let jitter = hashPx(gid.xy);
 
   var aoSum: f32 = 0.0;
@@ -132,9 +161,11 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
     //   axisVec  = vec3(dir.x, dir.y, 0.0) — the 2D slice direction lifted
     //              into 3D; this is the "in-plane perpendicular" (XeGTAO's
     //              axisVec). We treat screen X/Y as lateral and depth as −Z.
-    //   viewAxis = vec3(0.0, 0.0, -1.0)    — view direction (into screen).
-    //              This is an approximation: correct for orthographic projection
-    //              and a good central-pixel approximation for perspective.
+    //   viewAxis = pixViewAxis — the PER-PIXEL camera→pixel ray (B6). Was the
+    //              constant (0,0,-1) central-pixel approximation; reconstructed
+    //              above from tan(fov/2) + aspect so off-axis/wide-FOV pixels
+    //              integrate the correct tilted hemisphere. Centre pixel ⇒
+    //              (0,0,-1) ⇒ byte-identical to the old constant.
     //
     // Project the surface normal onto the slice plane (perpendicular to axisVec)
     // and compute the signed angle between that projection and viewAxis.
@@ -143,7 +174,7 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
     //
     // Matches XeGTAO.hlsli lines ~640–660.
     let axisVec = vec3f(dir.x, dir.y, 0.0);
-    let viewAxis = vec3f(0.0, 0.0, -1.0);
+    let viewAxis = pixViewAxis;
 
     let projNormal = surfNormal - axisVec * dot(surfNormal, axisVec);
     let projNormalLen = max(length(projNormal), 1e-6);

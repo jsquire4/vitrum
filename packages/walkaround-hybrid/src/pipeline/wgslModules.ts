@@ -83,6 +83,7 @@ import { INDIRECT_COMBINE_MODULE } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_MODULE } from '../shaders/indirectTemporalAccum.wgsl.js';
 import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composite.wgsl.js';
 import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
+import { ENVIRONMENT_SAMPLE_MODULE } from '../shaders/environmentSample.wgsl.js';
 import { PPG_TREE_LAYOUT_MODULE } from '../ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_PDF_MODULE } from '../ppg/ppgPdf.wgsl.js';
@@ -246,6 +247,10 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // Walkaround-local shader helpers
   [SURFACE_TEXTURES_MODULE.name, SURFACE_TEXTURES_MODULE],
   [DDGI_SAMPLE_MODULE.name, DDGI_SAMPLE_MODULE],
+  // B3 — directional IBL env bindings + lookup/importance helpers (scene group
+  // bindings 15-19). Required by ris/risGi/shade; bindings are runtime-gated by
+  // envParams.hasEnv (0 ⇒ scalar-tint fallback, no-HDRI byte-identity).
+  [ENVIRONMENT_SAMPLE_MODULE.name, ENVIRONMENT_SAMPLE_MODULE],
 
   // W2-C7+C9 — canonical ReSTIR-DI primitives
   [RESTIR_PHAT_MODULE.name, RESTIR_PHAT_MODULE],

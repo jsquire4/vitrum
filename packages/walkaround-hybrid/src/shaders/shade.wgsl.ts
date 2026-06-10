@@ -618,8 +618,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
   if (!primaryHit.didHit) {
     // Sky pixel: output sky color (already written by RIS pass, but keep consistent).
-    // Read from UBO so RIS miss + shade miss agree.
-    let skyMiss = ubo.skyTint * ubo.skyIrradiance;
+    // B3 — directional IBL: sample the actual map along the camera ray so RIS miss
+    // + shade miss agree (both call envRadiance(primaryRay.direction)); falls back
+    // to the scalar skyTint × skyIrradiance with no HDRI (no-HDRI byte-identity).
+    let skyMiss = envRadiance(primaryRay.direction);
     textureStore(hdrColorOut, pix, vec4f(skyMiss, 1.0));
     // G-buffer for sky: encoded "up" normal + depth=0.  The atrous denoiser
     // uses depth=0 as a sentinel that distinguishes sky from non-sky and
@@ -826,5 +828,5 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SHADE_MODULE: WgslModule = {
   name: 'shade',
   source: SHADE_WGSL,
-  requires: ['common', 'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade'],
+  requires: ['common', 'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
 };

@@ -1330,6 +1330,24 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   }
 
   /**
+   * B3 — swap the directional IBL resources (scene-group bindings 15-19). The
+   * scene bind group is rebuilt every frame from `sceneBindGroupResources()`,
+   * so the next frame picks up the new env textures with no explicit bind-group
+   * invalidation. `data == null` resets to the no-HDRI placeholder (hasEnv=0 →
+   * the WGSL scalar-sky fallback). No-op before initialize (the placeholder is
+   * created in `uploadInitial`; an early call lazily creates it).
+   */
+  updateDirectionalEnvironment(
+    data: import('../environment/equirectDirectional.js').DirectionalEnvData | null,
+    rotationY: number,
+    intensity: number,
+  ): void {
+    if (!this._bvhHost.initialized) return;
+    this._bvhHost.updateEnvironment(this._device, data, rotationY, intensity);
+    this.requestAccumReset();
+  }
+
+  /**
    * BVH-refit fast path — overwrite the bvhNodes + bvhPositions GPU
    * buffers in place via `device.queue.writeBuffer`. The buffer handles,
    * sizes, and bind groups are preserved (no pipeline rebind, no bind-

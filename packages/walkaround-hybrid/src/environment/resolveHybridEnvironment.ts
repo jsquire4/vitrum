@@ -3,6 +3,7 @@ import type {
   HdriEnvironment,
   SceneEnvironment,
 } from '@vitrum/core';
+import { buildDirectionalEnv, type DirectionalEnvData } from './equirectDirectional.js';
 
 export type HybridSkyVec3 = [number, number, number];
 
@@ -20,6 +21,24 @@ export interface HybridResolvedEnvironment {
   readonly proceduralSunDirection?: HybridSkyVec3;
   readonly proceduralSunIntensity?: number;
   readonly warnings: readonly string[];
+  /**
+   * B3 (road-to-100) — directional IBL payload. Present ONLY when a raw
+   * pixel-backed HDRI was supplied (the `hdri-raw-average` mode). The host
+   * uploads {@link DirectionalEnvData} as scene-group textures so the WGSL
+   * sky-miss / GI-escape paths sample the ACTUAL map by direction; the
+   * `skyTint`/`skyIrradiance` scalars above remain the fallback for backends/
+   * scenes without directional data (the existing contract — unchanged). Absent
+   * for opaque handles, procedural sky, and all-black maps.
+   */
+  readonly directional?: DirectionalEnvData;
+  /** HDRI Y-axis rotation in radians (H6 convention). 0 when not an HDRI. */
+  readonly rotationY?: number;
+  /**
+   * Unit-intensity radiance multiplier for the directional map (the
+   * SceneEnvironment.intensity). The WGSL applies it at sample time so the
+   * uploaded `map` texels stay unit-intensity. Present with `directional`.
+   */
+  readonly directionalIntensity?: number;
 }
 
 export interface HybridEnvironmentMapResolverResult {
@@ -119,7 +138,8 @@ function resolveHdriEnvironment(
   const intensity = finiteNonNegativeScalar(env.intensity, 1, warnings, 'HDRI intensity');
   const raw = readRawNumericHdriPayload(env.hdri);
   if (raw.kind === 'raw') {
-    return resolveRawHdriAverage(raw.payload, intensity, warnings);
+    const rotationY = finiteRotationY(env.rotationY, warnings);
+    return resolveRawHdriAverage(raw.payload, intensity, rotationY, warnings);
   }
 
   if (raw.kind === 'malformed') {
@@ -201,8 +221,13 @@ function resolveHdriWithExtensionResolver(
 function resolveRawHdriAverage(
   payload: RawNumericHdriPayload,
   intensity: number,
+  rotationY: number,
   warnings: string[],
 ): HybridResolvedEnvironment {
+  // B3 — directional IBL payload (PBRT 2D distribution). Built from the same raw
+  // pixels; additive to the scalar skyTint/skyIrradiance below (which stay the
+  // fallback). Null for an all-black map (the scalar path then yields 0 irradiance).
+  const directional = buildDirectionalEnv(payload) ?? undefined;
   const sum: HybridSkyVec3 = [0, 0, 0];
   let weightSum = 0;
   let clampedSamples = 0;
@@ -230,9 +255,15 @@ function resolveRawHdriAverage(
       `HDRI raw payload had ${clampedSamples} non-finite or negative radiance sample(s); clamped them to 0.`,
     );
   }
-  warnings.push(
-    'HDRI raw payload is reduced to a solid-angle-weighted average color; directional lighting and rotationY are not represented by walkaround-hybrid sky scalars.',
-  );
+  if (directional !== undefined) {
+    warnings.push(
+      'HDRI raw payload resolved to a directional IBL map (equirect + importance CDFs); the skyTint/skyIrradiance scalars below are the no-directional fallback only.',
+    );
+  } else {
+    warnings.push(
+      'HDRI raw payload is reduced to a solid-angle-weighted average color (no directional data — all-black or degenerate map); directional lighting and rotationY are not represented by walkaround-hybrid sky scalars.',
+    );
+  }
 
   if (weightSum <= 0) {
     return {
@@ -267,7 +298,19 @@ function resolveRawHdriAverage(
     ],
     skyIrradiance: maxChannel * intensity,
     warnings,
+    ...(directional !== undefined
+      ? { directional, rotationY, directionalIntensity: intensity }
+      : {}),
   };
+}
+
+function finiteRotationY(value: number | undefined, warnings: string[]): number {
+  if (value === undefined) return 0;
+  if (!Number.isFinite(value)) {
+    warnings.push('HDRI rotationY is not finite; defaulting to 0.');
+    return 0;
+  }
+  return value;
 }
 
 function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {

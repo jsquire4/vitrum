@@ -56,6 +56,11 @@ export interface ProbeUpdateFrameParamsInput {
    *  (`probesPerFrame = ceil(totalProbes / divisor)`). Default 4 reproduces
    *  the historical hardcoded `/4` 4-frame full-grid cycle. */
   updateDivisor?: number;
+  /** H46-A — DDGI indirect-feedback gate. `true` (default) folds the
+   *  previous-frame irradiance atlas into the bounce surface (the
+   *  infinite-bounce diffuse EMA, maxBounces >= 2). `false` drops it →
+   *  direct-only probes (maxBounces == 1). NOT a PT bounce cap. */
+  indirectFeedback?: boolean;
 }
 
 /** Clamp the divisor to ≥ 1 so `probesPerFrame` never exceeds `totalProbes`. */
@@ -75,7 +80,12 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
     skyTint: [input.skyTint[0], input.skyTint[1], input.skyTint[2]] as const,
     skyIrradiance: input.skyIrradiance,
     glassMixScale: input.glassMixScale,
-    _pad2: 0,
+    // H46-A — default true (multi-bounce EMA) preserves the historical
+    // behaviour byte-for-byte (the old _pad2 wrote 0; here `true` writes 1,
+    // which is the value the gated `select` treats as "fold indirect", i.e.
+    // identical radiance to the pre-gate `direct + indirect`). Host sets false
+    // for maxBounces == 1.
+    indirectFeedback: (input.indirectFeedback ?? true) ? 1 : 0,
     _pad3: 0,
     _pad4: 0,
   });

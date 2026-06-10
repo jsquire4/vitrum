@@ -132,6 +132,13 @@ interface SceneBindGroupResources {
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
   /** H41 — packed point/spot analytic lights (binding 13). 64-byte stride. */
   analyticLightsBuffer: GPUBuffer;
+  /** B3 — directional IBL (bindings 15-19). Placeholders + envParams.hasEnv=0
+   *  for non-HDRI scenes (scalar-tint fallback, no-HDRI byte-identity). */
+  envMapTextureView: GPUTextureView;
+  envMarginalTextureView: GPUTextureView;
+  envConditionalTextureView: GPUTextureView;
+  envSampler: GPUSampler;
+  envParamsBuffer: GPUBuffer;
 }
 
 export function buildSceneBindGroup(
@@ -155,6 +162,11 @@ export function buildSceneBindGroup(
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
     { buffer: r.analyticLightsBuffer },             // 13 H41 analytic point/spot lights for shade NEE
     r.bvhRoughMetalTextureView,                     // 14 B1 per-tri roughness+metalness (r32uint texture)
+    r.envMapTextureView,                            // 15 B3 directional IBL radiance + per-texel pdf
+    r.envMarginalTextureView,                       // 16 B3 marginal inverse-CDF
+    r.envConditionalTextureView,                    // 17 B3 conditional inverse-CDF
+    r.envSampler,                                   // 18 B3 env sampler (textureLoad path; declared for layout)
+    { buffer: r.envParamsBuffer },                  // 19 B3 EnvParams uniform
   ]);
 }
 

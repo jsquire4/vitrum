@@ -41,6 +41,22 @@ vi.mock('../bvhEmissiveTexture.js', () => ({
   refreshEmissiveTexture: vi.fn(),
 }));
 
+// B3 — directional IBL env resources create GPU textures/sampler/uniform; mock
+// the host helper so the test stays device-free (same pattern as beer/emissive).
+const mockEnv = () => ({
+  map: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+  marginal: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+  conditional: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+  sampler: {},
+  paramsBuffer: { destroy: vi.fn() },
+});
+vi.mock('../environmentTexture.js', () => ({
+  createPlaceholderEnvironment: vi.fn(() => mockEnv()),
+  uploadEnvironment: vi.fn(() => mockEnv()),
+  clearEnvironment: vi.fn(() => mockEnv()),
+  disposeEnvironment: vi.fn(),
+}));
+
 import { BvhBufferHost } from '../BvhBufferHost.js';
 
 function mockDevice(): GPUDevice {

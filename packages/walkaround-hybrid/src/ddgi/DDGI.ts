@@ -208,6 +208,17 @@ export class DDGI {
   }
 
   /**
+   * H46-A — forward the engine's `maxBounces`-derived indirect-feedback gate to
+   * the underlying ProbeUpdatePass. `true` = multi-bounce diffuse EMA
+   * (maxBounces >= 2, default); `false` = direct-only probes (maxBounces == 1).
+   * Forwarded from `HybridEngineFrameOrchestrator` so it doesn't reach through
+   * to `DDGI.pass` directly.
+   */
+  setIndirectFeedback(enabled: boolean): void {
+    this._pass.setIndirectFeedback(enabled);
+  }
+
+  /**
    * Return the read-side atlas GPU textures from the underlying
    * ProbeUpdatePass. Forwarded from `HybridEngineFrameOrchestrator`.
    */

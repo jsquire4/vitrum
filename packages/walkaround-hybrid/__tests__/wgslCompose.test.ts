@@ -79,6 +79,7 @@ import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { LIGHT_TREE_WGSL } from '../src/shaders/lightTree.wgsl.js';
 import { REGIR_WGSL } from '../src/shaders/regir.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
+import { ENVIRONMENT_SAMPLE_WGSL } from '../src/shaders/environmentSample.wgsl.js';
 import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
@@ -218,14 +219,15 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(COMMON_WGSL).toContain('tlasNodeCount:');
   });
 
-  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
-    // RIS_MODULE.requires === ['restirPHat', 'regir']. `regir` requires
-    // `lightTree` (which requires `common`), so the dep-first DFS emits:
+  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + ENVIRONMENT_SAMPLE_WGSL + RIS_WGSL', () => {
+    // RIS_MODULE.requires === ['restirPHat', 'regir', 'environmentSample'].
+    // `regir` requires `lightTree` (which requires `common`); `environmentSample`
+    // requires [], so the dep-first DFS emits:
     // common (via restirPHat) → restirPHat → lightTree (via regir) → regir →
-    // ris. The ReGIR grid-sampling read path lands between the light-tree
-    // traversal and the RIS kernel; both share the @group(3) buffer binding.
+    // environmentSample → ris. B3 — environmentSample lands just before the RIS
+    // kernel (its env bindings 15-19 + directional lookup/importance helpers).
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
+      COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + ENVIRONMENT_SAMPLE_WGSL + RIS_WGSL,
     );
   });
 
@@ -255,6 +257,9 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     // 'stainedGlassShade' (lo_sg_caustic / lo_sg_aperture). It requires only
     // 'common' (already emitted), so it contributes exactly
     // STAINED_GLASS_SHADE_WGSL immediately before SHADE_WGSL.
+    // B3 — SHADE_MODULE.requires now ends with 'environmentSample' (the sky-miss
+    // pixel samples the directional IBL map). It requires [] (common already
+    // emitted), so it contributes ENVIRONMENT_SAMPLE_WGSL immediately before SHADE_WGSL.
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL +
       SURFACE_TEXTURES_WGSL +
@@ -262,6 +267,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       OCTAHEDRAL_CORE_WGSL +
       SAMPLE_CASCADE_C0_WGSL +
       STAINED_GLASS_SHADE_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
       SHADE_WGSL,
     );
   });
@@ -299,7 +305,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
   // composition is pinned below (focused-module sources concatenated in the
   // pass's declared `requires` order, deps-first, deduped).
-  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+ppgTreeLayout) + RIS_GI', () => {
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+ppgTreeLayout) + environmentSample + RIS_GI', () => {
     // W9 guided sampling — risGi now requires `ppgPdf` (the gi-ris dTree
     // pdf-eval + guided sampler). ppgPdf requires only `ppgTreeLayout` (the
     // 2026-06-09 equal-area fix dropped its octahedralCore dependency — it now
@@ -317,6 +323,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       DDGI_SAMPLE_WGSL +
       PPG_TREE_LAYOUT_WGSL +
       PPG_PDF_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
       RIS_GI_WGSL,
     );
   });

@@ -26,6 +26,57 @@ export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
   isConverged: false,
 };
 
+/**
+ * H20-A — sky-only present for the empty-scene-ready state.
+ *
+ * When the scene has zero mesh primitives the engine reaches `'ready'` WITHOUT
+ * a pipeline or BVH (see HybridEngineLifecycle `_runInitChain` — "empty scene;
+ * ready without BVH/pipeline"). Before this path such frames returned SKIP on
+ * every call and the host's swap chain was never written (a clean canvas mount
+ * would present whatever the browser cleared it to). This is the minimal honest
+ * v1: clear the swap-chain view to the flat sky colour (`skyTint *
+ * skyIrradiance`) via a single device-level clear render pass — no compute, no
+ * pipeline, no BVH. The walkaround sky is a scalar tint today (no directional
+ * IBL on this stack), so a flat sky fill is the radiometrically-faithful
+ * empty-scene background. Returns a genuine `kind:'rendered'` FrameOutput so a
+ * host observing renderFrame sees a presented frame, not a skip.
+ *
+ * `clearValue` is the linear-sRGB sky radiance the swap chain expects; the
+ * composite path elsewhere writes linear values into the same (typically
+ * `*-unorm`/`*-srgb`) swap format, so we match that convention by writing the
+ * linear tint directly. The alpha is 1 to fully cover the target.
+ */
+function presentSkyOnly(
+  device: GPUDevice,
+  swapView: GPUTextureView,
+  skyTint: readonly [number, number, number],
+  skyIrradiance: number,
+): FrameOutput {
+  // Flat sky radiance = tint × irradiance, clamped non-negative. Values may
+  // exceed 1 (HDR sky); the swap-chain attachment clamps on write as usual.
+  const r = Math.max(0, skyTint[0] * skyIrradiance);
+  const g = Math.max(0, skyTint[1] * skyIrradiance);
+  const b = Math.max(0, skyTint[2] * skyIrradiance);
+  const encoder = device.createCommandEncoder({ label: 'hybrid-sky-only-present' });
+  const pass = encoder.beginRenderPass({
+    label: 'hybrid-sky-only-present',
+    colorAttachments: [{
+      view: swapView,
+      loadOp: 'clear',
+      storeOp: 'store',
+      clearValue: { r, g, b, a: 1 },
+    }],
+  });
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  return {
+    kind: 'rendered',
+    primaryRadiance: asBackendTexture<'webgpu', GPUTextureView>(swapView),
+    samplesAccumulated: 1,
+    isConverged: false,
+  };
+}
+
 // Column-major mat4 multiply, matching WGSL `a * b` for the camera matrices.
 function multiplyMat4ColumnMajor(a: Float32Array, b: Float32Array): Float32Array {
   const out = new Float32Array(16);
@@ -521,15 +572,42 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   const dbg = deps.telemetry.dbg;
   const pipeline = deps.subsystems.pipeline;
   const bvh = deps.subsystems.bvhBuffers;
+  // H20-A — empty-scene-ready: the engine is 'ready' with a retained Scene that
+  // carries zero primitives, so the init chain skipped BVH/pipeline build (see
+  // HybridEngineLifecycle "empty scene; ready without BVH/pipeline"). Present a
+  // flat sky-only frame rather than skipping forever. Distinguished from
+  // "pipeline not yet built" (a non-empty scene mid-init) by the retained
+  // scene's primitive count: only a genuinely empty scene takes this path.
+  const isEmptySceneReady =
+    pipeline == null &&
+    bvh == null &&
+    deps.flags.state === 'ready' &&
+    deps.subsystems.lastScene != null &&
+    deps.subsystems.lastScene.primitives.length === 0;
+  if (isEmptySceneReady) {
+    const skyView = input.swapChainView as GPUTextureView | undefined;
+    if (!skyView) {
+      if (dbg) dbg.skipNoSwapView++;
+      return HYBRID_FRAME_SKIP_OUTPUT;
+    }
+    if (dbg) dbg.framesDispatched++;
+    return presentSkyOnly(
+      deps.flags.device,
+      skyView,
+      deps.lighting.skyTint,
+      deps.lighting.skyIrradiance,
+    );
+  }
   if (!pipeline) {
     if (dbg) dbg.skipNoPipeline++;
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
   if (!bvh) {
-    // H20 — bvh is null when the engine is in empty-scene mode (e.g. after
-    // removePrimitive removes the last primitive). The engine is 'ready' but
-    // presents nothing: renderFrame returns SKIP every call until setScene
-    // provides mesh geometry. The sky-only present path is a road-to-100 item.
+    // H20 — bvh is null when the engine is in a transient no-geometry state
+    // (e.g. mid-init after a topology change). The engine is 'ready' but
+    // presents nothing: renderFrame returns SKIP every call until the BVH
+    // publishes. (The genuinely-empty-scene case is handled above by the
+    // sky-only present.)
     if (dbg) dbg.skipNoBvh++;
     return HYBRID_FRAME_SKIP_OUTPUT;
   }

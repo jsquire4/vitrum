@@ -309,7 +309,15 @@ describe('H46 — HybridEngine construction warnings', () => {
     };
   }
 
-  it('does not warn when maxBounces is 4 (the default)', async () => {
+  // H46-A — maxBounces is now a REAL control surface (the DDGI indirect-feedback
+  // gate), NOT a deferred warn-only echo. Semantics on this realtime stack:
+  //   maxBounces == 1  ⇒ direct-only DDGI probes
+  //   maxBounces >= 2  ⇒ infinite-bounce diffuse equilibrium (default; all
+  //                      values >= 2 behave identically — the EMA converges
+  //                      regardless of the integer)
+  // So values >= 1 are honoured silently. Only < 1 (which cannot be honoured as
+  // authored) warns. The old "warns when maxBounces ≠ 4" behaviour is gone.
+  it('does not warn for the default maxBounces (4)', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
     new HybridEngine(makeStubOpts({ maxBounces: 4 }) as never);
     const bounceWarns = warnSpy.mock.calls.filter(
@@ -318,14 +326,32 @@ describe('H46 — HybridEngine construction warnings', () => {
     expect(bounceWarns).toHaveLength(0);
   });
 
-  it('warns when maxBounces ≠ 4', async () => {
+  it('does NOT warn for maxBounces=8 (>= 2 is a valid multi-bounce regime, H46-A)', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
     new HybridEngine(makeStubOpts({ maxBounces: 8 }) as never);
     const bounceWarns = warnSpy.mock.calls.filter(
       (c) => String(c[0]).includes('maxBounces'),
     );
+    expect(bounceWarns).toHaveLength(0);
+  });
+
+  it('does NOT warn for maxBounces=1 (direct-only probes — a valid honoured regime)', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    new HybridEngine(makeStubOpts({ maxBounces: 1 }) as never);
+    const bounceWarns = warnSpy.mock.calls.filter(
+      (c) => String(c[0]).includes('maxBounces'),
+    );
+    expect(bounceWarns).toHaveLength(0);
+  });
+
+  it('warns when maxBounces < 1 (cannot be honoured; treated as direct-only)', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never);
+    const bounceWarns = warnSpy.mock.calls.filter(
+      (c) => String(c[0]).includes('maxBounces'),
+    );
     expect(bounceWarns.length).toBeGreaterThan(0);
-    expect(String(bounceWarns[0]![0])).toContain('8');
+    expect(String(bounceWarns[0]![0])).toContain('0');
   });
 
   it('warns when causticStrategy is manifold-nee', async () => {

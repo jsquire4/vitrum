@@ -27,7 +27,10 @@ export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   { name: 'skyTint',        type: 'vec3f' },
   { name: 'skyIrradiance',  type: 'f32'   },
   { name: 'glassMixScale',  type: 'f32'   },
-  { name: '_pad2',          type: 'u32'   },
+  // H46-A — DDGI indirect-feedback gate (was the inert _pad2 slot; byte size
+  // unchanged). 1 = multi-bounce diffuse EMA (maxBounces >= 2, default),
+  // 0 = direct-only probes (maxBounces == 1).
+  { name: 'indirectFeedback', type: 'u32' },
   { name: '_pad3',          type: 'u32'   },
   { name: '_pad4',          type: 'u32'   },
 ] as const);

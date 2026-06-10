@@ -97,7 +97,7 @@ describe('updateUBO — ReGIR packing + offsets', () => {
       dims: [16, 8, 12],
       candidatesPerCell: 32,
       survivorsPerCell: 8,
-      gridFloatOffset: 84, // 7 nodes × 12
+      gridFloatOffset: 84, // arbitrary passthrough value (UBO field round-trip test)
     };
     updateUBO(dev, {} as GPUBuffer, fakeInputs(), { enabled: false, mixAlpha: 0 }, regir);
     const f32 = new Float32Array(backing.buffer);
@@ -221,7 +221,7 @@ describe('ReGIRCoordinator', () => {
     // Dims clamped to [1, cellsPerAxis]; a ~4-unit cube at cellSize ~0.5 ⇒ 8.
     expect(u.dims[0]).toBeGreaterThanOrEqual(1);
     expect(u.dims[0]).toBeLessThanOrEqual(8);
-    expect(u.gridFloatOffset).toBe(7 * 12); // nodeCount × LIGHT_TREE_FLOATS_PER_NODE
+    expect(u.gridFloatOffset).toBe(7 * 16); // nodeCount × LIGHT_TREE_FLOATS_PER_NODE (B8: 12→16)
     expect(u.candidatesPerCell).toBe(16);
     expect(u.survivorsPerCell).toBe(4);
   });
@@ -245,7 +245,7 @@ describe('ReGIRCoordinator', () => {
     expect(c.live).toBe(true);
     // Emitter rebuild grew the tree (more nodes) → offset shifts.
     c.refreshAfterEmitterRebuild({ lightTreeNodeCount: 15, lightTreeEnabled: true });
-    expect(c.uboState().gridFloatOffset).toBe(15 * 12);
+    expect(c.uboState().gridFloatOffset).toBe(15 * 16); // B8: stride 12→16
     // Tree went degenerate → ReGIR drops to the tree/flat path.
     c.refreshAfterEmitterRebuild({ lightTreeNodeCount: 0, lightTreeEnabled: false });
     expect(c.live).toBe(false);
