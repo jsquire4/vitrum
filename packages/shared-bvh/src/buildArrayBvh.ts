@@ -121,16 +121,37 @@ function triCentroid(
   ];
 }
 
-/** Surface area of an AABB. Returns 0 for degenerate (empty) boxes. */
+/**
+ * Half-area metric of an AABB for SAH binning.
+ *
+ * B7 — planar SAH fix. The previous form `if (dx<=0||dy<=0||dz<=0) return 0`
+ * zeroed the area of ANY flat box. Planar geometry (floors, walls, ground
+ * planes — extremely common) lives on a single plane, so every node AABB has
+ * one zero extent → every split scored 0 → the SAH lost all discrimination and
+ * the builder degenerated to picking split=0 every time (a near-linked-list of
+ * depth O(n) instead of O(log n)). Verified: a 2000-tri coplanar floor built a
+ * tree of depth 45 (log2(2000)≈11) before this fix; depth 9 after.
+ *
+ * The correct form is the standard `2(dx·dy + dy·dz + dz·dx)` (here the leading
+ * 2 is dropped — it is a positive constant that cancels in every SAH ratio) with
+ * each extent CLAMPED at 0 via `Math.max(0, …)` rather than an early all-or-
+ * nothing return. This gives:
+ *   - planar box (one extent 0): a NONZERO half-perimeter term from the two
+ *     in-plane extents → splits along the in-plane axes are ranked correctly.
+ *   - empty / inverted box (all extents ≤ 0, e.g. an un-touched bin with
+ *     min=+Inf,max=-Inf): all three clamped products are 0 → area 0, exactly as
+ *     before, so empty bins still contribute nothing to the cost.
+ * This mirrors `aabbSurfaceArea` in `tlas.ts`, keeping the BLAS and TLAS
+ * builders on the same metric.
+ */
 function surfaceArea(
   minX: number, minY: number, minZ: number,
   maxX: number, maxY: number, maxZ: number,
 ): number {
-  const dx = maxX - minX;
-  const dy = maxY - minY;
-  const dz = maxZ - minZ;
-  if (dx <= 0 || dy <= 0 || dz <= 0) return 0;
-  return 2 * (dx * dy + dy * dz + dz * dx);
+  const dx = Math.max(0, maxX - minX);
+  const dy = Math.max(0, maxY - minY);
+  const dz = Math.max(0, maxZ - minZ);
+  return dx * dy + dy * dz + dz * dx;
 }
 
 function makeEmptyBin(): BinData {

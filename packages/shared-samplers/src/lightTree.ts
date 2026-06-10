@@ -45,6 +45,34 @@
 // Public types
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * B8 — Conty-Estévez orientation cone for a tree node.
+ *
+ * `axis` is the (unit) average emission direction of all emitters in the subtree.
+ * `thetaO` is the half-angle that bounds the spread of the constituent emitters'
+ * emission axes (the "normal cone"); `thetaE` is the additional half-angle of each
+ * emitter's own emission lobe beyond its axis (a cosine-lobe area light emits over
+ * a hemisphere ⇒ `thetaE = π/2`; an isotropic point light emits over the full
+ * sphere). The pair `(thetaO, thetaE)` lets the importance function cull a node
+ * whose emitters cannot illuminate the shading point (it lies outside the union of
+ * their emission cones), per Conty Estévez & Kulla 2018 §5.
+ *
+ * The "full sphere" sentinel (`thetaO = π`, `thetaE = π`, `axis = (0,0,0)`) means
+ * "no orientation information / emits everywhere" — the cone importance term is
+ * then identically 1, recovering the pre-B8 spatial-only behaviour byte-for-byte.
+ */
+export interface OrientationCone {
+  /** Unit average emission axis (or (0,0,0) for an unoriented / full-sphere node). */
+  readonly axis: readonly [number, number, number];
+  /** Half-angle bounding the spread of emitter axes in the subtree (radians). */
+  readonly thetaO: number;
+  /** Emission-lobe half-angle beyond the axis (radians; π/2 = hemisphere, π = sphere). */
+  readonly thetaE: number;
+}
+
+/** Full-sphere cone: emits in every direction ⇒ cone importance term ≡ 1. */
+const FULL_SPHERE_CONE: OrientationCone = { axis: [0, 0, 0], thetaO: Math.PI, thetaE: Math.PI };
+
 export interface LightTreeNode {
   /** Index into emitter list (-1 for internal nodes) */
   readonly emitterIndex: number;
@@ -58,6 +86,12 @@ export interface LightTreeNode {
   readonly leftChild: number;
   /** Right child index (-1 if leaf) */
   readonly rightChild: number;
+  /**
+   * B8 — merged orientation cone of this subtree (Conty-Estévez 2018). Defaults to
+   * the full sphere when the build input omits per-emitter directions, so the cone
+   * importance term is 1 and behaviour matches the pre-B8 spatial-only tree.
+   */
+  readonly cone: OrientationCone;
 }
 
 export interface LightTreeBuildInput {
@@ -70,6 +104,22 @@ export interface LightTreeBuildInput {
     min: readonly [number, number, number];
     max: readonly [number, number, number];
   }>;
+  /**
+   * B8 (OPTIONAL) — per-emitter orientation cone. When omitted (or an entry is
+   * omitted) the emitter is treated as a full-sphere emitter (no orientation
+   * culling) — identical to the pre-B8 behaviour. Supply this for oriented
+   * emitters (spotlights, single-sided area lights) so the importance function
+   * can cull nodes whose emitters point away from the shading point.
+   *
+   * `axis` need not be normalised — the builder normalises it. `thetaE` defaults
+   * to π/2 (a one-sided cosine lobe) when an entry is present but omits it;
+   * `thetaO` defaults to 0 (a single sharp axis) for a leaf.
+   */
+  readonly cones?: ReadonlyArray<{
+    readonly axis: readonly [number, number, number];
+    readonly thetaO?: number;
+    readonly thetaE?: number;
+  } | undefined>;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -82,6 +132,64 @@ interface BuildItem {
   centroid: readonly [number, number, number];
   aabbMin: readonly [number, number, number];
   aabbMax: readonly [number, number, number];
+  cone: OrientationCone;
+}
+
+function vlen(v: readonly [number, number, number]): number {
+  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+/**
+ * Merge two orientation cones into one that bounds both, per Conty Estévez & Kulla
+ * 2018 §4.4 ("Combining lights into clusters"). The merged cone shares a single
+ * axis (the wider cone's axis rotated toward the other so both are covered); its
+ * `thetaO` is grown so both input cones' axes lie within it, and its `thetaE` is
+ * the max of the two. A full-sphere input collapses the result to full-sphere.
+ */
+function mergeCones(a: OrientationCone, b: OrientationCone): OrientationCone {
+  const la = vlen(a.axis);
+  const lb = vlen(b.axis);
+  // A degenerate (zero-axis) or already-full-sphere cone unions to full-sphere.
+  if (la < 1e-8 || lb < 1e-8 || a.thetaO >= Math.PI || b.thetaO >= Math.PI) {
+    const thetaE = Math.min(Math.PI, Math.max(a.thetaE, b.thetaE));
+    return { axis: [0, 0, 0], thetaO: Math.PI, thetaE };
+  }
+  // Ensure `A` is the wider cone (larger thetaO) — EK keeps the wider as the base.
+  let A = a;
+  let B = b;
+  if (B.thetaO > A.thetaO) { A = b; B = a; }
+  const laA = vlen(A.axis);
+  const laB = vlen(B.axis);
+  const ax: readonly [number, number, number] = [A.axis[0] / laA, A.axis[1] / laA, A.axis[2] / laA];
+  const bx: readonly [number, number, number] = [B.axis[0] / laB, B.axis[1] / laB, B.axis[2] / laB];
+  const cosD = Math.max(-1, Math.min(1, ax[0] * bx[0] + ax[1] * bx[1] + ax[2] * bx[2]));
+  const dTheta = Math.acos(cosD);
+  const thetaE = Math.min(Math.PI, Math.max(A.thetaE, B.thetaE));
+  // If B's cone is already enclosed by A's, A is the answer.
+  if (Math.min(dTheta + B.thetaO, Math.PI) <= A.thetaO) {
+    return { axis: ax, thetaO: A.thetaO, thetaE };
+  }
+  const thetaO = (A.thetaO + dTheta + B.thetaO) * 0.5;
+  if (thetaO >= Math.PI) {
+    return { axis: [0, 0, 0], thetaO: Math.PI, thetaE };
+  }
+  // New axis: rotate A's axis toward B's by (thetaO - A.thetaO) in the plane the
+  // two axes span. Build that plane's tangent via Gram-Schmidt.
+  const rot = thetaO - A.thetaO;
+  let tx = bx[0] - cosD * ax[0];
+  let ty = bx[1] - cosD * ax[1];
+  let tz = bx[2] - cosD * ax[2];
+  const tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
+  let axis: readonly [number, number, number];
+  if (tl < 1e-8) {
+    axis = ax; // axes parallel — no rotation needed
+  } else {
+    tx /= tl; ty /= tl; tz /= tl;
+    const cr = Math.cos(rot);
+    const sr = Math.sin(rot);
+    axis = [ax[0] * cr + tx * sr, ax[1] * cr + ty * sr, ax[2] * cr + tz * sr];
+  }
+  return { axis, thetaO, thetaE };
 }
 
 /**
@@ -139,6 +247,7 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
       aabbMax: item.aabbMax,
       leftChild: -1,
       rightChild: -1,
+      cone: item.cone,
     });
     return nodeIndex;
   }
@@ -196,10 +305,14 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
     aabbMax,
     leftChild: -1, // patched below
     rightChild: -1, // patched below
+    cone: FULL_SPHERE_CONE, // patched below
   });
 
   const leftChildIdx = buildSubtree(leftItems, nodes);
   const rightChildIdx = buildSubtree(rightItems, nodes);
+
+  // B8 — merge the children's cones into this interior node's bounding cone.
+  const mergedCone = mergeCones(nodes[leftChildIdx]!.cone, nodes[rightChildIdx]!.cone);
 
   // Patch the internal node now that we know child indices
   // (nodes are readonly, so we replace the entry at nodeIndex)
@@ -210,6 +323,7 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
     aabbMax,
     leftChild: leftChildIdx,
     rightChild: rightChildIdx,
+    cone: mergedCone,
   };
 
   return nodeIndex;
@@ -255,11 +369,14 @@ export function buildLightTree(input: LightTreeBuildInput): {
    */
   _powerPrefixSumDebug: Float32Array;
 } {
-  const { powers, centroids, aabbs } = input;
+  const { powers, centroids, aabbs, cones } = input;
   const n = powers.length;
   if (n === 0) throw new Error('buildLightTree: at least one emitter required');
   if (centroids.length !== n || aabbs.length !== n) {
     throw new Error('buildLightTree: powers/centroids/aabbs length mismatch');
+  }
+  if (cones != null && cones.length !== n) {
+    throw new Error('buildLightTree: cones length mismatch (must equal powers.length when supplied)');
   }
 
   // Build item list
@@ -268,12 +385,28 @@ export function buildLightTree(input: LightTreeBuildInput): {
     const power = powers[i]!;
     const centroid = centroids[i]!;
     const aabb = aabbs[i]!;
+    // B8 — per-emitter orientation cone. Omitted ⇒ full sphere (no culling),
+    // exactly the pre-B8 behaviour. A present entry defaults thetaE to π/2 (a
+    // one-sided cosine emission lobe) and thetaO to 0 (a single sharp axis).
+    const ci = cones?.[i];
+    let cone: OrientationCone;
+    if (ci == null || vlen(ci.axis) < 1e-8) {
+      cone = FULL_SPHERE_CONE;
+    } else {
+      const l = vlen(ci.axis);
+      cone = {
+        axis: [ci.axis[0] / l, ci.axis[1] / l, ci.axis[2] / l],
+        thetaO: ci.thetaO ?? 0,
+        thetaE: Math.min(Math.PI, ci.thetaE ?? Math.PI / 2),
+      };
+    }
     items.push({
       emitterIndex: i,
       power,
       centroid,
       aabbMin: aabb.min,
       aabbMax: aabb.max,
+      cone,
     });
   }
 
@@ -297,28 +430,29 @@ export function buildLightTree(input: LightTreeBuildInput): {
 }
 
 /**
- * Pack the node array into a Float32Array suitable for GPU texture upload.
+ * Pack the node array into a Float32Array suitable for GPU texture / storage
+ * upload.
  *
- * Layout per node (10 logical floats, padded to 12 for RGBA32F 3-texel alignment):
+ * Layout per node (15 logical floats, padded to 16 for RGBA32F 4-texel
+ * alignment — B8 grew the stride from 12 to carry the orientation cone):
  *   [0]  emitterIndex (as float; -1.0 for internal)
  *   [1]  totalPower
  *   [2]  leftChild (as float; -1.0 for leaf)
  *   [3]  rightChild (as float; -1.0 for leaf)
- *   [4]  aabbMin.x
- *   [5]  aabbMin.y
- *   [6]  aabbMin.z
- *   [7]  aabbMax.x
- *   [8]  aabbMax.y
- *   [9]  aabbMax.z
- *   [10] padding (0)
- *   [11] padding (0)
+ *   [4]  aabbMin.x        [5] aabbMin.y      [6] aabbMin.z
+ *   [7]  aabbMax.x        [8] aabbMax.y      [9] aabbMax.z
+ *   [10] cone.axis.x      [11] cone.axis.y   [12] cone.axis.z
+ *   [13] cos(cone.thetaO) — cosine of the normal-cone half-angle
+ *   [14] cos(min(π, thetaO + thetaE)) — cosine of the total emission half-angle
+ *   [15] padding (0)
  *
- * 3 texels × 4 components = 12 floats per node. This aligns to RGBA32F
- * texture uploads where the texture width = nodeCount and height = 3.
- * On the GPU, a given node at index `i` reads:
- *   texelFetch(lightTree, ivec2(i, 0), 0)  → [emitterIdx, power, leftChild, rightChild]
- *   texelFetch(lightTree, ivec2(i, 1), 0)  → [aabbMin.xyz, aabbMax.x]
- *   texelFetch(lightTree, ivec2(i, 2), 0)  → [aabbMax.yz, pad, pad]
+ * Slots [13]/[14] store COSINES (not radians) so the GPU importance term avoids a
+ * per-node `acos`. A full-sphere node has axis (0,0,0) and both cosines = −1
+ * (cos π), which the importance term reads as "no orientation culling" ⇒ cone
+ * factor 1, recovering the pre-B8 spatial-only descent byte-for-byte.
+ *
+ * 4 texels × 4 components = 16 floats per node. Aligns to RGBA32F uploads where
+ * texture width = nodeCount and height = 4.
  */
 export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float32Array {
   const FLOATS_PER_NODE = LIGHT_TREE_FLOATS_PER_NODE;
@@ -336,20 +470,25 @@ export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float3
     out[base + 7] = node.aabbMax[0];
     out[base + 8] = node.aabbMax[1];
     out[base + 9] = node.aabbMax[2];
-    out[base + 10] = 0; // padding
-    out[base + 11] = 0; // padding
+    out[base + 10] = node.cone.axis[0];
+    out[base + 11] = node.cone.axis[1];
+    out[base + 12] = node.cone.axis[2];
+    out[base + 13] = Math.cos(Math.min(Math.PI, node.cone.thetaO));
+    out[base + 14] = Math.cos(Math.min(Math.PI, node.cone.thetaO + node.cone.thetaE));
+    out[base + 15] = 0; // padding
   }
   return out;
 }
 
 /**
- * 12 floats per node in the packed flat layout consumed by `packLightTreeForGPU`
- * and the WGSL `sampleLightTree` traversal. The WGSL side reads the same stride
- * from a flat `array<f32>` storage buffer (NOT a texture — the walkaround ReSTIR
- * path is compute-only and consumes the tree as a storage buffer); see
+ * 16 floats per node in the packed flat layout consumed by `packLightTreeForGPU`
+ * and the WGSL `sampleLightTree` traversal (B8 grew this from 12 to carry the
+ * orientation cone). The WGSL side reads the same stride from a flat
+ * `array<f32>` storage buffer (NOT a texture — the walkaround ReSTIR path is
+ * compute-only and consumes the tree as a storage buffer); see
  * `walkaround-hybrid/src/shaders/lightTree.wgsl.ts`.
  */
-export const LIGHT_TREE_FLOATS_PER_NODE = 12;
+export const LIGHT_TREE_FLOATS_PER_NODE = 16;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Spatially-aware traversal (CPU reference; mirrored 1:1 by the WGSL kernel)
@@ -371,11 +510,55 @@ export function dist2ToAabb(
 }
 
 /**
- * Importance of a node for a shading point `x`: `power / max(dist², floor)`.
+ * Cone importance factor (B8): how much a node's emitters can illuminate the
+ * shading point, given the merged orientation cone `(axis, thetaO, thetaE)`.
+ *
+ * Let `θ` be the angle between the emission axis and the direction from the node
+ * (AABB centre) TO the point. The emitters can reach the point only if it lies
+ * within the total emission cone of half-angle `thetaO + thetaE`. We return
+ * `max(0, cos(max(0, θ − thetaO)))` clamped to 0 beyond `thetaO + thetaE`:
+ *   - inside the normal cone (θ ≤ thetaO): factor 1;
+ *   - in the lobe skirt (thetaO < θ ≤ thetaO+thetaE): a smooth cosine falloff;
+ *   - outside (θ > thetaO+thetaE): 0 — the node is culled from selection.
+ * This is the Conty-Estévez 2018 orientation term, in cosine space using the
+ * packed `cosThetaO`/`cosThetaOE` so no `acos` is needed. A full-sphere node
+ * (cosThetaO = cosThetaOE = −1, axis length 0) returns 1 identically.
+ *
+ * `cosThetaO` = cos(thetaO); `cosThetaOE` = cos(min(π, thetaO+thetaE)).
+ */
+function coneImportanceFactor(
+  axis: readonly [number, number, number],
+  cosThetaO: number,
+  cosThetaOE: number,
+  px: number, py: number, pz: number,
+  cx: number, cy: number, cz: number,
+): number {
+  const al = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+  if (al < 1e-12) return 1.0;             // full sphere / unoriented — no culling
+  let dx = px - cx, dy = py - cy, dz = pz - cz;
+  const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dl < 1e-12) return 1.0;             // point at the centre — cannot orient
+  const inv = 1.0 / dl;
+  dx *= inv; dy *= inv; dz *= inv;
+  const aInv = 1.0 / Math.sqrt(al);
+  const cosTheta = (axis[0] * aInv) * dx + (axis[1] * aInv) * dy + (axis[2] * aInv) * dz;
+  if (cosTheta < cosThetaOE) return 0.0;  // outside the total emission cone — cull
+  if (cosTheta >= cosThetaO) return 1.0;  // inside the normal cone — full factor
+  // Lobe skirt: cos(θ − thetaO) = cosθ·cosθO + sinθ·sinθO.
+  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+  const sinThetaO = Math.sqrt(Math.max(0, 1 - cosThetaO * cosThetaO));
+  return Math.max(0, cosTheta * cosThetaO + sinTheta * sinThetaO);
+}
+
+/**
+ * Importance of a node for a shading point `x`:
+ *   `(power / max(dist², floor)) · coneFactor`.
  * The `dist2Floor` clamp prevents a divide-by-zero / unbounded importance when
  * the shading point lies inside (or on) the node AABB. It is the SAME floor the
  * RIS geometry term uses (`ubo.emitterDist2Floor`) so near-light behaviour stays
- * consistent between selection and evaluation. Matches WGSL `lt_importance`.
+ * consistent between selection and evaluation. The B8 cone factor (1 for
+ * full-sphere nodes) culls oriented emitters that point away from the point.
+ * Matches WGSL `lt_importance`.
  */
 export function nodeImportance(
   node: LightTreeNode,
@@ -384,7 +567,15 @@ export function nodeImportance(
 ): number {
   if (node.totalPower <= 0) return 0;
   const d2 = Math.max(dist2ToAabb(px, py, pz, node.aabbMin, node.aabbMax), dist2Floor);
-  return node.totalPower / d2;
+  const cx = 0.5 * (node.aabbMin[0] + node.aabbMax[0]);
+  const cy = 0.5 * (node.aabbMin[1] + node.aabbMax[1]);
+  const cz = 0.5 * (node.aabbMin[2] + node.aabbMax[2]);
+  const cosThetaO = Math.cos(Math.min(Math.PI, node.cone.thetaO));
+  const cosThetaOE = Math.cos(Math.min(Math.PI, node.cone.thetaO + node.cone.thetaE));
+  const coneFactor = coneImportanceFactor(
+    node.cone.axis, cosThetaO, cosThetaOE, px, py, pz, cx, cy, cz,
+  );
+  return (node.totalPower / d2) * coneFactor;
 }
 
 /**

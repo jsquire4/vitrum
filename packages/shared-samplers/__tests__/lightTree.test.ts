@@ -318,12 +318,12 @@ describe('33-F leaf PDF partition', () => {
 });
 
 describe('packLightTreeForGPU', () => {
-  it('produces 12 floats per node (3 RGBA texels)', () => {
+  it('produces 16 floats per node (4 RGBA texels — B8 cone-carrying stride)', () => {
     const { nodes } = buildLightTree(makeInput([4.0, 6.0]));
     const packed = packLightTreeForGPU(nodes);
 
-    // 3 nodes × 12 floats = 36 floats
-    expect(packed).toHaveLength(nodes.length * 12);
+    // 3 nodes × 16 floats = 48 floats
+    expect(packed).toHaveLength(nodes.length * 16);
   });
 
   it('leaf node has emitterIndex in slot 0, totalPower in slot 1, children -1 in slots 2+3', () => {
@@ -337,13 +337,21 @@ describe('packLightTreeForGPU', () => {
     expect(packed[3]).toBeCloseTo(-1); // rightChild
   });
 
-  it('padding slots 10 and 11 are zero', () => {
+  it('unoriented (default) nodes pack a full-sphere cone: axis 0, both cosines -1', () => {
+    // No cones supplied ⇒ every node is full-sphere. Cone slots [10..12] are the
+    // zero axis and [13]/[14] are cos(π) = -1, so lt_coneFactor returns 1 (no
+    // orientation culling) — byte-identical descent to the pre-B8 tree.
     const { nodes } = buildLightTree(makeInput([1.0, 2.0]));
     const packed = packLightTreeForGPU(nodes);
 
     for (let i = 0; i < nodes.length; i++) {
-      expect(packed[i * 12 + 10]).toBe(0);
-      expect(packed[i * 12 + 11]).toBe(0);
+      const b = i * 16;
+      expect(packed[b + 10]).toBe(0); // cone.axis.x
+      expect(packed[b + 11]).toBe(0); // cone.axis.y
+      expect(packed[b + 12]).toBe(0); // cone.axis.z
+      expect(packed[b + 13]).toBeCloseTo(-1, 6); // cos(thetaO) = cos(π)
+      expect(packed[b + 14]).toBeCloseTo(-1, 6); // cos(thetaO+thetaE) = cos(π)
+      expect(packed[b + 15]).toBe(0); // padding
     }
   });
 });

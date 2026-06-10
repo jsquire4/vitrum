@@ -218,3 +218,83 @@ describe('degenerate guards — descent always terminates with a positive pdf', 
     expect(s.pdf).toBeCloseTo(0.5, 6); // single internal node, 50/50
   });
 });
+
+// ── B8 — orientation-cone selection ──────────────────────────────────────────
+describe('B8 orientation cones — oriented emitters culled from behind', () => {
+  // Two equal-power emitters at x=±4 (y=z=0). Emitter 0 (x=-4) emits toward +x
+  // (axis (1,0,0), narrow lobe); emitter 1 (x=+4) emits toward +x as well. A
+  // shading point at x=0 sits in FRONT of emitter 0 (it shines toward +x, the
+  // point is at +x of it) but BEHIND emitter 1 (it shines toward +x, away from
+  // the point which is at -x of it). With cones, emitter 1 must get near-zero
+  // selection probability; emitter 0 takes essentially all of it.
+  function orientedInput(): LightTreeBuildInput {
+    return {
+      powers: [10, 10],
+      centroids: [[-4, 0, 0], [4, 0, 0]],
+      aabbs: [pointAabb(-4, 0, 0), pointAabb(4, 0, 0)],
+      // Both emit toward +x with a narrow ±10° lobe (thetaE small). thetaO=0
+      // (single sharp axis per leaf).
+      cones: [
+        { axis: [1, 0, 0], thetaO: 0, thetaE: Math.PI / 18 },
+        { axis: [1, 0, 0], thetaO: 0, thetaE: Math.PI / 18 },
+      ],
+    };
+  }
+
+  it('a directional emitter pointing AWAY from the point gets near-zero selection pdf', () => {
+    const { nodes } = buildLightTree(orientedInput());
+    const x: [number, number, number] = [0, 0, 0];
+    const pFront = lightTreePdfCPU(nodes, x, FLOOR, 0); // x=-4, faces toward point
+    const pBack = lightTreePdfCPU(nodes, x, FLOOR, 1);  // x=+4, faces away
+    // The back-facing emitter is culled (cone factor 0): pdf ~0; front takes all.
+    expect(pBack).toBeLessThan(1e-6);
+    expect(pFront).toBeGreaterThan(0.999);
+    // Still a partition.
+    expect(pFront + pBack).toBeCloseTo(1.0, 6);
+  });
+
+  it('full-sphere cones (no orientation) reproduce the spatial-only partition exactly', () => {
+    // Same geometry/powers but NO cones → both emitters are full-sphere. The
+    // partition must match a build with cones omitted entirely (byte-identical
+    // behaviour: the B8 cone term is identically 1).
+    const geom = {
+      powers: [10, 10],
+      centroids: [[-4, 0, 0] as const, [4, 0, 0] as const],
+      aabbs: [pointAabb(-4, 0, 0), pointAabb(4, 0, 0)],
+    };
+    const noCones = buildLightTree(geom);
+    const fullSphere = buildLightTree({
+      ...geom,
+      cones: [{ axis: [0, 0, 0] }, { axis: [0, 0, 0] }], // zero axis ⇒ full sphere
+    });
+    const x: [number, number, number] = [0, 0, 0];
+    for (let e = 0; e < 2; e++) {
+      expect(lightTreePdfCPU(fullSphere.nodes, x, FLOOR, e))
+        .toBeCloseTo(lightTreePdfCPU(noCones.nodes, x, FLOOR, e), 10);
+    }
+    // Symmetric geometry, equal power, both full-sphere ⇒ 50/50.
+    expect(lightTreePdfCPU(noCones.nodes, x, FLOOR, 0)).toBeCloseTo(0.5, 6);
+  });
+
+  it('the descent still terminates with a positive pdf when ALL emitters face away', () => {
+    // Both emitters face +x; the point is at +x of BOTH (so both face it) —
+    // flip: put the point BEHIND both (at large +x while both face -x).
+    const { nodes } = buildLightTree({
+      powers: [10, 10],
+      centroids: [[-4, 0, 0], [4, 0, 0]],
+      aabbs: [pointAabb(-4, 0, 0), pointAabb(4, 0, 0)],
+      cones: [
+        { axis: [-1, 0, 0], thetaO: 0, thetaE: Math.PI / 18 },
+        { axis: [-1, 0, 0], thetaO: 0, thetaE: Math.PI / 18 },
+      ],
+    });
+    const x: [number, number, number] = [100, 0, 0]; // far +x, both face -x ⇒ culled
+    const rng = makeLcg(11);
+    const s = sampleLightTreeCPU(nodes, x, FLOOR, rng);
+    // Both cone factors 0 ⇒ importance sum 0 at the root ⇒ 50/50 fallback. The
+    // descent must still return a reachable leaf with a strictly-positive pdf
+    // (unbiasedness: the selection pdf is divided out, never 0 for a hit leaf).
+    expect(s.emitterIndex).toBeGreaterThanOrEqual(0);
+    expect(s.pdf).toBeGreaterThan(0);
+  });
+});

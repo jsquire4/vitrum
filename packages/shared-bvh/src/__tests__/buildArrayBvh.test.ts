@@ -130,6 +130,50 @@ describe('buildArrayBvh', () => {
     expect(Array.from(built.reorderedTriMaterialIds)).toEqual([11, 22]);
   });
 
+  it('7. planar SAH (B7): a coplanar floor grid builds a balanced tree (depth ~log n)', () => {
+    // Regression pin for B7. A coplanar floor (all triangles on the y=0 plane,
+    // dy=0 for every node AABB) used to zero `surfaceArea` for every split, so the
+    // SAH lost all discrimination and the builder produced a near-linked-list
+    // (verified depth 45 for 2000 tris before the half-perimeter fix). The fix
+    // ranks splits along the in-plane axes, restoring a balanced tree (depth 9).
+    const NQUADS = 1000;
+    const side = Math.ceil(Math.sqrt(NQUADS));
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const mats: number[] = [];
+    let v = 0; let q = 0;
+    for (let i = 0; i < side && q < NQUADS; i += 1) {
+      for (let j = 0; j < side && q < NQUADS; j += 1, q += 1) {
+        positions.push(i, 0, j, 0, i + 1, 0, j, 0, i + 1, 0, j + 1, 0, i, 0, j + 1, 0);
+        indices.push(v, v + 1, v + 2, 0, v, v + 2, v + 3, 0);
+        mats.push(0, 0);
+        v += 4;
+      }
+    }
+    const built = buildArrayBvh(new Float32Array(positions), new Uint32Array(indices), new Uint32Array(mats));
+
+    const u32 = new Uint32Array(built.bvhNodes.buffer);
+    let maxDepth = 0; let maxLeaf = 0; let leafTris = 0;
+    const walk = (idx: number, d: number): void => {
+      maxDepth = Math.max(maxDepth, d);
+      const split = u32[idx * 8 + 7]!;
+      if ((split >>> 16) === LEAFNODE_FLAG) {
+        const c = split & 0xffff;
+        maxLeaf = Math.max(maxLeaf, c);
+        leafTris += c;
+        return;
+      }
+      walk(idx + 1, d + 1);
+      walk(idx + (u32[idx * 8 + 6] ?? 0), d + 1);
+    };
+    walk(0, 0);
+
+    const triCount = NQUADS * 2; // 2000
+    expect(leafTris).toBe(triCount);          // set-preservation
+    expect(maxLeaf).toBeLessThanOrEqual(4);   // leaves stay bounded
+    expect(maxDepth).toBeLessThanOrEqual(16); // balanced (pre-fix was 45)
+  });
+
   it('6. deterministic: identical inputs → byte-identical bvhNodes', () => {
     const positions = makeStride4Positions(18);
     const indices = new Uint32Array([

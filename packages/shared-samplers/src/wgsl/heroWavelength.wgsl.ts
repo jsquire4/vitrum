@@ -29,6 +29,15 @@ fn heroSampleCmf(lambdaNm: f32) -> vec3f {
   );
 }
 
+// A3 — D65 spectral power at λ, normalised so that a flat reflectance S≡1
+// illuminated by it reconstructs to RGB (1,1,1) through heroWavelengthToRgb. The
+// /HERO_D65_Y_INTEGRAL division matches the Jakob-Hanika reflectance white point
+// (jakobHanika.ts buildColorTables): reflectance is defined relative to D65, so
+// the transport's neutral "white" light is the D65 SPD, not equal-energy.
+fn heroSampleD65Normalised(lambdaNm: f32) -> f32 {
+  return heroSampleTable(lambdaNm, HERO_D65) * (HERO_Y_CMF_INTEGRAL / max(HERO_D65_Y_INTEGRAL, 1e-9));
+}
+
 fn heroMisMixturePdf(lambdaNm: f32) -> f32 {
   let x = heroSampleTable(lambdaNm, HERO_X_CMF) / HERO_X_CMF_INTEGRAL;
   let y = heroSampleTable(lambdaNm, HERO_Y_CMF) / HERO_Y_CMF_INTEGRAL;

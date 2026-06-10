@@ -29,7 +29,7 @@ export {
   sampleLightTreeCPU,
   lightTreePdfCPU,
 } from './lightTree.js';
-export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
+export type { LightTreeNode, LightTreeBuildInput, OrientationCone } from './lightTree.js';
 // Canonical GPU light-tree traversal WGSL (binding-agnostic). Both
 // walkaround-hybrid (ReSTIR-DI candidate selection) and pt-webgpu (NEE
 // importance sampling) build their light-tree shader from this one source.
