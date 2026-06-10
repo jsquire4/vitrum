@@ -68,11 +68,7 @@ const EXPECTATION_TABLE = {
   "pt/caustic-photon":    { expected: "ok" }, // R7a-3 fixed: capacity 32 fits default maxStorageBufferBindingSize
   "pt/spectral+photon":  { expected: "ok" }, // item 21: spectral×photon-map gather fix (heroLambda passed to sppmGather)
   "pt/lite-tier":         { expected: "ok" },
-  "pt/restirPtReuse":     {
-    expected: "known-residual",
-    reason: "ReSTIR-PT compositing not yet wired into beauty image (pt-webgpu wired-but-inert)",
-    planItem: "R7b",
-  },
+  "pt/restirPtReuse":     { expected: "ok" }, // A1 done: composite megakernel folds rpt indirect into beauty (kernel.wgsl.ts:308-312, gpuResources.ts:930)
   "pt/skinned-mesh":      { expected: "ok" },
   "pt/analytic-sphere":   { expected: "ok" },
   "pt/point-light":       { expected: "ok" },

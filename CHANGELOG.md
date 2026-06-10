@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (trust-remediation rounds R7a–R7d, 2026-06-10 — commits a1b85b1, ba1429d, 3f3aa6d, 9c3e6ba, 1a8ab08)
+
+- **`onError` engine error surface (R7d, 9c3e6ba):** `Engine.onError(cb)→unsubscribe` added to the core contract. `EngineError` carries `kind: 'gpu-validation' | 'gpu-internal' | 'device-lost' | 'context-lost' | 'render'`, `fatal`, and `raw`. All three backends wire `uncapturederror` (deduped, once per distinct message per 32 frames) and `device.lost` (fatal; state→`'error'`). `attachVitrum` gains an `onEngineError` option; `<VitrumCanvas>` gains an `onEngineError` prop. The audit's worst systemic finding — walkaround ran with a validation error every frame with no host visibility — is now structurally closed.
+- **`@vitrum/gltf-adapter` new package (R7d, 9c3e6ba):** zero-dependency glTF 2.0 → `@vitrum/core` `Scene` adapter. Handles GLB + JSON, sparse accessors, flat-normal generation, node-hierarchy transform flattening, and multi-primitive meshes. Full `pbrMetallicRoughness` + 9 KHR material extensions mapped to `MaterialSpec`; pluggable image decode (ImageBitmap default). Honest v1 exclusions (animations/skins-as-rest-pose/cameras/morphs/draco) warn per-file. 30 fixture tests; root suite now 13 packages.
+- **`captureFrame` pixel-readback API (R7d, 1a8ab08):** `Engine.captureFrame(opts)→Promise<CapturedFrame>` on the core contract. Returns `{ data: Float32Array, width, height }` in linear HDR RGBA, top-left origin. `'linear'` mode (default) reads the pre-tonemap accumulation buffer; `'output'` reads the post-tonemap present surface. pt-webgpu reads `accumTexture`/`presentTexture`; pt-webgl2 uses `gl.readPixels` with row-flip. walkaround reads `resolvedTexture` for `'linear'` and rejects `'output'` (swap-chain is host-owned — documented honest limitation). `attachVitrum` handle passthrough.
+- **`pickPrimitive` real on all 3 backends (R7d, 1a8ab08):** the core-contract stub is now a real CPU raycast on all backends. Shared `pickPrimitiveCpu` helper in `@vitrum/shared-bvh` uses Möller–Trumbore over world-space triangles with instanced transforms, analytic sphere intersection, and skinned rest-pose documentation. pt-webgl2 gains its first debug surface (`capabilities.debugSurface` now `true`).
+- **Anisotropic GGX on `@vitrum/pt-webgpu` (R7b, ba1429d):** `material.anisotropy` + `material.anisotropyRotation` now actually render. Heitz VNDF generalized to (αx, αy) with Burley aspect ratio + rotation tangent-frame; eval/sample/pdf trio consistent. `anisotropy=0` reduces exactly to the isotropic path (byte-identical). 10-test MC harness pins sampler/pdf CV agreement at 0/0.5/0.9 anisotropy.
+- **Behavioral gate (R7a, a1b85b1):** `tools/behavioral-gate/` permanent — 26-config matrix (17 pt-webgpu + 8 walkaround + 1 spectral×photon-map) on lavapipe. Asserts zero GPU errors + non-black per config; `npm run behavioral-gate`; CI job. 26/26 PASS.
+- **`CameraLike`, `QualityTier`, quality presets public (R7d, 9c3e6ba):** `CameraLike` exported from `@vitrum/engine`; `QualityTier`, `QUALITY_PRESETS`, `resolveQualityPreset` exported from `@vitrum/walkaround-hybrid`. 10 export smoke tests.
+- **`examples/README.md` + black-frame debugging runbook (R7d, 9c3e6ba):** 7-app inventory with run instructions, URL params, and capture protocol. `docs/debugging-black-frames.md` — 8-check runbook built from the repo's real failure catalog (symptom→check→fix, behavioral-gate quick command).
+- **giState v4 — PPG warm restore (R7c, 3f3aa6d):** `giState` export/import now includes an optional PPG section: the trained sTree/dTree guiding distributions serialize with bounds/cap compatibility validation; import restores warm guided sampling without retraining. Transient window state deliberately excluded (documented). v3 snapshots still import (cold PPG). 8 byte-identity round-trip tests.
+- **Spectral × photon-map gather spectralized (R7c, 3f3aa6d):** `sppmGather` now resolves photon RGB flux at the path's hero wavelength in spectral mode (matching all other RGB emission sources). Non-spectral byte-identical. `pt/spectral+photon` behavioral config now passes.
+
+### Changed (trust-remediation rounds R7a–R7d)
+
+- **SPPM streaming-window correction (R7a, a1b85b1):** the Wave 4 SPPM was clearing cell counters per frame (discarding photons; variance diverged as r→0). Fixed to accumulate. **Semantics clarification:** the current estimator is a streaming-window (frozen radius, insertion-normalized flux), not Hachisuka progressive SPPM. True progressive SPPM (A4-progressive) is a follow-up item.
+- **`envMapIntensity` unified on `@vitrum/pt-webgpu` (R7b, ba1429d):** the BSDF-escape env miss path now scales by the last-shaded surface's `envMapIntensity`, matching the NEE half and `@vitrum/pt-webgl2`'s design.
+- **`lightMap` depth-gating unified (R7b, ba1429d):** `@vitrum/pt-webgpu` now applies `lightMap` on camera-visible hits only (bounce == 0), matching `@vitrum/pt-webgl2`.
+- **pt-webgl2 `capabilities.debugSurface` now `true` (R7d, 1a8ab08):** honest flip — pt-webgl2 now has a real `pickPrimitive` implementation.
+- **walkaround procedural-sky ledger grade `'unsupported'`→`'approximate'` (R7b, ba1429d):** matches the scalar-degrade-on-walkaround reality.
+
+### Removed (trust-remediation rounds R7a–R7d)
+
+- **IES profile dead chain removed (R7b, ba1429d):** the IES GLSL function, uniform, struct field, texture unit, and packer lane were dead (wired to hardcoded null; never in the core contract; fork residue). Removed. The packer lane is now documented padding.
+
+### Fixed (trust-remediation rounds R7a–R7d)
+
+- **BDPT emitter-vertex throughput bias (R7a, a1b85b1):** `fPrev = vec3f(1.0)` while the body multiplied `cosPrev/pdfFwd` (=π for cosine-sampled emitters) — throughput ×π per emitter extension; isotropic branch had a similar bug. `fPrev = INV_PI` restores unity; `pdfRev` now stores the true reverse density (swapped-argument `brdfDirectionalPdf`).
+- **Checkerboard × real-denoiser gap-fill (R7a, a1b85b1):** a new `cb-prefill` compute pass gap-fills stale parity pixels before the denoiser slot when checkerboard + svgf-real/bmfr/neural/oidn-final. Checkerboard-off byte-identical; pass graph 18→19.
+- **Procedural-sky Preetham NaN (R7a, a1b85b1):** `Math.min(30, undefined) = NaN` caused the Preetham bake to NaN 16 896 texels when optional fields were omitted. Per-field defaults added; regression tests pin partial + bare specs.
+- **walkaround `rcEnabled` naga validation error (R7a, a1b85b1):** the naga-compat rename table was missing five `rc_tlas_*` → canonical TLAS identifier mappings; ptr-storage stripping left undefined identifiers → GPU validation error every frame on `rcEnabled`. Fixed in `nagaFix.mjs`.
+- **Spectral CMF upload guard fail-loud (R7b, ba1429d):** missing CMF upload now warns + degrades instead of the previous silent 1e-6-floor overbright.
+- **`fresnel` "blown out pixels" TODO resolved (R7b, ba1429d):** explained by B9 Kulla-Conty multiscatter. 50 lines of dead commented-out GLSL predecessors + a dead `transmissionEval` block removed.
+- **`environmentTexture` churn fix (R7b, ba1429d):** same-size uploads now reuse the GPU allocation (no destroy/recreate) and preserve bind-group identity.
+- **dof × equirect regime guard (R7c, 3f3aa6d):** physically-undefined DOF + equirect combination now warns and forces DOF off.
+- **Analytic × lite phantom count (R7c, 3f3aa6d):** `frameParams` zeroes `analyticCount` on lite tier — no phantom UBO analytic-light count for the analytic-less lite kernel.
+
 ### Added (v1-closure campaign, 2026-06-10 — commits 6e90443…caab499)
 
 - **Real SPPM photon map (A4, `06910e2`):** stochastic progressive photon mapping replaces the per-pixel 32-photon approximation on `@vitrum/pt-webgpu`. Persistent spatial hash grid (group-3 bindings 6–8), photon-emission pass from point/spot lights through the BVH, camera-hit SPPM gather with α=2/3 Hachisuka-Jensen progressive radius shrink seeded from the scene AABB. The 0.35 world-unit gather radius and ×1.25 brightness fudge are gone. Full-tier only (warn+degrade on lite); off-path gated; 23 hash-grid/radius tests.

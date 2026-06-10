@@ -66,8 +66,9 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 
 | Package                       | What you import                                        |
 | ----------------------------- | ------------------------------------------------------ |
-| `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath) |
-| `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats` types |
+| `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath), `CameraLike` |
+| `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats`, `EngineError` types; `Engine.onError`, `Engine.captureFrame`, `Engine.pickPrimitive` |
+| `@vitrum/gltf-adapter`        | `gltfToScene(buffer, opts?)→Promise<GltfToSceneResult>` — glTF 2.0 / GLB ingestion, zero deps |
 | `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
 
 Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
@@ -125,6 +126,7 @@ context loss, device-limit errors, NaN pixels) see
 @vitrum/engine             Drop-in facade — createEngine, attachVitrum, VitrumCanvas
   ↓
 @vitrum/core               Engine contract; types only, no GPU code
+@vitrum/gltf-adapter       glTF 2.0 / GLB → @vitrum/core Scene (zero-dependency)
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
 @vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + GPU dispatch + receiver)
 @vitrum/pt-webgl2          Native WebGL2 PT

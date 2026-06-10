@@ -8,17 +8,19 @@
 
 ## Where we actually are
 
-> **Updated 2026-06-10 at the END of v1-closure rounds 1–6 (commits 6e90443 onward).**
+> **Updated 2026-06-10 at the END of trust-remediation rounds R7a–R7d (commits a1b85b1, ba1429d, 3f3aa6d, 9c3e6ba, 1a8ab08).**
 > Per `plan/v1-closure-plan-2026-06-10.md §0`, "100%" = everything fully implemented.
-> Landed across the campaign: env pillar COMPLETE (hdri native), skinning native both PT
-> backends, real SPPM (A4), Preetham sky, tonemap/exposure/colorspace on all 3 backends,
-> BDPT estimator coherence both backends, RC finished (A7), B12 lite-tier light/env
-> texture packing, B14/B16, N-directional emitters, mesh-area NEE cap, starter neural
-> checkpoint VENDORED (`tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model`),
-> robustness (context loss, size guards), CI + WGSL(48) + GLSL(6-combo) compile gates,
-> examples/ tree (H57, b2fe5c7 — NOT a gap). **Implementation distance remaining:** A6 NRC
-> semantics, A8 GRIS-default gate, sun-NEE-default gate, B2 DDGI glossy bounce, glass
-> refracted GI (B1 tail), production-quality neural weights (starter only), H-residue
+> **R7a–R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
+> GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
+> silent-GPU-error class dead); `@vitrum/gltf-adapter` new package (glTF 2.0 → core Scene);
+> `captureFrame` pixel-readback API + `pickPrimitive` real on all 3 backends;
+> `CameraLike`/`QualityTier`/presets public; examples/ + debugging runbook docs; IES dead
+> chain removed; spectral×photon-map gather spectralized; giState v4 (PPG warm restore);
+> SPPM streaming-window corrected (non-progressive — see A4-progressive below).
+> **Implementation distance remaining:** A4-progressive (true Hachisuka SPPM, not
+> streaming-window); A6 NRC semantics; A8 GRIS-default gate; sun-NEE-default gate; B2 DDGI
+> glossy bounce; glass refracted GI (B1 tail); production-quality neural weights (starter
+> only); `TextureRef.texCoord` on pt-webgl2 (documented unkept promise); H-residue
 > (H5/H21/H24-cluster/H32/H34/H35). **Big validation tail: V28-B** — GPU A/B recapture for
 > every render-changing landing (improvement confirmations, not regression suspects).
 
@@ -48,7 +50,7 @@ the target is to make each one real and consumed — not to demote it.
 | **A1** | ✅ **DONE (Campaign 2 Wave A) — V28 radiometric pending** | `pt-webgpu/src/index.ts:844-918,1026-1036`; `wgsl/pathTrace/restirPt{Spatial,Compose,Resolve,Temporal,Producer}` | **Implemented:** producer→temporal→**spatial (5-neighbour GRIS, no /p_src)**→resolve, then a COMPOSITE megakernel folds the reconnection-indirect into the BEAUTY accumulator via an E0-direct / indirect estimator split (producer-dropped specular pixels fall through to the full path). OFF-path byte-identical. `restirPtReuse:true`+full-tier only. | Equal-spp variance-reduction A/B vs megakernel on real GPU (V28-B). | done (impl) |
 | **A2** | ✅ **DONE (Wave A + v1-closure Wave 4) — sTree splits + runaway fixed; atomics saturate** | `walkaround-hybrid/src/ppg/sTree.ts:179`, `pipeline/PPGCoordinator.ts:157-455`, `wgsl/ppgUpdate.wgsl.ts:241` | **Implemented:** per-cell atomic sample counters → GPU readback → `splitOverflowLeaves`; children seeded via `cloneDTree`; PPG_FLUX_DECAY=0.5 Müller per-window decay. **Wave 4 fix (06910e2):** flux atomics now saturate instead of u32-wrapping (clamp before atomic add); stale "single global cell" JSDoc deleted (code-verified: grep returns 0 hits). | Multi-region guiding-localization A/B on real GPU (V28-B). | done (impl) |
 | **A3** | ✅ **DONE (Wave B) — true spectral reflectance** | `wgsl/pathTrace/shadePrologue.wgsl.ts:127-147`, `material.wgsl.ts:732-769` | **Implemented:** in spectral mode the RGB albedo is replaced by a SCALAR spectral reflectance S(λ) at the hero λ via Jakob-Hanika per-material coeffs (solved at pack time), broadcast to all channels so throughput·brdf·NEE·MIS carries a genuine single-wavelength quantity. Material stride 26→27 (stale adjoint-stride latent bug fixed). Flat-spectrum invariant harness pins RGB-mode byte-identity. **Documented approximation:** emitter/env chroma is reconstructed as a D65-relative tristimulus SPD (not authored spectra); materials lacking packed coeffs fall back to RGB-luminance. | Per-material Jakob-Hanika lane for pt-webgl2; dispersive-scene A/B vs RGB (V28-B). | done (impl) |
-| **A4** | ✅ **DONE (v1-closure Wave 4, 06910e2) — real SPPM** | `pt-webgpu/src/wgsl/pathTrace/caustic.wgsl.ts:889-922`, `sppmBindings.wgsl.ts`, `pt-webgpu/src/scene/uploadSceneBuffers.ts` | **Implemented (user decision: BUILD):** stochastic progressive photon mapping replaces the per-pixel 32-photon approximation. Persistent spatial hash grid in group-3 bindings 6–8; photon-emission pass from point/spot lights through BVH; camera-hit SPPM gather with α=2/3 progressive radius shrink seeded from the scene AABB. The 0.35 world-unit radius and ×1.25 brightness fudge are GONE. Full-tier only (warn+degrade); off-path gated; 23 hash-grid/radius tests. shader-gate 48/48. | Radiometric A/B vs forward-traced oracle (V28-B). | done (impl) |
+| **A4** | ✅ **DONE (v1-closure Wave 4, 06910e2) — streaming-window photon gather; A4-progressive follow-up open** | `pt-webgpu/src/wgsl/pathTrace/caustic.wgsl.ts:889-922`, `sppmBindings.wgsl.ts`, `pt-webgpu/src/scene/uploadSceneBuffers.ts` | **Implemented (user decision: BUILD):** streaming-window photon estimator at a frozen scale-aware radius with insertion-normalized flux. Persistent spatial hash grid in group-3 bindings 6–8; photon-emission pass from point/spot lights through BVH; camera-hit gather. The per-pixel 32-photon approximation, the 0.35 world-unit fudge radius, and ×1.25 brightness fudge are GONE. Full-tier only (warn+degrade); off-path gated; 23 hash-grid/radius tests. **R7a correction (a1b85b1):** the initial Wave 4 form cleared cell counters per frame (discarding photons, radius shrinking, variance diverging) — fixed to accumulate. True Hachisuka progressive SPPM (A4-progressive) tracked as a follow-up: requires per-cell accumulated photon count + unbounded growth (not a streaming window). | Radiometric A/B vs forward-traced oracle (V28-B); A4-progressive implementation. | done (streaming-window impl) / A4-progressive open |
 | **A5** | ✅ **DONE (v1-closure Wave 3, 1d31f0b) — BDPT estimator coherence both backends** | `pt-webgl2/src/glsl/composeTraceGlsl.ts:275-383`, `pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts:351-431` | **Implemented:** (A) pt-webgl2 light-subpath RNG re-seeds row-independently (`vec2(gl_FragCoord.x, 0)`) so the three rows of one vertex trace the SAME path (were three independent paths = garbage vertices); confined to FEATURE_BDPT subpath branch — off-path byte-identical. (B) pt-webgpu BDPT estimator coherence: light-subpath extension now samples ONE real-BSDF direction at the previous vertex used for BOTH the trace and the stored throughput/pdfFwd (was a sampled-then-discarded direction); pdfRev patched per PBRT §16.3 reciprocal convention. Goldens re-pinned. | A/B vs forward-traced Cornell (V28-B). | done (impl) |
 | **A6** | ✅ **NRC: from opt-in/biased to a validated consumable** | `walkaround-hybrid/src/neural/nrc/*` | Online training (forward+backprop+Adam) is genuinely live on GPU, inference is consumed — but OFF by default, acknowledged-biased, and the zero-padded training tail trains on zero-target samples. | Fix tail-padding bias; converge/quality A/B vs reference; decide default-on tier; document the bias bound. | L |
 | **A7** | ✅ **DONE (v1-closure Wave 5, caab499) — RC finished (user decision: keep+finish)** | `walkaround-rc/src/`, `shade.wgsl.ts`, `HybridEngineRC.ts` | **Implemented:** RC receiver replaced with correct MC irradiance estimator `E=(4π/N)·ΣL·cos` (was `Le/Wsum·N·0.5` — ray-count-dependent; N=16/N=64 now agree ≈π in tests); real env map bound into the last cascade (was permanently 1×1 black); point/spot lights added to the RC light model (binding 15, DDGI conventions, fingerprint-gated upload); chromatic sun from scene's directional emitter (was achromatic); scene-scale shadow bias. | Real-GPU cascade A/B at N=16/N=64 (V28-B). | done (impl) |
@@ -75,7 +77,7 @@ the *default* render "hero-fidelity" rather than "good real-time."
 | **B8** | ✅ **DONE (Wave B) — light-tree orientation cones** | `shared-samplers/src/lightTree.ts:48-74,387` | **Implemented:** Conty-Estévez orientation cone (axis + thetaO + thetaE) per node, stride 12→16; spot/area producers wired; full-sphere sentinel keeps the cone term ≡1 (byte-identical when unoriented). | A/B on directional-emitter scenes (V28-B). | done (impl) |
 | **B9** | ✅ **DONE (Wave B) — GGX multiscatter (all 3 backends)** | pt-webgpu `material.wgsl.ts`; pt-webgl2 `glsl/render/get_surface_record_function.glsl.js`; walkaround `ggxBrdf.wgsl.ts` | **Implemented:** Kulla-Conty multiscatter energy compensation in all three GGX evals (LUT + furnace test on pt-webgpu; furnace-pinned on pt-webgl2, lite-mode skipped). | — | done |
 | **B10** | ✅ **DONE (Wave B) — physical refraction transmittance** | `wgsl/pathTrace/bsdf.wgsl.ts` | **Implemented:** physical Fresnel-consistent transmittance replaces the phenomenological `mix(vec3(1),baseColor,0.15)` tint. | — | done |
-| **B11** | ◻ **pt-webgl2 disc-area native emitter** | `pt-webgl2/src/scene/lightsTexture.ts` | `disc-area` emitters are lowered to rect approximation in the packer (note from `emitterPacking.ts:584` — same as pt-webgpu). `procedural-sky` demoted to `'unsupported'` on both PT backends (ledger `promiseLedger.ts:333`, code-verified). The THREE-era reference (`three-bindings/vitrumSceneToThree.ts:503,673`) is dead — those files were deleted. | Native disc-area emitter; decide procedural-sky on pt-webgl2 (implement or document as unsupported). | M |
+| **B11** | ✅ **pt-webgl2 disc-area NATIVE; pt-webgpu = 32-triangle fan (approximate)** | `pt-webgl2/src/scene/lightsTexture.ts`, `pt-webgpu/src/scene/emitterPacking.ts:128-197` | **pt-webgl2** packs `disc-area` emitters as `CIRC_AREA_LIGHT = 1` with concentric-disc sampling and `intersectsCircle` — geometrically exact. **pt-webgpu** lowers `disc-area` to an area-compensated 32-triangle fan (`discAreaPackedAsTriangles`; fan radius scaled so total area = π·r²) — geometrically approximate; ledger `disc-area` grade for pt-webgpu corrected to `'approximate'` (`promiseLedger.ts`). `procedural-sky` is `'unsupported'` on both PT backends (code-verified). | pt-webgpu native disc-area (32-fan → analytic disc NEE). | M (pt-webgpu only) |
 | **B12** | ◻ **DOCUMENTED (Wave B) — lite-tier fidelity cliff** | `webgpuLimits.ts:35-54`, `index.ts:426-439`, `wgsl/pathTrace/kernelLite.wgsl.ts` | **Wave B = binding-budget PROOF only** (the fidelity-cliff arithmetic, PINNED by `wgslLiteContract.test.ts`): on capped (≤10 storage buffer) adapters there is no headroom to add env importance + area-light MIS storage. The cliff is now documented, NOT closed. **Remaining honest gap:** lite texture-packing follow-up to fit HDRI importance + area-light MIS within the budget (or accept the documented cliff). | Texture-pack env CDF + tri-lights into the lite budget. | documented / lite texture-pack follow-up |
 
 ---
@@ -142,13 +144,16 @@ Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS do
   fork-vs-native A/Bs passed because they exercised exactly the paths that work
   (emissive-fold Cornell, glass, IBL-indirect, textures). Treat pt-webgl2's
   release-candidate label as suspended until H1–H5 land.
-- **B1 is WORSE than written:** metals are excluded from DIRECT light too, not just GI
-  (`shade.wgsl.ts:230,309` — lo_direct/lo_indirect both return 0 for isGlass||isMetal), so
-  metals are effectively unlit except emitter glow; and the comment's escape hatch ("the
-  path-traced fork") was deleted 2026-06-09. Also the material payload carries only
-  RGB888 + 4-bit transmission + 1-bit metal + 3-bit texId — authored roughness/metalness
-  never reach the BRDF (two hardcoded roughnesses, `shade.wgsl.ts:519-521`). Closing B1
-  properly requires widening the packed material lane, not just a shader change.
+- **B1 is DONE (Wave A):** the pre-Wave-A claim that metals were excluded from direct
+  light is stale. Current `shade.wgsl.ts:252` (`lo_analyticNEE`) gates only on `isGlass`;
+  `shade.wgsl.ts:333` (`lo_direct`) gates only on `isGlass` — metals receive both analytic
+  NEE and ReSTIR-DI direct light. `lo_indirectSpecular` (line 580) reflects the GI
+  reservoir via the GGX specular lobe for metals/glossy. DDGI's diffuse `lo_indirect`
+  (line 429) still exits early for `isGlass || isMetal`, but that is intentional — metals
+  consume `lo_indirectSpecular` instead (the DDGI cache is Lambertian-targeted; applying it
+  directly to a mirror-like metal would be physically wrong). Glass is the only material
+  that remains unlit by direct+indirect (refracted GI is out of scope — tracked in B11
+  and road-to-100).
 - **A2 (PPG) is two defects, not one:** beyond the sTree never splitting, ◻ the dTree's
   interior nodes never carry flux → descent is uniform above the leaf level AND
   `ppgEvalPdf` mismatches the actual sampling distribution → biased RIS when enabled
@@ -203,11 +208,14 @@ buckets that the A–D framing was missing:**
   what stops the next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
-  casualties — see B1/B13), and a dozen fields have zero consumers in ANY backend
-  (anisotropy*, envMapIntensity, aoMap, bumpMap, displacementMap, lightMap,
-  angularDiameter, castShadow/receiveShadow, tangents). Extends D3's "consumption tracked"
-  list with the verified full set; `denoiser` is additionally a silent no-op on both PT
-  backends for any value but `'oidn-final'` (H48).
+  casualties — see B1/B13), and a dozen fields have zero consumers in ANY backend. **R7b
+  update (ba1429d):** `anisotropy`/`anisotropyRotation` now consumed by pt-webgpu (Heitz
+  anisotropic GGX). Remaining zero-consumer fields: `envMapIntensity` (pt-webgpu unified
+  R7b; walkaround still scalar-tint only), `aoMap`, `bumpMap`, `displacementMap`, `lightMap`
+  (pt-webgpu camera-visible only R7b), `angularDiameter`, `castShadow`/`receiveShadow`,
+  `tangents`. `TextureRef.texCoord` on pt-webgl2 still zero consumption (documented unkept
+  promise, R7c). `denoiser` is a silent no-op on both PT backends for any value but
+  `'oidn-final'` (H48).
 
 ## Open decisions (need a call before building)
 

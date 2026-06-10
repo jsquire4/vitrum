@@ -144,10 +144,19 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgpu"] structural self-consistency', () =
     expect(ledger.supportedAnalyticShapes).toContain('h-channel-came');
   });
 
-  it('emitters are all "native"', () => {
-    for (const grade of Object.values(ledger.supportDetails.emitters)) {
-      expect(grade).toBe('native');
-    }
+  it('directional/rect-area/point/spot/mesh-area emitters are "native"', () => {
+    const e = ledger.supportDetails.emitters;
+    expect(e.directional).toBe('native');
+    expect(e['rect-area']).toBe('native');
+    expect(e.point).toBe('native');
+    expect(e.spot).toBe('native');
+    expect(e['mesh-area']).toBe('native');
+  });
+
+  it('disc-area emitter is "approximate" (32-triangle area-compensated fan, B11)', () => {
+    // pt-webgpu lowers disc-area to a 32-triangle fan (emitterPacking.ts:128-197,
+    // discAreaPackedAsTriangles). Geometrically approximate. pt-webgl2 is native.
+    expect(ledger.supportDetails.emitters['disc-area']).toBe('approximate');
   });
 
   it('accumulates is true (converged PT)', () => {

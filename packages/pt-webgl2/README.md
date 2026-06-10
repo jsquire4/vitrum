@@ -38,7 +38,7 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Emitters: directional, point, spot, rect-area, disc-area, mesh-area | Supported |
 | Environment: none, hdri | Supported (HDRI requires raw `{width, height, data}` RGB float payload) |
 | Spectral hero-wavelength (`spectral: true`) | Lit, achromatic-flat until Jakob coefficient upload (H2 partial) |
-| Bidirectional path tracing (`bdpt: true`) | Supported (A5, 2026-06-10): light-subpath passes are host-driven; renders bidirectionally. ANGLE (Chromium WebGL) disables BDPT via the `EXT_disjoint_timer_query` gate — unidirectional fallback on ANGLE drivers. See H5 for the ANGLE workaround. |
+| Bidirectional path tracing (`bdpt: true`) | Supported (A5, 2026-06-10): host opt-in (`bdpt: true`); light-subpath passes are driven on any driver. No ANGLE-specific gating exists — `EXT_disjoint_timer_query` is NOT used as a gate. |
 | `backgroundAlpha` | Supported (0 = transparent background; <1 forces alpha-composite regime) |
 | Analytic lights NEE (`lights.count`) | Supported (H1 fix) |
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
@@ -47,8 +47,8 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 
 ## Known gaps
 
-- **BDPT on ANGLE (Chromium/WebGL) drivers**: BDPT is implemented and host-driven (A5). On ANGLE-based drivers (Chromium WebGL) the light-subpath passes are disabled at runtime via a driver detection gate; the frame renders unidirectionally on those adapters. Non-ANGLE OpenGL/WebGL2 (Firefox, Safari, native drivers) runs full BDPT. Tracked in `items_to_fix §H5`.
-- **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid does not yet consume `rotationY` (no-op, documented).
+- **BDPT** (`bdpt: true`): BDPT is implemented and host-driven (A5). No ANGLE-specific gating exists — there is no `EXT_disjoint_timer_query` gate and no driver detection path. Pass `bdpt: true` to enable; any conformant WebGL2 driver runs full BDPT.
+- **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid also consumes `rotationY` (HybridEngine.ts:2061,2072 pass it through to DDGI and DDGI-probe-update; `environmentSample.wgsl.ts` applies `envRotateYNeg`).
 - **Mesh-area NEE**: mesh-area emitters are sampled via explicit triangle-light NEE (B4, 2026-06-10) — area-weighted random triangle selection with shadow ray. Also visible via emissive fold on direct camera hits.
 - **Spectral: achromatic-flat**: spectral mode traces the hero-wavelength path and reconstructs RGB via CIE CMF tables (H2 fix), but Jakob–Hanika material coefficients are not yet uploaded so spectral reflectance is a uniform tint over RGB. Tracked in road-to-100.
 
