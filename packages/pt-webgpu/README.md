@@ -131,7 +131,8 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` (same vertex count) patch in place; vertex/index-count and instance-count changes are absorbed via a targeted BLAS/TLAS repack (`incrementalPatchSupport.topology: true`).
-- **No texture maps:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling — textured PBR is a `pt-webgl`-only path today.
+- **No texture maps:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling in either native PT backend — textured PBR is a road-to-100 item for both `pt-webgpu` and `pt-webgl2`.
+- **`denoiser: 'oidn-final'` is NOT turnkey** — vitrum ships neither of the two required host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`, e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer dep installed in the host application. Missing either produces a clear error at construction time.
 ## Polish commands
 
 ```bash

@@ -298,4 +298,23 @@ export interface Engine {
    *  inverse-rendering path omit this method entirely; hosts MUST typeof-check
    *  before calling. See {@link InverseSessionOptions}. */
   createInverseSession?(opts: InverseSessionOptions): InverseSession;
+
+  // ── Experimental / backend-specific result buffers ───────────────────────
+
+  /**
+   * H14-C — Returns the EXPERIMENTAL ReSTIR-PT resolve-pass output buffer (the
+   * per-pixel reconnection-indirect estimate, one vec4f / px = 16 B). Present
+   * ONLY when the backend was constructed with `restirPtReuse: true` (gated on
+   * the `'pt-webgpu-restir-pt-reuse'` experimental feature) AND the reuse passes
+   * have been dispatched at least once (the buffer may be null before the first
+   * successful frame). The returned value is backend-opaque (`unknown`) so hosts
+   * must narrow it before use (e.g. cast to `GPUBuffer` when the backend is
+   * known to be pt-webgpu — see `capabilities.experimentalFeatures`).
+   *
+   * This result buffer is a SEPARATE debug output from the beauty image: the
+   * reuse path is validated in isolation before it composites into the beauty
+   * buffer (road-to-100 A1). Hosts MUST typeof-check before calling; backends
+   * that do not implement ReSTIR-PT reuse omit this method entirely.
+   */
+  getRestirPtResultBuffer?(): unknown | null;
 }

@@ -55,6 +55,16 @@ export type OidnReadbackFn = (
  * GPU → CPU readback of HDR color and optional G-buffer aux for OIDN.
  * Submits its own command buffer (call after the path-trace pass has landed).
  */
+/**
+ * H14-D — GPU → CPU readback of HDR color and optional G-buffer aux for OIDN.
+ * Submits its own command buffer (call after the path-trace pass has landed).
+ *
+ * All created GPUBuffers are tracked in a `created` array and destroyed in a
+ * `finally` block, so a rejected `mapAsync` (device lost, out of memory, etc.)
+ * never leaks GPU memory. The destroy-once guard (set membership) prevents
+ * double-destroy if a buffer appears in both the eager destroy path (albedo /
+ * normal after unmap) and the finally cleanup.
+ */
 export async function readOidnInputsFromTextures(
   device: GPUDevice,
   sources: OidnTextureSources,
@@ -67,11 +77,23 @@ export async function readOidnInputsFromTextures(
   const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8);
   const readSize = bytesPerRow * height;
 
+  // Track every buffer created so the finally block can destroy any that
+  // survive a rejection without double-destroying eagerly-cleaned ones.
+  const created: GPUBuffer[] = [];
+  const destroyed = new Set<GPUBuffer>();
+  const safeDestroy = (buf: GPUBuffer | null) => {
+    if (buf != null && !destroyed.has(buf)) {
+      destroyed.add(buf);
+      buf.destroy();
+    }
+  };
+
   const colorReadback = device.createBuffer({
     label: 'vitrum.pt-webgpu.oidn-readback-color',
     size: readSize,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
+  created.push(colorReadback);
 
   const encoder = device.createCommandEncoder({ label: 'vitrum.pt-webgpu.oidn-readback.encoder' });
   encoder.copyTextureToBuffer(
@@ -88,6 +110,7 @@ export async function readOidnInputsFromTextures(
       size: readSize,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
+    created.push(albedoReadback);
     encoder.copyTextureToBuffer(
       { texture: sources.albedo },
       { buffer: albedoReadback, bytesPerRow },
@@ -100,6 +123,7 @@ export async function readOidnInputsFromTextures(
       size: readSize,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
+    created.push(normalReadback);
     encoder.copyTextureToBuffer(
       { texture: sources.normalDepth },
       { buffer: normalReadback, bytesPerRow },
@@ -109,45 +133,50 @@ export async function readOidnInputsFromTextures(
 
   device.queue.submit([encoder.finish()]);
 
-  const mapPromises: Promise<void>[] = [colorReadback.mapAsync(GPUMapMode.READ)];
-  if (albedoReadback != null) mapPromises.push(albedoReadback.mapAsync(GPUMapMode.READ));
-  if (normalReadback != null) mapPromises.push(normalReadback.mapAsync(GPUMapMode.READ));
-  await Promise.all(mapPromises);
+  try {
+    const mapPromises: Promise<void>[] = [colorReadback.mapAsync(GPUMapMode.READ)];
+    if (albedoReadback != null) mapPromises.push(albedoReadback.mapAsync(GPUMapMode.READ));
+    if (normalReadback != null) mapPromises.push(normalReadback.mapAsync(GPUMapMode.READ));
+    await Promise.all(mapPromises);
 
-  const color = rgba16fBufferToRgbF32(
-    colorReadback.getMappedRange().slice(0),
-    bytesPerRow,
-    width,
-    height,
-  );
-  colorReadback.unmap();
-
-  let albedo: Float32Array | undefined;
-  if (albedoReadback != null) {
-    albedo = rgba16fBufferToRgbF32(
-      albedoReadback.getMappedRange().slice(0),
+    const color = rgba16fBufferToRgbF32(
+      colorReadback.getMappedRange().slice(0),
       bytesPerRow,
       width,
       height,
     );
-    albedoReadback.unmap();
-    albedoReadback.destroy();
+    colorReadback.unmap();
+
+    let albedo: Float32Array | undefined;
+    if (albedoReadback != null) {
+      albedo = rgba16fBufferToRgbF32(
+        albedoReadback.getMappedRange().slice(0),
+        bytesPerRow,
+        width,
+        height,
+      );
+      albedoReadback.unmap();
+      safeDestroy(albedoReadback);
+    }
+
+    let normal: Float32Array | undefined;
+    if (normalReadback != null) {
+      normal = rgba16fBufferToRgbF32(
+        normalReadback.getMappedRange().slice(0),
+        bytesPerRow,
+        width,
+        height,
+        (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
+      );
+      normalReadback.unmap();
+      safeDestroy(normalReadback);
+    }
+
+    safeDestroy(colorReadback);
+    return { color, ...(albedo !== undefined ? { albedo } : {}), ...(normal !== undefined ? { normal } : {}), width, height };
+  } finally {
+    // Destroy any buffers that weren't already cleaned up in the happy path
+    // (e.g. when mapAsync rejects due to device loss or OOM).
+    for (const buf of created) safeDestroy(buf);
   }
-
-  let normal: Float32Array | undefined;
-  if (normalReadback != null) {
-    normal = rgba16fBufferToRgbF32(
-      normalReadback.getMappedRange().slice(0),
-      bytesPerRow,
-      width,
-      height,
-      (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
-    );
-    normalReadback.unmap();
-    normalReadback.destroy();
-  }
-
-  colorReadback.destroy();
-
-  return { color, ...(albedo !== undefined ? { albedo } : {}), ...(normal !== undefined ? { normal } : {}), width, height };
 }

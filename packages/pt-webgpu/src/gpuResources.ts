@@ -172,6 +172,14 @@ export class GpuResources {
    */
   static readonly BDPT_EYE_STACK_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
 
+  /**
+   * H14-F — once-gate set for per-frame buffer-ceiling console.warns. A warn
+   * fires at most once per key (e.g. 'bdptEyeStack', 'restirPtReservoir') for
+   * the lifetime of this GpuResources instance. Keys are added on the first
+   * warn; subsequent frames that hit the same ceiling are silently suppressed.
+   */
+  readonly #ceilingWarnedKeys = new Set<string>();
+
   constructor(
     device: GPUDevice,
     traceTier: PtWebgpuTraceTier,
@@ -486,16 +494,18 @@ export class GpuResources {
       : GpuResources.BDPT_EYE_VERTEX_BYTES;
 
     if (bdptActive && targetBytes > GpuResources.BDPT_EYE_STACK_MAX_BYTES) {
-      // Non-silent refusal: report the size and skip BDPT this frame rather than
-      // allocating a multi-hundred-MB scratch region. The caller falls back to
-      // the unidirectional path; a placeholder buffer keeps the layout valid.
-      const mib = (targetBytes / (1024 * 1024)).toFixed(1);
-      console.warn(
-        `[vitrum/pt-webgpu] BDPT eye-stack scratch would be ${mib} MiB ` +
-          `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
-          `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-          'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile.',
-      );
+      // H14-F: once-gate — warn only on the first frame that hits the ceiling.
+      if (!this.#ceilingWarnedKeys.has('bdptEyeStack')) {
+        this.#ceilingWarnedKeys.add('bdptEyeStack');
+        const mib = (targetBytes / (1024 * 1024)).toFixed(1);
+        console.warn(
+          `[vitrum/pt-webgpu] BDPT eye-stack scratch would be ${mib} MiB ` +
+            `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
+            `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+            'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile. ' +
+            '(This warning fires once per engine instance.)',
+        );
+      }
       if (this.bdptEyeStackBuffer == null) {
         this.bdptEyeStackBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.bdpt.eyeStack.placeholder',
@@ -542,13 +552,18 @@ export class GpuResources {
     const reservoirBytes = px * GpuResources.RESERVOIR_PT_HERO_BYTES;
     const resultBytes = px * 16;
     if (reservoirBytes > GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES) {
-      const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
-      console.warn(
-        `[vitrum/pt-webgpu] ReSTIR-PT reservoir buffer would be ${mib} MiB ` +
-          `(${width}×${height} × 144 B), exceeding the ` +
-          `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-          'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile.',
-      );
+      // H14-F: once-gate — warn only on the first frame that hits the ceiling.
+      if (!this.#ceilingWarnedKeys.has('restirPtReservoir')) {
+        this.#ceilingWarnedKeys.add('restirPtReservoir');
+        const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
+        console.warn(
+          `[vitrum/pt-webgpu] ReSTIR-PT reservoir buffer would be ${mib} MiB ` +
+            `(${width}×${height} × 144 B), exceeding the ` +
+            `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+            'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile. ' +
+            '(This warning fires once per engine instance.)',
+        );
+      }
       return false;
     }
     const ready =
@@ -944,6 +959,50 @@ export class GpuResources {
   }
 
   /**
+   * H9 — Reconstruct ONLY bind group 2 (TLAS table + BDPT light-path/eye-stack)
+   * while leaving groups 0, 1, and 3 intact.  Called by `bdptAdvanceFrame` when
+   * the host supplies a new external light-path buffer for the NEXT frame; the
+   * full-group rebuild in `buildBindGroups` is NOT triggered because group 0 is
+   * still cached (and returning it early is the correct fast path for all other
+   * frames).
+   *
+   * Fast-out: if `lightPathBuffer` is the same reference that was used to build
+   * the currently-cached group 2, the group is left in place (pointer equality
+   * suffices because GPUBuffer identity is stable for the same host allocation).
+   *
+   * Preconditions (enforced by the `bdptAdvanceFrame` caller):
+   *  - full tier only (`this.#traceTier === 'full'`)
+   *  - `bindGroupLayout2` non-null (ensurePipeline must have run)
+   *  - `sb` non-null (a scene has been set)
+   *  - `bdptEyeStackBuffer` non-null (ensureBdptEyeStack must have run)
+   */
+  rebuildGroup2Only(sb: UploadedSceneBuffers, lightPathBuffer: GPUBuffer): void {
+    if (this.#traceTier !== 'full' || this.bindGroupLayout2 == null) return;
+    // Pointer-equality fast-out: if the buffer didn't change, the cached group
+    // is still valid — avoid a redundant createBindGroup call.
+    if (this.#lastBdptLightPathBuffer === lightPathBuffer && this.pathTraceBindGroup2 != null) {
+      return;
+    }
+    this.#lastBdptLightPathBuffer = lightPathBuffer;
+    this.pathTraceBindGroup2 = this.#device.createBindGroup({
+      label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full.bdptRebuild',
+      layout: this.bindGroupLayout2,
+      entries: [
+        { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
+        { binding: 1, resource: { buffer: sb.tlasInstanceIndicesBuffer } },
+        { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
+        { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
+        { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
+        { binding: 5, resource: { buffer: lightPathBuffer } },
+        { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
+      ],
+    });
+  }
+  /** The light-path buffer reference used to build the most-recent group 2.
+   *  Enables the pointer-equality fast-out in `rebuildGroup2Only`. */
+  #lastBdptLightPathBuffer: GPUBuffer | null = null;
+
+  /**
    * Progressive walkaround→PT handoff (P8) — seed the accumulation buffers from
    * `seedTex` as a DECAYING PRIOR of virtual weight `weight`. Writes
    * `accumBuffer[i] = vec4f(seedRGB·W, W)` and
@@ -1043,6 +1102,9 @@ export class GpuResources {
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
     this.pathTraceBindGroup3 = null;
+    // A full invalidation also clears the fast-out reference so the next
+    // rebuildGroup2Only call unconditionally rebuilds against fresh scene buffers.
+    this.#lastBdptLightPathBuffer = null;
     // The reuse bind groups reference the same scene buffers + accum views, so a
     // scene-buffer / accum-view recreation invalidates them too.
     this.rptProducerGroup0 = null;

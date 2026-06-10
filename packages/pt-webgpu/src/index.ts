@@ -404,15 +404,29 @@ class PTEngineWebGPU implements Engine {
       supportsAccumulatorSeed: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      // Advertised support is derived from the SAME `PT_WEBGPU_SUPPORT` sets the
-      // scene packer partitions against (uploadSceneBuffers.ts), so the declared
-      // capability and the ingestion behavior can no longer drift. Copy into
-      // fresh Sets so a host mutating the returned capability object can't
-      // corrupt the packer's source of truth.
-      supportedAnalyticShapes: new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
-      supportedEmitterKinds: new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
+      // H12 — lite-tier capabilities reflect what the lite kernel ACTUALLY binds:
+      //   • No analytic shapes (group-1 is not bound on the lite layout; the
+      //     analytic geometry/params/localToWorld/worldToLocal buffers are absent).
+      //   • Emitters: directional only (params-UBO lane lightDir.xyzw; verified in
+      //     kernelLite.wgsl.ts:341-342 — pointLights/spotLights/rectAreaLights
+      //     are group-1 bindings that the lite tier does not declare).
+      //   • Environments: none + procedural-sky only (lite connectLite module is
+      //     procedural-sky only; no HDRI sampling buffer in group-1).
+      //   • No pt-webgpu-bdpt in experimentalFeatures even when bdpt:true was
+      //     passed at construction (BDPT requires the full-tier group-2 layout).
+      //
+      // For the full tier the capability is derived from PT_WEBGPU_SUPPORT so
+      // the declared set and the ingestion/packer behavior stay in sync.
+      supportedAnalyticShapes: this.#traceTier === 'lite'
+        ? new Set<import('@vitrum/core').AnalyticShape>()
+        : new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
+      supportedEmitterKinds: this.#traceTier === 'lite'
+        ? new Set<import('@vitrum/core').SceneEmitter['kind']>(['directional'])
+        : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
       supportedPrimitiveKinds: new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
-      supportedEnvironmentKinds: new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
+      supportedEnvironmentKinds: this.#traceTier === 'lite'
+        ? new Set<import('@vitrum/core').Scene['environment']['kind']>(['none', 'procedural-sky'])
+        : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
       presentationMode: 'offscreen-texture',
       supportDetails: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
       experimentalFeatures: new Set([
@@ -420,7 +434,11 @@ class PTEngineWebGPU implements Engine {
         ...(this.#postDenoiser instanceof OIDNFinalDispatcher
           ? (['pt-webgpu-oidn-final'] as const)
           : []),
-        ...(this.#bdpt ? (['pt-webgpu-bdpt'] as const) : []),
+        // BDPT requires the full-tier group-2 layout; suppress from lite even
+        // when bdpt:true was passed at construction (the engine silently ignores
+        // the flag for lite — the shader does not have the bdptEnabled UBO slot
+        // and the BDPT sub-path pipeline is not created on the lite layout).
+        ...(this.#bdpt && this.#traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
         ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
         ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
           ? (['pt-webgpu-photon-map-approximate'] as const)
@@ -1167,9 +1185,20 @@ class PTEngineWebGPU implements Engine {
       }
     }
 
+    // H14-D: track all transient buffers in a list; finally block destroys any
+    // that survive a rejected mapAsync (device loss, OOM) so no GPU memory leaks.
     const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
+    const adjointCreated: GPUBuffer[] = [];
+    const adjointDestroyed = new Set<GPUBuffer>();
+    const adjointDestroy = (buf: GPUBuffer) => {
+      if (!adjointDestroyed.has(buf)) {
+        adjointDestroyed.add(buf);
+        buf.destroy();
+      }
+    };
     const mk = (size: number, usage: number, data?: ArrayBufferView): GPUBuffer => {
       const b = device.createBuffer({ size: Math.max(size, 16), usage });
+      adjointCreated.push(b);
       if (data) device.queue.writeBuffer(b, 0, data.buffer, data.byteOffset, data.byteLength);
       return b;
     };
@@ -1204,16 +1233,22 @@ class PTEngineWebGPU implements Engine {
     pass.end();
     enc.copyBufferToBuffer(gradBuf, 0, stage, 0, gradientLength * 4);
     device.queue.submit([enc.finish()]);
-    await stage.mapAsync((globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ);
-    const raw = new Int32Array(stage.getMappedRange().slice(0));
-    stage.unmap();
+    try {
+      await stage.mapAsync((globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ);
+      const raw = new Int32Array(stage.getMappedRange().slice(0));
+      stage.unmap();
 
-    const grad = new Float32Array(gradientLength);
-    for (let i = 0; i < gradientLength; i++) grad[i] = raw[i]! / ADJOINT_GRAD_FP;
+      const grad = new Float32Array(gradientLength);
+      for (let i = 0; i < gradientLength; i++) grad[i] = raw[i]! / ADJOINT_GRAD_FP;
 
-    // Per-step transient buffers — free them (no leak; the pipeline is cached).
-    for (const b of [paramsBuf, dLossBuf, gradBuf, descBuf, stage]) b.destroy();
-    return grad;
+      // Per-step transient buffers — free them (no leak; the pipeline is cached).
+      for (const b of adjointCreated) adjointDestroy(b);
+      return grad;
+    } finally {
+      // Destroy any buffers not already freed in the happy path above
+      // (ensures no GPU memory leak on rejected mapAsync).
+      for (const b of adjointCreated) adjointDestroy(b);
+    }
   }
 
   /**
@@ -1279,10 +1314,19 @@ class PTEngineWebGPU implements Engine {
   bdptAdvanceFrame(lightPathBuffer: GPUBuffer | null): void {
     if (!this.#bdpt) return;
     this.#bdptExternalBuffer = lightPathBuffer;
-    // Drop only group 2 (the BDPT light-path group), matching the prior inline
-    // behavior: group 0 stays cached, so the build branch in renderFrame won't
-    // fire and group 2 remains null until a full scene/accum invalidation.
-    this.#gpu.pathTraceBindGroup2 = null;
+    // H9: instead of nulling group 2 (which broke rendering because
+    // buildBindGroups returns early when group 0 is still cached, leaving
+    // group 2 null for the rest of the frame), reconstruct ONLY group 2
+    // against the new light-path buffer while groups 0/1/3 remain valid.
+    // A pointer-equality fast-out inside rebuildGroup2Only skips the
+    // createBindGroup call when the same buffer is re-supplied unchanged.
+    // If scene buffers are not yet uploaded (pre-setScene), rebuildGroup2Only
+    // is a no-op (bindGroupLayout2 is null); the regular buildBindGroups
+    // path in the next renderFrame will build all groups correctly.
+    if (this.#sceneBuffers != null) {
+      const buf = lightPathBuffer ?? this.#bdptLightPathBuffer();
+      this.#gpu.rebuildGroup2Only(this.#sceneBuffers, buf);
+    }
   }
 
   #bdptLightPathBuffer(): GPUBuffer {
@@ -1405,6 +1449,28 @@ export const createPTEngine_WebGPU: EngineFactory<
         "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
     );
   }
+  // H51-C: warn once listing any unknown extensions keys the host supplied.
+  // pt-webgpu has graduated its stable extensions (spectral, bdpt, oidn) into
+  // first-class named options; the `extensions` bag is now the escape hatch for
+  // truly experimental/future keys. Unknown keys are silently ignored at runtime;
+  // the once-warn ensures the host is aware that graduation happened.
+  if (opts.extensions != null) {
+    const unknownKeys = Object.keys(opts.extensions).filter(
+      (k) =>
+        // These keys were valid in older versions but have graduated to named opts.
+        !k.startsWith('vitrum.ptWebgpu.spectralHeroWavelength') &&
+        !k.startsWith('vitrum.ptWebgpu.bdpt') &&
+        !k.startsWith('vitrum.ptWebgpu.oidn'),
+    );
+    if (unknownKeys.length > 0) {
+      console.warn(
+        `[vitrum/pt-webgpu] Unknown extensions keys will be ignored: ${unknownKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
+          "pt-webgpu's stable extensions (spectral, bdpt, oidn, restirPtReuse) are now first-class " +
+          'named options. Check the PTEngineWebGPUOptions interface for the current option set.',
+      );
+    }
+  }
+
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
   if (opts.restirPtReuse === true) {
     assertRestirPtReuseSupported(opts.device, traceTier);

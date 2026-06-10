@@ -52,8 +52,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-08: TLAS mesh hits now carry instanceIndex, and normal
     // maps transform their derived tangent through the hit instance localToWorld
     // before shading rotated/scaled instances. RENDER-CHANGING on purpose.
-    expect(digest).toBe('72c1de3bc71fd20687157b329e59cc0e259bf91051771b593cb753b278f40947');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(218299);
+    // Re-pinned 2026-06-09: H13/D4 — brdfDirectionalPdf opposite-hemisphere
+    // branch now returns 0.0 (delta lobe; prior finite cosine·η² was wrong —
+    // did not match the deterministic Snell sampler in sampleNextBounceDirection).
+    // RENDER-CHANGING on transmissive scenes; A/B required before compositing.
+    expect(digest).toBe('7fd7052a9067675cdeebdeee69f682824f91e64c03c8bed5ad22e77a918c1985');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(218633);
   });
 });
 
@@ -73,10 +77,16 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('heroLambdaTo01(heroLambda)');
   });
 
-  it('threads transmission probability into directional MIS pdf helper', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let nDotT = max(abs(wiDotN), 1e-5);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('eta * eta * INV_PI');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('transProb * pdfTransApprox');
+  it('returns 0 for the delta-refraction lobe in brdfDirectionalPdf (H13 D4)', () => {
+    // H13/D4: delta-refraction pdf is 0 (Dirac delta, not a finite density).
+    // The prior finite cosine·η² approximation did not match the deterministic
+    // sampler in sampleNextBounceDirection; returning 0 is unbiased because all
+    // call sites guard against pdf <= 1e-6 before dividing.
+    // Verify the opposite-hemisphere branch now unconditionally returns 0.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!sameHemisphere) {');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let nDotT = max(abs(wiDotN), 1e-5);');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('eta * eta * INV_PI');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('transProb * pdfTransApprox');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn activeLayerWeightRgb');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('isTranslucent');
   });

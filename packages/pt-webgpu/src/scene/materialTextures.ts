@@ -60,8 +60,32 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   const indexOf = makeIndexer(sources);        // sRGB array
   const indexOfLinear = makeIndexer(linearSources); // linear array
 
+  // H51-B — once-warn when a material has both roughnessMap AND metallicMap set
+  // to DISTINCT handles. pt-webgpu uses a single ORM texture slot (the glTF
+  // combined roughness-metallic, G=roughness/B=metallic); when both maps are
+  // provided and they differ, metallicMap is silently dropped (roughnessMap wins
+  // via the ?? fallback). Warn once per scene-pack call so the host is aware.
+  let warnedOrmSplit = false;
+
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
+    // H51-B: warn once on the first material with distinct roughnessMap + metallicMap.
+    if (
+      !warnedOrmSplit &&
+      m.roughnessMap != null &&
+      m.metallicMap != null &&
+      m.roughnessMap.handle !== m.metallicMap.handle
+    ) {
+      warnedOrmSplit = true;
+      console.warn(
+        '[vitrum/pt-webgpu] A material provides separate roughnessMap and metallicMap ' +
+          'pointing to different texture handles. pt-webgpu uses a single ORM slot ' +
+          '(glTF combined roughness-metallic texture: G=roughness, B=metallic). ' +
+          'roughnessMap is used; metallicMap is ignored. Supply a pre-combined ORM ' +
+          'texture as roughnessMap (or as metallicMap when roughnessMap is absent) ' +
+          'to include both channels.',
+      );
+    }
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
     const bc = m.baseColorMap;
     descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)

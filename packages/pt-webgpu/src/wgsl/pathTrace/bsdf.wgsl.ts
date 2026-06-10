@@ -67,12 +67,16 @@ fn brdfDirectionalPdf(
   let diffProb = baseDiffProb / sumProb;
   let sameHemisphere = wiDotN * woDotN > 0.0;
   if (!sameHemisphere) {
-    // Refraction lobe PDF (opposite hemispheres): cosine on transmitted side
-    // scaled by η² (PBRT Dielectric / Walter 2007 hemisphere Jacobian).
-    let eta = select(ior, 1.0 / max(ior, 1.0), woDotN > 0.0);
-    let nDotT = max(abs(wiDotN), 1e-5);
-    let pdfTransApprox = nDotT * eta * eta * INV_PI;
-    return max(transProb * pdfTransApprox, 1e-8);
+    // Delta-refraction lobe (D4): the sampler draws a deterministic transmitted
+    // direction (Snell's law), so the refraction pdf is a Dirac delta — it
+    // contributes zero probability density for any specific direction query.
+    // Returning 0 here is unbiased: the NEE weight at connection sites resolves
+    // to the full light-pdf denominator (MIS collapses to pure NEE weighting on
+    // delta lobes). All brdfDirectionalPdf call sites guard against pdf <= 1e-6
+    // so division by zero never occurs.
+    // Decision H13/D4 (h-remediation-plan §3): prior finite cosine*eta^2 pdf
+    // did not match the deterministic sampler in sampleNextBounceDirection.
+    return 0.0;
   }
   let nDotL = max(wiDotN, 0.0);
   if (nDotL <= 1e-5) {

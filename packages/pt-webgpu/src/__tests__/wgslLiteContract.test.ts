@@ -24,8 +24,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-08: SceneHit gained an invalid-or-real TLAS
     // instanceIndex for the full-tier normal-map tangent transform. Lite always
     // writes the invalid sentinel, so this is render-neutral for lite.
-    expect(digest).toBe('aeb91fc1e0c7b769390b6e97b6160ad6b34deb3e7489e4dd1f7c246ee61cfac4');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73175);
+    // Re-pinned 2026-06-09: H13/D4 — brdfDirectionalPdf opposite-hemisphere
+    // branch now returns 0.0 (delta lobe). Lite composes the same bsdf module.
+    expect(digest).toBe('afecce34de159efe257c7aba3e189f20d671919cb51e9039cec8a986f87bcf5c');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(73509);
   });
 });
 
