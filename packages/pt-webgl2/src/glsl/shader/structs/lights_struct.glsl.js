@@ -5,6 +5,9 @@ export const lights_struct = /* glsl */`
 	#define SPOT_LIGHT_TYPE 2
 	#define DIR_LIGHT_TYPE 3
 	#define POINT_LIGHT_TYPE 4
+	// B4 — mesh-area triangle light (NEE). Packed separately in uMeshLights, but the
+	// type id shares the LightRecord.type space so directLightContribution can branch.
+	#define TRI_AREA_LIGHT_TYPE 5
 
 	struct LightsInfo {
 

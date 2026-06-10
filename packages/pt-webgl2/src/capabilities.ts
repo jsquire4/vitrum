@@ -45,7 +45,16 @@ export function buildCapabilities(
   maxBounces: number,
   maxSamplesPerPixel: number,
   supportsAuxBuffers: boolean,
+  experimental?: { bdpt?: boolean; spectral?: boolean },
 ): EngineCapabilities {
+  // experimentalFeatures advertises OFF-default research paths that are HOST-DRIVEN
+  // and live (not inert). A5 (2026-06-10): pt-webgl2-bdpt is added only when bdpt:true
+  // because the light-subpath passes are now actually issued (see GlResources). The
+  // photon-map/manifold-nee approximations are surfaced via causticStrategy + JSDoc,
+  // not here. Undefined (no flags) → field omitted, matching the prior shape.
+  const features = new Set<string>();
+  if (experimental?.bdpt === true) features.add('pt-webgl2-bdpt');
+  if (experimental?.spectral === true) features.add('pt-webgl2-spectral');
   return {
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
@@ -66,6 +75,7 @@ export function buildCapabilities(
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     causticStrategy,
+    ...(features.size > 0 ? { experimentalFeatures: features } : {}),
     supportDetails: {
       ...PT_WEBGL2_BASE_SUPPORT_DETAILS,
       mutations: {

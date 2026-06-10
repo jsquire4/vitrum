@@ -28,10 +28,38 @@ import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
 import { invertMat4, makeRotationYMat4 } from './mat4.js';
+import { CAUCHY_CROWN_GLASS } from '@vitrum/shared-samplers';
 import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
 
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+// A5 — light-subpath ping-pong width (one column per light bounce). MUST match the
+// `BDPT_MAX_LIGHT_BOUNCES=3` layout the GLSL light-subpath/connection kernels assume
+// (bdpt_light_subpath.glsl.js header; the connection sweep caps the merged path at
+// BDPT_MAX_MERGED=19 with n = c + e + 3, BDPT_MAX_EYE_DEPTH=8).
+const BDPT_MAX_LIGHT_BOUNCES = 3;
+
+// H2 follow-on — scene-global spectral coefficients (the GLSL declares u_jakobCoeffs +
+// iorCauchyA/B/C as global uniforms, not per-material).
+//   • iorCauchy: Crown Glass three-term Cauchy IOR (n(λ)). Uploaded only when
+//     spectral is on so any material carrying `dispersionAbbeNumber` (→ per-material
+//     dispersionStrength in the materials texture) actually disperses. All-zero =
+//     the GLSL `cauchyEnabled` fast-path (no dispersion), which is the non-spectral
+//     and the no-dispersion default → byte-identical when spectral:false.
+//   • jakobCoeffs: stays the flat (0,0,0) ⇒ S≡½ no-op. u_jakobCoeffs is a SINGLE
+//     global reflectance the GLSL uses only for the representative MEDIUM albedo
+//     (volume single-scatter / SSS); a non-flat global value would tint EVERY
+//     medium, which is wrong for a multi-material scene. Real per-material spectral
+//     reflectance needs a materials-texture lane + a Jakob solve per material at
+//     scene build — tracked as the H2 per-material follow-up (road-to-100 A3-adjacent).
+const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
+  CAUCHY_CROWN_GLASS.A,
+  CAUCHY_CROWN_GLASS.B,
+  CAUCHY_CROWN_GLASS.C,
+];
+const FLAT_JAKOB_COEFFS: readonly [number, number, number] = [0, 0, 0];
+const NO_IOR_CAUCHY: readonly [number, number, number] = [0, 0, 0];
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
@@ -60,6 +88,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
   readonly #backgroundAlpha: number;
+  readonly #cameraType: 0 | 1 | 2;
+  readonly #dof: PTEngineWebGL2Options['dof'];
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
   readonly #regime: AccumRegime;
@@ -80,21 +110,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#spectralEnabled = opts.spectral ?? false;
     this.#bdpt = opts.bdpt ?? false;
-    if (this.#bdpt) {
-      // H5 (2026-06-09): the BDPT GLSL kernels compile, but the host does NOT yet
-      // drive the light-subpath passes (uBdptLightSubpathPass/VertexCol/MaxLightBounces
-      // are never set → the light subpath is never generated, so connections add
-      // nothing). The frame renders unidirectionally. Surfaced honestly rather than
-      // silently presenting unidirectional output as bidirectional. Full orchestration
-      // is tracked in items_to_fix §H5. (The unbound-sampler crash is fixed separately.)
-      console.warn(
-        '[pt-webgl2] bdpt: true — BDPT light-subpath passes are not yet host-driven; ' +
-          'rendering is currently unidirectional. See items_to_fix §H5.',
-      );
-    }
+    // A5 (2026-06-10): the BDPT light-subpath passes are now host-driven (GlResources
+    // .#buildBdptLightSubpath builds the ping-pong light-path texture per sample and
+    // binds it as uBdptLightPathTex; the eye pass connects to it). The old inert-warn
+    // was removed. When bdpt:false the BDPT path is never touched (byte-identical
+    // unidirectional render); see capabilities.experimentalFeatures (pt-webgl2-bdpt).
     this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
     this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
     this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));
+    // Flag-plumbing audit (2026-06-10): cameraType + dof are now real options.
+    this.#cameraType =
+      opts.cameraType === 'orthographic' ? 1 : opts.cameraType === 'equirectangular' ? 2 : 0;
+    this.#dof = opts.dof;
     this.#traceTier = traceTier;
     this.#supportsAuxBuffers = traceTier === 'full';
     // Additive HDR accumulation needs EXT_float_blend; otherwise the alpha-composite
@@ -119,6 +146,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#maxBouncesLimit,
       this.#maxSamplesLimit,
       this.#supportsAuxBuffers,
+      { bdpt: this.#bdpt, spectral: this.#spectralEnabled },
     );
   }
 
@@ -306,7 +334,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // ── internals ──────────────────────────────────────────────────────────────
 
   #traceFeatures(): TraceFeatures {
-    return { ...DEFAULT_TRACE_FEATURES, bdpt: this.#bdpt };
+    return {
+      ...DEFAULT_TRACE_FEATURES,
+      bdpt: this.#bdpt,
+      cameraType: this.#cameraType,
+      dof: this.#dof != null,
+    };
   }
 
   #frameUniforms(input: FrameInput, bounces: number, w: number, h: number): FrameUniforms {
@@ -346,6 +379,23 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       mneeMaxIterations: this.#mneeMaxIterations,
       mneeMaxChainLength: this.#mneeMaxChainLength,
       backgroundAlpha: this.#backgroundAlpha,
+      // A5 — BDPT host-driver inputs (no-op when bdpt:false).
+      bdpt: this.#bdpt,
+      bdptMaxLightBounces: BDPT_MAX_LIGHT_BOUNCES,
+      // H2 follow-on — global spectral coefficients. Cauchy IOR only when spectral is
+      // on (else the no-dispersion fast path → byte-identical); Jakob stays flat.
+      iorCauchy: this.#spectralEnabled ? SPECTRAL_IOR_CAUCHY : NO_IOR_CAUCHY,
+      jakobCoeffs: FLAT_JAKOB_COEFFS,
+      dof:
+        this.#dof != null
+          ? {
+              focusDistance: this.#dof.focusDistance,
+              bokehSize: this.#dof.bokehSize,
+              apertureBlades: this.#dof.apertureBlades ?? 0,
+              apertureRotation: this.#dof.apertureRotation ?? 0,
+              anamorphicRatio: this.#dof.anamorphicRatio ?? 1,
+            }
+          : null,
     };
   }
 

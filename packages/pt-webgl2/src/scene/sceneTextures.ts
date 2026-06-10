@@ -55,6 +55,12 @@ export interface UploadedSceneTextures {
   // lights (sampler2D, 6px/light)
   readonly lights: WebGLTexture;
   readonly lightCount: number;
+  // B4 — mesh-area triangle lights for NEE (sampler2D, 6px/triangle). null when the
+  // scene has no emissive mesh-area triangles; meshLightCount/totalEmissiveArea drive
+  // the GLSL mesh-NEE branch + forward-hit MIS weight.
+  readonly meshLights: WebGLTexture | null;
+  readonly meshLightCount: number;
+  readonly totalEmissiveArea: number;
   // environment importance-sampling (optional — null for non-HDRI scenes)
   readonly envMap: WebGLTexture | null;
   readonly envMarginal: WebGLTexture | null;

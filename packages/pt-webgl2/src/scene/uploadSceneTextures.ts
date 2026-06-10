@@ -26,6 +26,7 @@ import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
+import { packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 
@@ -83,6 +84,12 @@ export function buildSceneTextures(
   const lightsData = packLightsTexture(supported.emitters);
   const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim);
 
+  // (5b) B4 — mesh-area triangle lights for NEE, built from the emissive mesh-area
+  //      emitters + the merged world-space geometry. null when the scene has none.
+  const meshLightsData = packMeshAreaLights(supported, merged);
+  const meshLights =
+    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim) : null;
+
   // (6) environment importance-sampling (null for non-HDRI scenes).
   const env = buildEquirectInfo(supported.environment);
   const envMap = env.map ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height) : null;
@@ -109,6 +116,9 @@ export function buildSceneTextures(
     attributesArray,
     lights,
     lightCount: lightsData.lightCount,
+    meshLights,
+    meshLightCount: meshLightsData.triLightCount,
+    totalEmissiveArea: meshLightsData.totalEmissiveArea,
     envMap,
     envMarginal,
     envConditional,
@@ -126,6 +136,7 @@ export function buildSceneTextures(
         materials,
         attributesArray,
         lights,
+        meshLights,
         envMap,
         envMarginal,
         envConditional,

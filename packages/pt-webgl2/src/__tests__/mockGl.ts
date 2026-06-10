@@ -75,6 +75,9 @@ export function createMockGl(record?: Map<string, unknown>): WebGL2RenderingCont
     uniform1i: (loc, v) => rec(loc, v),
     uniform1f: (loc, v) => rec(loc, v),
     uniform1fv: (loc, v) => rec(loc, v),
+    // vec2/vec3 recorders (resolution, u_jakobCoeffs, …). Stored as a tuple array.
+    uniform2f: (loc, x, y) => rec(loc, [x, y]),
+    uniform3f: (loc, x, y, z) => rec(loc, [x, y, z]),
     // H6: matrix uniform recorder (environmentRotation + camera matrices).
     uniformMatrix4fv: (loc, _transpose, v) => rec(loc, v),
   };

@@ -120,4 +120,25 @@ describe('composeTraceGlsl', () => {
     expect(connectionDef).toBeLessThan(main);
     expect(subpathDef).toBeLessThan(main);
   });
+
+  it('B4: mesh-area triangle-light NEE is always compiled in (decl + sampler + branch)', () => {
+    // The mesh-NEE path is feature-independent (no #define gate) — it self-gates on
+    // uMeshLightCount at runtime. The uniforms, the type id, the sampler helper, and
+    // the directLightContribution branch must all be present in the default program.
+    expect(src).toContain('uniform sampler2D uMeshLights;');
+    expect(src).toContain('uniform uint uMeshLightCount;');
+    expect(src).toContain('uniform float uTotalEmissiveArea;');
+    expect(src).toContain('#define TRI_AREA_LIGHT_TYPE 5');
+    expect(src).toContain('LightRecord sampleMeshAreaLight(');
+    expect(src).toContain('float meshAreaLightForwardPdf(');
+    // The forward-emission MIS site and the NEE branch both reference the count gate.
+    expect(src).toContain('uMeshLightCount != 0u');
+  });
+
+  it('flag-plumbing: camera-type + DOF GLSL gates are present (host-controllable)', () => {
+    expect(src).toContain('#if CAMERA_TYPE == 2'); // equirectangular
+    expect(src).toContain('#if CAMERA_TYPE == 1'); // orthographic
+    expect(src).toContain('#if FEATURE_DOF');
+    expect(src).toContain('struct PhysicalCamera {');
+  });
 });

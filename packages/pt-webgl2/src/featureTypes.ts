@@ -9,35 +9,54 @@ export type RandomType = 0 | 1 | 2; // 0=PCG, 1=Sobol, 2=Stratified
 export type CameraType = 0 | 1 | 2; // 0=Perspective, 1=Orthographic, 2=Equirectangular
 
 export interface TraceFeatures {
-  readonly mis: boolean;            // FEATURE_MIS
-  readonly russianRoulette: boolean; // FEATURE_RUSSIAN_ROULETTE
-  readonly dof: boolean;            // FEATURE_DOF
-  readonly backgroundMap: boolean;  // FEATURE_BACKGROUND_MAP
-  readonly fog: boolean;            // FEATURE_FOG
-  readonly bdpt: boolean;           // FEATURE_BDPT
+  // ── Host-controllable (an engine option drives these) ──────────────────────
+  readonly mis: boolean;            // FEATURE_MIS (always on — the MIS integrator)
+  readonly russianRoulette: boolean; // FEATURE_RUSSIAN_ROULETTE (always on)
+  readonly bdpt: boolean;           // FEATURE_BDPT — opts.bdpt (A5, host-driven)
+  readonly dof: boolean;            // FEATURE_DOF — opts.dof (thin-lens depth of field)
+  readonly cameraType: CameraType;  // CAMERA_TYPE — opts.cameraType (persp/ortho/equirect)
   readonly stainedGlassPerturbation: boolean; // FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
+
+  // ── Internal, FIXED at compile defaults (NOT host-controllable) ────────────
+  // Flag-plumbing audit (2026-06-10): these GLSL gates exist (verbatim from the fork)
+  // but have no real host pathway, so they are deliberately pinned and NOT exposed as
+  // options — leaving them switchable would be a silent dead claim. Each kept here
+  // only so featureDefines() can emit the GLSL macro at its safe default:
+  //   • fog            — FEATURE_FOG: the volume integrator needs per-scene fog-volume
+  //                      materials + u_volumeDensity uploads; the @vitrum/core contract
+  //                      carries no fog-volume primitive, so there is nothing to drive
+  //                      it. Pinned false. (Re-expose once core gains a fog-volume node.)
+  //   • backgroundMap  — FEATURE_BACKGROUND_MAP: a SEPARATE background texture distinct
+  //                      from the environment map; the core contract has no such field
+  //                      (env IS the background). Pinned false.
+  //   • randomType     — RANDOM_TYPE: PCG(0) is the only real RNG. Sobol(1)/Stratified(2)
+  //                      consume sobolTexture/stratifiedTexture/stratifiedOffsetTexture,
+  //                      which the host currently uploads as 1×1 dummies — enabling them
+  //                      would read garbage. Pinned PCG(0) until a real generator ships.
+  //   • debugMode      — DEBUG_MODE: g-buffer/AOV debug visualisations, not a production
+  //                      render path. Pinned 0.
+  readonly fog: boolean;            // FEATURE_FOG (pinned false)
+  readonly backgroundMap: boolean;  // FEATURE_BACKGROUND_MAP (pinned false)
+  readonly randomType: RandomType;  // RANDOM_TYPE (pinned PCG=0)
+  readonly debugMode: number;       // DEBUG_MODE (pinned 0)
   // D3 investigation (2026-06-09): FEATURE_ADDITIVE_ACCUM / 'additive' regime was
   // dead code — the engine never assigned AccumRegime='additive' (only 'normal' or
   // 'alpha-composite'). 'normal' IS the float-blend running-average path. The
   // 'additive' union member, blend branch, and shader blocks have been deleted;
   // behavior is byte-identical for 'normal' and 'alpha-composite'.
-  readonly randomType: RandomType;  // RANDOM_TYPE
-  readonly cameraType: CameraType;  // CAMERA_TYPE
-  readonly debugMode: number;       // DEBUG_MODE
 }
 
 export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
   mis: true,
   russianRoulette: true,
-  dof: false,
-  backgroundMap: false,
-  fog: false,
   bdpt: false,
-  stainedGlassPerturbation: false,
-  // PCG (0) is the default RNG: pure-compute, no sobol/stratified texture packers
-  // needed (the fork's stratified path is RANDOM_TYPE 2; we can add it later).
-  randomType: 0,
+  dof: false,
   cameraType: 0,
+  stainedGlassPerturbation: false,
+  // Internal fixed defaults (see TraceFeatures for why each is pinned, not optional).
+  fog: false,
+  backgroundMap: false,
+  randomType: 0,
   debugMode: 0,
 };
 

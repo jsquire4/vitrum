@@ -194,6 +194,16 @@ const UNIFORM_DECLS = /* glsl */ `
 					uniform sampler2DArray iesProfiles;
 					uniform LightsInfo lights;
 
+					// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per
+					// emissive triangle (meshAreaLights.ts layout); uMeshLightCount triangles;
+					// uTotalEmissiveArea is Σ triangle areas (the global the forward-hit MIS
+					// weight uses — area-proportional selection makes the NEE solid-angle pdf
+					// triangle-INDEPENDENT). All default to 0 / empty → the mesh-NEE branch and
+					// the forward-emission MIS are inert (byte-identical when no mesh-area light).
+					uniform sampler2D uMeshLights;
+					uniform uint uMeshLightCount;
+					uniform float uTotalEmissiveArea;
+
 					// background
 					uniform float backgroundBlur;
 					uniform float backgroundAlpha;
@@ -395,10 +405,15 @@ const RENDER_MAIN = /* glsl */ `
 						// inverse environment rotation
 						envRotation3x3 = mat3( environmentRotation );
 						invEnvRotation3x3 = inverse( envRotation3x3 );
+						// B4: the NEE-strategy slot count = analytic lights + mesh-area triangle
+						// lights (counted as ONE strategy slot — area-proportional triangle pick)
+						// + 1 env slot when an environment is present. Each strategy is chosen
+						// with probability 1/lightsDenom. When uMeshLightCount==0 this reduces to
+						// the original analytic+env denom (byte-identical no-mesh-light path).
 						lightsDenom =
 							( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
-								float( lights.count ) :
-								float( lights.count + 1u );
+								float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) ) :
+								float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) + 1u );
 
 						// Sprint 5: G-buffer accumulators (written at primary hit; sky fallback if NO_HIT).
 						// gNormalDepth.rgb = world normal encoded to [0,1] via (n*0.5+0.5).
@@ -682,6 +697,15 @@ const RENDER_MAIN = /* glsl */ `
 								gbufWritten = true;
 							}
 
+							// B4 — capture the INCOMING ray's BSDF pdf (the pdf of the prior
+							// bounce's scatter that produced the ray hitting THIS surface) BEFORE
+							// bsdfSample overwrites scatterRec. Used to MIS-weight the forward
+							// emissive accumulation below against the mesh-area NEE strategy.
+							// On the primary hit there is no prior scatter (camera) → handled by
+							// the firstRay branch at the emission site.
+							float incomingBsdfPdf = scatterRec.pdf;
+							bool incomingWasSpecular = scatterRec.specularPdf > 0.999;
+
 							// Sprint 7: gate SSS by per-material TRANSLUCENT_BIT and back-face traversal.
 							// Falls back to standard BSDF sampling for non-translucent materials.
 							bool canUseSss =
@@ -869,7 +893,30 @@ const RENDER_MAIN = /* glsl */ `
 							}
 
 							// accumulate emissive color
-							pc_fragColor.rgb += ( surf.emission * throughputRgb );
+							// B4 — MIS the forward emissive hit against the mesh-area NEE strategy.
+							// The fold (foldEmissiveEmitters) puts every mesh-area emitter's
+							// radiance on its material, so any emissive (surf.emission > 0) surface is ALSO
+							// a mesh-NEE triangle light. The forward hit (BSDF sampling) and the
+							// NEE sample (light sampling) are the two MIS strategies; the forward
+							// hit's weight is misHeuristic(bsdfPdf_incoming, neePdf). neePdf is the
+							// triangle-INDEPENDENT area-proportional pdf (meshAreaLightForwardPdf),
+							// scaled by the 1/lightsDenom strategy-selection probability.
+							//   • primary hit / specular incoming: NEE could not have made this
+							//     sample → weight 1 (full emission), no double-count.
+							//   • else: balance/power-heuristic split with the NEE estimate.
+							// When uMeshLightCount==0 this reduces to the raw add (byte-identical).
+							if ( uMeshLightCount != 0u && uTotalEmissiveArea > 0.0 &&
+								! state.firstRay && ! incomingWasSpecular &&
+								surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
+								float cosLight = dot( surf.faceNormal, ray.direction );
+								float neePdf = meshAreaLightForwardPdf(
+									surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissiveArea
+								) / lightsDenom;
+								float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
+								pc_fragColor.rgb += ( surf.emission * throughputRgb * emisMisWeight );
+							} else {
+								pc_fragColor.rgb += ( surf.emission * throughputRgb );
+							}
 
 							// skip the sample if our PDF or ray is impossible
 							if ( scatterRec.pdf <= 0.0 || ! isDirectionValid( scatterRec.direction, surf.normal, surf.faceNormal ) ) {

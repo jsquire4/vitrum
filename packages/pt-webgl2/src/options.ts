@@ -47,4 +47,33 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    * env never accumulated (rendered black) — see items_to_fix §H3.
    */
   readonly backgroundAlpha?: number;
+  /**
+   * Camera projection model (flag-plumbing audit 2026-06-10). The GLSL
+   * `getCameraRay` fully implements all three; the host declares which one its
+   * `projMatrix` represents (the matrix alone can't disambiguate equirect, which
+   * is not a linear projection). Default `'perspective'` — byte-identical to the
+   * prior fixed CAMERA_TYPE=0 path.
+   *   • 'perspective'     — standard pinhole (CAMERA_TYPE 0)
+   *   • 'orthographic'    — parallel rays along camera −Z (CAMERA_TYPE 1)
+   *   • 'equirectangular' — 360° panoramic capture (CAMERA_TYPE 2)
+   */
+  readonly cameraType?: 'perspective' | 'orthographic' | 'equirectangular';
+  /**
+   * Thin-lens depth of field (flag-plumbing audit 2026-06-10). When set, enables
+   * the GLSL FEATURE_DOF aperture sampler and uploads these PhysicalCamera
+   * uniforms. Omitted (default) → pinhole camera, byte-identical to the prior
+   * fixed FEATURE_DOF=0 path. All distances are in scene units; `bokehSize` is the
+   * aperture diameter in millimetres (matches the fork's `bokehSize·0.5·1e-3` scale).
+   */
+  readonly dof?: {
+    readonly focusDistance: number;
+    /** Aperture diameter (mm). Larger = shallower depth of field. */
+    readonly bokehSize: number;
+    /** Aperture polygon sides; 0 = perfect circle (default 0). */
+    readonly apertureBlades?: number;
+    /** Aperture rotation (radians, default 0). */
+    readonly apertureRotation?: number;
+    /** Anamorphic squeeze ratio (1 = spherical, default 1). */
+    readonly anamorphicRatio?: number;
+  };
 }

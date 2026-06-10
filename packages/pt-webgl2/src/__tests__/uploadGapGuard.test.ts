@@ -38,6 +38,23 @@ function sceneWithPointLight(): Scene {
 function sceneNoEmitters(): Scene {
   return { primitives: [tri('tri')], emitters: [], environment: { kind: 'none' } } as Scene;
 }
+function sceneWithMeshAreaLight(): Scene {
+  // A separate emissive panel mesh referenced by a mesh-area emitter (B4 NEE).
+  const panel: MeshPrimitive = {
+    kind: 'mesh',
+    id: 'panel',
+    positions: new Float32Array([-1, 3, -1, 1, 3, -1, 1, 3, 1, -1, 3, 1]),
+    normals: new Float32Array([0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: GREY,
+  };
+  return {
+    primitives: [tri('tri'), panel],
+    emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 5 }],
+    environment: { kind: 'none' },
+  } as Scene;
+}
 function frame(spp: number): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
   const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -95,6 +112,57 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     const rec = await renderAndRecord(sceneNoEmitters());
     expect(rec.has('backgroundAlpha')).toBe(true);
     expect(rec.get('backgroundAlpha')).toBe(1);
+  });
+
+  it('B4: mesh-area NEE uniforms are uploaded (count + Σ area) for an emissive mesh', async () => {
+    const rec = await renderAndRecord(sceneWithMeshAreaLight());
+    expect(rec.has('uMeshLightCount')).toBe(true);
+    // The emissive panel is 2 triangles → 2 triangle lights.
+    expect(rec.get('uMeshLightCount')).toBe(2);
+    expect(rec.has('uTotalEmissiveArea')).toBe(true);
+    // Panel spans [-1,1]×[-1,1] (area 4) → two tris of total area 4.
+    expect(rec.get('uTotalEmissiveArea')).toBeCloseTo(4, 5);
+  });
+
+  it('B4: mesh-area NEE uniforms are inert (count 0) when no mesh-area emitter', async () => {
+    const rec = await renderAndRecord(sceneNoEmitters());
+    expect(rec.has('uMeshLightCount')).toBe(true);
+    expect(rec.get('uMeshLightCount')).toBe(0);
+    expect(rec.get('uTotalEmissiveArea')).toBe(0);
+  });
+
+  it('A5: BDPT host-driver uniforms are uploaded when bdpt:true', async () => {
+    const rec = await renderAndRecord(sceneWithMeshAreaLight(), { bdpt: true });
+    // The eye pass sets the light-subpath pass flag to 0 and uploads the bounce count.
+    expect(rec.has('uBdptLightSubpathPass')).toBe(true);
+    expect(rec.has('uBdptMaxLightBounces')).toBe(true);
+    expect(rec.get('uBdptMaxLightBounces')).toBe(3);
+  });
+
+  it('A5: BDPT uniforms are NOT touched when bdpt:false (byte-identical invariant)', async () => {
+    const rec = await renderAndRecord(sceneWithMeshAreaLight(), { bdpt: false });
+    expect(rec.has('uBdptLightSubpathPass')).toBe(false);
+    expect(rec.has('uBdptMaxLightBounces')).toBe(false);
+  });
+
+  it('H2 follow-on: Cauchy IOR coefficients are uploaded (non-zero) when spectral:true', async () => {
+    const rec = await renderAndRecord(sceneNoEmitters(), { spectral: true });
+    expect(rec.has('iorCauchyA')).toBe(true);
+    expect(rec.get('iorCauchyA')).toBeGreaterThan(1); // Crown Glass A ≈ 1.5046
+    expect(rec.get('iorCauchyB')).toBeGreaterThan(0);
+    // Non-spectral: no dispersion (the GLSL cauchyEnabled fast-path → byte-identical).
+    const off = await renderAndRecord(sceneNoEmitters(), { spectral: false });
+    expect(off.get('iorCauchyB')).toBe(0);
+  });
+
+  it('flag-plumbing: dof uniforms are uploaded when dof is set, absent otherwise', async () => {
+    const withDof = await renderAndRecord(sceneNoEmitters(), {
+      dof: { focusDistance: 5, bokehSize: 2 },
+    });
+    expect(withDof.has('physicalCamera.focusDistance')).toBe(true);
+    expect(withDof.get('physicalCamera.focusDistance')).toBe(5);
+    const noDof = await renderAndRecord(sceneNoEmitters());
+    expect(noDof.has('physicalCamera.focusDistance')).toBe(false);
   });
 
   it('the recording mock actually distinguishes set-vs-unset (meta-check)', async () => {

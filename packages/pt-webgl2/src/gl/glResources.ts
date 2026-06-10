@@ -64,7 +64,39 @@ export interface FrameUniforms {
   readonly mneeMaxIterations: number;
   readonly mneeMaxChainLength: number;
   readonly backgroundAlpha: number; // 1 = opaque visible env (default); <1 = transparent (alpha-composite)
+  /**
+   * A5 (2026-06-10): BDPT host-driver inputs. `bdpt` mirrors the FEATURE_BDPT
+   * compile flag (so the driver knows to issue the light-subpath passes); when it
+   * is false the BDPT path is never touched and the frame is byte-identical to the
+   * unidirectional path. `maxLightBounces` is uploaded as `uBdptMaxLightBounces`
+   * (number of stored light-subpath vertices the connection sweep attempts). It is
+   * capped to BDPT_MAX_LIGHT_BOUNCES by the engine.
+   */
+  readonly bdpt: boolean;
+  readonly bdptMaxLightBounces: number;
+  /** Spectral global Cauchy IOR dispersion coefficients (H2 follow-on); 0/0/0 = no dispersion. */
+  readonly iorCauchy: readonly [number, number, number];
+  /** Spectral global Jakob & Hanika reflectance coefficients (H2 follow-on); (0,0,0) = flat S≡½ no-op. */
+  readonly jakobCoeffs: readonly [number, number, number];
+  /** Thin-lens DoF PhysicalCamera uniforms (flag-plumbing audit); null = pinhole (FEATURE_DOF off). */
+  readonly dof: {
+    readonly focusDistance: number;
+    readonly bokehSize: number;
+    readonly apertureBlades: number;
+    readonly apertureRotation: number;
+    readonly anamorphicRatio: number;
+  } | null;
 }
+
+/**
+ * A5 — BDPT light-path ping-pong dimensions. The light-subpath kernel writes a
+ * (BDPT_MAX_LIGHT_BOUNCES columns × 3 rows) RGBA32F texture: one column per light
+ * bounce, three rows per vertex (pos|kind, normal|pdfFwd, throughput|pdfRev). The
+ * width MUST stay 3 — the connection sweep caps the merged path at BDPT_MAX_MERGED
+ * (=19) with `n = c + e + 3`, and the kernel comment fixes the layout at width 3.
+ */
+const BDPT_LIGHT_PATH_COLS = 3;
+const BDPT_LIGHT_PATH_ROWS = 3;
 
 /**
  * The Regime-2 composite quad fragment (verbatim port of the fork's BlendMaterial.js:31-59,
@@ -116,6 +148,20 @@ export class GlResources {
   #accumHeight = 0;
   /** Samples already accumulated since the last clearAccum() — drives opacity 1/(N+1). */
   #samples = 0;
+
+  /**
+   * A5 — BDPT light-path ping-pong pair (3×3 single-attachment RGBA32F). Bounce 0
+   * writes column 0 (emitter vertex; reads nothing); bounce k reads column k-1 from
+   * the "read" texture and writes column k to the "write" texture. The light-subpath
+   * kernel `discard`s every column except `uBdptVertexCol`, so to keep already-built
+   * columns alive across passes we blit the read texture into the write texture
+   * before each column draw, then overwrite just that column. After the last bounce
+   * the read texture holds all columns and is bound as `uBdptLightPathTex` for the
+   * connection sweep. Allocated lazily only when bdpt is on (null otherwise → the
+   * unidirectional path never touches this). */
+  #bdptLightPath: [RenderTarget, RenderTarget] | null = null;
+  /** Scratch FBO for the copy-source side of the per-column blit. */
+  #bdptCopyFbo: WebGLFramebuffer | null = null;
 
   /**
    * @param supportsAuxBuffers host policy for the MRT g-buffers; intersected here with the
@@ -196,6 +242,13 @@ export class GlResources {
     if (this.#ptProgram == null) throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
     const prog = this.#ptProgram;
 
+    // A5 — BDPT light subpath. Build the light-path vertex texture for THIS sample
+    // (the subpath is reseeded per frame via the `seed`/rand bank) BEFORE the eye
+    // pass, then bind it as `uBdptLightPathTex`. Only runs when bdpt is on; the
+    // unidirectional path skips this entirely (byte-identical when bdpt:false).
+    const bdptResult =
+      frame.bdpt ? this.#buildBdptLightSubpath(prog, scene, seed, frame) : null;
+
     bindRenderTarget(gl, this.#accum);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
     setBlendForRegime(gl, regime, this.#samples);
@@ -254,7 +307,34 @@ export class GlResources {
     prog.setInt('uCausticStrategy', frame.causticStrategy);
     prog.setFloat('uMneeMaxIterations', frame.mneeMaxIterations);
     prog.setFloat('uMneeMaxChainLength', frame.mneeMaxChainLength);
-    this.#bindSceneTextures(prog, scene);
+    // H2 follow-on: scene-global spectral dispersion + reflectance coefficients.
+    // Default (0,0,0)/(0,0,0) keep the no-dispersion / flat-S≡½ no-op path, so a
+    // non-dispersive spectral frame is unchanged. Set unconditionally (cheap scalar
+    // uploads; gated to nothing-but-defaults when the host supplies no dispersion).
+    prog.setVec3('u_jakobCoeffs', frame.jakobCoeffs[0], frame.jakobCoeffs[1], frame.jakobCoeffs[2]);
+    prog.setFloat('iorCauchyA', frame.iorCauchy[0]);
+    prog.setFloat('iorCauchyB', frame.iorCauchy[1]);
+    prog.setFloat('iorCauchyC', frame.iorCauchy[2]);
+    // Flag-plumbing audit (2026-06-10): upload the PhysicalCamera DoF uniforms when
+    // dof is enabled. The FEATURE_DOF GLSL gate is compiled in only when opts.dof was
+    // set (see #traceFeatures), so these setters are inactive no-ops otherwise — but
+    // we still gate the upload to skip the work for the common pinhole path.
+    if (frame.dof != null) {
+      prog.setFloat('physicalCamera.focusDistance', frame.dof.focusDistance);
+      prog.setFloat('physicalCamera.bokehSize', frame.dof.bokehSize);
+      prog.setInt('physicalCamera.apertureBlades', frame.dof.apertureBlades);
+      prog.setFloat('physicalCamera.apertureRotation', frame.dof.apertureRotation);
+      prog.setFloat('physicalCamera.anamorphicRatio', frame.dof.anamorphicRatio);
+    }
+    // A5 — eye pass: light-subpath pass OFF, bind the built light-path texture, and
+    // upload the bounce count the connection sweep iterates. `#bindSceneTextures`
+    // binds a dummy for `uBdptLightPathTex` when bdpt is off (or the build failed);
+    // here we override it with the real result so the connection pass reads vertices.
+    if (frame.bdpt) {
+      prog.setInt('uBdptLightSubpathPass', 0);
+      prog.setInt('uBdptMaxLightBounces', frame.bdptMaxLightBounces);
+    }
+    this.#bindSceneTextures(prog, scene, bdptResult);
     this.#quad.draw(gl);
 
     if (regime === 'alpha-composite') this.#compositeBlendStep();
@@ -295,6 +375,13 @@ export class GlResources {
     // engine teardown (Canvas remount / route change churn would accumulate them).
     if (this.#dummy2dTex != null) { gl.deleteTexture(this.#dummy2dTex); this.#dummy2dTex = null; }
     if (this.#dummy2dArrTex != null) { gl.deleteTexture(this.#dummy2dArrTex); this.#dummy2dArrTex = null; }
+    // A5 — free the BDPT light-path ping-pong pair + copy FBO.
+    if (this.#bdptLightPath != null) {
+      this.#bdptLightPath[0].destroy();
+      this.#bdptLightPath[1].destroy();
+      this.#bdptLightPath = null;
+    }
+    if (this.#bdptCopyFbo != null) { gl.deleteFramebuffer(this.#bdptCopyFbo); this.#bdptCopyFbo = null; }
   }
 
   // ----- internals -------------------------------------------------------------------------
@@ -331,6 +418,125 @@ export class GlResources {
     return this.#blendProgram;
   }
 
+  /**
+   * A5 — build the BDPT light subpath for this sample and return the texture holding
+   * all light-path vertex columns (to be bound as `uBdptLightPathTex` for the eye
+   * pass's connection sweep). Returns null when there is nothing to connect to (no
+   * analytic lights) — the caller then leaves the dummy bound and the frame renders
+   * unidirectionally.
+   *
+   * Per-column protocol (one fullscreen draw over a 3×3 viewport per bounce):
+   *   read  = the texture holding columns < col already built this frame
+   *   write = the other ping-pong slot
+   *   1. blit read → write (copy already-built columns forward; the kernel `discard`s
+   *      every column != uBdptVertexCol, so without this they'd be lost on the swap)
+   *   2. set uBdptLightSubpathPass=1, uBdptVertexCol=col, uBdptMaxLightBounces
+   *   3. bind read as uBdptLightPathTex (bounce k reads column k-1 from it)
+   *   4. draw → write column `col` is overwritten with the new vertex
+   *   5. swap read/write
+   * After the loop, `read` holds all columns. Reading and writing the SAME texture in
+   * one draw is a WebGL2 feedback loop (undefined), which the read≠write ping-pong +
+   * pre-blit avoids.
+   */
+  #buildBdptLightSubpath(
+    prog: GlProgram,
+    scene: UploadedSceneTextures,
+    seed: number,
+    frame: FrameUniforms,
+  ): WebGLTexture | null {
+    if (scene.lightCount === 0) return null; // nothing to sample → unidirectional fallback
+    const gl = this.#gl;
+    this.#ensureBdptLightPath();
+    const pair = this.#bdptLightPath;
+    if (pair == null) return null;
+    const copyFbo = this.#bdptCopyFbo;
+    if (copyFbo == null) return null;
+
+    const cols = Math.max(1, Math.min(frame.bdptMaxLightBounces, BDPT_LIGHT_PATH_COLS));
+
+    // Clear both slots so unbuilt columns read as (0,0,0,0); column 0 row 0 .w==0 is
+    // BDPT_KIND_LIGHT, so an all-zero column is NOT auto-invalid — but the kernel only
+    // ever connects to columns it actually wrote, and the connection sweep iterates
+    // [0, uBdptMaxLightBounces); a failed sample writes BDPT_KIND_INVALID (.w==3)
+    // explicitly. Clearing keeps stale prior-frame columns out.
+    clearRenderTarget(gl, pair[0]);
+    clearRenderTarget(gl, pair[1]);
+
+    prog.use();
+    // The light-subpath pass shares the eye program; flip the pass flag + upload the
+    // per-pass scalars. The scene textures (BVH/materials/lights) are bound below.
+    prog.setInt('seed', seed);
+    prog.setInt('uBdptLightSubpathPass', 1);
+    prog.setInt('uBdptMaxLightBounces', cols);
+    // The light subpath traces scene rays → needs the same per-frame transforms the
+    // eye pass reads (lightsDenom uses environmentIntensity; traceScene reads none of
+    // the camera matrices but initRenderState / fog do touch a few). Upload the load-
+    // bearing ones; the kernel ignores the rest in the subpath branch.
+    prog.setVec2('resolution', BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
+    prog.setInt('bounces', frame.bounces);
+    prog.setInt('transmissiveBounces', frame.transmissiveBounces);
+    prog.setFloat('environmentIntensity', frame.environmentIntensity);
+    prog.setMat4('environmentRotation', frame.environmentRotation);
+    prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
+    prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
+
+    gl.disable(gl.BLEND); // vertex writes overwrite; no accumulation in the subpath.
+
+    let readIdx = 0;
+    for (let col = 0; col < cols; col += 1) {
+      const read = pair[readIdx]!;
+      const write = pair[1 - readIdx]!;
+
+      // 1. Copy already-built columns (< col) read → write so they survive the swap.
+      if (col > 0) this.#blitBdpt(read, write, copyFbo);
+
+      // 2/3. Per-column scalars + the read texture as uBdptLightPathTex.
+      prog.setInt('uBdptVertexCol', col);
+      // Bind scene textures with the read slot as the light-path source. (For col 0
+      // the kernel ignores the texture; binding the read slot is harmless.)
+      this.#bindSceneTextures(prog, scene, read.color);
+
+      // 4. Draw the 3×3 viewport into the write slot.
+      bindRenderTarget(gl, write);
+      gl.viewport(0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
+      this.#quad.draw(gl);
+
+      // 5. Swap — `write` now holds columns ≤ col.
+      readIdx = 1 - readIdx;
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // After the loop, pair[readIdx] is the most-recently-written slot (all columns).
+    return pair[readIdx]!.color;
+  }
+
+  /** A5 — copy `src` color into `dst` color via a framebuffer blit (preserve built columns). */
+  #blitBdpt(src: RenderTarget, dst: RenderTarget, copyFbo: WebGLFramebuffer): void {
+    const gl = this.#gl;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, copyFbo);
+    gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, src.color, 0);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fbo);
+    gl.blitFramebuffer(
+      0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS,
+      0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS,
+      gl.COLOR_BUFFER_BIT, gl.NEAREST,
+    );
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  }
+
+  /** A5 — lazily allocate the BDPT light-path ping-pong pair + copy FBO. */
+  #ensureBdptLightPath(): void {
+    if (this.#bdptLightPath != null) return;
+    const gl = this.#gl;
+    this.#bdptLightPath = [
+      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
+      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
+    ];
+    this.#bdptCopyFbo = gl.createFramebuffer();
+    if (this.#bdptCopyFbo == null) throw new Error('pt-webgl2: failed to create BDPT copy FBO');
+  }
+
   #ensureBlendPair(): void {
     if (this.#blend != null) return;
     this.#blend = [
@@ -342,8 +548,14 @@ export class GlResources {
     this.#blendReadIndex = 0;
   }
 
-  /** Bind the scene texture bundle to the PT program's samplers (plan 04 §4 binding remap). */
-  #bindSceneTextures(prog: GlProgram, scene: UploadedSceneTextures): void {
+  /** Bind the scene texture bundle to the PT program's samplers (plan 04 §4 binding remap).
+   *  `bdptLightPath` (A5) overrides the `uBdptLightPathTex` dummy with the built light-path
+   *  vertex texture when BDPT is driven; null keeps the dummy (bdpt off / build failed). */
+  #bindSceneTextures(
+    prog: GlProgram,
+    scene: UploadedSceneTextures,
+    bdptLightPath: WebGLTexture | null = null,
+  ): void {
     const gl = this.#gl;
     // BVH struct samplers (BVH { usampler2D index; sampler2D position; sampler2D bvhBounds;
     // usampler2D bvhContents; } — bvh_struct_definitions.glsl).
@@ -363,6 +575,12 @@ export class GlResources {
     // circ-area/directional NEE. The packed lights texture was already uploaded;
     // only its count uniform was missing.
     prog.setUint('lights.count', scene.lightCount);
+    // B4 — mesh-area triangle lights (NEE). Bind the tri-light texture (dummy when
+    // the scene has none, so the sampler stays valid) + the count + Σ-area scalars
+    // the GLSL mesh-NEE branch and forward-hit MIS read. count==0 → both inert.
+    prog.bindTexture('uMeshLights', scene.meshLights ?? this.#dummyTex2D());
+    prog.setUint('uMeshLightCount', scene.meshLightCount);
+    prog.setFloat('uTotalEmissiveArea', scene.totalEmissiveArea);
     // Every OPTIONAL sampler the fork GLSL declares must reference a valid texture of
     // the matching type — an unbound sampler defaults to unit 0 and collides with a
     // different-typed sampler there (GL_INVALID_OPERATION → black). bindTexture no-ops
@@ -384,7 +602,12 @@ export class GlResources {
     // light-subpath passes are never issued — see index.ts), so with this bound the
     // frame renders unidirectionally rather than crashing; full BDPT orchestration is
     // tracked as a feature in items_to_fix §H5.
-    prog.bindTexture('uBdptLightPathTex', d2d);
+    // A5 (2026-06-10): BDPT is now host-driven — when a light-path texture was built
+    // this frame we bind it here so the connection sweep reads real light vertices.
+    // bdptLightPath is null when bdpt is off (or the per-frame build short-circuited,
+    // e.g. no lights), so the dummy keeps the sampler valid and the connection sweep
+    // sees only BDPT_KIND_INVALID vertices → adds nothing (unidirectional fallback).
+    prog.bindTexture('uBdptLightPathTex', bdptLightPath ?? d2d);
     // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; float totalSum; }
     prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
     prog.bindTexture('envMapInfo.marginalWeights', scene.envMarginal ?? d2d);

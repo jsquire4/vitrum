@@ -58,6 +58,51 @@ export const direct_light_contribution_function = /*glsl*/`
 
 			}
 
+		} else if (
+			lightsDenom != 0.0 &&
+			uMeshLightCount != 0u &&
+			rand( 5 ) < float( lights.count + 1u ) / lightsDenom
+		) {
+
+			// B4 — mesh-area triangle-light NEE. One strategy slot; the chosen point is
+			// area-proportional over emissive triangles so the SA pdf is
+			// triangle-independent (matches meshAreaLightForwardPdf at the forward hit).
+			LightRecord lightRec = sampleMeshAreaLight(
+				uMeshLights, uMeshLightCount, uTotalEmissiveArea, rayOrigin, rand3( 6 )
+			);
+
+			bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, lightRec.direction ) < 0.0;
+			if ( isSampleBelowSurface ) lightRec.pdf = 0.0;
+
+			Ray lightRay;
+			lightRay.origin = rayOrigin;
+			lightRay.direction = lightRec.direction;
+			vec3 attenuatedColor;
+			if (
+				lightRec.pdf > 0.0 &&
+				isDirectionValid( lightRec.direction, surf.normal, surf.faceNormal ) &&
+				! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor )
+			) {
+
+				vec3 sampleColor;
+				float lightMaterialPdf = bsdfResult( worldWo, lightRec.direction, surf, state.wavelength, sampleColor );
+				bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
+				if ( lightMaterialPdf > 0.0 && isValidSampleColor ) {
+
+					// The mesh-light strategy is ONE slot of lightsDenom, chosen with
+					// probability 1/lightsDenom; the full NEE pdf of this sample is therefore
+					// (1/lightsDenom)·lightRec.pdf. (Mirrors the analytic branch's
+					// lightRec.pdf/lightsDenom·count·discretePdf — there count·discretePdf is
+					// the in-branch light selection; here the single area-proportional pick
+					// makes the in-branch factor 1.)
+					float lightPdf = lightRec.pdf / lightsDenom;
+					float misWeight = misHeuristic( lightPdf, lightMaterialPdf );
+					result = attenuatedColor * lightRec.emission * throughputRgb * sampleColor * misWeight / lightPdf;
+
+				}
+
+			}
+
 		} else if ( envMapInfo.totalSum != 0.0 && environmentIntensity != 0.0 ) {
 
 			// find a sample in the environment map to include in the contribution
