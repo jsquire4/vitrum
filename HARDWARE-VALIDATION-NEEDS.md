@@ -67,6 +67,10 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 > renders on DDGI-indirect/textured/emitter-lit paths; update this V28 block per item (PASS/INSPECT +
 > artifact paths); flip the "PENDING GPU VALIDATION" line in items_to_fix.md §H. Anything that FAILS:
 > file it in §H with evidence — fix the physics, never the gate (2026-06-04 lesson).
+>
+> ### V28 RESULTS LOG (2026-06-09, lavapipe oracle; harnesses in `wsl-gpu/scripts/v28-*.ts`)
+> - **STEP 0 — compile gate: ✅ PASS.** `git push` (cf06513..00e1443, 28 commits → origin/main) fired the pre-push T1 smoke: naga compiled ALL new WGSL (DDGI emitter NEE, Disney lobes stride 26, glass-aware TLAS, rotationY helpers, NRC atomics) with no SyntaxError; render non-regression 56.74 dB (lavapipe) / 56.77 dB (dzn) vs golden — **goldens did NOT move (already current, no re-seed needed)**; CPU brute-force oracles all 100% (RC-merged, ReSTIR-TLAS, DDGI TLAS+merged). Geometry + compile both clean.
+> - **STEP 1.1 — H18 DDGI/walkaround emitter NEE: ✅ PASS** (`v28-h18-emitter-ddgi.ts`, lavapipe, 48f). Rect-area-emitter enclosed Cornell, sun+sky OFF, env none → **meanLum 0.391, 95.5% lit** (was structurally dark pre-fix); no-emitter control **0.00033 black** (ratio 1186×). The 95% lit fraction includes indirect/shadowed regions → DDGI emitter indirect is contributing (corroborated by the batch-2 benchmark re-diff: hybrid cornell-box brightened +0.0026, attributed to H18+H41+H23). NOTE: the worksheet's "sun-only byte-identical" sub-check needs an OPEN scene — an enclosed Cornell blocks a directional sun (renders black), so that control is mis-scoped here; the emitterCount=0 guard is unit-covered.
 
 ---
 
