@@ -1,45 +1,27 @@
 /**
- * coreEmittersToDDGILights — radiometrically-faithful `@vitrum/core`
- * `SceneEmitter` → `DDGILight` projection for the DDGI probe-update pass.
+ * coreEmittersToDDGILights — `@vitrum/core` `SceneEmitter` → `DDGILight`
+ * projection for the DDGI probe-update pass's ANALYTIC light list (suns +
+ * point + spot fixtures).
  *
  * Background — the lossy host-adapter round-trip this replaces (Theme T16):
  * -----------------------------------------------------------------------
  * Before this mapper, `HybridEngineLifecycle` fed DDGI by walking a
  * host-renderer light graph and re-deriving each light's intensity from that
- * renderer object. That round-trip was lossy on two radiometric axes for
- * rect-area emitters:
+ * renderer object. That round-trip was lossy (chroma dropped; wrong area metric
+ * for sheared rect emitters). This mapper consumes the core `SceneEmitter`
+ * union DIRECTLY, preserving chroma and the source emitter id.
  *
- *   1. Chroma dropped. `collectDDGILightsFromRectAreaLights` built a
- *      `DDGILight` with NO `color`, so the GPU packer defaulted the
- *      fixture colour to white (1,1,1). A red rect emitter bled white
- *      light into the probe atlas.
- *   2. Wrong area metric. It used `light.width * light.height`
- *      (= `4·|uAxis|·|vAxis|`), which only equals the true emissive area
- *      `4·|uAxis × vAxis|` when the half-axes are orthogonal. Sheared /
- *      non-orthogonal rect emitters got the wrong flux. The old code's own
- *      comment admitted "factor-of-π errors ... negligible against the
- *      multiple-of-10 dynamic range" — i.e. it knowingly approximated.
- *
- * It also discarded the emitter id (DDGILight carried no id), so host-side
- * code could not correlate a DDGI light back to its core emitter.
- *
- * This mapper consumes the core `SceneEmitter` union DIRECTLY — no host-renderer
- * objects, no `userData.cellPower` round-trip — and produces the same
- * fixture-light projection the DDGI probe pass already consumes
- * (`kind: 'fixture'` point-light approximations), but with:
- *
- *   - chroma preserved (`color = emitter.color`);
- *   - the true cross-product area `4·|uAxis × vAxis|` for rect emitters
- *     (`π·r²` for disc emitters);
- *   - the source emitter id preserved on `DDGILight.id`.
- *
- * Radiometric convention: the DDGI probe shader (`probeUpdateRays.wgsl`
- * `evalPointLight`) evaluates a fixture as `color · intensity / (dist² + 1)
- * · nDotL`. So `color` carries the chroma and `intensity` carries the
- * scalar radiant magnitude. For an area emitter the flux-equivalent point
- * intensity is `emitter.intensity · area` (NO π factor — matching the
- * codebase's existing area-emitter power convention in
- * `restir/emitterList.ts`, where emitter power is `luminance(color)·area`).
+ * Single-count invariant for area emitters (2026-06-10):
+ * -------------------------------------------------------
+ * rect-area and disc-area emitters are NOT mapped to fixture point-proxies
+ * here. They reach DDGI probes via the H18 NEE path instead:
+ * `collectRectAreaEmitterTrisFromCore` + `setEmitterTris` → `ddgiEmitterNEE`.
+ * Adding a fixture for the same emitter here would double-count it, because
+ * `probeUpdateRays.wgsl` sums `direct_analytic + direct_emitter` (line 587).
+ * The NEE triangle path is physically correct (solid-angle–correct, accounts
+ * for emitter orientation and occlusion); the point-proxy is an approximation
+ * that is now superseded.
+ * (rect/disc fixture-proxy removed: was double-counted with H18 NEE, 2026-06-10)
  *
  * Taxonomy mapping (core → DDGI):
  *   - directional → `sun` DDGILight carrying the emitter's REAL direction,
@@ -62,8 +44,15 @@
  *     a no-op for the probe pass today since nothing injects a `sun` light in
  *     that case — the directional's render contribution flows through
  *     `shade.wgsl`'s `Lo_emit` instead). See `directionalSunMultiplier`.
- *   - rect-area  → fixture at `position`, area `4·|uAxis × vAxis|`.
- *   - disc-area  → fixture at `position`, area `π·r²`.
+ *   - rect-area  → EXCLUDED from the fixture list. The H18 NEE path supplies
+ *     the same emitter as two tessellated triangles via `setEmitterTris` /
+ *     `ddgiEmitterNEE`. Adding a fixture-proxy here would double-count it:
+ *     `probeUpdateRays.wgsl` sums `direct_analytic + direct_emitter` on line
+ *     587, so a fixture AND an emitter-tri for the same rect-area source would
+ *     contribute twice. The NEE triangle path is the physically-correct one
+ *     (solid-angle–correct, accounts for emitter orientation). (2026-06-10)
+ *   - disc-area  → EXCLUDED for the same reason. Its triangulated fan reaches
+ *     probes via `ddgiEmitterNEE`; a point-proxy fixture here would double it.
  *   - point      → fixture at `position`, scalar intensity (no area).
  *   - spot       → fixture at `position` WITH cone. `spotAxis` (toward-light
  *     unit vector), `spotCosInner`, and `spotCosOuter` are packed alongside the
@@ -72,28 +61,20 @@
  *     axis length is non-trivial (axisLen² > 0.25), which correctly confines the
  *     spot GI contribution to the cone (KHR_lights_punctual convention).
  *     Point fixtures have a zero axis, so they stay omnidirectional.
- *   - mesh-area  → EXCLUDED. Folded into the referenced mesh's emissive
- *     material; it reaches DDGI as emissive geometry probe rays hit, not as an
- *     analytic light.
+ *   - mesh-area  → EXCLUDED from the analytic light list. Emissive mesh triangles
+ *     reach DDGI probes via the H18 NEE path: `collectMeshAreaEmitterTrisFromCore`
+ *     includes them in the emitter-tri buffer → `ddgiEmitterNEE` in the probe
+ *     shader samples them directly. probeUpdateRays.wgsl does NOT read
+ *     mat.emissive on BVH hits, so the prior claim that they "reach DDGI as
+ *     emissive geometry probe rays hit" was incorrect. (2026-06-10)
+ *
+ * Radiometric convention for point/spot: the DDGI probe shader (`evalPointLight`)
+ * evaluates a fixture as `color · intensity / (dist² + 1) · nDotL`. So `color`
+ * carries the chroma and `intensity` carries the scalar radiant magnitude.
  */
 
-import type { Scene, SceneEmitter, Vec3 } from '@vitrum/core';
+import type { Scene, SceneEmitter } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
-
-/** True emissive area of a rect-area emitter from its two HALF-axis vectors:
- *  `4·|uAxis × vAxis|`. (`uAxis`/`vAxis` are half-width/half-height, so the
- *  full rectangle is `2·uAxis` by `2·vAxis`; its area is the magnitude of
- *  `(2u) × (2v) = 4·(u × v)`.) The lossy host-renderer walk instead used
- *  `width·height = 4·|u|·|v|`, which under-/over-states the area whenever the
- *  half-axes are not orthogonal. */
-function rectAreaFromHalfAxes(uAxis: Vec3, vAxis: Vec3): number {
-  // cross = uAxis × vAxis
-  const cx = uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1];
-  const cy = uAxis[2] * vAxis[0] - uAxis[0] * vAxis[2];
-  const cz = uAxis[0] * vAxis[1] - uAxis[1] * vAxis[0];
-  const crossLen = Math.sqrt(cx * cx + cy * cy + cz * cz);
-  return 4 * crossLen;
-}
 
 /** Convert the core/lighting toward-light vector into DDGI's sun travel vector. */
 export function primaryLightDirToDdgiSunDirection(
@@ -127,8 +108,9 @@ export function orientDdgiSunLights(
 }
 
 /** Project a single core emitter onto a DDGILight, or null if the emitter
- *  kind is not represented as an analytic DDGI light (mesh-area) or is
- *  degenerate. A `directional` emitter maps to a `sun` DDGILight (see header). */
+ *  kind is not represented as an analytic DDGI light (rect-area, disc-area,
+ *  mesh-area) or is degenerate. A `directional` emitter maps to a `sun`
+ *  DDGILight (see header). */
 export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
   switch (e.kind) {
     case 'directional': {
@@ -152,31 +134,16 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
       };
     }
-    case 'rect-area': {
-      const area = rectAreaFromHalfAxes(e.uAxis, e.vAxis);
-      if (area < 1e-12) return null; // degenerate (parallel/zero half-axes)
-      return {
-        kind: 'fixture',
-        id: String(e.id),
-        on: true,
-        intensity: e.intensity * area,
-        position: { x: e.position[0], y: e.position[1], z: e.position[2] },
-        color: { r: e.color[0], g: e.color[1], b: e.color[2] },
-      };
-    }
-    case 'disc-area': {
-      // Area-preserving footprint: a disc of radius r has area π·r².
-      const area = Math.PI * e.radius * e.radius;
-      if (area < 1e-12) return null;
-      return {
-        kind: 'fixture',
-        id: String(e.id),
-        on: true,
-        intensity: e.intensity * area,
-        position: { x: e.position[0], y: e.position[1], z: e.position[2] },
-        color: { r: e.color[0], g: e.color[1], b: e.color[2] },
-      };
-    }
+    case 'rect-area':
+      // Excluded: rect-area emitters reach DDGI probes as NEE triangles via
+      // `setEmitterTris` / `ddgiEmitterNEE` — a fixture here would double-count
+      // the contribution (`direct_analytic + direct_emitter` in the probe shader).
+      // (rect/disc fixture-proxy removed: was double-counted with H18 NEE, 2026-06-10)
+      return null;
+    case 'disc-area':
+      // Same reason as rect-area: tessellated fan via ddgiEmitterNEE.
+      // (rect/disc fixture-proxy removed: was double-counted with H18 NEE, 2026-06-10)
+      return null;
     case 'point': {
       return {
         kind: 'fixture',
@@ -210,9 +177,12 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
       };
     }
     case 'mesh-area':
-      // See module header: mesh-area is folded into the referenced mesh's
-      // emissive material and reaches DDGI as emissive geometry probe rays hit,
-      // not as an analytic light.
+      // Excluded from the analytic light list. Emissive mesh triangles reach
+      // DDGI probes via the H18 NEE path: `collectMeshAreaEmitterTrisFromCore`
+      // (in bvhSceneHelpers.ts) includes them in the emitter-tri buffer →
+      // `ddgiEmitterNEE` in the probe shader samples them directly.
+      // probeUpdateRays.wgsl does NOT read mat.emissive on BVH hits.
+      // (2026-06-10)
       return null;
     default: {
       // Exhaustiveness guard — a new emitter kind added to the core union
@@ -226,9 +196,9 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
 
 /**
  * Map a core `Scene`'s emitter list directly to the DDGILight projection
- * consumed by the DDGI probe-update pass — preserving chroma, using the true
- * emissive area for area emitters, and carrying the source emitter id. This
- * is the authoritative, non-lossy projection from core scene emitters.
+ * consumed by the DDGI probe-update pass — point and spot fixtures + sun.
+ * rect-area, disc-area, and mesh-area emitters are excluded (they reach DDGI
+ * through the H18 NEE triangle path instead).
  */
 export function coreEmittersToDDGILights(scene: Scene): DDGILight[] {
   const out: DDGILight[] = [];

@@ -303,10 +303,26 @@ class PTEngineWebGPU implements Engine {
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};
-    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
-    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+    const mneeIter =
+      typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+    const mneeChain =
+      typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
+    // Warn on unknown causticOptions keys — the contract requires backends to
+    // surface unrecognised keys rather than silently ignoring them.
+    if (opts.causticOptions != null) {
+      const knownCausticKeys = new Set(['mneeMaxIterations', 'mneeMaxChainLength']);
+      const unknownCausticKeys = Object.keys(opts.causticOptions).filter(
+        (k) => !knownCausticKeys.has(k),
+      );
+      if (unknownCausticKeys.length > 0) {
+        console.warn(
+          `[vitrum/pt-webgpu] Unknown causticOptions keys will be ignored: ${unknownCausticKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
+            'The recognised keys are: mneeMaxIterations, mneeMaxChainLength.',
+        );
+      }
+    }
     this.#bdpt = opts.bdpt === true;
     // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
     // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default stays 3 (the
@@ -458,7 +474,42 @@ class PTEngineWebGPU implements Engine {
         ? new Set<import('@vitrum/core').Scene['environment']['kind']>(['none', 'procedural-sky'])
         : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
       presentationMode: 'offscreen-texture',
-      supportDetails: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
+      // H12 — lite-tier supportDetails must reflect what group-0 ACTUALLY binds,
+      // not the full-tier ledger. Group-0 lite omits group-1 (analytic, env, lights)
+      // and group-2 (TLAS, BDPT). Only directional emitters and procedural-sky
+      // environments are operative; all others get 'unsupported' here.
+      supportDetails:
+        this.#traceTier === 'lite'
+          ? {
+              primitives: {
+                mesh: 'native',
+                'skinned-mesh': 'native',
+                'instanced-mesh': 'native',
+                analytic: 'unsupported',
+              },
+              emitters: {
+                directional: 'native',
+                point: 'unsupported',
+                spot: 'unsupported',
+                'rect-area': 'unsupported',
+                'disc-area': 'unsupported',
+                'mesh-area': 'unsupported',
+              },
+              environments: {
+                none: 'native',
+                'procedural-sky': 'native',
+                hdri: 'unsupported',
+              },
+              analyticShapes: {
+                sphere: 'unsupported',
+                box: 'unsupported',
+                capsule: 'unsupported',
+                cylinder: 'unsupported',
+                'h-channel-came': 'unsupported',
+              },
+              mutations: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
+            }
+          : BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
       experimentalFeatures: new Set([
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
         ...(this.#postDenoiser instanceof OIDNFinalDispatcher
@@ -684,6 +735,40 @@ class PTEngineWebGPU implements Engine {
   setScene(scene: Scene): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('setScene: engine is disposed');
+    }
+    if (this.#traceTier === 'lite') {
+      // Warn when the scene contains content the lite tier cannot bind.
+      // The lite tier binds only group-0 (mesh BVH, directional emitter via
+      // UBO lane, procedural-sky). Analytic primitives, non-directional emitters,
+      // and HDRI environments are silently dropped at runtime; surface them here
+      // so hosts can make an informed choice.
+      const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
+      if (analyticPrimitives.length > 0) {
+        console.warn(
+          `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
+            'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
+            'These will be silently ignored.',
+        );
+      }
+      const unsupportedEmitters = scene.emitters.filter((e) => e.kind !== 'directional');
+      if (unsupportedEmitters.length > 0) {
+        const kinds = [...new Set(unsupportedEmitters.map((e) => e.kind))].join(', ');
+        console.warn(
+          `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
+            'only directional emitters are supported on the lite tier (group-1 light buffers are absent). ' +
+            'These will be silently ignored.',
+        );
+      }
+      if (
+        scene.environment.kind !== 'none' &&
+        scene.environment.kind !== 'procedural-sky'
+      ) {
+        console.warn(
+          `[vitrum/pt-webgpu] Lite tier: scene environment kind '${scene.environment.kind}' is not supported — ` +
+            'only none and procedural-sky are operative on the lite tier (HDRI sampling buffers are absent). ' +
+            'Falling back to procedural sky.',
+        );
+      }
     }
     this.#repackScene(scene, { warnOnEmpty: true });
   }
@@ -1024,10 +1109,12 @@ class PTEngineWebGPU implements Engine {
    * EXPERIMENTAL — the ReSTIR-PT reconnection-indirect result buffer (one vec4f /
    * full-res pixel: .rgb = reconnection indirect HDR, .a = contributing flag), or
    * `null` when the engine was not built with `restirPtReuse: true` or no frame
-   * has rendered yet. This is a SEPARATE debug output: the beauty image is the
-   * unmodified megakernel result this increment (the reuse path is validated in
-   * isolation before it composites). Hosts read it back via `copyBufferToBuffer`
-   * → a MAP_READ staging buffer (the buffer carries `COPY_SRC`).
+   * has rendered yet. This is a SEPARATE debug output. When the composite pipeline
+   * is active (`rptCompositePipeline` + `rptProducerGroup0` are both non-null), the
+   * composite megakernel folds the ReSTIR-PT resolve into the beauty accumulator;
+   * the beauty image already contains the composited result. Hosts read this buffer
+   * back via `copyBufferToBuffer` → a MAP_READ staging buffer (the buffer carries
+   * `COPY_SRC`).
    *
    * Available only when `capabilities.experimentalFeatures` has
    * `'pt-webgpu-restir-pt-reuse'`.
@@ -1106,11 +1193,13 @@ class PTEngineWebGPU implements Engine {
     return this.#postDenoiser?.getLatestDenoised() ?? null;
   }
 
-  /** Read back the retained canonical core {@link Scene} (the capability-filtered
-   *  `supported` scene stored in {@link setScene}), or null before the first
+  /** Read back the retained canonical core {@link Scene} (the UNFILTERED scene
+   *  passed to the most recent {@link setScene} call), or null before the first
    *  `setScene` — and also after {@link dispose}, which drops `#scene`.
-   *  Implements the optional `Engine.getScene` contract — see its JSDoc for the
-   *  no-defensive-copy / frozen-by-contract semantics. */
+   *  The scene is stored as-is by {@link #repackScene}; no capability filtering is
+   *  applied to the returned object. Implements the optional `Engine.getScene`
+   *  contract — see its JSDoc for the no-defensive-copy / frozen-by-contract
+   *  semantics. */
   getScene(): Scene | null {
     return this.#scene;
   }
@@ -1504,18 +1593,37 @@ export const createPTEngine_WebGPU: EngineFactory<
         "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
     );
   }
-  // H51-C: warn once listing any unknown extensions keys the host supplied.
-  // pt-webgpu has graduated its stable extensions (spectral, bdpt, oidn) into
-  // first-class named options; the `extensions` bag is now the escape hatch for
-  // truly experimental/future keys. Unknown keys are silently ignored at runtime;
-  // the once-warn ensures the host is aware that graduation happened.
+  // H51-C: warn once listing any extensions keys the host supplied that are
+  // either (a) graduated legacy keys that no longer do anything, or (b) truly
+  // unknown keys. In both cases the key is silently ignored at runtime; the
+  // warn ensures the host is aware that migration is needed.
+  //
+  // pt-webgpu graduated its formerly-experimental extensions in 2025:
+  //   vitrum.ptWebgpu.spectralHeroWavelength.*  →  opts.spectral (boolean)
+  //   vitrum.ptWebgpu.bdpt.*                    →  opts.bdpt (boolean) + opts.bdptOptions
+  //   vitrum.ptWebgpu.oidn.*                    →  opts.denoiser:'oidn-final' + opts.oidn
   if (opts.extensions != null) {
-    const unknownKeys = Object.keys(opts.extensions).filter(
-      (k) =>
-        // These keys were valid in older versions but have graduated to named opts.
-        !k.startsWith('vitrum.ptWebgpu.spectralHeroWavelength') &&
-        !k.startsWith('vitrum.ptWebgpu.bdpt') &&
-        !k.startsWith('vitrum.ptWebgpu.oidn'),
+    const GRADUATED_KEY_MIGRATION: Record<string, string> = {
+      'vitrum.ptWebgpu.spectralHeroWavelength':
+        "opts.spectral (boolean) — set spectral: true to enable hero-wavelength spectral transport",
+      'vitrum.ptWebgpu.bdpt':
+        "opts.bdpt (boolean) + opts.bdptOptions — set bdpt: true to enable bidirectional path tracing",
+      'vitrum.ptWebgpu.oidn':
+        "opts.denoiser: 'oidn-final' + opts.oidn: { modelUrl } — pass denoiser:'oidn-final' with an OIDN model URL",
+    };
+    const allKeys = Object.keys(opts.extensions);
+    for (const [prefix, migration] of Object.entries(GRADUATED_KEY_MIGRATION)) {
+      const matchingKeys = allKeys.filter((k) => k.startsWith(prefix));
+      if (matchingKeys.length > 0) {
+        console.warn(
+          `[vitrum/pt-webgpu] Extension key(s) ${matchingKeys.map((k) => JSON.stringify(k)).join(', ')} ` +
+            `are no longer consumed — this key graduated to a first-class option. ` +
+            `Replace with: ${migration}.`,
+        );
+      }
+    }
+    const unknownKeys = allKeys.filter(
+      (k) => !Object.keys(GRADUATED_KEY_MIGRATION).some((prefix) => k.startsWith(prefix)),
     );
     if (unknownKeys.length > 0) {
       console.warn(

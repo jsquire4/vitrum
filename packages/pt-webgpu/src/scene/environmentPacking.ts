@@ -97,23 +97,34 @@ export function environmentParams(scene: Scene): EnvironmentParams {
   const width = Number(hdri?.width ?? 0);
   const height = Number(hdri?.height ?? 0);
   const data = hdri?.data;
-  if (
-    Number.isFinite(width) &&
-    Number.isFinite(height) &&
-    width > 0 &&
-    height > 0 &&
+  const pixelCount = width * height;
+  const hasRgb =
+    pixelCount > 0 &&
     data != null &&
     typeof data.length === 'number' &&
-    data.length >= width * height * 3
-  ) {
-    const pixelCount = width * height;
+    data.length >= pixelCount * 3;
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && hasRgb) {
+    // Detect whether the caller provided RGBA (stride 4) or RGB (stride 3) data.
+    // A w·h·4-length buffer passes the >= w·h·3 gate but must be decoded at
+    // stride 4 or every pixel after the first will read from the wrong offset.
+    const isRgba = data!.length >= pixelCount * 4;
+    const stride = isRgba ? 4 : 3;
+    // Warn once on ambiguous / unexpected RGBA input so the host is aware of the
+    // implicit stride detection (there is no authoritative flag in the scene API).
+    const warnings: string[] = [];
+    if (isRgba) {
+      warnings.push(
+        '[vitrum/pt-webgpu] HDRI data.length matches a w×h×4 RGBA layout; ' +
+          'decoding at stride 4. Pass a w×h×3 RGB array to suppress this warning.',
+      );
+    }
     const texels = new Float32Array(pixelCount * 4);
     const cdf = new Float32Array(pixelCount + 1);
     let totalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const r = Number(data[i * 3] ?? 0);
-      const g = Number(data[i * 3 + 1] ?? 0);
-      const b = Number(data[i * 3 + 2] ?? 0);
+      const r = Number(data![i * stride] ?? 0);
+      const g = Number(data![i * stride + 1] ?? 0);
+      const b = Number(data![i * stride + 2] ?? 0);
       texels[i * 4] = r;
       texels[i * 4 + 1] = g;
       texels[i * 4 + 2] = b;
@@ -124,7 +135,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       cdf[i + 1] = totalWeight;
     }
     if (totalWeight > 1e-12) {
-      const dOmegaBase = (2 * Math.PI / width) * (Math.PI / height);
+      const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
       for (let i = 0; i < pixelCount; i += 1) {
         cdf[i + 1] = (cdf[i + 1] ?? 0) / totalWeight;
         const y = (i / width) | 0;
@@ -152,9 +163,28 @@ export function environmentParams(scene: Scene): EnvironmentParams {
         hasHdri: true,
         hdriTexels: texels,
         hdriCdf: cdf,
-        warnings: [],
+        warnings,
       };
     }
+    // All pixels are black (totalWeight ≤ 1e-12) — the HDRI data was valid but
+    // has zero luminance. Report accurately rather than misattributing this to
+    // missing pixel data.
+    return {
+      tint: [1, 1, 1],
+      sunDirection: [0, 1, 0],
+      sunStrength: 0,
+      hdriIntensity: 0,
+      hdriRotationY: 0,
+      hdriWidth: 0,
+      hdriHeight: 0,
+      hasHdri: false,
+      hdriTexels: new Float32Array(0),
+      hdriCdf: new Float32Array(0),
+      warnings: [
+        ...warnings,
+        'HDRI environment has zero total luminance (all-black or transparent pixels); falling back to procedural sky model.',
+      ],
+    };
   }
   return {
     tint: [1, 1, 1],

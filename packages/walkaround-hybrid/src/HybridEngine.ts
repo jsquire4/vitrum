@@ -75,6 +75,7 @@ import {
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import {
   collectRectAreaEmitterTrisFromCore,
+  collectMeshAreaEmitterTrisFromCore,
   packEmitterTrisForDDGI,
 } from './restir/bvhSceneHelpers.js';
 import { solveSkin } from '@vitrum/core';
@@ -1561,10 +1562,16 @@ export class HybridEngine implements Engine {
       orientDdgiSunLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights), this._primaryLightDir),
     );
     // H18 Stage 2 — supply area-emitter NEE triangles to the probe-ray kernel.
-    // Reuses the same collectRectAreaEmitterTrisFromCore output that ReSTIR uses
-    // for its emitter CDF, so DDGI and ReSTIR see identical geometry. Count=0
-    // (sun-only scenes) produces a no-op via the ddgiEmitterNEE guard.
-    const emitterTris = collectRectAreaEmitterTrisFromCore(this._renderScene);
+    // rect-area/disc-area: same geometry as ReSTIR (collectRectAreaEmitterTrisFromCore).
+    // mesh-area: DDGI-only expansion (collectMeshAreaEmitterTrisFromCore) — these
+    // tris are NOT in the extraEmitters stream for ReSTIR (the geometry stream
+    // already carries them), but DDGI has no geometry stream, so they must be
+    // added explicitly here. Count=0 (sun+point-only scenes) → no-op guard.
+    // (mesh-area tris added to probe NEE, 2026-06-10)
+    const emitterTris = [
+      ...collectRectAreaEmitterTrisFromCore(this._renderScene),
+      ...collectMeshAreaEmitterTrisFromCore(this._renderScene),
+    ];
     const packed = packEmitterTrisForDDGI(emitterTris);
     this._ddgi.setEmitterTris(packed.data, packed.count);
     // H41 — re-upload the analytic point/spot lights buffer for shade NEE.

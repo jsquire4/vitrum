@@ -349,8 +349,12 @@ function discPoint(
  * Despite the legacy rect-only name, this also collects `disc-area` emitters as
  * a 32-triangle equal-area fan. The fan radius is scaled so the represented
  * polygon area equals the analytic disc area, preserving total power and the
- * area-PDF used by ReSTIR. `mesh-area` emitters are not expanded here: material
- * emissive mesh triangles already enter through the world-space emitter stream.
+ * area-PDF used by ReSTIR. `mesh-area` emitters are NOT expanded here because
+ * the ReSTIR path receives their triangles through the merged world-space
+ * geometry stream (adding them again as extraEmitters would double-count them).
+ * For the DDGI probe-NEE path, which has no geometry stream, use
+ * {@link collectMeshAreaEmitterTrisFromCore} and concatenate:
+ * `[...collectRectAreaEmitterTrisFromCore(s), ...collectMeshAreaEmitterTrisFromCore(s)]`.
  */
 export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTri[] {
   const out: ExtraEmitterTri[] = [];
@@ -420,6 +424,95 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     // Two tris (LL,LR,UR) + (LL,UR,UL) — identical winding to the THREE path.
     out.push({ vA: ll, vB: lr, vC: ur, normal: N, area: triArea, Le });
     out.push({ vA: ll, vB: ur, vC: ul, normal: N, area: triArea, Le });
+  }
+  return out;
+}
+
+/**
+ * Expand `mesh-area` emitters from a `@vitrum/core` `Scene` into world-space
+ * triangles for DDGI probe NEE. This is the DDGI-only counterpart to
+ * {@link collectRectAreaEmitterTrisFromCore}; do NOT add this output to the
+ * ReSTIR `extraEmitters` stream — that would double-count the triangles that
+ * the merged world-space geometry stream already carries.
+ *
+ * For each `mesh-area` emitter, the referenced `MeshPrimitive` or
+ * `SkinnedMeshPrimitive` is found by `emitter.meshId === primitive.id`. All
+ * indexed (or unindexed) triangles are expanded to world space using the
+ * primitive's `transform` (or identity), face-normals and per-tri areas are
+ * computed, and `Le = emitter.color * emitter.intensity` is assigned — the
+ * same H23 convention used by `buildMeshAreaLeOverrides`.
+ *
+ * Emitter ids that reference no primitive emit a console.warn and are skipped.
+ * Degenerate triangles (cross-length < 1e-8) are silently discarded.
+ *
+ * Implicit-emissive meshes (material.emissive set, no `mesh-area` emitter) are
+ * NOT included. A host that wants probe NEE on implicit emissives should add an
+ * explicit `mesh-area` emitter — consistent with the convention for all other
+ * backends. (2026-06-10)
+ */
+export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTri[] {
+  const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
+  if (meshAreaEmitters.length === 0) return [];
+
+  // Build a map from primitive id → primitive for quick lookup.
+  const primById = new Map<string, Scene['primitives'][number]>();
+  for (const p of scene.primitives) {
+    primById.set(String(p.id), p);
+  }
+
+  const out: ExtraEmitterTri[] = [];
+  for (const e of meshAreaEmitters) {
+    if (e.kind !== 'mesh-area') continue;
+    const prim = primById.get(String(e.meshId));
+    if (prim == null) {
+      console.warn(
+        `[collectMeshAreaEmitterTrisFromCore] mesh-area emitter id="${String(e.id)}" ` +
+        `references meshId="${String(e.meshId)}" which is not in scene.primitives — skipped.`,
+      );
+      continue;
+    }
+    // Only mesh / skinned-mesh kinds carry triangle geometry.
+    if (prim.kind !== 'mesh' && prim.kind !== 'skinned-mesh') continue;
+
+    const positions = prim.positions; // Float32Array, stride-3 (x,y,z)
+    const indices = prim.indices;     // Uint32Array | undefined
+    const transform: Mat4 | undefined = (prim as { transform?: Mat4 }).transform;
+    const Le = emitterLe(e.color, e.intensity);
+
+    // Column-major 4×4 world transform (or identity when absent).
+    const m: ArrayLike<number> = transform != null
+      ? (transform as unknown as ArrayLike<number>)
+      : IDENTITY_MAT4;
+
+    const triCount = indices != null
+      ? Math.floor(indices.length / 3)
+      : Math.floor(positions.length / 9); // 3 verts × 3 floats per vert
+
+    for (let ti = 0; ti < triCount; ti++) {
+      const i0 = indices != null ? (indices[ti * 3]!)     : (ti * 3);
+      const i1 = indices != null ? (indices[ti * 3 + 1]!) : (ti * 3 + 1);
+      const i2 = indices != null ? (indices[ti * 3 + 2]!) : (ti * 3 + 2);
+
+      const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
+      const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
+      const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
+
+      const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
+      const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
+      const nx = aby * acz - abz * acy;
+      const ny = abz * acx - abx * acz;
+      const nz = abx * acy - aby * acx;
+      const crossLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (crossLen < 1e-8) continue; // degenerate — skip
+      const area = crossLen * 0.5;
+      const invLen = 1 / crossLen;
+      out.push({
+        vA, vB, vC,
+        normal: [nx * invLen, ny * invLen, nz * invLen],
+        area,
+        Le,
+      });
+    }
   }
   return out;
 }

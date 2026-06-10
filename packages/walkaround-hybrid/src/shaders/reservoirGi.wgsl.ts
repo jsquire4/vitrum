@@ -26,8 +26,10 @@
  * the future GPU shift + Jacobian will read. The existing [0..19] layout is
  * byte-identical, so every current load/store/read in temporalGi, spatialGi,
  * risGi and shade is provably unaffected. The appended fields [20..29] are
- * WRITTEN by risGi (Phase 0 zero-initialises them via `emptyReservoirGI`) but
- * READ by NO pass in Phase 0.
+ * WRITTEN by risGi (initialised via `emptyReservoirGI` when no reconnection
+ * vertex is produced) and READ by the GRIS variants of spatialGi and temporalGi
+ * (spatialGi.wgsl.ts lines 298–303, 379–383; temporalGi.wgsl.ts lines 311–317,
+ * 333, 383–387). comment-only update 2026-06-10.
  *
  * Phases 1-2 (dispatched separately) will:
  *   • Phase 1 — implement the GPU reconnection-shift application in spatialGi
@@ -136,7 +138,10 @@ fn emptyReservoirGI() -> ReservoirPT {
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
   r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
   r.lightId = 0u; r._pad0 = 0.0;
-  // GRIS Phase-0 fields — zero-initialised, READ BY NO PASS in Phase 0.
+  // GRIS reconnection-shift cache — zero-initialised when risGi produces no
+  // reconnection vertex; read by the GRIS variants of spatialGi + temporalGi
+  // (spatialGi.wgsl.ts lines 298–303, 379–383; temporalGi.wgsl.ts lines 311–317,
+  // 333, 383–387). comment-only update 2026-06-10.
   r.wi_recon = vec3f(0.0);
   r.pdfReconBsdf = 0.0;
   r.distRecon = 0.0;
