@@ -15,7 +15,9 @@ describe('captureFrame row-flip (pt-webgl2)', () => {
   it('captureFrame returns null before any frame is rendered', async () => {
     const gl = createMockGl();
     const engine = await createPTEngine_WebGL2({ device: gl });
-    const frame = await engine.captureFrame();
+    // captureFrame is optional on the core contract; this backend implements it.
+    expect(engine.captureFrame).toBeDefined();
+    const frame = await engine.captureFrame!();
     expect(frame).toBeNull();
     engine.dispose();
   });
