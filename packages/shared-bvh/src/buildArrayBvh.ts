@@ -247,14 +247,38 @@ export function buildArrayBvh(
     };
   }
 
+  // Vertex count for out-of-range index detection. An index >= vertexCount
+  // would read past `positions`, and `getPosition`'s `?? 0` would silently
+  // yield (0,0,0) — a FINITE coordinate, so it slips past the NaN/Inf filter
+  // below and collapses the triangle toward the origin, corrupting the BVH
+  // with no diagnostic. Mirror the NaN-filter warn+skip pattern instead.
+  const vertexCount = positionStride > 0 ? Math.floor(positions.length / positionStride) : 0;
+
   const records: TriangleRecord[] = [];
   const MAX_NAN_WARNS = 10;
   let nanWarnCount = 0;
   let nanFilteredCount = 0;
+  let oobWarnCount = 0;
+  let oobFilteredCount = 0;
   for (let t = 0; t < triCount; t += 1) {
     const i0 = indices[t * indexStride] ?? 0;
     const i1 = indices[t * indexStride + 1] ?? 0;
     const i2 = indices[t * indexStride + 2] ?? 0;
+    // H34-style guard: an index referencing a vertex beyond the positions
+    // buffer is malformed mesh data; filter the triangle rather than emit
+    // a silent origin-collapsed degenerate.
+    if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) {
+      oobFilteredCount += 1;
+      if (oobWarnCount < MAX_NAN_WARNS) {
+        console.warn(
+          `[@vitrum/shared-bvh/buildArrayBvh] Triangle ${t} references an out-of-range vertex ` +
+          `index (i0=${i0}, i1=${i1}, i2=${i2}; vertexCount=${vertexCount}); filtering it from ` +
+          `the BVH build. Check the mesh index/position buffers.`,
+        );
+        oobWarnCount += 1;
+      }
+      continue;
+    }
     const a = getPosition(positions, i0, positionStride);
     const b = getPosition(positions, i1, positionStride);
     const c = getPosition(positions, i2, positionStride);
@@ -285,6 +309,12 @@ export function buildArrayBvh(
   if (nanFilteredCount > MAX_NAN_WARNS) {
     console.warn(
       `[@vitrum/shared-bvh/buildArrayBvh] ${nanFilteredCount} non-finite triangles filtered ` +
+      `(${MAX_NAN_WARNS} individual warnings shown above).`,
+    );
+  }
+  if (oobFilteredCount > MAX_NAN_WARNS) {
+    console.warn(
+      `[@vitrum/shared-bvh/buildArrayBvh] ${oobFilteredCount} out-of-range-index triangles filtered ` +
       `(${MAX_NAN_WARNS} individual warnings shown above).`,
     );
   }
