@@ -118,3 +118,41 @@ describe('H34-b: NaN/Inf triangle filtering', () => {
     }
   });
 });
+
+describe('H60: ALL triangles non-finite', () => {
+  it('returns the empty-BVH shape instead of building from zero records', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // Two triangles, every one carries a NaN vertex — the triCount===0 guard
+      // does NOT fire, so without the H60 post-filter guard the recursive build
+      // ran on an empty subset (degenerate ±Infinity root).
+      const positions = new Float32Array([
+        NaN, 0, 0, 0,
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, NaN, 0,
+        2, 0, 0, 0,
+        0, 2, 0, 0,
+      ]);
+      const indices = new Uint32Array([0, 1, 2, 0, 3, 4, 5, 0]);
+      const matIds = new Uint32Array([0, 0]);
+
+      const result = buildArrayBvh(positions, indices, matIds, {
+        positionStride: 4,
+        indexStride: 4,
+      });
+
+      // Same shape as the zero-input path: a single zeroed 8-float node.
+      expect(result.bvhNodes.length).toBe(8);
+      const f32 = new Float32Array(result.bvhNodes.buffer);
+      for (let i = 0; i < 8; i += 1) {
+        expect(Number.isFinite(f32[i]!)).toBe(true);
+      }
+      expect(
+        warnSpy.mock.calls.some(c => String(c[0]).includes('every input triangle was non-finite')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

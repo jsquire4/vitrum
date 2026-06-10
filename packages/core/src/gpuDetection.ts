@@ -214,11 +214,26 @@ declare global {
 let cached: Promise<GpuDetection> | null = null;
 
 /**
+ * H62 — drop the module-level memo so the NEXT {@link detectGpu} call re-probes.
+ *
+ * The memo is otherwise permanent for the page lifetime, which is wrong after a
+ * device-lost / eGPU unplug / driver reset, and makes per-test isolation
+ * impossible. Does NOT clear an already-published `window.__WG__` (consumers may
+ * hold the old snapshot); the next successful probe overwrites it when
+ * `publishToWindow` is enabled.
+ */
+export function resetGpuDetectionCache(): void {
+  cached = null;
+}
+
+/**
  * Detect whether the runtime is on a real hardware GPU. Memoized — safe
  * to call from multiple call sites; only one adapter is actually requested.
  * By default the first call also assigns `window.__WG__` (see
- * {@link DetectGpuOptions.publishToWindow}). Options apply only to the first
- * invocation.
+ * {@link DetectGpuOptions.publishToWindow}). Options apply only to the FIRST
+ * invocation — later calls return the memo regardless of their options. After a
+ * GPU topology change (device-lost, eGPU unplug) call
+ * {@link resetGpuDetectionCache} to force a re-probe.
  */
 export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   if (cached) return cached;

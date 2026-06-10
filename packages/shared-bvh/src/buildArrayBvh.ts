@@ -288,6 +288,21 @@ export function buildArrayBvh(
       `(${MAX_NAN_WARNS} individual warnings shown above).`,
     );
   }
+  // H60 — ALL triangles can be non-finite, in which case the triCount===0 guard above
+  // never fired but `records` is empty. Proceeding would run the recursive build on an
+  // empty subset (degenerate root, ±Infinity AABB). Return the same empty-BVH shape as
+  // the zero-input path instead.
+  if (records.length === 0) {
+    console.warn(
+      '[@vitrum/shared-bvh/buildArrayBvh] every input triangle was non-finite — returning an empty BVH.',
+    );
+    const emptyNode = new Float32Array(8);
+    return {
+      bvhNodes: emptyNode,
+      reorderedIndices: indices,
+      reorderedTriMaterialIds: triMaterialIds,
+    };
+  }
 
   const nodes: NodeBuild[] = [];
   const orderedTriangles: number[] = [];

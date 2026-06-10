@@ -52,7 +52,8 @@ type OptionalMethodName =
   | 'updateLighting'
   | 'onFrame'
   | 'onProgress'
-  | 'createInverseSession';
+  | 'createInverseSession'
+  | 'getRestirPtResultBuffer';
 
 interface OptionalMethodProxy {
   readonly method: OptionalMethodName;
@@ -94,6 +95,11 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
     disposedBehavior: 'throw',
     throwMessage: 'createInverseSession: engine is disposed',
   },
+  // H61 — debug/experimental accessor for the ReSTIR-PT reuse output buffer
+  // (pt-webgpu, gated by the 'pt-webgpu-restir-pt-reuse' experimental feature).
+  // Added to the Engine contract in H14-C; without this row the createEngine
+  // facade silently hid it. After dispose the buffer is destroyed → noop/null.
+  { method: 'getRestirPtResultBuffer', disposedBehavior: 'noop' },
 ];
 
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
