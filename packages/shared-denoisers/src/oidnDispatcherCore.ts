@@ -168,6 +168,18 @@ export interface OIDNDispatcherCoreOptions<TInput> {
    * This preserves the behavioral difference between the two backends.
    */
   readonly preloadOnBridgeInit: boolean;
+  /**
+   * Optional error callback. Invoked once per distinct error message when
+   * the inference cycle catches an exception (readback failure, ORT load
+   * failure, model mismatch, etc.). The same error message is NOT repeated
+   * on every subsequent failing cohort — only when the message changes from
+   * the previous failure.
+   *
+   * The existing `console.warn` once-per-distinct-error behaviour is
+   * preserved regardless of whether this callback is supplied; the callback
+   * fires IN ADDITION to the warn.
+   */
+  readonly onError?: (err: unknown) => void;
 }
 
 /**
@@ -195,6 +207,7 @@ export class OIDNDispatcherCore<TInput> {
   readonly #loader: OIDNBridgeLoader;
   readonly #readback: ReadbackFn<TInput>;
   readonly #preloadOnBridgeInit: boolean;
+  readonly #onError: ((err: unknown) => void) | undefined;
 
   /** True while an OIDN inference promise is unresolved. Re-kick attempts
    *  during this window are no-ops. */
@@ -216,6 +229,16 @@ export class OIDNDispatcherCore<TInput> {
    *  flight at bump time discard their result on resolve. Prevents a stale
    *  inference from polluting the post-invalidation cohort. */
   #cohortId = 0;
+  /**
+   * The string message of the last caught error, or null when the last
+   * cycle succeeded (or no cycle has run yet). Used to suppress repeated
+   * `console.warn` calls for the same error message. Cleared on a
+   * successful inference.
+   *
+   * Exposed via {@link getLastError} so the engine can surface it into
+   * `FrameStats.denoiserState.reason` without polling private state.
+   */
+  #lastErrorMessage: string | null = null;
 
   constructor(opts: OIDNDispatcherCoreOptions<TInput>) {
     this.#modelUrl = opts.dispatcherOptions.modelUrl;
@@ -223,6 +246,7 @@ export class OIDNDispatcherCore<TInput> {
     this.#loader = opts.loader ?? _defaultLoader;
     this.#readback = opts.readback;
     this.#preloadOnBridgeInit = opts.preloadOnBridgeInit;
+    this.#onError = opts.onError;
   }
 
   /**
@@ -237,6 +261,19 @@ export class OIDNDispatcherCore<TInput> {
   /** True iff an inference is currently unresolved. Diagnostic only. */
   isInFlight(): boolean {
     return this.#inFlight;
+  }
+
+  /**
+   * The string message of the most recent unrecovered inference error, or
+   * `null` when no error has occurred (or after a successful inference
+   * clears the previous error). Cleared on each successful inference.
+   *
+   * Intended for engine telemetry: the engine reads this once per frame
+   * to populate `FrameStats.denoiserState.reason` without accessing
+   * private fields.
+   */
+  getLastError(): string | null {
+    return this.#lastErrorMessage;
   }
 
   /**
@@ -335,8 +372,20 @@ export class OIDNDispatcherCore<TInput> {
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
       this.#latest = { rgb: denoised, width, height };
       this.#haveCompleted = true;
+      // Clear the error state after a successful inference so that
+      // `getLastError()` reflects the current health of the dispatcher.
+      this.#lastErrorMessage = null;
     } catch (err) {
-      console.warn('[OIDNDispatcherCore] readback or denoiseFinal failed', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      // Suppress repeated `console.warn` for the identical error message —
+      // only warn when the message changes from the previously recorded one.
+      if (msg !== this.#lastErrorMessage) {
+        console.warn('[OIDNDispatcherCore] readback or denoiseFinal failed', err);
+        if (this.#onError !== undefined) {
+          try { this.#onError(err); } catch { /* onError must not propagate */ }
+        }
+      }
+      this.#lastErrorMessage = msg;
     }
   }
 

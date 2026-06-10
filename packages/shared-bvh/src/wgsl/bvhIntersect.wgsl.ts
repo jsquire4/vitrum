@@ -18,6 +18,12 @@
  *   - `bvhIntersectFirstHit(bvh_index, bvh_position, bvh, ray, triEps) ->
  *     IntersectionResult` — full ordered-stack closest-hit traversal for
  *     `array<vec4u>` / `array<vec4f>` storage (ReSTIR's pre-canonical form).
+ *     Delegates to `bvhIntersectFirstHitAtRoot` with skipGlass=false.
+ *   - `bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps,
+ *     rootNode, skipGlass: bool) -> IntersectionResult` — same traversal from
+ *     an arbitrary BLAS root. H32: the new `skipGlass` parameter mirrors the
+ *     same filter as `bvhIntersectAny` so TLAS shadow rays can skip glass with
+ *     one traversal instead of an any-hit pre-test + closest-hit follow-up.
  *   - `bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax,
  *     triEps, skipGlass: bool) -> bool` — shadow-ray any-hit traversal
  *     with caller-chosen glass-skip behaviour.
@@ -272,6 +278,12 @@ fn intersectTriangle(
 // On a leaf (splitAxisOrTriCount & 0xFFFF0000u == BVH_LEAFNODE_FLAG):
 //   triCount  = splitAxisOrTriCount & 0x0000FFFFu
 //   triOffset = rightChildOrTriOffset
+//
+// skipGlass: when true, triangles whose transmission nibble (bits [7:4] of
+// bvh_index[i].w) exceeds 4 are skipped — matching the any-hit glass filter in
+// bvhIntersectAny. Used by traceTlasAny (H32) so that the TLAS shadow-ray
+// closest-hit and any-hit paths agree on which triangles occlude.  Pass false
+// everywhere the old call sites were to preserve byte-identical semantics.
 fn bvhIntersectFirstHit(
   bvh_index:    ptr<storage, array<vec4u>,   read>,
   bvh_position: ptr<storage, array<vec4f>,   read>,
@@ -279,7 +291,7 @@ fn bvhIntersectFirstHit(
   ray: Ray,
   triEps: f32,
 ) -> IntersectionResult {
-  return bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps, 0u);
+  return bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps, 0u, false);
 }
 
 fn bvhIntersectFirstHitAtRoot(
@@ -289,6 +301,7 @@ fn bvhIntersectFirstHitAtRoot(
   ray: Ray,
   triEps: f32,
   rootNode: u32,
+  skipGlass: bool,
 ) -> IntersectionResult {
   var best: IntersectionResult;
   best.didHit = false;
@@ -326,6 +339,13 @@ fn bvhIntersectFirstHitAtRoot(
         let triIdx   = triOffset + i;
         let idxEntry = (*bvh_index)[triIdx];
         let idx      = idxEntry.xyz;
+        // H32 — mirror the any-hit glass-skip filter. Triangles whose
+        // transmission nibble (bits [7:4] of idxEntry.w) > 4 are skipped when
+        // skipGlass is true, so TLAS shadow-ray closest-hit and any-hit agree.
+        if (skipGlass) {
+          let trans4 = (idxEntry.w >> 4u) & 0xFu;
+          if (trans4 > 4u) { continue; }
+        }
         let pa4 = (*bvh_position)[idx.x];
         let pb4 = (*bvh_position)[idx.y];
         let pc4 = (*bvh_position)[idx.z];

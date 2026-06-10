@@ -357,7 +357,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fraction = target > 0 ? Math.min(samples / target, 1) : 1;
     for (const cb of this.#onProgressSubs) cb({ kind: 'pt-spp', current: samples, target, fraction });
-    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples });
+    // pt-webgl2 does not have a per-frame denoiser pipeline; always report 'disabled'.
+    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples, denoiserState: { status: 'disabled', reason: null } });
     return out;
   }
 

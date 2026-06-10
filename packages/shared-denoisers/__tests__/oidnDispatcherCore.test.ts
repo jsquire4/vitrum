@@ -438,6 +438,114 @@ describe('OIDNDispatcherCore — albedo + normal aux passthrough', () => {
   });
 });
 
+describe('OIDNDispatcherCore — onError callback + getLastError', () => {
+  it('fires onError with the thrown value on denoiseFinal failure', async () => {
+    const thrownErr = new Error('mock ORT failure');
+    const denoiseFinal = vi.fn(async () => { throw thrownErr; });
+    const bridge: OIDNBridgeLike = { denoiseFinal };
+    const onError = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onError }));
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(thrownErr);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('getLastError returns the error message after a failure, null before any kick', async () => {
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal: vi.fn(async () => { throw new Error('boom'); }),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+
+      expect(core.getLastError()).toBeNull();
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+
+      expect(core.getLastError()).toBe('boom');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('getLastError is cleared to null after a successful inference', async () => {
+    let callCount = 0;
+    const denoiseFinal = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('transient failure');
+      return new Float32Array(12);
+    });
+    const bridge: OIDNBridgeLike = { denoiseFinal };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+
+      // First kick — fails; getLastError is set.
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(core.getLastError()).toBe('transient failure');
+
+      // Second kick (after invalidate to re-arm) — succeeds; getLastError clears.
+      core.invalidate();
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(core.getLastError()).toBeNull();
+      expect(core.getLatestDenoised()).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('onError is NOT fired again for the same repeated error message (once-per-distinct)', async () => {
+    const denoiseFinal = vi.fn(async () => { throw new Error('persistent failure'); });
+    const bridge: OIDNBridgeLike = { denoiseFinal };
+    const onError = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onError }));
+
+      // First kick — fails; onError fires once.
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(onError).toHaveBeenCalledTimes(1);
+
+      // Second kick (after invalidate) — same error; onError NOT fired again.
+      core.invalidate();
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(onError).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('onError does not propagate if it throws', async () => {
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal: vi.fn(async () => { throw new Error('inference err'); }),
+    };
+    const onError = vi.fn(() => { throw new Error('onError itself threw'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onError }));
+      // Should not reject the test — the dispatcher swallows onError throws.
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(onError).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('OIDNDispatcherCore readback gating (protects expensive backend readbacks)', () => {
   // Regression pin (2026-06-02): the backend `readback` callback must only run
   // AFTER the disposed/in-flight/haveCompleted gate. pt-webgl's gl.readPixels

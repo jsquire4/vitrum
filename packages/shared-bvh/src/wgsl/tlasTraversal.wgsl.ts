@@ -95,8 +95,10 @@ fn traceTlasFirstHit(
         localRay.origin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
         localRay.direction = tlasTransformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
         let blasRoot = select(0u, (*tlasBlasRoots)[instIdx], instIdx < arrayLength(tlasBlasRoots));
+        // closest-hit traversal — glass always occludes (skipGlass=false),
+        // preserving the pre-H32 semantics of traceTlasFirstHit.
         let localHit = bvhIntersectFirstHitAtRoot(
-          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot,
+          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, false,
         );
         if (localHit.didHit && localHit.dist > 0.0 && localHit.dist < best.dist) {
           let localHitPos = localRay.origin + localRay.direction * localHit.dist;
@@ -186,15 +188,21 @@ fn traceTlasAny(
         localRay.origin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
         localRay.direction = tlasTransformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
         let blasRoot = select(0u, (*tlasBlasRoots)[instIdx], instIdx < arrayLength(tlasBlasRoots));
-        if (bvhIntersectAnyAtRoot(bvh_index, bvh_position, bvh, localRay.origin, localRay.direction, BVH_INTERSECT_INFINITY, triEps, skipGlass, blasRoot)) {
-          let localHit = bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, localRay, triEps, blasRoot);
-          if (!localHit.didHit || localHit.dist <= 0.0) { continue; }
-          let localHitPos = localRay.origin + localRay.direction * localHit.dist;
-          let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-          let worldDist = dot(worldHitPos - ray.origin, ray.direction);
-          if (worldDist > 1e-4 && worldDist < tMax) {
-            return true;
-          }
+        // H32 — single glass-aware closest-hit traversal replaces the old
+        // any-hit pre-test + closest-hit follow-up pair.  The any-hit path
+        // respected skipGlass but the follow-up bvhIntersectFirstHitAtRoot did
+        // NOT, so glass primitives wrongly occluded TLAS shadow rays even when
+        // skipGlass=true.  The double traversal was also needlessly expensive.
+        // One closest-hit call with the same skipGlass flag fixes both.
+        let localHit = bvhIntersectFirstHitAtRoot(
+          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass,
+        );
+        if (!localHit.didHit || localHit.dist <= 0.0) { continue; }
+        let localHitPos = localRay.origin + localRay.direction * localHit.dist;
+        let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
+        let worldDist = dot(worldHitPos - ray.origin, ray.direction);
+        if (worldDist > 1e-4 && worldDist < tMax) {
+          return true;
         }
       }
     } else {

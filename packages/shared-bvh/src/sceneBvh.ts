@@ -44,12 +44,28 @@ export interface SceneBvhOptions {
   readonly onSlowRebuild?: (elapsedMs: number) => void;
 }
 
+export interface UpdateFromCoreOptions {
+  /**
+   * H34-h (D12) — monotonic scene-mutation tag supplied by the caller. When
+   * provided AND unchanged since the last {@link SceneBvh.updateFromCore}
+   * call, the expensive {@link mergeWorldSpaceFromCore} is skipped entirely
+   * (the existing {@link SceneBvh.buffers} are kept as-is). Callers that do
+   * not have a cheap tag available may omit this field; the content-fingerprint
+   * fallback path (compare hashes of geometry + material bytes) is used
+   * instead. The tag must change whenever the scene geometry or materials
+   * change — monotonic integers (e.g. a mutation counter) are a safe choice.
+   */
+  readonly sceneVersionTag?: number | string;
+}
+
 const DDGI_CORE_MESH_FILTER = (p: ScenePrimitive): boolean =>
   p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh';
 
 export class SceneBvh {
   protected _buffers: SceneBvhBuffers | null = null;
   private _lastCoreFingerprint = -1;
+  /** H34-h — last sceneVersionTag seen; `undefined` means "no tag was supplied". */
+  private _lastSceneVersionTag: number | string | undefined = undefined;
 
   protected readonly opts: SceneBvhOptions;
 
@@ -69,8 +85,26 @@ export class SceneBvh {
    * The slow-rebuild timer covers the entire scope of real work (merge + BVH
    * build + fingerprint) so that `onSlowRebuild` can actually fire. (Previously
    * the timer only measured an object-literal assignment — an ~0 µs no-op.)
+   *
+   * @param opts.sceneVersionTag — H34-h (D12): optional monotonic scene-mutation
+   *   tag. When provided and UNCHANGED since the last call, the expensive merge
+   *   is skipped and the existing buffers are returned as-is. Callers without a
+   *   cheap tag may omit this; the fingerprint fallback is used instead.
    */
-  updateFromCore(scene: Scene): void {
+  updateFromCore(scene: Scene, opts: UpdateFromCoreOptions = {}): void {
+    // H34-h — fast path: if the caller supplies a sceneVersionTag and it
+    // matches the last seen value, skip the merge entirely. The buffers field
+    // is already current (or null, which is the correct answer for an empty
+    // scene that has not changed either).
+    const { sceneVersionTag } = opts;
+    if (
+      sceneVersionTag !== undefined &&
+      sceneVersionTag === this._lastSceneVersionTag &&
+      this._buffers !== null
+    ) {
+      return;
+    }
+
     // H34-g: start timing BEFORE the expensive merge so onSlowRebuild can fire.
     const t0 = performance.now();
 
@@ -82,6 +116,9 @@ export class SceneBvh {
     if (merged.triangleCount === 0) {
       this._buffers = null;
       this._lastCoreFingerprint = -1;
+      // Record the tag for an empty scene too — next call with the same tag
+      // still correctly returns null buffers via the fast path above.
+      this._lastSceneVersionTag = sceneVersionTag;
       return;
     }
 
@@ -91,8 +128,14 @@ export class SceneBvh {
       merged.mergedTriMaterialId.buffer as ArrayBuffer,
       new Float32Array(materialSetHashFloats(merged.materials)).buffer,
     );
-    if (fingerprint === this._lastCoreFingerprint && this._buffers !== null) return;
+    if (fingerprint === this._lastCoreFingerprint && this._buffers !== null) {
+      // Content fingerprint matched — update tag so the fast path fires on the
+      // next call even when the caller switches from no-tag to tag mode.
+      this._lastSceneVersionTag = sceneVersionTag;
+      return;
+    }
     this._lastCoreFingerprint = fingerprint;
+    this._lastSceneVersionTag = sceneVersionTag;
 
     this._buffers = {
       bvhNodes: merged.bvhNodes,
@@ -118,6 +161,7 @@ export class SceneBvh {
   dispose(): void {
     this._buffers = null;
     this._lastCoreFingerprint = -1;
+    this._lastSceneVersionTag = undefined;
   }
 }
 
