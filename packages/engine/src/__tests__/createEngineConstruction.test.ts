@@ -39,6 +39,8 @@ vi.mock('@vitrum/pt-webgpu', () => ({
 import {
   constructPathTracerWebGPU,
   constructWalkaround,
+  stripOwnershipCriticalKeys,
+  warnCrossBackendAdvanced,
   type CreateEngineOptions,
   type SharedDeviceCtx,
 } from '../createEngine.js';
@@ -202,5 +204,141 @@ describe('createEngine backend construction safety', () => {
 
     expect(engine.dispose).toHaveBeenCalledTimes(1);
     expect(device.destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKeys)', () => {
+  it('strips device from advanced bag and emits a console.warn', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fakeDevice = {} as GPUDevice;
+    const advanced = { device: fakeDevice, maxBounces: 4 };
+    const stripped = stripOwnershipCriticalKeys(advanced as unknown as Record<string, unknown>, 'walkaround-hybrid');
+    expect((stripped as Record<string, unknown>).device).toBeUndefined();
+    // Non-ownership keys are preserved.
+    expect((stripped as Record<string, unknown>).maxBounces).toBe(4);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/device/);
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/walkaround-hybrid/);
+    warnSpy.mockRestore();
+  });
+
+  it('strips canvas and context keys too', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const advanced = { canvas: {}, context: {}, traceTier: 'full' };
+    const stripped = stripOwnershipCriticalKeys(advanced as unknown as Record<string, unknown>, 'pt-webgpu');
+    expect((stripped as Record<string, unknown>).canvas).toBeUndefined();
+    expect((stripped as Record<string, unknown>).context).toBeUndefined();
+    expect((stripped as Record<string, unknown>).traceTier).toBe('full');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('returns the bag unchanged (no warn) when no ownership keys are present', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const advanced = { maxBounces: 8, spectral: true };
+    const stripped = stripOwnershipCriticalKeys(advanced as unknown as Record<string, unknown>, 'pt-webgpu');
+    expect(stripped).toEqual(advanced);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('returns empty object for undefined advanced', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stripped = stripOwnershipCriticalKeys(undefined, 'pt-webgpu');
+    expect(stripped).toEqual({});
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('walkaround constructor strips device from advanced before passing to factory', async () => {
+    hybridFactory.mockReset();
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter: vi.fn(async () => adapter) } },
+      configurable: true,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const impostor = makeDevice(); // a DIFFERENT device than the factory-minted one
+    hybridFactory.mockResolvedValue(makeEngine());
+
+    await constructWalkaround(
+      makeOptions({ device: impostor } as unknown as CreateEngineOptions['advanced']),
+      scene,
+      aabb,
+      false,
+    );
+
+    // calls[0] is safe — hybridFactory was reset at the start of this test.
+    const passedDevice = hybridFactory.mock.calls[0]?.[0]?.device;
+    expect(passedDevice).toBe(device);
+    expect(passedDevice).not.toBe(impostor);
+    // A warn must have been emitted.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('pt-webgpu constructor strips device from advanced before passing to factory', async () => {
+    ptFactory.mockReset();
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter: vi.fn(async () => adapter) } },
+      configurable: true,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const impostor = makeDevice();
+    ptFactory.mockResolvedValue(makeEngine());
+
+    await constructPathTracerWebGPU(
+      makeOptions({ device: impostor } as unknown as CreateEngineOptions['advanced']),
+      scene,
+    );
+
+    // calls[0] is safe — ptFactory was reset at the start of this test.
+    const passedDevice = ptFactory.mock.calls[0]?.[0]?.device;
+    expect(passedDevice).toBe(device);
+    expect(passedDevice).not.toBe(impostor);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+});
+
+describe('Bug4 fix — cross-backend advanced fallback warning (warnCrossBackendAdvanced)', () => {
+  it('emits a console.warn when advanced is non-empty and backends differ', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnCrossBackendAdvanced(
+      { maxBounces: 4 } as CreateEngineOptions['advanced'],
+      'walkaround-hybrid',
+      'pt-webgpu',
+    );
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = warnSpy.mock.calls[0]?.[0] as string;
+    expect(msg).toMatch(/walkaround-hybrid/);
+    expect(msg).toMatch(/pt-webgpu/);
+    expect(msg).toMatch(/maxBounces/);
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT warn when advanced is null/undefined', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnCrossBackendAdvanced(undefined, 'walkaround-hybrid', 'pt-webgl2');
+    warnCrossBackendAdvanced(null as never, 'walkaround-hybrid', 'pt-webgl2');
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT warn when advanced is an empty object', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnCrossBackendAdvanced({}, 'pt-webgpu', 'pt-webgl2');
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT warn when advanced only has undefined-valued keys', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnCrossBackendAdvanced({ maxBounces: undefined } as unknown as CreateEngineOptions['advanced'], 'pt-webgpu', 'pt-webgl2');
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

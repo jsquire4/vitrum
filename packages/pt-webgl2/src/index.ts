@@ -28,7 +28,7 @@ import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
 import { invertMat4, makeRotationYMat4 } from './mat4.js';
-import { CAUCHY_CROWN_GLASS } from '@vitrum/shared-samplers';
+import { CAUCHY_CROWN_GLASS, TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
 
@@ -396,6 +396,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
               anamorphicRatio: this.#dof.anamorphicRatio ?? 1,
             }
           : null,
+      // ── Tonemap / present-pass dials (2026-06-10) ─────────────────────────
+      // Matches the contract (FrameQualitySettings) and the walkaround-hybrid
+      // orchestrator wiring (HybridEngineFrameOrchestrator.ts:764).
+      // Default: aces(0) @ 1.0 @ srgb(0) — same as walkaround and the contract.
+      //
+      // CONTRACT-DEFAULT TENSION: pt-webgl2 previously returned raw linear HDR
+      // (no present pass).  Adding the present pass with default aces+srgb
+      // changes the default visual output.  Hosts that relied on the raw HDR
+      // should pass quality.tonemap='none' + quality.outputColorSpace='linear'.
+      tonemapMode:      TONEMAP_MODE_INDEX[input.quality?.tonemap ?? 'aces'],
+      exposure:         input.quality?.exposure ?? 1.0,
+      outputColorSpace: input.quality?.outputColorSpace === 'linear' ? 1 : 0,
     };
   }
 

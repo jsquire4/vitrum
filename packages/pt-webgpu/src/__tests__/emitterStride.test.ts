@@ -39,6 +39,7 @@ import {
   MESH_AREA_LIGHT_STRIDE,
 } from '../bdpt/flatEmitterWalk.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -148,20 +149,26 @@ describe('WGSL light-stride constants ↔ TS packer parity (caustic H1-class fix
   });
 
   it('caustic photon-map point seed uses POINT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let pointBase\s*=\s*pointIdx\s*\*\s*2u/);
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE');
+    // A4: photon emission now lives in SPPM_PHOTON_PASS_WGSL (separate compute pass),
+    // not in the megakernel caustic path.  Check the photon-emission WGSL directly.
+    expect(SPPM_PHOTON_PASS_WGSL).not.toMatch(/let pointBase\s*=\s*pointIdx\s*\*\s*2u/);
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE');
   });
 
   it('caustic photon-map spot seed uses SPOT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let spotBase\s*=\s*spotIdx\s*\*\s*3u/);
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE');
+    // A4: photon emission now lives in SPPM_PHOTON_PASS_WGSL.
+    expect(SPPM_PHOTON_PASS_WGSL).not.toMatch(/let spotBase\s*=\s*spotIdx\s*\*\s*3u/);
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE');
   });
 
   it('caustic photon spot-axis has no negation (forward emission axis, not backward)', () => {
     // The packed spot direction is the FORWARD emission axis. Negating it before
     // building the ONB emits photons backward (away from the lit region) → zero
     // spot-light photon contributions. The fix: use the packed direction directly.
-    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let spotAxis = safe_normalize(-spotLights[spotBase + 1u].xyz)');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let spotAxis = safe_normalize(spotLights[spotBase + 1u].xyz)');
+    // A4: photon emission now lives in SPPM_PHOTON_PASS_WGSL.
+    // The photon pass names the unpacked spot direction 'spotAxis' (the
+    // safe_normalize of saxisVec.xyz) — no negation anywhere.
+    expect(SPPM_PHOTON_PASS_WGSL).not.toMatch(/let spotAxis\s*=\s*safe_normalize\(-/);
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('let spotAxis = safe_normalize(saxisVec.xyz)');
   });
 });

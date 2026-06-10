@@ -14,6 +14,10 @@ import {
   MNEE_CHAIN_WGSL,
   MNEE_CONNECTION_WGSL,
 } from './pathTrace/mneeNewton.wgsl.js';
+import {
+  SPPM_GROUP4_BINDINGS_WGSL,
+  SPPM_PHOTON_PASS_WGSL,
+} from './pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
 import {
   PT_WEBGPU_PATH_TRACE_KERNEL_WGSL,
@@ -53,8 +57,13 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  *                       block-tridiagonal Newton + chain connection-PDF. Placed
  *                       AFTER `mneeNewton` (it reuses `mnee_safe_normalize`) and
  *                       BEFORE `caustic` so the glass-slab caustic can call it.
+ *   6d. `sppm`        — A4 SPPM group-4 hash-grid bindings (SppmStats UBO +
+ *                       sppmPhotonCells + sppmCellCounters) + sppmInsertPhoton +
+ *                       sppmGather.  Composed BEFORE `caustic` because
+ *                       `photonMapContribution` calls `sppmGather` (WGSL requires
+ *                       callees to precede callers in source order).
  *   7. `caustic`      — REAL MNEE reflection caustic + transmissive cone-search
- *                       MNEE + photon-map gather (causticStrategy modes 1 / 2).
+ *                       MNEE + SPPM gather shim (causticStrategy modes 1 / 2).
  *   8. `kernel`       — primary-ray generation, projectToNdc, causticMode,
  *                       RR helpers, accumulateFrame, and the @compute @main
  *                       entry point that walks each path.
@@ -92,6 +101,7 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
+${SPPM_GROUP4_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
@@ -111,8 +121,9 @@ ${kernel}
  * and `composePtWebgpuTraceWgsl` are untouched (OFF-path byte-identical).
  *
  * The relocation is a string rewrite of the module-scope binding DECL only
- * (`@group(4) @binding(N)` → `@group(0) @binding(23+…)`), mirroring the reuse
- * compose's relocateReuseGroup4ToGroup0. Only binding 3 is present in the kernel.
+ * (`@group(4) @binding(N)` → `@group(0) @binding(20+N)`). Only binding 3 is
+ * present in the kernel (rpt_result_in at group(0) binding 23). SPPM bindings
+ * are in group(3) (bindings 6/7/8) and are not relocated by this transform.
  */
 export function composePtWebgpuCompositeTraceWgsl(bdptEnabled: boolean): string {
   const kernel = composePathTraceKernelWgsl({
@@ -132,12 +143,16 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
+${SPPM_GROUP4_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
 ${kernel}
 `;
-  // Relocate @group(4)@binding(N) → @group(0)@binding(20+N) (only N=3 present).
+  // Relocate @group(4)@binding(N) → @group(0)@binding(20+N).
+  // The ONLY group(4) binding in the composite megakernel is the RPT result
+  // at binding(3) → @group(0)@binding(23). SPPM bindings are in group(3)
+  // (A4 decision: bindings 6/7/8) and do not need relocation here.
   return body.replace(
     /@group\(4\)\s+@binding\((\d+)\)/g,
     (_m, b: string) => `@group(0) @binding(${20 + Number(b)})`,
@@ -145,9 +160,48 @@ ${kernel}
 }
 
 /**
+ * A4 — compose the SPPM photon-emission pass WGSL.  This is a SEPARATE
+ * compute pipeline (entry point `sppmEmitPhotons`, workgroup_size(64,1,1)) that
+ * runs BEFORE the megakernel each frame when `causticStrategy == 'photon-map'`.
+ *
+ * The pass needs the full module stack (PCG RNG, scene bindings, BVH
+ * traceClosest, material decodeMaterial, etc.) plus the SPPM group-4 bindings
+ * (read_write access — it WRITES photons into the hash grid).  The megakernel
+ * separately reads from the same group-4 bind group.
+ *
+ * The `sppmEmitPhotons` entry point + its helpers live in
+ * `SPPM_GROUP4_BINDINGS_WGSL` + `SPPM_PHOTON_PASS_WGSL`.  BSDF helpers
+ * (uniformSphere, buildOnb) come from the standard module stack.
+ *
+ * Full-tier only; never composed on lite.
+ */
+export function composeSppmPhotonPassWgsl(): string {
+  return /* wgsl */ `
+${PT_WEBGPU_COMMON_WGSL}
+${HAMMERSLEY_WGSL}
+${OCTAHEDRAL_CORE_WGSL}
+${LUMINANCE_WGSL}
+${HERO_WAVELENGTH_WGSL}
+${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
+${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
+${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
+${SPPM_GROUP4_BINDINGS_WGSL}
+${SPPM_PHOTON_PASS_WGSL}
+`;
+}
+
+/**
  * Default full-tier composition — BDPT off ⇒ volumetric SSS walk present.
  * Preserved as a const for the many WGSL-contract tests + the non-BDPT
- * pipeline path. \`composePtWebgpuTraceWgsl(true)\` yields the BDPT-on variant.
+ * pipeline path. `composePtWebgpuTraceWgsl(true)` yields the BDPT-on variant.
+ *
+ * Re-pinned 2026-06-10: A4 real SPPM progressive photon map replaces the
+ * per-pixel 32-photon approximation (removed: gatherRadius=0.35, ×1.25 fudge).
+ * SPPM_GROUP4_BINDINGS_WGSL added to the composition (RENDER-CHANGING for
+ * causticStrategy:'photon-map'; off-path byte-identical for other strategies).
+ * The WGSL string changes (hence this re-pin); the OFF runtime path
+ * (causticStrategy:'none'/'manifold-nee') does not change radiometrically.
+ * A/B pending V28-B.
  */
 export const PT_WEBGPU_TRACE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_COMMON_WGSL}
@@ -162,6 +216,7 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
+${SPPM_GROUP4_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}

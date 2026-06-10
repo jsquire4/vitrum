@@ -196,6 +196,36 @@ describe('idempotentDispose proxy table — post-dispose behaviour (golden)', ()
   });
 });
 
+describe('idempotentDispose proxy table — getRestirPtResultBuffer disposed returns null (Bug5 fix)', () => {
+  it('pre-dispose: forwards to backend and returns its value', () => {
+    const fakeBuffer = { kind: 'GPUBuffer' };
+    const engine: Engine = {
+      ...makeFullEngine().engine,
+      capabilities: allOnCapabilities(),
+      getRestirPtResultBuffer: vi.fn(() => fakeBuffer),
+    } as unknown as Engine;
+    const p = wrapWithIdempotentDispose(engine, () => {});
+    expect(p.getRestirPtResultBuffer!()).toBe(fakeBuffer);
+  });
+
+  it('post-dispose: returns null (not undefined)', () => {
+    const getRestirPtResultBuffer = vi.fn(() => ({ kind: 'GPUBuffer' }));
+    const engine: Engine = {
+      ...makeFullEngine().engine,
+      capabilities: allOnCapabilities(),
+      getRestirPtResultBuffer,
+    } as unknown as Engine;
+    const p = wrapWithIdempotentDispose(engine, () => {});
+    p.dispose();
+    const result = p.getRestirPtResultBuffer!();
+    // Must be null, not undefined — the contract type is `unknown | null`.
+    expect(result).toBeNull();
+    expect(result).not.toBeUndefined();
+    // Must not forward to the backend after dispose.
+    expect(getRestirPtResultBuffer).not.toHaveBeenCalled();
+  });
+});
+
 describe('idempotentDispose proxy table — eligibility gating', () => {
   it('addPrimitive/removePrimitive omitted when supportsAddRemovePrimitive is false', () => {
     const { engine } = makeFullEngine();

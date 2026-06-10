@@ -14,7 +14,8 @@ describe('createPTEngine_WebGPU', () => {
       causticStrategy: 'manifold-nee',
     });
     expect(engine.capabilities.causticStrategy).toBe('manifold-nee');
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-approximate')).toBe(false);
+    // A4: old approximate tag gone; SPPM tag not present for non-photon-map strategies.
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(false);
   });
 
   it('supports photon-map capability reporting path', async () => {
@@ -23,7 +24,8 @@ describe('createPTEngine_WebGPU', () => {
       causticStrategy: 'photon-map',
     });
     expect(engine.capabilities.causticStrategy).toBe('photon-map');
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-approximate')).toBe(true);
+    // A4: real SPPM (not approximate) — tag updated to 'pt-webgpu-photon-map-sppm'.
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(true);
   });
 
   it('reports current incremental patch support matrix', async () => {

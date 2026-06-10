@@ -47,16 +47,16 @@ import { MNEE_NEWTON_MAX_ITERS, MNEE_CHAIN_MAX_ITERS } from './mneeNewton.wgsl.j
  *    solve (no half-vector constraint / Newton / change-of-variables Jacobian); it
  *    remains for the DIRECTIONAL-light multi-bounce-glass case the single-interface
  *    point-light refraction solve does not yet cover.
- *  - `photonMapContribution` — caustic strategy mode 2 (Jensen 1996 photon
- *    mapping with a tiny in-shader photon pass + Gaussian gather kernel). This is
- *    the APPROXIMATE/stylized caustic mode (`causticStrategy:'photon-map'`,
- *    advertised as `pt-webgpu-photon-map-approximate`), NOT a radiometric reference:
- *    GPU A/B vs the forward-traced oracle that validated MNEE recovers only ~21% of
- *    the true caustic energy and fires on ~1% of caustic pixels, with a hardcoded
- *    world-unit gather radius + a flat brightness fudge (see those two sites below).
- *    The validated reference caustic is the mode-1 MNEE path
- *    (`causticStrategy:'manifold-nee'`, ~98.7% oracle energy, scale-invariant).
- *    Evidence: wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
+ *  - `photonMapContribution` — caustic strategy mode 2: SPPM gather shim.
+ *    Reads from the @group(4) hash grid populated by the photon-emission pre-pass
+ *    (`sppmEmitPhotons` in sppmBindings.wgsl.ts / the separate sppmPhotonPass
+ *    pipeline). The old per-pixel 32-photon mini-pass with a hardcoded 0.35 world-
+ *    unit gather radius and a ×1.25 brightness fudge was removed in A4 (2026-06-10);
+ *    it recovered only ~21% of oracle caustic energy and was non-physical.
+ *    Replacement: Hachisuka & Jensen 2009 SPPM with progressive radius shrink
+ *    (α=2/3), scale-aware initial radius (r₀ = diagonal/100), and standard
+ *    π r² density estimator — no brightness fudge.  Radiometric A/B tracked as V28-B.
+ *    Provenance: Hachisuka & Jensen 2009 "Stochastic Progressive Photon Mapping".
  *
  * Depends on FrameParams bindings (materials, lightDir, pointLights,
  * spotLights) from `material.wgsl.ts`, evaluateBrdf + brdfDirectionalPdf,
@@ -886,6 +886,26 @@ fn manifoldNeeContribution(
   return total + transmissiveContribution;
 }
 
+// ── SPPM gather (causticStrategy == 2) ────────────────────────────────────────
+// Stochastic Progressive Photon Mapping (Hachisuka & Jensen 2009).
+// The photon-emission pass (sppmEmitPhotons in sppmBindings.wgsl.ts / the
+// separate sppmPhotonPass pipeline) runs BEFORE the megakernel each frame and
+// populates the @group(4) hash grid.  This gather reads from that grid.
+//
+// The old per-pixel mini-pass (32 in-shader photons, gatherRadius=0.35 fixed,
+// ×1.25 fudge) is REMOVED entirely (A4 decision 2026-06-10). It recovered only
+// ~21% of oracle caustic energy and fired on ~1% of pixels with a hardcoded
+// world-unit radius that mis-scaled with the scene. Evidence:
+// wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
+//
+// Replacement: the photon pass + sppmGather from sppmBindings.wgsl.ts give a
+// physically-grounded first-order density estimate without fudge factors. The
+// progressive radius shrinks as r₀·√((n·α+α)/(n+1)), α=2/3, converging to zero
+// — the canonical SPPM convergence criterion. Radiometric A/B is tracked as
+// V28-B (hardware GPU campaign).
+//
+// Provenance: Hachisuka & Jensen 2009 "Stochastic Progressive Photon Mapping"
+// (ACM SIGGRAPH Asia 2009, §3 gather estimator).
 fn photonMapContribution(
   rng: ptr<function, u32>,
   hitPos: vec3f,
@@ -897,139 +917,8 @@ fn photonMapContribution(
   transmission: f32,
   throughput: vec3f,
 ) -> vec3f {
-  var availableLightCount = 0u;
-  if (params.lightDir.w > 1e-6) { availableLightCount = availableLightCount + 1u; }
-  if (params.pointLightCount > 0u) { availableLightCount = availableLightCount + params.pointLightCount; }
-  if (params.spotLightCount > 0u) { availableLightCount = availableLightCount + params.spotLightCount; }
-  if (availableLightCount == 0u) { return vec3f(0.0); }
-  let photonCount = u32(clamp(f32(params.mneeMaxIterations) * 2.0, 8.0, 32.0));
-  let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
-  // Photon-gather radius in ABSOLUTE world units — a NON-PHYSICAL, scene-relative
-  // constant with no radiometric anchor. Hardcoded at 0.35 for one calibration
-  // scene; it is NOT a fraction of the caustic footprint, so it mis-scales with the
-  // world. GPU A/B (dzn RTX-4090, 2026-06-07) vs the same forward-traced oracle that
-  // validated MNEE: holding the rendered image radiometrically INVARIANT and only
-  // rescaling the scene ×10, this fixed radius swings the caustic firing-rate ~6×
-  // (1.1% → 6.4% of caustic pixels) — 100% an artifact of this constant. The
-  // photon-map strategy as a whole recovers only ~21% of the true caustic energy
-  // and fires on ~1% of pixels, which is WHY causticStrategy:'photon-map' is the
-  // APPROXIMATE/stylized mode (advertised as pt-webgpu-photon-map-approximate) and
-  // causticStrategy:'manifold-nee' (98.7% oracle energy, scale-invariant) is the
-  // validated reference caustic. Evidence:
-  // wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
-  // Future: lift to a params field with a scene-relative bandwidth (progressive
-  // photon-mapping kernel) if photon-map is ever promoted toward radiometric.
-  let gatherRadius = 0.35;
-  let gatherRadius2 = gatherRadius * gatherRadius;
-  var contribution = vec3f(0.0);
-  for (var photonIdx = 0u; photonIdx < 32u; photonIdx = photonIdx + 1u) {
-    if (photonIdx >= photonCount) {
-      break;
-    }
-    let pick = u32(min(floor(rand_f32(rng) * f32(availableLightCount)), f32(availableLightCount - 1u)));
-    var current = 0u;
-    var photonOrigin = hitPos;
-    var photonDir = vec3f(0.0, 1.0, 0.0);
-    var photonFlux = vec3f(0.0);
-    var seeded = false;
-    if (params.lightDir.w > 1e-6) {
-      if (current == pick) {
-        photonOrigin = hitPos - safe_normalize(params.lightDir.xyz) * 24.0;
-        photonDir = safe_normalize(params.lightDir.xyz);
-        photonFlux = vec3f(params.lightDir.w);
-        seeded = true;
-      }
-      current = current + 1u;
-    }
-    if (params.pointLightCount > 0u) {
-      if (pick >= current && pick < current + params.pointLightCount) {
-        let pointIdx = pick - current;
-        let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE;
-        photonOrigin = pointLights[pointBase].xyz;
-        photonDir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
-        photonFlux = pointLights[pointBase + 1u].rgb;
-        seeded = true;
-      }
-      current = current + params.pointLightCount;
-    }
-    if (params.spotLightCount > 0u && pick >= current && pick < current + params.spotLightCount) {
-      let spotIdx = pick - current;
-      let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE;
-      photonOrigin = spotLights[spotBase].xyz;
-      let coneXi = vec2f(rand_f32(rng), rand_f32(rng));
-      let cosMin = spotLights[spotBase + 1u].w;
-      let cosTheta = mix(cosMin, 1.0, coneXi.x);
-      let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
-      let phi = 2.0 * PI * coneXi.y;
-      let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-      // spotLights[spotBase+1].xyz is the forward emission axis (direction the spot
-      // points -- identical to kernel.wgsl spotDir = safe_normalize(saxis.xyz)).
-      // Photons must travel in the FORWARD direction, so NO negation here.
-      // (The prior negation emitted photons backward -- away from the lit region
-      // -- making spot-light photon-map contributions always zero.)
-      let spotAxis = safe_normalize(spotLights[spotBase + 1u].xyz);
-      var t: vec3f;
-      var b: vec3f;
-      buildOnb(spotAxis, &t, &b);
-      photonDir = safe_normalize(local.x * t + local.y * b + local.z * spotAxis);
-      photonFlux = spotLights[spotBase + 2u].rgb;
-      seeded = true;
-    }
-    if (!seeded) {
-      continue;
-    }
-    var ray = Ray(photonOrigin + photonDir * 1e-3, photonDir);
-    var flux = photonFlux / max(f32(photonCount), 1.0);
-    for (var bounce = 0u; bounce < 8u; bounce = bounce + 1u) {
-      if (bounce >= maxChain) { break; }
-      let hit = traceClosest(ray, 1e-4, INFINITY);
-      if (!hit.didHit) { break; }
-      let matId = hitMaterialId(hit);
-      // Decode is now canonical (decodeMaterial owns the offset arithmetic +
-      // per-field clamps). baseColor is re-clamped to [0,1] in the flux mix
-      // below to preserve caustic's historical clamp. (material.wgsl.ts decodeMaterial)
-      let mat = decodeMaterial(matId);
-      let mTransmission = mat.transmission;
-      let mIor = mat.ior;
-      let hp = ray.origin + ray.direction * hit.dist;
-      let dist2ToReceiver = dot(hp - hitPos, hp - hitPos);
-      if (dist2ToReceiver <= gatherRadius2) {
-        let wi = -ray.direction;
-        let nDotL = max(dot(normal, wi), 0.0);
-        if (nDotL > 1e-6) {
-          let receiverBrdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-          let kernel = exp(-dist2ToReceiver / max(2.0 * gatherRadius2, 1e-6)) / max(PI * gatherRadius2, 1e-6);
-          contribution = contribution + throughput * flux * receiverBrdf * nDotL * kernel;
-        }
-      }
-      if (mTransmission <= 1e-4) {
-        break;
-      }
-      let frontFace = dot(ray.direction, hit.normal) < 0.0;
-      let n = select(-hit.normal, hit.normal, frontFace);
-      let eta = select(mIor, 1.0 / mIor, frontFace);
-      let refr = refract(ray.direction, n, eta);
-      let hasRefr = dot(refr, refr) > 1e-8;
-      let nextDir = select(reflect(ray.direction, n), safe_normalize(refr), hasRefr);
-      flux = flux * mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2) * max(mTransmission, 0.05);
-      if (max(flux.r, max(flux.g, flux.b)) < 1e-5) {
-        break;
-      }
-      ray.origin = hp + nextDir * 1e-3;
-      ray.direction = nextDir;
-    }
-  }
-  // NON-PHYSICAL brightness fudge: a flat scalar (1 + 0.25·transmission) with no
-  // radiometric basis. On the calibration scene (transmission = 1) this is a 1.25×
-  // multiplier, so 20% of the reported photon-map energy (0.25 / 1.25) is pure fudge
-  // (GPU A/B, dzn RTX-4090, 2026-06-07; de-fudged ratio drops from 0.213 → 0.171 of
-  // the forward-traced oracle). It nudges magnitude but CANNOT repair the missing
-  // ~79% of energy or the wrong spatial profile — a band-aid, not physics. This is
-  // part of WHY causticStrategy:'photon-map' is the APPROXIMATE mode; the validated
-  // reference caustic is causticStrategy:'manifold-nee' (no such fudge — 98.7%
-  // oracle energy, scale-invariant). Evidence:
-  // wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
-  let strategyScale = 1.0 + 0.25 * transmission;
-  return contribution * strategyScale;
+  // Delegate entirely to the SPPM grid gather (reads from @group(4) bindings
+  // written by the photon-emission pre-pass this frame).
+  return sppmGather(hitPos, normal, wo, baseColor, roughness, metallic, throughput);
 }
 `;

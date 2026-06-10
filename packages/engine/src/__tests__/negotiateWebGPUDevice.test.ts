@@ -221,4 +221,28 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     // untouched (not destroyed) when it returns.
     expect((result.device.destroy as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
+
+  // ── Bug7 fix: restirPtReuse forwarded for target:'progressive' ───────────
+
+  it("Bug7 fix — target 'progressive' with restirPtReuse:true requests the higher buffer floor", async () => {
+    // The ReSTIR-PT reuse floor is higher than the regular full-tier floor.
+    // This adapter must be capable of the ReSTIR-PT reuse tier.
+    const { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } = await import('@vitrum/pt-webgpu');
+    const fa = fakeAdapter(PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive', restirPtReuse: true });
+    const limits = fa.lastDescriptor()?.requiredLimits;
+    // With restirPtReuse:true the limit union must use the higher buffer floor.
+    expect(limits?.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("Bug7 fix — target 'progressive' without restirPtReuse uses the regular full-tier floor", async () => {
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive' });
+    const limits = fa.lastDescriptor()?.requiredLimits;
+    expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  });
 });

@@ -68,6 +68,7 @@ const shaders = [];
   const {
     composePtWebgpuTraceWgsl,
     composePtWebgpuCompositeTraceWgsl,
+    composeSppmPhotonPassWgsl,
     PT_WEBGPU_TRACE_WGSL,
   } = await import("../../packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts");
 
@@ -128,6 +129,15 @@ const shaders = [];
     name: "pt-webgpu/seed-blit",
     wgsl: PT_WEBGPU_SEED_BLIT_WGSL,
     entryPoint: "main",
+  });
+
+  // A4 — SPPM photon-emission pass (full-tier only; @group(3) bindings 6/7/8).
+  // The SPPM bindings live in group 3 (same group as the light-tree / material
+  // textures) so maxBindGroups=4 is sufficient — works on lavapipe.
+  shaders.push({
+    name: "pt-webgpu/sppm-photon-pass",
+    wgsl: composeSppmPhotonPassWgsl(),
+    entryPoint: "sppmEmitPhotons",
   });
 
   // ReSTIR-PT per-pass composers (per-pass because the combined unit has

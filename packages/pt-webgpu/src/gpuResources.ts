@@ -27,7 +27,14 @@ import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import {
   composePtWebgpuTraceWgsl,
   composePtWebgpuCompositeTraceWgsl,
+  composeSppmPhotonPassWgsl,
 } from './wgsl/pathTraceBruteforce.wgsl.js';
+import {
+  SPPM_PHOTON_CELLS_BYTES,
+  SPPM_CELL_COUNTERS_BYTES,
+  SPPM_STATS_BYTES,
+  SPPM_PHOTON_CELLS_MAX_BYTES,
+} from './wgsl/pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
 import {
@@ -148,6 +155,36 @@ export class GpuResources {
   rptTemporalGroup0: GPUBindGroup | null = null;
   rptSpatialGroup0: GPUBindGroup | null = null;
   rptResolveGroup0: GPUBindGroup | null = null;
+
+  // ── SPPM photon-map resources (A4; gated by causticStrategy == 'photon-map' + full-tier) ──
+
+  /**
+   * A4 — SPPM photon hash-grid cells buffer.
+   * PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY], 48 B/record ≈ 402 MiB.
+   * Bound at group(3) binding(6).  A 16-byte placeholder is used when SPPM is
+   * off so the group-3 layout slot is satisfied without allocating the real buffer.
+   */
+  sppmPhotonCellsBuffer: GPUBuffer | null = null;
+
+  /**
+   * A4 — SPPM cell-insertion counters: atomic<u32>[SPPM_MAX_CELLS] ≈ 256 KiB.
+   * Cleared at the start of each frame before the photon pass writes into it.
+   * Bound at group(3) binding(7).
+   */
+  sppmCellCountersBuffer: GPUBuffer | null = null;
+
+  /**
+   * A4 — SppmStats UBO (32 bytes): currentRadius, r0, frameAccumulated,
+   * photonCount, sceneExtent, _pad×3.  Written per-frame by the host.
+   * Bound at group(3) binding(8).
+   */
+  sppmStatsBuffer: GPUBuffer | null = null;
+
+  /** Compute pipeline for the photon-emission pre-pass (sppmEmitPhotons). */
+  sppmPhotonPipeline: GPUComputePipeline | null = null;
+
+  /** true if the SPPM buffers have been allocated at full size (not placeholder). */
+  sppmBuffersReady = false;
 
   /** Bytes per ReservoirPTHero (36 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
    *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
@@ -432,6 +469,11 @@ export class GpuResources {
       // UVs, per-material descriptors, the baseColor texture_2d_array, a sampler).
       // A DEDICATED group so the lite tier (which never reaches this branch) carries
       // no group-3 layout, and so adding it leaves groups 0/1/2 byte-identical.
+      // A4 — Group 3 extended with SPPM bindings 6/7/8 (photonCells + cellCounters
+      // + sppmStats). Using group 3 instead of a new group 4 avoids requiring
+      // maxBindGroups ≥ 5 (lavapipe only supports 4 bind groups). Placeholder
+      // buffers are bound when SPPM is off; the gather code is guarded by
+      // causticMode() == 2u so they are never accessed.
       this.bindGroupLayout3 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group3.full',
         entries: [
@@ -441,6 +483,9 @@ export class GpuResources {
           { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures sRGB (P2)
           { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
           { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/ORM (P2)
+          buf(6, rw), // A4: sppmPhotonCells (read_write storage)
+          buf(7, rw), // A4: sppmCellCounters (read_write storage, atomic)
+          buf(8, uniform), // A4: sppmStats (uniform)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -1020,6 +1065,13 @@ export class GpuResources {
           { binding: 3, resource: sb.materialTextureView },
           { binding: 4, resource: sb.materialTextureSampler },
           { binding: 5, resource: sb.materialLinearTextureView },
+          // A4 — SPPM photon hash-grid (bindings 6/7/8). Placeholder buffers
+          // are bound when SPPM is off so the layout slot is satisfied; the
+          // gather code in caustic.wgsl.ts is guarded by causticMode() == 2u
+          // so the placeholders are never accessed.
+          { binding: 6, resource: { buffer: this.sppmPhotonCellsBuffer! } },
+          { binding: 7, resource: { buffer: this.sppmCellCountersBuffer! } },
+          { binding: 8, resource: { buffer: this.sppmStatsBuffer! } },
         ],
       });
     }
@@ -1181,6 +1233,174 @@ export class GpuResources {
     this.rptResolveGroup0 = null;
   }
 
+  // ── SPPM photon-map lifecycle (A4) ───────────────────────────────────────────
+
+  /**
+   * (Re)allocate or ensure the SPPM buffers and pipeline exist.  Returns `true`
+   * when the full photon-cells + counters + stats buffers are allocated and the
+   * photon-emission pipeline is built; `false` on the lite tier or when the
+   * allocation would exceed the ceiling.
+   *
+   * SPPM bindings live in group-3 (bindings 6/7/8), appended to the existing
+   * light-tree / material-texture entries (0–5).  No new bind group is needed;
+   * only the three buffer handles in group-3 are managed here.
+   *
+   * A 16-byte placeholder buffer is always created when SPPM is off so the
+   * group-3 layout slots 6/7/8 are satisfied without allocating the real data.
+   * The gather code in caustic.wgsl.ts is guarded by `causticMode() == 2u` so
+   * the placeholder buffers are never accessed on the GPU.
+   */
+  ensureSppmBuffers(sppmActive: boolean): boolean {
+    if (this.#traceTier !== 'full') return false;
+    // The group-3 layout (which includes SPPM bindings 6/7/8) is built in
+    // #buildSharedPipelineLayout via ensurePipeline. We don't need the layout
+    // here — just ensure the buffer handles exist so buildBindGroups can bind them.
+    // When SPPM is not active, ensure at least a placeholder buffer for the
+    // layout — 16 bytes satisfies the binding without allocating the real data.
+    if (!sppmActive) {
+      if (this.sppmPhotonCellsBuffer == null) {
+        this.sppmPhotonCellsBuffer = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.sppm.photonCells.placeholder',
+          size: 16,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.sppmCellCountersBuffer = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.sppm.cellCounters.placeholder',
+          size: 16,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.sppmStatsBuffer = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.sppm.stats.placeholder',
+          size: 32,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        // SPPM buffers just created — invalidate group-3 so it rebuilds
+        // with the new placeholder handles.
+        this.invalidateGroup3BindGroup();
+      }
+      return false;
+    }
+    // Full allocation path.
+    if (this.sppmBuffersReady) return true;
+
+    if (SPPM_PHOTON_CELLS_BYTES > SPPM_PHOTON_CELLS_MAX_BYTES) {
+      if (!this.#ceilingWarnedKeys.has('sppmPhotonCells')) {
+        this.#ceilingWarnedKeys.add('sppmPhotonCells');
+        const mib = (SPPM_PHOTON_CELLS_BYTES / (1024 * 1024)).toFixed(1);
+        console.warn(
+          `[vitrum/pt-webgpu] SPPM photon-cells buffer would be ${mib} MiB, ` +
+            `exceeding the ${(SPPM_PHOTON_CELLS_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+            "Falling back to 'manifold-nee' caustic strategy. " +
+            '(This warning fires once per engine instance.)',
+        );
+      }
+      return false;
+    }
+    // Destroy any placeholder buffers before allocating the real ones.
+    this.sppmPhotonCellsBuffer?.destroy();
+    this.sppmCellCountersBuffer?.destroy();
+    this.sppmStatsBuffer?.destroy();
+    this.sppmPhotonCellsBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.sppm.photonCells',
+      size: SPPM_PHOTON_CELLS_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.sppmCellCountersBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.sppm.cellCounters',
+      size: SPPM_CELL_COUNTERS_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.sppmStatsBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.sppm.stats',
+      size: SPPM_STATS_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // New SPPM buffers — invalidate group-3 so it rebuilds with the real handles.
+    this.invalidateGroup3BindGroup();
+    this.sppmBuffersReady = true;
+
+    // Build the photon-emission pipeline lazily.
+    // The photon pass uses groups 0–3.  Group 3 now carries the SPPM bindings
+    // (6/7/8) in addition to the light-tree / material-texture entries (0–5).
+    // Its pipeline layout is [g0, g1, g2, g3] — the SAME 4-group layout as the
+    // megakernel.  This is safe on ALL adapters (maxBindGroups = 4 is guaranteed
+    // by the WebGPU spec).  Must be called AFTER ensurePipeline().
+    if (this.sppmPhotonPipeline == null) {
+      if (
+        this.bindGroupLayout != null &&
+        this.bindGroupLayout1 != null &&
+        this.bindGroupLayout2 != null &&
+        this.bindGroupLayout3 != null
+      ) {
+        const module = this.#device.createShaderModule({
+          label: 'vitrum.pt-webgpu.sppm.photonPass',
+          code: composeSppmPhotonPassWgsl(),
+        });
+        const photonLayout = this.#device.createPipelineLayout({
+          label: 'vitrum.pt-webgpu.sppm.photonPass.layout',
+          bindGroupLayouts: [
+            this.bindGroupLayout,
+            this.bindGroupLayout1,
+            this.bindGroupLayout2,
+            this.bindGroupLayout3,
+          ],
+        });
+        this.sppmPhotonPipeline = this.#device.createComputePipeline({
+          label: 'vitrum.pt-webgpu.sppm.photonPass.pipeline',
+          layout: photonLayout,
+          compute: { module, entryPoint: 'sppmEmitPhotons' },
+        });
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Invalidate the group-3 bind group (which now includes the SPPM bindings
+   * at 6/7/8) when the SPPM buffers are reallocated.  Called by
+   * `ensureSppmBuffers` after a buffer realloc; the next `buildBindGroups` call
+   * will re-create group-3 with the new buffer handles.
+   */
+  invalidateGroup3BindGroup(): void {
+    this.pathTraceBindGroup3 = null;
+  }
+
+  /** Write the SppmStats UBO per-frame. No-op if the buffer is not allocated. */
+  writeSppmStats(
+    currentRadius: number,
+    r0: number,
+    frameAccumulated: number,
+    photonCount: number,
+    sceneExtent: number,
+  ): void {
+    if (this.sppmStatsBuffer == null) return;
+    const ubo = new ArrayBuffer(SPPM_STATS_BYTES);
+    const f = new Float32Array(ubo);
+    const u = new Uint32Array(ubo);
+    f[0] = currentRadius;
+    f[1] = r0;
+    u[2] = frameAccumulated >>> 0;
+    u[3] = photonCount >>> 0;
+    f[4] = sceneExtent;
+    f[5] = 0; f[6] = 0; f[7] = 0; // _pad
+    this.#device.queue.writeBuffer(this.sppmStatsBuffer, 0, ubo);
+  }
+
+  /** Dispose SPPM-specific GPU resources. Called from dispose(). */
+  #disposeSppmResources(): void {
+    this.sppmPhotonCellsBuffer?.destroy();
+    this.sppmPhotonCellsBuffer = null;
+    this.sppmCellCountersBuffer?.destroy();
+    this.sppmCellCountersBuffer = null;
+    this.sppmStatsBuffer?.destroy();
+    this.sppmStatsBuffer = null;
+    this.sppmPhotonPipeline = null; // GPUComputePipeline has no destroy()
+    // The SPPM bind-group layout is part of group-3 (bindGroupLayout3 / the shared
+    // pipeline layout); it is released via the normal bindGroupLayout3 null-out in
+    // dispose() — no separate ref to drop here.
+    this.sppmBuffersReady = false;
+  }
+
   /**
    * Full GPU-resource teardown for engine `dispose()`: destroy the accum textures
    * + buffers, drop the cached bind groups, destroy + null the params buffer, and
@@ -1210,5 +1430,6 @@ export class GpuResources {
     this.bindGroupLayout2 = null;
     this.bindGroupLayout3 = null;
     this.#disposeReservoirResources();
+    this.#disposeSppmResources();
   }
 }

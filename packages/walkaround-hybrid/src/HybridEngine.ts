@@ -1653,6 +1653,29 @@ export class HybridEngine implements Engine {
    * atlases and returns the atlas result unchanged.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
+    // Validate grid origin, spacing, and dims before touching GPU buffers.
+    // Two scenes can have identical probe-atlas pixel dimensions but different
+    // grid origin/spacing/dims — restoring into such a mismatched grid would
+    // corrupt the GI with probes from the wrong world-space layout. The atlas
+    // dim check in importAtlasData is necessary but not sufficient.
+    const grid = this._ddgi.probeGrid;
+    const epsilon = 1e-4;
+    const dimsMismatch =
+      snapshot.dims.x !== grid.dims.x ||
+      snapshot.dims.y !== grid.dims.y ||
+      snapshot.dims.z !== grid.dims.z;
+    const originMismatch =
+      Math.abs(snapshot.origin[0] - grid.worldOrigin.x) > epsilon ||
+      Math.abs(snapshot.origin[1] - grid.worldOrigin.y) > epsilon ||
+      Math.abs(snapshot.origin[2] - grid.worldOrigin.z) > epsilon;
+    const spacingMismatch = Math.abs(snapshot.spacing - grid.worldSpacing) > epsilon;
+    if (dimsMismatch || originMismatch || spacingMismatch) {
+      console.warn(
+        '[HybridEngine] importGIState: snapshot grid layout does not match the current grid ' +
+        '(dims/origin/spacing mismatch) — restore rejected to avoid garbage GI.',
+      );
+      return false;
+    }
     const atlasOk = this._ddgi.pass.importAtlasData(this._device, snapshot);
     if (!atlasOk) return false;
     if (snapshot.restirGI == null) return true; // v1 / no reservoir section — atlas-only restore

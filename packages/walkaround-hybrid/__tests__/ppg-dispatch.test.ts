@@ -119,6 +119,7 @@ function makeMinimalCtx(
     lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: 0, wgY: 0, wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,
     checkerboardOn: false, frameParity: 0,
+    welfordPing: 0,
     gtaoDownscale: 2,
     gNormalDepthView: {} as unknown as GPUTextureView,
     computeDesc: (label) => ({ label }),

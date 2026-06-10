@@ -244,7 +244,7 @@ export class ProgressiveHandoffCoordinator {
         // without biasing the converged mean. Runs AFTER reset (the seed is the sole
         // prior). No-op unless seedFromRealtime + both engines' capabilities (+ a
         // shared device at runtime).
-        if (this.#seedFromRealtime) this.#seedConvergedFromRealtime();
+        if (this.#seedFromRealtime) this.#seedConvergedFromRealtime(input);
         this.#convergedStale = false;
       }
       // Always advance the converged engine (it accumulates either way).
@@ -279,14 +279,23 @@ export class ProgressiveHandoffCoordinator {
    *  smooth still-camera image). No-op unless BOTH engines expose the optional
    *  source/sink methods (`getProgressiveSeedTexture` / `seedAccumulator`); at
    *  runtime they must also share one GPUDevice (else the cross-device texture bind
-   *  throws — the host wires this via `createProgressiveEngine`). */
-  #seedConvergedFromRealtime(): void {
+   *  throws — the host wires this via `createProgressiveEngine`).
+   *
+   *  `input` is the current frame input; its viewport carries the DESTINATION
+   *  accumulator dims (the converged engine accumulates at `viewport × its internal
+   *  resolutionFactor`).  Per the contract, `seedAccumulator` `opts.width`/`height`
+   *  are the DESTINATION dims (not the source), so we derive them from the viewport
+   *  rather than the source texture dims — which may differ when source and dest have
+   *  different resolutionFactors.  The backend resamples the seed texture to fit. */
+  #seedConvergedFromRealtime(input: FrameInput): void {
     const src = this.#realtime.getProgressiveSeedTexture?.();
     if (src == null) return;
+    const destWidth = input.viewport?.width ?? src.width;
+    const destHeight = input.viewport?.height ?? src.height;
     this.#converged.seedAccumulator?.(src.texture, {
       weight: this.#seedWeight,
-      width: src.width,
-      height: src.height,
+      width: destWidth,
+      height: destHeight,
     });
   }
 }

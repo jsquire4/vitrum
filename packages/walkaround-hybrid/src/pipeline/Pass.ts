@@ -141,6 +141,16 @@ export interface PassDispatchContext {
   readonly wgY16: number;
   readonly halfWgX: number;
   readonly halfWgY: number;
+  /**
+   * Welford variance ping-pong index at the START of this frame, before the
+   * atrousVariance denoiser's dispatch() has run. The SampleBudgetPass reads
+   * this to select the freshest variance side:
+   *   welfordPing === 0 → freshest data is in `resources.common.varianceBuffer`
+   *   welfordPing === 1 → freshest data is in `resources.common.varianceBufferAux`
+   * For non-atrous-variance denoisers (where varianceBufferAux may not be
+   * written), always 0 (read `varianceBuffer`).
+   */
+  readonly welfordPing: number;
   /** Checkerboard half-res shading state (host opt-in; default OFF). When ON
    *  the {@link ShadePass} compacts its dispatch to ~half the threads — one per
    *  active-parity pixel — instead of dispatching full-res and early-returning

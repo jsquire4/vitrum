@@ -34,6 +34,14 @@ export class NeuralDenoiser implements Denoiser {
   private readonly _inferenceGraph: InferenceGraph | undefined;
   private _width = 0;
   private _height = 0;
+  /** Dimensions the InferenceGraph was initialized with. Fixed for the
+   *  lifetime of this denoiser — the graph's tensor shapes cannot be
+   *  changed after initialization. resize() updates _width/_height and
+   *  reallocates the pack/unpack staging buffers, but the graph itself
+   *  stays at these dims. dispatch() guards against this mismatch so the
+   *  graph never receives buffers sized for a different resolution. */
+  private _graphW = 0;
+  private _graphH = 0;
   private _loggedSizeMismatch = false;
 
   private _device: GPUDevice | null = null;
@@ -62,6 +70,9 @@ export class NeuralDenoiser implements Denoiser {
     }
     this._width = ctx.width;
     this._height = ctx.height;
+    // Record the InferenceGraph's fixed dims — these never change.
+    this._graphW = ctx.width;
+    this._graphH = ctx.height;
     const device = ctx.device;
     this._device = device;
 
@@ -141,14 +152,18 @@ export class NeuralDenoiser implements Denoiser {
       return ctx.resources.common.hdrColorTexture;
     }
     // InferenceGraph tensor buffers are fixed at initialization dimensions.
-    if (ctx.width !== this._width || ctx.height !== this._height) {
+    // Check against the graph's own dims (_graphW/_graphH), NOT the
+    // current _width/_height — resize() updates those and reallocates the
+    // pack/unpack staging buffers, but the InferenceGraph stays at boot
+    // dims and cannot be resized without recreating the engine.
+    if (ctx.width !== this._graphW || ctx.height !== this._graphH) {
       this._lastFallbackReason =
-        `size changed from ${this._width}x${this._height} to ` +
-        `${ctx.width}x${ctx.height}`;
+        `size changed from ${this._graphW}x${this._graphH} to ` +
+        `${ctx.width}x${ctx.height}; recreate engine to resize neural denoiser`;
       if (!this._loggedSizeMismatch) {
         this._loggedSizeMismatch = true;
         console.warn(
-          `[NeuralDenoiser] size changed from ${this._width}x${this._height} ` +
+          `[NeuralDenoiser] size changed from ${this._graphW}x${this._graphH} ` +
           `to ${ctx.width}x${ctx.height}; falling back to hdrColorTexture. ` +
           `Recreate engine to reinitialize neural tensor buffers.`,
         );

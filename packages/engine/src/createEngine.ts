@@ -105,6 +105,46 @@ export function mergeWalkaroundTlasExtension(
 // @internal — not part of the public `@vitrum/engine` API surface.
 export { wrapWithIdempotentDispose } from './idempotentDispose.js';
 
+/**
+ * Strip ownership-critical keys (`device`, `canvas`, `context`) from an
+ * `advanced` option bag before spreading it over createEngine's own
+ * factory-derived values.  If `advanced` supplied any of these keys they
+ * would silently override the device that createEngine minted and owns — the
+ * dispose path would destroy a device the HOST owns (or a completely alien
+ * object), so the engine-minted one would leak.  We strip and warn so the
+ * bug surfaces at construction instead of at GC/teardown time.
+ *
+ * @internal — used by the two device-owning constructors (walkaround-hybrid +
+ * pt-webgpu).  The WebGL2 path already uses `Omit<…, 'device'>` in its type
+ * so it is safe without this helper.
+ */
+const OWNERSHIP_CRITICAL_KEYS = ['device', 'canvas', 'context'] as const;
+type OwnershipCriticalKey = (typeof OWNERSHIP_CRITICAL_KEYS)[number];
+
+export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
+  advanced: T | undefined,
+  backend: CreateEngineBackendId,
+): Omit<T, OwnershipCriticalKey> {
+  if (advanced == null) return {} as Omit<T, OwnershipCriticalKey>;
+  const stripped = { ...advanced } as Record<string, unknown>;
+  const overridden: string[] = [];
+  for (const key of OWNERSHIP_CRITICAL_KEYS) {
+    if (key in stripped) {
+      overridden.push(key);
+      delete stripped[key];
+    }
+  }
+  if (overridden.length > 0) {
+    console.warn(
+      `[vitrum/createEngine] advanced.${overridden.join('/')} was supplied but ` +
+      `createEngine owns the ${backend} device lifecycle — the supplied ` +
+      `${overridden.join('/')} key(s) have been ignored to prevent a double-dispose. ` +
+      `To bring your own device, use the backend factory directly.`,
+    );
+  }
+  return stripped as Omit<T, OwnershipCriticalKey>;
+}
+
 export interface CreateEngineOptions {
   /** Canvas the engine renders into. Used to obtain the GPU context. */
   readonly canvas: HTMLCanvasElement;
@@ -173,11 +213,12 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         backend: 'walkaround-hybrid',
         recoverable: true,
       });
+      const fallbackBackend = gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl2';
       console.warn(
-        `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ` +
-        `${gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl2'}.`,
+        `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ${fallbackBackend}.`,
         err,
       );
+      warnCrossBackendAdvanced(opts.advanced, 'walkaround-hybrid', fallbackBackend);
       return await constructPathTracerFallback(opts, vitrumScene, gpu.isWebGPU);
     }
   }
@@ -192,6 +233,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         recoverable: true,
       });
       console.warn('[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.', err);
+      warnCrossBackendAdvanced(opts.advanced, 'pt-webgpu', 'pt-webgl2');
       return await constructPathTracerWebGLFallback(opts, vitrumScene);
     }
   }
@@ -222,6 +264,38 @@ function reportCreateEngineError(
   try {
     opts.onError?.(error, event);
   } catch {}
+}
+
+/**
+ * Warn when `advanced` is non-empty and the resolved backend differs from the
+ * backend the host most likely targeted (because the preferred backend fell
+ * back). The `advanced` keys are applied to a different backend than the one
+ * they were written for — most keys will be silently ignored, but a few may
+ * accidentally match, producing subtle misbehaviour.
+ *
+ * Note: there is no explicit `targetBackend` field on `advanced`; this heuristic
+ * fires on any non-empty `advanced` when a fallback occurs, which is the honest
+ * minimum without per-key introspection.
+ *
+ * @internal Exported for unit-test access. Not part of the public API.
+ */
+export function warnCrossBackendAdvanced(
+  advanced: CreateEngineOptions['advanced'],
+  preferredBackend: CreateEngineBackendId,
+  resolvedBackend: CreateEngineBackendId,
+): void {
+  if (advanced == null) return;
+  const keys = Object.keys(advanced as Record<string, unknown>).filter(
+    (k) => (advanced as Record<string, unknown>)[k] !== undefined,
+  );
+  if (keys.length === 0) return;
+  console.warn(
+    `[vitrum/createEngine] advanced options (keys: ${keys.join(', ')}) were supplied ` +
+    `but the preferred backend '${preferredBackend}' was unavailable — they are now ` +
+    `being applied to the fallback backend '${resolvedBackend}'. Keys authored for ` +
+    `'${preferredBackend}' may be silently ignored or misinterpreted by '${resolvedBackend}'. ` +
+    `Pass prefer:'${resolvedBackend}' explicitly to suppress this warning.`,
+  );
 }
 
 function destroyOwnedWebGpuDevice(shared: SharedDeviceCtx | undefined, device: GPUDevice): void {
@@ -385,7 +459,8 @@ export async function constructWalkaround(
 
   let engine: (Engine & Partial<GIStatePersistable>) | null = null;
   try {
-    const advancedHybrid = opts.advanced as Partial<HybridEngineOptions> | undefined;
+    const advancedHybridRaw = opts.advanced as Partial<HybridEngineOptions> | undefined;
+    const advancedHybrid = stripOwnershipCriticalKeys(advancedHybridRaw, 'walkaround-hybrid') as Partial<HybridEngineOptions>;
     const merged: HybridEngineOptions = {
       device,
       width: Math.max(1, opts.canvas.width),
@@ -466,10 +541,11 @@ export async function constructPathTracerWebGPU(
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const advancedWebGPU = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
+  const advancedWebGPURaw = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
+  const advancedWebGPU = stripOwnershipCriticalKeys(advancedWebGPURaw, 'pt-webgpu') as Partial<PTEngineWebGPUOptions>;
   const device = shared?.device ?? await adapter.requestDevice({
     requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
-      restirPtReuse: advancedWebGPU?.restirPtReuse === true,
+      restirPtReuse: advancedWebGPURaw?.restirPtReuse === true,
     }),
   });
 

@@ -107,8 +107,13 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // throughput (f·cos/pdf) + pdfFwd; pdfRev(prevCol) is patched to pdfFwd (PBRT RandomWalk
     // convention); the dead "nextDir" sampling at newPos is removed. RENDER-CHANGING for bdpt:true,
     // A/B pending V28-B.
-    expect(digest).toBe('655393a819f4eb7faab3aa9fcda54e322c7113f811e9692670cb953b746ba94f');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(282637);
+    // Re-pinned 2026-06-10: A4 real SPPM progressive photon map — SPPM_GROUP4_BINDINGS_WGSL
+    // (group-3 @binding(6/7/8): sppmPhotonCells, sppmCellCounters, sppmStats) added to
+    // composition; photonMapContribution replaced with sppmGather() shim; old 32-photon
+    // per-pixel approximation + gatherRadius=0.35 + ×1.25 fudge REMOVED.
+    // RENDER-CHANGING for causticStrategy:'photon-map'; off-path byte-identical for other strategies.
+    expect(digest).toBe('29ccf24475567e0d939a3acb3d96c4eea728586d85ae24e6aa853da1bf4e9762');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(281858);
   });
 });
 
@@ -375,11 +380,13 @@ describe('pt-webgpu WGSL material contract', () => {
       .split('\n')
       .filter((l) => !l.trim().startsWith('//'))
       .join('\n');
-    // traceSpecularTransmissiveChain + photonMapContribution = 2 real calls.
+    // A4: traceSpecularTransmissiveChain = 1 real call.  photonMapContribution now
+    // delegates to sppmGather() (SPPM hash-grid lookup) and no longer has its own
+    // decodeMaterial call — the gather is done inside the SPPM bindings module.
     const decodeCalls = causticCode.match(/let mat = decodeMaterial\(matId\);/g) ?? [];
-    expect(decodeCalls.length).toBe(2);
+    expect(decodeCalls.length).toBe(1);
 
-    // The historical baseColor clamp inside the mix is preserved at both sites.
+    // The historical baseColor clamp inside the mix is preserved at the remaining site.
     expect(causticCode).toContain(
       'mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2)',
     );

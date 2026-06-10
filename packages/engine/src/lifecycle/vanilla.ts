@@ -279,6 +279,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         viewportW = viewport.width;
         viewportH = viewport.height;
       }
+      // H30 — update the canvas backing store to match the new CSS size × DPR so
+      // the swapchain textures (WebGL drawingBuffer, WebGPU canvas texture) are
+      // sized correctly after the resize.  Without this the backing store stays at
+      // the initial size while the engine's internal targets resize, causing
+      // viewport/swapchain mismatches until the next createEngine call.
+      opts.canvas.width = viewportW;
+      opts.canvas.height = viewportH;
       if (needsExplicitSetSize) {
         try {
           engine.setSize?.(viewportW, viewportH);

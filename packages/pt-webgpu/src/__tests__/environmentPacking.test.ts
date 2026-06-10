@@ -3,6 +3,7 @@
  *   1. RGBA input (stride 4) is decoded correctly — RGB-only decode garbles values.
  *   2. All-black HDRI emits an accurate warning rather than the misleading
  *      "lacks CPU pixel data" message.
+ *   3. Preetham procedural-sky bake — numerical invariants.
  */
 import { describe, expect, it } from 'vitest';
 import { environmentParams } from '../scene/environmentPacking.js';
@@ -95,5 +96,220 @@ describe('environmentPacking — all-black HDRI message', () => {
     const p = environmentParams(scene);
     expect(p.hasHdri).toBe(false);
     expect(p.warnings.some((w) => w.includes('lacks CPU pixel data'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Preetham procedural-sky bake tests (CPU, no GPU needed)
+// Ref: Preetham, Shirley, Smits, SIGGRAPH 1999.
+// ---------------------------------------------------------------------------
+
+function makeProceduralSkyScene(opts: {
+  sunDirection?: [number, number, number];
+  turbidity?: number;
+  rayleigh?: number;
+  mieCoefficient?: number;
+  mieDirectionalG?: number;
+  intensity?: number;
+}): Scene {
+  return {
+    primitives: [],
+    emitters: [],
+    environment: {
+      kind: 'procedural-sky',
+      sunDirection: opts.sunDirection ?? [0, 1, 0],
+      turbidity: opts.turbidity ?? 2,
+      rayleigh: opts.rayleigh ?? 1,
+      mieCoefficient: opts.mieCoefficient ?? 0.005,
+      mieDirectionalG: opts.mieDirectionalG ?? 0.8,
+      ...(opts.intensity !== undefined ? { intensity: opts.intensity } : {}),
+    },
+  };
+}
+
+describe('environmentPacking — Preetham procedural sky bake', () => {
+  // ----- 1. Routes through the HDRI path (hasHdri = true) -----
+  it('returns hasHdri=true so the HDRI importance-sampling path is used', () => {
+    const p = environmentParams(makeProceduralSkyScene({}));
+    expect(p.hasHdri).toBe(true);
+  });
+
+  // ----- 2. Sun texel is the map maximum (sun-extraction can locate it) -----
+  it('sun-direction pixel is the map maximum', () => {
+    // Sun at zenith (θ=0, +Y up) — pixel at (py, px) corresponding to θ≈0, any φ
+    const p = environmentParams(makeProceduralSkyScene({ sunDirection: [0, 1, 0] }));
+    expect(p.hasHdri).toBe(true);
+    const W = p.hdriWidth;
+    const H = p.hdriHeight;
+    expect(W).toBe(256);
+    expect(H).toBe(128);
+
+    // Find the map maximum (luminance of RGB channels).
+    let maxLum = -Infinity;
+    let maxIdx = 0;
+    for (let i = 0; i < W * H; i += 1) {
+      const r = p.hdriTexels[i * 4] ?? 0;
+      const g = p.hdriTexels[i * 4 + 1] ?? 0;
+      const b = p.hdriTexels[i * 4 + 2] ?? 0;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum > maxLum) { maxLum = lum; maxIdx = i; }
+    }
+
+    // The maximum pixel's θ should be near 0 (zenith sun).
+    const pyMax = (maxIdx / W) | 0;
+    const thetaMax = ((pyMax + 0.5) / H) * Math.PI;
+    // Within 10° of zenith (sun at +Y)
+    expect(thetaMax).toBeLessThan(Math.PI / 18);
+  });
+
+  it('sun-direction pixel is the map maximum for a low-angle (horizon) sun', () => {
+    // Sun near the horizon, East (+X, y≈0)
+    const sunDir: [number, number, number] = [1, 0.05, 0];
+    const len = Math.hypot(...sunDir);
+    const normSunDir: [number, number, number] = [sunDir[0] / len, sunDir[1] / len, sunDir[2] / len];
+    const p = environmentParams(makeProceduralSkyScene({ sunDirection: normSunDir }));
+
+    let maxLum = -Infinity;
+    let maxIdx = 0;
+    const W = p.hdriWidth;
+    const H = p.hdriHeight;
+    for (let i = 0; i < W * H; i += 1) {
+      const r = p.hdriTexels[i * 4] ?? 0;
+      const g = p.hdriTexels[i * 4 + 1] ?? 0;
+      const b = p.hdriTexels[i * 4 + 2] ?? 0;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum > maxLum) { maxLum = lum; maxIdx = i; }
+    }
+
+    const pyMax = (maxIdx / W) | 0;
+    const pxMax = maxIdx % W;
+    const thetaMax = ((pyMax + 0.5) / H) * Math.PI;
+    const phiMax   = ((pxMax + 0.5) / W) * (2 * Math.PI);
+    // Expected: θ ≈ π/2 (horizon), φ ≈ 0 (+X east)
+    expect(thetaMax).toBeGreaterThan(Math.PI / 2 - 0.3);
+    expect(thetaMax).toBeLessThan(Math.PI / 2 + 0.3);
+    // φ=0 corresponds to +X; allow ±15° = ±0.26 rad
+    const phiErr = Math.min(phiMax, 2 * Math.PI - phiMax);
+    expect(phiErr).toBeLessThan(0.3);
+  });
+
+  // ----- 3. Zenith luminance matches Preetham zenith polynomial (T=2, T=5) -----
+  // Preetham Eq. A.4: Yz = (4.0453T − 4.9710)·tan((4/9 − T/120)·(π − 2θs)) − 0.2155T + 2.4192
+  // At θs ≈ 0 (sun at zenith), we can check the relative zenith brightness via the map.
+  it('zenith pixel luminance scales with turbidity (higher T → brighter atmosphere)', () => {
+    // Turbidity 2 (clear) vs turbidity 8 (hazy).  Hazy sky has more scattered
+    // light at the zenith from Mie, so zenith luminance is HIGHER at T=8.
+    const pClear = environmentParams(makeProceduralSkyScene({ sunDirection: [0, 1, 0], turbidity: 2 }));
+    const pHazy  = environmentParams(makeProceduralSkyScene({ sunDirection: [0, 1, 0], turbidity: 8 }));
+
+    const W = pClear.hdriWidth;
+    // Zenith pixel: py=0, px in the middle
+    const pxMid = Math.floor(W / 2);
+    const riClear = 4 * pxMid;  // py=0
+    const riHazy  = 4 * pxMid;
+    const lumClear =
+      0.2126 * (pClear.hdriTexels[riClear] ?? 0) +
+      0.7152 * (pClear.hdriTexels[riClear + 1] ?? 0) +
+      0.0722 * (pClear.hdriTexels[riClear + 2] ?? 0);
+    const lumHazy =
+      0.2126 * (pHazy.hdriTexels[riHazy] ?? 0) +
+      0.7152 * (pHazy.hdriTexels[riHazy + 1] ?? 0) +
+      0.0722 * (pHazy.hdriTexels[riHazy + 2] ?? 0);
+
+    // Preetham Yz at θs=0: both are positive; T=8 is brighter than T=2.
+    expect(lumHazy).toBeGreaterThan(lumClear);
+  });
+
+  // ----- 4. Map is finite and non-negative everywhere -----
+  it('all texel values are finite and non-negative', () => {
+    const p = environmentParams(makeProceduralSkyScene({ sunDirection: [0.6, 0.8, 0] }));
+    const n = p.hdriWidth * p.hdriHeight * 4;
+    for (let i = 0; i < n; i += 1) {
+      const v = p.hdriTexels[i] ?? 0;
+      expect(isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  // ----- 5. CDF is valid (monotone, starts at 0, ends at 1) -----
+  it('CDF is monotone non-decreasing from 0 to 1', () => {
+    const p = environmentParams(makeProceduralSkyScene({}));
+    const cdf = p.hdriCdf;
+    const N = p.hdriWidth * p.hdriHeight;
+    expect(cdf.length).toBe(N + 1);
+    expect(cdf[0]).toBeCloseTo(0, 10);
+    expect(cdf[N]).toBeCloseTo(1, 10);
+    for (let i = 0; i < N; i += 1) {
+      expect((cdf[i + 1] ?? 0)).toBeGreaterThanOrEqual((cdf[i] ?? 0) - 1e-9);
+    }
+  });
+
+  // ----- 6. No heuristic red-channel fudge (the 0.2 floor must be gone) -----
+  it('tint is white (radiance fully baked into texels; no heuristic tint fudge)', () => {
+    const p = environmentParams(makeProceduralSkyScene({ mieCoefficient: 1.0 }));
+    // The old heuristic would produce a non-white tint and set hasHdri=false.
+    // The new implementation always returns tint=[1,1,1] and hasHdri=true.
+    expect(p.tint[0]).toBeCloseTo(1);
+    expect(p.tint[1]).toBeCloseTo(1);
+    expect(p.tint[2]).toBeCloseTo(1);
+    expect(p.hdriIntensity).toBeGreaterThan(0);
+  });
+
+  // ----- 7. sunStrength = 0 (sky-NEE branch does NOT double-fire) -----
+  it('sunStrength is 0 so the procedural-sky NEE gate does not double-fire', () => {
+    const p = environmentParams(makeProceduralSkyScene({ intensity: 3 }));
+    expect(p.sunStrength).toBe(0);
+  });
+
+  // ----- 8. Horizon–zenith ratio: zenith should be brighter than horizon (clear sky) -----
+  it('zenith luminance exceeds average horizon-band luminance (T=2, noon sun)', () => {
+    const p = environmentParams(makeProceduralSkyScene({
+      sunDirection: [0, 1, 0],   // sun at zenith
+      turbidity: 2,
+    }));
+    const W = p.hdriWidth;
+    const H = p.hdriHeight;
+    // Zenith row (py=0): average luminance
+    let zenithSum = 0;
+    for (let px = 0; px < W; px += 1) {
+      const i = px;
+      zenithSum += 0.2126 * (p.hdriTexels[i * 4] ?? 0) +
+                   0.7152 * (p.hdriTexels[i * 4 + 1] ?? 0) +
+                   0.0722 * (p.hdriTexels[i * 4 + 2] ?? 0);
+    }
+    const zenithAvg = zenithSum / W;
+    // Horizon band (py near H/2, θ ≈ π/2): rows H*3/8..H*5/8
+    const pyLo = Math.floor(H * 3 / 8);
+    const pyHi = Math.ceil(H * 5 / 8);
+    let horizonSum = 0;
+    let horizonCount = 0;
+    for (let py = pyLo; py < pyHi; py += 1) {
+      for (let px = 0; px < W; px += 1) {
+        const i = py * W + px;
+        horizonSum += 0.2126 * (p.hdriTexels[i * 4] ?? 0) +
+                      0.7152 * (p.hdriTexels[i * 4 + 1] ?? 0) +
+                      0.0722 * (p.hdriTexels[i * 4 + 2] ?? 0);
+        horizonCount += 1;
+      }
+    }
+    const horizonAvg = horizonSum / horizonCount;
+    // At T=2, the zenith under the sun should outshine the mid-sky horizon band.
+    // (This tests the sun-at-zenith case; with the sun disk at zenith, zenith ≫ horizon.)
+    expect(zenithAvg).toBeGreaterThan(horizonAvg);
+  });
+
+  // ----- 9. No warnings emitted for a valid procedural-sky -----
+  it('emits no warnings for valid inputs', () => {
+    const p = environmentParams(makeProceduralSkyScene({}));
+    expect(p.warnings.length).toBe(0);
+  });
+
+  // ----- 10. hdriWidth/Height match the expected bake dimensions -----
+  it('baked map has the expected 256×128 dimensions', () => {
+    const p = environmentParams(makeProceduralSkyScene({}));
+    expect(p.hdriWidth).toBe(256);
+    expect(p.hdriHeight).toBe(128);
+    expect(p.hdriTexels.length).toBe(256 * 128 * 4);
+    expect(p.hdriCdf.length).toBe(256 * 128 + 1);
   });
 });

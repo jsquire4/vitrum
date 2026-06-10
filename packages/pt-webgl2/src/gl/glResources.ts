@@ -19,6 +19,7 @@ import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
 import {
   createRenderTarget,
+  createColorTexture,
   bindRenderTarget,
   clearRenderTarget,
   type RenderTarget,
@@ -30,6 +31,9 @@ import {
   X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF,
   X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL,
 } from '@vitrum/shared-samplers';
+// Present-pass tonemap GLSL functions (port of @vitrum/shared-samplers,
+// kept numerically identical — see tonemap_functions.glsl.js for provenance).
+import * as TonemapFunctions from '../glsl/shader/common/tonemap_functions.glsl.js';
 
 // H2 — spectral CMF upload tables (constant; precomputed Float32 copies so the
 // per-frame upload allocates nothing). The spectral path importance-samples the
@@ -86,6 +90,26 @@ export interface FrameUniforms {
     readonly apertureRotation: number;
     readonly anamorphicRatio: number;
   } | null;
+  // ── Tonemap / present-pass dials (2026-06-10) ──────────────────────────
+  // Wired from FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
+  // These are NOT used by the PT accumulation shader — they drive the separate
+  // present pass (glResources #runPresentPass) that blits the HDR accum
+  // texture to a tonemapped output.
+  //
+  // CONTRACT-DEFAULT TENSION: the contract (FrameQualitySettings) documents
+  // default 'aces' @ 1.0 @ 'srgb'. pt-webgl2 previously had NO present pass,
+  // so the raw linear HDR was returned as primaryRadiance. The new default
+  // (aces+srgb) changes the visual output of any host that was receiving the
+  // raw HDR. The walkaround backend had the same default and documents this in
+  // HybridEngineFrameOrchestrator.ts:764 — here we match that behaviour.
+  // Hosts that need the raw HDR should pass quality.tonemap='none' and
+  // quality.outputColorSpace='linear'.
+  /** Tonemap operator mode (matches TONEMAP_MODE_INDEX: 0=aces,1=agx,2=reinhard,3=linear,4=none). Default: 0 (aces). */
+  readonly tonemapMode: number;
+  /** Linear-exposure multiplier applied before tonemapping. Default: 1.0. */
+  readonly exposure: number;
+  /** Output color space: 0 = srgb (OETF applied, default), 1 = linear (OETF skipped). */
+  readonly outputColorSpace: number;
 }
 
 /**
@@ -123,6 +147,45 @@ void main() {
 }
 `;
 
+/**
+ * Present-pass fragment shader body (no `#version`/preamble — GlProgram prepends those).
+ * Reads the HDR accumulation texture (RGBA32F), applies exposure + the selected tonemap
+ * operator, and optionally applies the sRGB OETF before writing to the present target.
+ *
+ * Uniforms:
+ *   uAccumTex       — RGBA32F accumulation texture (sampler2D)
+ *   uTonemapMode    — operator index (0=aces, 1=agx, 2=reinhard, 3=linear, 4=none)
+ *   uExposure       — linear-exposure multiplier (default 1.0)
+ *   uOutputColorSpace — 0=srgb (apply OETF, default), 1=linear (skip OETF)
+ *
+ * Wired 2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
+ */
+function buildPresentFragBody(tonemapGlsl: string): string {
+  return /* glsl */ `
+in vec2 vUv;
+uniform sampler2D uAccumTex;
+uniform int uTonemapMode;
+uniform float uExposure;
+uniform int uOutputColorSpace;
+
+${tonemapGlsl}
+
+void main() {
+  vec3 hdr = texture(uAccumTex, vUv).rgb;
+  // Guard against negative values that can appear from alpha-compositing precision.
+  vec3 tonemapped = vitrumTonemap(max(hdr, vec3(0.0)), uTonemapMode, uExposure);
+  // outputColorSpace 0 = srgb (default) — apply the IEC 61966-2-1 OETF before
+  // writing to the 8-bit output (the framebuffer is RGBA8 unorm, not auto-sRGB).
+  // outputColorSpace 1 = linear — skip the OETF (useful for HDR/linear pipeline).
+  if (uOutputColorSpace == 0) {
+    pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);
+  } else {
+    pc_fragColor = vec4(tonemapped, 1.0);
+  }
+}
+`;
+}
+
 export class GlResources {
   readonly #gl: WebGL2RenderingContext;
   readonly #caps: GlCaps;
@@ -143,6 +206,15 @@ export class GlResources {
 
   #ptProgram: GlProgram | null = null;
   #blendProgram: GlProgram | null = null;
+
+  // ── Present pass (tonemap / exposure / outputColorSpace) ────────────────────
+  // A separate single-attachment RGBA8 render target + fullscreen quad program
+  // that blits the HDR accum texture through the tonemap+OETF chain.
+  // Allocated lazily on the first drawAccumStep call (ensured once per
+  // ensureAccumResources cycle); destroyed/reallocated on resize.
+  #presentTex: WebGLTexture | null = null;
+  #presentFbo: WebGLFramebuffer | null = null;
+  #presentProgram: GlProgram | null = null;
 
   #accumWidth = 0;
   #accumHeight = 0;
@@ -193,6 +265,16 @@ export class GlResources {
     if (w === this.#accumWidth && h === this.#accumHeight && this.#accum != null) return false;
     this.#destroyTargets();
     this.#accum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
+    // Present target — RGBA8 (sufficient for display output; the HDR lives in #accum).
+    this.#destroyPresentTarget();
+    this.#presentTex = createColorTexture(this.#gl, w, h);
+    // RGBA8 FBO for the present-pass output.
+    const fbo = this.#gl.createFramebuffer();
+    if (fbo == null) throw new Error('pt-webgl2: failed to create present-pass FBO');
+    this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, fbo);
+    this.#gl.framebufferTexture2D(this.#gl.FRAMEBUFFER, this.#gl.COLOR_ATTACHMENT0, this.#gl.TEXTURE_2D, this.#presentTex, 0);
+    this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, null);
+    this.#presentFbo = fbo;
     this.#accumWidth = w;
     this.#accumHeight = h;
     this.#samples = 0;
@@ -340,11 +422,26 @@ export class GlResources {
     if (regime === 'alpha-composite') this.#compositeBlendStep();
 
     this.#samples += 1;
+
+    // Present pass — blit the HDR accum through tonemap + OETF into #presentTex.
+    this.#runPresentPass(frame.tonemapMode, frame.exposure, frame.outputColorSpace);
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  /** The readable accumulation result texture (ping-pong slot for Regime 2, else primary). */
+  /**
+   * The tonemapped present texture (the output of the most-recent present pass).
+   * Always points to the presentTex (RGBA32F) written by #runPresentPass after
+   * each drawAccumStep. When no present pass has run yet (before the first
+   * drawAccumStep), returns the raw HDR accum as a fallback.
+   *
+   * NOTE: the present texture is the TONEMAPPED output.  Hosts that need the
+   * raw HDR accumulation can read #accum.color directly (internal API only).
+   */
   resultTexture(): WebGLTexture | null {
+    // Prefer the present-pass output (tonemapped) when it has been allocated.
+    if (this.#presentTex != null) return this.#presentTex;
+    // Fallback: raw HDR accum (pre-present, e.g. before the first frame).
     if (this.#blend != null) {
       const [a, b] = this.#blend;
       return (this.#blendReadIndex === 0 ? a : b).color;
@@ -365,10 +462,13 @@ export class GlResources {
   dispose(): void {
     const gl = this.#gl;
     this.#destroyTargets();
+    this.#destroyPresentTarget();
     this.#ptProgram?.dispose();
     this.#ptProgram = null;
     this.#blendProgram?.dispose();
     this.#blendProgram = null;
+    this.#presentProgram?.dispose();
+    this.#presentProgram = null;
     this.#quad.dispose(gl);
     // H7 FIX (2026-06-09): delete the lazily-allocated dummy textures — dispose()
     // freed the programs/targets/quad but LEAKED these two GPU textures on every
@@ -660,5 +760,68 @@ export class GlResources {
     this.#accumWidth = 0;
     this.#accumHeight = 0;
     this.#blendReadIndex = 0;
+  }
+
+  #destroyPresentTarget(): void {
+    const gl = this.#gl;
+    if (this.#presentTex != null) { gl.deleteTexture(this.#presentTex); this.#presentTex = null; }
+    if (this.#presentFbo != null) { gl.deleteFramebuffer(this.#presentFbo); this.#presentFbo = null; }
+  }
+
+  #ensurePresentProgram(): GlProgram {
+    if (this.#presentProgram == null) {
+      const tonemapGlsl = (TonemapFunctions as Record<string, unknown>)['tonemap_functions'];
+      if (typeof tonemapGlsl !== 'string') throw new Error('pt-webgl2: tonemap_functions GLSL not found');
+      this.#presentProgram = new GlProgram(
+        this.#gl,
+        FULLSCREEN_VERT,
+        buildPresentFragBody(tonemapGlsl),
+        {}, // no compile-time defines; all dials are uniforms
+      );
+    }
+    return this.#presentProgram;
+  }
+
+  /**
+   * Run the present pass: blit the current HDR accumulation (or ping-pong blend
+   * result) through the tonemap + OETF chain into #presentTex.
+   *
+   * Called once per drawAccumStep, after the PT accumulation draw and the
+   * optional alpha-composite step. The present target is already allocated by
+   * ensureAccumResources so this is a no-alloc hot path.
+   *
+   * Default dials match the contract (FrameQualitySettings) defaults and the
+   * walkaround-hybrid orchestrator (HybridEngineFrameOrchestrator.ts:764):
+   *   tonemapMode = 0 (aces), exposure = 1.0, outputColorSpace = 0 (srgb).
+   */
+  #runPresentPass(tonemapMode: number, exposure: number, outputColorSpace: number): void {
+    const gl = this.#gl;
+    const presentFbo = this.#presentFbo;
+    if (presentFbo == null) return;
+
+    // The HDR source is the ping-pong read slot (Regime 2) or the primary accum.
+    let srcTex: WebGLTexture | null = null;
+    if (this.#blend != null) {
+      const [a, b] = this.#blend;
+      srcTex = (this.#blendReadIndex === 0 ? a : b).color;
+    } else {
+      srcTex = this.#accum?.color ?? null;
+    }
+    if (srcTex == null) return;
+
+    const prog = this.#ensurePresentProgram();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, presentFbo);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
+    gl.disable(gl.BLEND); // no blending in the present pass — overwrite only
+
+    prog.use();
+    prog.bindTexture('uAccumTex', srcTex);
+    prog.setInt('uTonemapMode', tonemapMode);
+    prog.setFloat('uExposure', exposure);
+    prog.setInt('uOutputColorSpace', outputColorSpace);
+    this.#quad.draw(gl);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 }

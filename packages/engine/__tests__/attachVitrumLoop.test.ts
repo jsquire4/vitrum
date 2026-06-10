@@ -295,6 +295,60 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     handle.dispose();
     vi.restoreAllMocks();
   });
+
+  it('H30 fix — ResizeObserver callback updates canvas.width/height (backing store)', async () => {
+    // Verifies Bug 1: after a resize, canvas.width/height must track the new
+    // CSS × DPR size so the swapchain textures are the right physical size.
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    // Capture the ResizeObserver callback so we can fire it manually.
+    let capturedCallback: ResizeObserverCallback | null = null;
+    (globalThis as Record<string, unknown>).ResizeObserver = class MockRO {
+      constructor(cb: ResizeObserverCallback) { capturedCallback = cb; }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    };
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    canvas.width = 300;
+    canvas.height = 150;
+
+    const engine = makeMockEngine();
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+
+    vi.spyOn(createEngineModule, 'createEngine').mockResolvedValue(
+      engine as ReturnType<typeof createEngineModule.createEngine> extends Promise<infer T> ? T : never,
+    );
+
+    const handle = await attachVitrum({
+      canvas,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' as const } },
+      camera,
+    });
+
+    // Simulate a resize to 800×600 CSS pixels at DPR=1.
+    expect(capturedCallback).not.toBeNull();
+    const resizeEntry = [
+      { contentRect: { width: 800, height: 600 } } as unknown as ResizeObserverEntry,
+    ];
+    (capturedCallback as unknown as ResizeObserverCallback)(resizeEntry, {} as ResizeObserver);
+
+    // Canvas backing store must have been updated to the new physical size.
+    expect(canvas.width).toBe(800);
+    expect(canvas.height).toBe(600);
+
+    handle.dispose();
+    vi.restoreAllMocks();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

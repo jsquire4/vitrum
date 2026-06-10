@@ -165,8 +165,15 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
       features: [...adapter.features].map(String),
       limits,
     };
-  } catch {
-    return { supported: false };
+  } catch (err: unknown) {
+    // Carry the underlying error as a human-readable reason so callers can
+    // distinguish a transient adapter failure (driver crash, context lost,
+    // requestAdapter exception on a new-but-broken GPU) from a genuine
+    // no-WebGPU environment (navigator.gpu absent / requestAdapter → null).
+    const reason = err instanceof Error
+      ? err.message
+      : String(err);
+    return { supported: false, reason };
   }
 }
 

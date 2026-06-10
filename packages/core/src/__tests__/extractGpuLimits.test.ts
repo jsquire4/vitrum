@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { extractGpuLimits } from '../gpuDetection.js';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { extractGpuLimits, probeWebGPU, resetGpuDetectionCache } from '../gpuDetection.js';
 
 describe('extractGpuLimits — portable GPUSupportedLimits reader', () => {
   it('reads canonical limits from a plain enumerable object (browser shape)', () => {
@@ -56,5 +56,62 @@ describe('extractGpuLimits — portable GPUSupportedLimits reader', () => {
     expect(out['maxBindGroups']).toBe(4);
     expect('maxBufferSize' in out).toBe(false);
     expect('bogus' in out).toBe(false);
+  });
+});
+
+describe('Bug6 fix — probeWebGPU carries error reason on adapter exception', () => {
+  const origNavigator = globalThis.navigator;
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'navigator', { value: origNavigator, configurable: true });
+    resetGpuDetectionCache();
+  });
+
+  it('returns supported:false with no reason when navigator.gpu is absent', async () => {
+    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true });
+    const result = await probeWebGPU();
+    expect(result.supported).toBe(false);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it('returns supported:false with no reason when requestAdapter returns null', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter: async () => null } },
+      configurable: true,
+    });
+    const result = await probeWebGPU();
+    expect(result.supported).toBe(false);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it('returns supported:false WITH a reason string when requestAdapter throws', async () => {
+    const boom = new Error('driver crash: GPU device lost');
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: async () => { throw boom; },
+        },
+      },
+      configurable: true,
+    });
+    const result = await probeWebGPU();
+    expect(result.supported).toBe(false);
+    // The reason must be present and carry the error message so callers can
+    // distinguish a transient failure from a no-WebGPU environment.
+    expect(result.reason).toBeDefined();
+    expect(result.reason).toMatch(/driver crash/);
+  });
+
+  it('reason is the stringified error when the thrown value is not an Error', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: async () => { throw 'adapter exploded'; },
+        },
+      },
+      configurable: true,
+    });
+    const result = await probeWebGPU();
+    expect(result.supported).toBe(false);
+    expect(result.reason).toMatch(/adapter exploded/);
   });
 });

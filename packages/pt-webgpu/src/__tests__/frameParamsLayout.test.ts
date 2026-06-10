@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FRAME_PARAMS_BYTE_SIZE } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 
 /**
  * FrameParams layout contract test.
@@ -160,12 +161,17 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     // not hardcoded [0]. The main direct-light loop still uses rb = ri * 4u.
     // We verify a representative sample is present and the .w-stuffing reads
     // are gone.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[pointBase].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[pointBase + 1u].rgb');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase + 1u].w');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase + 2u].rgb');
-    // Item 15: rectAreaLights and meshAreaLights now use loop-indexed rb/mb.
+    // A4: point/spot light per-array reads (pointBase, spotBase) have MOVED to the
+    // SPPM photon-emission compute pass (SPPM_PHOTON_PASS_WGSL).  The megakernel
+    // caustic path now calls sppmGather() — no per-pixel point/spot loops.  Check
+    // the photon-emission pass for the storage-array access patterns.
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('pointLights[pointBase].xyz');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('pointLights[pointBase + 1u].rgb');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('spotLights[spotBase].xyz');
+    // spotBase + 1u row: saxisVec = spotLights[spotBase + 1u] holds direction + cosOuter.
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('spotLights[spotBase + 1u]');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('spotLights[spotBase + 2u]');
+    // Item 15: rectAreaLights and meshAreaLights now use loop-indexed rb/mb (megakernel).
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb].xyz');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u].rgb');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb].xyz');

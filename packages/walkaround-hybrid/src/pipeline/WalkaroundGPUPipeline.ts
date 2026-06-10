@@ -69,6 +69,7 @@ import {
   type DenoiserId,
 } from './denoisers/index.js';
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
+import { AtrousVarianceDenoiser } from './denoisers/atrousVariance.js';
 import { PassRegistry } from './PassRegistry.js';
 import type {
   Pass,
@@ -1786,6 +1787,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // decode, their UBO reads, and the resolve gap-fill all agree this frame.
       checkerboardOn: cbActiveThisFrame,
       frameParity: this._frameCount & 1,
+      // Welford ping-pong state at the START of this frame (before
+      // AtrousVarianceDenoiser.dispatch() flips it). SampleBudgetPass reads
+      // this to bind the freshest variance side — ping===0 means varianceBuffer
+      // holds the previous frame's write; ping===1 means varianceBufferAux does.
+      // For other denoisers that don't ping-pong variance, always 0.
+      welfordPing: this._activeDenoiser instanceof AtrousVarianceDenoiser
+        ? this._activeDenoiser.getWelfordPing()
+        : 0,
       gtaoDownscale: this._gtaoDownscale,
       gNormalDepthView,
       computeDesc,
@@ -1927,6 +1936,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._nrc?.dispose();
     this._nrc = null;
     this._resourceCache.clear();
+    // Guard all post-dispose entry points (renderFrame / presentLastFrame /
+    // getDebugTextures / resize) — they all check this flag first.
+    this._initialized = false;
   }
 
   /**

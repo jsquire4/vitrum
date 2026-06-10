@@ -88,6 +88,17 @@ export interface NegotiateWebGPUDeviceOptions {
 
   /** Optional `label` forwarded to `adapter.requestDevice` for debugging. */
   readonly label?: string;
+
+  /**
+   * For `target: 'progressive'` only — include the ReSTIR-PT reuse
+   * reservoir buffers in the device-limit union (raises the
+   * `maxStorageBuffersPerShaderStage` floor to the ReSTIR-PT reuse tier).
+   * Matches the `restirPtReuse` option on {@link CreateProgressiveEngineOptions}
+   * so a host can build the device with `negotiateWebGPUDevice` and then pass
+   * it to `createProgressiveEngine` with the same flag without a limit
+   * mismatch.  Ignored for all other targets.
+   */
+  readonly restirPtReuse?: boolean;
 }
 
 /** The negotiated, HOST-OWNED WebGPU handles. The caller is responsible for
@@ -209,7 +220,12 @@ function resolveRequiredLimits(
     case 'progressive': {
       // Both backends on one shared device — the limit UNION. Preflight the
       // adapter so the gap is named (matches createProgressiveEngine).
-      const union = computeProgressiveLimitUnion();
+      // Forward restirPtReuse so a host negotiating a progressive device for
+      // ReSTIR-PT reuse gets the higher buffer floor (matching the
+      // createProgressiveEngine limit-union preflight).
+      const union = computeProgressiveLimitUnion({
+        restirPtReuse: options.restirPtReuse === true,
+      });
       const unmet: string[] = [];
       for (const [key, wanted] of Object.entries(union)) {
         const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];

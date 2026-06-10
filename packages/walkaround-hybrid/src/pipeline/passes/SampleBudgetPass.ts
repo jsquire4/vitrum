@@ -71,9 +71,18 @@ export class SampleBudgetPass implements Pass {
       sampleCount: Math.max(ctx.frameIndex + 1, 1),
     });
     device.queue.writeBuffer(this._sampleCountUboRef.buf!, 0, sampleCountBytes);
+    // Select the freshest Welford variance side.  AtrousVarianceDenoiser
+    // ping-pongs between varianceBuffer (ping=0) and varianceBufferAux (ping=1):
+    //   welfordPing === 0 → frame N-1 wrote varianceBuffer  → read varianceBuffer
+    //   welfordPing === 1 → frame N-1 wrote varianceBufferAux → read varianceBufferAux
+    // For denoisers that do not ping-pong, welfordPing is always 0, so
+    // varianceBuffer is used (the historical default, unchanged behaviour).
+    const varianceTex = ctx.welfordPing === 0
+      ? resources.common.varianceBuffer
+      : resources.common.varianceBufferAux;
     const bg = buildSampleBudgetBindGroup(
       device, ctx.bglCache,
-      resources.common.varianceBuffer.createView(),
+      varianceTex.createView(),
       resources.common.tierTexture.createView(),
       this._budgetUboRef.buf!,
       this._sampleCountUboRef.buf!,

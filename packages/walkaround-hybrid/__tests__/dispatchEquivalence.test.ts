@@ -154,6 +154,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     indirectDenoisedPongTexture: tex('indDenoisedPong'),
     resolvedTexture: tex('resolved'),
     varianceBuffer: buf('variance'),
+    varianceBufferAux: buf('varianceAux'),
     tierTexture: tex('tier'),
   };
   const resources = {
@@ -199,6 +200,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     wgX16: 4, wgY16: 4,
     halfWgX: 2, halfWgY: 2,
     gtaoDownscale: 2,
+    welfordPing: 0,
     gNormalDepthView: { __tag: 'gndView' } as unknown as GPUTextureView,
     computeDesc: (label: PassLabel) => ({ label }) as GPUComputePassDescriptor,
     renderTimestampWrites: () => undefined,

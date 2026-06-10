@@ -139,7 +139,7 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 //   (b) the opaque-shadow path, which would treat glass as a wall and
 //       black-out the floor caustic entirely.
 //
-// Algorithm (matches RC's traceSunVisibility / probeRayCast.wgsl):
+// Algorithm:
 //   visibility = vec3f(1.0)
 //   for each tri the ray hits along [0, tMax):
 //     if opaque  → return vec3f(0.0)   (fully shadowed)
@@ -148,6 +148,13 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 //
 // tMax lets the caller cap the ray at e.g. the distance to a sampled
 // emitter point. For directional-light queries pass a large value (INFINITY).
+//
+// §4.10 (road-to-100, 2026-06-10) — TLAS-aware: in bvhMode==1 the function
+// traverses the TLAS, transforms the ray to each BLAS's local space, and
+// performs the leaf tinted-visibility accumulation using LOCAL positions so
+// world-vs-local coordinates are never conflated. The BLAS local t is
+// converted back to a world-space distance (dot(worldHitPos−origin, dir))
+// for the tMax guard — mirrors the approach in traceTlasAny/traceTlasFirstHit.
 // ============================================================
 // WS1 (2026-05-29) — bvh_beer is an r32uint TEXTURE (not a storage buffer):
 // width matches host pipeline/bvhBeerTexture.ts. Declared here (the earliest
@@ -155,6 +162,110 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 // stainedGlassShade see it. Textures are passed to WGSL functions by handle
 // (no ptr), so bvhTraceTintedVisibility takes the texture directly.
 const BVH_BEER_TEX_WIDTH: u32 = 4096u;
+
+// Inner helper: traverse one BLAS from blasRoot, accumulating tinted visibility.
+// Positions in bvh_position are LOCAL-space; tMax is in LOCAL t units.
+// Returns false early (sets visibility = 0) on opaque hit.
+fn _bvhTraceTintedBlasLeaves(
+  bvh_index:    ptr<storage, array<vec4u>,   read>,
+  bvh_position: ptr<storage, array<vec4f>,   read>,
+  bvh:          ptr<storage, array<BVHNode>, read>,
+  bvh_beer:     texture_2d<u32>,
+  origin:   vec3f,   // LOCAL-space ray origin
+  dir:      vec3f,   // LOCAL-space ray direction (unit)
+  tMaxLocal: f32,
+  blasRoot:  u32,
+  visibility: ptr<function, vec3f>,
+) -> bool {
+  // Returns true if we should keep going; false if opaque hit (caller should
+  // abort and return vec3f(0)).
+  var stack: array<u32, 64>;
+  var stackPtr = 0u;
+  stack[stackPtr] = blasRoot; stackPtr++;
+
+  while (stackPtr > 0u) {
+    stackPtr--;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= arrayLength(bvh)) { continue; }
+    let node = (*bvh)[nodeIdx];
+
+    let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    // Williams 2005 §4 IEEE-safe inverse-direction.
+    let invDir = safeInvDir(dir);
+    let t1 = (nMin - origin) * invDir;
+    let t2 = (nMax - origin) * invDir;
+    let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+    let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+    if (tNear > tFar || tFar < 0.0 || tNear > tMaxLocal) { continue; }
+
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000FFFFu;
+      let offset = node.rightChildOrTriOffset;
+      for (var i = 0u; i < count; i++) {
+        let triIdx = offset + i;
+        if (triIdx >= arrayLength(bvh_index)) { continue; }
+        let idxEntry = (*bvh_index)[triIdx];
+        let idx = idxEntry.xyz;
+        let a = (*bvh_position)[idx.x].xyz;
+        let b = (*bvh_position)[idx.y].xyz;
+        let c = (*bvh_position)[idx.z].xyz;
+        // Canonical intersectTriangle returns IntersectionResult; unwrap .dist.
+        let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
+        let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
+        if (t > 1e-4 && t < tMaxLocal) {
+          let trans4 = (idxEntry.w >> 4u) & 0xFu;
+          if (trans4 > 4u) {
+            // Glass hit — multiply visibility by sqrt(Beer × trans × texMod).
+            let matCol = decodeMaterialColor(idxEntry.w);
+            let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
+            let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
+            let beerColor = vec3f(
+              f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+              f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+              f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+            );
+            let pa4 = (*bvh_position)[idx.x];
+            let pb4 = (*bvh_position)[idx.y];
+            let pc4 = (*bvh_position)[idx.z];
+            let p = origin + dir * t;
+            let ab = b - a; let ac = c - a; let ap = p - a;
+            let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
+            let d20 = dot(ap, ab); let d21 = dot(ap, ac);
+            let denom = max(d00 * d11 - d01 * d01, 1e-8);
+            var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+            var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+            let bw = 1.0 - u - v;
+            let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
+            let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
+            let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
+            let uvAt = bw * uvA + u * uvB + v * uvC;
+            let texId = decodeSurfaceTextureId(idxEntry.w);
+            let texMod = surfaceTextureMod(uvAt, texId);
+            let perHitFactor = sqrt(max(vec3f(1e-8), beerColor * matCol.a * texMod));
+            *visibility = (*visibility) * perHitFactor;
+          } else {
+            // Opaque hit — fully shadowed.
+            *visibility = vec3f(0.0);
+            return false;
+          }
+        }
+      }
+    } else {
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      if (stackPtr < 62u) {
+        stack[stackPtr] = rightChild; stackPtr++;
+        stack[stackPtr] = nodeIdx + 1u; stackPtr++;
+      } else {
+        // Stack overflow: conservatively treat as occluded.
+        *visibility = vec3f(0.0);
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 fn bvhTraceTintedVisibility(
   bvh_index:    ptr<storage, array<vec4u>,    read>,
@@ -166,6 +277,79 @@ fn bvhTraceTintedVisibility(
   tMax:   f32,
 ) -> vec3f {
   var visibility = vec3f(1.0);
+
+  // §4.10 — TLAS mode: traverse the TLAS tree, transform the ray to each
+  // instance's local space, and accumulate tinted visibility via
+  // _bvhTraceTintedBlasLeaves. World-space t is recovered from the local hit
+  // position by dot(worldHitPos − origin, dir) (matches traceTlasAny/FirstHit).
+  if (ubo.bvhMode == 1u && ubo.tlasNodeCount > 0u &&
+      arrayLength(&tlasNodes) > 0u && arrayLength(&tlasInstanceIndices) > 0u) {
+
+    var tlasStack: array<u32, 64>;
+    var tlasStackPtr = 0u;
+    tlasStack[tlasStackPtr] = 0u; tlasStackPtr++;
+
+    while (tlasStackPtr > 0u) {
+      tlasStackPtr--;
+      let nodeIdx = tlasStack[tlasStackPtr];
+      if (nodeIdx >= min(ubo.tlasNodeCount, arrayLength(&tlasNodes))) { continue; }
+      let node = tlasNodes[nodeIdx];
+
+      let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+      let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+      let invDirT = safeInvDir(dir);
+      let t1t = (nMin - origin) * invDirT;
+      let t2t = (nMax - origin) * invDirT;
+      let tNearT = max(max(min(t1t.x, t2t.x), min(t1t.y, t2t.y)), min(t1t.z, t2t.z));
+      let tFarT  = min(min(max(t1t.x, t2t.x), max(t1t.y, t2t.y)), max(t1t.z, t2t.z));
+      if (tNearT > tFarT || tFarT < 0.0 || tNearT > tMax) { continue; }
+
+      let splitOrCount = node.splitAxisOrTriCount;
+      if ((splitOrCount & BVH_LEAFNODE_FLAG) == BVH_LEAFNODE_FLAG) {
+        let count = splitOrCount & 0x0000FFFFu;
+        let start = node.rightChildOrTriOffset;
+        for (var i = 0u; i < count; i++) {
+          let permIdx = start + i;
+          if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
+          let instIdx = tlasInstanceIndices[permIdx];
+          let m = instIdx * 4u;
+          if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal) ||
+              m + 3u >= arrayLength(&tlasInstanceLocalToWorld)) { continue; }
+          let w2l0 = tlasInstanceWorldToLocal[m];
+          let w2l1 = tlasInstanceWorldToLocal[m + 1u];
+          let w2l2 = tlasInstanceWorldToLocal[m + 2u];
+          let w2l3 = tlasInstanceWorldToLocal[m + 3u];
+          // Transform ray to local space (mirrors traceTlasFirstHit).
+          let localOrigin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, origin);
+          let localDir    = tlasTransformDirectionCols(w2l0, w2l1, w2l2, dir);
+          // Use a conservative local tMax of 1e20 — the BLAS leaf test uses a
+          // local t but the outer TLAS AABB already bounds the traversal to the
+          // world segment [0, tMax]. This matches traceTlasAny's approach.
+          let blasRoot = select(0u, tlasBlasRoots[instIdx], instIdx < arrayLength(&tlasBlasRoots));
+          // Run tinted BLAS traversal; if an opaque hit fires, visibility → 0.
+          let cont = _bvhTraceTintedBlasLeaves(
+            bvh_index, bvh_position, bvh, bvh_beer,
+            localOrigin, localDir, 1e20,
+            blasRoot, &visibility,
+          );
+          if (!cont) { return vec3f(0.0); }
+        }
+      } else {
+        let rightChild = nodeIdx + node.rightChildOrTriOffset;
+        if (tlasStackPtr < 62u) {
+          tlasStack[tlasStackPtr] = rightChild; tlasStackPtr++;
+          tlasStack[tlasStackPtr] = nodeIdx + 1u; tlasStackPtr++;
+        } else {
+          return visibility;
+        }
+      }
+    }
+    return visibility;
+  }
+
+  // ── Merged world-BVH path (bvhMode == 0) ─────────────────────────────────
+  // All positions in bvh_position are world-space; t is directly comparable
+  // to tMax. Unchanged from the pre-§4.10 implementation.
   var stack: array<u32, 64>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u; stackPtr++;

@@ -130,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(282637); // re-pinned 2026-06-10: BDPT light-subpath estimator coherence (scatter at prevPos, pdfRev patch, remove nextDir) — RENDER-CHANGING for bdpt:true, A/B pending V28-B
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(281858); // re-pinned 2026-06-10: A4 real SPPM — SPPM_GROUP4_BINDINGS_WGSL added, caustic gather moved out of megakernel. RENDER-CHANGING for causticStrategy:'photon-map'.
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
@@ -293,14 +293,18 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
 
   it('ON: full-tier request throws if the device was not acquired with the reuse buffer floor', async () => {
     const rec = emptyRecorder();
+    // 30 = PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE (A4: was 28, +2 SPPM).
+    // 34 = PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE (30 + 4 RPT).
+    // Use 30 so the device is full-tier (30 ≥ 30) but below the restirPtReuse floor (30 < 34),
+    // ensuring the thrown error is the buffer-floor error, not the lite-tier error.
     const device = {
       ...makeFullTierDevice(rec),
-      limits: { maxStorageBuffersPerShaderStage: 28, maxStorageTexturesPerShaderStage: 8 },
+      limits: { maxStorageBuffersPerShaderStage: 30, maxStorageTexturesPerShaderStage: 8 },
     } as unknown as GPUDevice;
     await expect(createPTEngine_WebGPU({
       device,
       restirPtReuse: true,
-    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 32/);
+    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 34/);
   });
 });
 

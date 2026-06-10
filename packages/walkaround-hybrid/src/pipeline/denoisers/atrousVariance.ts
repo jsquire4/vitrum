@@ -120,8 +120,22 @@ export class AtrousVarianceDenoiser implements Denoiser {
   private readonly _varianceUboRef: UboRef = { buf: undefined };
   private readonly _atrousUboRef: UboRef = { buf: undefined };
 
-  /** Ping-pong index for the Welford variance buffer (0 = read aux, write main). */
+  /** Ping-pong index for the Welford variance buffer (0 = read main, write aux). */
   private _welfordPing = 0;
+
+  /**
+   * Return the current Welford ping-pong index so the SampleBudgetPass can
+   * bind the freshest side (the side written by the previous frame).
+   *
+   * When ping === 0: freshest data is in `varianceBuffer` (written by frame N-1).
+   * When ping === 1: freshest data is in `varianceBufferAux`.
+   *
+   * This must be read BEFORE calling dispatch() for the current frame, because
+   * dispatch() flips the ping at the end.
+   */
+  getWelfordPing(): number {
+    return this._welfordPing;
+  }
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
     const { device } = ctx;

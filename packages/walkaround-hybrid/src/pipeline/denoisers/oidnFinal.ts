@@ -213,6 +213,11 @@ export class OIDNFinalDenoiser implements Denoiser {
   /** Disposed-flag — set in `dispose`. The background chain checks this
    *  after every await to bail out (and skip writes to destroyed textures). */
   private _disposed = false;
+  /** Incremented on every resize(). The background inference chain captures
+   *  this at the point of dispatch and checks it before writing the result
+   *  back — if the generation has changed, the texture is a different size
+   *  and the write would be a stale-size validation error. */
+  private _resizeGeneration = 0;
 
   constructor(opts?: OIDNFinalDenoiserOptions) {
     // No-modelUrl construction registers as a `disabled` placeholder.
@@ -343,6 +348,11 @@ export class OIDNFinalDenoiser implements Denoiser {
     const common = ctx.resources.common;
     const W = ctx.width;
     const H = ctx.height;
+    // Capture the generation at dispatch time. If resize() is called before
+    // the async chain reaches the writeTexture, the generation will have
+    // changed and we abort instead of writing old-size data into the
+    // new (different-size) texture (WebGPU validation error / stale frame).
+    const dispatchGeneration = this._resizeGeneration;
 
     // Allocate transient readback buffers + queue the copies into the
     // current frame's encoder. WebGPU requires bytesPerRow to be a
@@ -426,6 +436,9 @@ export class OIDNFinalDenoiser implements Denoiser {
       });
 
       if (this._disposed || !this._denoisedOutputTexture) return;
+      // Abort if resize() was called while we were awaiting — the output
+      // texture is now a different size, so writing W×H into it is wrong.
+      if (this._resizeGeneration !== dispatchGeneration) return;
 
       // Pad RGB → RGBA16F and upload back to the owned output texture.
       const { buffer, bytesPerRow: uploadBpr } = rgbF32ToRgba16fRowAligned(
@@ -456,12 +469,14 @@ export class OIDNFinalDenoiser implements Denoiser {
   }
 
   resize(width: number, height: number): void {
-    // Tear down + reallocate the output texture at the new size. The
-    // background chain checks `_disposed` and `_denoisedOutputTexture`
-    // after every await so an in-flight cycle from the pre-resize size
-    // will bail before writing into the new (different-size) texture.
+    // Tear down + reallocate the output texture at the new size. Bump the
+    // generation counter so any in-flight inference cycle that captured
+    // the previous generation aborts its writeTexture instead of writing
+    // old-size data into the new (different-size) texture (which would be
+    // a WebGPU validation error or a stale partial frame).
     this._width = width;
     this._height = height;
+    this._resizeGeneration++;
     this._haveDenoisedOutput = false;
     if (this._denoisedOutputTexture && this._device) {
       try { this._denoisedOutputTexture.destroy(); } catch { /* ignore */ }

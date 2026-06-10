@@ -50,6 +50,10 @@ export class PPGCoordinator implements PipelineSubsystem {
   private static readonly _FLUX_SCALE = 65536.0;
   private static readonly _DEFAULT_READBACK_INTERVAL_FRAMES = 64;
   private _enabled = false;
+  /** Retained from initialize() so onResize() forwards the same cap to
+   *  allocatePPGResources — without this, an sTree that has grown beyond
+   *  the default 1024 cells would overflow the under-allocated buffer. */
+  private _maxSpatialCells: number | undefined = undefined;
   /** CPU-side PPG model (sTree + per-cell dTrees). Allocated at
    *  initialize() when ppgEnabled is true; serialised to GPU buffers per
    *  frame (Phase 1: static empty tree uploaded once). */
@@ -62,6 +66,11 @@ export class PPGCoordinator implements PipelineSubsystem {
   private _cellCountReadbackBuffer: GPUBuffer | null = null;
   private _fluxReadbackInFlight = false;
   private _lastFluxReadbackFrame = -1;
+  /** Incremented on each onResize() call. The async readback chain captures
+   *  this at launch and checks on completion — a mismatch means a resize
+   *  happened mid-flight, so the frameResources arg is stale and any write
+   *  through it would target destroyed GPU buffers. */
+  private _frameResourcesGeneration = 0;
   /**
    * Reusable zero-fill scratch for clearing the GPU flux accumulators after a
    * refine cycle. Grown on demand to the active-prefix byte count we actually
@@ -113,6 +122,8 @@ export class PPGCoordinator implements PipelineSubsystem {
       return;
     }
     this._enabled = true;
+    // Retain for onResize() so it forwards the same cap on resize.
+    this._maxSpatialCells = maxSpatialCells;
     // Derive scene bounds from the uploaded BVH if available; the initial
     // single-cell sTree root must cover the rendered scene before adaptive
     // splits begin.
@@ -144,7 +155,19 @@ export class PPGCoordinator implements PipelineSubsystem {
     _frameCount: number,
   ): void {
     if (!this._enabled) return;
-    allocatePPGResources(this._device, frameResources, width, height);
+    // Forward the same maxSpatialCells cap used at initialize() time so a
+    // tree that has grown past the default 1024-cell cap doesn't overflow
+    // the re-allocated buffer on resize.
+    allocatePPGResources(
+      this._device,
+      frameResources,
+      width,
+      height,
+      this._maxSpatialCells !== undefined ? { maxSpatialCells: this._maxSpatialCells } : undefined,
+    );
+    // Bump the generation so any in-flight readback chain that captured the
+    // old frameResources knows its resource references are now stale.
+    this._frameResourcesGeneration++;
     this._uploadTree(frameResources);
     this._writeUpdateUBO(frameResources, width, height);
   }
@@ -196,6 +219,10 @@ export class PPGCoordinator implements PipelineSubsystem {
 
     this._lastFluxReadbackFrame = frameCount;
     this._fluxReadbackInFlight = true;
+    // Capture the current frameResources generation. If onResize() fires
+    // before the async chain completes, the generation will have changed
+    // and the _mergeFluxAndRefine writes would target destroyed GPU buffers.
+    const capturedGeneration = this._frameResourcesGeneration;
 
     // A2 — the per-cell sample counter holds one u32 per spatial cell. Read back
     // the same active prefix (activeCells cells).
@@ -233,6 +260,10 @@ export class PPGCoordinator implements PipelineSubsystem {
       .then(async () => {
         if (this._fluxReadbackBuffer == null || this._cellCountReadbackBuffer == null
           || this._sTree == null) return;
+        // If a resize happened after we launched the copy, frameResources is
+        // stale (its GPU buffers have been destroyed). Bail out to avoid
+        // writing into destroyed buffers.
+        if (this._frameResourcesGeneration !== capturedGeneration) return;
         await this._fluxReadbackBuffer.mapAsync(GPUMapMode.READ, 0, activeBytes);
         const mapped = this._fluxReadbackBuffer.getMappedRange(0, activeBytes);
         const raw = new Uint32Array(mapped.slice(0));

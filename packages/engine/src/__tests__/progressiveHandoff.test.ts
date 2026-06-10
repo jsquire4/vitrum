@@ -239,4 +239,31 @@ describe('ProgressiveHandoffCoordinator — seed-on-handoff (P8 increment 2)', (
     c.frame(input(9)); c.frame(input(9));                     // settle → handoff 2 → re-seed
     expect(cv.seedAccumulator).toHaveBeenCalledTimes(2);
   });
+
+  it('Bug2 fix — passes DESTINATION (viewport) dims to seedAccumulator, not source dims', () => {
+    // When source and destination have different resolutions (e.g. different
+    // resolutionFactors), the seed call must carry the DESTINATION accumulator
+    // dims so the backend resamples the seed to the right output size.
+    // We inject a viewport that is DIFFERENT from the source texture dims.
+    const rt = seedSource(); // source: 320×180
+    const cv = seedSink();
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 2,
+      seedFromRealtime: true, seedWeight: 4,
+    });
+    // Build frames with an explicit viewport of 640×360 (2× the source).
+    function inputWithViewport(x: number): FrameInput {
+      return {
+        viewMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1])),
+        projMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+        cameraPosition: [x, 0, 0],
+        viewport: { width: 640, height: 360, devicePixelRatio: 1 },
+      } as unknown as FrameInput;
+    }
+    c.frame(inputWithViewport(0)); // moved (first frame)
+    c.frame(inputWithViewport(0)); // still #1
+    c.frame(inputWithViewport(0)); // still #2 → handoff
+    // width/height must be VIEWPORT dims (640×360), NOT source dims (320×180).
+    expect(cv.seedAccumulator).toHaveBeenCalledWith(rt.fakeTex, { weight: 4, width: 640, height: 360 });
+  });
 });

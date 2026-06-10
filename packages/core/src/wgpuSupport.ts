@@ -11,6 +11,13 @@ export interface WgpuProbeResult {
    * Classified from `adapter.info` (with empty vendor/arch treated as unknown).
    */
   adapterKind?: WgpuAdapterKind;
+  /**
+   * Present only when `supported === false` AND the failure was an exception
+   * (rather than `navigator.gpu` being absent or `requestAdapter` returning
+   * null).  Carries a human-readable description so callers can distinguish a
+   * transient adapter failure from a genuine no-WebGPU environment.
+   */
+  reason?: string;
 }
 
 /**

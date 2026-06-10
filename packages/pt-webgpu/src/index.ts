@@ -64,6 +64,10 @@ import {
   OCTAHEDRAL_CORE_WGSL,
 } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
+import {
+  sppmRadiusAtFrame,
+  sppmInitialRadius,
+} from './wgsl/pathTrace/sppmBindings.wgsl.js';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export {
@@ -215,6 +219,9 @@ export type {
 const EXPERIMENTAL_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
+/** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
+const SPPM_PHOTON_COUNT = 65536;
+const SPPM_WORKGROUP_COUNT = Math.ceil(SPPM_PHOTON_COUNT / 64);
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -279,6 +286,15 @@ class PTEngineWebGPU implements Engine {
   readonly #restirPtReuse: boolean;
   readonly #restirPtMClamp: number;
   readonly #restirPtWCap: number;
+
+  // ── SPPM state (A4, photon-map strategy) ──────────────────────────────────
+  /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
+   *  Recomputed on every setScene. */
+  #sppmR0 = 0.017; // 1.7 cm — a safe pre-setScene default (1 m Cornell box)
+  /** Progressive shrink: r(frameAccumulated) = r₀ × sqrt((n α + α) / (n + 1)). */
+  #sppmCurrentRadius = 0.017;
+  /** Half-diagonal of the scene used for the directional-light disk emitter. */
+  #sppmSceneExtent = 10.0; // world units; refreshed on setScene
 
   /**
    * Scene-mutation fast-path dispatch (Task 4.3, Theme A). The engine stays the
@@ -522,7 +538,7 @@ class PTEngineWebGPU implements Engine {
         ...(this.#bdpt && this.#traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
         ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
         ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
-          ? (['pt-webgpu-photon-map-approximate'] as const)
+          ? (['pt-webgpu-photon-map-sppm'] as const)
           : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
@@ -799,6 +815,32 @@ class PTEngineWebGPU implements Engine {
     }
     this.#gpu.invalidateBindGroups();
     this.#scene = scene;
+    // A4 — recompute SPPM scale-aware initial radius from the scene AABB
+    // (positions is a stride-4 Float32Array: xyz + packed-uv-in-w per vertex).
+    if (this.#causticStrategy === 'photon-map' && this.#traceTier === 'full') {
+      const pos = this.#geoPack?.positions;
+      if (pos != null && pos.length >= 4) {
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (let i = 0; i + 2 < pos.length; i += 4) {
+          const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+        }
+        if (Number.isFinite(minX)) {
+          this.#sppmR0 = sppmInitialRadius(
+            [minX, minY, minZ] as const,
+            [maxX, maxY, maxZ] as const,
+          );
+          const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+          this.#sppmSceneExtent = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
+        }
+      }
+      this.#sppmCurrentRadius = this.#sppmR0;
+      // Invalidate the SPPM buffers so they are rebuilt with the new stats.
+      this.#gpu.sppmBuffersReady = false;
+    }
     if (opts.warnOnEmpty) {
       const sceneSummary = summarizeScene(scene);
       if (sceneSummary.primitiveCount === 0) {
@@ -919,6 +961,15 @@ class PTEngineWebGPU implements Engine {
     }
     this.#device.queue.writeBuffer(gpu.paramsBuffer, 0, paramsArrayBuffer);
 
+    // A4 — ensure SPPM placeholder buffers exist BEFORE buildBindGroups so that
+    // group-3 bindings 6/7/8 are satisfied (non-null) when the bind group is built.
+    // ensureSppmBuffers(false) creates 16-byte placeholders on the first call and
+    // is a no-op on subsequent frames (idempotent; real buffers are allocated later
+    // if sppmActive). On the lite tier this is a no-op.
+    if (this.#traceTier === 'full') {
+      gpu.ensureSppmBuffers(false);
+    }
+
     const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathBuffer());
 
     // EXPERIMENTAL ReSTIR-PT reuse (OFF by default). When ON: (re)allocate the
@@ -944,7 +995,62 @@ class PTEngineWebGPU implements Engine {
       }
     }
 
+    // ── A4 SPPM photon pre-pass (full-tier, photon-map strategy only) ───────
+    // When active: (1) ensure the photon-cells + counters + stats buffers exist,
+    // (2) update the progressive radius r(n), (3) write SppmStats UBO.
+    // The photon-emission pass and the megakernel both use group-3 (which now
+    // includes SPPM bindings 6/7/8 alongside the light-tree and material textures).
+    // Placeholder buffers are bound when SPPM is off so the layout slot is satisfied
+    // without dispatching the photon pass (causticMode() != 2u guards the gather).
+    const sppmActive =
+      this.#causticStrategy === 'photon-map' && this.#traceTier === 'full';
+    let sppmReady = false;
+    if (sppmActive) {
+      const sppmBuffersOk = gpu.ensureSppmBuffers(true);
+      if (!sppmBuffersOk) {
+        // Ceiling exceeded — fall back silently (manifold-nee semantics).
+        gpu.ensureSppmBuffers(false); // ensure placeholder satisfies the layout
+      }
+      // Update progressive radius.
+      this.#sppmCurrentRadius = sppmRadiusAtFrame(this.#sppmR0, this.#samplesAccumulated);
+      // Write stats UBO.
+      gpu.writeSppmStats(
+        this.#sppmCurrentRadius,
+        this.#sppmR0,
+        this.#samplesAccumulated,
+        SPPM_PHOTON_COUNT,
+        this.#sppmSceneExtent,
+      );
+      sppmReady =
+        sppmBuffersOk &&
+        gpu.sppmPhotonPipeline != null;
+    } else {
+      // Ensure placeholder SPPM buffers exist so group-3 binding 6/7/8 are
+      // satisfied (the gather is guarded by causticMode() == 2u, so the
+      // placeholders are never accessed).
+      gpu.ensureSppmBuffers(false);
+    }
+
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
+
+    // ── A4 SPPM photon-emission pass (before the megakernel) ─────────────────
+    // The photon pass binds the SAME groups 0/1/2/3 as the megakernel.
+    // Group 3 carries the SPPM hash-grid buffers at bindings 6/7/8 alongside the
+    // light-tree / material textures (0-5), so no separate group-4 is needed.
+    if (sppmReady && gpu.sppmPhotonPipeline != null) {
+      // Clear cell counters so this frame's photons replace last frame's.
+      encoder.clearBuffer(gpu.sppmCellCountersBuffer!);
+      const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
+      photonPass.setPipeline(gpu.sppmPhotonPipeline);
+      photonPass.setBindGroup(0, bindGroup);
+      photonPass.setBindGroup(1, gpu.pathTraceBindGroup1!);
+      photonPass.setBindGroup(2, gpu.pathTraceBindGroup2!);
+      if (gpu.pathTraceBindGroup3 != null) {
+        photonPass.setBindGroup(3, gpu.pathTraceBindGroup3);
+      }
+      photonPass.dispatchWorkgroups(SPPM_WORKGROUP_COUNT, 1, 1);
+      photonPass.end();
+    }
 
     // ── ReSTIR-PT reuse sequence: producer → temporal → resolve (before the
     //    megakernel; the result lands in the SEPARATE rpt_result debug buffer,
@@ -1004,6 +1110,9 @@ class PTEngineWebGPU implements Engine {
         pass.setBindGroup(1, gpu.pathTraceBindGroup1);
         pass.setBindGroup(2, gpu.pathTraceBindGroup2);
         if (gpu.pathTraceBindGroup3 != null) {
+          // A4 — group 3 now includes SPPM bindings 6/7/8 in addition to the
+          // light-tree / material textures (0-5). The gather is guarded by
+          // causticMode() == 2u so off-path renders are unaffected.
           pass.setBindGroup(3, gpu.pathTraceBindGroup3);
         }
       }

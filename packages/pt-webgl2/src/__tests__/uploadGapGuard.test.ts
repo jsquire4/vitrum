@@ -165,6 +165,76 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(noDof.has('physicalCamera.focusDistance')).toBe(false);
   });
 
+  it('tonemap present-pass: uTonemapMode/uExposure/uOutputColorSpace are uploaded per frame', async () => {
+    // Default quality (no quality field) → aces(0), exposure=1.0, srgb(0).
+    const rec = await renderAndRecord(sceneNoEmitters());
+    expect(rec.has('uTonemapMode')).toBe(true);
+    expect(rec.get('uTonemapMode')).toBe(0); // aces
+    expect(rec.has('uExposure')).toBe(true);
+    expect(rec.get('uExposure')).toBeCloseTo(1.0, 6);
+    expect(rec.has('uOutputColorSpace')).toBe(true);
+    expect(rec.get('uOutputColorSpace')).toBe(0); // srgb
+  });
+
+  it('tonemap present-pass: quality.tonemap=agx → uTonemapMode=1', async () => {
+    const gl = createMockGl(new Map());
+    const rec = new Map<string, unknown>();
+    const gl2 = createMockGl(rec);
+    const engine = await createPTEngine_WebGL2({ device: gl2 } as never);
+    engine.setScene(sceneNoEmitters());
+    const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
+    const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
+    engine.renderFrame({
+      viewMatrix: view as never, projMatrix: proj as never,
+      cameraPosition: [0, 0, 5] as never,
+      viewport: { width: 32, height: 32, devicePixelRatio: 1 },
+      frameIndex: 0, frameSeed: 0,
+      quality: { samplesTarget: 4, tonemap: 'agx' },
+    });
+    expect(rec.get('uTonemapMode')).toBe(1); // agx
+    void gl;
+  });
+
+  it('tonemap present-pass: quality.exposure=2.5 → uExposure=2.5', async () => {
+    const rec = new Map<string, unknown>();
+    const gl = createMockGl(rec);
+    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    engine.setScene(sceneNoEmitters());
+    const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
+    const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
+    engine.renderFrame({
+      viewMatrix: view as never, projMatrix: proj as never,
+      cameraPosition: [0, 0, 5] as never,
+      viewport: { width: 32, height: 32, devicePixelRatio: 1 },
+      frameIndex: 0, frameSeed: 0,
+      quality: { samplesTarget: 4, exposure: 2.5 },
+    });
+    expect(rec.get('uExposure')).toBeCloseTo(2.5, 5);
+  });
+
+  it("tonemap present-pass: quality.outputColorSpace='linear' → uOutputColorSpace=1", async () => {
+    const rec = new Map<string, unknown>();
+    const gl = createMockGl(rec);
+    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    engine.setScene(sceneNoEmitters());
+    const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
+    const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
+    engine.renderFrame({
+      viewMatrix: view as never, projMatrix: proj as never,
+      cameraPosition: [0, 0, 5] as never,
+      viewport: { width: 32, height: 32, devicePixelRatio: 1 },
+      frameIndex: 0, frameSeed: 0,
+      quality: { samplesTarget: 4, outputColorSpace: 'linear' },
+    });
+    expect(rec.get('uOutputColorSpace')).toBe(1); // linear: OETF skipped
+  });
+
+  it("tonemap present-pass: default outputColorSpace='srgb' → uOutputColorSpace=0", async () => {
+    const rec = await renderAndRecord(sceneNoEmitters());
+    // Default is 'srgb' — OETF applied, uOutputColorSpace must be 0.
+    expect(rec.get('uOutputColorSpace')).toBe(0);
+  });
+
   it('the recording mock actually distinguishes set-vs-unset (meta-check)', async () => {
     // A uniform the engine never sets must be ABSENT — proves the guard can FAIL
     // (i.e. the H1/H2/H3 asserts above are meaningful, not vacuously true).

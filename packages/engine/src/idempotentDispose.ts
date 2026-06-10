@@ -34,13 +34,17 @@ export interface GIStatePersistable {
  *   • 'noop'        — when disposed, swallow the call and return undefined.
  *                     (updatePrimitive/updateEmitter/addPrimitive/removePrimitive/
  *                      updateEnvironment/setSize/updateLighting)
+ *   • 'null'        — when disposed, return null (for methods whose contract
+ *                     return type is `T | null` — distinct from noop whose
+ *                     return is `undefined`).
+ *                     (getRestirPtResultBuffer)
  *   • 'empty-unsub' — the method returns an unsubscribe fn; when disposed, return
  *                     a no-op unsubscribe `() => {}` without forwarding.
  *                     (onFrame/onProgress)
  *   • 'throw'       — when disposed, throw (the engine is torn down; refuse).
  *                     (createInverseSession)
  */
-type DisposedBehavior = 'noop' | 'empty-unsub' | 'throw';
+type DisposedBehavior = 'noop' | 'null' | 'empty-unsub' | 'throw';
 
 type OptionalMethodName =
   | 'updatePrimitive'
@@ -98,8 +102,10 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   // H61 — debug/experimental accessor for the ReSTIR-PT reuse output buffer
   // (pt-webgpu, gated by the 'pt-webgpu-restir-pt-reuse' experimental feature).
   // Added to the Engine contract in H14-C; without this row the createEngine
-  // facade silently hid it. After dispose the buffer is destroyed → noop/null.
-  { method: 'getRestirPtResultBuffer', disposedBehavior: 'noop' },
+  // facade silently hid it. After dispose the buffer is destroyed → null
+  // (the contract type is `unknown | null`, so null is the correct sentinel,
+  // not undefined; use 'null' behavior not 'noop').
+  { method: 'getRestirPtResultBuffer', disposedBehavior: 'null' },
 ];
 
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
@@ -252,6 +258,11 @@ function makeForward(
     case 'noop':
       return (...args: unknown[]) => {
         if (isDisposed()) return undefined;
+        return impl.apply(engine, args);
+      };
+    case 'null':
+      return (...args: unknown[]) => {
+        if (isDisposed()) return null;
         return impl.apply(engine, args);
       };
     case 'empty-unsub':

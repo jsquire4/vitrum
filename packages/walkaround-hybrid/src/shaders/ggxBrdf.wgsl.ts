@@ -201,8 +201,12 @@ fn ggxSampleVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
 // Sample a world-space glossy reflection direction wi via VNDF. n = surface
 // normal, wo = world view dir (toward camera). Returns wi (may point below the
 // surface — the caller checks dot(n,wi) > 0).
+//
+// B16 (road-to-100) — alpha floor: alpha = max(rough², 1e-4). Matches
+// ggxVndfReflectionPdf exactly so the RIS source-pdf bookkeeping is unbiased.
+// (Prior code floored at 1e-3 here vs 1e-4 in the pdf — sampler/pdf mismatch.)
 fn ggxSampleVndf(n: vec3f, wo: vec3f, rough: f32, rng: ptr<function, u32>) -> vec3f {
-  let alpha = max(rough * rough, 1e-3);
+  let alpha = max(rough * rough, 1e-4);
   var t: vec3f; var b: vec3f;
   ggxBuildOnb(n, &t, &b);
   // wo into tangent space (N = +Z).
@@ -212,17 +216,38 @@ fn ggxSampleVndf(n: vec3f, wo: vec3f, rough: f32, rng: ptr<function, u32>) -> ve
   return reflect(-wo, h);
 }
 
+// Exact Smith G1 for GGX (Heitz 2014 / Walter 2007).
+// G1(nv, a²) = 2·nv / (nv + sqrt(a² + (1 − a²)·nv²))
+// Used ONLY in the VNDF density (below); the shading G term (geometrySmith)
+// keeps the Schlick approximation intentionally — changing it would alter
+// shading. The VNDF density REQUIRES the exact G1 (the sampler draws from the
+// exact distribution; using the Schlick approx here biases source-pdf values).
+fn smithG1GGX(nv: f32, a2: f32) -> f32 {
+  return 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv));
+}
+
 // VNDF reflection PDF in SOLID-ANGLE measure (Heitz 2018 §3 Eq. 17 + reflection
-// Jacobian): p(wi) = D(h)·G1(wo) / (4·NdotV). MUST match ggxSampleVndf so the
-// RIS source pdf is exact.
+// Jacobian): p(wi) = D(h)·G1(wo,α²) / (4·NdotV). MUST match ggxSampleVndf so
+// the RIS source pdf is exact.
+//
+// B16 (road-to-100) — two fixes applied here:
+//   1. Alpha floor: alpha² = max(rough², 1e-4) — matches ggxSampleVndf exactly.
+//      (Prior code: a = max(0.01, rough); a² could reach 1e-4 correctly, but the
+//      floor was on rough not alpha — now explicit and shared with the sampler.)
+//   2. G1 form: smithG1GGX (exact Smith) replaces geometrySchlickGGX (Schlick
+//      k=(r+1)²/8 shading approximation). The exact G1 is required because the
+//      VNDF distribution is DEFINED in terms of the exact Smith G1 (Heitz 2014
+//      Eq. 2). Using the Schlick form here made pdf(sample) mismatch the true
+//      VNDF density — the RIS M-BRDF weight was subtly biased at all roughnesses.
 fn ggxVndfReflectionPdf(n: vec3f, wo: vec3f, wi: vec3f, rough: f32) -> f32 {
   let h = safe_normalize(wo + wi);
   let NdotV = max(1e-4, dot(n, wo));
   let NdotH = max(0.0, dot(n, h));
   if (NdotH <= 0.0) { return 0.0; }
-  let a = max(0.01, rough);
-  let D = distributionGGX(NdotH, a);
-  let g1 = geometrySchlickGGX(NdotV, a);
+  let a2 = max(rough * rough, 1e-4);
+  let a  = sqrt(a2);
+  let D  = distributionGGX(NdotH, a);
+  let g1 = smithG1GGX(NdotV, a2);
   return (D * g1) / max(4.0 * NdotV, 1e-6);
 }
 

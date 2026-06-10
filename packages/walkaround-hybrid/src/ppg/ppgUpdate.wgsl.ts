@@ -238,7 +238,16 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (slot >= ppgUBO.fluxBudget) { return; }
 
   // Encode lum as fixed-point and accumulate atomically.
-  atomicAdd(&ppgFluxAtomics[slot], encodeFlux(lum));
+  // Saturation: atomicAdd returns the OLD value. If old + increment would
+  // wrap past 2^32 (detectable as old > 0xFFFFFFFF - increment), the add
+  // already wrapped to a tiny value. Restore the slot to 0xFFFFFFFF via
+  // atomicMax so accumulated flux is monotonically clamped rather than
+  // silently wrapping to near-zero on a hot leaf over a 64-frame window.
+  let increment = encodeFlux(lum);
+  let oldVal = atomicAdd(&ppgFluxAtomics[slot], increment);
+  if (oldVal > (0xFFFFFFFFu - increment)) {
+    atomicMax(&ppgFluxAtomics[slot], 0xFFFFFFFFu);
+  }
 }
 `;
 }
