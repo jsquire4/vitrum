@@ -242,16 +242,23 @@ fn lo_analyticNEE(
   isMetal:  bool,
 ) -> vec3f {
   if (isGlass || isMetal) { return vec3f(0.0); }
-  let count = arrayLength(&analytic_lights) / 16u;
+  // V28 H41-spot FIX (2026-06-09): the struct is 4×vec4f per entry (packer
+  // ANALYTIC_LIGHT_STRIDE_FLOATS=16 floats = 4 vec4s). arrayLength on an
+  // array<vec4f> returns the VEC4 count, so entry count = arrayLength/4 (was /16,
+  // which read float-stride as vec4-stride → count=0 for 1-3 lights → the analytic
+  // DIRECT NEE returned nothing; point scenes only lit via DDGI-indirect, spot
+  // scenes stayed dark). Per-entry vec4 layout: [base+0]=pos, [base+1]=color×Le,
+  // [base+2]=dir.xyz+cosInner, [base+3]=cosOuter.
+  let count = arrayLength(&analytic_lights) / 4u;
   if (count == 0u) { return vec3f(0.0); }
   var Lo = vec3f(0.0);
   for (var li = 0u; li < count; li++) {
-    let base = li * 16u;
+    let base = li * 4u;
     let lightPos  = analytic_lights[base + 0u].xyz;
-    let lightLe   = analytic_lights[base + 4u].xyz;      // pre-multiplied color×intensity
-    let lightDir  = analytic_lights[base + 8u].xyz;      // toward-light direction (spot axis); (0,0,0) = point
-    let cosInner  = analytic_lights[base + 8u].w;        // 1.0 for point
-    let cosOuter  = analytic_lights[base + 12u].x;       // 0.0 for point
+    let lightLe   = analytic_lights[base + 1u].xyz;      // pre-multiplied color×intensity
+    let lightDir  = analytic_lights[base + 2u].xyz;      // toward-light direction (spot axis); (0,0,0) = point
+    let cosInner  = analytic_lights[base + 2u].w;        // 1.0 for point
+    let cosOuter  = analytic_lights[base + 3u].x;        // 0.0 for point
 
     let toL  = lightPos - pos;
     let dist = length(toL);
