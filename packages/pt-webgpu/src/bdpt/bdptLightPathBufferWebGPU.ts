@@ -8,19 +8,20 @@
  * (Dawn + wgpu-native lavapipe/dzn). The cache is therefore a read_write storage
  * BUFFER, mirroring the BDPT eye-stack (`bdptEyeStack`, group 2 binding 6).
  *
- * Layout: `maxLightBounces` columns × 3 rows of vec4f, flattened row-minor as
- * `idx = col * 3 + row` (matches WGSL `bdptLightPathIndex`). Per light-vertex:
+ * Layout: `maxLightBounces` columns × 4 rows of vec4f, flattened row-minor as
+ * `idx = col * 4 + row` (matches WGSL `bdptLightPathIndex`). Per light-vertex:
  * row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd, row 2 =
- * throughput + pdfRev. Layout matches the native WebGL2 BDPT light-path
- * convention used for cross-backend parity.
+ * throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz) for the REAL
+ * light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian).
  */
 
 export interface BdptLightPathBufferWebGPUOptions {
   readonly maxLightBounces?: number;
 }
 
-/** vec4f rows per light-vertex column (was the former texture height). */
-const LIGHT_PATH_ROWS = 3;
+/** vec4f rows per light-vertex column (A9 — was 3; row 3 carries the light-vertex
+ *  matId + wo-toward-prev for the real BSDF in the connection). */
+const LIGHT_PATH_ROWS = 4;
 /** Bytes per vec4f. */
 const VEC4F_BYTES = 16;
 
@@ -36,8 +37,10 @@ export class BdptLightPathBufferWebGPU {
 
   constructor(device: GPUDevice, options: BdptLightPathBufferWebGPUOptions = {}) {
     const max = options.maxLightBounces ?? 3;
-    if (!Number.isFinite(max) || max < 1 || max > 3) {
-      throw new RangeError(`[BdptLightPathBufferWebGPU] maxLightBounces must be 1..3 (got ${max})`);
+    // A9 — cap raised 3 → 8 (matches the eye-subpath depth; the connection sweep's
+    // merged-pdf array BDPT_MAX_MERGED=19 accommodates c≤8 + e≤8 + 3 headroom).
+    if (!Number.isFinite(max) || max < 1 || max > 8) {
+      throw new RangeError(`[BdptLightPathBufferWebGPU] maxLightBounces must be 1..8 (got ${max})`);
     }
     this.maxLightBounces = max;
     this.buffer = device.createBuffer({

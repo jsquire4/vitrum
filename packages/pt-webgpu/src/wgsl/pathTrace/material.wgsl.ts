@@ -132,10 +132,11 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl *
  *  `r32float/uint/sint` (gpuweb #4651); `rgba32float` read_write storage
  *  textures are rejected at bind-group creation on every conformant impl
  *  (Dawn + wgpu-native), so the light-path cache is a storage buffer instead.
- *  Layout: `maxLightBounces` columns × 3 rows of vec4f, flattened row-minor as
+ *  Layout: `maxLightBounces` columns × 4 rows of vec4f, flattened row-minor as
  *  `idx = col * BDPT_LIGHT_PATH_ROWS + row` (see `bdptLightPathIndex`). Per
  *  light-vertex: row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd,
- *  row 2 = throughput + pdfRev.
+ *  row 2 = throughput + pdfRev, row 3 = (A9) matId + wo-toward-prev for the REAL
+ *  light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian).
  *
  *  `bdptEyeStack` is a per-pixel × bdptMaxEyeDepth read_write storage stack of
  *  eye-vertex pdf/pos/normal data (2× vec4 / vertex; specular packed as a
@@ -150,8 +151,11 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl *
 @group(2) @binding(5) var<storage, read_write> bdptLightPath: array<vec4f>;
 @group(2) @binding(6) var<storage, read_write> bdptEyeStack: array<vec4f>;
 
-// Light-path flat index: 3 vec4f rows per light-vertex column.
-const BDPT_LIGHT_PATH_ROWS = 3u;
+// Light-path flat index: 4 vec4f rows per light-vertex column (A9 — row 3 carries
+// the reached vertex's matId + wo-toward-prev so the §10.3 connection can evaluate
+// the REAL light-vertex BSDF for a glossy/metallic light-path vertex; matId < 0
+// marks the emitter vertex, which keeps its Lambertian/emission profile).
+const BDPT_LIGHT_PATH_ROWS = 4u;
 fn bdptLightPathIndex(col: i32, row: u32) -> u32 {
   return u32(col) * BDPT_LIGHT_PATH_ROWS + row;
 }

@@ -100,6 +100,51 @@ ${kernel}
 }
 
 /**
+ * A1 — the ReSTIR-PT COMPOSITE full-tier megakernel. The kernel is composed in
+ * composite mode (E0-direct-only + add the resolve indirect; see
+ * composePathTraceKernelWgsl restirPtComposite). The kernel declares the resolve
+ * output at `@group(4) @binding(3)`; this wrapper RELOCATES that decl onto
+ * `@group(0) @binding(23)` — the SAME relocated slot the reuse passes' rpt_result
+ * occupies (RPT_GROUP0_BINDING_BASE + 3 = 23) — so the megakernel reads exactly the
+ * buffer the resolve pass wrote, via the reuse-extended group-0 bind group + layout.
+ * Composed ONLY when restirPtReuse is active; the default `PT_WEBGPU_TRACE_WGSL`
+ * and `composePtWebgpuTraceWgsl` are untouched (OFF-path byte-identical).
+ *
+ * The relocation is a string rewrite of the module-scope binding DECL only
+ * (`@group(4) @binding(N)` → `@group(0) @binding(23+…)`), mirroring the reuse
+ * compose's relocateReuseGroup4ToGroup0. Only binding 3 is present in the kernel.
+ */
+export function composePtWebgpuCompositeTraceWgsl(bdptEnabled: boolean): string {
+  const kernel = composePathTraceKernelWgsl({
+    volumetricSss: !bdptEnabled,
+    restirPtComposite: true,
+  });
+  const body = /* wgsl */ `
+${PT_WEBGPU_COMMON_WGSL}
+${HAMMERSLEY_WGSL}
+${OCTAHEDRAL_CORE_WGSL}
+${LUMINANCE_WGSL}
+${HERO_WAVELENGTH_WGSL}
+${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
+${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
+${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
+${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
+${MNEE_NEWTON_WGSL}
+${MNEE_CHAIN_WGSL}
+${MNEE_CONNECTION_WGSL}
+${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
+${PT_WEBGPU_BDPT_CONNECTION_WGSL}
+${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
+${kernel}
+`;
+  // Relocate @group(4)@binding(N) → @group(0)@binding(20+N) (only N=3 present).
+  return body.replace(
+    /@group\(4\)\s+@binding\((\d+)\)/g,
+    (_m, b: string) => `@group(0) @binding(${20 + Number(b)})`,
+  );
+}
+
+/**
  * Default full-tier composition — BDPT off ⇒ volumetric SSS walk present.
  * Preserved as a const for the many WGSL-contract tests + the non-BDPT
  * pipeline path. \`composePtWebgpuTraceWgsl(true)\` yields the BDPT-on variant.

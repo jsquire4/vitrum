@@ -194,7 +194,9 @@ describe('bdptEmitterPickCpu', () => {
     // Sampled bounce-0 vertices, one per flat index (discretePdf=0.5, uHemi=0.37).
     const goldenSamples = [
       { emitPos: [-32.30811713779822, -28.718326344709528, -25.128535551620836], emitNormal: [0.6461623427559644, 0.5743665268941905, 0.5025707110324167], pdfHemi: 0.2526506396086754 },
-      { emitPos: [1, 2, 3], emitNormal: [0, 1, 0], pdfHemi: 0.25265063960867545 },
+      // A9 — point emitter is ISOTROPIC (uniform sphere): emitNormal = sampled sphere
+      // dir, pdfHemi = 1/(4π) = 0.0795774715… (was cosine-up about [0,1,0]).
+      { emitPos: [1, 2, 3], emitNormal: [-0.5316159505093274, 0.566113487883891, -0.6299999999999999], pdfHemi: 0.07957747154594767 },
       { emitPos: [7, 8, 9], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
       { emitPos: [-0.52, 5, 0.78], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
       { emitPos: [0.9914902924386096, 0.22506221362103418, 0], emitNormal: [0, 0, 1], pdfHemi: 0.25265063960867545 },

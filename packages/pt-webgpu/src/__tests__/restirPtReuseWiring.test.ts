@@ -130,11 +130,14 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(242294); // re-pinned 2026-06-09: H6 (rotateYNeg/rotateYPos added to connect.wgsl.ts for HDRI rotationY)
-    // The default trace must NOT contain any restir-pt reuse entry point.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(250628); // re-pinned 2026-06-10: A9 (glossy BDPT light subpath + 4-row light-path + cap 3→8 + isotropic point)
+    // The default trace must NOT contain any restir-pt reuse entry point, nor the
+    // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtTemporal');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtSpatial');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtResolve');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('rpt_result_in');
   });
 
   it('OFF: a full-tier render creates NO reservoir buffers and NO reuse pipelines', async () => {
@@ -146,7 +149,11 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // No reuse pipeline entry points were created.
     expect(rec.pipelineEntryPoints).not.toContain('restirPtProduce');
     expect(rec.pipelineEntryPoints).not.toContain('restirPtTemporal');
+    expect(rec.pipelineEntryPoints).not.toContain('restirPtSpatial');
     expect(rec.pipelineEntryPoints).not.toContain('restirPtResolve');
+    // A1: no composite megakernel — the default megakernel runs (byte-identical).
+    expect(rec.computePassLabels).not.toContain('vitrum.pt-webgpu.restirPt.spatial');
+    expect(rec.shaderCodes.some((c) => c.includes('rpt_result_in'))).toBe(false);
     // No reservoir / reuse buffers were created.
     expect(rec.bufferLabels.some((l) => l.includes('restirPt'))).toBe(false);
     // The experimental capability flag is absent.
@@ -176,14 +183,22 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.setScene(makeScene());
     engine.renderFrame(frameInput(16));
 
-    // All three reuse compute entry points were created exactly once.
+    // All four reuse compute entry points were created exactly once.
     expect(rec.pipelineEntryPoints.filter((e) => e === 'restirPtProduce').length).toBe(1);
     expect(rec.pipelineEntryPoints.filter((e) => e === 'restirPtTemporal').length).toBe(1);
+    expect(rec.pipelineEntryPoints.filter((e) => e === 'restirPtSpatial').length).toBe(1);
     expect(rec.pipelineEntryPoints.filter((e) => e === 'restirPtResolve').length).toBe(1);
+    // A1: the COMPOSITE megakernel was compiled (E0-direct-only + reads rpt_result_in).
+    const compositeModules = rec.shaderCodes.filter((c) => c.includes('rpt_result_in'));
+    expect(compositeModules.length).toBe(1);
+    expect(compositeModules[0]).toContain('@group(0) @binding(23)');
+    // The default megakernel (full path) must NOT be the composite (no rpt_result_in).
+    expect(rec.shaderCodes.some((c) => c.includes('fn main') && !c.includes('rpt_result_in'))).toBe(true);
 
-    // The reservoir ping-pong + result + params buffers were allocated.
+    // The reservoir ping-pong + spatial + result + params buffers were allocated.
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.cur');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.prev');
+    expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.spatial');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.result');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.params');
 
@@ -211,6 +226,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
 
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.produce').length).toBe(2);
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.temporal').length).toBe(2);
+    expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.spatial').length).toBe(2);
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.resolve').length).toBe(2);
     engine.dispose();
   });
@@ -252,6 +268,14 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     for (const code of producerModules) {
       expect(code).toContain('fn restirPtProduce');
       expect(code).not.toContain('fn restirPtTemporal(');
+      expect(code).not.toContain('fn restirPtSpatial(');
+      expect(code).not.toContain('fn restirPtResolve(');
+    }
+    // The spatial module has restirPtSpatial and NOT the others.
+    const spatialModules = rec.shaderCodes.filter((c) => c.includes('fn restirPtSpatial('));
+    expect(spatialModules.length).toBeGreaterThanOrEqual(1);
+    for (const code of spatialModules) {
+      expect(code).not.toContain('fn restirPtProduce(');
       expect(code).not.toContain('fn restirPtResolve(');
     }
     engine.dispose();

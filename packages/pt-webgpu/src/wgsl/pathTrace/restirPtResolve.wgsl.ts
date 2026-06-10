@@ -50,13 +50,14 @@
  * ── Bind groups ─────────────────────────────────────────────────────────────
  * Composes the SHARED pt-webgpu modules (for evaluateBrdf); the ReSTIR-PT
  * reservoir + result + params live in @group(4):
- *   @binding(1) rpt_reservoirCur (read)       — the resolved reservoir
+ *   @binding(5) rpt_resResolved  (read)       — the resolved reservoir (the SPATIAL
+ *                                                pass output; temporal→spatial→resolve)
  *   @binding(3) rpt_result       (read_write) — the reconnection-indirect output
  *   @binding(4) rptParams        (uniform)
  */
 
 export const RESTIR_PT_RESOLVE_WGSL = /* wgsl */ `
-@group(4) @binding(1) var<storage, read>       rpt_resResolved: array<u32>;
+@group(4) @binding(5) var<storage, read>       rpt_resResolved: array<u32>;
 @group(4) @binding(3) var<storage, read_write> rpt_result:      array<vec4f>;
 @group(4) @binding(4) var<uniform>             rptParams:       RestirPtParams;
 

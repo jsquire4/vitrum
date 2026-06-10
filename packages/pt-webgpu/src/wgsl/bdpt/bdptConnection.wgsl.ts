@@ -322,7 +322,23 @@ fn evaluateBdptConnection(
   }
   let eyeBsdfCosTheta = eyeBrdf * cosEye;
   let cosLight = max(dot(lightNormal, -connDir), 0.0);
-  let lightBsdfCosTheta = vec3f(cosLight / PI);
+  // A9 — REAL light-vertex BSDF at L_c (row 3: matId + wo-toward-prev). For a
+  // surface vertex (matId >= 0) evaluate the actual BSDF scattering the incoming
+  // light direction (toward L_{c-1}, = lvWoPrev) to the connection direction (L_c →
+  // E_e, = -connDir); for the emitter vertex (matId < 0) keep the diffuse
+  // emission/Lambertian profile cosθ/π. This makes a glossy/metallic light-path
+  // vertex's connection consistent with the glossy light-subpath BUILD (else the
+  // BSDF mismatch between build and connect biases the estimate).
+  let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
+  let lvMatId = lv3.w;
+  let lvWoPrev = lv3.xyz;
+  var lightBsdfCosTheta = vec3f(cosLight / PI);
+  if (lvMatId >= 0.0) {
+    let lvMat = decodeMaterial(u32(lvMatId));
+    let lvBrdf = evaluateBrdf(lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
+                              lightNormal, -connDir, lvWoPrev);
+    lightBsdfCosTheta = lvBrdf * cosLight;
+  }
 
   // ── Full §10.3 MIS weight ──────────────────────────────────────────────────
   let c = u32(lightVtxIdx);
@@ -337,7 +353,16 @@ fn evaluateBdptConnection(
 
   // Connection-induced straddle overrides (PBRT MISWeight remapping).
   let lcToE = -connDir;                          // L_c → E_e
-  let fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
+  // A9 — forward arrival density at E_e from L_c: the REAL light-vertex BSDF pdf
+  // (incoming = lvWoPrev, outgoing = lcToE) for a surface vertex; Lambertian for the
+  // emitter (matId < 0). Keeps the MIS pdf bookkeeping consistent with the glossy
+  // light-vertex BSDF used in lightBsdfCosTheta.
+  var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
+  if (lvMatId >= 0.0) {
+    let lvMatF = decodeMaterial(u32(lvMatId));
+    fwdEe = brdfDirectionalPdf(lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
+                               0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE);
+  }
   // E_{e-1} position from scratch (if e>=1); else camera endpoint.
   var eeMinusPos = camPos;
   if (e >= 1u) {
@@ -350,12 +375,20 @@ fn evaluateBdptConnection(
   if (e >= 1u) {
     fwdEeMinus = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev);
   }
-  // L_{c-1} override (Lambertian at L_c toward L_{c-1}).
+  // L_{c-1} override: reverse density at L_c toward L_{c-1}. REAL BSDF pdf (outgoing
+  // = lcToE toward E_e, incoming = direction to L_{c-1}) for a surface vertex;
+  // Lambertian for the emitter.
   var revLcMinus = 0.0;
   if (c >= 1u) {
     let lcm0 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 0u)];
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
-    revLcMinus = bdptLambertDirPdf(lightNormal, lcToLcMinus);
+    if (lvMatId >= 0.0) {
+      let lvMatR = decodeMaterial(u32(lvMatId));
+      revLcMinus = brdfDirectionalPdf(lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
+                                      0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus);
+    } else {
+      revLcMinus = bdptLambertDirPdf(lightNormal, lcToLcMinus);
+    }
   }
 
   // pRef = joint forward density of the chosen strategy = light forward

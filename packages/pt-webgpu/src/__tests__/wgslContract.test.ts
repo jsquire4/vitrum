@@ -72,8 +72,17 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // CDF-sampled direction by +rotationY. rotationY=0 → identity (zero-rotation invariant).
     // Packed into params.environmentTint.w (no layout change). RENDER-CHANGING on HDRI scenes
     // with non-zero rotationY; rotationY=0 byte-identical to pre-H6.
-    expect(digest).toBe('080662d86bac21f527a76bb7d08db1461128d9be2c71cc0ca469fc3ee83c756e');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(242294);
+    // Re-pinned 2026-06-10: A9 (BDPT production quality) — the BDPT-gated light
+    // subpath gained a REAL glossy/specular BSDF extension (was Lambertian-only);
+    // the light-path vertex widened to 4 rows (BDPT_LIGHT_PATH_ROWS 3→4, row 3 =
+    // matId + wo-toward-prev) so the §10.3 connection evaluates the REAL light-vertex
+    // BSDF/pdfs (fwdEe/revLcMinus); the connection light-bounce cap rose 3→8; the
+    // point emitter went isotropic (uniform sphere, was cosine-up). All gated behind
+    // `if (params.bdptEnabled != 0u)` so a bdpt:false RUNTIME render is byte-identical
+    // (the WGSL STRING changes, hence this re-pin; the OFF runtime path does not).
+    // RENDER-CHANGING on bdpt:true scenes; equal-spp variance + caustic A/Bs → V28.
+    expect(digest).toBe('3d678055007aeca99d3fc1ca6416c0856954b3a75eee6c5d106cdaa29baf0864');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(250628);
   });
 });
 

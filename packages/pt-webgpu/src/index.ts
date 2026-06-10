@@ -129,14 +129,18 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * temporal reconnection reuse — Lin 2022). Full tier only. **OFF by default.**
    *
    * When OFF the default megakernel render is byte-identical (no reuse buffers or
-   * pipelines are created). When ON, a producer→temporal→resolve sequence runs
-   * BEFORE the megakernel each frame and writes its reconnection-indirect estimate
-   * to a SEPARATE debug output (`getRestirPtResultBuffer()`); the beauty image is
-   * still the unmodified megakernel result this increment (the reuse path is
-   * validated in isolation before it composites into the beauty buffer — see
-   * `capabilities.experimentalFeatures` and HARDWARE-VALIDATION-NEEDS). The
-   * compile-time naga gate is `wsl-gpu/scripts/restir-pt-compile-gate.ts`; the
-   * unbiasedness A/B is `wsl-gpu/scripts/restir-pt-unbiased-ab.ts`.
+   * pipelines are created). When ON (A1), a producer→temporal→SPATIAL→resolve
+   * sequence runs BEFORE the megakernel each frame; resolve writes the
+   * reconnection-INDIRECT estimate to `rpt_result` (also exposed for debug via
+   * `getRestirPtResultBuffer()`), and the megakernel runs in COMPOSITE mode:
+   * E0-direct-only (camera-visible emission + NEE at the primary vertex) + the
+   * resolve indirect, composited into the BEAUTY accumulator. The estimator split
+   * is exact + double-count-free (megakernel = E0's own emission+direct; resolve =
+   * everything from the first bounce off E0 onward; see the kernel composite gate).
+   * The spatial pass adds GRIS pairwise-MIS reuse over 5 disc neighbours (variance
+   * reduction). The compile-time naga gate is
+   * `wsl-gpu/scripts/restir-pt-compile-gate.ts`; the unbiasedness + equal-spp
+   * variance A/Bs are V28 queue entries (see road-to-100 A1).
    */
   readonly restirPtReuse?: boolean;
   /** ReSTIR-PT reuse tuning — read only when {@link restirPtReuse} is `true`. */
@@ -304,10 +308,13 @@ class PTEngineWebGPU implements Engine {
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
     this.#bdpt = opts.bdpt === true;
+    // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
+    // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default stays 3 (the
+    // validated baseline); hosts may opt up to 8 for deeper caustic/SDS transport.
     const requestedBdptBounces = opts.bdptOptions?.maxLightBounces;
     this.#bdptMaxLightBounces =
       typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
-        ? Math.min(3, Math.floor(requestedBdptBounces))
+        ? Math.min(8, Math.floor(requestedBdptBounces))
         : 3;
     // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
     // gates the full-tier requirement internally; mirror the resolved value here so
@@ -821,6 +828,7 @@ class PTEngineWebGPU implements Engine {
         restirPtReady =
           gpu.rptProducerPipeline != null &&
           gpu.rptTemporalPipeline != null &&
+          gpu.rptSpatialPipeline != null &&
           gpu.rptResolvePipeline != null &&
           gpu.rptProducerGroup0 != null &&
           gpu.pathTraceBindGroup1 != null &&
@@ -867,14 +875,30 @@ class PTEngineWebGPU implements Engine {
       bdptPass.end();
     }
 
+    // A1 — when ReSTIR-PT reuse + its composite megakernel are ready, dispatch the
+    // COMPOSITE megakernel (E0-direct-only + adds the resolve indirect from
+    // rpt_result) bound to the reuse-extended group 0 (which carries rpt_result at
+    // the relocated binding 23). Otherwise the default full-path megakernel. The
+    // composite path composites the ReSTIR-PT indirect into the BEAUTY accumulator;
+    // the default path is byte-identical to pre-A1.
+    const useComposite =
+      restirPtReady && gpu.rptCompositePipeline != null && gpu.rptProducerGroup0 != null;
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
-    pass.setPipeline(gpu.computePipeline);
-    pass.setBindGroup(0, bindGroup);
-    if (this.#traceTier === 'full' && gpu.pathTraceBindGroup1 != null && gpu.pathTraceBindGroup2 != null) {
-      pass.setBindGroup(1, gpu.pathTraceBindGroup1);
-      pass.setBindGroup(2, gpu.pathTraceBindGroup2);
-      if (gpu.pathTraceBindGroup3 != null) {
-        pass.setBindGroup(3, gpu.pathTraceBindGroup3);
+    if (useComposite) {
+      pass.setPipeline(gpu.rptCompositePipeline!);
+      pass.setBindGroup(0, gpu.rptProducerGroup0!);
+      pass.setBindGroup(1, gpu.pathTraceBindGroup1!);
+      pass.setBindGroup(2, gpu.pathTraceBindGroup2!);
+      pass.setBindGroup(3, gpu.pathTraceBindGroup3!);
+    } else {
+      pass.setPipeline(gpu.computePipeline);
+      pass.setBindGroup(0, bindGroup);
+      if (this.#traceTier === 'full' && gpu.pathTraceBindGroup1 != null && gpu.pathTraceBindGroup2 != null) {
+        pass.setBindGroup(1, gpu.pathTraceBindGroup1);
+        pass.setBindGroup(2, gpu.pathTraceBindGroup2);
+        if (gpu.pathTraceBindGroup3 != null) {
+          pass.setBindGroup(3, gpu.pathTraceBindGroup3);
+        }
       }
     }
     pass.dispatchWorkgroups(
@@ -924,17 +948,20 @@ class PTEngineWebGPU implements Engine {
   }
 
   /**
-   * Encode the ReSTIR-PT reuse sequence (producer → temporal → resolve) onto the
-   * supplied command encoder. Each pass binds the reuse-extended group 0 plus the
-   * megakernel's group-1/2/3 scene bind groups (built against the SAME explicit
-   * layouts the reuse pipeline layout reuses — so they set cleanly on the reuse
-   * pipelines). Preconditions are checked by the caller (`restirPtReady`).
+   * Encode the ReSTIR-PT reuse sequence (producer → temporal → spatial → resolve)
+   * onto the supplied command encoder. Each pass binds the reuse-extended group 0
+   * plus the megakernel's group-1/2/3 scene bind groups (built against the SAME
+   * explicit layouts the reuse pipeline layout reuses — so they set cleanly on the
+   * reuse pipelines). Preconditions are checked by the caller (`restirPtReady`).
    *
    * Ordering: producer fills `Cur` from a fresh primary+1-bounce trace; temporal
-   * fuses the reprojected `Prev` history into `Cur` in place; resolve reconstructs
-   * the reconnection-indirect from `Cur` into `rpt_result`. Three sequential
-   * compute passes on one encoder — each `pass.end()` is an execution barrier, so
-   * the producer's writes to `Cur` are visible to the temporal pass and so on.
+   * fuses the reprojected `Prev` history into `Cur` in place; spatial folds 5 disc
+   * neighbours of `Cur` (full GBH) into `Spatial`; resolve reconstructs the
+   * reconnection-indirect from `Spatial` into `rpt_result`. Four sequential compute
+   * passes on one encoder — each `pass.end()` is an execution barrier, so the
+   * producer's writes to `Cur` are visible to the temporal pass and so on. The
+   * COMPOSITE megakernel (dispatched after) reads `rpt_result` and composites the
+   * indirect into the beauty accumulator.
    */
   #encodeRestirPtReusePasses(
     encoder: GPUCommandEncoder,
@@ -967,6 +994,7 @@ class PTEngineWebGPU implements Engine {
     };
     dispatch('vitrum.pt-webgpu.restirPt.produce', gpu.rptProducerPipeline!, gpu.rptProducerGroup0!);
     dispatch('vitrum.pt-webgpu.restirPt.temporal', gpu.rptTemporalPipeline!, gpu.rptTemporalGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.spatial', gpu.rptSpatialPipeline!, gpu.rptSpatialGroup0!);
     dispatch('vitrum.pt-webgpu.restirPt.resolve', gpu.rptResolvePipeline!, gpu.rptResolveGroup0!);
   }
 

@@ -24,12 +24,16 @@
 
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
-import { composePtWebgpuTraceWgsl } from './wgsl/pathTraceBruteforce.wgsl.js';
+import {
+  composePtWebgpuTraceWgsl,
+  composePtWebgpuCompositeTraceWgsl,
+} from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
 import {
   composeRestirPtProducerWgsl,
   composeRestirPtTemporalWgsl,
+  composeRestirPtSpatialWgsl,
   composeRestirPtResolveWgsl,
   RPT_GROUP0_BINDING_BASE,
 } from './wgsl/pathTrace/restirPtCompose.wgsl.js';
@@ -111,6 +115,11 @@ export class GpuResources {
    */
   rptReservoirCur: GPUBuffer | null = null;
   rptReservoirPrev: GPUBuffer | null = null;
+  /** A1 — the SPATIAL pass output (post-temporal → spatial → resolve). The spatial
+   *  pass reads the temporal output (`Cur`) for neighbour sampling and writes here;
+   *  resolve reads this. A dedicated buffer (not a ping-pong slot) so the spatial
+   *  pass never writes the slot it samples (hazard-free neighbour reads). */
+  rptReservoirSpatial: GPUBuffer | null = null;
   /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
    *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
   rptResultBuffer: GPUBuffer | null = null;
@@ -123,14 +132,21 @@ export class GpuResources {
    *  bindings) — see #buildReservoirPipelines. */
   rptProducerPipeline: GPUComputePipeline | null = null;
   rptTemporalPipeline: GPUComputePipeline | null = null;
+  rptSpatialPipeline: GPUComputePipeline | null = null;
   rptResolvePipeline: GPUComputePipeline | null = null;
+  /** A1 — the COMPOSITE megakernel: E0-direct-only + adds the resolve indirect from
+   *  rpt_result (relocated @group(0)@binding(23)). Built alongside the reuse passes
+   *  (it needs the reuse-extended group-0 layout for the rpt_result binding). When
+   *  reuse is active the engine dispatches THIS instead of the default megakernel. */
+  rptCompositePipeline: GPUComputePipeline | null = null;
   /** Explicit group-0 layout for the reuse passes: the megakernel's group-0
-   *  bindings PLUS the relocated reuse bindings (20..24). Built once. */
+   *  bindings PLUS the relocated reuse bindings (20..25). Built once. */
   #rptGroup0Layout: GPUBindGroupLayout | null = null;
   /** Cached per-pass reuse bind groups (rebuilt on scene-buffer / reservoir
    *  recreation via invalidateBindGroups). */
   rptProducerGroup0: GPUBindGroup | null = null;
   rptTemporalGroup0: GPUBindGroup | null = null;
+  rptSpatialGroup0: GPUBindGroup | null = null;
   rptResolveGroup0: GPUBindGroup | null = null;
 
   /** Bytes per ReservoirPTHero (36 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
@@ -574,6 +590,7 @@ export class GpuResources {
 
     this.rptReservoirCur?.destroy();
     this.rptReservoirPrev?.destroy();
+    this.rptReservoirSpatial?.destroy();
     this.rptResultBuffer?.destroy();
     const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
     this.rptReservoirCur = this.#device.createBuffer({
@@ -583,6 +600,11 @@ export class GpuResources {
     });
     this.rptReservoirPrev = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.restirPt.reservoir.prev',
+      size: reservoirBytes,
+      usage,
+    });
+    this.rptReservoirSpatial = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.restirPt.reservoir.spatial',
       size: reservoirBytes,
       usage,
     });
@@ -604,10 +626,12 @@ export class GpuResources {
     const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.restirPt.clear' });
     enc.clearBuffer(this.rptReservoirCur);
     enc.clearBuffer(this.rptReservoirPrev);
+    enc.clearBuffer(this.rptReservoirSpatial);
     this.#device.queue.submit([enc.finish()]);
     // New buffers → the cached reuse bind groups are stale.
     this.rptProducerGroup0 = null;
     this.rptTemporalGroup0 = null;
+    this.rptSpatialGroup0 = null;
     this.rptResolveGroup0 = null;
     return true;
   }
@@ -685,10 +709,11 @@ export class GpuResources {
       // monomorphiseReservoirHelpers; the access modes are unchanged). So the layout
       // matches the shader access modes exactly: rpt_resPrev (b22) is read-only.
       buf(B + 0, rw), // rpt_reservoirOut  (producer write)
-      buf(B + 1, rw), // rpt_resCurrent    (temporal in/out; resolve reads same slot as `read`)
+      buf(B + 1, rw), // rpt_resCurrent    (temporal in/out; spatial reads same slot as `read`)
       buf(B + 2, ro), // rpt_resPrev       (temporal history, read-only)
       buf(B + 3, rw), // rpt_result        (resolve write)
       buf(B + 4, uniform), // rptParams
+      buf(B + 5, rw), // rpt_resSpatial    (spatial write; resolve reads same slot as `read`)
     ];
     return this.#device.createBindGroupLayout({
       label: 'vitrum.pt-webgpu.restirPt.layout.group0',
@@ -747,10 +772,23 @@ export class GpuResources {
       composeRestirPtTemporalWgsl(),
       'restirPtTemporal',
     );
+    this.rptSpatialPipeline = mk(
+      'vitrum.pt-webgpu.restirPt.spatial',
+      composeRestirPtSpatialWgsl(),
+      'restirPtSpatial',
+    );
     this.rptResolvePipeline = mk(
       'vitrum.pt-webgpu.restirPt.resolve',
       composeRestirPtResolveWgsl(),
       'restirPtResolve',
+    );
+    // A1 — the COMPOSITE megakernel uses the SAME [g0', g1, g2, g3] layout (it reads
+    // rpt_result at the relocated group-0 binding 23 + the scene groups). Composed
+    // for this engine's BDPT mode (matches the default megakernel's SSS/BDPT gate).
+    this.rptCompositePipeline = mk(
+      'vitrum.pt-webgpu.restirPt.compositeMegakernel',
+      composePtWebgpuCompositeTraceWgsl(this.#bdpt),
+      'main',
     );
   }
 
@@ -778,6 +816,7 @@ export class GpuResources {
     if (
       this.rptReservoirCur == null ||
       this.rptReservoirPrev == null ||
+      this.rptReservoirSpatial == null ||
       this.rptResultBuffer == null ||
       this.rptParamsBuffer == null ||
       this.accumView == null ||
@@ -822,26 +861,33 @@ export class GpuResources {
         { binding: B + 1, resource: { buffer: this.rptReservoirCur } }, // rpt_resCurrent  → Cur
         { binding: B + 2, resource: { buffer: this.rptReservoirPrev } }, // rpt_resPrev    → Prev
         { binding: B + 3, resource: { buffer: this.rptResultBuffer } }, // rpt_result      → result
+        { binding: B + 5, resource: { buffer: this.rptReservoirSpatial } }, // rpt_resSpatial → Spatial
       ],
     });
-    // Same resources for all three passes (the layout + bindings are uniform).
+    // Same resources for all four passes (the layout + bindings are uniform).
     this.rptProducerGroup0 = group0;
     this.rptTemporalGroup0 = group0;
+    this.rptSpatialGroup0 = group0;
     this.rptResolveGroup0 = group0;
   }
 
   /**
-   * Ping-pong the reservoir buffers: this frame's resolved `Cur` becomes next
-   * frame's `Prev` history. Invalidates the cached reuse bind groups (they
-   * reference the now-swapped buffers by binding). No-op when reuse is OFF.
+   * Ping-pong the reservoir buffers: this frame's RESOLVED reservoir is the SPATIAL
+   * pass output (producer→Cur, temporal Prev→Cur, spatial Cur→Spatial, resolve reads
+   * Spatial). For the temporal feedback loop to carry the spatially-improved estimate
+   * forward, next frame's `Prev` history must be THIS frame's `Spatial` — so we swap
+   * Prev↔Spatial (the old Prev buffer becomes the new Spatial scratch). `Cur` is
+   * producer-overwritten every frame, so it does NOT rotate. Invalidates the cached
+   * reuse bind groups (they reference the now-swapped buffers). No-op when reuse OFF.
    */
   swapReservoirs(): void {
     if (!this.#restirPtReuse) return;
-    const tmp = this.rptReservoirCur;
-    this.rptReservoirCur = this.rptReservoirPrev;
-    this.rptReservoirPrev = tmp;
+    const tmp = this.rptReservoirPrev;
+    this.rptReservoirPrev = this.rptReservoirSpatial;
+    this.rptReservoirSpatial = tmp;
     this.rptProducerGroup0 = null;
     this.rptTemporalGroup0 = null;
+    this.rptSpatialGroup0 = null;
     this.rptResolveGroup0 = null;
   }
 
@@ -851,6 +897,8 @@ export class GpuResources {
     this.rptReservoirCur = null;
     this.rptReservoirPrev?.destroy();
     this.rptReservoirPrev = null;
+    this.rptReservoirSpatial?.destroy();
+    this.rptReservoirSpatial = null;
     this.rptResultBuffer?.destroy();
     this.rptResultBuffer = null;
     this.rptParamsBuffer?.destroy();
@@ -859,10 +907,13 @@ export class GpuResources {
     this.rptResultByteSize = 0;
     this.rptProducerPipeline = null; // GPUComputePipeline has no destroy()
     this.rptTemporalPipeline = null;
+    this.rptSpatialPipeline = null;
     this.rptResolvePipeline = null;
+    this.rptCompositePipeline = null;
     this.#rptGroup0Layout = null;
     this.rptProducerGroup0 = null;
     this.rptTemporalGroup0 = null;
+    this.rptSpatialGroup0 = null;
     this.rptResolveGroup0 = null;
   }
 
@@ -1109,6 +1160,7 @@ export class GpuResources {
     // scene-buffer / accum-view recreation invalidates them too.
     this.rptProducerGroup0 = null;
     this.rptTemporalGroup0 = null;
+    this.rptSpatialGroup0 = null;
     this.rptResolveGroup0 = null;
   }
 

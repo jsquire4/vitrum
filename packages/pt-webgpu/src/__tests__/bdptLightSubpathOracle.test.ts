@@ -92,30 +92,33 @@ describe('bdptLightSubpathOracle', () => {
     expect(data[bdptLightPathColumnIndex(0, 2) + 0]).toBeGreaterThan(0);
   });
 
-  // Regression for the bounce-0 tangent-frame bug. The cosine hemisphere
-  // direction must be `wi = t*x + b*y + n*z`; the original code scaled the
-  // bitangent `b` by `x` instead of `y` (dead `y = r*sin(phi)` local). For a
-  // point emitter the emit normal is +Y, and uHemi=0.42 gives distinct
-  // x=0.161169, y=-0.627714, so the corrected hemisphere pdf differs from the
-  // buggy one. Pin the CORRECTED values; the buggy (b*x) variant gave 0.30495.
-  it('uses the y-scaled bitangent for the bounce-0 hemisphere pdf', () => {
+  // A9 — a point emitter is now ISOTROPIC (uniform sphere), not cosine-up about a
+  // fabricated +Y normal. The directional sampling pdf is the uniform-sphere density
+  // 1/(4π) = 0.0795774715… and the emit "normal" is the sampled sphere direction
+  // (carried so the first extension bounce has a consistent local frame). There is
+  // NO surface cosine for a point source.
+  it('point emitter bounce-0 is isotropic (uniform sphere, pdf 1/4π)', () => {
     const sb = stubScene({
       pointLightCount: 1,
       pointLightsData: new Float32Array([0, 1, 0, 0, 10, 10, 10, 0]),
     });
     const sample = sampleBdptBounce0Cpu(sb, 0, 1, 0.42);
     expect(sample).not.toBeNull();
-    expect(sample!.emitNormal[0]).toBeCloseTo(0, 6);
-    expect(sample!.emitNormal[1]).toBeCloseTo(1, 6);
-    expect(sample!.emitNormal[2]).toBeCloseTo(0, 6);
-    expect(sample!.pdfJoint).toBeCloseTo(0.2424175870529115, 9);
-    expect(sample!.pdfHemi).toBeCloseTo(0.2424175870529115, 9);
-    expect(sample!.pdfJoint).not.toBeCloseTo(0.30494558820375234, 9);
+    // Sampled sphere direction (deterministic for uHemi=0.42).
+    expect(sample!.emitNormal[0]).toBeCloseTo(-0.7138538579947795, 9);
+    expect(sample!.emitNormal[1]).toBeCloseTo(0.39244447941838734, 9);
+    expect(sample!.emitNormal[2]).toBeCloseTo(-0.58, 9);
+    // Uniform-sphere pdf (discretePdf=1) — NOT the old cosine-hemisphere 0.2424…
+    expect(sample!.pdfHemi).toBeCloseTo(0.07957747154594767, 9);
+    expect(sample!.pdfJoint).toBeCloseTo(0.07957747154594767, 9);
+    expect(sample!.pdfJoint).not.toBeCloseTo(0.2424175870529115, 9);
 
     // The packed buffer stores pdf in 32-bit float, so loosen to f32 precision.
     const width = 3;
     const data = packBdptLightPathColumns(width, sample);
-    expect(data[bdptLightPathColumnIndex(0, 1) + 3]).toBeCloseTo(0.2424175870529115, 6);
-    expect(data[bdptLightPathColumnIndex(0, 2) + 3]).toBeCloseTo(0.2424175870529115, 6);
+    expect(data[bdptLightPathColumnIndex(0, 1) + 3]).toBeCloseTo(0.07957747154594767, 6);
+    expect(data[bdptLightPathColumnIndex(0, 2) + 3]).toBeCloseTo(0.07957747154594767, 6);
+    // A9 — row 3 marks the emitter vertex (matId < 0 → Lambertian/emission profile).
+    expect(data[bdptLightPathColumnIndex(0, 3) + 3]).toBeLessThan(0);
   });
 });

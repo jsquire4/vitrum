@@ -275,19 +275,42 @@ export function composeRestirPtTemporalWgsl(): string {
 }
 
 /**
+ * Compose the ReSTIR-PT SPATIAL pass standalone. Shared prefix + ONLY the spatial
+ * body (relocated). Statically uses groups 0,1,2 (the reconnection-visibility
+ * traceAny) + group 0's reuse bindings. Reads the temporal output (b21, the
+ * "current" slot) and writes the spatial output (b25).
+ */
+export function composeRestirPtSpatialWgsl(): string {
+  // Spatial READS rpt_resSpatialIn (b21 = the temporal output / "current" slot,
+  // declared read_write in the shared layout → promote the `read` decl to match)
+  // and WRITES rpt_resSpatialOut (b25). It never writes the slot it samples, so
+  // neighbour reads are hazard-free.
+  let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_SPATIAL_WGSL}`);
+  wgsl = wgsl.replace(
+    /(var<storage,)\s*read(>\s+rpt_resSpatialIn)/,
+    (_m, pre: string, post: string) => `${pre} read_write${post}`,
+  );
+  // Spatial source calls loadReservoirPTHero_ro(&rpt_resSpatialIn, …) and stores
+  // via storeReservoirPTHero_rw(&rpt_resSpatialOut, …).
+  return monomorphiseReservoirHelpers(wgsl, {
+    ro: ['rpt_resSpatialIn'],
+    store: ['rpt_resSpatialOut'],
+  });
+}
+
+/**
  * Compose the ReSTIR-PT RESOLVE pass standalone. Shared prefix + ONLY the resolve
  * body (relocated). Statically uses group 0 only (evaluateBrdf is pure math; the
  * pass reads `params` + the reservoir/result reuse bindings, all in group 0).
  */
 export function composeRestirPtResolveWgsl(): string {
-  // Resolve LOADS rpt_resResolved, which sits at the SHARED "current" reservoir
-  // slot (relocated binding 21 — the same slot temporal WRITES as rpt_resCurrent).
-  // The single shared group-0 layout declares that slot `storage` (read_write), so
-  // resolve's binding access mode must MATCH it (a `read` shader binding against a
-  // read_write layout entry is a validation mismatch). Promote the binding decl to
-  // `read_write` (reading a read_write storage global directly is legal); the
-  // monomorphised load indexes it directly, so this only changes the access
-  // qualifier — never the math. rpt_resPrev is NOT in resolve.
+  // Resolve LOADS rpt_resResolved, which sits at the SPATIAL OUTPUT slot
+  // (relocated binding 25 — the slot the spatial pass WRITES). The single shared
+  // group-0 layout declares that slot `storage` (read_write), so resolve's binding
+  // access mode must MATCH it (a `read` shader binding against a read_write layout
+  // entry is a validation mismatch). Promote the binding decl to `read_write`
+  // (reading a read_write storage global directly is legal); the monomorphised load
+  // indexes it directly, so this only changes the access qualifier — never the math.
   let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_RESOLVE_WGSL}`);
   wgsl = wgsl.replace(
     /(var<storage,)\s*read(>\s+rpt_resResolved)/,
@@ -317,6 +340,7 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 import { RESERVOIR_PT_HERO_WITH_SHIFT_WGSL } from './reservoirPtHero.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from './restirPtProducer.wgsl.js';
 import { RESTIR_PT_TEMPORAL_WGSL } from './restirPtTemporal.wgsl.js';
+import { RESTIR_PT_SPATIAL_WGSL } from './restirPtSpatial.wgsl.js';
 import { RESTIR_PT_RESOLVE_WGSL } from './restirPtResolve.wgsl.js';
 
 /**
@@ -346,6 +370,7 @@ ${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 ${RESERVOIR_PT_HERO_WITH_SHIFT_WGSL}
 ${RESTIR_PT_PRODUCER_WGSL}
 ${RESTIR_PT_TEMPORAL_WGSL}
+${RESTIR_PT_SPATIAL_WGSL}
 ${RESTIR_PT_RESOLVE_WGSL}
 `;
 }

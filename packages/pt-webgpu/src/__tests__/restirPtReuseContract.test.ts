@@ -31,9 +31,10 @@ function codeOnly(src: string): string {
 }
 
 describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
-  it('declares all three @compute entry points exactly once each', () => {
+  it('declares all four @compute entry points exactly once each', () => {
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtProduce\(/g) ?? []).length).toBe(1);
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtTemporal\(/g) ?? []).length).toBe(1);
+    expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtSpatial\(/g) ?? []).length).toBe(1);
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtResolve\(/g) ?? []).length).toBe(1);
   });
 

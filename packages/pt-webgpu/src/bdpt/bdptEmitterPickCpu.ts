@@ -168,6 +168,33 @@ export function sampleBdptBounce0Cpu(
     return { emitPos, emitNormal: n, emitRad: throughput, pdfJoint, pdfHemi };
   };
 
+  // A9 — ISOTROPIC point-emitter finish (uniform sphere, no surface cosine). Mirrors
+  // the WGSL bdptFinishBounce0Isotropic: a point light emits over the FULL sphere with
+  // directional pdf 1/(4π); the stored "emitNormal" is the sampled direction so the
+  // first extension bounce has a consistent local frame. emitRad is radiant intensity;
+  // no cosEmit factor (a point source has no surface cosine). (The oracle uses uHemi as
+  // the deterministic sphere-sample input — it pins the MODEL, not GPU-PCG bit parity.)
+  const finishIsotropic = (
+    emitPos: [number, number, number],
+    emitRad: [number, number, number],
+    pdfLight: number,
+  ): BdptBounce0Sample => {
+    const ux = Math.max(uHemi, 1e-8);
+    const uy = 1 - ux * 0.5;
+    const phi = ux * 2 * PI;
+    const cosT = 1 - 2 * uy;
+    const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+    const dir = normalize3([sinT * Math.cos(phi), sinT * Math.sin(phi), cosT]);
+    const pdfDir = 0.25 / PI; // 1/(4π)
+    const pdfJoint = Math.max(pdfLight * pdfDir, 1e-8);
+    const throughput: [number, number, number] = [
+      emitRad[0] / pdfJoint,
+      emitRad[1] / pdfJoint,
+      emitRad[2] / pdfJoint,
+    ];
+    return { emitPos, emitNormal: dir, emitRad: throughput, pdfJoint, pdfHemi: pdfDir };
+  };
+
   let cur = 0;
   const irr = sb.directionalIrradiance;
   if (irr[0] + irr[1] + irr[2] > 1e-6) {
@@ -187,7 +214,8 @@ export function sampleBdptBounce0Cpu(
     if (cur === flat) {
       switch (e.kind) {
         case 'point':
-          return finish(e.position, [0, 1, 0], e.radiance, discretePdf);
+          // A9 — isotropic point emitter (uniform sphere, not cosine-up).
+          return finishIsotropic(e.position, e.radiance, discretePdf);
         case 'spot': {
           const spotDir = normalize3(e.axis);
           return finish(e.position, spotDir, e.radiance, discretePdf);

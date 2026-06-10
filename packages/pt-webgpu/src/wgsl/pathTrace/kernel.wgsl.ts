@@ -39,8 +39,19 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
  * eye path inside a medium would break energy conservation. With the gate off
  * the kernel falls back to the legacy per-channel Beer-Lambert absorption.
  */
-export function composePathTraceKernelWgsl(opts: { readonly volumetricSss: boolean }): string {
+export function composePathTraceKernelWgsl(opts: {
+  readonly volumetricSss: boolean;
+  /**
+   * A1 — ReSTIR-PT composite mode. When true the megakernel renders ONLY the
+   * DIRECT illumination at the primary visible vertex E0 (camera-visible emission
+   * of E0 + analytic NEE at E0: deltas + area-light NEE + env NEE) and the ReSTIR-PT
+   * resolve pass supplies ALL the indirect (everything from the first bounce off
+   * E0 onward). See the estimator-split note at the composite gate. OFF (default)
+   * emits the verbatim full-path kernel — byte-identical to pre-A1. */
+  readonly restirPtComposite?: boolean;
+}): string {
   const sss = opts.volumetricSss;
+  const composite = opts.restirPtComposite === true;
   // Henyey-Greenstein phase helpers are top-level WGSL functions used only by
   // the volumetric walk; include them only when the walk is compiled in so the
   // BDPT-on shader carries no SSS symbols (structural gate, no dead code).
@@ -209,7 +220,93 @@ export function composePathTraceKernelWgsl(opts: { readonly volumetricSss: boole
     }`
     : '';
 
-  return /* wgsl */ `
+  // A1 — composite mode module-scope binding: the ReSTIR-PT resolve output
+  // (one vec4f / px; .rgb = reconnection indirect, .a = contributing flag). The
+  // compose wrapper (composePtWebgpuCompositeTraceWgsl) relocates this
+  // @group(4)@binding(3) decl onto @group(0)@binding(23) — the SAME relocated slot
+  // the reuse passes' rpt_result occupies — so the megakernel reads exactly what
+  // resolve wrote. Absent entirely when composite is OFF (byte-identical default).
+  // OFF (default) emits the EMPTY string with no surrounding newline so the
+  // composed kernel is byte-for-byte the pre-A1 string (the byte-identity pin).
+  // NB: declared read_write to MATCH the shared reuse group-0 layout slot (binding
+  // 23 is `storage`/read_write there — the resolve pass WRITES it). Reading a
+  // read_write storage global is legal; this only sets the access qualifier.
+  const rptResultBinding = composite
+    ? /* wgsl */ `@group(4) @binding(3) var<storage, read_write> rpt_result_in: array<vec4f>;
+`
+    : '';
+  // A1 — the per-bounce BSDF→light/env MIS connection adds. OFF (default) emits
+  // the VERBATIM original block (byte-identical pin). In composite mode the
+  // BSDF-sampled direct connections are DROPPED: they estimate the light reached by
+  // E0's BSDF sample, which the ReSTIR-PT reconnection bounce (resolve indirect)
+  // already covers — keeping them would double-count the first-bounce-hits-a-light
+  // term. NEE (deltas + area + env) stays (it is E0's own direct lighting, which the
+  // resolve indirect does NOT include).
+  // A1 composite preamble — read the resolve indirect for THIS pixel once. A pixel
+  // the producer contributed to (rpt.a > 0.5) gets the E0-direct-only + composited-
+  // indirect split; a producer-DROPPED pixel (specular/transmissive E0 → rpt.a == 0)
+  // falls through to the FULL path so glass/mirror primaries still trace their
+  // reflection/refraction. Empty when composite is OFF (byte-identical default).
+  const compositePreamble = composite
+    ? /* wgsl */ `    let rptCompositeIdx = gid.y * params.width + gid.x;
+    let rptComposite = rpt_result_in[rptCompositeIdx];
+    let rptCompositeContributed = rptComposite.a > 0.5;
+`
+    : '';
+  // The BSDF→light/env area-MIS connection condition. In composite mode it is ALSO
+  // gated on !rptCompositeContributed: for a composited pixel the resolve indirect
+  // already covers first-bounce-hits-a-light (keeping it would double-count); a
+  // fall-through pixel runs the verbatim full connection. OFF = the verbatim original.
+  const sampleAllowsAreaMisCond = composite
+    ? 'sampleAllowsAreaMis && !rptCompositeContributed'
+    : 'sampleAllowsAreaMis';
+  const bsdfAreaConnect = /* wgsl */ `    if (${sampleAllowsAreaMisCond}) {
+      // H52: bsdfAreaLightConnectionContribution / bsdfEnvironmentConnectionContribution use
+      // the base evaluateBrdf/brdfDirectionalPdf (connect.wgsl.ts has no mat in scope).
+      // Add the extension lobe contribution here, on top, using the same nDotL/shadow logic.
+      // When all extension scalars are 0 the extra terms are 0 → zero-default invariant.
+      radiance = radiance + bsdfAreaLightConnectionContribution(
+        hitPos,
+        normal,
+        wo,
+        sampledDir,
+        baseColor,
+        roughness,
+        metallic,
+        transmission,
+        ior,
+        throughputAtVertex,
+      );
+      radiance = radiance + bsdfEnvironmentConnectionContribution(
+        hitPos,
+        normal,
+        wo,
+        sampledDir,
+        baseColor,
+        roughness,
+        metallic,
+        transmission,
+        ior,
+        throughputAtVertex,
+      );
+    }
+`;
+  // A1 — composite early-out. After E0's emission + NEE direct (+ for fall-through
+  // pixels the BSDF-area connection), composite the ReSTIR-PT reconnection indirect
+  // (f_bsdf(E0)·cos·Lo·W, reconstructed by resolve) into the BEAUTY accumulator and
+  // TERMINATE — the megakernel supplied E0's emission + direct only; the resolve
+  // supplies the indirect. Exact + double-count-free (resolve indirect = first bounce
+  // off E0 onward, disjoint from E0's own emission + direct). Producer-dropped pixels
+  // skip this and continue the FULL path. OFF (default) emits NOTHING (byte-identical).
+  const compositeEarlyOut = composite
+    ? /* wgsl */ `    if (rptCompositeContributed) {
+      radiance = radiance + rptComposite.rgb;
+      break;
+    }
+`
+    : '';
+
+  return /* wgsl */ `${rptResultBinding}
 ${hgHelpers}
 ${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 
@@ -621,7 +718,7 @@ ${transmissiveBlock}
       // Skip the primary hit (bounce 0): an explicit connection there would
       // double-count with the unidirectional NEE above (fork !state.firstRay).
       if (bounce > 0u) {
-        let maxLv = min(params.bdptMaxLightBounces, 3u);
+        let maxLv = min(params.bdptMaxLightBounces, 8u);
         for (var lvi = 0u; lvi < maxLv; lvi++) {
           radiance = radiance + evaluateBdptConnection(
             hitPos,
@@ -715,37 +812,7 @@ ${mediumStateUpdate}
       bdptPrevPos = hitPos;
     }
 
-    if (sampleAllowsAreaMis) {
-      // H52: bsdfAreaLightConnectionContribution / bsdfEnvironmentConnectionContribution use
-      // the base evaluateBrdf/brdfDirectionalPdf (connect.wgsl.ts has no mat in scope).
-      // Add the extension lobe contribution here, on top, using the same nDotL/shadow logic.
-      // When all extension scalars are 0 the extra terms are 0 → zero-default invariant.
-      radiance = radiance + bsdfAreaLightConnectionContribution(
-        hitPos,
-        normal,
-        wo,
-        sampledDir,
-        baseColor,
-        roughness,
-        metallic,
-        transmission,
-        ior,
-        throughputAtVertex,
-      );
-      radiance = radiance + bsdfEnvironmentConnectionContribution(
-        hitPos,
-        normal,
-        wo,
-        sampledDir,
-        baseColor,
-        roughness,
-        metallic,
-        transmission,
-        ior,
-        throughputAtVertex,
-      );
-    }
-
+${compositePreamble}${bsdfAreaConnect}${compositeEarlyOut}
     if (bounce > 2u) {
       let rr = russianRoulette(&rng, throughput);
       if (!rr.survives) { break; }

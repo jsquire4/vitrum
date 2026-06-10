@@ -27,8 +27,20 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEyeStackStore');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEyeStackSetFwd');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptMaxEyeDepth');
-    // The light subpath stores bare solid-angle pdfs (no baked-in geometry term).
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let pdfFwd = pdfScatter;');
+    // A9 — the light subpath now samples the REAL BSDF (glossy/specular, not
+    // Lambertian-only) and stores bare SOLID-ANGLE pdfs (no baked-in geometry term):
+    // pdfFwd/pdfRev are brdfDirectionalPdf, not the cosine-lobe cosθ/π.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let pdfFwd = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, woLp, nextDir);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let pdfRev = brdfDirectionalPdf(bc, rough, metal, 0.0, mat.ior, nsFront, nextDir, toPrev);',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/pdfFwd = pdfScatter \* max\(gTerm/);
+    // The §10.3 connection evaluates the REAL light-vertex BSDF (4-row light path).
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 4u;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (lvMatId >= 0.0) {');
+    // A9 — light-bounce cap raised 3 → 8.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let maxLv = min(params.bdptMaxLightBounces, 8u);');
   });
 });
