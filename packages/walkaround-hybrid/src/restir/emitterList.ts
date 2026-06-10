@@ -393,14 +393,24 @@ function buildEmitterListCore(
   }
 
   if (emitterData.length === 0) {
+    // H22 — the phantom placeholder is a structural requirement: the GPU buffer
+    // binding needs at least one element to avoid a zero-byte storage binding
+    // (WebGPU validation error). However, the placeholder MUST NOT contribute
+    // light: setting Le=[0,0,0] (intensity=0) ensures pHat = 0 at every RIS
+    // candidate evaluation → the RIS weight w=0 → no reservoir update → the
+    // shade pass returns vec3f(0) on the empty `r.W <= 0` guard. The shade.wgsl
+    // `if (lid >= ubo.emitterCount)` guard does NOT fire because emitterCount=1
+    // (the placeholder slot), but the zero-radiance Le makes the placeholder
+    // contribution exactly 0. Verified: ris.wgsl:232 `let pHat = luminance(...)`
+    // is 0 when Le=0, so `let w = select(0.0, pHat/pX, pHat > 0.0)` returns 0.
     emitterData.push({
       triIdx: 0,
       vA: [0, 10, 0], vB: [1, 10, 0], vC: [0.5, 10, 1],
       normal: [0, -1, 0],
       area: 0.5,
-      color: [1, 1, 1],
-      intensity: 1,
-      power: 0.5,
+      color: [0, 0, 0],  // zero Le → pHat = 0 → inert (H22)
+      intensity: 0,
+      power: 0,          // power = 0 → excluded from CDF (totalEmissivePower = 0)
     });
   }
 
@@ -448,7 +458,13 @@ function buildEmitterListCore(
   let runningSum = 0;
   for (let i = 0; i < emitterCount; i++) {
     runningSum += emitterData[i]!.power;
-    cdfArray[i] = runningSum / totalEmissivePower;
+    // H22 guard: when totalEmissivePower = 0 (the zero-real-emitter placeholder
+    // path), set a uniform CDF so the CDF buffer contains valid f32 values (not
+    // NaN). The placeholder's Le=0 makes every candidate pHat=0 → RIS weight=0
+    // → the reservoir stays empty → shade returns 0. CDF content is irrelevant
+    // when all weights are zero, but NaN in the buffer would produce undefined
+    // GPU behaviour.
+    cdfArray[i] = totalEmissivePower > 0 ? runningSum / totalEmissivePower : (i + 1) / emitterCount;
   }
 
   return { emitterFloats, cdfArray, totalEmissivePower, treeInput };

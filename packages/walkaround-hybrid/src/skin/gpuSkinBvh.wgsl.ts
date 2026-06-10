@@ -90,7 +90,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let idx = skinIndices[vi];
   let w = skinWeights[vi];
 
-  var sp = vec4f(0.0, 0.0, 0.0, 1.0);
+  // H17 — seed sp at zero (mirrors solveSkin's accumulate-from-zero convention).
+  // The old seed vec4f(0,0,0,1) caused sp.w = 1 + Σwᵢ ≈ 2 for normalized
+  // weights, which doubled the translation column when matrixWorld was applied
+  // in merged mode (applyWorld=1). seeding at (0,0,0,0) gives sp.w = Σwᵢ ≈ 1,
+  // and we clamp it to exactly 1.0 before the matrixWorld multiply for
+  // robustness with non-normalized weights.
+  var sp = vec4f(0.0);
   // Blended skin upper-3×3 columns (the linear part applied to directions).
   var col0 = vec3f(0.0);
   var col1 = vec3f(0.0);
@@ -120,6 +126,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var outN = nt * rn;
 
   if (skinParams.applyWorld != 0u) {
+    // H17 — force sp.w = 1.0 so the homogeneous divide in matrixWorld * sp
+    // is exactly a point transform regardless of whether the blended weights
+    // sum to slightly less than 1 (unnormalized skin weights).
+    sp.w = 1.0;
     outPos = (skinParams.matrixWorld * sp).xyz;
     // Compose the world matrix's upper-3×3 inverse-transpose onto the normal.
     let w0 = skinParams.matrixWorld[0].xyz;

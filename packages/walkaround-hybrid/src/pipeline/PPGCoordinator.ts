@@ -103,6 +103,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     height: number,
     ppgEnabled: boolean,
     _frameCount: number,
+    /** H47 — forwarded to allocatePPGResources `maxSpatialCells`; undefined = default 1 024. */
+    maxSpatialCells?: number,
   ): void {
     if (!ppgEnabled) {
       this._enabled = false;
@@ -114,7 +116,13 @@ export class PPGCoordinator implements PipelineSubsystem {
     // splits begin.
     this._sceneAABB = derivePPGSceneAABB(bvhBuffers);
     this._sTree = buildSTree(this._sceneAABB);
-    allocatePPGResources(this._device, frameResources, width, height);
+    allocatePPGResources(
+      this._device,
+      frameResources,
+      width,
+      height,
+      maxSpatialCells !== undefined ? { maxSpatialCells } : undefined,
+    );
     this._uploadTree(frameResources);
     this._writeUpdateUBO(frameResources, width, height);
   }

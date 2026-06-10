@@ -93,7 +93,21 @@ function materialResolver(scene: Scene): {
   }
   return {
     coreMaterials,
-    resolveMaterialId: (id) => byKey.get(id) ?? 0,
+    resolveMaterialId: (id) => {
+      const idx = byKey.get(id);
+      if (idx === undefined) {
+        // H24-A — warn on unknown primitive id so material-0 fallbacks are visible
+        // in the console rather than silently producing incorrect shading. Duplicate
+        // ids (two primitives share the same id) would also land here for the second
+        // occurrence; both cases warrant investigation.
+        console.warn(
+          `[ReSTIR bvhCore] unknown primitive id "${id}" — falling back to material 0. ` +
+          `This may produce incorrect shading. Check scene.primitives for duplicate or missing ids.`,
+        );
+        return 0;
+      }
+      return idx;
+    },
   };
 }
 
@@ -157,6 +171,22 @@ function coreEmitterBuffers(
   };
 }
 
+/**
+ * H15 — extract the uv0 layer from a stride-4 `ScenePackResult.uvs` array
+ * (layout: [u0, v0, u1, v1] per vertex) into a stride-2 Float32Array that
+ * `packUVIntoPositionW` can consume via its `{ array }` BufferAttributeLike.
+ * The TLAS vertex ordering is inherited from `packSceneFromCore` → same
+ * primitive-concat order as `geo.positions`, so vertex indices align 1:1.
+ */
+function stride4UvsToStride2Uv0(uvs4: Float32Array, vertCount: number): Float32Array {
+  const out = new Float32Array(vertCount * 2);
+  for (let i = 0; i < vertCount; i++) {
+    out[i * 2] = uvs4[i * 4] ?? 0;
+    out[i * 2 + 1] = uvs4[i * 4 + 1] ?? 0;
+  }
+  return out;
+}
+
 function buffersFromCoreScenePack(
   scene: Scene,
   geo: ScenePackResult,
@@ -166,7 +196,12 @@ function buffersFromCoreScenePack(
   const triCount = geo.triangleCount;
   const vertCount = geo.positions.length / 4;
 
-  const positionsWithUV = packUVIntoPositionW(geo.positions, undefined, vertCount);
+  // H15 — pass the real UVs from ScenePackResult.uvs (stride-4 vec4f → extract
+  // uv0 as stride-2) so every vertex's .w lane carries the packed UV pair instead
+  // of (0,0). Vertex ordering: packSceneFromCore emits positions and uvs in the
+  // same primitive-concat order, so indices align 1:1.
+  const uv0Stride2 = stride4UvsToStride2Uv0(geo.uvs, vertCount);
+  const positionsWithUV = packUVIntoPositionW(geo.positions, { array: uv0Stride2 }, vertCount);
   const triIndices3 = new Uint32Array(triCount * 3);
   for (let t = 0; t < triCount; t += 1) {
     triIndices3[t * 3 + 0] = geo.indices[t * 4 + 0]!;
@@ -243,7 +278,11 @@ function buildReSTIRSceneBVHFromCoreMerged(
   const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
   const triCount = merged.indices.length / 3;
   const vertCount = merged.positions.length / 4;
-  const positionsWithUV = packUVIntoPositionW(merged.positions, undefined, vertCount);
+  // H15 — pass merged.uvs (stride-2, same vertex order as merged.positions) so
+  // every vertex's .w lane carries the packed UV pair.  WorldSpaceMergeResult.uvs
+  // is stride-2 (u0, v0 per vertex), which is exactly what packUVIntoPositionW's
+  // { array } path expects (reads array[i*2] / array[i*2+1]).
+  const positionsWithUV = packUVIntoPositionW(merged.positions, { array: merged.uvs }, vertCount);
   const indexBuf = packBVHIndexWFromCore(
     merged.indices,
     merged.triMaterialId,

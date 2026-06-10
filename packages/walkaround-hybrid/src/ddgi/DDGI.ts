@@ -135,6 +135,26 @@ export class DDGI {
   get lastFrameMs(): number     { return this._lastFrameMs; }
   get probeCount(): number      { return this._grid.probeCount; }
 
+  /**
+   * H24-B — observable DDGI lifecycle state.
+   *
+   * - `'initializing'` — GPU init has not yet completed (before the first
+   *   `updateFrame` call with a WebGPU device).
+   * - `'ready'`        — GPU init succeeded AND the probe atlas has completed
+   *   at least one full round-robin cycle (all `_stride` strata updated).
+   *   Only set when `_gpuOk === true` to prevent a failed GPU init from
+   *   silently advertising convergence.
+   * - `'failed'`       — GPU init was attempted but returned false
+   *   (`navigator.gpu` unavailable, adapter request failed, or
+   *   ShaderModule compilation error). DDGI compute is disabled; the scene
+   *   renders without indirect GI.
+   */
+  state(): 'initializing' | 'ready' | 'failed' {
+    if (!this._inited) return 'initializing';
+    if (!this._gpuOk)  return 'failed';
+    return this._ready ? 'ready' : 'initializing';
+  }
+
   /** Number of probe-update passes dispatched since the last
    *  `invalidateProbeCache()` (or construction). Increments once per enabled
    *  `updateFrame` tick; reset to 0 by `invalidateProbeCache()`. Read by
@@ -222,19 +242,26 @@ export class DDGI {
   /**
    * Invalidate the DDGI probe atlas so it re-converges from scratch.
    *
-   * Resets `_frame` to 0 and `_ready` to false. On the next `updateFrame`
-   * call the blend kernel will fire with `alpha=1` for every texel (history
-   * weight = 0), effectively clearing the irradiance + visibility atlases
-   * and letting the DDGI update kernel re-converge over the next `_stride`
-   * frame window (the probe-update divisor; default 8).
+   * Mechanism:
+   *   1. Resets `_frame` to 0 and `_ready` to false so the warmup gate
+   *      re-arms and the progress bar re-runs.
+   *   2. Calls `ProbeUpdatePass.requestFullBlend()`, which sets a one-shot
+   *      flag that makes the NEXT `runFrame` upload `hysteresis = 0.0`
+   *      (`EMA weight = 0 → blendedValue = freshSample`). This overwrites
+   *      every atlas texel in a single probe-update stride window (~8 frames
+   *      at the default cadence / ~133 ms at 60 FPS) rather than fading in
+   *      over hundreds of frames.
    *
-   * Does NOT deallocate GPU textures or touch the BVH — cost is two JS
+   * Does NOT deallocate GPU textures or touch the BVH — cost is three JS
    * field writes only. Called by `HybridEngine.updateLighting()` when
    * lighting parameters change at runtime.
    */
   invalidateProbeCache(): void {
     this._frame = 0;
     this._ready = false;
+    // H16 — fire hysteresis=0 on the next blend upload so the atlas clears
+    // in one stride window instead of fading over hundreds of frames.
+    this._pass.requestFullBlend();
   }
 
   /**
@@ -342,7 +369,9 @@ export class DDGI {
     }
 
     // Mark ready after the first full cycle (`_stride` frames).
-    if (this._frame >= stride) {
+    // H24-B — only flip _ready when _gpuOk so a failed GPU init cannot silently
+    // advertise convergence (the state() accessor returns 'failed' in that case).
+    if (this._gpuOk && this._frame >= stride) {
       this._ready = true;
     }
 

@@ -33,6 +33,20 @@ export interface BvhUpdateSink {
     positionsSlice: { byteOffset: number; data: ArrayBuffer },
   ): void;
 
+  /**
+   * H19 — upload a per-vertex normals slice into the GPU `bvhNormals` buffer.
+   * Used by transform/positions fast paths to keep world-space smooth-shading
+   * normals consistent after a refit. The skin path is exempt (the GPU-skin
+   * kernel writes normals directly via `skinnedNormals`).
+   *
+   * @param normalsSlice - Byte offset + data for the affected vertex range.
+   *   Each vertex is 16 bytes (vec4f, .w unused). The offset must be aligned
+   *   to 4 bytes (GPU requirement for writeBuffer).
+   */
+  refreshBvhNormalsSlice(
+    normalsSlice: { byteOffset: number; data: ArrayBuffer },
+  ): void;
+
   /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
   refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void;
 

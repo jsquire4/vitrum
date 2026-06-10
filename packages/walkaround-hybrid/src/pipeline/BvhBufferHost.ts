@@ -228,6 +228,15 @@ export class BvhBufferHost {
     device.queue.writeBuffer(this._bvhNodesBuffer!, 0, bvhNodesBytes);
   }
 
+  /** H19 — upload a per-vertex normals slice (vec4f stride, .w unused). */
+  refreshBvhNormalsSlice(
+    device: GPUDevice,
+    normalsSlice: { byteOffset: number; data: ArrayBuffer },
+  ): void {
+    if (!this.initialized) return;
+    device.queue.writeBuffer(this._bvhNormalBuffer!, normalsSlice.byteOffset, normalsSlice.data);
+  }
+
   getBvhPositionBuffer(): GPUBuffer | null {
     return this._bvhPositionBuffer;
   }

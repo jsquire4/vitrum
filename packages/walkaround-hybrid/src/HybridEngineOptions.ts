@@ -647,7 +647,13 @@ export interface HybridEngineOptions extends EngineOptions {
    * Maximum number of sTree spatial cells (hard cap on adaptive splits).
    * Each cell consumes memory for a flat dTree node buffer on the GPU.
    *
-   * Default: 16 384 (matches `PPG_MAX_SPATIAL_CELLS`).
+   * Default: 1 024 — large enough for meaningful spatial refinement while
+   * keeping VRAM bounded at ~6 MB. The absolute ceiling is `PPG_MAX_SPATIAL_CELLS`
+   * (16 384); raise this only for dense, complex scenes where 1 024 cells are
+   * insufficient for guided sampling coverage.
+   *
+   * Note: this option has no effect until H25/A2 (spatial sTree splitting) lands;
+   * the current PPG implementation uses a single global cell regardless of this cap.
    */
   readonly ppgMaxSpatialCells?: number;
 

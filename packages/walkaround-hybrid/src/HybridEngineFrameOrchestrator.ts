@@ -504,6 +504,10 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
   if (!bvh) {
+    // H20 — bvh is null when the engine is in empty-scene mode (e.g. after
+    // removePrimitive removes the last primitive). The engine is 'ready' but
+    // presents nothing: renderFrame returns SKIP every call until setScene
+    // provides mesh geometry. The sky-only present path is a road-to-100 item.
     if (dbg) dbg.skipNoBvh++;
     return HYBRID_FRAME_SKIP_OUTPUT;
   }

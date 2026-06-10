@@ -156,8 +156,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
-  // Skip glass / metal — indirect for those goes through the
-  // path-traced fork, not DDGI atlas sampling. ReSTIR-DI Lo_direct stays.
+  // Skip glass / metal — DDGI atlas sampling does not apply to glossy/specular
+  // surfaces; they currently get NO indirect GI (road-to-100 B1). ReSTIR-DI
+  // Lo_direct is still evaluated for these pixels at the shade stage.
   let matColor = decodeMaterialColor(hit.matColorPacked);
   let isGlass = matColor.a > 0.3;
   let isMetal = decodeIsMetal(hit.matColorPacked);

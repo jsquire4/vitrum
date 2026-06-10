@@ -84,13 +84,27 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
 
 export const DDGI_PROBE_BLEND_HYSTERESIS = 0.97;
 
-export function packProbeUpdateBlendParams(totalProbes: number, updateDivisor?: number): ArrayBuffer {
+/**
+ * Pack the blend-params UBO.
+ *
+ * @param totalProbes - Total probe count for the current grid.
+ * @param updateDivisor - Round-robin stride (≥ 1); default 4.
+ * @param hysteresisOverride - When provided, overrides the steady-state 0.97.
+ *   Pass `0.0` for a full-replace blend (H16 invalidate path): EMA weight = 0
+ *   means `newValue = (1 − 0) × freshSample + 0 × history = freshSample`,
+ *   clearing stale atlas data in one probe-update cycle.
+ */
+export function packProbeUpdateBlendParams(
+  totalProbes: number,
+  updateDivisor?: number,
+  hysteresisOverride?: number,
+): ArrayBuffer {
   const data = new ArrayBuffer(DDGI_BLEND_PARAMS_UBO.sizeBytes);
   DDGI_BLEND_PARAMS_UBO.pack(new DataView(data), 0, {
     // MUST match the ray pass's coverage (same divisor) so the blend kernel
     // only blends probes that received fresh rays this frame.
     probesPerFrame: Math.ceil(totalProbes / safeDivisor(updateDivisor)),
-    hysteresis: DDGI_PROBE_BLEND_HYSTERESIS,
+    hysteresis: hysteresisOverride ?? DDGI_PROBE_BLEND_HYSTERESIS,
   });
   return data;
 }

@@ -231,6 +231,92 @@ function refitBvhNodesAndUploadSlice(
   );
 }
 
+/**
+ * H19 — apply a 3×3 rotation matrix (upper-left of a 4×4 column-major Mat4)
+ * to the per-vertex world-space normals in `bvhNormals.cpuData`, writing only
+ * the affected `[baseVertex, baseVertex + sliceVerts)` range, then upload the
+ * updated slice to the GPU via `pipeline.refreshBvhNormalsSlice`.
+ *
+ * The normal buffer is stride-4 (vec4f, .w=0 unused). The rotation is the
+ * upper-3×3 of the provided 4×4 column-major matrix (same convention as
+ * `matrixWorld`). Skipped when `pipeline` is null (init in flight) or when
+ * `bvh.bvhNormals` is absent.
+ */
+function rotateNormalsAndUploadSlice(
+  bvh: SceneBVHBuffers,
+  rotMat4: ArrayLike<number>,
+  baseVertex: number,
+  sliceVerts: number,
+  pipeline: BvhUpdateSink | null | undefined,
+): void {
+  if (!pipeline) return;
+  const NORM_STRIDE = 4; // vec4f per vertex (.w unused)
+  const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
+  // Column-major upper-3×3 of rotMat4.
+  const r00 = rotMat4[0]!; const r10 = rotMat4[1]!; const r20 = rotMat4[2]!;
+  const r01 = rotMat4[4]!; const r11 = rotMat4[5]!; const r21 = rotMat4[6]!;
+  const r02 = rotMat4[8]!; const r12 = rotMat4[9]!; const r22 = rotMat4[10]!;
+  for (let v = 0; v < sliceVerts; v++) {
+    const off = (baseVertex + v) * NORM_STRIDE;
+    const nx = normalsF32[off]!;
+    const ny = normalsF32[off + 1]!;
+    const nz = normalsF32[off + 2]!;
+    normalsF32[off]     = r00 * nx + r01 * ny + r02 * nz;
+    normalsF32[off + 1] = r10 * nx + r11 * ny + r12 * nz;
+    normalsF32[off + 2] = r20 * nx + r21 * ny + r22 * nz;
+    // .w unchanged (always 0)
+  }
+  const byteOffset = baseVertex * NORM_STRIDE * 4;
+  const byteLength = sliceVerts * NORM_STRIDE * 4;
+  const sliceData = bvh.bvhNormals.cpuData.slice(byteOffset, byteOffset + byteLength);
+  pipeline.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
+}
+
+/**
+ * H19 — write caller-supplied local-space normals into the bvhNormals buffer
+ * after applying matrixWorld (upper-3×3 only, then normalize), then upload
+ * the slice. Handles the positions-patch path where the host supplies new
+ * normals alongside new positions.
+ *
+ * `localNormals` is stride-3 (same convention as MeshPrimitive.normals).
+ * The output is stride-4 (vec4f, .w=0).
+ */
+function writeTransformedNormalsAndUploadSlice(
+  bvh: SceneBVHBuffers,
+  localNormals: ArrayLike<number>,
+  matrixWorld: ArrayLike<number>,
+  baseVertex: number,
+  sliceVerts: number,
+  pipeline: BvhUpdateSink | null | undefined,
+): void {
+  if (!pipeline) return;
+  const NORM_STRIDE = 4;
+  const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
+  // Column-major upper-3×3 of matrixWorld.
+  const r00 = matrixWorld[0]!; const r10 = matrixWorld[1]!; const r20 = matrixWorld[2]!;
+  const r01 = matrixWorld[4]!; const r11 = matrixWorld[5]!; const r21 = matrixWorld[6]!;
+  const r02 = matrixWorld[8]!; const r12 = matrixWorld[9]!; const r22 = matrixWorld[10]!;
+  for (let v = 0; v < sliceVerts; v++) {
+    const lx = localNormals[v * 3]!;
+    const ly = localNormals[v * 3 + 1]!;
+    const lz = localNormals[v * 3 + 2]!;
+    let wx = r00 * lx + r01 * ly + r02 * lz;
+    let wy = r10 * lx + r11 * ly + r12 * lz;
+    let wz = r20 * lx + r21 * ly + r22 * lz;
+    const len = Math.sqrt(wx * wx + wy * wy + wz * wz);
+    if (len > 1e-12) { wx /= len; wy /= len; wz /= len; }
+    const off = (baseVertex + v) * NORM_STRIDE;
+    normalsF32[off] = wx;
+    normalsF32[off + 1] = wy;
+    normalsF32[off + 2] = wz;
+    normalsF32[off + 3] = 0;
+  }
+  const byteOffset = baseVertex * NORM_STRIDE * 4;
+  const byteLength = sliceVerts * NORM_STRIDE * 4;
+  const sliceData = bvh.bvhNormals.cpuData.slice(byteOffset, byteOffset + byteLength);
+  pipeline.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
+}
+
 /** Aggregated resources the primitive-update paths need from the engine. */
 export interface PrimitiveUpdateContext {
   /** The engine's currently-owned BVH GPU buffers. May be null if the
@@ -427,6 +513,11 @@ export function transformRefit(
   // just the affected stride-4 vertex slice to honour the fast-path goal.
   refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
 
+  // H19 — apply the same rotation delta to bvhNormals so smooth-shading
+  // normals stay correct after a transform refit (skin path exempt — the GPU
+  // skin kernel writes normals directly every frame).
+  rotateNormalsAndUploadSlice(bvh, delta, baseVertex, sliceVerts, ctx.pipeline);
+
   // Reset the accumulator — temporal history is invalid because the
   // primitive moved (history pixels reference the old world position).
   ctx.pipeline?.requestAccumReset();
@@ -581,6 +672,16 @@ export function positionsRefit(
   // Refit BVH bounds in place against the freshly-updated positions, then
   // upload the full node buffer + just the affected vertex slice to GPU.
   refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
+
+  // H19 — if the positions patch also carries new local normals, transform them
+  // to world space and upload the affected normals slice. Without this the GPU
+  // bvhNormals buffer keeps the build-time normals even after vertex positions
+  // move (smooth-shading references stale normals until a topology rebuild).
+  const meshPosPatch0 = patch as Partial<MeshPrimitive>;
+  if (meshPosPatch0.normals !== undefined && meshPosPatch0.normals.length === sliceVerts * 3) {
+    writeTransformedNormalsAndUploadSlice(
+      bvh, meshPosPatch0.normals, matWorld, baseVertex, sliceVerts, ctx.pipeline);
+  }
 
   // Reset the accumulator + invalidate DDGI — vertex positions changed,
   // history pixels reference the old geometry. Same invalidation cost as

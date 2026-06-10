@@ -184,6 +184,9 @@ interface ParsedHybridEngineConfig {
    *  read only by the lite-tier guard and never forwarded to the pipeline —
    *  PPG was inert through the public API.) */
   readonly ppgEnabled: number;
+  /** H47 — maximum PPG sTree spatial cells, threaded to `allocatePPGResources`.
+   *  `undefined` ⇒ use allocatePPGResources default (1 024). */
+  readonly ppgMaxSpatialCells: number | undefined;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  `false` by default (no preset ⇒ ultra ⇒ off); the `medium`/`low` presets
    *  enable it, `ultra`/`high` keep it off. Threaded into
@@ -451,6 +454,9 @@ export function deriveHybridEngineConfig(
       1,
       Math.floor(opts.ppgDispatchInterval ?? preset.ppgDispatchInterval),
     ),
+    // H47 — PPG max spatial cells. Pass-through; undefined = allocatePPGResources
+    // default (1 024). No clamping here — the allocator handles its own floor.
+    ppgMaxSpatialCells: opts.ppgMaxSpatialCells,
     // ReGIR (Boksansky 2021) grid-based DI light selection. Pass-through from
     // opts; `undefined` ⇒ off (the pipeline's resolveReGIRConfig default).
     regirConfig: opts.regir,
@@ -801,6 +807,29 @@ export class HybridEngine implements Engine {
     // key fingerprint) gets its own field.
     const cfg = parseHybridEngineOptions(opts);
     this._cfg = cfg;
+
+    // H46 — non-default maxBounces: walkaround shaders have a fixed bounce budget;
+    // the value is forwarded to capabilities but does NOT gate the DDGI bounce path.
+    // Wire into DDGI feedback control is deferred (road-to-100 D15-A).
+    if (cfg.maxBounces !== 4) {
+      console.warn(
+        `[HybridEngine] maxBounces=${cfg.maxBounces} is not the default (4). ` +
+        `The walkaround shaders use a fixed bounce budget; this value is reflected ` +
+        `in capabilities.maxBounces but does not yet gate the DDGI indirect path ` +
+        `(road-to-100 D15-A).`,
+      );
+    }
+    // H46 — causticStrategy: walkaround always reports 'none' in capabilities.
+    // Non-'none' strategies are not implemented for this backend.
+    if ((opts as { causticStrategy?: string }).causticStrategy != null &&
+        (opts as { causticStrategy?: string }).causticStrategy !== 'none') {
+      console.warn(
+        `[HybridEngine] causticStrategy='${(opts as { causticStrategy?: string }).causticStrategy}' ` +
+        `is not supported by the walkaround-hybrid engine. ` +
+        `This engine always reports causticStrategy:'none' in capabilities. ` +
+        `Use pt-webgpu or pt-webgl2 for manifold-nee/photon-map caustics.`,
+      );
+    }
 
     this._device                = opts.device;
     this._width                 = opts.width;
@@ -1323,9 +1352,16 @@ export class HybridEngine implements Engine {
    * through `setScene` (same full-rebuild approach as {@link addPrimitive}).
    * Reusing the `setScene` packing path re-packs the dense BVH / DDGI-light /
    * ReSTIR-emitter arrays correctly by construction rather than hand-rolling a
-   * multi-array compaction. Removing the last primitive is legal and yields a
-   * renderable sky-only scene (the empty scene `setScene` already supports — the
-   * factory bootstraps with exactly that).
+   * multi-array compaction.
+   *
+   * **Empty-scene behaviour (H20 / decision D8):** Removing the LAST primitive
+   * routes through `setScene` with an empty primitives array. The engine
+   * transitions to `'ready'` state (no pipeline / BVH allocated) but
+   * `renderFrame` returns a SKIP output on every call — the empty scene DOES NOT
+   * present a frame (neither sky nor background). To observe the skip counter you
+   * must construct the engine with `debug: true` and read
+   * `window.__WALKAROUND__.dbg.skipNoBvh`. A sky-only present path is tracked as
+   * a road-to-100 item.
    *
    * Contract semantics honored:
    *   • A missing `id` throws BEFORE any mutation — the membership check runs
@@ -2226,6 +2262,8 @@ export class HybridEngine implements Engine {
       // PPG guided sampling — builds the ppg-update pipeline + UBO gate.
       ppgEnabled: this._cfg.ppgEnabled === 1,
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
+      // H47 — PPG max spatial cells. undefined ⇒ allocatePPGResources default (1 024).
+      ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,
       // Checkerboard half-res shading — flips the ResolvePass gate + the
       // per-frame shade UBO fields. OFF (default) is bit-identical.
       checkerboard: this._cfg.checkerboard,

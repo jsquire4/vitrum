@@ -3,17 +3,21 @@
  * GPU uniform data.
  *
  * Atlas layout:
- *  irradianceAtlas: (dimsX * 10) × (dimsY * dimsZ * 10) rgba16float
- *    each probe cell = 8×8 + 2px border = 10×10
+ *  irradianceAtlas: (dimsX * 5) × (dimsY * dimsZ * 5) rgba16float
+ *    each probe cell = 3×3 (L2 SH, 9 RGB coefficients) + 2px border = 5×5
  *  visibilityAtlas: (dimsX * 18) × (dimsY * dimsZ * 18) rg16float
  *    each probe cell = 16×16 + 2px border = 18×18
  *
+ * The irradiance cell migrated from octahedral 8×8 to L2 SH 3×3 (ddgiSH.wgsl.ts,
+ * 2026-06-07). SH has no octahedral seam so the irradiance border is unused
+ * (no border pass); the 2px ring is kept only for stride-uniformity with the
+ * visibility atlas. See ddgiAtlasLayout.ts for the single-source constants.
+ *
  * Atlas slots are plain `{width, height}` records; ProbeGrid does not hold
- * any GPU or three/webgpu handles. probeUpdatePass.ts maintains the actual
- * `GPUTexture` per slot via a WeakMap keyed on the slot instance.
- * applyDDGIShading.ts (the TSL consumer) wraps each slot in its own
- * three/webgpu `StorageTexture` if needed. This isolates the three/webgpu
- * coupling to the TSL site and lets the compute path be pure raw WebGPU.
+ * any GPU handles. probeUpdatePass.ts maintains the GPUTexture per slot via
+ * a WeakMap keyed on the slot instance. applyDDGIShading.ts (the TSL consumer)
+ * wraps each slot in a three/webgpu StorageTexture — that is the only
+ * three/webgpu coupling; the raw compute path is host-neutral.
  */
 
 import type { PlainAabb } from '@vitrum/shared-bvh';

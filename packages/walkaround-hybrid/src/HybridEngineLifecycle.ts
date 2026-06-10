@@ -106,6 +106,9 @@ export interface PipelineInitHost {
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
   readonly ppgEnabled: boolean;
+  /** H47 — maximum PPG sTree spatial cells forwarded to allocatePPGResources.
+   *  undefined ⇒ use the allocator's built-in default (1 024). */
+  readonly ppgMaxSpatialCells: number | undefined;
   /** Checkerboard half-res shading — when true shade.wgsl AND the two DI spatial
    *  passes compact their dispatch to one checkerboard phase per frame and
    *  ResolvePass reprojects the gap; false (default) shades every pixel + passes
@@ -180,6 +183,7 @@ export type HybridInitStaticConfig = Pick<
   | 'restirPtReuse'
   | 'nrcEnabled'
   | 'ppgEnabled'
+  | 'ppgMaxSpatialCells'
   | 'checkerboard'
   | 'ppgDispatchInterval'
   | 'regirConfig'
@@ -436,6 +440,11 @@ export class PipelineInitCoordinator {
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
           ppgDispatchInterval: host.ppgDispatchInterval,
+          // H47 — PPG max sTree spatial cells. Omit when undefined so the
+          // pipeline's allocatePPGResources default (1 024) applies.
+          ...(host.ppgMaxSpatialCells !== undefined
+            ? { ppgMaxSpatialCells: host.ppgMaxSpatialCells }
+            : {}),
           // ReGIR (Boksansky 2021) grid-based DI light selection. Omit the key
           // entirely when undefined (exactOptionalPropertyTypes) so the
           // pipeline's resolveReGIRConfig default (off) applies.

@@ -432,9 +432,15 @@ export interface PipelineFrameLighting {
    *  named generically because the path tracer is light-source-agnostic. */
   primaryLightDir: [number, number, number];
   /** Primary directional light irradiance multiplier (linear, unitless).
-   *  Must match the value passed to buildSceneBVH({primaryLightIntensity})
-   *  at BVH-build time so the shader's self-emission Le for primary panel
-   *  hits reproduces exactly the Le baked into the emitter list. */
+   *  Uploaded to the shade-side WalkaroundUBO each frame (offset ~220) to
+   *  scale Lo_emit on primary-panel hits in the glass/stained-glass path.
+   *  NOTE (H21): directional/sun emitters NEVER enter the rect-area emitter
+   *  CDF (`collectRectAreaEmitterTrisFromCore` collects only `rect-area` and
+   *  `disc-area` kinds), so this field does NOT need to stay in sync with
+   *  BVH-build time emitter baking. The "must match at BVH-build time" claim
+   *  in earlier docs was an over-broad carry-over from the stained-glass path;
+   *  `updateLighting({primaryLightIntensity})` correctly mutates it without
+   *  rebuilding the emitter list. */
   primaryLightIntensity: number;
   /** Diffuse-sky-dome RGB tint, derived from computeLightingState. Replaces
    *  four formerly-hardcoded sky tints in WGSL. Consumed by sky-aperture
@@ -1005,6 +1011,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       inferenceGraph?: InferenceGraph;
       /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
       ppgEnabled?: boolean;
+      /** H47 — maximum PPG sTree spatial cells forwarded to allocatePPGResources.
+       *  undefined ⇒ use allocatePPGResources default (1 024). */
+      ppgMaxSpatialCells?: number;
       /** W11 — OIDN final-pass denoiser config (required when denoiser='oidn-final').
        *  Threaded into `registerBuiltinDenoisers` so the OIDN entry registers as a
        *  real (non-disabled) denoiser; missing on a 'oidn-final' selection causes
@@ -1265,7 +1274,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // and uploads the serialised tree + both UBOs. No-op when ppgEnabled
     // is false. The kernels descend the serialised buffers each frame; the
     // CPU refines + re-uploads on rebuild cycles (Phase 2 follow-up).
-    this._ppg.initialize(bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount);
+    this._ppg.initialize(
+      bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount,
+      options?.ppgMaxSpatialCells,
+    );
 
     this._initialized = true;
     if (options?.verbose) {
@@ -1322,6 +1334,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhNodesOnly(this._device, bvhNodesBytes);
+  }
+
+  /** H19 — upload a per-vertex normals slice after a transform/positions refit. */
+  refreshBvhNormalsSlice(normalsSlice: { byteOffset: number; data: ArrayBuffer }): void {
+    if (!this._initialized) return;
+    this._bvhHost.refreshBvhNormalsSlice(this._device, normalsSlice);
   }
 
   /** Live merged vertex buffer for GPU skinning writes. */

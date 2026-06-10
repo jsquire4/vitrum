@@ -1,23 +1,23 @@
 /**
  * ProbeUpdatePass — DDGI probe update via raw WebGPU compute.
  *
- * Uses the renderer's raw GPUDevice to run two compute passes per frame:
+ * Uses the raw GPUDevice to run two compute passes per frame:
  *  Pass 1 (probeUpdateRays): for each active probe, fire 192 rays via
  *          inline BVH traversal, collect radiance at hit points.
- *  Pass 2 (probeUpdateBlend): blend ray results into octahedral atlas
- *          textures with EWMA temporal hysteresis.
+ *  Pass 2 (probeUpdateBlend): blend ray results into the L2-SH irradiance
+ *          atlas and the octahedral visibility atlas with EWMA temporal
+ *          hysteresis.
  *
- * This uses raw WebGPU rather than TSL/wgslFn because the compute shader
- * has custom @group/@binding layouts that don't compose naturally with
- * three.js's binding system. The WebGPU backend's `device` property is
- * used directly.
+ * Raw WebGPU is used because the compute shaders have custom @group/@binding
+ * layouts that the engine manages directly. The GPUDevice is supplied by the
+ * caller (HybridEngine); this class does not own the device lifetime.
  *
- * three/webgpu coupling: `renderer.backend.device` is accessed directly,
- * but ProbeGrid atlas slots are now backend-agnostic `AtlasTextureSlot`
- * records (see probeGrid.ts). The GPU texture per slot is allocated lazily
- * in `_getOrCreateAtlasTexture` and cached in `_textureCache` keyed on the
- * slot identity. TSL binding (if applyDDGIShading is in use) is the only
- * site still importing from three/webgpu.
+ * The irradiance atlas stores 9-coefficient L2 spherical harmonics in a 3×3
+ * texel block per probe (IRR_CELL=3); the visibility atlas uses a 16×16
+ * octahedral layout per probe (VIS_CELL=16). Both atlases are allocated and
+ * owned here; the TSL-side applyDDGIShading.ts consumer reads them as
+ * StorageTexture handles — that is the only remaining three/webgpu import in
+ * the DDGI subsystem.
  */
 
 import { type SceneBvh } from '@vitrum/shared-bvh';
@@ -134,6 +134,12 @@ export class ProbeUpdatePass {
   // values (8/16) update fewer probes per frame for the medium/low presets.
   private _probeUpdateDivisor = 4;
 
+  // H16 — when true, the next _uploadBlendParams call uploads hysteresis=0.0
+  // (full replace) instead of the steady-state 0.97, then clears this flag.
+  // Set by requestFullBlend() (called from DDGI.invalidateProbeCache()) so
+  // lighting changes converge in ONE stride window rather than hundreds of frames.
+  private _pendingFullBlend = false;
+
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
 
@@ -204,6 +210,19 @@ export class ProbeUpdatePass {
    */
   setProbeUpdateDivisor(divisor: number): void {
     this._probeUpdateDivisor = Math.max(1, Math.floor(divisor));
+  }
+
+  /**
+   * H16 — request a full-replace blend on the next runFrame call.
+   *
+   * Sets `_pendingFullBlend`, which makes `_uploadBlendParams` write
+   * `hysteresis = 0.0` (EMA weight = 0 → full replace of every texel)
+   * for exactly one frame, then reverts to the steady-state 0.97.
+   * Called by `DDGI.invalidateProbeCache()` so lighting changes converge
+   * in a single stride window rather than fading over hundreds of frames.
+   */
+  requestFullBlend(): void {
+    this._pendingFullBlend = true;
   }
 
   /**
@@ -381,11 +400,11 @@ export class ProbeUpdatePass {
       }
       this._uploadTraceParams(device, snap);
     } else if (legacyBuffers != null) {
-      const bvhVersion = legacyBuffers.bvhNodes.length + legacyBuffers.positions.length;
-      if (bvhVersion !== this._lastBvhVersion) {
-        rebuildProbeBvhFromScene(device, this._gpu, legacyBuffers);
-        this._lastBvhVersion = bvhVersion;
-      }
+      // H24-C — always rebuild so normal/position updates land in the probe-BVH.
+      // The length-based gate was a fragile proxy that missed in-place geometry
+      // changes (positions fast-path, normal recompute). Rebuild cost is small
+      // relative to probe-ray dispatch; this is the safe default.
+      rebuildProbeBvhFromScene(device, this._gpu, legacyBuffers);
       this._uploadTraceParams(device, { bvhMode: 'merged', tlasNodeCount: 0 });
     }
 
@@ -590,7 +609,18 @@ export class ProbeUpdatePass {
   private _uploadBlendParams(device: GPUDevice): void {
     // Same divisor as the ray pass so the blend coverage matches the rays
     // written this frame (a mismatch would blend uncovered probes).
-    const data = packProbeUpdateBlendParams(this._grid.probeCount, this._probeUpdateDivisor);
+    // H16 — when _pendingFullBlend is set, use hysteresis=0.0 (EMA weight=0,
+    // full replace) for exactly this one frame so a lighting change takes
+    // effect immediately instead of fading in over hundreds of frames.
+    // The flag is cleared HERE (after the upload) so only one frame fires
+    // with hysteresis=0; subsequent frames revert to the steady-state 0.97.
+    const hysteresisOverride = this._pendingFullBlend ? 0.0 : undefined;
+    this._pendingFullBlend = false;
+    const data = packProbeUpdateBlendParams(
+      this._grid.probeCount,
+      this._probeUpdateDivisor,
+      hysteresisOverride,
+    );
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
   }
 
