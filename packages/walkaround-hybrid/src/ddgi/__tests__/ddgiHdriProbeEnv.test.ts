@@ -173,9 +173,13 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
     expect(wgsl).toContain('texture_2d<f32>');
   });
 
-  it('(a) env sampler binding is declared (@group(2) @binding(7) ddgiEnvSamp)', () => {
-    expect(wgsl).toContain('@group(2) @binding(7)');
-    expect(wgsl).toContain('ddgiEnvSamp');
+  it('(a) NO env sampler binding exists (trust-audit F3, 2026-06-10)', () => {
+    // The env lookup is textureLoad-only; a declared-but-unused sampler at
+    // binding(7) was stripped by layout:'auto' while the dispatcher still
+    // passed an entry for it — failing bind-group validation EVERY frame.
+    // Pin the absence so the class cannot silently return.
+    expect(wgsl).not.toContain('@group(2) @binding(7)');
+    expect(wgsl).not.toContain('ddgiEnvSamp:  sampler');
   });
 
   it('(a) equirect UV math uses textureLoad on ddgiEnvMap', () => {
@@ -301,12 +305,15 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 8 entries (bindings 0�
     dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex);
 
     // bg2 is the 3rd createBindGroup call (index 2).
+    // Trust-audit F3 (2026-06-10): 7 entries (0-6) — NO sampler entry at 7.
+    // The WGSL uses textureLoad only; layout:'auto' strips an unused sampler,
+    // so an 8th entry failed bind-group validation on every frame.
     const bg2Entries = bindGroupEntryLists[2] as Array<{ binding: number }>;
     expect(bg2Entries).toBeDefined();
-    expect(bg2Entries.length).toBe(8);
+    expect(bg2Entries.length).toBe(7);
 
     const bindings = bg2Entries.map((e) => e.binding).sort((a, b) => a - b);
-    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 });
 
