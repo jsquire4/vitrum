@@ -30,6 +30,7 @@
 import { composeWgsl } from './wgslComposer.js';
 import {
   ATROUS_MODULE,
+  CB_PREFILL_MODULE,
   COMPOSITE_FRAG_MODULE,
   COMPOSITE_VERT_MODULE,
   GTAO_MODULE,
@@ -63,6 +64,7 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getCbPrefillBindGroupLayout,
   getMotionVectorsBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
@@ -95,6 +97,9 @@ interface CompiledPipelines {
   sampleBudgetPipeline: GPUComputePipeline;
   /** Sprint 9 — resolve pass (runs between temporalAccum and composite). */
   resolvePipeline: GPUComputePipeline;
+  /** Checkerboard pre-denoiser gap-fill (runs before denoiser-adapter when
+   *  checkerboard is on AND a real denoiser is active). */
+  cbPrefillPipeline: GPUComputePipeline;
   /** Sprint 15 — half-res GTAO compute pass. */
   gtaoPipeline: GPUComputePipeline;
   /** Sprint 15 — bilateral upsample from half-res AO to full-res. */
@@ -174,8 +179,9 @@ export async function compilePipelines(
   // sampleBudget.wgsl template-interpolates WELFORD_VARIANCE_WGSL from
   // @vitrum/shared-denoisers into its own source; resolve.wgsl is
   // self-contained. Both modules declare `requires: []`.
-  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES) });
-  const resolveSM      = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,       WGSL_MODULES) });
+  const sampleBudgetSM  = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE,  WGSL_MODULES) });
+  const resolveSM       = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,        WGSL_MODULES) });
+  const cbPrefillSM     = device.createShaderModule({ label: 'cb-prefill',    code: composeWgsl(CB_PREFILL_MODULE,     WGSL_MODULES) });
   const motionVectorsSM = device.createShaderModule({ label: 'motion-vectors', code: composeWgsl(MOTION_VECTORS_MODULE, WGSL_MODULES) });
 
   // Check for compile errors on every shader module before proceeding.
@@ -183,7 +189,7 @@ export async function compilePipelines(
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
-    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM], ['motion-vectors', motionVectorsSM],
+    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM], ['cb-prefill', cbPrefillSM], ['motion-vectors', motionVectorsSM],
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -246,6 +252,9 @@ export async function compilePipelines(
   const resolveLayout = device.createPipelineLayout({
     bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
   });
+  const cbPrefillLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getCbPrefillBindGroupLayout(device, bglCache)],
+  });
   const motionVectorsLayout = device.createPipelineLayout({
     bindGroupLayouts: [getMotionVectorsBindGroupLayout(device, bglCache)],
   });
@@ -307,8 +316,8 @@ export async function compilePipelines(
     compute: { module: atrousSM, entryPoint: 'atrousMain' },
   });
 
-  // Sprint 9 — adaptive sampling pipelines.
-  const [sampleBudgetPipeline, resolvePipeline] = await Promise.all([
+  // Sprint 9 — adaptive sampling pipelines + checkerboard pre-denoiser fill.
+  const [sampleBudgetPipeline, resolvePipeline, cbPrefillPipeline] = await Promise.all([
     device.createComputePipelineAsync({
       label: 'sample-budget', layout: sampleBudgetLayout,
       compute: { module: sampleBudgetSM, entryPoint: 'sampleBudgetKernel' },
@@ -316,6 +325,10 @@ export async function compilePipelines(
     device.createComputePipelineAsync({
       label: 'resolve', layout: resolveLayout,
       compute: { module: resolveSM, entryPoint: 'resolveKernel' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'cb-prefill', layout: cbPrefillLayout,
+      compute: { module: cbPrefillSM, entryPoint: 'cbPrefillKernel' },
     }),
   ]);
 
@@ -500,6 +513,7 @@ export async function compilePipelines(
     compositePipeline,
     sampleBudgetPipeline,
     resolvePipeline,
+    cbPrefillPipeline,
     gtaoPipeline,
     gtaoUpsamplePipeline,
     risGiPipeline,

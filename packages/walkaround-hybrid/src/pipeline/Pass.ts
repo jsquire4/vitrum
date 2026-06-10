@@ -56,6 +56,12 @@ export interface PassGateOptions {
    *  quality preset / `gtaoMode:'off'`) gates off BOTH the GTAO compute pass
    *  and its bilateral upsample. Absent ⇒ treated as `true` (on). */
   readonly gtaoEnabled?: boolean;
+  /** Per-frame checkerboard active state (`cbActiveThisFrame`).  `true` when
+   *  checkerboard rendering is on AND the camera did not exceed the motion
+   *  fallback threshold this frame.  Used by {@link CheckerboardPrefillPass}
+   *  to skip on full-rate (non-checkerboard) frames.  Absent ⇒ treated as
+   *  `false` (all pixels shaded). */
+  readonly checkerboardOn?: boolean;
   /** Extension bag for forward-compatible flags. */
   readonly [extension: string]: unknown;
 }

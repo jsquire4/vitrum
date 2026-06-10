@@ -76,6 +76,7 @@ import { SPATIAL_GI_COMMON_MODULE } from '../shaders/spatialGiCommon.wgsl.js';
 import { WELFORD_TEMPORAL_MODULE } from '../shaders/welfordTemporal.wgsl.js';
 import { SAMPLE_BUDGET_MODULE } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_MODULE } from '../shaders/resolve.wgsl.js';
+import { CB_PREFILL_MODULE } from '../shaders/cbPrefill.wgsl.js';
 import { GTAO_COMMON_MODULE } from '../shaders/gtaoCommon.wgsl.js';
 import { GTAO_MODULE } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_MODULE } from '../shaders/gtaoUpsample.wgsl.js';
@@ -113,6 +114,7 @@ export {
   WELFORD_TEMPORAL_MODULE,
   SAMPLE_BUDGET_MODULE,
   RESOLVE_MODULE,
+  CB_PREFILL_MODULE,
   GTAO_MODULE,
   GTAO_UPSAMPLE_MODULE,
   INDIRECT_COMBINE_MODULE,
@@ -286,6 +288,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [WELFORD_TEMPORAL_MODULE.name, WELFORD_TEMPORAL_MODULE],
   [SAMPLE_BUDGET_MODULE.name, SAMPLE_BUDGET_MODULE],
   [RESOLVE_MODULE.name, RESOLVE_MODULE],
+  [CB_PREFILL_MODULE.name, CB_PREFILL_MODULE],
 
   // Sprint 15 — GTAO
   [GTAO_COMMON_MODULE.name, GTAO_COMMON_MODULE],

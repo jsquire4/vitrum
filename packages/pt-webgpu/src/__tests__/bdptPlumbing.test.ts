@@ -38,8 +38,10 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     );
     // pdfFwd at the new vertex = the scatter pdf at prevPos for the traced direction.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let pdfFwd = pdfScatter;');
-    // pdfRev(prevCol) is patched to pdfFwd after the trace (PBRT RandomWalk convention).
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);');
+    // pdfRev(prevCol) is patched to the TRUE reverse density (Item-3 fix 2026-06-10):
+    // for surface vertices brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev);
+    // for emitter vertices (Lambertian, symmetric) pdfFwd is the correct pdfRev.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/pdfFwd = pdfScatter \* max\(gTerm/);
     // The §10.3 connection evaluates the REAL light-vertex BSDF (4-row light path).
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 4u;');

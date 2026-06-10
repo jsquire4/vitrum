@@ -21,6 +21,7 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getCbPrefillBindGroupLayout,
   getMotionVectorsBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
@@ -461,6 +462,22 @@ export function buildResolveBindGroup(
     prevRadianceView,         // 2
     motionVectorsView,        // 3
     resolvedWriteView,        // 4
+  ]);
+}
+
+export function buildCbPrefillBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  cbPrefillUbo: GPUBuffer,
+  prevRadianceView: GPUTextureView,
+  motionVectorsView: GPUTextureView,
+  hdrColorWriteView: GPUTextureView,
+): GPUBindGroup {
+  return buildBindGroupFromTable(device, 'cbPrefill', getCbPrefillBindGroupLayout(device, cache), [
+    { buffer: cbPrefillUbo },  // 0
+    prevRadianceView,          // 1
+    motionVectorsView,         // 2
+    hdrColorWriteView,         // 3
   ]);
 }
 

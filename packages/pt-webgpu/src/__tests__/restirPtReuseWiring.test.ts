@@ -130,7 +130,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(285885); // re-pinned 2026-06-10: N-directional emitter packing + mesh-area NEE cap — single-directional scenes byte-identical at runtime, kernel loops params.directionalLightCount records from directionalLights[] storage buffer.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(288698); // re-pinned 2026-06-10: R7a — SPPM streaming-window + BDPT emitter-vertex π² fix + pdfRev true reverse density + SPPM bind-group ordering fix. RENDER-CHANGING for photon-map + bdpt:true; off-path byte-identical. A/B pending V28-B.
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');

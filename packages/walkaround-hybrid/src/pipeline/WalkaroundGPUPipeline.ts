@@ -79,6 +79,7 @@ import type {
 } from './Pass.js';
 import {
   AtrousIndirectPass,
+  CheckerboardPrefillPass,
   CompositePass,
   DenoiserAdapterPass,
   GTAOPass,
@@ -128,8 +129,10 @@ interface RegisterPassesDeps {
   giSpatialPasses: 1 | 2;
   restirPtReuseStructural: boolean;
   /** Checkerboard half-res shading flag (host opt-in). Threaded into the
-   *  ResolvePass ctor; OFF ⇒ passthrough (byte-identity). */
+   *  ResolvePass + CheckerboardPrefillPass ctors; OFF ⇒ passthrough
+   *  (byte-identity). */
   checkerboard: boolean;
+  cbPrefillUboRef: UboRef;
   sampleBudgetUboRef: UboRef;
   sampleCountUboRef: UboRef;
   accumUboRef: UboRef;
@@ -190,6 +193,16 @@ function registerPasses(
   registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
   registry.register(new GTAOPass(compiled.gtaoPipeline));
   registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
+  // Checkerboard pre-denoiser gap-fill — fills hdrColorTexture gap pixels
+  // before the denoiser-adapter reads it.  Gated: only runs when
+  // checkerboardOn AND the active denoiser is one of the four real denoisers.
+  // Byte-identical to today when checkerboard is off or a default denoiser
+  // is active.
+  registry.register(new CheckerboardPrefillPass(
+    compiled.cbPrefillPipeline,
+    deps.cbPrefillUboRef,
+    deps.checkerboard,
+  ));
   // Virtual pass — promotes the polymorphic denoiser dispatch into the
   // regular pass loop. Reads the active Denoiser through a getter so
   // the adapter stays valid across `_activeDenoiser` reassignment in
@@ -801,6 +814,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
   private _sampleCountUboRef:  UboRef = { buf: undefined };
   private _resolveUboRef:      UboRef = { buf: undefined };
+  /** Checkerboard pre-denoiser gap-fill UBO (16 bytes: screenW/H, frameParity, _pad). */
+  private _cbPrefillUboRef:    UboRef = { buf: undefined };
   /** Tonemap / exposure / outputColorSpace per-frame UBO for the composite pass
    *  (2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace). */
   private _compositeUboRef:    UboRef = { buf: undefined };
@@ -810,6 +825,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
+      this._cbPrefillUboRef,
       this._compositeUboRef,
     ];
   }
@@ -1260,6 +1276,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
     this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
     this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
+    this._cbPrefillUboRef.buf    = d.createBuffer({ label: 'cb-prefill-ubo',    size: 16, usage: U });
     // 2026-06-10 — per-frame composite UBO (tonemap/exposure/outputColorSpace).
     this._compositeUboRef.buf    = d.createBuffer({ label: 'composite-ubo',     size: 16, usage: U });
 
@@ -1272,6 +1289,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       giSpatialPasses: this._giSpatialPasses,
       restirPtReuseStructural: this._restirPtReuseStructural,
       checkerboard: this._checkerboard,
+      cbPrefillUboRef: this._cbPrefillUboRef,
       sampleBudgetUboRef: this._sampleBudgetUboRef,
       sampleCountUboRef: this._sampleCountUboRef,
       accumUboRef: this._accumUboRef,
@@ -1827,6 +1845,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       ppgTrainThisFrame: this._frameCount % this._ppgDispatchInterval === 0,
       // Phase-0 — gate GTAO + its upsample when the preset disabled it.
       gtaoEnabled: this._gtaoEnabled,
+      // Checkerboard pre-denoiser gap-fill gate. Mirrors `cbActiveThisFrame`
+      // (= `_checkerboard && !cbMotionExceeded`) so CheckerboardPrefillPass
+      // skips on full-rate (non-checkerboard) frames exactly as intended.
+      checkerboardOn: cbActiveThisFrame,
     };
 
     // ── Unified pass loop ────────────────────────────────────────────────

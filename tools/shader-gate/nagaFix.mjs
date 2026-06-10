@@ -47,11 +47,30 @@ const BVH_BINDING_NAMES = [
 /** GRIS per-pass prefixes used in spatialGiGris / temporalGiGris. */
 const GRIS_SCENE_PREFIXES = ["sgi_", "tgi_"];
 
-/** RC probe-ray per-pass renames (rc_bvh → bvh etc.). */
+/** RC probe-ray per-pass renames (rc_bvh → bvh etc. + TLAS bindings → canonical names).
+ *
+ * The RC probe shader uses `rc_tlas_*` prefixed names for its TLAS bindings.
+ * `TLAS_TRAVERSAL_WGSL`'s `traceTlasFirstHit`/`traceTlasAny` take the TLAS
+ * buffers as ptr<storage> function parameters with the CANONICAL names
+ * (tlasNodes, tlasInstanceIndices, etc.). After `removePtrStorageParams` strips
+ * those params, the function bodies still reference the canonical names — which
+ * would be undefined if the module-scope vars are still `rc_tlas_*`.
+ * Renaming them to canonical here (before the ptr strip) ensures the body
+ * references resolve to the module-scope globals. The call-site `&rc_tlas_*`
+ * args become `&tlasNodes` etc., which `removeStorageArgs` then strips.
+ */
 const RC_SCENE_GLOBAL_RENAMES = [
-  ["rc_geom_position", "bvh_position"],
-  ["rc_geom_index", "bvh_index"],
-  ["rc_bvh", "bvh"],
+  ["rc_geom_position",         "bvh_position"],
+  ["rc_geom_index",            "bvh_index"],
+  ["rc_bvh",                   "bvh"],
+  // TLAS bindings: rc_tlas_* → canonical names expected by TLAS_TRAVERSAL_WGSL
+  ["rc_tlas_instance_indices", "tlasInstanceIndices"],
+  ["rc_tlas_instance_w2l",     "tlasInstanceWorldToLocal"],  // defensive alias
+  ["rc_tlas_instance_l2w",     "tlasInstanceLocalToWorld"],  // defensive alias
+  ["rc_tlas_blas_roots",       "tlasBlasRoots"],
+  ["rc_tlas_w2l",              "tlasInstanceWorldToLocal"],
+  ["rc_tlas_l2w",              "tlasInstanceLocalToWorld"],
+  ["rc_tlas_nodes",            "tlasNodes"],
 ];
 
 // ── helpers ──────────────────────────────────────────────────────────────────

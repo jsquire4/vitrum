@@ -58,6 +58,8 @@ export interface BGLCache {
    *  compile-time on (MLP weights/biases + hash tables + level descs + record
    *  gather + encoding-config UBO). */
   nrc?: GPUBindGroupLayout;
+  /** Checkerboard pre-denoiser gap-fill pass BGL. */
+  cbPrefill?: GPUBindGroupLayout;
 }
 
 // frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14/15)
@@ -336,6 +338,25 @@ export function getResolveBindGroupLayout(
     entries: bglEntriesFor('resolve'),
   });
   return cache.resolve;
+}
+
+/**
+ * Checkerboard pre-denoiser gap-fill BGL. Matches `cbPrefill.wgsl.ts`:
+ *   0 — CbPrefillUniforms (uniform)
+ *   1 — readAccum / previous-frame radiance (rgba16float sampled, unfilterable)
+ *   2 — motionVectors (rg32float sampled, unfilterable)
+ *   3 — hdrColorTexture gap-fill output (rgba16float, write-only storage)
+ */
+export function getCbPrefillBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.cbPrefill) return cache.cbPrefill;
+  cache.cbPrefill = device.createBindGroupLayout({
+    label: 'cb-prefill-bgl',
+    entries: bglEntriesFor('cbPrefill'),
+  });
+  return cache.cbPrefill;
 }
 
 /**

@@ -31,7 +31,8 @@
     "release:dry-run": "npm pack --dry-run --workspaces --if-present",
     "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs",
     "shader-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/shader-gate/gate.mjs",
-    "shader-gate:glsl": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp tools/shader-gate/glslGate.mjs"
+    "shader-gate:glsl": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp tools/shader-gate/glslGate.mjs",
+    "behavioral-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net tools/behavioral-gate/gate.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -383,13 +383,32 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     scatterDir = hemi.wi;
     pdfScatter = hemi.pdf;
     cosPrev = max(dot(prevNormal, scatterDir), 0.0);
-    // Lambertian f = 1/π, but the emitter vertex absorbs the full f·cos/pdf of
-    // the emitter-surface scatter into the already-stored emitThroughput (see
-    // bdptFinishBounce0: emitThroughput = emitRad * cosEmit / pdfJoint). For the
-    // extension, that emitThroughput is prevThroughput and we scatter from the
-    // emitter face with pdf = pdfHemi; so the correction here is just
-    // f·cos/pdf = (1/π)·cosEmit / (cosEmit/π) = 1.0. Hence fPrev = vec3f(1.0).
-    fPrev = vec3f(1.0);
+    // DERIVATION (Item-3 fix, 2026-06-10):
+    //
+    // The throughput update at line ~456 is:
+    //   newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd
+    //
+    // For a LAMBERTIAN AREA EMITTER the BSDF is f = 1/π (albedo 1 emission
+    // profile).  The cosine hemisphere samples pdf = cos θ / π.  So:
+    //   fPrev * cosPrev / pdfFwd = (1/π) * cos / (cos/π) = 1.0  ✓
+    //
+    // Setting fPrev = INV_PI (the literal BSDF value) makes the general formula
+    // produce the correct result without special-casing the cos/pdf ratio.
+    //
+    // PRIOR BUG: fPrev = vec3f(1.0) caused:
+    //   1.0 * cos / (cos/π) = π — a spurious ×π on every emitter-extension bounce.
+    //
+    // For the ISOTROPIC POINT EMITTER branch (bdptFinishBounce0Isotropic): the
+    // emitter has no surface; prevNormal stores the sampled emission direction.
+    // The extension scatters from that "normal" via cosine hemisphere.  The
+    // point emitter has no BSDF in the traditional sense — the throughput ratio
+    // should still be 1.0 (no extra weighting for an emission-direction scatter).
+    // Using fPrev = INV_PI and pdfScatter = cos/π gives fPrev*cos/pdf = 1.0 ✓,
+    // exactly as for the area emitter.
+    //
+    // pdfFwd = pdfScatter = cos θ / π is kept as-is (the true SA density for the
+    // sampled direction, needed for correct MIS weights in bdptMISWeightFull).
+    fPrev = vec3f(INV_PI);
   } else {
     // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
     // the direction that brought the path to prevPos from its predecessor).
@@ -463,12 +482,43 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   // the §10.3 connection overrides pdfRev at L_c and L_{c-1} anyway.
   let pdfRevPlaceholder = max(dot(nsFront, woLp), 0.0) * INV_PI;
 
-  // PATCH pdfRev of prevCol = pdfFwd (PBRT convention: once we know the traced
-  // direction from prevPos, the reverse density at prevPos = pdfScatter because
-  // for a reciprocal BSDF the density of the reverse edge = fwd density of the
-  // forward edge). This corrects all interior light vertices for deeper connections.
+  // PATCH pdfRev of prevCol (PBRT RandomWalk convention, Item-3 fix 2026-06-10):
+  //
+  // pdfRev at prevCol = the solid-angle density of generating the REVERSE direction
+  // (woAtPrev = direction back toward prevCol's predecessor) given the INCOMING
+  // direction at prevCol is scatterDir.
+  //
+  // For LAMBERTIAN / EMITTER vertices: pdfFwd == pdfRev (cosine hemisphere is
+  // symmetric w.r.t. the Lambertian BSDF), so pdfFwd is the correct patch value.
+  //
+  // For GLOSSY / VNDF vertices: the VNDF pdf is NOT symmetric.  The forward pdf
+  // was brdfDirectionalPdf(prevNormal, woAtPrev, scatterDir); the reverse pdf is
+  // brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) — outgoing and incoming
+  // swapped.  Using pdfFwd as pdfRev for VNDF lobes biases the MIS weights but
+  // NOT the contribution value (the MIS sum still integrates to an unbiased
+  // estimator — incorrect pdfRev inflates or deflates strategy weights without
+  // introducing energy).  The PBRT §16.3 analysis bounds the variance penalty to
+  // at most the VNDF/Lambertian pdf ratio at the specific angle (~10% typical,
+  // up to ~3× at grazing angles on metallic surfaces).
+  //
+  // We compute the true pdfRev for both cases:
+  //   - emitter (prevMatId < 0): pdfRev = pdfFwd (Lambertian symmetric)
+  //   - surface (prevMatId >= 0): pdfRev = brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev)
+  var pdfRevAtPrev = pdfFwd; // correct default for emitter + Lambertian vertices
+  if (prevMatId >= 0.0) {
+    // Surface vertex: compute the reverse pdf by swapping wo/wi in the BSDF pdf.
+    // prevBc/prevRough/prevMetal/prevMat.ior are in scope from the surface branch
+    // above (the emitter branch does not reach this code path since prevMatId < 0).
+    let prevMatForRev = decodeMaterial(u32(prevMatId));
+    let prevBcRev = prevMatForRev.baseColor;
+    let prevRoughRev = max(prevMatForRev.roughness, 0.02);
+    let prevMetalRev = prevMatForRev.metallic;
+    // Reverse: incoming = scatterDir, outgoing (toward prevCol's predecessor) = woAtPrev.
+    pdfRevAtPrev = brdfDirectionalPdf(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
+                                      prevMatForRev.ior, prevNormal, scatterDir, woAtPrev);
+  }
   let old_r2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
-  bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);
+  bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);
 
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(newPos, 0.0);
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(nsFront, pdfFwd);

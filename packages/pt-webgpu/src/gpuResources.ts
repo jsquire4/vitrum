@@ -1385,13 +1385,21 @@ export class GpuResources {
     // Full allocation path.
     if (this.sppmBuffersReady) return true;
 
-    if (SPPM_PHOTON_CELLS_BYTES > SPPM_PHOTON_CELLS_MAX_BYTES) {
+    // R7a behavioral-gate fix (2026-06-10): the static ceiling alone let a
+    // 402 MiB allocation through onto devices whose maxBufferSize is the
+    // WebGPU default 256 MiB — buffer creation failed validation and photon-map
+    // rendered black.  Guard against the LIVE device limit too, same degrade.
+    const deviceMaxBuffer = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
+    const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
+    const sppmCeiling = Math.min(SPPM_PHOTON_CELLS_MAX_BYTES, deviceMaxBuffer, deviceMaxBinding);
+    if (SPPM_PHOTON_CELLS_BYTES > sppmCeiling) {
       if (!this.#ceilingWarnedKeys.has('sppmPhotonCells')) {
         this.#ceilingWarnedKeys.add('sppmPhotonCells');
         const mib = (SPPM_PHOTON_CELLS_BYTES / (1024 * 1024)).toFixed(1);
         console.warn(
           `[vitrum/pt-webgpu] SPPM photon-cells buffer would be ${mib} MiB, ` +
-            `exceeding the ${(SPPM_PHOTON_CELLS_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+            `exceeding the ${(sppmCeiling / (1024 * 1024)).toFixed(0)} MiB ceiling ` +
+            '(min of the static SPPM ceiling and device.limits.maxBufferSize). ' +
             "Falling back to 'manifold-nee' caustic strategy. " +
             '(This warning fires once per engine instance.)',
         );
@@ -1537,8 +1545,20 @@ export class GpuResources {
    * at 6/7/8) when the SPPM buffers are reallocated.  Called by
    * `ensureSppmBuffers` after a buffer realloc; the next `buildBindGroups` call
    * will re-create group-3 with the new buffer handles.
+   *
+   * Item-1 fix (2026-06-10): also clears `pathTraceBindGroup` (group-0 cache) so
+   * `buildBindGroups` is forced to rebuild ALL groups — not just group-3.
+   * Previously, group-0 stayed cached after placeholder→real buffer swap, causing
+   * `buildBindGroups` to return the cached group-0 early (line 1078 fast-out)
+   * while leaving `pathTraceBindGroup3` null on every subsequent frame.  Both
+   * the photon-emission pass and the megakernel guard group-3 with a null-check
+   * and silently skip the bind — the photon pass wrote nothing, the gather read
+   * stale/zero data, and the full-tier pipeline missed the light-tree binding.
+   * Root cause: the 4th occurrence of the placeholder-→-real buffer invalidation
+   * bug class (ea88803 / 0bedd92 / item-F1b); fix is identical in principle.
    */
   invalidateGroup3BindGroup(): void {
+    this.pathTraceBindGroup = null;    // force buildBindGroups to rebuild all groups
     this.pathTraceBindGroup3 = null;
   }
 

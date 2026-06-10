@@ -397,10 +397,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       environments: {
         none: 'native',
         hdri: 'native',
-        // Interim (plan/v1-closure-plan-2026-06-10.md): the procedural-sky env
-        // uses a heuristic RGB tint derived from mieCoefficient only; turbidity,
-        // rayleigh, and mieDirectionalG are silently ignored. A full Preetham
-        // model is planned for Wave 2. Demoted from 'native' to 'approximate'.
+        // Preetham 1999 analytic daylight model (baked to 256×128 equirect,
+        // routed through the HDRI importance-sampling path).  All scene fields
+        // (turbidity, rayleigh, mieCoefficient, mieDirectionalG, sunDirection,
+        // intensity) are consumed.  'approximate' reflects the bake resolution
+        // (256×128) vs a continuous analytical eval in the kernel.
         'procedural-sky': 'approximate',
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,

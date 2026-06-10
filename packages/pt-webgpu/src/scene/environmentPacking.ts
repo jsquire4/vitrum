@@ -383,18 +383,24 @@ function emptyEnvironmentParams(): EnvironmentParams {
 function buildProceduralSkyEnvironmentParams(
   env: Extract<Scene['environment'], { kind: 'procedural-sky' }>,
 ): EnvironmentParams {
-  const d = env.sunDirection;
-  const len = Math.hypot(d[0], d[1], d[2]);
+  // Defensive defaults: the TypeScript type marks all fields required, but hosts
+  // (especially @ts-nocheck scripts) may pass a partial object with only `kind`.
+  // Math.max/min with `undefined` produces NaN (not the clamped value), so every
+  // Preetham output would be NaN → GPU buffer full of NaN → black output with
+  // zero GPU errors.  Apply per-field defaults here matching the core contract's
+  // documented defaults so a bare `{ kind: 'procedural-sky' }` renders correctly.
+  const rawD = env.sunDirection ?? [0, 1, 0];
+  const len = Math.hypot(rawD[0] ?? 0, rawD[1] ?? 0, rawD[2] ?? 0);
   const sunDir: readonly [number, number, number] =
-    len < 1e-8 ? [0, 1, 0] : [d[0] / len, d[1] / len, d[2] / len];
+    len < 1e-8 ? [0, 1, 0] : [(rawD[0] ?? 0) / len, (rawD[1] ?? 0) / len, (rawD[2] ?? 0) / len];
   const intensity = env.intensity ?? 1;
 
   const { texels, cdf, width, height } = bakePreethamEquirect(
     sunDir,
-    env.turbidity,
-    env.rayleigh,
-    env.mieCoefficient,
-    env.mieDirectionalG,
+    env.turbidity ?? 2,
+    env.rayleigh ?? 1,
+    env.mieCoefficient ?? 0.005,
+    env.mieDirectionalG ?? 0.8,
     intensity,
   );
 

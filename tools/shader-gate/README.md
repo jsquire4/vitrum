@@ -128,3 +128,16 @@ GLSL gate) so no real GPU is required.
 The `shader-gate` job is independent of the `mechanical-checks` job (no `needs:`
 dependency) so both run in parallel and a typecheck/test failure does not suppress
 a shader compiler error.
+
+## Relationship to the behavioral gate
+
+The shader gate is **static**: it compiles WGSL/GLSL source strings but never boots an
+engine or renders a frame.  It cannot catch engine factory crashes, UBO upload gaps, or
+total-black renders caused by unbound resources.
+
+The **`tools/behavioral-gate/`** fills that gap: it boots the real `createPTEngine_WebGPU`
+and `createWalkaroundEngine_Hybrid` factory functions, renders a Cornell-box scene for
+every config in the matrix, and asserts zero GPU errors and finite non-black output.  A
+separate CI job (`behavioral-gate` in `ci.yml`) runs it on every push.  See
+[`tools/behavioral-gate/README.md`](../behavioral-gate/README.md) for the full config
+matrix and expectation-table contract.

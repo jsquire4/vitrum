@@ -71,7 +71,6 @@ import {
 } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
 import {
-  sppmRadiusAtFrame,
   sppmInitialRadius,
 } from './wgsl/pathTrace/sppmBindings.wgsl.js';
 
@@ -295,10 +294,9 @@ class PTEngineWebGPU implements Engine {
 
   // ── SPPM state (A4, photon-map strategy) ──────────────────────────────────
   /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
-   *  Recomputed on every setScene. */
+   *  Recomputed on every setScene.  This IS the per-frame gather radius — frozen
+   *  (not shrunk) for the streaming-window photon estimator.  See Item-2 fix. */
   #sppmR0 = 0.017; // 1.7 cm — a safe pre-setScene default (1 m Cornell box)
-  /** Progressive shrink: r(frameAccumulated) = r₀ × sqrt((n α + α) / (n + 1)). */
-  #sppmCurrentRadius = 0.017;
   /** Half-diagonal of the scene used for the directional-light disk emitter. */
   #sppmSceneExtent = 10.0; // world units; refreshed on setScene
 
@@ -866,8 +864,9 @@ class PTEngineWebGPU implements Engine {
           this.#sppmSceneExtent = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
         }
       }
-      this.#sppmCurrentRadius = this.#sppmR0;
-      // Invalidate the SPPM buffers so they are rebuilt with the new stats.
+      // Item-2 fix: radius is frozen at r₀ (streaming-window estimator).  No
+      // per-frame shrink; the streaming window naturally evicts stale photons.
+      // Invalidate SPPM buffers so they rebuild with the new scene-extent stats.
       this.#gpu.sppmBuffersReady = false;
     }
     if (opts.warnOnEmpty) {
@@ -994,12 +993,50 @@ class PTEngineWebGPU implements Engine {
     }
     this.#device.queue.writeBuffer(gpu.paramsBuffer, 0, paramsArrayBuffer);
 
-    // A4 — ensure SPPM placeholder buffers exist BEFORE buildBindGroups so that
-    // group-3 bindings 6/7/8 are satisfied (non-null) when the bind group is built.
-    // ensureSppmBuffers(false) creates 16-byte placeholders on the first call and
-    // is a no-op on subsequent frames (idempotent; real buffers are allocated later
-    // if sppmActive). On the lite tier this is a no-op.
-    if (this.#traceTier === 'full') {
+    // A4 + Item-1 fix (2026-06-10): ALL SPPM buffer allocation happens HERE,
+    // BEFORE buildBindGroups, so that group-3 is always built with the correct
+    // (real or placeholder) buffer handles.  The previous ordering had
+    // ensureSppmBuffers(true) AFTER buildBindGroups, which caused
+    // invalidateGroup3BindGroup() to null pathTraceBindGroup3 AFTER group-0 was
+    // already cached — buildBindGroups then returned the cached group-0 without
+    // rebuilding group-3, leaving pathTraceBindGroup3 null on every subsequent
+    // frame (photon pass and megakernel both silently skipped group-3 → photons
+    // were never written, gather read nothing, lum=0 gpuErrs=1 on full tier).
+    //
+    // Item-2 fix (2026-06-10): radius is FROZEN at r₀ (streaming-window estimator,
+    // not progressive).  Per-frame counter clearing (clearBuffer) is REMOVED so
+    // photons accumulate in the ring buffer across frames (streaming window of the
+    // last SPPM_CELL_CAPACITY photons per cell).  The PT accumulation buffer
+    // averages independent-frame estimates, which gives stable, bounded-variance
+    // output.  The Hachisuka 2009 "progressive" shrinking schedule is NOT used:
+    // it requires per-hit-point τ/N accumulators that are outside the scope of
+    // the hash-grid streaming design; renaming to a streaming-window photon density
+    // estimator is the honest label.  Road-to-100 A4-progressive tracks the true
+    // SPPM with per-pixel τ/N buffers as a follow-up.
+    const sppmActive =
+      this.#causticStrategy === 'photon-map' && this.#traceTier === 'full';
+    let sppmReady = false;
+    if (sppmActive) {
+      const sppmBuffersOk = gpu.ensureSppmBuffers(true);
+      if (!sppmBuffersOk) {
+        // Ceiling exceeded — fall back silently (manifold-nee semantics).
+        gpu.ensureSppmBuffers(false); // ensure placeholder satisfies the layout
+      }
+      // Frozen radius — use r₀ directly (no per-frame shrink).
+      gpu.writeSppmStats(
+        this.#sppmR0,
+        this.#sppmR0,
+        this.#samplesAccumulated,
+        SPPM_PHOTON_COUNT,
+        this.#sppmSceneExtent,
+      );
+      sppmReady =
+        sppmBuffersOk &&
+        gpu.sppmPhotonPipeline != null;
+    } else if (this.#traceTier === 'full') {
+      // Ensure placeholder SPPM buffers exist so group-3 binding 6/7/8 are
+      // satisfied (the gather is guarded by causticMode() == 2u, so the
+      // placeholders are never accessed).
       gpu.ensureSppmBuffers(false);
     }
 
@@ -1028,51 +1065,19 @@ class PTEngineWebGPU implements Engine {
       }
     }
 
-    // ── A4 SPPM photon pre-pass (full-tier, photon-map strategy only) ───────
-    // When active: (1) ensure the photon-cells + counters + stats buffers exist,
-    // (2) update the progressive radius r(n), (3) write SppmStats UBO.
-    // The photon-emission pass and the megakernel both use group-3 (which now
-    // includes SPPM bindings 6/7/8 alongside the light-tree and material textures).
-    // Placeholder buffers are bound when SPPM is off so the layout slot is satisfied
-    // without dispatching the photon pass (causticMode() != 2u guards the gather).
-    const sppmActive =
-      this.#causticStrategy === 'photon-map' && this.#traceTier === 'full';
-    let sppmReady = false;
-    if (sppmActive) {
-      const sppmBuffersOk = gpu.ensureSppmBuffers(true);
-      if (!sppmBuffersOk) {
-        // Ceiling exceeded — fall back silently (manifold-nee semantics).
-        gpu.ensureSppmBuffers(false); // ensure placeholder satisfies the layout
-      }
-      // Update progressive radius.
-      this.#sppmCurrentRadius = sppmRadiusAtFrame(this.#sppmR0, this.#samplesAccumulated);
-      // Write stats UBO.
-      gpu.writeSppmStats(
-        this.#sppmCurrentRadius,
-        this.#sppmR0,
-        this.#samplesAccumulated,
-        SPPM_PHOTON_COUNT,
-        this.#sppmSceneExtent,
-      );
-      sppmReady =
-        sppmBuffersOk &&
-        gpu.sppmPhotonPipeline != null;
-    } else {
-      // Ensure placeholder SPPM buffers exist so group-3 binding 6/7/8 are
-      // satisfied (the gather is guarded by causticMode() == 2u, so the
-      // placeholders are never accessed).
-      gpu.ensureSppmBuffers(false);
-    }
-
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
 
     // ── A4 SPPM photon-emission pass (before the megakernel) ─────────────────
     // The photon pass binds the SAME groups 0/1/2/3 as the megakernel.
     // Group 3 carries the SPPM hash-grid buffers at bindings 6/7/8 alongside the
     // light-tree / material textures (0-5), so no separate group-4 is needed.
+    //
+    // Item-2 fix: counters are NOT cleared per frame.  Photons accumulate in the
+    // ring buffer (streaming window of last SPPM_CELL_CAPACITY photons per cell),
+    // giving stable variance.  The PT accumulation buffer averages over frames.
+    // Per-frame counter clearing caused variance to GROW as frame count increased
+    // because fewer photons per cell contributed as coverage converged.
     if (sppmReady && gpu.sppmPhotonPipeline != null) {
-      // Clear cell counters so this frame's photons replace last frame's.
-      encoder.clearBuffer(gpu.sppmCellCountersBuffer!);
       const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
       photonPass.setPipeline(gpu.sppmPhotonPipeline);
       photonPass.setBindGroup(0, bindGroup);

@@ -23,6 +23,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
+import { CheckerboardPrefillPass } from '../src/pipeline/passes/CheckerboardPrefillPass.js';
 import { MotionVectorsPass } from '../src/pipeline/passes/MotionVectorsPass.js';
 import { GTAOUpsamplePass } from '../src/pipeline/passes/GTAOUpsamplePass.js';
 import { IndirectCombinePass } from '../src/pipeline/passes/IndirectCombinePass.js';
@@ -144,6 +145,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
   const common = {
     gNormalDepthTexture: tex('gNormalDepth'),
     motionVectorTexture: tex('motionVec'),
+    hdrColorTexture: tex('hdrColor'),
     uboBuffer: buf('ubo'),
     combinedDenoisedTexture: tex('combinedDenoisedTex'),
     albedoTexture: tex('albedo'),
@@ -443,6 +445,9 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     reg.register(new MotionVectorsPass(stubPipeline));
     reg.register(new GTAOPass(stubPipeline));
     reg.register(new GTAOUpsamplePass(stubPipeline));
+    // cb-prefill must be registered so denoiser-adapter's dependency resolves;
+    // with denoiserMode='atrous-variance' the pass gates false and is never dispatched.
+    reg.register(new CheckerboardPrefillPass(stubPipeline, stubUbo, /* checkerboard */ false));
     reg.register(new DenoiserAdapterPass(() => denoiser, () => stubPipeline));
     reg.register(new IndirectTemporalAccumPass(stubPipeline, { value: 0 }));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUbo));
@@ -516,6 +521,51 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     expect(pack).toBeGreaterThan(gtaoUp);
     expect(unpack).toBe(pack + 1);
     expect(unpack).toBeLessThan(indTA);
+  });
+});
+
+describe('CheckerboardPrefillPass — pass-order assertion for checkerboard+real-denoiser path', () => {
+  // This block verifies the static label table (which drives timestamp-query
+  // slot assignment) places cb-prefill in the expected window between
+  // gtao-upsample and the denoiser labels. All four real denoiser modes are
+  // checked so the insertion point is pinned regardless of which denoiser the
+  // user configures.
+  it.each(['svgf-real', 'bmfr', 'neural', 'oidn-final'] as const)(
+    'cb-prefill sits between gtao-upsample and the denoiser labels for mode=%s',
+    (mode) => {
+      const denoiserLabels = DENOISER_PASS_LABELS[mode as keyof typeof DENOISER_PASS_LABELS] ?? ['denoiser-adapter'];
+      const labels = composePassLabels(denoiserLabels as PassLabel[]);
+      const cbPrefill = labels.indexOf('cb-prefill');
+      const gtaoUp = labels.indexOf('gtao-upsample');
+      const firstDenoiserLabel = denoiserLabels[0];
+      // cb-prefill must be present
+      expect(cbPrefill, `cb-prefill missing from layout for denoiserMode=${mode}`).toBeGreaterThanOrEqual(0);
+      // cb-prefill must come after gtao-upsample
+      expect(cbPrefill, `cb-prefill must come after gtao-upsample`).toBeGreaterThan(gtaoUp);
+      if (firstDenoiserLabel) {
+        const firstDenoiser = labels.indexOf(firstDenoiserLabel as PassLabel);
+        // cb-prefill must come before the first denoiser label
+        expect(cbPrefill, `cb-prefill must come before first denoiser label`).toBeLessThan(firstDenoiser);
+      }
+    },
+  );
+
+  it('cb-prefill is in the static label table for atrous-variance mode (always present)', () => {
+    // cb-prefill is a permanent slot in the timestamp layout for ALL denoiser
+    // modes — it gates to a no-op dispatch for atrous/atrous-variance modes but
+    // its slot is always reserved so the layout stays stable.
+    const labels = composePassLabels(DENOISER_PASS_LABELS['atrous-variance']);
+    expect(labels.includes('cb-prefill')).toBe(true);
+  });
+
+  it('cb-prefill slot is immediately before the denoiser labels in the label sequence', () => {
+    // For svgf-real, the label after cb-prefill must be the first denoiser label.
+    const svgfLabels = DENOISER_PASS_LABELS['svgf-real'];
+    const labels = composePassLabels(svgfLabels as PassLabel[]);
+    const cbIdx = labels.indexOf('cb-prefill');
+    expect(cbIdx).toBeGreaterThanOrEqual(0);
+    // The very next label after cb-prefill must be the first svgf-real label.
+    expect(labels[cbIdx + 1]).toBe(svgfLabels[0]);
   });
 });
 
@@ -627,6 +677,65 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
   // rendered image is unchanged by the compaction. The SAME decode is shared by
   // ris + spatial + shade (all use `px = gid.x*2 + ((gid.y + frameParity)&1)`),
   // so this invariant covers all three compacted passes.
+  it('CheckerboardPrefillPass checkerboard OFF (host flag false): gates() returns false, not dispatched', () => {
+    // When checkerboard=false at the host level, gates() always returns false
+    // regardless of the denoiser mode — the pass is never dispatched and
+    // hdrColorTexture is byte-identical to the pre-cb-prefill path.
+    const pass = new CheckerboardPrefillPass(stubPipeline('cbPrefill'), { buf: buf('cbUbo') }, /* checkerboard */ false);
+    expect(pass.gates({ denoiserMode: 'svgf-real', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    expect(pass.gates({ denoiserMode: 'bmfr', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    expect(pass.gates({ denoiserMode: 'neural', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    expect(pass.gates({ denoiserMode: 'oidn-final', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    // Also false for non-real denoisers (belt-and-suspenders).
+    expect(pass.gates({ denoiserMode: 'atrous-variance', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+  });
+
+  it('CheckerboardPrefillPass checkerboard ON host + non-real denoiser: gates() returns false', () => {
+    // Even with the host flag true and checkerboardOn=true per-frame, the pass
+    // only runs for the four real denoisers — the default atrous paths survive
+    // via temporal accumulation.
+    const pass = new CheckerboardPrefillPass(stubPipeline('cbPrefill'), { buf: buf('cbUbo') }, /* checkerboard */ true);
+    expect(pass.gates({ denoiserMode: 'atrous-variance', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    expect(pass.gates({ denoiserMode: 'atrous', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+    expect(pass.gates({ denoiserMode: 'none', checkerboardOn: true, ppgEnabled: false })).toBe(false);
+  });
+
+  it('CheckerboardPrefillPass checkerboard ON + real denoiser: gates() returns true', () => {
+    const pass = new CheckerboardPrefillPass(stubPipeline('cbPrefill'), { buf: buf('cbUbo') }, /* checkerboard */ true);
+    expect(pass.gates({ denoiserMode: 'svgf-real', checkerboardOn: true, ppgEnabled: false })).toBe(true);
+    expect(pass.gates({ denoiserMode: 'bmfr', checkerboardOn: true, ppgEnabled: false })).toBe(true);
+    expect(pass.gates({ denoiserMode: 'neural', checkerboardOn: true, ppgEnabled: false })).toBe(true);
+    expect(pass.gates({ denoiserMode: 'oidn-final', checkerboardOn: true, ppgEnabled: false })).toBe(true);
+  });
+
+  it('CheckerboardPrefillPass checkerboard ON + per-frame motion fallback: gates() returns false', () => {
+    // If cbActiveThisFrame is false (motion exceeded fallback) the per-frame
+    // checkerboardOn is false and the pass is skipped.
+    const pass = new CheckerboardPrefillPass(stubPipeline('cbPrefill'), { buf: buf('cbUbo') }, /* checkerboard */ true);
+    expect(pass.gates({ denoiserMode: 'svgf-real', checkerboardOn: false, ppgEnabled: false })).toBe(false);
+  });
+
+  it('CheckerboardPrefillPass checkerboard ON + real denoiser: dispatches 1 pass, slot-0, label=cb-prefill', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = {
+      ...makeCtx(encoder),
+      checkerboardOn: true,
+      frameParity: 0,
+    } as PassDispatchContext;
+    const pass = new CheckerboardPrefillPass(
+      stubPipeline('cbPrefill'),
+      { buf: buf('cbUbo') },
+      /* checkerboard */ true,
+    );
+    pass.dispatch(ctx);
+    expect(records).toHaveLength(1);
+    const r = records[0]!;
+    expect(r.label).toBe('cb-prefill');
+    expect(r.pipeline).toBeDefined();
+    expect(r.binds.map((b) => b.slot)).toEqual([0]);
+    expect(r.dims).toEqual([8, 8, 1]);
+  });
+
   it('compacted-gid decode covers exactly the active-parity pixel set (resolve agreement)', () => {
     const decodePix = (cx: number, cy: number, frameParity: number) => {
       const startCol = (cy + frameParity) & 1;

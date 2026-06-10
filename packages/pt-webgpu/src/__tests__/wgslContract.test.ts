@@ -126,8 +126,19 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // scenes; single-directional A/B invariant. Mesh-area NEE cap
     // (MESH_AREA_LIGHT_TRI_CAP=65536, largest-area-first) added to emitterPacking.ts
     // — no WGSL change, cap is applied on the host side during packing.
-    expect(digest).toBe('8e7cb7944c32225bc36e83c55dfb4dbfcfa0916fabc7e8fdc29b9f806ead7159');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(285885);
+    // Re-pinned 2026-06-10 (R7a + capacity): SPPM_CELL_CAPACITY 128→32 (fits default maxStorageBufferBindingSize — behavioral-gate verified photon-map renders) + R7a — SPPM streaming-window fix (Item-2: no per-frame
+    // clearBuffer, radius frozen at r₀; RENDER-CHANGING for photon-map: lower
+    // variance over long runs, streaming window evicts stale photons); BDPT
+    // emitter-vertex throughput correction (Item-3: fPrev = INV_PI instead of 1.0
+    // so fPrev·cos/pdf = (1/π)·cos/(cos/π) = 1 ✓; spurious ×π removed; A/B
+    // pending V28-B); pdfRev(prevCol) patched to true reverse density for VNDF
+    // lobes (brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) instead of
+    // pdfFwd — only exact for symmetric BSDFs); SPPM bind-group ordering fix
+    // (Item-1: invalidateGroup3BindGroup now also nulls pathTraceBindGroup so
+    // buildBindGroups rebuilds ALL groups after placeholder→real buffer swap).
+    // RENDER-CHANGING for photon-map + bdpt:true; off-path byte-identical.
+    expect(digest).toBe('aa3bce982b4b57f75acf8d6d44f4230d39b79fa84ad8cfb5244702fdb134a624');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(288698);
   });
 });
 

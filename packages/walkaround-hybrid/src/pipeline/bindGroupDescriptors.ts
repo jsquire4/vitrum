@@ -84,7 +84,8 @@ export type BindGroupTableId =
   | 'motionVectors'
   | 'resolve'
   | 'sampleBudget'
-  | 'composite';
+  | 'composite'
+  | 'cbPrefill';
 
 export interface BindGroupTableEntry {
   readonly id: BindGroupTableId;
@@ -320,6 +321,17 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 0, kind: 'tex', note: 'final blit source' },
       { binding: 1, kind: 'sampler:nf', note: 'composite sampler' },
       { binding: 2, kind: 'uniform', note: 'CompositeUniforms (tonemapMode, exposure, outputColorSpace)' },
+    ],
+  },
+  {
+    id: 'cbPrefill',
+    label: 'cb-prefill',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'uniform', note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
+      { binding: 1, kind: 'tex', note: 'readAccum — previous-frame accumulated radiance' },
+      { binding: 2, kind: 'tex', note: 'motionVectors — rg32float NDC motion' },
+      { binding: 3, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
     ],
   },
 ];

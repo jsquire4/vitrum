@@ -36,7 +36,11 @@ import type { Denoiser } from '../denoisers/index.js';
 
 export class DenoiserAdapterPass implements Pass {
   readonly id = 'denoiser-adapter' as const;
-  readonly dependencies: readonly string[] = ['gtao-upsample'];
+  /** Depends on `cb-prefill` so the checkerboard gap-fill always runs before
+   *  the denoiser reads hdrColorTexture.  CheckerboardPrefillPass itself
+   *  depends on `gtao-upsample`, so the full chain is:
+   *    … → gtao-upsample → cb-prefill → denoiser-adapter → … */
+  readonly dependencies: readonly string[] = ['cb-prefill'];
 
   /** The active Denoiser instance (set once at engine boot; survives until
    *  pipeline `dispose()`). Stored as a getter callback so this class

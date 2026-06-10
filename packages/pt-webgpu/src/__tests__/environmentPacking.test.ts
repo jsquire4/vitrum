@@ -312,4 +312,72 @@ describe('environmentPacking — Preetham procedural sky bake', () => {
     expect(p.hdriTexels.length).toBe(256 * 128 * 4);
     expect(p.hdriCdf.length).toBe(256 * 128 + 1);
   });
+
+  // ----- 11. Partial-object guard: missing Preetham fields must NOT produce NaN texels -----
+  //
+  // Root cause (R7a-4): The behavioural gate passes { kind:'procedural-sky', sunDirection }
+  // without turbidity/rayleigh/mieCoefficient/mieDirectionalG.  JavaScript's
+  //   Math.max(1.5, Math.min(30, undefined)) === NaN   (NOT 1.5)
+  // so every Preetham intermediate becomes NaN → the GPU buffer is all-NaN → the
+  // sky renders black with zero GPU validation errors (NaN arithmetic is valid WGSL).
+  // The fix applies per-field defaults in buildProceduralSkyEnvironmentParams so a
+  // partial scene object is equivalent to the documented API defaults.
+  it('partial object (sunDirection only, no turbidity/rayleigh/mie fields) produces non-NaN, non-black texels', () => {
+    // Exactly the object gate.mjs builds for opts.sky = true.
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      // Cast: the TS type requires all fields, but real-world @ts-nocheck hosts omit them.
+      environment: { kind: 'procedural-sky', sunDirection: [0.5, 1.0, 0.3] } as Scene['environment'],
+    };
+    const p = environmentParams(scene);
+    expect(p.hasHdri).toBe(true);
+    expect(p.hdriIntensity).toBeGreaterThan(0);
+    expect(p.hdriWidth).toBe(256);
+
+    // No NaN texels — GPU buffer must be clean.
+    let nanCount = 0;
+    for (let i = 0; i < p.hdriTexels.length; i++) {
+      if (!Number.isFinite(p.hdriTexels[i] ?? NaN)) nanCount++;
+    }
+    expect(nanCount).toBe(0);
+
+    // Mean luminance must be meaningfully above zero (sky has light).
+    let sumLum = 0;
+    const N = p.hdriWidth * p.hdriHeight;
+    for (let i = 0; i < N; i++) {
+      const r = p.hdriTexels[i * 4] ?? 0;
+      const g = p.hdriTexels[i * 4 + 1] ?? 0;
+      const b = p.hdriTexels[i * 4 + 2] ?? 0;
+      sumLum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    expect(sumLum / N).toBeGreaterThan(0.1);
+  });
+
+  it('bare { kind: "procedural-sky" } (no other fields) produces non-NaN, non-black texels', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      // All Preetham fields absent; defaults must kick in.
+      environment: { kind: 'procedural-sky' } as Scene['environment'],
+    };
+    const p = environmentParams(scene);
+    expect(p.hasHdri).toBe(true);
+
+    let nanCount = 0;
+    for (let i = 0; i < p.hdriTexels.length; i++) {
+      if (!Number.isFinite(p.hdriTexels[i] ?? NaN)) nanCount++;
+    }
+    expect(nanCount).toBe(0);
+
+    let sumLum = 0;
+    const N = p.hdriWidth * p.hdriHeight;
+    for (let i = 0; i < N; i++) {
+      const r = p.hdriTexels[i * 4] ?? 0;
+      const g = p.hdriTexels[i * 4 + 1] ?? 0;
+      const b = p.hdriTexels[i * 4 + 2] ?? 0;
+      sumLum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    expect(sumLum / N).toBeGreaterThan(0.1);
+  });
 });

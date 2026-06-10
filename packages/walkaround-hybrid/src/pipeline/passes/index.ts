@@ -19,6 +19,7 @@
  * `bindGroupLayouts`, or `timestampQueries` are required.
  */
 
+export { CheckerboardPrefillPass } from './CheckerboardPrefillPass.js';
 export { SampleBudgetPass } from './SampleBudgetPass.js';
 export { ReGIRBuildPass } from './ReGIRBuildPass.js';
 export { RISPass } from './RISPass.js';

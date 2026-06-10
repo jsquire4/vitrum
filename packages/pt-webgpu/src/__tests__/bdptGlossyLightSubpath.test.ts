@@ -23,6 +23,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // (cosine-hemisphere trace + discard + real-BSDF sample at newPos) is gone.
     // The BSDF is sampled at prevPos: glossy lobe via glossyReflectionSample,
     // diffuse lobe via cosineHemisphereSample.
+    //
+    // Item-3 fix (2026-06-10): emitter vertex sets fPrev = INV_PI (the Lambertian
+    // BSDF value f = 1/π) so fPrev·cos/pdf = (1/π)·cos/(cos/π) = 1. The prior
+    // fPrev = 1.0 gave 1.0·cos/(cos/π) = π — a spurious ×π on every emitter bounce.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough)');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir)');
@@ -30,8 +34,21 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter;');
-    // pdfRev(prevCol) is patched = pdfFwd (PBRT RandomWalk convention).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfFwd);');
+    // pdfRev(prevCol) is patched to the TRUE reverse density (Item-3 fix 2026-06-10):
+    // for surface vertices, brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) —
+    // NOT pdfFwd, which was the forward pdf and only equal for symmetric BSDFs.
+    // For emitter vertices (prevMatId < 0), Lambertian cosine hemisphere IS symmetric
+    // so pdfFwd == pdfRev; the emitter branch correctly falls back to pdfFwd.
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
+  });
+
+  it('emitter-vertex extension uses fPrev = INV_PI (Lambertian f = 1/π, not 1.0)', () => {
+    // Item-3 fix (2026-06-10): fPrev = INV_PI for the prevMatId < 0 branch so
+    // fPrev * cosPrev / pdfFwd = (1/π) * cos / (cos/π) = 1.0 exactly.
+    // Prior fPrev = vec3f(1.0) gave (1.0) * cos / (cos/π) = π — a spurious ×π.
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(INV_PI);');
+    // Surface vertices still use the real evaluateBrdf (unchanged).
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir)');
   });
 
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {

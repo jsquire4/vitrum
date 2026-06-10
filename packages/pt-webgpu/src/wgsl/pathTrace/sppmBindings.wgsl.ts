@@ -45,10 +45,13 @@ export const SPPM_MAX_CELLS = 65521;
 /** Photons stored per cell (ring buffer).  Over-capacity photons are dropped
  *  (their slot is counted but not written); the density estimator clamps to
  *  this capacity so only the most-recent SPPM_CELL_CAPACITY photons contribute
- *  per cell.  128 keeps the buffer under ~500 MB at SPPM_MAX_CELLS=65521:
- *  65521 × 128 × 48 B ≈ 402 MiB.  The host ceiling check (below) protects
- *  against platforms that cannot satisfy this. */
-export const SPPM_CELL_CAPACITY = 128;
+ *  per cell.  R7a behavioral-gate fix (2026-06-10): capacity 128 made the cells
+ *  buffer 65521 × 128 × 48 B ≈ 402 MiB — EXCEEDING WebGPU's default
+ *  maxBufferSize (256 MiB), so every photon-map render failed buffer validation
+ *  on default-limit devices.  32 → ≈ 100 MiB, inside BOTH the default maxBufferSize (256 MiB) AND the default maxStorageBufferBindingSize (128 MiB — the binding limit binds first); the
+ *  host additionally guards against the live device limit at allocation and
+ *  degrades to manifold-nee with a warning. */
+export const SPPM_CELL_CAPACITY = 32;
 
 /** Bytes per PhotonRecord: 3 × vec4f = 48 bytes. */
 export const SPPM_PHOTON_RECORD_BYTES = 48;

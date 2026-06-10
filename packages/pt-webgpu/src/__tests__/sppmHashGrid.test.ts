@@ -64,9 +64,15 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
   it('constants are consistent with each other', () => {
     // SPPM_MAX_CELLS must be a prime-ish value in a sensible range (≥ 1000).
     expect(SPPM_MAX_CELLS).toBe(65521);
-    expect(SPPM_CELL_CAPACITY).toBe(128);
+    // R7a (2026-06-10): 64, not 128 — 128 made the cells buffer 402 MiB,
+    // exceeding WebGPU's DEFAULT maxBufferSize (256 MiB); photon-map failed
+    // buffer validation on every default-limit device. 64 ≈ 201 MiB fits.
+    expect(SPPM_CELL_CAPACITY).toBe(32);
     expect(SPPM_PHOTON_RECORD_BYTES).toBe(48); // 3 × vec4f
     expect(SPPM_PHOTON_CELLS_BYTES).toBe(SPPM_MAX_CELLS * SPPM_CELL_CAPACITY * SPPM_PHOTON_RECORD_BYTES);
+    // The whole grid must fit the WebGPU DEFAULT maxBufferSize so photon-map
+    // works without negotiated limits.
+    expect(SPPM_PHOTON_CELLS_BYTES).toBeLessThanOrEqual(128 * 1024 * 1024); // default maxStorageBufferBindingSize — the tighter limit
     expect(SPPM_CELL_COUNTERS_BYTES).toBe(SPPM_MAX_CELLS * 4);
     expect(SPPM_STATS_BYTES).toBe(32);
   });

@@ -68,6 +68,11 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
   { id: 'ppg-update', labels: ['ppg-update'] },
+  // Checkerboard pre-denoiser gap-fill — fills hdrColorTexture gap pixels
+  // before the denoiser reads it.  Gated: only runs when checkerboard is ON
+  // AND the active denoiser is one of the four real denoisers (svgf-real,
+  // bmfr, neural, oidn-final).  Byte-identical to today for all other paths.
+  { id: 'cb-prefill', labels: ['cb-prefill'] },
   // Virtual denoiser-adapter slot — labels come from the active Denoiser
   // and are spliced here by `composePassLabels`.
   { id: 'denoiser-adapter', labels: [] },

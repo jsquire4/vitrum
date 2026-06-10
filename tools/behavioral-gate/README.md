@@ -1,0 +1,132 @@
+# tools/behavioral-gate
+
+End-to-end behavioral gate.  Boots the real `pt-webgpu` and `walkaround-hybrid` engines
+on lavapipe (CPU Vulkan), renders a minimal Cornell-box scene for each config in the
+matrix, reads back the output texture, and asserts the result meets the per-config
+expectation.
+
+This is the gate class that caught the F1–F3 total-runtime-breakage bugs (full-tier
+bind-group crash, SPPM placeholder min-binding-size, DDGI sampler strip) that the
+3,000-assertion test suite and both shader compile gates were completely blind to.
+
+## How to run locally
+
+**Prerequisites:** Deno ≥2.8, Mesa lavapipe (or any Vulkan ICD).
+
+```bash
+# Ubuntu — install prerequisites once:
+sudo apt-get install -y mesa-vulkan-drivers
+
+# Run from the repo root:
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run behavioral-gate
+
+# Self-test mode (injects a synthetic BLACK result and verifies detection):
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run behavioral-gate -- --self-test
+```
+
+## What it covers
+
+### pt-webgpu configs (17)
+
+| Label | Engine opts | Notes |
+|-------|-------------|-------|
+| `pt/default` | — | baseline |
+| `pt/spectral` | `spectral:true` | hero-λ spectral transport |
+| `pt/bdpt` | `bdpt:true` | bidirectional PT |
+| `pt/caustic-manifold` | `causticStrategy:'manifold-nee'` | MNEE manifold caustics |
+| `pt/caustic-photon` | `causticStrategy:'photon-map'` | SPPM photon map |
+| `pt/lite-tier` | `traceTier:'lite'` | lite binding budget |
+| `pt/restirPtReuse` | `restirPtReuse:true` | ReSTIR-PT (wired, off-default) |
+| `pt/skinned-mesh` | — | scene with skinned-mesh primitive |
+| `pt/analytic-sphere` | — | scene with analytic sphere primitive |
+| `pt/point-light` | — | point emitter only |
+| `pt/spot-light` | — | spot emitter only |
+| `pt/directional-2` | — | 2 directional emitters |
+| `pt/hdri-env` | — | synthetic flat-white HDRI environment |
+| `pt/procedural-sky` | — | Preetham procedural sky |
+| `pt/spectral+bdpt` | `spectral:true, bdpt:true` | combo |
+| `pt/lite+hdri` | `traceTier:'lite'` | lite + HDRI |
+| `pt/lite+point-light` | `traceTier:'lite'` | lite + point light |
+
+### walkaround-hybrid configs (8)
+
+| Label | Engine opts | Notes |
+|-------|-------------|-------|
+| `wh/default` | — | baseline |
+| `wh/rcEnabled` | `rcEnabled:true` | Radiance Cascades |
+| `wh/ppgEnabled` | `ppgEnabled:true` | PPG path guiding |
+| `wh/gtao-off` | `gtaoEnabled:false` | GTAO disabled |
+| `wh/checkerboard` | `checkerboardEnabled:true` | checkerboard resolve |
+| `wh/skinned-mesh` | — | scene with skinned-mesh primitive |
+| `wh/hdri-env` | — | synthetic flat-white HDRI environment |
+| `wh/rect-area-emitter` | — | rect-area ceiling light |
+
+## Assertions per config
+
+1. **Zero GPU errors** — no validation or out-of-memory errors from the device error scopes.
+2. **Finite pixels** — no NaN values in the readback.
+3. **Non-black output** — mean luminance ≥ 0.005 (after 8 frames at 64×64).
+
+All three must pass for a result of `OK`.
+
+## Expectation table
+
+Each config in `gate.mjs` has an entry in `EXPECTATION_TABLE`:
+
+| Value | Meaning |
+|-------|---------|
+| `expected: 'ok'` | Gate **fails** if result is anything other than OK |
+| `expected: 'known-residual'` | Gate **passes** regardless of result; includes `reason` and `planItem` fields |
+
+`known-residual` entries are **temporary scaffolding**, not permanent exceptions.  They
+encode open bugs being fixed in parallel so the gate is green on CI now and flips to
+enforcing as fixes land.
+
+**Graduating a residual:** when the fix for a `known-residual` config lands, the agent
+making that fix updates the entry from `'known-residual'` to `'ok'` and removes the
+`reason`/`planItem` fields.  A config that was expected to be a residual but now renders
+correctly will start showing `PASS | KNOWN-RESIDUAL` (which is fine — it just means the
+fix landed without the table being updated; update the table in the same commit as the fix).
+
+### Current known-residuals
+
+| Config | Plan item | Reason |
+|--------|-----------|--------|
+| `pt/caustic-photon` | R7a-3 | SPPM GPU validation errors; progressive fix in flight |
+| `pt/procedural-sky` | R7a-4 | Procedural-sky radiometric wiring gap (Preetham-bake path) |
+| `pt/restirPtReuse` | R7b | ReSTIR-PT compositing not yet wired into beauty image |
+| `wh/rcEnabled` | R7a-2 | rcEnabled GPU validation errors; RC binding fix in flight |
+
+## Naga gap patches
+
+lavapipe's Vulkan/naga layer rejects a small set of WGSL constructs that Tint/Dawn
+accepts.  The gate applies the same patches as the pre-push T1 GPU smoke:
+
+- **pt-webgpu** — strips the 3-arg `textureLoad(bdptLightPath, …, mip)` mip argument;
+  adds `isNan`/`isInf` polyfills; downgrades `bdptLightPath` from `texture_storage_2d`
+  to `texture_2d<f32>` when `bdpt=false`.
+- **walkaround-hybrid** — uses `tools/shader-gate/nagaFix.mjs` (the production fix
+  shared with the shader compile gate and the T1 smoke); primarily rewrites
+  `ptr<storage>` function parameters.
+
+## CI
+
+The `behavioral-gate` job runs in `.github/workflows/ci.yml` on every push to `main`
+and every pull request.  It is **not** `continue-on-error` — a regression in any
+`'ok'` config hard-fails the build.
+
+## Relationship to other gates
+
+| Gate | What it checks |
+|------|---------------|
+| `shader-gate` (WGSL) | Every composed WGSL string compiles without errors (static) |
+| `shader-gate` (GLSL) | Every pt-webgl2 feature combination compiles with glslangValidator (static) |
+| **`behavioral-gate`** | End-to-end engine boots, renders, produces finite non-black output (dynamic) |
+| T1 GPU smoke (`wsl-gpu`) | Full convergence + radiometric oracles on real GPU (wsl-gpu, pre-push) |
+
+The behavioral gate fills the gap between static shader compilation and full convergence
+tests: it exercises the engine factory, BVH build, scene upload, UBO packing, and
+readback — the class of bug that manifests as a crash or black render rather than a
+shader compile error.

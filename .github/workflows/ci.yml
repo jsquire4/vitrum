@@ -94,3 +94,32 @@ jobs:
         # pt-webgl2 composed GLSL ES 3.00 fragment program using glslangValidator.
         # No GPU or WebGPU adapter required — glslangValidator is a CPU-only binary.
         run: npm run shader-gate:glsl
+
+  behavioral-gate:
+    runs-on: ubuntu-latest
+    # This job is load-bearing: continue-on-error is intentionally NOT set.
+    # It exercises the full engine boot/render/readback loop and is the only
+    # CI gate that catches total-runtime-breakage bugs (device errors, black
+    # renders, engine factory crashes) that static shader compilation misses.
+
+    steps:
+      - name: Check out vitrum
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "~2.8"
+
+      - name: Install Mesa lavapipe (software Vulkan)
+        # lavapipe provides a CPU-side Vulkan ICD that exposes WebGPU without
+        # real GPU hardware.  Both candidate ICD paths are passed so the gate
+        # works regardless of the Ubuntu runner version.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+
+      - name: Run behavioral gate
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json:/usr/share/vulkan/icd.d/lvp_icd.json
+        run: npm run behavioral-gate

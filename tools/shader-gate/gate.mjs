@@ -211,6 +211,7 @@ const shaders = [];
     SVGF_VARIANCE_FROM_MOMENTS_MODULE,
     SVGF_7X7_SPATIAL_FALLBACK_MODULE,
     BMFR_MODULE,
+    CB_PREFILL_MODULE,
   } = await import(
     "../../packages/walkaround-hybrid/src/pipeline/wgslModules.ts"
   );
@@ -252,6 +253,7 @@ const shaders = [];
   addWh("motionVectors", MOTION_VECTORS_MODULE);
   addWh("sampleBudget", SAMPLE_BUDGET_MODULE);
   addWh("resolve", RESOLVE_MODULE);
+  addWh("cbPrefill", CB_PREFILL_MODULE);
   addWh("regirBuild", REGIR_BUILD_MODULE);
 
   // GTAO passes
@@ -370,6 +372,36 @@ const shaders = [];
   shaders.push({ name: "shared-denoisers/bmfr-standalone", wgsl: BMFR_WGSL });
   shaders.push({ name: "shared-denoisers/hdrLuminanceBilateral", wgsl: HDR_LUMINANCE_BILATERAL_WGSL });
   shaders.push({ name: "shared-denoisers/welfordVariance-fragment", wgsl: WELFORD_VARIANCE_WGSL });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 4: walkaround-rc
+//
+// The RC probe-ray-cast shader uses ptr<storage> TLAS params from
+// TLAS_TRAVERSAL_WGSL and RC-prefixed binding names (rc_tlas_nodes etc.).
+// nagaFix.mjs must rename those to the canonical names before naga can compile.
+// This section was added 2026-06-10 after the rcEnabled GPU validation error
+// (shader parse: "no definition in scope for identifier: tlasNodes") was found
+// to be a nagaFix gap — the RC TLAS binding renames were missing from
+// RC_SCENE_GLOBAL_RENAMES.  Adding these two shaders to the gate ensures the
+// same regression cannot go undetected again.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const { PROBE_RAY_CAST_WGSL, CASCADE_MERGE_WGSL } = await import(
+    "@vitrum/walkaround-rc"
+  );
+
+  shaders.push({
+    name: "walkaround-rc/probeRayCast",
+    wgsl: applyNagaFix(PROBE_RAY_CAST_WGSL),
+    entryPoint: "probeRayCastKernel",
+  });
+
+  shaders.push({
+    name: "walkaround-rc/cascadeMerge",
+    wgsl: CASCADE_MERGE_WGSL,
+    entryPoint: "cascadeMergeKernel",
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

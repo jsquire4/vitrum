@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import {
   AtrousIndirectPass,
+  CheckerboardPrefillPass,
   CompositePass,
   DenoiserAdapterPass,
   GTAOPass,
@@ -83,6 +84,7 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new MotionVectorsPass(stubPipeline));
   reg.register(new GTAOPass(stubPipeline));
   reg.register(new GTAOUpsamplePass(stubPipeline));
+  reg.register(new CheckerboardPrefillPass(stubPipeline, stubUboRef, /* checkerboard */ false));
   reg.register(new DenoiserAdapterPass(
     () => makeStubDenoiser('atrous-variance', ['welford-temporal', 'atrous-variance-variance']),
     () => stubPipeline,
@@ -119,6 +121,7 @@ const GOLDEN_REGISTERED_IDS = [
   'motion-vectors',
   'gtao',
   'gtao-upsample',
+  'cb-prefill',
   'denoiser-adapter',
   'indirect-temporal-accum',
   'atrous-indirect-3',
@@ -136,6 +139,7 @@ type PipelineUboRefShape = {
   _sampleBudgetUboRef: object;
   _sampleCountUboRef: object;
   _resolveUboRef: object;
+  _cbPrefillUboRef: object;
   _compositeUboRef: object;
   readonly _perPassUboRefs: readonly object[];
 };
@@ -164,6 +168,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'shade',
       'gtao',
       'gtao-upsample',
+      'cb-prefill',
       'denoiser-adapter',
       'indirect-temporal-accum',
       'atrous-indirect-3',
@@ -200,6 +205,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'shade',
       'gtao',
       'gtao-upsample',
+      'cb-prefill',
       'welford-temporal',
       'atrous-variance-variance',
       'indirect-temporal-accum',
@@ -225,16 +231,19 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
     const sampleBudget = { buf: 'sample-budget' };
     const sampleCount = { buf: 'sample-count' };
     const resolve = { buf: 'resolve' };
+    const cbPrefill = { buf: 'cb-prefill' };
     const composite = { buf: 'composite' };
     pipeline._atrousIndirectUboRef = atrousIndirect;
     pipeline._accumUboRef = accum;
     pipeline._sampleBudgetUboRef = sampleBudget;
     pipeline._sampleCountUboRef = sampleCount;
     pipeline._resolveUboRef = resolve;
+    pipeline._cbPrefillUboRef = cbPrefill;
     pipeline._compositeUboRef = composite;
 
-    // 2026-06-10: composite UBO added (tonemap/exposure/outputColorSpace per-frame dials).
-    expect(pipeline._perPassUboRefs).toEqual([accum, sampleBudget, sampleCount, resolve, composite]);
+    // 2026-06-10: cb-prefill + composite UBOs added. Atrous-indirect is NOT included
+    // (it is lazy/per-dispatch, not eagerly allocated).
+    expect(pipeline._perPassUboRefs).toEqual([accum, sampleBudget, sampleCount, resolve, cbPrefill, composite]);
     expect(pipeline._perPassUboRefs).not.toContain(atrousIndirect);
   });
 });

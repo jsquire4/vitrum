@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   AtrousIndirectPass,
+  CheckerboardPrefillPass,
   CompositePass,
   DenoiserAdapterPass,
   GTAOPass,
@@ -127,11 +128,40 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.dependencies).toEqual(['gtao']);
   });
 
-  it('DenoiserAdapterPass: depends on gtao-upsample; passLabels forward from active denoiser', () => {
+  it('CheckerboardPrefillPass: id=cb-prefill, depends on gtao-upsample, passLabels=[cb-prefill]', () => {
+    const p = new CheckerboardPrefillPass(stubPipeline, stubUboRef, false);
+    expect(p.id).toBe('cb-prefill');
+    expect(p.dependencies).toEqual(['gtao-upsample']);
+    expect(p.passLabels).toEqual(['cb-prefill']);
+  });
+
+  it('CheckerboardPrefillPass: gates only when checkerboard host-flag is true + real denoiser + checkerboardOn', () => {
+    const offPass = new CheckerboardPrefillPass(stubPipeline, stubUboRef, /* checkerboard */ false);
+    // Host flag false → always false regardless of per-frame state.
+    expect(offPass.gates({ ...DEFAULT_GATE, denoiserMode: 'svgf-real', checkerboardOn: true })).toBe(false);
+    expect(offPass.gates({ ...DEFAULT_GATE, denoiserMode: 'bmfr', checkerboardOn: true })).toBe(false);
+
+    const onPass = new CheckerboardPrefillPass(stubPipeline, stubUboRef, /* checkerboard */ true);
+    // Real denoisers + per-frame on → true.
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'svgf-real', checkerboardOn: true })).toBe(true);
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'bmfr', checkerboardOn: true })).toBe(true);
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'neural', checkerboardOn: true })).toBe(true);
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'oidn-final', checkerboardOn: true })).toBe(true);
+    // Default atrous paths → false (they use temporal accumulation).
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'atrous-variance', checkerboardOn: true })).toBe(false);
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'atrous', checkerboardOn: true })).toBe(false);
+    // Per-frame motion fallback → false.
+    expect(onPass.gates({ ...DEFAULT_GATE, denoiserMode: 'svgf-real', checkerboardOn: false })).toBe(false);
+  });
+
+  it('DenoiserAdapterPass: depends on cb-prefill (which in turn depends on gtao-upsample); passLabels forward from active denoiser', () => {
     const stubDenoiser = makeStubDenoiser('atrous-variance', ['welford-temporal', 'atrous-variance-variance']);
     const p = new DenoiserAdapterPass(() => stubDenoiser, () => stubPipeline);
     expect(p.id).toBe('denoiser-adapter');
-    expect(p.dependencies).toEqual(['gtao-upsample']);
+    // 2026-06-10: cb-prefill inserted before denoiser-adapter to fill
+    // checkerboard gap pixels before real denoisers read hdrColorTexture.
+    // Chain: gtao-upsample → cb-prefill → denoiser-adapter.
+    expect(p.dependencies).toEqual(['cb-prefill']);
     expect(p.passLabels).toEqual(['welford-temporal', 'atrous-variance-variance']);
   });
 
@@ -206,7 +236,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
 });
 
 describe('Pass entries — topological registration', () => {
-  it('all 18 passes register + sort with no cycles', () => {
+  it('all 19 passes register + sort with no cycles', () => {
     const reg = new PassRegistry();
     reg.register(new SampleBudgetPass(stubPipeline, stubUboRef, stubUboRef));
     reg.register(new RISPass(stubPipeline));
@@ -218,6 +248,9 @@ describe('Pass entries — topological registration', () => {
     reg.register(new ShadePass(stubPipeline));
     reg.register(new GTAOPass(stubPipeline));
     reg.register(new GTAOUpsamplePass(stubPipeline));
+    // 2026-06-10: cb-prefill must be registered before denoiser-adapter
+    // (which now depends on it).
+    reg.register(new CheckerboardPrefillPass(stubPipeline, stubUboRef, false));
     reg.register(new DenoiserAdapterPass(() => makeStubDenoiser('atrous-variance', []), () => stubPipeline));
     reg.register(new IndirectTemporalAccumPass(stubPipeline, stubPingPong));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
@@ -226,7 +259,7 @@ describe('Pass entries — topological registration', () => {
     reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
     reg.register(new CompositePass(stubRenderPipeline, stubUboRef));
     reg.register(new PPGUpdatePass(stubPipeline));
-    expect(reg.size()).toBe(18);
+    expect(reg.size()).toBe(19);
     const order = reg.sortedPasses().map((p) => p.id);
     // Spot-check the topo: sample-budget first, composite last.
     expect(order[0]).toBe('sample-budget');
