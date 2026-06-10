@@ -104,6 +104,18 @@ export const bsdf_functions = /* glsl */`
 		float ggxPdf = D * G1 * max( 0.0, abs( dot( wo, wh ) ) ) / abs ( wo.z );
 
 		color = wi.z * F * G * D / ( 4.0 * abs( wi.z * wo.z ) );
+
+		// B9 — Kulla-Conty multiscatter energy compensation. The single-scatter
+		// lobe above drops the multi-bounce microfacet inter-reflections, so rough
+		// metals/speculars read dark; add the multiscatter lobe that restores them.
+		// Favg ≈ f0 + (1 − f0)/21 (Fdez-Agüera 2019 cosine-weighted average Fresnel).
+		// Skipped in liteMode (indirect bounce) — the energy gain is dominated by
+		// the first hit, and the lite path keeps the hot loop lean.
+		if ( ! surf.liteMode ) {
+			vec3 Favg = f0Color + ( vec3( 1.0 ) - f0Color ) * ( 1.0 / 21.0 );
+			color += ggxMultiscatter( roughness, abs( wo.z ), abs( wi.z ), Favg );
+		}
+
 		return ggxPdf / ( 4.0 * dot( wo, wh ) );
 
 	}

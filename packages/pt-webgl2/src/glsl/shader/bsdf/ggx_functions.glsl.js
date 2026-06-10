@@ -99,4 +99,55 @@ export const ggx_functions = /* glsl */`
 
 	}
 
+	// ── B9 — Kulla-Conty multiscatter energy compensation ────────────────────
+	// A single-scatter GGX lobe loses energy as roughness rises (multi-bounce
+	// microfacet inter-reflections are dropped), so rough metals/speculars read
+	// dark. Kulla & Conty 2017 ("Revisiting Physically Based Shading at Imageworks")
+	// add a multiscatter lobe that recovers exactly the missing energy. The fit
+	// below is shared CONVENTION-coordinate with the walkaround-hybrid B9 fit
+	// (ggxBrdf.wgsl.ts) — same ggxDirectionalAlbedo / ggxAverageAlbedo analytic
+	// approximations and the same Fms reciprocity, so all backends compensate
+	// identically. mu is |cosθ| of the view (or light) direction; rough is the
+	// linear (perceptual) roughness.
+
+	// Directional albedo E(μ) of the single-scatter GGX lobe (analytic fit).
+	float ggxDirectionalAlbedo( float mu, float rough ) {
+
+		float a = clamp( rough, 0.0, 1.0 );
+		float c = clamp( mu, 0.0, 1.0 );
+		float a2 = a * a;
+		return clamp( 1.0 - a2 * ( 1.0 - c ) * ( 0.75 + 0.25 * c ), 0.0, 1.0 );
+
+	}
+
+	// Cosine-weighted hemispherical average albedo E_avg of the GGX lobe.
+	float ggxAverageAlbedo( float rough ) {
+
+		float a = clamp( rough, 0.0, 1.0 );
+		float a2 = a * a;
+		return clamp( 1.0 - a2 * ( 7.0 / 24.0 ), 0.0, 1.0 );
+
+	}
+
+	// Multiscatter BRDF lobe value (Kulla-Conty). Adds the energy the single-
+	// scatter lobe drops. Favg is the cosine-weighted average Fresnel of the
+	// specular f0 (per Fdez-Agüera 2019: Favg ≈ f0 + (1 − f0)/21). Returns the
+	// per-component lobe value to ADD to the single-scatter color (already carries
+	// the wi.z cosine, matching specularEval's color convention).
+	vec3 ggxMultiscatter( float rough, float NdotV, float NdotL, vec3 Favg ) {
+
+		float Eo = ggxDirectionalAlbedo( NdotV, rough );
+		float Ei = ggxDirectionalAlbedo( NdotL, rough );
+		float Eavg = ggxAverageAlbedo( rough );
+		float oneMinusEavg = 1.0 - Eavg;
+		if ( oneMinusEavg < 1e-4 ) return vec3( 0.0 );
+		float fms = ( 1.0 - Eo ) * ( 1.0 - Ei ) / ( PI * oneMinusEavg );
+		// Fms = Favg² · Eavg / (1 − Favg·(1−Eavg)) — the geometric series of
+		// repeated Fresnel-weighted bounces (Kulla-Conty eq. 9 / Fdez-Agüera).
+		vec3 Fms = ( Favg * Favg * Eavg ) / max( vec3( 1.0 ) - Favg * oneMinusEavg, vec3( 1e-4 ) );
+		// Carry the wi.z (NdotL) cosine to match specularEval's color term.
+		return fms * Fms * NdotL;
+
+	}
+
 `;
