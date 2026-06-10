@@ -591,12 +591,17 @@ const RENDER_MAIN = /* glsl */ `
 									envPdf /= lightsDenom;
 
 									// and weight the contribution
+									// D3 — state.envMapIntensity scales the BSDF half of the env
+									// estimator by the LAST shaded surface's per-material env scale
+									// (the NEE half applies the same factor in
+									// directLightContribution → consistent MIS, radiance-only).
 									float misWeight = misHeuristic( scatterRec.pdf, envPdf );
-									pc_fragColor.rgb += environmentIntensity * envColor * throughputRgb * misWeight;
+									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * envColor * throughputRgb * misWeight;
 
 									#else
 
 									pc_fragColor.rgb +=
+										state.envMapIntensity *
 										environmentIntensity *
 										sampleEquirectColor( envMapInfo.map, envRotation3x3 * ray.direction ) *
 										throughputRgb;
@@ -696,6 +701,10 @@ const RENDER_MAIN = /* glsl */ `
 								gbufAlbedo = surf.color;
 								gbufWritten = true;
 							}
+
+							// D3 — record this surface's env scale for the forward env pickup
+							// (the NO_HIT MIS branch above) on the NEXT iteration.
+							state.envMapIntensity = surf.envMapIntensity;
 
 							// B4 — capture the INCOMING ray's BSDF pdf (the pdf of the prior
 							// bounce's scatter that produced the ray hitting THIS surface) BEFORE

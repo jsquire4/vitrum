@@ -68,6 +68,19 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
+		// D3 — aoMap (glTF occlusionTexture, R channel): modulate albedo by
+		// mix(1, ao, aoMapIntensity). CAVEAT (documented biased semantics, mirrors
+		// pt-webgpu sampleAoFactor): a path tracer integrates real occlusion, so a
+		// baked AO term double-darkens crevices — aoMapIntensity is the artist dial
+		// (1 matches the raster look; 0 disables).
+		if ( useTextures && material.aoMap != - 1 ) {
+
+			vec3 uvPrime = material.aoMapTransform * vec3( uv, 1 );
+			float ao = texture2D( textures, vec3( uvPrime.xy, material.aoMap ) ).r;
+			albedo.rgb *= clamp( mix( 1.0, ao, material.aoMapIntensity ), 0.0, 1.0 );
+
+		}
+
 		// possibly skip this sample if it's transparent, alpha test is enabled, or we hit the wrong material side
 		// and it's single sided.
 		// - alpha test is disabled when it === 0
@@ -126,6 +139,17 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
+		// D3 — lightMap: baked OUTGOING radiance (linear), added at camera-visible
+		// hits ONLY (pathDepth == 0; matches pt-webgpu's emissive-on-hit semantics).
+		// It never enters NEE/MIS (it is not in the lights texture), and adding it
+		// at indirect depths would double-count the live lights the bake encodes.
+		if ( useTextures && material.lightMap != - 1 && pathDepth == 0 ) {
+
+			vec3 uvPrime = material.lightMapTransform * vec3( uv, 1 );
+			emission += material.lightMapIntensity * texture2D( textures, vec3( uvPrime.xy, material.lightMap ) ).rgb;
+
+		}
+
 		// transmission
 		float transmission = material.transmission;
 		if ( useTextures && material.transmissionMap != - 1 ) {
@@ -169,6 +193,41 @@ export const get_surface_record_function = /* glsl */`
 				vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.normalMap ) ).xyz * 2.0 - 1.0;
 				texNormal.xy *= material.normalScale;
 				normal = vTBN * texNormal;
+
+			}
+
+		}
+
+		// D3 — bumpMap: height-field normal perturbation (Blinn 1978), central
+		// differences in UV space (no screen derivatives on secondary rays; mirrors
+		// pt-webgpu applyBumpMap's fixed 1/512 step + n - scale·(dh/du·T + dh/dv·B)).
+		// Applied AFTER the normal map so the two compose.
+		if ( useTextures && material.bumpMap != - 1 ) {
+
+			vec4 tangentSample = textureSampleBarycoord(
+				attributesArray,
+				ATTR_TANGENT,
+				surfaceHit.barycoord,
+				surfaceHit.faceIndices.xyz
+			);
+
+			if ( length( tangentSample.xyz ) > 0.0 ) {
+
+				vec3 uvPrime = material.bumpMapTransform * vec3( uv, 1 );
+				float du = 1.0 / 512.0;
+				float hC = texture2D( textures, vec3( uvPrime.xy, material.bumpMap ) ).r;
+				float hU = texture2D( textures, vec3( uvPrime.xy + vec2( du, 0.0 ), material.bumpMap ) ).r;
+				float hV = texture2D( textures, vec3( uvPrime.xy + vec2( 0.0, du ), material.bumpMap ) ).r;
+				float dhdu = ( hU - hC ) / du;
+				float dhdv = ( hV - hC ) / du;
+				vec3 tangent = normalize( tangentSample.xyz );
+				vec3 bitangent = normalize( cross( normal, tangent ) * tangentSample.w );
+				vec3 perturbed = normal - material.bumpScale * ( dhdu * tangent + dhdv * bitangent );
+				if ( length( perturbed ) > 1e-6 ) {
+
+					normal = normalize( perturbed );
+
+				}
 
 			}
 
@@ -330,6 +389,7 @@ export const get_surface_record_function = /* glsl */`
 
 		surf.specularColor = specularColor;
 		surf.specularIntensity = specularIntensity;
+		surf.envMapIntensity = max( material.envMapIntensity, 0.0 );
 
 		// apply perceptual roughness factor from gltf. sheen perceptual roughness is
 		// applied by its brdf function

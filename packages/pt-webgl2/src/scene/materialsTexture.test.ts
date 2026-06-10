@@ -13,9 +13,13 @@ function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 85px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
-    expect(MATERIAL_PIXELS).toBe(85);
+    // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
+    // + envMapIntensity at 85/86, their transforms at 87..92). Single-sourced with
+    // every GLSL fetch site via glsl/shader/structs/materialStride.js — see
+    // materialStrideParity.test.ts for the packer↔shader guard.
+    expect(MATERIAL_PIXELS).toBe(93);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {

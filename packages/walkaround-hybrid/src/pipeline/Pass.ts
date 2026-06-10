@@ -33,6 +33,7 @@ import type { BGLCache } from './bindGroupLayouts.js';
 import type { FrameResources } from './resourceManager.js';
 import type { PassLabel } from './timestampQueries.js';
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
+import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
 /** Engine-state surface a pass may inspect when deciding whether to run.
  *  Kept structural so this module does not import HybridEngineOptions. */
@@ -170,6 +171,16 @@ export interface PassDispatchContext {
   /** Shared mutable frame state used to thread textures between chained
    *  passes (denoiser→indirect-combine→temporalAccum→resolve→composite). */
   readonly frameState: PassFrameState;
+  /** D6 — identity-keyed cache for per-pass bind groups (and texture views).
+   *  Passes whose bind group binds only stable resources (or a small set of
+   *  ping-pong variants) memoize through this so the per-frame
+   *  `device.createBindGroup` churn collapses to one build per
+   *  resource (re)allocation. Optional: a pass with no cache (e.g. the
+   *  dispatch-equivalence test harness) falls back to building every frame,
+   *  which is behaviourally identical (same group, same contents). Invalidation
+   *  is automatic — a resource identity change flips the key, and the
+   *  orchestrator `clear()`s the cache on resize / dispose. */
+  readonly resourceCache?: PipelineResourceCache;
 }
 
 /**

@@ -6,6 +6,9 @@ import {
   SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL,
   SHADE_PROLOGUE_ORM_TEX_APPLY_FULL,
   SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_AO_APPLY_FULL,
+  SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
 } from './shadePrologue.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 
@@ -430,7 +433,7 @@ ${mediumStateDecls}
       break;
     }
 
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL)}
+${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL)}
     let throughputAtVertex = throughput;
 ${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
@@ -707,7 +710,18 @@ ${transmissiveBlock}
             // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
             // rect-area branch. Mean stays independent of the selection pdf.
             // A3 — spectralise the env radiance at the hero λ (RGB mode unchanged).
-            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
+            // D3 — per-material envMapIntensity scales the env contribution at THIS
+            // surface's NEE/connect path. ASYMMETRY (documented): the miss-shader
+            // env hit (a BSDF-sampled bounce that escapes to the environment) does
+            // NOT know the last surface material cheaply, so it is NOT scaled there.
+            // Scaling only the NEE/connect path means a non-unit envMapIntensity is
+            // applied to the explicit env-light connection but not to the implicit
+            // BSDF-sampled env escape; for the common case (envMapIntensity used as
+            // an artistic IBL dial on a surface's reflections) the NEE term is the
+            // dominant, lower-variance contribution. envMapIntensity == 1 (default)
+            // ⇒ scale == 1 ⇒ byte-identical. Ref: THREE.envMapIntensity.
+            let envScale = materialEnvMapIntensity(matId);
+            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envScale;
             let misWeight = powerHeuristic(envPdf, brdfPdf);
             directLi = throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8) * lightSelectInvPdf;
           }

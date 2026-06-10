@@ -1,3 +1,5 @@
+import { MATERIAL_PIXELS } from '../structs/materialStride.js';
+
 export const util_functions = /* glsl */`
 
 	// TODO: possibly this should be renamed something related to material or path tracing logic
@@ -42,7 +44,7 @@ export const util_functions = /* glsl */`
 	// uniform wavelength samples 380..780 nm (matches SPECTRAL_GRID_* in JS).
 	float readSpectralAttenuationMu( sampler2D materialsTex, uint materialIndex, uint spectralIdx ) {
 
-		const uint MATERIAL_PIXELS = 85u;
+		const uint MATERIAL_PIXELS = ${MATERIAL_PIXELS}u;
 		const uint SPECTRAL_BASE_TEXEL = 20u;
 		uint texelOffset = SPECTRAL_BASE_TEXEL + spectralIdx / 4u;
 		uint comp = spectralIdx % 4u;

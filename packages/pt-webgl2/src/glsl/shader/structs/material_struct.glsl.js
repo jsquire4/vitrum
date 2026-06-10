@@ -1,3 +1,5 @@
+import { MATERIAL_PIXELS } from './materialStride.js';
+
 export const material_struct = /* glsl */ `
 
 	struct Material {
@@ -82,6 +84,19 @@ export const material_struct = /* glsl */ `
 		float backLayerRoughness;
 		bool hasBackLayer;
 
+		// D3 — reserved-field consumption: ambient-occlusion / baked light / bump maps
+		// + per-material env-IBL scale. Layout: texels 85..92 (after the 30 transform
+		// texels 55..84). aoMap modulates albedo (with the geometry-occlusion caveat),
+		// lightMap adds baked irradiance at camera hits, bumpMap perturbs the normal by
+		// its height gradient, envMapIntensity scales this material's IBL contribution.
+		int aoMap;
+		int lightMap;
+		int bumpMap;
+		float aoMapIntensity;
+		float lightMapIntensity;
+		float bumpScale;
+		float envMapIntensity;
+
 		mat3 mapTransform;
 		mat3 metalnessMapTransform;
 		mat3 roughnessMapTransform;
@@ -97,6 +112,12 @@ export const material_struct = /* glsl */ `
 		mat3 iridescenceThicknessMapTransform;
 		mat3 specularColorMapTransform;
 		mat3 specularIntensityMapTransform;
+
+		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
+		// see readMaterialInfo). Identity when the corresponding map id == -1.
+		mat3 aoMapTransform;
+		mat3 lightMapTransform;
+		mat3 bumpMapTransform;
 
 	};
 
@@ -117,7 +138,10 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		uint i = index * 85u;
+		// D3 — stride bumped 85 → 93 (single-sourced from materialStride.js; the
+		// packer imports the same constant): texels 85/86 carry ao/light/bump map
+		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms.
+		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
 		vec4 s1 = texelFetch1D( tex, i + 1u );
@@ -221,6 +245,17 @@ export const material_struct = /* glsl */ `
 		m.backLayerTransmission = s19.rgb;
 		m.backLayerRoughness = s19.a;
 
+		// D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity.
+		vec4 s20 = texelFetch1D( tex, i + 85u );
+		vec4 s21 = texelFetch1D( tex, i + 86u );
+		m.aoMap = int( round( s20.r ) );
+		m.lightMap = int( round( s20.g ) );
+		m.bumpMap = int( round( s20.b ) );
+		m.envMapIntensity = s20.a;
+		m.aoMapIntensity = s21.r;
+		m.lightMapIntensity = s21.g;
+		m.bumpScale = s21.b;
+
 		uint firstTextureTransformIdx = i + 55u;
 
 		// mat3( 1.0 ) is an identity matrix
@@ -239,6 +274,11 @@ export const material_struct = /* glsl */ `
 		m.iridescenceThicknessMapTransform = m.iridescenceThicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 24u );
 		m.specularColorMapTransform = m.specularColorMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 26u );
 		m.specularIntensityMapTransform = m.specularIntensityMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 28u );
+
+		// D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
+		m.aoMapTransform = m.aoMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 87u );
+		m.lightMapTransform = m.lightMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 89u );
+		m.bumpMapTransform = m.bumpMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 91u );
 
 		return m;
 

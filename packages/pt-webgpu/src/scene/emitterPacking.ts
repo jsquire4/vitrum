@@ -194,6 +194,22 @@ export function defaultDirectionalIrradiance(scene: Scene): readonly [number, nu
   ];
 }
 
+/**
+ * D3 — soft-sun angular diameter (radians) for the scene's directional emitter.
+ * 0 (the default, and when no directional emitter is present) = a perfect delta
+ * directional, the historical exact path (byte-identical). A positive value turns
+ * the directional NEE into a cone sampler over the sun's solid angle for soft
+ * shadows. Carried in the frame UBO's `cameraPos.w` lane (a previously-unused
+ * `.w` slot — see frameParamsPacker) so no UBO byte-size/layout change is needed.
+ * Ref: DirectionalEmitter.angularDiameter (core contract).
+ */
+export function defaultDirectionalAngularDiameter(scene: Scene): number {
+  const directional = scene.emitters.find((e) => e.kind === 'directional');
+  if (directional == null) return 0;
+  const ad = directional.angularDiameter;
+  return ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+}
+
 function packMeshAreaTriangles(
   emitter: MeshAreaEmitter,
   scene: Scene,

@@ -96,8 +96,9 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // identical for unoriented scenes (full-sphere cone ⇒ factor ≡ 1); oriented
     // emitters (spot / single-sided area) get tighter SELECTION pdf only (the pdf
     // is divided out — unbiased) → V28 oriented-emitter A/B.
-    expect(digest).toBe('a5c3cb929c331f0f722620eb61385c208ad79d13d10c1a08de300f1f5d836f2d');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(269962);
+    // Re-pinned 2026-06-10: D3 reserved-field consumption (ao/light/bump/env/anisotropy maps) + backtick escape fix — RENDER-CHANGING, A/B pending V28-B
+    expect(digest).toBe('85eee9fe6b134490a3cff123bfca7e181bf2697bce425e739596e914deab1676');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(279018);
   });
 });
 

@@ -138,9 +138,12 @@ export const direct_light_contribution_function = /*glsl*/`
 				if ( envMaterialPdf > 0.0 && isValidSampleColor ) {
 
 					// weight the direct light contribution
+					// D3 — surf.envMapIntensity: per-material env scale on the NEE half;
+					// the forward (BSDF) half applies the same factor via
+					// state.envMapIntensity, keeping the MIS estimator consistent.
 					envPdf /= lightsDenom;
 					float misWeight = misHeuristic( envPdf, envMaterialPdf );
-					result = attenuatedColor * environmentIntensity * envColor * throughputRgb * sampleColor * misWeight / envPdf;
+					result = attenuatedColor * surf.envMapIntensity * environmentIntensity * envColor * throughputRgb * sampleColor * misWeight / envPdf;
 
 				}
 

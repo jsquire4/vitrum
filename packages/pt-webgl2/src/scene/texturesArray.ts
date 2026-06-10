@@ -14,10 +14,22 @@
 
 import type { MaterialSpec } from '@vitrum/core';
 
-/** The material-map fields the fork GLSL samples (others are inert until wired). */
+/** The material-map fields the fork GLSL samples (others are inert until wired).
+ *  D3 (Wave C) added the clearcoat/sheen/iridescence/specular maps — the fork
+ *  `get_surface_record` ALREADY samples each (see clearcoatMap…specularIntensityMap
+ *  in get_surface_record_function.glsl.js), only the packer wired them as NO_TEXTURE.
+ *  aoMap/lightMap/bumpMap are NEW GLSL (added to material_struct + get_surface_record)
+ *  so they are gathered here too. */
 const SAMPLED_MAP_KEYS = [
   'baseColorMap', 'metallicMap', 'roughnessMap', 'transmissionMap',
   'emissiveMap', 'normalMap', 'alphaMap',
+  // D3 — clearcoat / sheen / iridescence / specular maps (GLSL already samples).
+  'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
+  'sheenColorMap', 'sheenRoughnessMap',
+  'iridescenceMap', 'iridescenceThicknessMap',
+  'specularColorMap', 'specularIntensityMap',
+  // D3 — aoMap / lightMap / bumpMap (new GLSL consumption sites).
+  'aoMap', 'lightMap', 'bumpMap',
 ] as const satisfies ReadonlyArray<keyof MaterialSpec>;
 
 interface RawPixels {

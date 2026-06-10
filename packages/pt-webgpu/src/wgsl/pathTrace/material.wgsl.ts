@@ -201,8 +201,11 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 // MATERIAL_TEX_VEC4_STRIDE in scene/materialTextures.ts.
 //   0: {baseColorIdx, normalIdx, ormIdx, emissiveIdx}   (-1 = no map)
 //   1: {alphaMode, alphaCutoff, opacity, texCoord}
-//   2: {offset.xy, scale.xy}   3: {rotation, _, _, _}
-const MATERIAL_TEX_VEC4_STRIDE = 4u;
+//   2: {offset.xy, scale.xy}
+//   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}      ← D3 (-1 = no map)
+//   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
+//   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, _pad}         ← D3
+const MATERIAL_TEX_VEC4_STRIDE = 6u;
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
 // interpolate the per-vertex UV by the hit barycentrics, apply the material's
@@ -347,6 +350,146 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   let perturbed = tangent * tn.x + bitangent * tn.y + geomNormal * tn.z;
   let plen = length(perturbed);
   return select(geomNormal, perturbed / plen, plen > 1e-6);
+}
+
+// ── D3 — reserved-field consumption (aoMap / lightMap / bumpMap / envMapIntensity
+//        / anisotropy). All gated so a material lacking the field is a no-op. ──
+
+// AO map (LINEAR array) — descriptor vec4[3].y; intensity vec4[4].x.
+// Returns the baked occlusion factor ∈ [0,1] lerped by aoMapIntensity:
+//   ao = mix(1, sampledR, intensity).  Returns 1 (no occlusion) when absent →
+// byte-identical. SEMANTICS (documented, biased): a baked AO map encodes the
+// fraction of the hemisphere occluded by *nearby* geometry that the path tracer
+// does NOT cheaply re-derive at the primary hit. The honest PT interpretation is
+// that AO double-counts occlusion the global solve already integrates, so we apply
+// it ONLY as a multiplier on baseColor (the standard glTF occlusionTexture
+// semantics, R channel). This darkens cavities consistently with the artist
+// intent at the cost of slight energy loss vs ground-truth GI. Hosts wanting
+// unbiased transport should omit aoMap. Ref: glTF 2.0 occlusionTexture.
+fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let aoIdx = i32(materialTexDescriptors[base + 3u].y);
+  if (aoIdx < 0) { return 1.0; }
+  let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
+  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW).r;
+  return clamp(mix(1.0, r, intensity), 0.0, 1.0);
+}
+
+// Light map (LINEAR array) — descriptor vec4[3].z; intensity vec4[4].y.
+// Baked OUTGOING radiance added to the surface emission. SEMANTICS: a light map
+// is precomputed *outgoing* radiance, so it is added to \`emissive\` at
+// camera-visible (emissive-on-hit) shade points ONLY. Adding it inside NEE would
+// double-count the real lights it bakes; the path-tracer's own NEE/indirect
+// terms already integrate live light. Returns 0 (no addition) when absent →
+// byte-identical. The map is treated as linear data (it is radiance, not albedo);
+// hosts that authored an sRGB-encoded light map should decode before upload.
+// Ref: glTF lightmap convention; THREE.MeshStandardMaterial.lightMap (additive).
+fn sampleLightMapRadiance(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return vec3f(0.0); }
+  let lmIdx = i32(materialTexDescriptors[base + 3u].z);
+  if (lmIdx < 0) { return vec3f(0.0); }
+  let intensity = max(materialTexDescriptors[base + 4u].y, 0.0);
+  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW).rgb * intensity;
+}
+
+// Per-material environment-map intensity scale — descriptor vec4[4].w (default 1).
+fn materialEnvMapIntensity(matId: u32) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  return max(materialTexDescriptors[base + 4u].w, 0.0);
+}
+
+// Anisotropy strength ∈ [0,1] (descriptor vec4[5].x), optionally modulated by the
+// KHR_materials_anisotropy map's B channel. 0 ⇒ isotropic (default) ⇒ the caller
+// keeps the existing isotropic GGX path → byte-identical.
+fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 0.0; }
+  var a = clamp(materialTexDescriptors[base + 5u].x, 0.0, 1.0);
+  let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
+  if (anisoIdx >= 0) {
+    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW).b;
+  }
+  return clamp(a, 0.0, 1.0);
+}
+
+// Anisotropy rotation in radians (descriptor vec4[5].y), optionally offset by the
+// anisotropy map's RG direction (KHR_materials_anisotropy: RG encodes a 2D tangent
+// rotation as cos/sin in [0,1]→[-1,1]). Returns the scalar rotation when no map.
+fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 0.0; }
+  var rot = materialTexDescriptors[base + 5u].y;
+  let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
+  if (anisoIdx >= 0) {
+    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW).rg * 2.0 - vec2f(1.0);
+    rot = rot + atan2(rg.y, rg.x);
+  }
+  return rot;
+}
+
+// Bump map (LINEAR height field) — descriptor vec4[3].w; scale vec4[4].z.
+// Perturbs the shading normal by the gradient of the height field in UV space,
+// finite-differenced from the texture. Mirrors applyNormalMap's tangent-frame
+// derivation + TLAS-instance transform + Gram-Schmidt; combines additively with a
+// normal map when both are present (apply normal map first, bump second). Returns
+// the input normal unchanged when there is no bump map → byte-identical.
+// Ref: Blinn 1978, "Simulation of Wrinkled Surfaces"; height-gradient perturbation.
+fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, instanceIndex: u32) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return shadingNormal; }
+  let bumpIdx = i32(materialTexDescriptors[base + 3u].w);
+  if (bumpIdx < 0 || triIndex >= arrayLength(&indices)) { return shadingNormal; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return shadingNormal;
+  }
+  let bumpScale = materialTexDescriptors[base + 4u].z;
+  // Build the same world-space tangent frame applyNormalMap uses.
+  let p0 = positions[tri.x].xyz;
+  let e1 = positions[tri.y].xyz - p0;
+  let e2 = positions[tri.z].xyz - p0;
+  let uv0 = meshUvs[tri.x].xy;
+  let duv1 = meshUvs[tri.y].xy - uv0;
+  let duv2 = meshUvs[tri.z].xy - uv0;
+  let det = duv1.x * duv2.y - duv2.x * duv1.y;
+  if (abs(det) < 1e-10) { return shadingNormal; }
+  let f = 1.0 / det;
+  var tangent = f * (duv2.y * e1 - duv1.y * e2);
+  var bitanW = f * (duv1.x * e2 - duv2.x * e1);
+  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
+    let m = instanceIndex * 4u;
+    if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
+      let l2w0 = tlasInstanceLocalToWorld[m];
+      let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+      let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+      tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
+      bitanW = transformDirectionCols(l2w0, l2w1, l2w2, bitanW);
+    }
+  }
+  tangent = tangent - shadingNormal * dot(shadingNormal, tangent);
+  let tlen = length(tangent);
+  if (tlen < 1e-8) { return shadingNormal; }
+  tangent = tangent / tlen;
+  let bitangent = cross(shadingNormal, tangent);
+  // Central finite difference of the height (R channel) in UV space. A small UV
+  // step; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
+  let hC = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW).r;
+  // Approximate dh/du, dh/dv by sampling a small step along the interpolated UV
+  // via barycentric perturbation toward each triangle edge.
+  let du = 1.0 / 512.0;
+  let baryU = vec2f(baryVW.x + du, baryVW.y);
+  let baryV = vec2f(baryVW.x, baryVW.y + du);
+  let hU = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryU).r;
+  let hV = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryV).r;
+  let dhdu = (hU - hC) / du;
+  let dhdv = (hV - hC) / du;
+  let perturbed = shadingNormal - bumpScale * (dhdu * tangent + dhdv * bitangent);
+  let plen = length(perturbed);
+  return select(shadingNormal, perturbed / plen, plen > 1e-6);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

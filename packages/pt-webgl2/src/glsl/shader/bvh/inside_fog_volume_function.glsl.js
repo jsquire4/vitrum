@@ -1,3 +1,5 @@
+import { MATERIAL_PIXELS } from '../structs/materialStride.js';
+
 export const inside_fog_volume_function = /* glsl */`
 
 #ifndef FOG_CHECK_ITERATIONS
@@ -7,7 +9,7 @@ export const inside_fog_volume_function = /* glsl */`
 // returns whether the given material is a fog material or not
 bool isMaterialFogVolume( sampler2D materials, uint materialIndex ) {
 
-	const uint MATERIAL_PIXELS = 85u;
+	const uint MATERIAL_PIXELS = ${MATERIAL_PIXELS}u;
 	uint i = materialIndex * uint( MATERIAL_PIXELS );
 	vec4 s14 = texelFetch1D( materials, i + 14u );
 	return bool( int( s14.b ) & 4 );

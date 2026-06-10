@@ -11,14 +11,29 @@
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
 
 /**
- * vec4s per material in the descriptor buffer (MUST match the future WGSL
+ * vec4s per material in the descriptor buffer (MUST match the WGSL
  * `MATERIAL_TEX_VEC4_STRIDE`):
  *   0: {baseColorIdx, normalIdx, ormIdx, emissiveIdx}   (-1 = no map)
  *   1: {alphaMode (0 opaque/1 mask/2 blend), alphaCutoff, opacity, texCoord}
  *   2: {offsetX, offsetY, scaleX, scaleY}                (baseColor UV transform)
- *   3: {rotation, _pad, _pad, _pad}
+ *   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}     ← D3 (-1 = no map)
+ *   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
+ *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, _pad}         ← D3
+ *
+ * D3 (reserved-field consumption) bumped the stride 4 → 6:
+ *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
+ *     their intensity / scale scalars. All three maps are LINEAR-space (occlusion,
+ *     baked-radiance-as-data, height field) so they share the LINEAR texture array
+ *     index space (materialTexturesLinear). A material lacking a given map carries
+ *     index -1 (the WGSL sampler returns a no-op), so absent-field scenes stay
+ *     byte-identical to the pre-D3 path.
+ *   - vec4 #4.w: per-material envMapIntensity (default 1).
+ *   - vec4 #5: anisotropy / anisotropyRotation scalars + the optional
+ *     anisotropyMap layer index (KHR_materials_anisotropy: RG = tangent rotation
+ *     direction, B = strength), also in the LINEAR array. anisotropy == 0 (default)
+ *     means the anisotropic GGX path is never taken → byte-identical.
  */
-export const MATERIAL_TEX_VEC4_STRIDE = 4;
+export const MATERIAL_TEX_VEC4_STRIDE = 6;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -102,6 +117,21 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 10] = t?.scale?.[0] ?? 1;
     descriptors[b + 11] = t?.scale?.[1] ?? 1;
     descriptors[b + 12] = t?.rotation ?? 0;
+    // D3 — vec4 #3.yzw + #4.xyz: aoMap / lightMap / bumpMap (all LINEAR-space data:
+    // occlusion factor, baked outgoing radiance, height field) routed through the
+    // linear texture array. Index -1 when absent → the WGSL sampler is a no-op.
+    descriptors[b + 13] = indexOfLinear(m.aoMap);
+    descriptors[b + 14] = indexOfLinear(m.lightMap);
+    descriptors[b + 15] = indexOfLinear(m.bumpMap);
+    descriptors[b + 16] = m.aoMapIntensity ?? 1;
+    descriptors[b + 17] = m.lightMapIntensity ?? 1;
+    descriptors[b + 18] = m.bumpScale ?? 1;
+    descriptors[b + 19] = m.envMapIntensity ?? 1;
+    // D3 — vec4 #5: anisotropy scalars + optional KHR_materials_anisotropy map.
+    descriptors[b + 20] = m.anisotropy ?? 0;
+    descriptors[b + 21] = m.anisotropyRotation ?? 0;
+    descriptors[b + 22] = indexOfLinear(m.anisotropyMap);
+    descriptors[b + 23] = 0; // pad
   });
 
   return { sources, linearSources, descriptors };

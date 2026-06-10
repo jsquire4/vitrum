@@ -30,12 +30,15 @@ export function composeShadePrologueWgsl(
   emissiveTexApply = '',
   ormTexApply = '',
   normalMapApply = '',
+  aoApply = '',
+  lightMapApply = '',
+  bumpMapApply = '',
 ): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
-    var baseColor = mat.baseColor;${baseColorTexApply}
+    var baseColor = mat.baseColor;${baseColorTexApply}${aoApply}
     var roughness = mat.roughness;
-    var emissive = mat.emissive;${emissiveTexApply}
+    var emissive = mat.emissive;${emissiveTexApply}${lightMapApply}
     var metallic = mat.metallic;${ormTexApply}
     let transmission = mat.transmission;
     var ior = mat.ior;
@@ -77,7 +80,7 @@ ${emissiveComment}
 
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
-    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}
+    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
     let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
     let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
     if (layerRoughness >= 0.0) {
@@ -184,3 +187,23 @@ export const SHADE_PROLOGUE_ORM_TEX_APPLY_FULL =
  *  so the G-buffer normal is the mapped one. */
 export const SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL =
   `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;
+
+/** D3 — AO map: multiply baseColor by the baked occlusion factor (glTF
+ *  occlusionTexture, R channel), lerped by aoMapIntensity. sampleAoFactor returns
+ *  1 when no aoMap → byte-identical. Applied right after the baseColor texture
+ *  modulation so the G-buffer albedo and all downstream BSDF terms see the
+ *  occluded albedo (documented biased semantics — see material.wgsl.ts). */
+export const SHADE_PROLOGUE_AO_APPLY_FULL =
+  `\n    baseColor = baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);`;
+
+/** D3 — light map: add the baked OUTGOING radiance to emissive (camera-visible /
+ *  emissive-on-hit only, via the prevSampleAllowsAreaMis gate below). 0 when no
+ *  lightMap → byte-identical. Adds to the emission var so it never enters NEE. */
+export const SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL =
+  `\n    emissive = emissive + sampleLightMapRadiance(matId, hit.triIndex, hit.baryVW);`;
+
+/** D3 — bump map: perturb the shading normal by the height-field gradient
+ *  (applied AFTER the normal map so the two compose). Returns the normal unchanged
+ *  when no bumpMap → byte-identical. */
+export const SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL =
+  `\n    normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;

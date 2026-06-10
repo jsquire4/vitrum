@@ -22,6 +22,7 @@ import { createMaterialTextureArray } from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
 import {
   buildLightTreeInputForScene,
+  defaultDirectionalAngularDiameter,
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
   packEmitterArrays,
@@ -76,6 +77,8 @@ interface PackedSceneData {
   readonly warnings: readonly string[];
   readonly directionalLight: readonly [number, number, number];
   readonly directionalIrradiance: readonly [number, number, number];
+  /** D3 — soft-sun angular diameter (radians); 0 = exact delta directional. */
+  readonly directionalAngularDiameter: number;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
@@ -437,6 +440,7 @@ export function buildPackedScene(
     warnings,
     directionalLight: defaultDirectionalLight(scene),
     directionalIrradiance: defaultDirectionalIrradiance(scene),
+    directionalAngularDiameter: defaultDirectionalAngularDiameter(scene),
     pointLightCount: emitArrays.pointLightCount,
     spotLightCount: emitArrays.spotLightCount,
     rectAreaLightCount: emitArrays.rectAreaLightCount,

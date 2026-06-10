@@ -1767,6 +1767,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       computeDesc,
       renderTimestampWrites,
       frameState,
+      // D6 — pass the shared resource cache so per-pass bind groups memoize
+      // through the same identity-keyed cache as the frame/scene/ubo groups.
+      // Cleared on resize() + dispose(); resource identity changes (scene
+      // rebuild, emitter/env update, ping-pong reallocation) auto-invalidate.
+      resourceCache: this._resourceCache,
     };
 
     const gateOpts: PassGateOptions = {

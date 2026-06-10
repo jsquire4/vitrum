@@ -58,20 +58,38 @@ export function buildPerFrameBindGroups(
     aoFullView,
     tierView,
   );
+  // The cache key MUST list EVERY resource the scene bind group binds, in any
+  // order — a missing entry is a stale-binding bug: the memoized group keeps
+  // referencing a DESTROYED buffer/texture after an update path swaps it.
+  // The Wave A/B additions (analytic lights @13, rough-metal @14, env @15-19,
+  // beer @5, emissive @12, normals @11) recreate their resources in
+  // `updateAnalyticLights` / `updateEmitters` / `updateEnvironment`
+  // (BvhBufferHost) — destroy() + fresh upload changes identity, so listing
+  // them here makes those refresh paths auto-invalidate the scene group on the
+  // next frame without an explicit cache.clear(). `envSampler`/`envParamsBuffer`
+  // are reused across env swaps (stable identity) but are listed for
+  // completeness so a future lifecycle change can't silently desync.
   const sceneKey = [
     scene.bvhNodesBuffer,
     scene.bvhIndexBuffer,
     scene.bvhPositionBuffer,
     scene.emitterBuffer,
     scene.emitterCdfBuffer,
-    scene.bvhBeerTextureView,
-    scene.bvhNormalBuffer,
-    scene.bvhEmissiveTextureView,
+    scene.bvhBeerTextureView,        // 5
     scene.tlasNodesBuffer,
     scene.tlasInstanceIndicesBuffer,
     scene.tlasBlasRootsBuffer,
     scene.tlasInstanceWorldToLocalBuffer,
     scene.tlasInstanceLocalToWorldBuffer,
+    scene.bvhNormalBuffer,           // 11
+    scene.bvhEmissiveTextureView,    // 12
+    scene.analyticLightsBuffer,      // 13 — H41, recreated by updateAnalyticLights
+    scene.bvhRoughMetalTextureView,  // 14 — B1
+    scene.envMapTextureView,         // 15 — B3, recreated by updateEnvironment
+    scene.envMarginalTextureView,    // 16
+    scene.envConditionalTextureView, // 17
+    scene.envSampler,                // 18
+    scene.envParamsBuffer,           // 19
   ] as const;
   return {
     frame: resourceCache?.bindGroup('per-frame:frame', [

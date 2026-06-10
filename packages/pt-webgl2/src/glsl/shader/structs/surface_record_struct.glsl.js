@@ -64,6 +64,12 @@ export const surface_record_struct = /* glsl */`
 		vec3 specularColor;
 		float specularIntensity;
 
+		// D3 — per-material environment-IBL scale (default 1). Applied to BOTH MIS
+		// halves of the env estimator (NEE in directLightContribution + the forward
+		// env pickup via state.envMapIntensity) so the combined estimator stays
+		// consistent — radiance-only scale, pdfs untouched.
+		float envMapIntensity;
+
 		// Sprint 4: P1 — lobeMask bitfield for BSDF lobe skipping.
 		// bit 0 = diffuse, bit 1 = specular/GGX, bit 2 = sheen,
 		// bit 3 = clearcoat, bit 4 = iridescence, bit 5 = transmission.

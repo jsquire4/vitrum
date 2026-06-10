@@ -30,6 +30,10 @@ export const render_structs = /* glsl */`
 		float wavelengthPdf;
 		vec3 throughput;
 		Material fogMaterial;
+		// D3 — envMapIntensity of the LAST shaded surface; scales the forward env
+		// pickup after a bounce (the BSDF half of the env MIS estimator). 1.0 until
+		// the first surface is shaded (camera-visible env is never material-scaled).
+		float envMapIntensity;
 
 	};
 
@@ -47,6 +51,7 @@ export const render_structs = /* glsl */`
 		result.throughput = vec3( 1.0 );
 		result.depth = 0u;
 		result.fogMaterial.fogVolume = false;
+		result.envMapIntensity = 1.0;
 		return result;
 
 	}

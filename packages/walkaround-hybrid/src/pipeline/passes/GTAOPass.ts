@@ -41,7 +41,7 @@ export class GTAOPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, inputs, width, height, gtaoDownscale } = ctx;
+    const { device, encoder, computeDesc, bglCache, resources, inputs, width, height, gtaoDownscale, resourceCache } = ctx;
     // AO compute downscale: 2 = half-res (`gtaoMode:'on'`), 4 = quarter-res
     // (`gtaoMode:'quarter'`). Clamp ≥ 1 so a bad value can't divide by zero.
     const ds = Math.max(1, Math.floor(gtaoDownscale));
@@ -75,14 +75,28 @@ export class GTAOPass implements Pass {
     const wgGtaoX = Math.ceil(lowW / 8);
     const wgGtaoY = Math.ceil(lowH / 8);
 
-    const bg = buildGTAOBindGroup(
+    // D6 — class (a): all four bindings are stable resources (the GTAO UBO
+    // buffer identity is fixed; its CONTENTS are rewritten above each frame via
+    // writeBuffer, which is independent of the bind group). Memoize the group;
+    // the cache key is the resource identities so a resize-driven texture
+    // reallocation auto-invalidates.
+    const buildGtaoBg = (): GPUBindGroup => buildGTAOBindGroup(
       device, bglCache,
-      resources.common.gNormalDepthTexture.createView(),
-      resources.gtao.aoHalfTexture.createView(),
+      resourceCache?.textureView(resources.common.gNormalDepthTexture)
+        ?? resources.common.gNormalDepthTexture.createView(),
+      resourceCache?.textureView(resources.gtao.aoHalfTexture)
+        ?? resources.gtao.aoHalfTexture.createView(),
       resources.gtao.gtaoUboBuffer,
       // E1 — hdrAlbedoOut for Jiménez 2016 §5.2 multi-bounce term.
-      resources.common.albedoTexture.createView(),
+      resourceCache?.textureView(resources.common.albedoTexture)
+        ?? resources.common.albedoTexture.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:gtao', [
+      resources.common.gNormalDepthTexture,
+      resources.gtao.aoHalfTexture,
+      resources.gtao.gtaoUboBuffer,
+      resources.common.albedoTexture,
+    ], buildGtaoBg) ?? buildGtaoBg();
     const pass = encoder.beginComputePass(computeDesc('gtao'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);

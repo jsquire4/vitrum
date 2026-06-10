@@ -17,9 +17,13 @@
 import type { MaterialSpec, Vec3 } from '@vitrum/core';
 import type { MaterialsTextureData } from './sceneTextures.js';
 
-/** Pixels (RGBA32F texels) per material; verified against the fork (`MaterialsTexture.js:5`). */
-export const MATERIAL_PIXELS = 85;
-/** Floats per material (85 px × 4 channels). */
+import { MATERIAL_PIXELS } from '../glsl/shader/structs/materialStride.js';
+
+/** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
+ *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
+ *  texels 85..92 = 93). Re-exported for tests and parity guards. */
+export { MATERIAL_PIXELS };
+/** Floats per material (93 px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
 /** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
@@ -184,6 +188,20 @@ export function packMaterialsTexture(
     const emissiveLayer = mapLayer(m.emissiveMap, layerOf);
     const normalLayer = mapLayer(m.normalMap, layerOf);
     const alphaLayer = mapLayer(m.alphaMap, layerOf);
+    // D3 — clearcoat / sheen / iridescence / specular maps (GLSL already samples).
+    const clearcoatLayer = mapLayer(m.clearcoatMap, layerOf);
+    const clearcoatRoughnessLayer = mapLayer(m.clearcoatRoughnessMap, layerOf);
+    const clearcoatNormalLayer = mapLayer(m.clearcoatNormalMap, layerOf);
+    const sheenColorLayer = mapLayer(m.sheenColorMap, layerOf);
+    const sheenRoughnessLayer = mapLayer(m.sheenRoughnessMap, layerOf);
+    const iridescenceLayer = mapLayer(m.iridescenceMap, layerOf);
+    const iridescenceThicknessLayer = mapLayer(m.iridescenceThicknessMap, layerOf);
+    const specularColorLayer = mapLayer(m.specularColorMap, layerOf);
+    const specularIntensityLayer = mapLayer(m.specularIntensityMap, layerOf);
+    // D3 — aoMap / lightMap / bumpMap (new GLSL consumption sites).
+    const aoLayer = mapLayer(m.aoMap, layerOf);
+    const lightMapLayer = mapLayer(m.lightMap, layerOf);
+    const bumpLayer = mapLayer(m.bumpMap, layerOf);
 
     // sample 0 — color.rgb / map
     data[index++] = color[0];
@@ -216,10 +234,10 @@ export function packMaterialsTexture(
     data[index++] = clearcoat;
 
     // sample 5 — clearcoatMap / clearcoatRoughness / clearcoatRoughnessMap / clearcoatNormalMap
-    data[index++] = NO_TEXTURE;
+    data[index++] = clearcoatLayer;
     data[index++] = clearcoatRoughness;
-    data[index++] = NO_TEXTURE;
-    data[index++] = NO_TEXTURE;
+    data[index++] = clearcoatRoughnessLayer;
+    data[index++] = clearcoatNormalLayer;
 
     // sample 6 — clearcoatNormalScale.xy / pad / sheen
     data[index++] = clearcoatNormalScale;
@@ -231,13 +249,13 @@ export function packMaterialsTexture(
     data[index++] = sheenColor[0];
     data[index++] = sheenColor[1];
     data[index++] = sheenColor[2];
-    data[index++] = NO_TEXTURE;
+    data[index++] = sheenColorLayer;
 
     // sample 8 — sheenRoughness / sheenRoughnessMap / iridescenceMap / iridescenceThicknessMap
     data[index++] = sheenRoughness;
-    data[index++] = NO_TEXTURE;
-    data[index++] = NO_TEXTURE;
-    data[index++] = NO_TEXTURE;
+    data[index++] = sheenRoughnessLayer;
+    data[index++] = iridescenceLayer;
+    data[index++] = iridescenceThicknessLayer;
 
     // sample 9 — iridescence / iridescenceIOR / iridThicknessRange.xy
     data[index++] = iridescence;
@@ -249,11 +267,11 @@ export function packMaterialsTexture(
     data[index++] = specularColor[0];
     data[index++] = specularColor[1];
     data[index++] = specularColor[2];
-    data[index++] = NO_TEXTURE;
+    data[index++] = specularColorLayer;
 
     // sample 11 — specularIntensity / specularIntensityMap / isThinFilm / —
     data[index++] = specularIntensity;
-    data[index++] = NO_TEXTURE;
+    data[index++] = specularIntensityLayer;
     data[index++] = Number(isThinFilm);
     index++; // pad (fork does `index ++`)
 
@@ -383,12 +401,44 @@ export function packMaterialsTexture(
     // texture (others stay zero / unread → identity). Maps without a transform slot
     // (alphaMap) sample with raw uv. The fork's `writeTextureMatrixToArray` is the
     // analogue.
+    // Transform-slot order matches the GLSL `readTextureTransform` calls in
+    // material_struct.glsl.js (firstTextureTransformIdx + 2k): map(0), metalness(2),
+    // roughness(4), transmission(6), emissive(8), normal(10), clearcoat(12),
+    // clearcoatNormal(14), clearcoatRoughness(16), sheenColor(18), sheenRoughness(20),
+    // iridescence(22), iridescenceThickness(24), specularColor(26), specularIntensity(28).
+    // Each slot is 2 texels (mat3 rows), starting at texel 55.
     if (baseColorLayer >= 0) writeTransform(data, base, 55, m.baseColorMap);
     if (metalLayer >= 0) writeTransform(data, base, 57, m.metallicMap);
     if (roughLayer >= 0) writeTransform(data, base, 59, m.roughnessMap);
     if (transmissionLayer >= 0) writeTransform(data, base, 61, m.transmissionMap);
     if (emissiveLayer >= 0) writeTransform(data, base, 63, m.emissiveMap);
     if (normalLayer >= 0) writeTransform(data, base, 65, m.normalMap);
+    // D3 — clearcoat / sheen / iridescence / specular transforms (GLSL slots 12..28).
+    if (clearcoatLayer >= 0) writeTransform(data, base, 67, m.clearcoatMap);
+    if (clearcoatNormalLayer >= 0) writeTransform(data, base, 69, m.clearcoatNormalMap);
+    if (clearcoatRoughnessLayer >= 0) writeTransform(data, base, 71, m.clearcoatRoughnessMap);
+    if (sheenColorLayer >= 0) writeTransform(data, base, 73, m.sheenColorMap);
+    if (sheenRoughnessLayer >= 0) writeTransform(data, base, 75, m.sheenRoughnessMap);
+    if (iridescenceLayer >= 0) writeTransform(data, base, 77, m.iridescenceMap);
+    if (iridescenceThicknessLayer >= 0) writeTransform(data, base, 79, m.iridescenceThicknessMap);
+    if (specularColorLayer >= 0) writeTransform(data, base, 81, m.specularColorMap);
+    if (specularIntensityLayer >= 0) writeTransform(data, base, 83, m.specularIntensityMap);
+
+    // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
+    // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
+    let d3 = base + 85 * 4;
+    data[d3++] = aoLayer;
+    data[d3++] = lightMapLayer;
+    data[d3++] = bumpLayer;
+    data[d3++] = m.envMapIntensity ?? 1.0;
+    data[d3++] = m.aoMapIntensity ?? 1.0;
+    data[d3++] = m.lightMapIntensity ?? 1.0;
+    data[d3++] = m.bumpScale ?? 1.0;
+    data[d3++] = 0; // pad
+    // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
+    if (aoLayer >= 0) writeTransform(data, base, 87, m.aoMap);
+    if (lightMapLayer >= 0) writeTransform(data, base, 89, m.lightMap);
+    if (bumpLayer >= 0) writeTransform(data, base, 91, m.bumpMap);
 
     index = base + MATERIAL_STRIDE;
   }

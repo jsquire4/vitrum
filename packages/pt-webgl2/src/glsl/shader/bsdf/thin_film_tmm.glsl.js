@@ -1,8 +1,10 @@
+import { MATERIAL_PIXELS } from '../structs/materialStride.js';
+
 export const thin_film_tmm = /* glsl */`
 
 	// Sprint 14 (RFE-14): 35-layer thin-film evaluator (TE approximation).
 	#define N_THIN_FILM_LAYERS 35
-	const uint MATERIAL_PIXELS = 85u;
+	const uint MATERIAL_PIXELS = ${MATERIAL_PIXELS}u;
 	const uint THIN_FILM_SAMPLE_OFFSET = 28u;
 
 	float getMaterialStackScalar( uint materialIndex, uint scalarOffset ) {

@@ -242,6 +242,15 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       emitters: WALKAROUND_EMITTERS,
       environments: {
         none: 'native',
+        // B3 (road-to-100) — PARTIAL as of 2026-06-10: the scene-load env path
+        // builds equirect importance-sampling inverse-CDFs (sinθ-weighted,
+        // rotationY-aware) and binds radiance map + CDFs at scene-group bindings
+        // 15-19, and GI-escape rays DO read the real map (`risGi.wgsl` envRadiance).
+        // But `envImportanceSample`/`envDirectionalPdf` have no call sites (no env
+        // NEE), DDGI probe misses still sample a procedural gradient, and the NRC
+        // GI variant falls back to the scalar tint — so HDRI lighting is not yet
+        // full-fidelity. Held at 'approximate' until the Wave-4 env pillar lands
+        // (see plan/v1-closure-plan-2026-06-10.md §5); promote to 'native' there.
         hdri: 'approximate',
         'procedural-sky': 'unsupported',
       },

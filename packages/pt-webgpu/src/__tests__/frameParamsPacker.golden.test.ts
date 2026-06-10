@@ -86,7 +86,9 @@ function reconstructExpected(
   f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
   f[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
   f[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-  f[FrameParamsSlot.cameraPos + 3] = 1;
+  // D3 — cameraPos.w now carries the soft-sun angular diameter (was constant 1,
+  // never read by any shader; 0 = exact delta directional).
+  f[FrameParamsSlot.cameraPos + 3] = sb.directionalAngularDiameter;
   f[FrameParamsSlot.lightDir] = sb.directionalLight[0];
   f[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
   f[FrameParamsSlot.lightDir + 2] = sb.directionalLight[2];
@@ -128,6 +130,7 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     lightTreeNodeCount: 9,
     directionalLight: [0.1, -0.9, 0.3],
     directionalIrradiance: [1.2, 0.8, 0.5],
+    directionalAngularDiameter: 0,
     environmentTint: [0.95, 0.97, 1.0],
     environmentSunDirection: [0.0, 1.0, 0.0],
     environmentSunStrength: 3.5,
@@ -337,7 +340,8 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);
-    expect(f[FrameParamsSlot.cameraPos + 3]).toBe(1);
+    // D3 — cameraPos.w = directionalAngularDiameter (0 in the canonical input).
+    expect(f[FrameParamsSlot.cameraPos + 3]).toBe(0);
     expect(f[FrameParamsSlot.lightDir + 3]).toBeCloseTo((1.2 + 0.8 + 0.5) / 3, 6);
     expect(f[FrameParamsSlot.environmentSun + 3]).toBe(3.5);
   });
