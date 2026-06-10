@@ -148,6 +148,12 @@ function unionBinInto(target: AabbBin, src: AabbBin): void {
 }
 
 function buildLeaf(records: ReadonlyArray<InstanceRecord>): TlasNodeBuild {
+  if (records.length > 0xffff) {
+    throw new Error(
+      `[@vitrum/shared-bvh/tlas] Leaf instance count ${records.length} exceeds the ` +
+      `16-bit limit (0xFFFF = 65535). Reduce the number of instances per leaf.`,
+    );
+  }
   let nMinX = Infinity, nMinY = Infinity, nMinZ = Infinity;
   let nMaxX = -Infinity, nMaxY = -Infinity, nMaxZ = -Infinity;
   for (const r of records) {
@@ -312,6 +318,12 @@ function buildRecursive(
   const { left, right } = partitionByBin(records, cb, split.axis, split.binIdx, numBins);
   if (left.length === 0 || right.length === 0) {
     // Degenerate split → fall back to a leaf.
+    if (records.length > 0xffff) {
+      throw new Error(
+        `[@vitrum/shared-bvh/tlas] Degenerate-partition leaf instance count ${records.length} exceeds the ` +
+        `16-bit limit (0xFFFF = 65535). Reduce the number of instances per leaf.`,
+      );
+    }
     const leaf = buildLeaf(records);
     leaf.rightChildOrInstanceOffset = permutation.length;
     leaf.splitAxisOrInstanceCount = TLAS_LEAFNODE_FLAG | records.length;

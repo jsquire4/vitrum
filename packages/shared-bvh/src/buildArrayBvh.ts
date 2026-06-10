@@ -248,6 +248,9 @@ export function buildArrayBvh(
   }
 
   const records: TriangleRecord[] = [];
+  const MAX_NAN_WARNS = 10;
+  let nanWarnCount = 0;
+  let nanFilteredCount = 0;
   for (let t = 0; t < triCount; t += 1) {
     const i0 = indices[t * indexStride] ?? 0;
     const i1 = indices[t * indexStride + 1] ?? 0;
@@ -255,6 +258,21 @@ export function buildArrayBvh(
     const a = getPosition(positions, i0, positionStride);
     const b = getPosition(positions, i1, positionStride);
     const c = getPosition(positions, i2, positionStride);
+    // Filter triangles whose AABB would be non-finite (NaN or Inf vertex coordinate
+    // poisons the root AABB → silently black scene).
+    const isFiniteCoord = (v: readonly [number, number, number]): boolean =>
+      isFinite(v[0]) && isFinite(v[1]) && isFinite(v[2]);
+    if (!isFiniteCoord(a) || !isFiniteCoord(b) || !isFiniteCoord(c)) {
+      nanFilteredCount += 1;
+      if (nanWarnCount < MAX_NAN_WARNS) {
+        console.warn(
+          `[@vitrum/shared-bvh/buildArrayBvh] Triangle ${t} has non-finite vertex coordinate ` +
+          `(NaN or Inf); filtering it from the BVH build. Check the mesh source data.`,
+        );
+        nanWarnCount += 1;
+      }
+      continue;
+    }
     const triMin = min3(a, b, c);
     const triMax = max3(a, b, c);
     records.push({
@@ -263,6 +281,12 @@ export function buildArrayBvh(
       max: triMax,
       centroid: triCentroid(triMin, triMax),
     });
+  }
+  if (nanFilteredCount > MAX_NAN_WARNS) {
+    console.warn(
+      `[@vitrum/shared-bvh/buildArrayBvh] ${nanFilteredCount} non-finite triangles filtered ` +
+      `(${MAX_NAN_WARNS} individual warnings shown above).`,
+    );
   }
 
   const nodes: NodeBuild[] = [];
@@ -318,6 +342,12 @@ export function buildArrayBvh(
 
     // Leaf: too few triangles to split profitably.
     if (subset.length <= maxLeafTriangles) {
+      if (subset.length > 0xffff) {
+        throw new Error(
+          `[@vitrum/shared-bvh/buildArrayBvh] Leaf triangle count ${subset.length} exceeds the ` +
+          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
+        );
+      }
       const leafOffset = orderedTriangles.length;
       for (const r of subset) orderedTriangles.push(r.triIndex);
       node.rightChildOrTriOffset = leafOffset;
@@ -436,6 +466,12 @@ export function buildArrayBvh(
     // (This happens when all centroids are co-planar on every axis, or when
     // the SAH cost exceeds N.)
     if (bestCost >= leafCost || bestCost === Infinity) {
+      if (subset.length > 0xffff) {
+        throw new Error(
+          `[@vitrum/shared-bvh/buildArrayBvh] Forced-leaf triangle count ${subset.length} exceeds the ` +
+          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
+        );
+      }
       const leafOffset = orderedTriangles.length;
       for (const r of subset) orderedTriangles.push(r.triIndex);
       node.rightChildOrTriOffset = leafOffset;
@@ -460,6 +496,12 @@ export function buildArrayBvh(
     // Degenerate partition: SAH chose a split that put everything on one side.
     // Fall back to a leaf to avoid infinite recursion.
     if (left.length === 0 || right.length === 0) {
+      if (subset.length > 0xffff) {
+        throw new Error(
+          `[@vitrum/shared-bvh/buildArrayBvh] Degenerate-partition leaf triangle count ${subset.length} exceeds the ` +
+          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
+        );
+      }
       const leafOffset = orderedTriangles.length;
       for (const r of subset) orderedTriangles.push(r.triIndex);
       node.rightChildOrTriOffset = leafOffset;

@@ -808,9 +808,24 @@ function splicePrimitiveBlasIntoPack(
 /**
  * Pack mesh-like primitives from a `@vitrum/core` `Scene` into concatenated
  * local BLAS buffers and an optional TLAS over instances.
+ *
+ * **`tlas:false` + multiple primitives:** when the caller explicitly disables TLAS
+ * but the scene contains more than one mesh-like primitive, the resulting
+ * per-BLAS-only concat is an untraversable forest (the WGSL traversal expects a
+ * single root node, not multiple disjoint subtrees). The packer automatically
+ * upgrades to `tlas:true` in this case and emits a warning. If you intentionally
+ * want a single-primitive pack without a TLAS, ensure the scene contains exactly
+ * one mesh-like primitive.
  */
 export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePackResult {
-  const buildTlasTree = opts.tlas !== false;
+  // H34-d: guard the `tlas:false` + multiple-primitive footgun. Count mesh-like
+  // primitives first (excluding analytics that are already skipped below). Auto-
+  // upgrade to tlas mode if >1 mesh-like primitive is present.
+  const meshLikeCount = scene.primitives.filter(
+    (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
+  ).length;
+  const requestedTlas = opts.tlas !== false;
+  const buildTlasTree = requestedTlas || meshLikeCount > 1;
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
@@ -820,6 +835,14 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const pendingTlasInstances: PendingTlasInstance[] = [];
   const primitiveTlasBindings: PrimitiveTlasBinding[] = [];
   const warnings: string[] = [];
+
+  if (!requestedTlas && meshLikeCount > 1) {
+    warnings.push(
+      `packSceneFromCore: tlas:false was requested but the scene has ${meshLikeCount} mesh-like ` +
+      `primitives. A per-BLAS-only concat of multiple primitives is an untraversable forest; ` +
+      `automatically upgrading to tlas:true.`,
+    );
+  }
 
   for (const primitive of scene.primitives) {
     if (!isMeshLike(primitive)) {
@@ -837,6 +860,17 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     const { slice, warnings: sliceWarnings } = packOneMeshLikePrimitive(primitive, matId);
     warnings.push(...sliceWarnings);
     if (slice == null) {
+      continue;
+    }
+
+    // H34-c: Skip zero-instance instanced meshes entirely — before concatenating
+    // any geometry — so no orphan BLAS nodes are emitted that would break the
+    // bindings-tile-the-node-array invariant.
+    if (primitive.kind === 'instanced-mesh' && primitive.instances.length === 0) {
+      warnings.push(
+        `Primitive "${primitive.id}" is an instanced-mesh with zero instances; ` +
+        `skipping (no geometry or BLAS nodes contributed).`,
+      );
       continue;
     }
 
@@ -881,10 +915,8 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     if (buildTlasTree) {
       const transforms =
         primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-      if (transforms.length === 0) {
-        warnings.push(`Instanced primitive "${primitive.id}" has no instances; skipping TLAS instance upload.`);
-        continue;
-      }
+      // Zero-instance case is handled above (before geometry concatenation); this
+      // branch should never be reached with an empty transforms array now.
       for (const transform of transforms) {
         const { instance, nonInvertible } = resolveOneTransform(
           transform,
@@ -893,9 +925,13 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
           nodeBase,
         );
         if (nonInvertible) {
+          // H34-e: singular transform → skip this TLAS instance with a warning
+          // rather than silently placing geometry at the origin.
           warnings.push(
-            `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
+            `Primitive "${primitive.id}" has non-invertible instance transform; ` +
+            `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
           );
+          continue;
         }
         pendingTlasInstances.push(instance);
       }

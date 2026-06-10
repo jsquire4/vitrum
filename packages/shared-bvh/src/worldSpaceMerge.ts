@@ -305,11 +305,16 @@ function determinant4(m: ArrayLike<number>): number {
  * Structural material signature — the core `MaterialSpec` counterpart to
  * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes only the fields
  * the GI/PT consumers read (baseColor, emissive, emissiveIntensity, roughness,
- * metallic, transmission, ior, and base/normal map handle identity), with the
- * SAME `toFixed(4)` quantisation, so two primitives carrying structurally-equal
- * materials collapse to one LUT slot — exactly as the THREE value-dedup does for
- * React/R3F material churn. Map identity uses the opaque `TextureRef.handle`
- * (the core analogue of THREE's `texture.uuid`).
+ * metallic, transmission, ior, Beer-Lambert attenuation fields, and base/normal
+ * map handle identity), with the SAME `toFixed(4)` quantisation, so two primitives
+ * carrying structurally-equal materials collapse to one LUT slot — exactly as the
+ * THREE value-dedup does for React/R3F material churn. Map identity uses the opaque
+ * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
+ *
+ * Beer-Lambert fields (`attenuationColor`, `attenuationDistance`, `thickness`) are
+ * included to match `materialSetHashFloats` in `sceneBvh.ts`. Infinity
+ * `attenuationDistance` is normalised to the token `'Inf'` so the signature remains
+ * a stable string (JSON.stringify of Infinity produces `null`).
  */
 export function materialSig(m: MaterialSpec): string {
   const col = m.baseColor;
@@ -327,7 +332,19 @@ export function materialSig(m: MaterialSpec): string {
   const ior = (m.ior ?? 1.5).toFixed(4);
   const mapU = handleId(m.baseColorMap?.handle);
   const nmU = handleId(m.normalMap?.handle);
-  return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}`;
+  // Beer-Lambert fields — must match materialSetHashFloats in sceneBvh.ts.
+  const ac = m.attenuationColor;
+  const acS = ac
+    ? `${(ac[0] ?? 1).toFixed(4)},${(ac[1] ?? 1).toFixed(4)},${(ac[2] ?? 1).toFixed(4)}`
+    : '1.0000,1.0000,1.0000';
+  const adRaw = m.attenuationDistance;
+  const adS = adRaw == null
+    ? 'Inf'
+    : !isFinite(adRaw)
+      ? 'Inf'
+      : adRaw.toFixed(4);
+  const thS = (m.thickness ?? 0).toFixed(4);
+  return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}|${acS}|${adS}|${thS}`;
 }
 
 /** A stable per-handle identity string for the dedup signature. Objects use a

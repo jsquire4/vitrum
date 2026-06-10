@@ -65,8 +65,15 @@ export class SceneBvh {
    * Rebuild the DDGI merged BVH from a `@vitrum/core` Scene directly.
    * Geometry comes from `mergeWorldSpaceFromCore` at the same stride-4 layout
    * the DDGI WGSL probe pass reads (`array<vec3f>` = 16-byte stride).
+   *
+   * The slow-rebuild timer covers the entire scope of real work (merge + BVH
+   * build + fingerprint) so that `onSlowRebuild` can actually fire. (Previously
+   * the timer only measured an object-literal assignment — an ~0 µs no-op.)
    */
   updateFromCore(scene: Scene): void {
+    // H34-g: start timing BEFORE the expensive merge so onSlowRebuild can fire.
+    const t0 = performance.now();
+
     const merged = mergeWorldSpaceFromCore(scene, {
       positionStride: 4,
       filter: DDGI_CORE_MESH_FILTER,
@@ -86,8 +93,6 @@ export class SceneBvh {
     );
     if (fingerprint === this._lastCoreFingerprint && this._buffers !== null) return;
     this._lastCoreFingerprint = fingerprint;
-
-    const t0 = performance.now();
 
     this._buffers = {
       bvhNodes: merged.bvhNodes,

@@ -705,7 +705,8 @@ describe('packSceneFromCore — warning characterization', () => {
     expect(packed.triangleCount).toBe(0);
   });
 
-  it('emits non-invertible warning and falls back to identity (exact message)', () => {
+  // H34-e: singular transform → skip-with-warning (not identity-at-origin fallback).
+  it('emits non-invertible warning and skips the TLAS instance (H34-e new behavior)', () => {
     // A zero-column matrix is singular (det=0) — invertMat4 returns null.
     const singular = asMat4(new Float32Array([
       0, 0, 0, 0,
@@ -726,13 +727,15 @@ describe('packSceneFromCore — warning characterization', () => {
       environment: { kind: 'none' },
     };
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    // H34-e: now emits skip warning, not identity-fallback warning.
     expect(packed.warnings).toContain(
-      'Primitive "sing" has non-invertible instance transform; using identity fallback for TLAS transform.',
+      'Primitive "sing" has non-invertible instance transform; ' +
+      'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
     );
-    // Primitive is still packed (non-invertible only affects TLAS transform, not the BLAS).
+    // BLAS geometry is still packed — the primitive contributes triangles to the BLAS buffer.
     expect(packed.triangleCount).toBe(1);
-    // TLAS uses identity fallback: the world AABB matches the local AABB.
-    expect(packed.primitiveTlasBindings[0]?.localAabbMin).toEqual([0, 0, 0]);
+    // But the TLAS has NO instances (the singular transform instance was skipped).
+    expect(packed.tlasNodeCount).toBe(0);
   });
 });
 
@@ -823,5 +826,66 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     );
     expect(pack.uvs.length).toBe(pack.positions.length);
     expect(pack.uvs.every((v) => v === 0)).toBe(true);
+  });
+});
+
+// ─── H34-c: zero-instance instanced-mesh ─────────────────────────────────────
+describe('H34-c: zero-instance instanced-mesh skips geometry', () => {
+  it('[meshA, zeroInstanceB, meshC] packs only meshA and meshC', () => {
+    const meshA = unitTriMesh('A', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])));
+    const zeroInstB: Scene['primitives'][number] = {
+      kind: 'instanced-mesh',
+      id: 'B',
+      positions: new Float32Array([0,0,0, 1,0,0, 0,1,0]),
+      normals: new Float32Array([0,0,1, 0,0,1, 0,0,1]),
+      material: { baseColor: [1,1,1], roughness: 0.5, metallic: 0 },
+      instances: [],
+    };
+    const meshC = unitTriMesh('C', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1])));
+    const scene: Scene = {
+      primitives: [meshA, zeroInstB, meshC],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    // Two non-zero primitives → 2 triangles
+    expect(packed.triangleCount).toBe(2);
+    // Warning must mention the zero-instance primitive
+    expect(packed.warnings.some((w) => w.includes('"B"') && w.includes('zero instances'))).toBe(true);
+    // TLAS bindings must NOT include B
+    const bindingIds = packed.primitiveTlasBindings.map((b) => b.primitiveId);
+    expect(bindingIds).not.toContain('B');
+    expect(bindingIds).toContain('A');
+    expect(bindingIds).toContain('C');
+  });
+});
+
+// ─── H34-d: tlas:false + multiple primitives → warn+auto-upgrade ─────────────
+describe('H34-d: tlas:false with multiple primitives auto-upgrades to tlas', () => {
+  it('emits a warning and still builds a TLAS when tlas:false + 2 primitives', () => {
+    const meshA = unitTriMesh('A');
+    const meshB = unitTriMesh('B', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1])));
+    const scene: Scene = {
+      primitives: [meshA, meshB],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+    // Both triangles packed
+    expect(packed.triangleCount).toBe(2);
+    // TLAS was built (node count > 0)
+    expect(packed.tlasNodeCount).toBeGreaterThan(0);
+    // Warning about auto-upgrade
+    expect(packed.warnings.some((w) => w.includes('tlas:false') && w.includes('auto'))).toBe(true);
+  });
+
+  it('tlas:false with a single primitive does NOT emit the multi-prim warning', () => {
+    const scene: Scene = {
+      primitives: [unitTriMesh('A')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+    expect(packed.warnings.some((w) => w.includes('tlas:false'))).toBe(false);
   });
 });
