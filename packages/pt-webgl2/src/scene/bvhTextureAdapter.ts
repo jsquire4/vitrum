@@ -38,7 +38,7 @@ export interface BvhTextureData {
   /** RGBA32UI, 1 texel/tri: .xyz = the 3 GLOBAL vertex indices (.w unused). */
   readonly index: Uint32Array;
   readonly indexDim: number;
-  /** R32UI as RGBA32UI .x, 1 texel/tri: per-triangle material id. */
+  /** RGBA32UI .x, 1 texel/tri: per-triangle material id; indexed in GLSL by faceIndices.w. */
   readonly materialIndex: Uint32Array;
   readonly materialIndexDim: number;
   readonly nodeCount: number;
@@ -124,42 +124,19 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
     index[dst + 2] = pack.indices[src + 2]!;
   }
 
-  // materialIndex — RGBA32UI .x, PER-VERTEX. The fork GLSL reads
-  // `uTexelFetch1D(materialIndexAttribute, surfaceHit.faceIndices.x).r` — indexed by a
-  // VERTEX index, not a triangle index (it mirrors three-mesh-bvh's per-vertex
-  // UIntVertexAttributeTexture). So assign each vertex its triangle's material id.
-  const materialIndexDim = squareDim(vertexCount);
+  // materialIndex — RGBA32UI .x, PER-TRIANGLE. The GLSL reads
+  // `uTexelFetch1D(materialIndexAttribute, surfaceHit.faceIndices.w).r` — indexed by the
+  // triangle index stored in faceIndices.w by intersectTriangles() in bvh_ray_functions.glsl.js
+  // (line: `faceIndices = uvec4( indices.xyz, i )` where `i` is the loop index into the
+  // index texture, i.e. the triangle id). One entry per triangle is structurally correct:
+  // each triangle belongs to exactly one material, regardless of vertex sharing. The former
+  // per-vertex layout required the H8 dev-mode assertion to guard against last-writer-wins
+  // corruption when vertices were shared across material boundaries; that ambiguity class is
+  // now gone because the fetch is keyed on the triangle, not a vertex.
+  const materialIndexDim = squareDim(triangleCount);
   const materialIndex = new Uint32Array(materialIndexDim * materialIndexDim * 4);
-  // H8 dev-mode assertion: a vertex must not be shared across triangles with DIFFERENT
-  // material ids. When a vertex is assigned M1 by one triangle and then M2 by another,
-  // the second silently overwrites the first — the GLSL reads ONE material id per vertex
-  // but the geometry is ambiguous. This class of bug has recurred. Gate: runs only in
-  // Node-side dev/test runs (NODE_ENV unset, 'development', or 'test'); browsers have no
-  // `process` global so the check is OFF in shipped bundles. Read via `globalThis` so a
-  // browser-targeted typecheck needs no @types/node. The check is O(vertices) with a
-  // Uint32Array sentinel. Any collision is a CALLER BUG — the host must not share
-  // vertices across primitives that belong to different materials.
-  const __nodeEnv = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV;
-  const __devCheck = __nodeEnv != null && __nodeEnv !== 'production';
-  const __devPrevMat: Uint32Array | null = __devCheck ? new Uint32Array(vertexCount).fill(0xffffffff) : null;
   for (let t = 0; t < triangleCount; t += 1) {
-    const m = triMaterialIds[t]!;
-    const src = t * indexStride;
-    for (let vi = 0; vi < 3; vi += 1) {
-      const vIdx = pack.indices[src + vi]!;
-      if (__devPrevMat != null) {
-        const prev = __devPrevMat[vIdx]!;
-        if (prev !== 0xffffffff && prev !== m) {
-          throw new Error(
-            `pt-webgl2 [dev]: vertex ${vIdx} is shared by triangles with DIFFERENT material ids ` +
-              `(${prev} vs ${m}). Shared vertices across material boundaries produce ` +
-              `non-deterministic GLSL materialIndex reads — split the vertex or merge the materials.`,
-          );
-        }
-        __devPrevMat[vIdx] = m;
-      }
-      materialIndex[vIdx * 4] = m;
-    }
+    materialIndex[t * 4] = triMaterialIds[t]!;
   }
 
   return {

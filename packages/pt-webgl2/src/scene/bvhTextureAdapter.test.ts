@@ -167,39 +167,17 @@ describe('BVH texture adapter — packed textures traverse correctly (vs brute f
   });
 });
 
-// H8 — dev-mode materialIndex aliasing invariant assertion.
-// A vertex shared by two triangles with DIFFERENT material ids produces non-deterministic
-// GLSL reads. The assertion catches this bug class at pack time in non-production runs.
-describe('packBvhTextureData — H8 materialIndex aliasing invariant', () => {
-  it('does NOT throw when all triangles sharing a vertex use the SAME material id', () => {
-    // Two triangles that share 2 vertices (v0,v2) — both belong to material 0.
-    const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
-    const positions = new Float32Array([
-      0, 0, 0, 0, 0, 0,   // v0
-      1, 0, 0, 0, 0, 0,   // v1
-      1, 1, 0, 0, 0, 0,   // v2
-      0, 1, 0, 0, 0, 0,   // v3
-    ]);
-    const triMaterialIds = new Uint32Array([0, 0]); // both tris → material 0 ✓
-    const mockPack = {
-      bvhNodes: new Float32Array([
-        -1, -1, -1, 0, 2, 2, 0,  // node 0 boundsMin/Max stubs
-        0xffff0000 | 2, 0,        // leaf: 2 tris starting at 0
-      ]).slice(0, 8),
-      positions,
-      indices,
-      triangleCount: 2,
-      vertexCount: 4,
-      positionStrideFloats: 6,
-      bvhIndexStride: 3,
-      triMaterialId: triMaterialIds,
-    } as unknown as Parameters<typeof packBvhTextureData>[0];
-    expect(() => packBvhTextureData(mockPack)).not.toThrow();
-  });
-
-  it('THROWS in dev mode when a vertex is shared by triangles with DIFFERENT material ids', () => {
-    // Triangle 0: v0,v1,v2 → material 0. Triangle 1: v2,v3,v0 → material 1.
-    // v0 (shared) gets material 0 from tri-0, then material 1 from tri-1 → CONFLICT.
+// D10.9 — per-triangle materialIndex layout.
+// The texture is now keyed on triangle index (faceIndices.w in GLSL), not vertex index.
+// This eliminates the ambiguity class where a vertex shared between triangles of DIFFERENT
+// materials received the last writer's material id (H8). The H8 dev-mode assertion is
+// removed because the structural fix makes it impossible: each triangle slot is written
+// exactly once from triMaterialIds[t], regardless of vertex sharing.
+describe('packBvhTextureData — per-triangle materialIndex layout (D10.9)', () => {
+  it('stores one material id per TRIANGLE (not per vertex)', () => {
+    // Two triangles sharing vertices v0 and v2, with DIFFERENT material ids.
+    // Under the old per-vertex layout this would have triggered the H8 assertion.
+    // Under the new per-triangle layout it must succeed and pack correctly.
     const indices = new Uint32Array([0, 1, 2, 2, 3, 0]);
     const positions = new Float32Array([
       0, 0, 0, 0, 0, 0,  // v0
@@ -207,7 +185,7 @@ describe('packBvhTextureData — H8 materialIndex aliasing invariant', () => {
       1, 1, 0, 0, 0, 0,  // v2
       0, 1, 0, 0, 0, 0,  // v3
     ]);
-    const triMaterialIds = new Uint32Array([0, 1]); // CONFLICT at v0 and v2
+    const triMaterialIds = new Uint32Array([5, 7]); // different materials — cross-material vertex sharing
     const mockPack = {
       bvhNodes: new Float32Array(8),
       positions,
@@ -218,7 +196,26 @@ describe('packBvhTextureData — H8 materialIndex aliasing invariant', () => {
       bvhIndexStride: 3,
       triMaterialId: triMaterialIds,
     } as unknown as Parameters<typeof packBvhTextureData>[0];
-    // NODE_ENV is 'test' in vitest → assertion fires.
-    expect(() => packBvhTextureData(mockPack)).toThrow(/vertex.*material ids/i);
+    // Must not throw — cross-material vertex sharing is now valid.
+    let d: ReturnType<typeof packBvhTextureData>;
+    expect(() => { d = packBvhTextureData(mockPack); }).not.toThrow();
+    // materialIndex texture has one RGBA texel per triangle (not per vertex).
+    // triangleCount=2, squareDim(2)=2 → 2×2×4 = 16 elements.
+    expect(d!.materialIndexDim).toBe(2);
+    expect(d!.materialIndex.length).toBe(16);
+    // Triangle 0 → material 5, triangle 1 → material 7 (RGBA stride, .x = material id).
+    expect(d!.materialIndex[0]).toBe(5);   // tri 0, texel 0, .r
+    expect(d!.materialIndex[4]).toBe(7);   // tri 1, texel 1, .r
+  });
+
+  it('packs the multi-node scene with correct per-triangle material ids', () => {
+    const pack = mergeWorldSpaceFromCore(multiNodeScene(), { positionStride: 4 });
+    const d = packBvhTextureData(pack);
+    // materialIndexDim should accommodate triangleCount texels, not vertexCount.
+    expect(d.materialIndexDim * d.materialIndexDim).toBeGreaterThanOrEqual(d.triangleCount);
+    // All primitives use GREY → material id 0 for every triangle.
+    for (let t = 0; t < d.triangleCount; t += 1) {
+      expect(d.materialIndex[t * 4]).toBe(0);
+    }
   });
 });

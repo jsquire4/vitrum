@@ -191,7 +191,7 @@ export const bdpt_light_subpath = /* glsl */`
 			}
 
 			// Fetch material at the new hit.
-			uint matIdx  = uTexelFetch1D( materialIndexAttribute, scatterHit.faceIndices.x ).r;
+			uint matIdx  = uTexelFetch1D( materialIndexAttribute, scatterHit.faceIndices.w ).r;
 			Material mat = readMaterialInfo( materials, matIdx );
 
 			// Skip specular / delta-BSDF surfaces — MIS weight would be zero for

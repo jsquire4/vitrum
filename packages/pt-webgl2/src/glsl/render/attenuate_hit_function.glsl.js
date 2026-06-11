@@ -49,7 +49,7 @@ export const attenuate_hit_function = /* glsl */`
 				// Should be able to work using the material BSDF functions which will take into account specularity, etc.
 				// TODO: should we account for emissive surfaces here?
 
-				uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.x ).r;
+				uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
 				Material material = readMaterialInfo( materials, materialIndex );
 
 				// adjust the ray to the new surface

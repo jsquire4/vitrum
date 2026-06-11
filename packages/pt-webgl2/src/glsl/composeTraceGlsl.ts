@@ -795,7 +795,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 							}
 
-							uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.x ).r;
+							uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
 							Material material = readMaterialInfo( materials, materialIndex );
 
 							#if FEATURE_FOG
@@ -1011,7 +1011,7 @@ const RENDER_MAIN_CAUSTIC_MANIFOLD = /* glsl */ `
 													reachedLight = true;
 													break;
 												}
-												uint walkMaterialIndex = uTexelFetch1D( materialIndexAttribute, walkHit.faceIndices.x ).r;
+												uint walkMaterialIndex = uTexelFetch1D( materialIndexAttribute, walkHit.faceIndices.w ).r;
 												Material walkMaterial = readMaterialInfo( materials, walkMaterialIndex );
 												if ( walkMaterial.transmission <= 0.0 ) {
 													break;

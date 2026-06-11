@@ -37,7 +37,7 @@ bool bvhIntersectFogVolumeHit(
 		if ( hit ) {
 
 			// if it's a fog volume return whether we hit the front or back face
-			uint materialIndex = uTexelFetch1D( materialIndexAttribute, faceIndices.x ).r;
+			uint materialIndex = uTexelFetch1D( materialIndexAttribute, faceIndices.w ).r;
 			if ( isMaterialFogVolume( materials, materialIndex ) ) {
 
 				material = readMaterialInfo( materials, materialIndex );
