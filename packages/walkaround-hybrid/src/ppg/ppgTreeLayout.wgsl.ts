@@ -9,7 +9,7 @@
  * Light-Transport Simulation", §3.1 (sTree layout) and §3.2 (dTree layout).
  */
 
-import type { WgslModule } from '../pipeline/wgslComposer.js';
+import type { WgslModule } from '../wgslTypes.js';
 
 export const PPG_TREE_LAYOUT_WGSL = /* wgsl */ `
 // ── PPG tree layout constants — MUST stay in sync with serialise.ts ──────────

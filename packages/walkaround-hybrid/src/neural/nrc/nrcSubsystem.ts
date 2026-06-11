@@ -40,7 +40,8 @@ import {
   type NrcEncodingConfig,
 } from './nrcEncoding.js';
 import type { RisGiNrcConfig } from '../../shaders/risGiNrc.wgsl.js';
-import { getNrcBindGroupLayout, type BGLCache } from '../../pipeline/bindGroupLayouts.js';
+import { getNrcBindGroupLayout } from './nrcBindGroupLayout.js';
+import type { BGLCache } from '../../pipeline/bindGroupLayouts.js';
 import type { PipelineSubsystem } from '../../pipeline/PipelineSubsystem.js';
 
 /** Resolved NRC config (encoding + MLP + self-training cadence). The WGSL gi-ris

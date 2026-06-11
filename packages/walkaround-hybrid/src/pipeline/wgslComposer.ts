@@ -28,15 +28,12 @@
  * matching dep-first listed order.
  */
 
-export interface WgslModule {
-  /** Stable identifier — referenced by other modules' `requires` arrays. */
-  readonly name: string;
-  /** Raw WGSL source for this module (without its own deps prepended). */
-  readonly source: string;
-  /** Names of modules this module depends on, in the order they should be
-   *  emitted relative to each other when reached via this module. */
-  readonly requires: readonly string[];
-}
+// Re-exported from the neutral wgslTypes.ts so subsystem files (ppg/*.wgsl.ts,
+// ddgi/ddgiSampleWgsl.ts, shaders/*.wgsl.ts) can import `WgslModule` without
+// a pipeline-layer dependency (I5.1, R6 E sweep, 2026-06-11). All existing
+// importers of `'../pipeline/wgslComposer.js'` remain byte-identical.
+import type { WgslModule } from '../wgslTypes.js';
+export type { WgslModule };
 
 /**
  * Compose a root module's WGSL source by prepending the transitive closure

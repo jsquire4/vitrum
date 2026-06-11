@@ -82,7 +82,10 @@ interface FrameBindGroupResources {
 
 // Positional resource order MUST match the 'frame' descriptor table in
 // bindGroupDescriptors.ts (which carries the per-binding rationale notes —
-// incl. the inert/placeholder G-buffer slots 0-4 and shade-only 10/12/13/14/15).
+// incl. the shade.wgsl-declared G-buffer slots 0-4 and shade-only 10/12/13/14/15).
+// IMPORTANT: slots 0-4 are bound to a 1×1 placeholder in primary-ray-cast mode
+// but shade.wgsl DOES declare them at @binding(0..4) — removing them from the
+// BGL would break the shade pipeline's bind group layout validation.
 export function buildFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,

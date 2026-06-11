@@ -22,6 +22,11 @@ import {
   packBVHEmissiveLeFromCore,
   packBVHRoughMetalFromCore,
 } from './packingHelpers.js';
+// D6.7: re-export repackBVHMaterialRange from bvhCore.ts so the restir subtree
+// has a single owning module for the function. The definition remains in
+// packingHelpers.ts (back-compat for existing callers); this re-export adds the
+// subsystem-local access point without creating a circular dependency.
+export { repackBVHMaterialRange } from './packingHelpers.js';
 import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import {
   collectRectAreaEmitterTrisFromCore,
@@ -515,3 +520,4 @@ export function rebuildEmitterBuffersFromCoreScene(
 export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
   buffers.mergedGeometry.dispose();
 }
+

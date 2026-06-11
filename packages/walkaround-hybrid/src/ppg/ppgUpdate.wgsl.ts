@@ -47,7 +47,7 @@
  */
 
 import { RESERVOIR_GI_STRIDE } from './ppgConstants.js';
-import type { WgslModule } from '../pipeline/wgslComposer.js';
+import type { WgslModule } from '../wgslTypes.js';
 
 /**
  * Default spatial-cell count used by allocatePPGResources and the dTree stride

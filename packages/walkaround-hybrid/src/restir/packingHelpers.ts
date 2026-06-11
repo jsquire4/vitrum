@@ -122,7 +122,12 @@ function resolveTriColor(mat: PbrMaterialLike, applyBeer: boolean): ColorLike {
   return mat.color ?? { r: 0.6, g: 0.58, b: 0.55 };
 }
 
-/** Pack one triangle's index lanes + material byte into an existing vec4u buffer. */
+/**
+ * Pack one triangle's index lanes + material byte into an existing vec4u buffer.
+ * @deprecated Superseded by {@link packBVHIndexWFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy; production code uses
+ *   the `*FromCore` counterparts. Retained for tests and legacy adapters only.
+ */
 export function packBVHIndexWTri(
   indexBuf: Uint32Array,
   indices: Uint32Array,
@@ -242,7 +247,11 @@ function resolveRoughMetal(
   return { rough, metal, ior: resolvedIor };
 }
 
-/** Pack one triangle's roughness+metalness+IOR into a parallel u32 buffer. */
+/**
+ * Pack one triangle's roughness+metalness+IOR into a parallel u32 buffer.
+ * @deprecated Superseded by {@link packBVHRoughMetalFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
+ */
 export function packBVHRoughMetalTri(
   rmBuf: Uint32Array,
   triMaterialId: Uint32Array,
@@ -257,7 +266,11 @@ export function packBVHRoughMetalTri(
   rmBuf[tri] = packRoughMetalIorBytes(rm.rough, rm.metal, rm.ior);
 }
 
-/** Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer. */
+/**
+ * Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer.
+ * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
+ */
 export function packBVHBeerColorTri(
   beerBuf: Uint32Array,
   triMaterialId: Uint32Array,
@@ -279,6 +292,11 @@ export function packBVHBeerColorTri(
 /**
  * Re-pack `bvhIndex.w` and `bvh_beer` for a contiguous triangle subrange.
  * Used by the material-only `updatePrimitive` fast path.
+ *
+ * @deprecated Structural `PbrMaterialLike`-based family; legacy adapter.
+ *   The canonical location of this function is also re-exported from
+ *   `restir/bvhCore.ts` (D6.7, R6 E sweep, 2026-06-11) for subsystem-local
+ *   access. Retained here for back-compatibility.
  */
 export function repackBVHMaterialRange(
   indexBuf: Uint32Array,
@@ -301,6 +319,9 @@ export function repackBVHMaterialRange(
 /**
  * Pack vertex indices + RGBA8 baseColor + (trans4|texType4) into vec4u
  * per-triangle (4 u32 = 16 bytes per triangle).
+ * @deprecated Superseded by {@link packBVHIndexWFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy; production code uses
+ *   the `*FromCore` counterparts. Retained for tests only.
  */
 export function packBVHIndexW(
   indices: Uint32Array,
@@ -322,6 +343,8 @@ export function packBVHIndexW(
  * Read by the ReSTIR/shade WGSL via decodeRoughMetal+decodeIor(triIndex).
  * See packBVHRoughMetalTri for the B1 diffuse-default invariant and the
  * B1-ior-per-tri IOR default invariant (glass → 1.5; opaque → 1.0).
+ * @deprecated Superseded by {@link packBVHRoughMetalFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
 export function packBVHRoughMetal(
   triMaterialId: Uint32Array,
@@ -338,6 +361,8 @@ export function packBVHRoughMetal(
 /**
  * Pack the Beer-Lambert visible color per triangle into a parallel u32 buffer.
  * Read by shade.wgsl Lo_emit on a primary glass hit.
+ * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
 export function packBVHBeerColors(
   triMaterialId: Uint32Array,
@@ -359,6 +384,8 @@ export function packBVHBeerColors(
  * emitter — but deliberately EXCLUDES the transmissive "sun-attenuated secondary
  * emitter" branch: glass self-emission to the camera is already handled by
  * shade.wgsl `lo_emit` (Beer-Lambert), so packing it here would double-count.
+ * @deprecated Structural `PbrMaterialLike` family; legacy adapter. Production code
+ *   uses `materialSpecEmissiveLe` from `@vitrum/shared-bvh` via the `*FromCore` packers.
  */
 export function materialEmissiveLe(mat: PbrMaterialLike): [number, number, number] | null {
   const em = mat.emissive;
@@ -375,6 +402,8 @@ export function materialEmissiveLe(mat: PbrMaterialLike): [number, number, numbe
  * so emissive-mesh surfaces are CAMERA-VISIBLE (the real-time analogue of the
  * pt-webgpu camera-visible-emitters fix). Non-emissive triangles are zero. HDR
  * (emissiveIntensity may exceed 1), hence float — not the LDR `bvh_beer` u32.
+ * @deprecated Superseded by {@link packBVHEmissiveLeFromCore} (core `MaterialSpec[]`).
+ *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
 export function packBVHEmissiveLe(
   triMaterialId: Uint32Array,

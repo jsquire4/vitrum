@@ -129,7 +129,19 @@ export class DDGI {
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
 
   get bvh():        SceneBvh    { return this._bvh; }
+  /**
+   * @internal — direct ProbeGrid access for tests and legacy adapters.
+   *   Production callers should prefer {@link gridParams} (returns a snapshot
+   *   ProbeGridParams with named origin/spacing/dims fields) instead of
+   *   reaching through to the mutable grid object.
+   */
   get probeGrid():  ProbeGrid   { return this._grid; }
+  /**
+   * @internal — direct ProbeUpdatePass access for tests and legacy adapters.
+   *   Production callers should prefer the facade methods
+   *   ({@link exportAtlasData}, {@link importAtlasData},
+   *   {@link getReadAtlasGPUTextures}) instead of reaching through to the pass.
+   */
   get pass():       ProbeUpdatePass { return this._pass; }
   get ready():      boolean     { return this._ready; }
   get lastFrameMs(): number     { return this._lastFrameMs; }
@@ -256,6 +268,36 @@ export class DDGI {
    */
   getReadAtlasGPUTextures(): { irradiance: GPUTexture; visibility: GPUTexture } | null {
     return this._pass.getReadAtlasGPUTextures();
+  }
+
+  /**
+   * I5.3 facade — export the converged DDGI probe atlases to CPU
+   * ({irrW, irrH, visW, visH, irrData, visData}). Returns null if the atlases
+   * are not yet allocated. Async (atlas readback uses mapAsync).
+   *
+   * Callers (e.g. `HybridEngineGIState.exportGIStateImpl`) use this instead of
+   * reaching through `DDGI.pass.exportAtlasData`.
+   */
+  async exportAtlasData(device: GPUDevice): Promise<{
+    irrW: number; irrH: number; visW: number; visH: number;
+    irrData: Uint16Array; visData: Uint16Array;
+  } | null> {
+    return this._pass.exportAtlasData(device);
+  }
+
+  /**
+   * I5.3 facade — restore a previously-exported atlas snapshot into the live
+   * probe atlases. Returns false (no-op) when the atlases are not allocated or
+   * the snapshot dims do not match the current grid.
+   *
+   * Callers (e.g. `HybridEngineGIState.importGIStateImpl`) use this instead of
+   * reaching through `DDGI.pass.importAtlasData`.
+   */
+  importAtlasData(
+    device: GPUDevice,
+    snap: { irrW: number; irrH: number; visW: number; visH: number; irrData: Uint16Array; visData: Uint16Array },
+  ): boolean {
+    return this._pass.importAtlasData(device, snap);
   }
 
   /**

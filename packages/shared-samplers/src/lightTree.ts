@@ -341,21 +341,43 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Optional debug output bag returned alongside `nodes` by {@link buildLightTree}.
+ *
+ * All fields are for CPU-side structural verification only. None are consumed
+ * by the GPU traversal or the RIS estimator.
+ */
+export interface LightTreeDebugOutput {
+  /**
+   * Unnormalised node-power prefix-sum for CPU-side structural verification.
+   *
+   * Length = nodeCount (pre-order). Each entry is the running sum of
+   * `totalPower` values normalised by `root.totalPower`. Because internal nodes
+   * aggregate subtree power, their power is counted before each child's power
+   * is also counted — so entries routinely exceed 1.0 for trees with more than
+   * one leaf.
+   *
+   * This is NOT a true probability CDF (which would be normalised to [0, 1]
+   * and built only over leaves). Use leaf-only power traversal on `nodes` for
+   * sampling. The GPU does its own binary descent from the root and does not
+   * consume this array.
+   *
+   * Useful checks: monotonically non-decreasing; first entry ≈ 1.0 (root
+   * power / root power); all entries > 0 when all emitter powers > 0.
+   */
+  _powerPrefixSumDebug: Float32Array;
+}
+
+/**
  * Build a binary light tree where each internal node sums child powers.
  *
  * GPU traversal: descends toward the heavier-power child with probability
  * proportional to child power, then corrects for spatial proximity at the
  * leaf. The GPU consumes the packed node array directly via `packLightTreeForGPU`.
  *
- * `_powerPrefixSumDebug` layout: length = nodeCount (one entry per node, pre-order).
- * Each entry is the running prefix sum of `totalPower` values across the
- * pre-order node array, normalised by `root.totalPower`. Because internal nodes
- * aggregate subtree power, their contribution is counted once in the running sum
- * before each leaf's power is also counted — so entries routinely exceed 1.0 for
- * trees with more than one leaf. This is NOT a true probability CDF (which would
- * be normalised to [0, 1] and built only over leaves). It is an unnormalised
- * prefix-sum provided for CPU-side structural verification and monotonicity checks.
- * The GPU does its own binary descent from the root and does not consume this array.
+ * The `debug` sub-object carries CPU-side verification data (see
+ * {@link LightTreeDebugOutput}). It is always populated but intentionally
+ * separated from the primary return so production call-sites can destructure
+ * `{ nodes }` without pulling in debug allocations into their type surface.
  *
  * @throws if powers/centroids/aabbs arrays have mismatched lengths
  * @throws if any array is empty
@@ -363,21 +385,10 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
 export function buildLightTree(input: LightTreeBuildInput): {
   nodes: LightTreeNode[];
   /**
-   * @internal
-   * @deprecated debug-only — Do NOT use for sampling. Values exceed 1.0
-   * because internal nodes are counted before children. Use leaf-only power
-   * traversal on `nodes` instead.
-   *
-   * **WARNING: Do NOT use for sampling — values exceed 1.0 because internal
-   * nodes are counted before children. Use leaf-only power traversal on
-   * `nodes` instead.**
-   *
-   * Unnormalised node-power prefix-sum for CPU-side structural verification
-   * only. Length = nodeCount (pre-order). Values can exceed 1.0 because
-   * internal nodes aggregate subtree power, so their power is counted before
-   * each child's power is also counted. This is NOT a true CDF.
+   * CPU-side structural verification data. Never consumed by the GPU or the
+   * RIS estimator. See {@link LightTreeDebugOutput} for field documentation.
    */
-  _powerPrefixSumDebug: Float32Array;
+  debug: LightTreeDebugOutput;
 } {
   const { powers, centroids, aabbs, cones } = input;
   const n = powers.length;
@@ -436,7 +447,7 @@ export function buildLightTree(input: LightTreeBuildInput): {
     _powerPrefixSumDebug[i] = rootPower > 0 ? running / rootPower : 0;
   }
 
-  return { nodes, _powerPrefixSumDebug };
+  return { nodes, debug: { _powerPrefixSumDebug } };
 }
 
 /**

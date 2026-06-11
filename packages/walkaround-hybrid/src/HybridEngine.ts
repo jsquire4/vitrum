@@ -710,7 +710,7 @@ export class HybridEngine implements Engine {
 
     this.debug = createHybridEngineDebugSurface({
       device: () => this._device,
-      readAtlas: () => this._ddgi?.pass?.getReadAtlasGPUTextures?.() ?? null,
+      readAtlas: () => this._ddgi?.getReadAtlasGPUTextures() ?? null,
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
       debugTextures: () => this._pipeline?.getDebugTextures() ?? null,
       getMemoryBreakdown: () => this._pipeline?.getMemoryBreakdown() ?? null,

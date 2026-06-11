@@ -24,9 +24,9 @@ export interface GIStateDeps {
  * run at least one frame). Async (atlas readback uses mapAsync).
  */
 export async function exportGIStateImpl(deps: GIStateDeps): Promise<GIStateSnapshot | null> {
-  const atlas = await deps.ddgi.pass.exportAtlasData(deps.device);
+  const atlas = await deps.ddgi.exportAtlasData(deps.device);
   if (!atlas) return null;
-  const grid = deps.ddgi.probeGrid;
+  const grid = deps.ddgi.gridParams;
   // Also snapshot the ReSTIR-GI temporal reservoirs when the pipeline is live,
   // so a restore continues the temporal+spatial GI reuse instead of dropping
   // the high-frequency indirect history and re-converging it from scratch.
@@ -49,8 +49,8 @@ export async function exportGIStateImpl(deps: GIStateDeps): Promise<GIStateSnaps
   } : undefined;
   return {
     dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
-    origin: [grid.worldOrigin.x, grid.worldOrigin.y, grid.worldOrigin.z],
-    spacing: grid.worldSpacing,
+    origin: [grid.origin.x, grid.origin.y, grid.origin.z],
+    spacing: grid.spacing,
     ...atlas,
     ...(restirGI ? { restirGI } : {}),
     ...(ppg ? { ppg } : {}),
@@ -78,17 +78,17 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
   // grid origin/spacing/dims — restoring into such a mismatched grid would
   // corrupt the GI with probes from the wrong world-space layout. The atlas
   // dim check in importAtlasData is necessary but not sufficient.
-  const grid = deps.ddgi.probeGrid;
+  const grid = deps.ddgi.gridParams;
   const epsilon = 1e-4;
   const dimsMismatch =
     snapshot.dims.x !== grid.dims.x ||
     snapshot.dims.y !== grid.dims.y ||
     snapshot.dims.z !== grid.dims.z;
   const originMismatch =
-    Math.abs(snapshot.origin[0] - grid.worldOrigin.x) > epsilon ||
-    Math.abs(snapshot.origin[1] - grid.worldOrigin.y) > epsilon ||
-    Math.abs(snapshot.origin[2] - grid.worldOrigin.z) > epsilon;
-  const spacingMismatch = Math.abs(snapshot.spacing - grid.worldSpacing) > epsilon;
+    Math.abs(snapshot.origin[0] - grid.origin.x) > epsilon ||
+    Math.abs(snapshot.origin[1] - grid.origin.y) > epsilon ||
+    Math.abs(snapshot.origin[2] - grid.origin.z) > epsilon;
+  const spacingMismatch = Math.abs(snapshot.spacing - grid.spacing) > epsilon;
   if (dimsMismatch || originMismatch || spacingMismatch) {
     console.warn(
       '[HybridEngine] importGIState: snapshot grid layout does not match the current grid ' +
@@ -96,7 +96,7 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     );
     return false;
   }
-  const atlasOk = deps.ddgi.pass.importAtlasData(deps.device, snapshot);
+  const atlasOk = deps.ddgi.importAtlasData(deps.device, snapshot);
   if (!atlasOk) return false;
   if (snapshot.restirGI == null) {
     // v3 (or earlier) / no reservoir section — atlas-only restore.

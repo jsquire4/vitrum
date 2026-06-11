@@ -5,7 +5,7 @@
  *  - 1 emitter → trivial leaf tree
  *  - 2 emitters → 3 nodes (internal + 2 leaves), correct power sum
  *  - 4 emitters with linear power [1, 2, 4, 8] → root totalPower = 15,
- *    _powerPrefixSumDebug is monotonically increasing (values may exceed 1.0 — see
+ *    debug._powerPrefixSumDebug is monotonically increasing (values may exceed 1.0 — see
  *    buildLightTree JSDoc: it is an unnormalised node-power prefix-sum, not a true CDF)
  *  - Doubling all powers → all node totalPowers double (Sprint 2 round-trip)
  *  - packLightTreeForGPU → correct float layout
@@ -49,7 +49,7 @@ function makeInput(powers: number[]): LightTreeBuildInput {
 describe('buildLightTree', () => {
   it('1 emitter → single leaf node', () => {
     const input = makeInput([5.0]);
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, debug: { _powerPrefixSumDebug } } = buildLightTree(input);
 
     expect(nodes).toHaveLength(1);
     const node = nodes[0]!;
@@ -94,9 +94,9 @@ describe('buildLightTree', () => {
     expect(leafPowerSum).toBeCloseTo(10.0);
   });
 
-  it('4 emitters with powers [1,2,4,8] → root totalPower = 15, _powerPrefixSumDebug is monotonically increasing', () => {
+  it('4 emitters with powers [1,2,4,8] → root totalPower = 15, debug._powerPrefixSumDebug is monotonically increasing', () => {
     const input = makeInput([1, 2, 4, 8]);
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, debug: { _powerPrefixSumDebug } } = buildLightTree(input);
 
     // 4 leaves → 7 nodes in a full binary tree
     expect(nodes).toHaveLength(7);
@@ -160,7 +160,7 @@ describe('buildLightTree', () => {
     };
 
     // Must not throw
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, debug: { _powerPrefixSumDebug } } = buildLightTree(input);
 
     // Correct node count for 4 leaves
     expect(nodes).toHaveLength(7);

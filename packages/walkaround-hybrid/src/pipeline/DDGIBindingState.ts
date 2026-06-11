@@ -1,21 +1,30 @@
 /**
- * DDGIBindingState — owns the DDGI atlas binding state that
- * {@link WalkaroundGPUPipeline} hands to the shade / GI-RIS passes via the
- * `hybridLayers` bind group.
+ * OptionalSubsystemBindingState — manages the GPU placeholder and real-buffer
+ * binding state for THREE optional subsystems that share a single
+ * `hybridLayers` bind group:
+ *
+ *  1. **DDGI** (`_irrTex` / `_visTex` / `_placeholderUBO`) — irradiance +
+ *     visibility atlases. `null` → 1×1 placeholder textures from
+ *     {@link FrameResources.ddgi}. Placeholder UBO is cached so
+ *     `setInputs(null)` never allocates a fresh `Float32Array(16)` when DDGI
+ *     is disabled (HOT-1 fix, 2026-05-16 sweep).
+ *
+ *  2. **RC** (`_rcCascade0` / `_rcParamsBuffer` / `_rcCascade0Placeholder` /
+ *     `_rcParamsPlaceholder`) — cascade-0 buffer + packed RCParams uniform.
+ *     `null` → 16-byte storage placeholder + 64-byte UBO placeholder with
+ *     `enabled = 0u` (W8 Phase 3, 2026-05-18).
+ *
+ *  3. **PPG** (`_ppgPlaceholder`) — shared 16-byte zeroed storage placeholder
+ *     for the three sTree/dTree/dTreeOffsets slots when PPG is disabled (W9,
+ *     2026-05-18). The placeholder is never dereferenced when PPG is off
+ *     because gi-ris guards every dTree descent on `ubo.ppgEnabled == 1`.
  *
  * Extracted from {@link WalkaroundGPUPipeline} in the 2026-05-18 refactor
- * sweep. Three pieces of state move here:
+ * sweep. Public surface: `setInputs` called from `HybridLayeredStage`;
+ * `buildBindGroup` called once per frame from `renderFrame`.
  *
- *  - `_irrTex` / `_visTex` — the host-supplied irradiance + visibility
- *    atlases (or `null` when DDGI is disabled, in which case the placeholder
- *    1×1 textures from {@link FrameResources.ddgi} are bound instead).
- *  - `_placeholderUBO` — a cached `Float32Array(16)` so that
- *    {@link setInputs}(`null`) doesn't allocate a new buffer every time a
- *    host toggles DDGI off (HOT-1 fix from the 2026-05-16 sweep).
- *
- * Public surface mirrors the pre-refactor pipeline methods: `setInputs` is
- * called from `HybridLayeredStage`, and `buildBindGroup` is called once per
- * frame from `renderFrame`.
+ * @deprecated Use `OptionalSubsystemBindingState` directly.
+ * The name `DDGIBindingState` is a back-compat alias (see bottom of file).
  */
 
 import { buildHybridLayersBindGroup } from './bindGroupBuilders.js';
@@ -44,7 +53,7 @@ export interface RCSetInputs {
   paramsBytes: ArrayBuffer;
 }
 
-export class DDGIBindingState implements PipelineSubsystem {
+export class OptionalSubsystemBindingState implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   /** DDGI inputs (layered hybrid). Null → placeholder textures. */
   private _irrTex: GPUTexture | null = null;
@@ -269,3 +278,18 @@ export class DDGIBindingState implements PipelineSubsystem {
     if (this._ppgPlaceholder) { this._ppgPlaceholder.destroy(); this._ppgPlaceholder = null; }
   }
 }
+
+/**
+ * Back-compat re-export: importers outside `pipeline/` (e.g.
+ * `HybridEngine*.ts`, `pipelineBindGroupFactory.ts`) continue to import
+ * `DDGIBindingState` without modification. The alias will be removed in a
+ * later pass when those callers are migrated to `OptionalSubsystemBindingState`.
+ *
+ * **Importers still on the alias (as of 2026-06-11):**
+ *   - `packages/walkaround-hybrid/src/pipeline/pipelineBindGroupFactory.ts`
+ *   - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts`
+ *   - `packages/walkaround-hybrid/src/pipeline/__tests__/ddgiBindingStateCache.test.ts`
+ *   - `packages/walkaround-hybrid/__tests__/rcParamsCodegen.test.ts` (indirect via HybridEngineRC)
+ */
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+export { OptionalSubsystemBindingState as DDGIBindingState };

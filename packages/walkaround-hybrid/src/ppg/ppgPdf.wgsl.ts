@@ -42,7 +42,7 @@
  * so the 16-byte placeholders bound when PPG is off are never dereferenced.
  */
 
-import type { WgslModule } from '../pipeline/wgslComposer.js';
+import type { WgslModule } from '../wgslTypes.js';
 
 export const PPG_PDF_WGSL = /* wgsl */ `
 // ── PPG guided-sampling + pdf-eval (gi-ris) ─────────────────────────────────

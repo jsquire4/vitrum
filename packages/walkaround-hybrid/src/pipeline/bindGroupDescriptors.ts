@@ -104,14 +104,25 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'frame',
     visibility: 'compute',
     entries: [
-      // Slots 0-4 — G-buffer placeholders. Inert in primary-ray-cast mode
-      // (no pre-pass writes them) but MUST stay bound: every frame-BGL
-      // pipeline declares them, so dropping them breaks layout compat.
-      { binding: 0, kind: 'tex', note: 'gDepth (placeholder — not used in primary-ray-cast mode)' },
-      { binding: 1, kind: 'tex', note: 'gNormal (placeholder)' },
-      { binding: 2, kind: 'tex', note: 'gAlbedo (placeholder)' },
-      { binding: 3, kind: 'tex', note: 'gRough (placeholder)' },
-      { binding: 4, kind: 'tex', note: 'motionVec (placeholder)' },
+      // Slots 0-4 — G-buffer textures. shade.wgsl declares ALL FIVE as
+      // gDepth/gNormal/gAlbedo/gRough/motionVec at @group(0)@binding(0..4).
+      // In primary-ray-cast mode no pre-pass writes them, so they are bound
+      // to a shared 1×1 placeholder texture — but the BGL entry MUST remain
+      // because shade compiles them and WebGPU validates the BGL against the
+      // pipeline's shader interface. ris/temporal/spatial declare a subset of
+      // the frame BGL and never reference bindings 0-4; they are inert for
+      // those passes but bound for layout compat so the same BGL is shared.
+      //
+      // IMPORTANT: Do NOT remove these entries. shade.wgsl reads gDepth (for
+      // primary-hit distance) and gNormal (for shade normals) in future
+      // G-buffer-fill mode, and gRough/gAlbedo/motionVec are reserved for
+      // the same upgrade. The 1×1 placeholder bound today makes the shader
+      // a no-op for those reads without requiring a separate pipeline variant.
+      { binding: 0, kind: 'tex', note: 'gDepth — shade.wgsl @binding(0); 1×1 placeholder in primary-ray-cast mode' },
+      { binding: 1, kind: 'tex', note: 'gNormal — shade.wgsl @binding(1); 1×1 placeholder in primary-ray-cast mode' },
+      { binding: 2, kind: 'tex', note: 'gAlbedo — shade.wgsl @binding(2); 1×1 placeholder in primary-ray-cast mode' },
+      { binding: 3, kind: 'tex', note: 'gRough — shade.wgsl @binding(3); 1×1 placeholder in primary-ray-cast mode' },
+      { binding: 4, kind: 'tex', note: 'motionVec — shade.wgsl @binding(4); 1×1 placeholder in primary-ray-cast mode' },
       { binding: 5, kind: 'storage-rw', note: 'reservoirCurrent' },
       { binding: 6, kind: 'storage-ro', note: 'reservoirPrevious' },
       { binding: 7, kind: 'storage-rw', note: 'reservoirSpatial' },
