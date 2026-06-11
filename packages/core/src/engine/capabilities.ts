@@ -8,6 +8,7 @@
 import type { AnalyticShape, ScenePrimitive } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
+import type { MaterialSpec } from '../scene/material.js';
 
 export interface IncrementalPatchSupport {
   /** Primitive transform-only patch path (no full scene rebuild). */
@@ -55,6 +56,10 @@ export interface BackendSupportDetails {
   readonly emitters: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>;
   readonly environments: Readonly<Partial<Record<SceneEnvironment['kind'], BackendSupportMode>>>;
   readonly analyticShapes: Readonly<Partial<Record<AnalyticShape, BackendSupportMode>>>;
+  /** Per-material-field fidelity rows. This map is intentionally partial:
+   *  omitted fields are not yet audited in this detail table, while present
+   *  fields are a machine-checkable promise. */
+  readonly materials: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
   readonly mutations: BackendMutationSupportDetails;
 }
 

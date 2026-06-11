@@ -60,6 +60,22 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
   0, 0, 0, 1,
 ]));
 
+const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+] as const;
+
+function collectUnsupportedDisplacementPatchFields(
+  material: Record<string, unknown>,
+): string[] {
+  const fields: string[] = [];
+  for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+    if (material[field] != null) fields.push(field);
+  }
+  return fields;
+}
+
 function warnHost(
   host: MutationHost,
   warning: EngineWarning,
@@ -516,6 +532,19 @@ export class SceneMutationRouter {
         // Item 2c — detect emissive-field changes so the implicit NEE emitter
         // (H14-A) is re-packed with the new radiance.
         const mat = (fastPathPatch as unknown as { material?: Record<string, unknown> }).material ?? {};
+        const unsupportedDisplacementFields = collectUnsupportedDisplacementPatchFields(mat);
+        if (unsupportedDisplacementFields.length > 0) {
+          warnHost(host, {
+            code: 'pt-webgpu.unsupported-displacement-material',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updatePrimitive',
+            message:
+              `[vitrum/pt-webgpu] updatePrimitive("${id}"): displacement material fields are supplied ` +
+              `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
+            details: { id, fields: unsupportedDisplacementFields },
+          });
+        }
         const changedEmissiveField =
           'emissive' in mat || 'emissiveIntensity' in mat;
         return { invalidateBindGroups: false, warnings: [], changedEmissiveField };

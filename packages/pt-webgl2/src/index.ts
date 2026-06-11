@@ -12,6 +12,7 @@ import type {
   FrameOutput,
   FrameRendered,
   FrameStats,
+  MaterialSpec,
   ProgressStats,
   Scene,
   SceneEmitter,
@@ -66,6 +67,24 @@ const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
 ];
 const FLAT_JAKOB_COEFFS: readonly [number, number, number] = [0, 0, 0];
 const NO_IOR_CAUCHY: readonly [number, number, number] = [0, 0, 0];
+
+const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+function collectUnsupportedDisplacementFields(scene: Scene): string[] {
+  const fields = new Set<string>();
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+      if (material[field] != null) fields.add(field);
+    }
+  }
+  return Array.from(fields).sort();
+}
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
@@ -252,6 +271,19 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
+    const unsupportedDisplacementFields = collectUnsupportedDisplacementFields(scene);
+    if (unsupportedDisplacementFields.length > 0) {
+      this.#warn({
+        code: 'pt-webgl2.unsupported-displacement-material',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgl2] setScene: displacement material fields are supplied ` +
+          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
+        details: { fields: unsupportedDisplacementFields },
+      });
+    }
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.

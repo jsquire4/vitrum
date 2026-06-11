@@ -77,6 +77,12 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   contract-affecting warnings: ignored/degraded options, backend fallback,
   unsupported scene features, material-field drops, lite-tier downgrades, and
   mutation fallback warnings.
+- MAT-02 displacement maps are no longer silently accepted as an implied
+  renderer promise: `supportDetails.materials` now marks `displacementMap`,
+  `displacementScale`, and `displacementBias` as unsupported on all three
+  shipping backends; pt-webgpu and pt-webgl2 emit structured warnings when
+  submitted scenes contain them, and walkaround-hybrid pins them through its
+  unconsumed-material allowlist.
 
 Not fully closed yet:
 
@@ -337,8 +343,17 @@ Evidence:
 - No backend rendering path consumes them meaningfully.
 
 Closure:
-- Implement displacement through a real geometry/tessellation/parallax strategy,
-  or mark unsupported with structured diagnostics and capability rows.
+- Closed as a professional honesty downgrade in the 2026-06-11 displacement
+  wave: `BackendSupportDetails.materials` now has explicit unsupported rows for
+  `displacementMap`, `displacementScale`, and `displacementBias` on
+  walkaround-hybrid, pt-webgl2, and pt-webgpu.
+- pt-webgpu and pt-webgl2 emit structured
+  `*.unsupported-displacement-material` warnings when scenes or material patches
+  submit displacement fields. walkaround-hybrid already warns for unconsumed
+  material fields; the allowlist test now pins displacement as unconsumed.
+- Remaining optional future work: implement real displacement through an
+  authored-geometry, tessellation, or parallax strategy, then promote these rows
+  from `unsupported` with renderer A/B evidence.
 
 ### SHADOW-01 - Shadow flags are incomplete across backends
 

@@ -127,6 +127,46 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.triangleCount).toBe(2);
   });
 
+  it('warns when displacement material fields are supplied', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const base = triScene();
+      const prim = base.primitives[0] as MeshPrimitive;
+      const scene: Scene = {
+        ...base,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            displacementMap: { handle: { id: 'height' } },
+            displacementScale: 0.2,
+            displacementBias: -0.1,
+          },
+        }],
+      };
+      e.setScene(scene);
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('displacementMap') &&
+        m.includes('displacementScale') &&
+        m.includes('displacementBias'),
+      )).toBe(true);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.unsupported-displacement-material' &&
+        Array.isArray(w.details?.fields) &&
+        w.details.fields.includes('displacementMap') &&
+        w.details.fields.includes('displacementScale') &&
+        w.details.fields.includes('displacementBias'),
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('renderFrame skips before a scene, then renders + accumulates one sample per call', async () => {
     const e = await createPTEngine_WebGL2(opts());
     expect(e.renderFrame(frame(16)).kind).toBe('skipped'); // no scene yet

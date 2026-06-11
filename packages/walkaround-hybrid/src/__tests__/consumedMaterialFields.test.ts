@@ -108,7 +108,15 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
   });
 
   it('does NOT contain texture-map fields', () => {
-    for (const f of ['baseColorMap', 'normalMap', 'roughnessMap', 'metalnessMap']) {
+    for (const f of [
+      'baseColorMap',
+      'normalMap',
+      'roughnessMap',
+      'metalnessMap',
+      'displacementMap',
+      'displacementScale',
+      'displacementBias',
+    ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(false);
     }
   });

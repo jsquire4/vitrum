@@ -121,6 +121,24 @@ function isIdentityMat4(m: ArrayLike<number> | undefined): boolean {
   return true;
 }
 
+const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+function collectUnsupportedDisplacementFields(scene: Scene): string[] {
+  const fields = new Set<string>();
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+      if (material[field] != null) fields.add(field);
+    }
+  }
+  return Array.from(fields).sort();
+}
+
 export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
    * The host-owned `GPUDevice`. The engine allocates GPU resources against it
@@ -643,6 +661,7 @@ class PTEngineWebGPU implements Engine {
                 cylinder: 'unsupported',
                 'h-channel-came': 'unsupported',
               },
+              materials: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'unsupported',
@@ -1072,6 +1091,19 @@ class PTEngineWebGPU implements Engine {
    * per-array index remap; see class header on the add/remove design choice).
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
+    const unsupportedDisplacementFields = collectUnsupportedDisplacementFields(scene);
+    if (unsupportedDisplacementFields.length > 0) {
+      this.#warn({
+        code: 'pt-webgpu.unsupported-displacement-material',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgpu] setScene: displacement material fields are supplied ` +
+          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
+        details: { fields: unsupportedDisplacementFields },
+      });
+    }
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,
     });

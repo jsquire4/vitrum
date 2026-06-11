@@ -81,6 +81,14 @@ describe('backend promise ledger', () => {
     }
   });
 
+  it('marks reserved displacement material fields unsupported on every shipping backend', () => {
+    for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.supportDetails.materials.displacementMap).toBe('unsupported');
+      expect(rec.supportDetails.materials.displacementScale).toBe('unsupported');
+      expect(rec.supportDetails.materials.displacementBias).toBe('unsupported');
+    }
+  });
+
   it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {
     for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
       expect(rec.methodPromises.onError).toBe(true);

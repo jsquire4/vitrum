@@ -249,6 +249,12 @@ const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticSh
   'h-channel-came': 'fallback-generated-mesh',
 });
 
+const DISPLACEMENT_MATERIALS_UNSUPPORTED: BackendSupportDetails['materials'] = Object.freeze({
+  displacementMap: 'unsupported',
+  displacementScale: 'unsupported',
+  displacementBias: 'unsupported',
+});
+
 // ── Shared mutation/method constants (D1.4) ──────────────────────────────────
 //
 // Extracted to eliminate copy-paste drift between the three backend records.
@@ -386,6 +392,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'approximate',
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
+      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
       mutations: {
         transform: 'native',
         positions: 'native',
@@ -477,6 +484,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'unsupported',
       },
       analyticShapes: NO_ANALYTIC_SHAPES,
+      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
       // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
       // (a full scene-texture/BVH repack, not a targeted in-place edit).
       // The incrementalPatchSupport flags above reflect the OUTCOME (patches
@@ -541,6 +549,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'approximate',
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
+      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
       mutations: PT_WEBGPU_MUTATIONS,
     },
     methodPromises: {
