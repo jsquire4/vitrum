@@ -68,6 +68,23 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 > artifact paths); flip the "PENDING GPU VALIDATION" line in items_to_fix.md §H. Anything that FAILS:
 > file it in §H with evidence — fix the physics, never the gate (2026-06-04 lesson).
 >
+> ### V28-B RE-BASELINE (2026-06-10, lavapipe, HEAD 2d201af — R7/R8 campaign tree)
+> Full lavapipe re-baseline of the wsl-gpu harness against the R7/R8 campaign tree (commits `6e49fb2..2d201af`).
+>
+> **T1 smoke:** PASS. Pin updated to 2d201af. Lavapipe golden re-seeded (`captures/golden/hybrid-lavapipe.png`, nonzero 99.6%). CPU brute-force oracles all 100% (RC-merged CORE 100.00% vs BUGGY 51.13%; ReSTIR-TLAS FIXED 100.00% vs BUGGY 59.68%; DDGI TLAS+merged FIXED 100.00%/100.00%, buggy paths 59.68/77.26%). No stale oracle import paths — all 5 production file paths verified present.
+>
+> **pt-webgl2 harnesses:** H1 (analytic lights): verdict `H1-FIXED: rect-area analytic light illuminates; control is black` — lit meanLum 0.262, control 0.000. H2 (spectral): verdict `H2-FIXED: spectral renders lit (was black); CMF tables uploaded` — spectral/RGB ratio 0.940 (was 0 pre-fix). Both harnesses survive the campaign changes.
+>
+> **pt-webgpu benchmark (lavapipe spp=48) — all luminance deltas attributed to ACES tonemap default + named campaign features.** `primaryRadiance` is now the tonemapped+sRGB output; every scene moved up ~0.1–0.3 meanLum. cornell-box 0.382→0.657 (+0.275, ACES+sun-NEE-default-on); cornell-parity 0.443→0.702 (+0.258, ACES); mnee-glass-slab-caustic 0.562→0.810 (+0.248, ACES); mnee-reflect-caustic 0.758→0.873 (+0.114, ACES shoulder); mnee-refract-caustic 0.501→0.780 (+0.279, ACES); rfe07-sss-mixed 0.470→0.682 (+0.212, ACES+B9 multiscatter); sss-allopaque 0.454→0.705 (+0.251, ACES); sss-alltranslucent 0.482→0.658 (+0.175, ACES+B10 glass-GI); spectral-payload 0.437→0.580 (+0.134, ACES+spectral-MIS). No unattributed deltas.
+>
+> **walkaround-hybrid benchmark (lavapipe frames=64):** cornell-box 0.434→0.417 (-0.017); cornell-parity 0.461→0.444 (-0.017). Both moved down slightly — walkaround does NOT go through the ACES present pass, so the tonemap default is not the cause. Attributed to B2 glossy probe bounce redistributing indirect energy and B3 directional IBL changing sky-energy distribution into DDGI. Symmetric across scenes → consistent with shared-path change, not scene-specific regression.
+>
+> **pt-webgl2 benchmark (ANGLE spp=32):** All scenes up ~0.12–0.35 meanLum — attributed to pt-webgl2 tonemap default (landed in R7-round3/4) plus env-NEE pillar (env-blue: 0.288→0.637, +0.349, largest jump due to env-NEE becoming fully wired). No unattributed deltas.
+>
+> **What lavapipe validates vs what still needs dzn/RTX:** lavapipe confirms correctness (shader compile, BVH traversal, radiometric proportions) for all three backends. It does NOT validate: vendor-driver behavior under dzn/ANGLE; performance numbers (timing informational); full-tier pt-webgpu (needs ≥23 storage buffers — lavapipe gives unlimited); walkaround-hybrid on dzn (prior WARP memory-pressure caveat still applies); real-GPU ACES tone-mapping consistency. The dzn walkaround baseline is left at its last-good V28 capture (0.434/0.461) — a dzn re-capture requires a fresh-env or real hardware session.
+>
+> Baseline files updated: `wsl-gpu/captures/benchmarks/pt-webgpu-lavapipe-spp48.json`, `walkaround-hybrid-lavapipe-frames64.json`, `pt-webgl2-anchors.json`. README updated with attribution table at `wsl-gpu/captures/benchmarks/README.md`.
+>
 > ### V28 RESULTS LOG (2026-06-09, lavapipe oracle; harnesses in `wsl-gpu/scripts/v28-*.ts`)
 > - **STEP 0 — compile gate: ✅ PASS.** `git push` (cf06513..00e1443, 28 commits → origin/main) fired the pre-push T1 smoke: naga compiled ALL new WGSL (DDGI emitter NEE, Disney lobes stride 26, glass-aware TLAS, rotationY helpers, NRC atomics) with no SyntaxError; render non-regression 56.74 dB (lavapipe) / 56.77 dB (dzn) vs golden — **goldens did NOT move (already current, no re-seed needed)**; CPU brute-force oracles all 100% (RC-merged, ReSTIR-TLAS, DDGI TLAS+merged). Geometry + compile both clean.
 > - **STEP 2.8 — H51-D spot/point distance/decay: ◑ point PASS, spot = the H41 inert finding.** POINT distance/decay is validated by the cycle-19 benchmark: `cornell-parity` (the only point-light anchor) moved 0.44913→0.44225 IDENTICALLY on lavapipe+dzn after the H51-D commit — the point falloff change is live + cross-backend-consistent. SPOT params can't be assessed until the H41 spot-direct inert gap (above) is fixed — the spot contributes ≈0 regardless of penumbra/decay. So H51-D-point ✅, H51-D-spot blocked on the same root cause as H41-spot.
