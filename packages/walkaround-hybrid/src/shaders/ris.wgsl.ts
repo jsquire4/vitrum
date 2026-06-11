@@ -64,7 +64,7 @@ export const RIS_WGSL = /* wgsl */ `
 // (requires: ['restirPHat'] → 'common').
 
 // W2-C7 — emitter target function p̂ moved to restirPHat.wgsl
-// (canonical restir_di_compute_phat_from_surface(lid, surf)). RIS calls
+// (canonical restir_di_compute_phat_xi(lid, xi, surf)). RIS calls
 // it once at the visibility-test stage with a PrimarySurface built from
 // the inline primary-cast result (the M_LIGHT loop computes its own
 // per-candidate p̂ inline because it uses the sampled emitter point
@@ -185,6 +185,13 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let metalness = rm.y;
 
   var r = emptyReservoirDI();
+  // Support-aware sample counts for mixed-measure reservoirs. Area emitters and
+  // the BSDF->emitter candidate share finite-emitter support; the HDRI sentinel
+  // lives on a disjoint directional domain. A selected candidate's W denominator
+  // must count only candidates from its support, otherwise a single env sample is
+  // averaged down by all finite-emitter candidates in the pool.
+  var mAreaSupport = 0u;
+  var mEnvSupport = 0u;
   let totalPower = max(ubo.totalEmPower, 1e-8);
   let emCount = max(ubo.emitterCount, 1u);
 
@@ -244,8 +251,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
 
     // evalGGX includes NdotL; G is the emitter geometry term only.
-    // Same emitterGeometry helper as the canonical
-    // restir_di_compute_phat_from_surface (restirPHat.wgsl), so the
+    // Same emitterGeometry helper as the canonical xi-aware p̂ helper
+    // (restirPHat.wgsl), so the
     // per-candidate p̂ in the M_LIGHT loop matches the reservoir's
     // selection p̂ matches shade's evaluation p̂ (sweep finding Bug 3).
     let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
@@ -260,6 +267,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let pX = max(1e-15, emitterSelPmf * ls.pdfArea);
     let w = select(0.0, pHat / pX, pHat > 0.0);
     updateReservoirDI(&r, lid, xiTri, w, &rng);
+    mAreaSupport = mAreaSupport + 1u;
   }
 
   // --- M_BRDF candidate(s): GGX-VNDF-sampled BSDF candidate (B16) ────────────
@@ -278,8 +286,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // BRDF candidate samples wi in SOLID-ANGLE measure, so we convert its pdf to
   // area measure via the geometry Jacobian  p_area = p_sa · dist² / cosθ_light.
   // p̂ is IDENTICAL to the light candidates (luminance(Le·brdf·G)), so the chosen
-  // sample's W finalisation (restir_di_compute_phat_from_surface) is unchanged —
-  // the BRDF candidate is just another contributor to w_sum / M.
+  // sample's W finalisation uses the stored xi, so the BRDF candidate is just
+  // another contributor to w_sum / M over finite-emitter support.
   //
   // DIFFUSE-DEFAULT NON-BIAS: for a rough Lambertian (rough≈0.85) the VNDF lobe
   // is broad; the candidate still has the CORRECT source pdf so it cannot bias
@@ -349,6 +357,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let pXb = max(1e-15, pAreaB);
     let wB = select(0.0, pHatB / pXb, pHatB > 0.0);
     updateReservoirDI(&r, bestLid, bestXi, wB, &rng);
+    mAreaSupport = mAreaSupport + 1u;
   }
 
   // --- M_ENV candidate(s): HDRI importance-sampled directional candidates (Wave 4) ──
@@ -386,6 +395,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // Encode direction into xi: xi.x = theta/PI, xi.y = phi/(2PI)+0.5.
     let envXi = envDirToXi(envS.dir);
     updateReservoirDI(&r, ENV_SAMPLE_SENTINEL, envXi, wE, &rng);
+    mEnvSupport = mEnvSupport + 1u;
   }
 
   // --- Visibility test on chosen candidate ---
@@ -420,7 +430,9 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         surf.metal  = metalness;
         surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+        let supportM = max(1u, mEnvSupport);
+        r.M = supportM;
+        r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
       }
     } else {
       let e   = emitters[lid];
@@ -460,7 +472,9 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         surf.metal  = metalness;
         surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+        let supportM = max(1u, mAreaSupport);
+        r.M = supportM;
+        r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
       }
     }
   }

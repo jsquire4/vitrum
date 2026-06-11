@@ -237,7 +237,7 @@ const CASES: MaterialCase[] = [
 // ── (a) transcribed lite NEE estimator (kernelLite.wgsl.ts:251-296) ──────────
 // One-light scene: `picked` is always this light and the L325 `· f32(lightCount)`
 // factor is 1. throughput = 1 (primary vertex).
-function liteNeeSample(m: MaterialCase, x1: number, x2: number): V3 {
+function liteNeeSample(m: MaterialCase, x1: number, x2: number, historicalMis = false): V3 {
   const lpos = add(rpos, add(scale(ru, x1 * 2 - 1), scale(rv, x2 * 2 - 1))); // L271
   const toLight = sub(lpos, hitPos); // L274
   const dist2 = Math.max(dot(toLight, toLight), 1e-6); // L275
@@ -250,7 +250,7 @@ function liteNeeSample(m: MaterialCase, x1: number, x2: number): V3 {
   if (cosLight <= 0) return [0, 0, 0];
   const lightPdf = dist2 / Math.max(cosLight * area, 1e-6); // L284
   const brdfPdf = brdfDirectionalPdf(m.baseColor, m.roughness, m.metallic, 0, normal, wo, wi); // L285
-  const misWeight = powerHeuristic(lightPdf, brdfPdf); // L286
+  const misWeight = historicalMis ? powerHeuristic(lightPdf, brdfPdf) : 1; // L286, old one-sided MIS
   // shadow ray L287-288: unoccluded scene → always passes
   // L290: directLi = throughput·brdf·nDotL·Le·misWeight/lightPdf
   return scale(mulv(brdf, Le), (nDotL * misWeight) / Math.max(lightPdf, 1e-6));
@@ -290,11 +290,11 @@ function groundTruth(m: MaterialCase, nSamples: number, seed: number): V3 {
   return scale(acc, 1 / nSamples);
 }
 
-function measureLite(m: MaterialCase, nSamples: number, seed: number): V3 {
+function measureLite(m: MaterialCase, nSamples: number, seed: number, historicalMis = false): V3 {
   const rng = mulberry32(seed);
   const acc: V3 = [0, 0, 0];
   for (let i = 0; i < nSamples; i++) {
-    const v = liteNeeSample(m, rng(), rng());
+    const v = liteNeeSample(m, rng(), rng(), historicalMis);
     acc[0] += v[0];
     acc[1] += v[1];
     acc[2] += v[2];
@@ -338,14 +338,14 @@ describe('PTWG-LITE-01 oracle — lite rect area-light one-sided MIS deficit', (
   });
 
   for (const m of CASES) {
-    it(`CONFIRMED BIAS (characterization pin): one-sided MIS under-estimates — ${m.name}`, () => {
-      const measured = measureLite(m, 1_000_000, 1337);
+    it(`historical one-sided MIS under-estimates — ${m.name}`, () => {
+      const measured = measureLite(m, 1_000_000, 1337, true);
       const truth = groundTruth(m, 2_000_000, 7331);
       const ratio = lum(measured) / lum(truth);
       const msg =
         `lite rect NEE [${m.name}]: measured/truth = ${ratio.toFixed(4)} ` +
         `(deficit ${(100 * (1 - ratio)).toFixed(1)}%). The NEE half is weighted by ` +
-        `powerHeuristic(lightPdf, brdfPdf) (kernelLite.wgsl.ts:286) but the ` +
+        `powerHeuristic(lightPdf, brdfPdf) in the historical lite path, but the ` +
         `complementary BSDF→light half is a zero stub (connectLite.wgsl.ts:136-159) ` +
         `and lite rect lights are not geometry — the w_bsdf share of the energy is ` +
         `simply discarded, a deterministic under-estimate (not variance).`;
@@ -358,15 +358,13 @@ describe('PTWG-LITE-01 oracle — lite rect area-light one-sided MIS deficit', (
     });
   }
 
-  // Un-skip when the lite tier either (a) implements the BSDF→rect-light
-  // connection (and keeps the power heuristic), or (b) drops the MIS weight
-  // from the NEE half (valid for a one-sided estimator).
-  it.skip('CORRECT VALUE (un-skip with the fix): lite rect direct light matches ground truth', () => {
+  it('REGRESSION PTWG-LITE-01: lite rect direct light matches ground truth', () => {
     for (const m of CASES) {
       const measured = measureLite(m, 1_000_000, 1337);
       const truth = groundTruth(m, 2_000_000, 7331);
-      expect(lum(measured) / lum(truth)).toBeGreaterThan(0.98);
-      expect(lum(measured) / lum(truth)).toBeLessThan(1.02);
+      const ratio = lum(measured) / lum(truth);
+      expect(ratio, m.name).toBeGreaterThan(0.97);
+      expect(ratio, m.name).toBeLessThan(1.03);
     }
   });
 });

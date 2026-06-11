@@ -58,7 +58,7 @@ fn reprojectToPrev(world: vec3f, dims: vec2u) -> vec2i {
 }
 
 // W2-C7 — p̂ moved to restirPHat.wgsl
-// (canonical restir_di_compute_phat_from_surface(lid, surf)).
+// (canonical restir_di_compute_phat_xi(lid, xi, surf)).
 
 @compute @workgroup_size(8, 8, 1)
 fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -110,7 +110,24 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Combine reservoirs.
   var combined = cur;
-  combined.M += prev.M;
+  let curIsEnv = cur.lightId == ENV_SAMPLE_SENTINEL;
+  let prevIsEnv = prev.lightId == ENV_SAMPLE_SENTINEL;
+  var areaSupportM = 0u;
+  var envSupportM = 0u;
+  if (cur.M > 0u) {
+    if (curIsEnv) {
+      envSupportM = envSupportM + cur.M;
+    } else {
+      areaSupportM = areaSupportM + cur.M;
+    }
+  }
+  if (prev.M > 0u) {
+    if (prevIsEnv) {
+      envSupportM = envSupportM + prev.M;
+    } else {
+      areaSupportM = areaSupportM + prev.M;
+    }
+  }
   combined.w_sum += w_prev;
   if (rand_f32(&rng) * combined.w_sum < w_prev && w_prev > 0.0) {
     combined.lightId = prev.lightId;
@@ -122,6 +139,8 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Recompute W. Wave 4: pass combined.xi for the env-sentinel path.
   let pHatZ = restir_di_compute_phat_xi(combined.lightId, combined.xi, curSurf);
+  let combinedSupportM = select(areaSupportM, envSupportM, combined.lightId == ENV_SAMPLE_SENTINEL);
+  combined.M = max(1u, combinedSupportM);
   combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);

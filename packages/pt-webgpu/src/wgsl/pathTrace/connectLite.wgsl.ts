@@ -128,11 +128,10 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
 // Area-light BSDF→light MIS: zero stub on the lite tier.
 // Rect-area lights are sampled via the NEE loop in kernelLite only (analytic NEE
 // from the liteLightTex).  The BSDF-sampled direction that happens to hit a rect
-// light is not reconnected here (no double-count risk since rect-light NEE in
-// kernelLite uses power-heuristic MIS against the BRDF pdf — the bsdf-area
-// connect term is the complementary half of that MIS).  Implementing the rect
-// intersect here would require iterating all rect lights for every bounce on the
-// lite tier and is deferred.
+// light is not reconnected here; kernelLite therefore uses a one-sided area-NEE
+// estimator for rect/disc records instead of applying an unmatched MIS weight.
+// Implementing the rect intersect here would require iterating all rect lights
+// for every bounce on the lite tier and is deferred.
 fn bsdfAreaLightConnectionContribution(
   hitPos: vec3f,
   normal: vec3f,

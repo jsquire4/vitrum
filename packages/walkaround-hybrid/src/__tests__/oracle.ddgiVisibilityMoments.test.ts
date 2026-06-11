@@ -86,14 +86,19 @@ interface ProbeRay {
 // direction is `texelDir` (the oracle picks the texel aligned with the
 // surface→probe query direction, which is the texel Chebyshev reads).
 // f32 semantics modelled with Math.fround on every accumulate.
-function blendVisibilityTexel(texelDir: V3, rays: ProbeRay[]): { mean: number; meanSq: number } {
+function blendVisibilityTexel(
+  texelDir: V3,
+  rays: ProbeRay[],
+  options: { skipMisses?: boolean } = {},
+): { mean: number; meanSq: number } {
+  const skipMisses = options.skipMisses ?? true;
   let newDepth = 0;
   let newDepthSq = 0;
   let totalWeight = 0;
   for (const ray of rays) {
     if (ray.hitDistance < 0.0) continue; // L217 backface skip
     if (ray.hitDistance < 0.05) continue; // L225 self-intersection skip
-    // NOTE: NO miss/INFINITY guard here — that is the defect under audit.
+    if (skipMisses && ray.hitDistance >= BVH_INTERSECT_INFINITY * 0.1) continue;
     const w = Math.max(0, dot(texelDir, ray.direction)); // L226
     if (w < 1e-3) continue; // L227
     const weight = f32(w * w); // L231 pow(w, 2.0)
@@ -156,8 +161,8 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
     expect(cheb, `control chebyshev = ${cheb}`).toBeLessThan(0.05);
   });
 
-  it('CONFIRMED BIAS (characterization pin): ONE sky miss among 32 rays → chebyshev = 1.0 (full leak)', () => {
-    const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true));
+  it('historical characterization: ONE sky miss among 32 rays → chebyshev = 1.0 (full leak)', () => {
+    const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true), { skipMisses: false });
     // d² = 1e40 overflows f32 → meanSq is +Inf BEFORE storage quantization:
     expect(meanSq, 'depthSq moment overflows f32 (1e20² = 1e40 > 3.4e38)').toBe(Infinity);
     // The depth mean is ~1e20·w/ΣW ≈ 1e19 in f32 → +Inf after rgba16float
@@ -195,12 +200,8 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
     expect(cheb).toBe(1.0);
   });
 
-  // Un-skip with the fix (skip miss rays in the visibility blend, or clamp
-  // them to a finite max-depth semantic): one sky miss must not disable
-  // occlusion for the wall the other 31 rays saw.
-  it.skip('CORRECT VALUE (un-skip with the fix): one sky miss does not disable occlusion', () => {
-    const rays = coneRays(true).filter((r) => r.hitDistance < BVH_INTERSECT_INFINITY); // fix-shaped semantics
-    const { mean, meanSq } = blendVisibilityTexel(texelDir, rays);
+  it('REGRESSION HYB-DDGI-01: one sky miss does not disable occlusion', () => {
+    const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true));
     const cheb = chebyshevVisibility(mean, meanSq, probeDist);
     expect(cheb).toBeLessThan(0.05);
   });

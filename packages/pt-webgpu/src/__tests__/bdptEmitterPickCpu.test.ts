@@ -144,7 +144,9 @@ describe('bdptEmitterPickCpu', () => {
     // pdfHemi = cosEmit / PI with the CORRECTED (b*y) direction.
     // The buggy (b*x) variant yields 0.2923763342 instead.
     expect(sample!.pdfHemi).toBeCloseTo(0.25265063960867545, 9);
-    expect(sample!.pdfJoint).toBeCloseTo(0.25265063960867545, 9);
+    // Finite area emitters store pdfPick*pdfArea for the emitter vertex; this
+    // mesh triangle has area 2 and discretePdf=1.
+    expect(sample!.pdfJoint).toBeCloseTo(0.5, 9);
     expect(sample!.pdfHemi).not.toBeCloseTo(0.2923763342268401, 9);
   });
 

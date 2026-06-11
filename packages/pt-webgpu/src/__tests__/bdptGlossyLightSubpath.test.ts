@@ -58,13 +58,17 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
   });
 
   it('the §10.3 connection evaluates the REAL light-vertex BSDF + pdfs for a surface vertex', () => {
-    // lightBsdfCosTheta uses the real BSDF when matId >= 0 (was always cosθ/π).
+    // lightBsdfCosTheta uses the real BSDF when matId >= 0 (was always cosθ/π),
+    // without re-multiplying cosLight (the geometry term owns edge cosines).
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf * cosLight;');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
     // The MIS pdf bookkeeping (fwdEe + revLcMinus) also uses the real BSDF pdf.
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvWoPrev, lcToE)');
-    // The emitter (matId < 0) keeps the Lambertian emission profile.
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('var lightBsdfCosTheta = vec3f(cosLight / PI);');
+    // Legacy pseudo emitters keep the Lambertian emission profile; finite area
+    // emitters use a distinct sentinel and contribute no extra endpoint factor.
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId == -1.0) {');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = vec3f(cosLight / PI);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('const BDPT_LV_AREA_EMITTER_MATID: f32 = -2.0;');
   });
 
   it('the light-path vertex is 4 rows (row 3 = matId + wo-toward-prev)', () => {

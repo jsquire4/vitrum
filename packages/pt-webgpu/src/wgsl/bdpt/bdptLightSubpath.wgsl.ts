@@ -123,10 +123,12 @@ fn bdptPickEmitterFlat(rng: ptr<function, u32>, totalPower: f32, emitterCount: u
   return emitterCount - 1u;
 }
 
-// A9 — row-3 light-vertex BSDF record. .x = matId (>=0 ⇒ a real surface vertex
-// whose BSDF the connection evaluates; < 0 ⇒ emitter/invalid → Lambertian profile).
-// .yzw = wo toward the PREVIOUS light vertex (the eval's outgoing direction).
+// A9 — row-3 light-vertex BSDF record. .w = matId (>=0 ⇒ a real surface vertex
+// whose BSDF the connection evaluates; -1 ⇒ legacy pseudo-emitter Lambertian
+// profile; -2 ⇒ finite area emitter whose throughput already includes pdfArea).
+// .xyz = wo toward the PREVIOUS light vertex (the eval's outgoing direction).
 const BDPT_LV_EMITTER_MATID: f32 = -1.0;
+const BDPT_LV_AREA_EMITTER_MATID: f32 = -2.0;
 fn bdptWriteLvBsdf(col: i32, matId: f32, woTowardPrev: vec3f) {
   bdptLightPath[bdptLightPathIndex(col, 3u)] = vec4f(woTowardPrev, matId);
 }
@@ -156,6 +158,25 @@ fn bdptFinishBounce0(
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
   // Emitter vertex → Lambertian/emission profile in the connection (matId < 0).
   bdptWriteLvBsdf(col, BDPT_LV_EMITTER_MATID, emitNormal);
+}
+
+fn bdptFinishBounce0Area(
+  col: i32,
+  emitPos: vec3f,
+  emitNormal: vec3f,
+  emitRad: vec3f,
+  pdfLight: f32,
+  pdfArea: f32,
+  rng: ptr<function, u32>,
+) {
+  let hemi = cosineHemisphereSample(rng, emitNormal);
+  let pdfHemi = hemi.pdf;
+  let pdfPos = max(pdfLight * pdfArea, 1e-8);
+  let emitThroughput = emitRad / pdfPos;
+  bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(emitPos, 0.0);
+  bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(emitNormal, pdfPos);
+  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
+  bdptWriteLvBsdf(col, BDPT_LV_AREA_EMITTER_MATID, emitNormal);
 }
 
 // A9 — ISOTROPIC point-emitter bounce-0 finish. A point light emits uniformly over
@@ -251,6 +272,7 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let xi1s = rand_f32(rng);
       let xi2s = rand_f32(rng);
       var emitPos: vec3f;
+      var areaS: f32;
       if (isDiscS) {
         let rrad = length(ru);
         let a = xi1s * 2.0 - 1.0;
@@ -262,11 +284,13 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
           cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
         }
         emitPos = rpos + ru * (cr * cos(cphi)) + rv * (cr * sin(cphi));
+        areaS = max(PI * rrad * rrad, 1e-6);
       } else {
         emitPos = rpos + ru * (xi1s * 2.0 - 1.0) + rv * (xi2s * 2.0 - 1.0);
+        areaS = max(4.0 * length(cross(ru, rv)), 1e-6);
       }
       let emitNormal = safe_normalize(cross(ru, rv));
-      bdptFinishBounce0(col, emitPos, emitNormal, rr, discretePdf, rng);
+      bdptFinishBounce0Area(col, emitPos, emitNormal, rr, discretePdf, 1.0 / areaS, rng);
       return;
     }
     cur = cur + 1u;
@@ -294,7 +318,8 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
         return;
       }
       let emitNormal = n / nLen;
-      bdptFinishBounce0(col, emitPos, emitNormal, mr, discretePdf, rng);
+      let areaM = max(0.5 * nLen, 1e-6);
+      bdptFinishBounce0Area(col, emitPos, emitNormal, mr, discretePdf, 1.0 / areaM, rng);
       return;
     }
     cur = cur + 1u;

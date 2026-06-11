@@ -76,8 +76,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // spot spExtra.z / rect texel-0 .w). Lite directional NEE reads the UBO
     // lightDir mirror (no flag — documented 'approximate' on the ledger row).
     // Default (flag-less) scenes are behaviorally identical (all lanes pack 0.0).
-    expect(digest).toBe('198128533a7595f6747ad1c384d2df36de2461d44e89c1ce29781704b210d99f');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(134532);
+    // Re-pinned 2026-06-11 (PTWG-LITE-01): lite rect/disc analytic records use
+    // one-sided area NEE because connectLite has no BSDF->area-light complement.
+    // RENDER-CHANGING for lite rect/disc scenes; CPU oracle pins unbiased mean.
+    expect(digest).toBe('a2ba562b0d5f836c7072abd59af497554203f67dcd04165452a06fa1efca88b7');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(134506);
   });
 });
 

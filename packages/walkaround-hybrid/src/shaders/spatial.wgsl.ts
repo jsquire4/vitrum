@@ -67,7 +67,7 @@ const M_SCALE = 4u;
 // W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
 // (canonical castPrimary(px, dims, camPos, invVP)).
 // W2-C7 — p̂ moved to restirPHat.wgsl
-// (canonical restir_di_compute_phat_from_surface(lid, surf)).
+// (canonical restir_di_compute_phat_xi(lid, xi, surf)).
 
 // Poisson disk offsets (normalized, scale by RADIUS in the shader).
 fn poissonDisk(i: u32, rotation: f32) -> vec2f {
@@ -121,6 +121,15 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     r.w_sum = r.w_sum * f32(M_SCALE) / f32(r.M);
     r.M = M_SCALE;
   }
+  var areaSupportM = 0u;
+  var envSupportM = 0u;
+  if (r.M > 0u) {
+    if (r.lightId == ENV_SAMPLE_SENTINEL) {
+      envSupportM = envSupportM + r.M;
+    } else {
+      areaSupportM = areaSupportM + r.M;
+    }
+  }
 
   // Re-cast the center pixel's primary ray to get the actual surface — needed
   // both for the similarity gate (we compare against neighbor surfaces, not
@@ -155,6 +164,11 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
 
     let nbr  = loadReservoirDI_rw(&currentReservoir, nbrIdx);
     let nbrM = max(1u, nbr.M / M_SCALE);
+    if (nbr.lightId == ENV_SAMPLE_SENTINEL) {
+      envSupportM = envSupportM + nbrM;
+    } else {
+      areaSupportM = areaSupportM + nbrM;
+    }
 
     // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
     // Wave 4: pass nbr.xi for the ENV_SAMPLE_SENTINEL path.
@@ -175,6 +189,8 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   // Recompute W.
   // Wave 4: use xi-aware pHat so ENV_SAMPLE_SENTINEL reservoirs get correct W.
   let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, center);
+  let supportM = select(areaSupportM, envSupportM, r.lightId == ENV_SAMPLE_SENTINEL);
+  r.M = max(1u, supportM);
   r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);

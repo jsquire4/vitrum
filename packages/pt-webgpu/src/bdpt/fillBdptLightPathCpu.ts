@@ -58,12 +58,13 @@ export function packBdptLightPathColumns(
   data[o2 + 1] = bounce0.emitRad[1];
   data[o2 + 2] = bounce0.emitRad[2];
   data[o2 + 3] = bounce0.pdfHemi;
-  // A9 — bounce-0 is the emitter vertex: matId < 0 (Lambertian/emission); wo-toward-
-  // prev is the emit normal (no previous light vertex).
+  // A9/PTWG-BDPT-01 — bounce-0 is an emitter vertex: finite area emitters use
+  // -2 so the connection treats row-2 throughput as Le/(pdfPick*pdfArea);
+  // legacy pseudo emitters/point lights use -1.
   data[o3 + 0] = bounce0.emitNormal[0];
   data[o3 + 1] = bounce0.emitNormal[1];
   data[o3 + 2] = bounce0.emitNormal[2];
-  data[o3 + 3] = LV_EMITTER_MATID;
+  data[o3 + 3] = bounce0.lvMatId ?? LV_EMITTER_MATID;
   return data;
 }
 

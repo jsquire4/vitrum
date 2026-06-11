@@ -193,8 +193,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // sign-encoded angularDiameter; point/spot/rect/mesh lanes) + connect.wgsl
     // BSDF-MIS parity gates. Default (flag-less) scenes are behaviorally
     // identical: every gate reads a lane that packs 0.0 by default.
-    expect(digest).toBe('105dd7b5e4be50bb6af0720d64058bb689a90ae11dca5a6ad20689814b33116b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(316123);
+    // Re-pinned 2026-06-11 (PTWG-BDPT-01): finite area BDPT emitter vertices
+    // store Le/(pdfPick*pdfArea), use a distinct area-emitter sentinel, and
+    // the connection no longer double-multiplies endpoint cosines. RENDER-
+    // CHANGING for bdpt:true area-light scenes; CPU oracle pins the mean.
+    expect(digest).toBe('e2e7c2e69d28d0437d374feba2c73cd00a4e157c4118d5e1abf38277e76a13f3');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(317588);
   });
 });
 

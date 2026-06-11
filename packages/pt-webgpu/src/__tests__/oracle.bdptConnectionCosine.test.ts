@@ -229,16 +229,14 @@ function samplePointOnRect(x1: number, x2: number): V3 {
   return add(rectCenter, add(scale(rectU, x1 * 2 - 1), scale(rectV, x2 * 2 - 1)));
 }
 
-// ─────────── shader transcription: β_L0 (bdptFinishBounce0) ─────────────────
-// bdptLightSubpath.wgsl.ts:149-153 with discretePdf = 1 (single light):
-//   hemi.pdf = cosEmit/π; pdfJoint = max(1·cosEmit/π, 1e-8);
-//   emitThroughput = Le·cosEmit/pdfJoint
-// The hemisphere draw cosEmit cancels exactly → β_L0 = π·Le, independent of
-// the random emission direction. Verified numerically in the first test.
+// ─────────── shader transcription: β_L0 (bdptFinishBounce0Area) ──────────────
+// Finite area emitters store β_L0 = Le / (pdfPick·pdfArea). In this single-light
+// rect scene pdfPick=1 and pdfArea=1/A, so β_L0 = Le·A. The sampled emission
+// direction is used only for path extension; a direct s=1 connection to L0 does
+// not inherit that direction pdf.
 function shaderLightVertexThroughput(cosEmit: number): V3 {
-  const pdfHemi = cosEmit / PI; // cosineHemisphereSample pdf
-  const pdfJoint = Math.max(1 * pdfHemi, 1e-8); // L152, discretePdf = 1
-  return scale(Le, cosEmit / pdfJoint); // L153
+  void cosEmit;
+  return scale(Le, rectArea);
 }
 
 // ─────────── shader transcription: connection contribution (pre-MIS) ─────────
@@ -260,10 +258,12 @@ function shaderConnectionContribution(lightPos: V3): V3 {
   const eyeBrdf = evaluateBrdf(baseColor, roughness, metallic, eyeNormal, eyeWo, connDir); // L318
   const cosEye = Math.max(dot(eyeNormal, connDir), 0); // L319
   if (cosEye <= 0) return [0, 0, 0]; // L320
-  const eyeBsdfCosTheta = scale(eyeBrdf, cosEye); // L323  ← cosEye AGAIN (also in gTerm)
+  const eyeBsdfCosTheta = eyeBrdf; // gTerm already carries cosEye
   const cosLight = Math.max(dot(rectNormal, scale(connDir, -1)), 0); // L324
-  // Emitter vertex (lvMatId < 0): Lambertian emission profile, L335
-  const lightBsdfCosTheta: V3 = [cosLight / PI, cosLight / PI, cosLight / PI]; // ← cosLight AGAIN
+  if (cosLight <= 0) return [0, 0, 0];
+  // Finite area emitter vertex (lvMatId = -2): β_L0 already carries Le·A; the
+  // geometry term carries cosLight.
+  const lightBsdfCosTheta: V3 = [1, 1, 1];
   const beta_L0 = shaderLightVertexThroughput(0.42 /* arbitrary hemi draw; cancels */);
   // L406: contribution = lightThroughput·lightBsdfCosTheta·gTerm·eyeBsdfCosTheta·misW
   // L407: contribution *= eyeThroughput (=1 here)
@@ -287,39 +287,28 @@ function correctConnectionContribution(lightPos: V3): V3 {
 }
 
 describe('PTWG-BDPT-01 oracle — BDPT connection cosine/area audit', () => {
-  it('transcription sanity: β_L0 = π·Le for every hemisphere draw (bdptFinishBounce0:149-153)', () => {
+  it('transcription sanity: finite-area β_L0 = Le·A for every hemisphere draw', () => {
     for (const cosEmit of [0.05, 0.3, 0.7, 0.99]) {
       const beta = shaderLightVertexThroughput(cosEmit);
-      expect(beta[0]).toBeCloseTo(PI * Le[0], 9);
-      expect(beta[1]).toBeCloseTo(PI * Le[1], 9);
-      expect(beta[2]).toBeCloseTo(PI * Le[2], 9);
+      expect(beta[0]).toBeCloseTo(rectArea * Le[0], 9);
+      expect(beta[1]).toBeCloseTo(rectArea * Le[1], 9);
+      expect(beta[2]).toBeCloseTo(rectArea * Le[2], 9);
     }
-    // Veach's β_L0 would be Le·A/discretePdf = Le·4 here; the shader carries
-    // Le·π. The missing-area half of the bias law below comes from exactly this.
   });
 
-  it('per-sample bias law: C_shader(x) = C_correct(x) · cosE·cosL / A (exact, no MC noise)', () => {
-    // This pins the bias ANALYTICALLY: the transcribed shader formula equals the
-    // first-principles estimator times one extra cosine per connection-edge
-    // endpoint (cos² per edge total) divided by the emitter area.
+  it('per-sample law: C_shader(x) = C_correct(x) (exact, no MC noise)', () => {
     const rng = mulberry32(1234);
     for (let i = 0; i < 64; i++) {
       const x = samplePointOnRect(rng(), rng());
       const cs = shaderConnectionContribution(x);
       const cc = correctConnectionContribution(x);
-      const toLight = sub(x, eyePos);
-      const d = Math.sqrt(dot(toLight, toLight));
-      const wi = scale(toLight, 1 / d);
-      const cosE = Math.max(dot(eyeNormal, wi), 0);
-      const cosL = Math.max(dot(rectNormal, scale(wi, -1)), 0);
-      const predicted = scale(cc, (cosE * cosL) / rectArea);
       for (const ch of [0, 1, 2] as const) {
-        expect(Math.abs(cs[ch] - predicted[ch])).toBeLessThan(1e-9 * Math.max(1, Math.abs(predicted[ch])));
+        expect(Math.abs(cs[ch] - cc[ch])).toBeLessThan(1e-9 * Math.max(1, Math.abs(cc[ch])));
       }
     }
   });
 
-  it('CONFIRMED BIAS (characterization pin): E[C_shader] / L ≈ 0.20 for this geometry, not 1', () => {
+  it('REGRESSION PTWG-BDPT-01: E[C_shader] / L = 1 ± MC noise', () => {
     // 2·10⁶-sample MC of both estimators over the same uniform-rect draws.
     // Ground truth L is the fresh rendering-equation estimator; the shader side
     // is the faithful transcription. If a fix lands in bdptConnection.wgsl.ts /
@@ -329,58 +318,13 @@ describe('PTWG-BDPT-01 oracle — BDPT connection cosine/area audit', () => {
     const rng = mulberry32(987654321);
     let sumShaderLum = 0;
     let sumCorrectLum = 0;
-    let sumBiasFactor = 0;
     const lum = (c: V3) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     for (let i = 0; i < N; i++) {
       const x = samplePointOnRect(rng(), rng());
       sumShaderLum += lum(shaderConnectionContribution(x));
       sumCorrectLum += lum(correctConnectionContribution(x));
-      const toLight = sub(x, eyePos);
-      const d2 = dot(toLight, toLight);
-      const d = Math.sqrt(d2);
-      const wi = scale(toLight, 1 / d);
-      sumBiasFactor +=
-        (Math.max(dot(eyeNormal, wi), 0) * Math.max(dot(rectNormal, scale(wi, -1)), 0)) / rectArea;
     }
     const ratio = sumShaderLum / sumCorrectLum;
-    const predictedBias = sumBiasFactor / N; // E[cosE·cosL]/A under the correct measure-weighting? No —
-    // NOTE: predictedBias is E_uniform[cosE·cosL/A], an unweighted average; the
-    // realized ratio is the C_correct-WEIGHTED average of the same factor, so the
-    // two differ slightly. Both are reported; the assertion uses the realized ratio.
-    const msg =
-      `BDPT s=1 connection: measured E[C_shader]/L = ${ratio.toFixed(4)} ` +
-      `(uniform-avg bias factor E[cosE·cosL]/A = ${predictedBias.toFixed(4)}). ` +
-      `The shader applies cos² per connection edge (gTerm carries both cosines AND ` +
-      `each side's bsdfCosTheta re-multiplies its cosine) and never divides the ` +
-      `emitter-position pdf 1/A out of β_L0 — bdptConnection.wgsl.ts:108,323,335 + ` +
-      `bdptLightSubpath.wgsl.ts:153,269.`;
-    // The bias is geometry-dependent (cosE·cosL/A field over the rect); for THIS
-    // geometry (2×2 rect, 1.5 above a horizontal receiver) the realized ratio is
-    // ≈ 0.205 — a ~5× energy deficit. Pin with a band wide enough for MC noise
-    // (deterministic seed → tight in practice).
-    // eslint-disable-next-line no-console
-    console.log(`[oracle.bdptConnectionCosine] ${msg}`);
-    expect(ratio, msg).toBeGreaterThan(0.1);
-    expect(ratio, msg).toBeLessThan(0.25);
-    // And it is decisively NOT unbiased:
-    expect(Math.abs(ratio - 1), msg).toBeGreaterThan(0.5);
-  });
-
-  // The fix should make the unweighted s=1 strategy contribution an unbiased
-  // estimator of the direct-illumination integral: un-skip when the connection
-  // assembly is corrected (single G with both cosines, plain BSDF values f_l/f_e
-  // without re-multiplied cosines, β_L0 = Le/(pdfPick·pdfArea)).
-  it.skip('CORRECT VALUE (un-skip with the fix): E[C_shader] / L = 1 ± MC noise', () => {
-    const N = 2_000_000;
-    const rng = mulberry32(987654321);
-    let sumShaderLum = 0;
-    let sumCorrectLum = 0;
-    const lum = (c: V3) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    for (let i = 0; i < N; i++) {
-      const x = samplePointOnRect(rng(), rng());
-      sumShaderLum += lum(shaderConnectionContribution(x));
-      sumCorrectLum += lum(correctConnectionContribution(x));
-    }
     expect(sumShaderLum / sumCorrectLum).toBeCloseTo(1, 2);
   });
 });

@@ -320,24 +320,36 @@ fn evaluateBdptConnection(
   if (cosEye <= 0.0) {
     return vec3f(0.0);
   }
-  let eyeBsdfCosTheta = eyeBrdf * cosEye;
+  // bdptGeometricTerm already contributes the receiver cosine for this edge.
+  // Keep the BSDF value itself here so the connection does not double-count
+  // cos(theta) at the eye endpoint.
+  let eyeBsdfCosTheta = eyeBrdf;
   let cosLight = max(dot(lightNormal, -connDir), 0.0);
+  if (cosLight <= 0.0) {
+    return vec3f(0.0);
+  }
   // A9 — REAL light-vertex BSDF at L_c (row 3: matId + wo-toward-prev). For a
   // surface vertex (matId >= 0) evaluate the actual BSDF scattering the incoming
   // light direction (toward L_{c-1}, = lvWoPrev) to the connection direction (L_c →
-  // E_e, = -connDir); for the emitter vertex (matId < 0) keep the diffuse
-  // emission/Lambertian profile cosθ/π. This makes a glossy/metallic light-path
+  // E_e, = -connDir); for the legacy pseudo-emitter vertex (matId == -1) keep
+  // the diffuse emission/Lambertian profile cosθ/π. Finite area emitters
+  // (matId == -2) already carry Le/(pdfPick·pdfArea), so their endpoint factor
+  // is 1 and the geometry term owns the emitter cosine. This makes a glossy/metallic light-path
   // vertex's connection consistent with the glossy light-subpath BUILD (else the
   // BSDF mismatch between build and connect biases the estimate).
   let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
   let lvMatId = lv3.w;
   let lvWoPrev = lv3.xyz;
-  var lightBsdfCosTheta = vec3f(cosLight / PI);
+  var lightBsdfCosTheta = vec3f(1.0);
+  if (lvMatId == -1.0) {
+    lightBsdfCosTheta = vec3f(cosLight / PI);
+  }
   if (lvMatId >= 0.0) {
     let lvMat = decodeMaterial(u32(lvMatId));
     let lvBrdf = evaluateBrdf(lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
                               lightNormal, -connDir, lvWoPrev);
-    lightBsdfCosTheta = lvBrdf * cosLight;
+    // bdptGeometricTerm already contributes the light-vertex cosine.
+    lightBsdfCosTheta = lvBrdf;
   }
 
   // ── Full §10.3 MIS weight ──────────────────────────────────────────────────

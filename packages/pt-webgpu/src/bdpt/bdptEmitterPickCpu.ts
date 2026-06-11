@@ -131,6 +131,7 @@ export type BdptBounce0Sample = {
   readonly emitRad: [number, number, number];
   readonly pdfJoint: number;
   readonly pdfHemi: number;
+  readonly lvMatId?: number;
 };
 
 /** Deterministic bounce-0 vertex (cosine hemisphere uses uHemi in [0,1)). */
@@ -173,6 +174,40 @@ export function sampleBdptBounce0Cpu(
     return { emitPos, emitNormal: n, emitRad: throughput, pdfJoint, pdfHemi };
   };
 
+  const finishArea = (
+    emitPos: [number, number, number],
+    emitNormal: [number, number, number],
+    emitRad: [number, number, number],
+    pdfLight: number,
+    pdfArea: number,
+  ): BdptBounce0Sample => {
+    const n = emitNormal;
+    const u1 = Math.max(uHemi, 1e-8);
+    const u2 = 1 - u1 * 0.5;
+    const r = Math.sqrt(u1);
+    const phi = 2 * PI * u2;
+    const x = r * Math.cos(phi);
+    const y = r * Math.sin(phi);
+    const z = Math.sqrt(Math.max(0, 1 - u1));
+    const tx: [number, number, number] = Math.abs(n[1]) < 0.999 ? [0, 1, 0] : [1, 0, 0];
+    const t = normalize3(cross3(tx, n));
+    const b = cross3(n, t);
+    const wi = normalize3([
+      t[0] * x + b[0] * y + n[0] * z,
+      t[1] * x + b[1] * y + n[1] * z,
+      t[2] * x + b[2] * y + n[2] * z,
+    ]);
+    const cosEmit = Math.max(dot3(n, wi), 0);
+    const pdfHemi = cosEmit / PI;
+    const pdfJoint = Math.max(pdfLight * pdfArea, 1e-8);
+    const throughput: [number, number, number] = [
+      emitRad[0] / pdfJoint,
+      emitRad[1] / pdfJoint,
+      emitRad[2] / pdfJoint,
+    ];
+    return { emitPos, emitNormal: n, emitRad: throughput, pdfJoint, pdfHemi, lvMatId: -2 };
+  };
+
   // A9 — ISOTROPIC point-emitter finish (uniform sphere, no surface cosine). Mirrors
   // the WGSL bdptFinishBounce0Isotropic: a point light emits over the FULL sphere with
   // directional pdf 1/(4π); the stored "emitNormal" is the sampled direction so the
@@ -197,7 +232,7 @@ export function sampleBdptBounce0Cpu(
       emitRad[1] / pdfJoint,
       emitRad[2] / pdfJoint,
     ];
-    return { emitPos, emitNormal: dir, emitRad: throughput, pdfJoint, pdfHemi: pdfDir };
+    return { emitPos, emitNormal: dir, emitRad: throughput, pdfJoint, pdfHemi: pdfDir, lvMatId: -1 };
   };
 
   let cur = 0;
@@ -228,15 +263,39 @@ export function sampleBdptBounce0Cpu(
         case 'rect': {
           const ru = e.uAxis;
           const rv = e.vAxis;
-          const u = uHemi * 2 - 1;
-          const v = (1 - uHemi) * 2 - 1;
-          const emitPos: [number, number, number] = [
-            e.position[0] + ru[0] * u + rv[0] * v,
-            e.position[1] + ru[1] * u + rv[1] * v,
-            e.position[2] + ru[2] * u + rv[2] * v,
-          ];
+          const isDisc = Math.abs((e.shapeTag ?? 0) - 1.0) < 0.5;
+          let emitPos: [number, number, number];
+          let area: number;
+          if (isDisc) {
+            const a = uHemi * 2 - 1;
+            const bb = (1 - uHemi) * 2 - 1;
+            let cr: number;
+            let cphi: number;
+            if (Math.abs(a) >= Math.abs(bb)) {
+              cr = a;
+              cphi = (PI / 4) * (bb / Math.max(Math.abs(a), 1e-9));
+            } else {
+              cr = bb;
+              cphi = PI / 2 - (PI / 4) * (a / Math.max(Math.abs(bb), 1e-9));
+            }
+            emitPos = [
+              e.position[0] + ru[0] * (cr * Math.cos(cphi)) + rv[0] * (cr * Math.sin(cphi)),
+              e.position[1] + ru[1] * (cr * Math.cos(cphi)) + rv[1] * (cr * Math.sin(cphi)),
+              e.position[2] + ru[2] * (cr * Math.cos(cphi)) + rv[2] * (cr * Math.sin(cphi)),
+            ];
+            area = Math.max(discArea(ru), 1e-6);
+          } else {
+            const u = uHemi * 2 - 1;
+            const v = (1 - uHemi) * 2 - 1;
+            emitPos = [
+              e.position[0] + ru[0] * u + rv[0] * v,
+              e.position[1] + ru[1] * u + rv[1] * v,
+              e.position[2] + ru[2] * u + rv[2] * v,
+            ];
+            area = Math.max(rectQuadArea(ru, rv), 1e-6);
+          }
           const emitNormal = normalize3(cross3(ru, rv));
-          return finish(emitPos, emitNormal, e.radiance, discretePdf);
+          return finishArea(emitPos, emitNormal, e.radiance, discretePdf, 1 / area);
         }
         case 'mesh': {
           const a = e.triA;
@@ -261,7 +320,8 @@ export function sampleBdptBounce0Cpu(
             return null;
           }
           const emitNormal: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
-          return finish(emitPos, emitNormal, e.radiance, discretePdf);
+          const area = Math.max(meshTriangleArea(a, b, c), 1e-6);
+          return finishArea(emitPos, emitNormal, e.radiance, discretePdf, 1 / area);
         }
       }
     }

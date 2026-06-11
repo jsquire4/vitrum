@@ -35,6 +35,7 @@ const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
 const HYSTERESIS:     f32 = 0.97;
 const IRR_CELL:       u32 = ${IRR_CELL}u;
 const VIS_CELL:       u32 = ${VIS_CELL}u;
+const DDGI_MISS_DISTANCE: f32 = 1.0e19;
 
 struct ProbeRay {
   hitPosition:   vec3f,
@@ -223,6 +224,11 @@ fn probeUpdateBlendVisibility(
     // neighbours (the bordered atlas samples in zero corners of an
     // inside-box probe cell). Skip these the same way as the irradiance pass.
     if (ray.hitDistance < 0.05) { continue; }
+    // Sky misses are encoded by the ray pass as a huge sentinel distance
+    // (~1e20). Treat them as "no occluder sample" for visibility moments:
+    // including them drives mean/depth² to infinity in the rgba16float atlas,
+    // which makes the Chebyshev receiver permanently transparent.
+    if (ray.hitDistance >= DDGI_MISS_DISTANCE) { continue; }
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
     // Variance-shadow visibility kernel — Majercik 2019 §3 uses pow(2) for the

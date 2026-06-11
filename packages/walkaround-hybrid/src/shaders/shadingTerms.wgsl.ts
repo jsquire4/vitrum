@@ -258,14 +258,10 @@ fn lo_direct(
 
   if (lid >= ubo.emitterCount) { return vec3f(0.0); }
   let e  = emitters[lid];
-  // Stochastic xi instead of (0.5, 0.5). The deterministic centre-sample
-  // bites hard on rect-area lights split into two triangles: the two
-  // tris have different centroids, so ReSTIR flipping between them
-  // produces a bimodal radiance per frame (visible flicker). Random xi
-  // distributes the sample point across the triangle each frame;
-  // temporalAccum integrates the variance out.
-  let lsXi = vec2f(rand_f32(rng), rand_f32(rng));
-  let ls = sampleEmitterPoint(e, lsXi);
+  // Consume the exact sample that won the reservoir. Re-rolling a fresh point
+  // here breaks the ReSTIR identity between candidate p̂, finalization p̂, and
+  // shaded contribution for large close emitters.
+  let ls = sampleEmitterPoint(e, r.xi);
   let toL = ls.pos - pos;
   let dist = length(toL);
   if (dist <= 1e-4) { return vec3f(0.0); }

@@ -322,6 +322,21 @@ interface SceneCfg {
 }
 
 // ── restir_di_compute_phat_xi transcription (restirPHat.wgsl.ts:46-73) ───────
+function computePhatCentroid(cfg: SceneCfg, lid: number): number {
+  const e = cfg.emitters[lid]!;
+  const centroid = scale(add(add(e.vA, e.vB), e.vC), 1 / 3);
+  const toL = sub(centroid, pos);
+  const dist2 = dot(toL, toL);
+  if (dist2 < 1e-8) return 0;
+  const wi = scale(toL, 1 / Math.sqrt(dist2));
+  const nDotL = Math.max(0, dot(normal, wi));
+  const nlDotL = Math.max(0, dot(scale(e.normal, -1), wi));
+  if (nDotL < 1e-6 || nlDotL < 1e-6) return 0;
+  const G = emitterGeometry(nlDotL, dist2, dist2Floor);
+  const brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
+  return luminance(scale(mulv(e.Le, brdf), G));
+}
+
 function computePhatXi(cfg: SceneCfg, lid: number, xi: V2): number {
   if (lid === ENV_SENTINEL) {
     if (!cfg.envHasMap) return 0; // L50
@@ -333,9 +348,8 @@ function computePhatXi(cfg: SceneCfg, lid: number, xi: V2): number {
     return luminance(mulv(color, brdf)); // L56
   }
   const e = cfg.emitters[lid]!;
-  // L59 — CENTROID, not the stored sample point (the HYB-GI-01 defect):
-  const centroid = scale(add(add(e.vA, e.vB), e.vC), 1 / 3);
-  const toL = sub(centroid, pos);
+  const ls = sampleEmitterPoint(e, xi);
+  const toL = sub(ls.pos, pos);
   const dist2 = dot(toL, toL);
   if (dist2 < 1e-8) return 0;
   const wi = scale(toL, 1 / Math.sqrt(dist2));
@@ -348,10 +362,12 @@ function computePhatXi(cfg: SceneCfg, lid: number, xi: V2): number {
 }
 
 // ── RIS pass transcription (ris.wgsl.ts risMain, flat-CDF mode) ──────────────
-type Variant = 'shader' | 'fixXi';
+type Variant = 'shader' | 'historical';
 
 function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): ReservoirDI {
   const r: ReservoirDI = { lightId: 0, M: 0, w_sum: 0, W: 0, xi: [0, 0] };
+  let areaSupportM = 0;
+  let envSupportM = 0;
   const totalPower = Math.max(
     cfg.emitters.reduce((s, e) => s + luminance(e.Le) * e.area, 0),
     1e-8,
@@ -386,6 +402,7 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     const pX = Math.max(1e-15, emitterSelPmf * ls.pdfArea); // L260
     const w = pHat > 0 ? pHat / pX : 0; // L261
     updateReservoirDI(r, lid, xiTri, w, rng); // L262
+    areaSupportM += 1;
   }
   // M_BRDF loop [L291-352]
   for (let bi = 0; bi < M_BRDF; bi++) {
@@ -433,6 +450,7 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     const pAreaB = (pdfSa * dist2B) / Math.max(nlDotLB, 1e-6); // L348
     const wB = pHatB > 0 ? pHatB / Math.max(1e-15, pAreaB) : 0; // L349-350
     updateReservoirDI(r, bestLid, bestXi, wB, rng); // L351
+    areaSupportM += 1;
   }
   // M_ENV loop [L375-389]
   for (let ei = 0; ei < M_ENV; ei++) {
@@ -445,35 +463,24 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     const pXe = Math.max(1e-15, envS.pdf); // L384
     const wE = pHatE > 0 ? pHatE / pXe : 0; // L385
     updateReservoirDI(r, ENV_SENTINEL, envDirToXi(envS.dir), wE, rng); // L388
+    envSupportM += 1;
   }
   // W finalize [L392-461] — unoccluded scene, so the shadow tests pass.
   if (r.M > 0 && r.w_sum > 0) {
     const pHatZ =
-      variant === 'fixXi' && r.lightId !== ENV_SENTINEL
-        ? // fix-shaped: target evaluated at the SELECTED sample point r.xi —
-          // the p̂-consistent finalize Bitterli 2020 §3.3 requires.
-          phatAtSample(cfg, r.lightId, r.xi)
-        : computePhatXi(cfg, r.lightId, r.xi); // L419 / L457 — CENTROID for emitters
-    r.W = pHatZ > 0 ? r.w_sum / (r.M * pHatZ) : 0; // L420 / L458
+      variant === 'historical' && r.lightId !== ENV_SENTINEL
+        ? computePhatCentroid(cfg, r.lightId)
+        : computePhatXi(cfg, r.lightId, r.xi);
+    const supportM =
+      variant === 'historical'
+        ? r.M
+        : r.lightId === ENV_SENTINEL
+          ? Math.max(1, envSupportM)
+          : Math.max(1, areaSupportM);
+    r.M = supportM;
+    r.W = pHatZ > 0 ? r.w_sum / (supportM * pHatZ) : 0; // L420 / L458
   }
   return r;
-}
-
-// p̂ at the reservoir's stored sample point (the candidate-loop form,
-// ris.wgsl.ts:236-253) — used only by the fix-shaped variant.
-function phatAtSample(cfg: SceneCfg, lid: number, xi: V2): number {
-  const e = cfg.emitters[lid]!;
-  const ls = sampleEmitterPoint(e, xi);
-  const toL = sub(ls.pos, pos);
-  const dist2 = dot(toL, toL);
-  if (dist2 < 1e-8) return 0;
-  const wi = scale(toL, 1 / Math.sqrt(dist2));
-  const nDotL = Math.max(0, dot(normal, wi));
-  const nlDotL = Math.max(0, dot(scale(e.normal, -1), wi));
-  if (nDotL < 1e-6 || nlDotL < 1e-6) return 0;
-  const G = emitterGeometry(nlDotL, dist2, dist2Floor);
-  const brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
-  return luminance(scale(mulv(e.Le, brdf), G));
 }
 
 // ── shade consumption transcription (shadingTerms.wgsl.ts lo_direct) ─────────
@@ -489,9 +496,7 @@ function loDirect(cfg: SceneCfg, r: ReservoirDI, rng: () => number, variant: Var
     return scale(mulv(envColor, brdfE), r.W); // L254
   }
   const e = cfg.emitters[r.lightId]!;
-  // L265 — the SHADER draws a FRESH xi, not the reservoir's r.xi; the
-  // fix-shaped variant consumes the selected sample (xi-consistent shading).
-  const lsXi: V2 = variant === 'fixXi' ? r.xi : [rng(), rng()];
+  const lsXi: V2 = variant === 'historical' ? [rng(), rng()] : r.xi;
   const ls = sampleEmitterPoint(e, lsXi); // L266
   const toL = sub(ls.pos, pos);
   const dist = Math.sqrt(dot(toL, toL));
@@ -598,7 +603,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     // Direct demonstration that the two p̂s the estimator mixes (w_sum built
     // from sampled-point p̂, W divided by centroid p̂) disagree by large factors
     // across the triangle — the inconsistency HYB-GI-01 flags.
-    const phatCentroid = computePhatXi({ emitters: [TRI1, TRI2], envHasMap: false }, 0, [0, 0]);
+    const phatCentroid = computePhatCentroid({ emitters: [TRI1, TRI2], envHasMap: false }, 0);
     const rng = mulberry32(11);
     let minR = Infinity;
     let maxR = 0;
@@ -622,18 +627,18 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     expect(maxR / minR, `p̂(sample)/p̂(centroid) spans [${minR.toFixed(3)}, ${maxR.toFixed(3)}]`).toBeGreaterThan(3);
   });
 
-  it('CONFIRMED BIAS HYB-GI-01 (characterization pin): lights-only under-estimates ~30% (centroid p̂ finalize)', () => {
+  it('historical HYB-GI-01 characterization: centroid p̂ + fresh shade xi under-estimates ~30%', () => {
     const cfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: false };
-    const measured = measurePipeline(cfg, 24_000, 314159);
+    const measured = measurePipeline(cfg, 24_000, 314159, 'historical');
     const truth = groundTruthLights(cfg.emitters, 400_000, 271828);
     const ratio = lum3(measured) / lum3(truth);
     const msg =
       `lights-only E[lo_direct]/I = ${ratio.toFixed(4)} (≈30% under-estimate). w_sum is ` +
       `built from SAMPLED-POINT p̂ (ris.wgsl.ts:253) but W divides by CENTROID p̂ ` +
-      `(restirPHat.wgsl.ts:59 via ris.wgsl.ts:457-458), and shade re-samples a FRESH point ` +
+      `(historical restirPHat path), and shade re-samples a FRESH point ` +
       `(shadingTerms.wgsl.ts:265). The expectation collapses to ≈ I·mean_A(p̂)/p̂(centroid), ` +
       `< 1 for any large emitter close to the receiver (the centroid sits near the p̂ peak). ` +
-      `The fix-shaped variant test below restores ≈1.00 with the same candidate stream.`;
+      `The current selected-xi regression sibling restores ≈1.00 with the same candidate stream.`;
     // eslint-disable-next-line no-console
     console.log(`[oracle.restirDi] ${msg}`);
     expect(ratio, msg).toBeGreaterThan(0.62);
@@ -641,7 +646,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     expect(Math.abs(ratio - 1), msg).toBeGreaterThan(0.2); // decisively biased
   });
 
-  it('attribution + HYB-GI-02 skip-class REFUTED: selected-xi finalize/shade variant is unbiased (≈1.000)', () => {
+  it('REGRESSION HYB-GI-01: selected-xi finalize/shade path is unbiased (≈1.000)', () => {
     // Same transcribed candidate generation (including all the `continue`
     // skips that drop BOTH weight and count), but W finalized with p̂ at the
     // SELECTED r.xi and shade consuming r.xi. Restores E ≈ I:
@@ -654,7 +659,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     //       for the skip class. (The env 1/M inflation below is the real
     //       M-accounting defect.)
     const cfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: false };
-    const measured = measurePipeline(cfg, 24_000, 314159, 'fixXi');
+    const measured = measurePipeline(cfg, 24_000, 314159);
     const truth = groundTruthLights(cfg.emitters, 400_000, 271828);
     const ratio = lum3(measured) / lum3(truth);
     // eslint-disable-next-line no-console
@@ -663,7 +668,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     expect(ratio).toBeLessThan(1.03);
   });
 
-  it('CONFIRMED BIAS HYB-GI-02 (characterization pin): env-only direct light is under-estimated ≈ M× (≈66×)', () => {
+  it('historical HYB-GI-02 characterization: env-only direct light is under-estimated ≈ M× (≈66×)', () => {
     // Scene: env map + the same two emitters DARK (Le=0). The 64 emitter
     // candidates and the BRDF candidate still enter the pool (w=0 but
     // M incremented — reservoirDi.wgsl.ts:86 runs for every updateReservoirDI
@@ -672,7 +677,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     const darkTri1: EmitterTri = { ...TRI1, Le: [0, 0, 0] };
     const darkTri2: EmitterTri = { ...TRI2, Le: [0, 0, 0] };
     const cfg: SceneCfg = { emitters: [darkTri1, darkTri2], envHasMap: true };
-    const measured = measurePipeline(cfg, 60_000, 161803);
+    const measured = measurePipeline(cfg, 60_000, 161803, 'historical');
     const truth = groundTruthEnv(2_000_000, 141421);
     const ratio = lum3(measured) / lum3(truth);
     const msg =
@@ -687,9 +692,9 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     expect(ratio, msg).toBeLessThan(1 / 45);
   });
 
-  it('mixed lights+env: both defects compose — measured matches the two-bias model (pinned)', () => {
+  it('historical mixed lights+env: both defects compose — measured matches the two-bias model', () => {
     const cfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: true };
-    const measured = measurePipeline(cfg, 24_000, 999331);
+    const measured = measurePipeline(cfg, 24_000, 999331, 'historical');
     const truthL = groundTruthLights(cfg.emitters, 400_000, 271828);
     const truthE = groundTruthEnv(2_000_000, 141421);
     const truthTotal = add(truthL, truthE);
@@ -698,7 +703,7 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     //   lights share carries the centroid-p̂ factor (measured in the
     //   lights-only pin) and a 65/66 dilution from the env candidate's M slot;
     //   env share is crushed to 1/66 by the disjoint-support balance.
-    const lightsOnly = measurePipeline({ emitters: [TRI1, TRI2], envHasMap: false }, 24_000, 314159);
+    const lightsOnly = measurePipeline({ emitters: [TRI1, TRI2], envHasMap: false }, 24_000, 314159, 'historical');
     const centroidFactor = lum3(lightsOnly) / lum3(truthL);
     const predicted =
       ((65 / 66) * centroidFactor * lum3(truthL) + (1 / 66) * lum3(truthE)) / lum3(truthTotal);
@@ -714,15 +719,19 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     expect(ratio, msg).toBeLessThan(0.6); // decisively short of unbiased (1.0)
   });
 
-  // Un-skip when the DI pool weights disjoint-support strategies correctly
-  // (per-strategy balance weights / separate env reservoir / m_i(x) MIS
-  // weights) AND finalize/shade consume p̂ at the selected sample.
-  it.skip('CORRECT VALUE (un-skip with the fix): env-only and mixed scenes match brute force', () => {
+  it('REGRESSION HYB-GI-02: env-only and mixed scenes match brute force', () => {
     const darkTri1: EmitterTri = { ...TRI1, Le: [0, 0, 0] };
     const darkTri2: EmitterTri = { ...TRI2, Le: [0, 0, 0] };
     const envOnly = measurePipeline({ emitters: [darkTri1, darkTri2], envHasMap: true }, 60_000, 161803);
     const truthE = groundTruthEnv(2_000_000, 141421);
     expect(lum3(envOnly) / lum3(truthE)).toBeGreaterThan(0.95);
     expect(lum3(envOnly) / lum3(truthE)).toBeLessThan(1.05);
+
+    const mixedCfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: true };
+    const mixed = measurePipeline(mixedCfg, 24_000, 999331);
+    const truthL = groundTruthLights(mixedCfg.emitters, 400_000, 271828);
+    const truthTotal = add(truthL, truthE);
+    expect(lum3(mixed) / lum3(truthTotal)).toBeGreaterThan(0.95);
+    expect(lum3(mixed) / lum3(truthTotal)).toBeLessThan(1.05);
   });
 });
