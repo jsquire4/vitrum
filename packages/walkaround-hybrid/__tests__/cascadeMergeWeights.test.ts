@@ -195,7 +195,7 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
     // Compute the un-normalized weighted sum for one cell.
     const N = 8;
     const gx = 2, gy = 2;
-    let rawSumR = 0, rawOmegaTotal = 0;
+    let rawSumR = 0, _rawOmegaTotal = 0;
     for (let ci = 0; ci < 4; ci++) {
       const dx = ci % 2;
       const dy = Math.floor(ci / 2);
@@ -203,7 +203,7 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
       const childGy = gy * 2 + dy;
       const omega = octCellSolidAngle(childGx, childGy, N);
       rawSumR += 1 * omega; // radiance = 1
-      rawOmegaTotal += omega;
+      _rawOmegaTotal += omega;
     }
 
     // The un-normalized sum should NOT equal 1.

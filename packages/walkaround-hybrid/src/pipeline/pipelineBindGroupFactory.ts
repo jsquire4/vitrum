@@ -13,7 +13,7 @@ import {
   buildCompositeBindGroup,
 } from './bindGroupBuilders.js';
 import type { SceneBindGroupResources } from './BvhBufferHost.js';
-import type { DDGIBindingState } from './DDGIBindingState.js';
+import type { OptionalSubsystemBindingState } from './OptionalSubsystemBindingState.js';
 import type { FrameResources } from './resourceManager.js';
 import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
@@ -29,7 +29,7 @@ export function buildPerFrameBindGroups(
   cache: BGLCache,
   resources: FrameResources,
   scene: SceneBindGroupResources,
-  ddgi: DDGIBindingState,
+  ddgi: OptionalSubsystemBindingState,
   placeholderView: GPUTextureView,
   resourceCache?: PipelineResourceCache,
 ): PerFrameBindGroups {

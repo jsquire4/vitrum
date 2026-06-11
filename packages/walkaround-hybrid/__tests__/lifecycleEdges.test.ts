@@ -135,7 +135,8 @@ function makeOidnDevice(w: number, h: number) {
   } as unknown as GPUDevice;
 }
 
-function makeOidnCtx(device: GPUDevice, w: number, h: number) {
+// _makeOidnCtx: retained as an OIDN context factory for denoiser lifecycle tests.
+function _makeOidnCtx(device: GPUDevice, w: number, h: number) {
   const hdr = {
     label: 'hdr', destroy: vi.fn(),
     createView: vi.fn(() => ({})), width: w, height: h,

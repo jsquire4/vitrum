@@ -7,7 +7,6 @@ import {
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
-  type SkinnedMeshPrimitive,
   type SupportSets,
 } from '@vitrum/core';
 import {
@@ -31,7 +30,6 @@ import {
   packEmitterArrays,
   type EnvSummaryForTree,
   type PackedEmitterArrays,
-  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
 } from './emitterPacking.js';
 
 // 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally

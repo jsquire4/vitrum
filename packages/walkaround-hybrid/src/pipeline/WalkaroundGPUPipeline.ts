@@ -62,7 +62,7 @@ import { PipelineResourceCache } from './PipelineResourceCache.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
 import { NrcSubsystem } from '../neural/nrc/nrcSubsystem.js';
 import { ReGIRCoordinator, resolveReGIRConfig, type ReGIRConfig } from './ReGIRCoordinator.js';
-import { DDGIBindingState } from './DDGIBindingState.js';
+import { OptionalSubsystemBindingState } from './OptionalSubsystemBindingState.js';
 import {
   DenoiserRegistry,
   type Denoiser,
@@ -446,7 +446,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   // for the no-DDGI fallback. Constructed once in the pipeline ctor; the
   // device handle is captured at that point so renderFrame / setDDGIInputs
   // can stay device-agnostic on this side.
-  private readonly _ddgi: DDGIBindingState;
+  private readonly _ddgi: OptionalSubsystemBindingState;
 
   // PPG (Müller 2017) state — enabled flag, scene-bounds AABB, CPU sTree,
   // and the three serialise/upload writers used to be loose private members
@@ -875,7 +875,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._device = device;
     this._width  = width;
     this._height = height;
-    this._ddgi = new DDGIBindingState(device);
+    this._ddgi = new OptionalSubsystemBindingState(device);
     this._ppg  = new PPGCoordinator(device);
   }
 

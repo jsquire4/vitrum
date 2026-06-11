@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asTextureRef } from '@vitrum/core';
 import { canFastPathMaterialPatch } from '../scene/incrementalPatch.js';
-import { hasMeshAreaEmitterForPrimitive, packEmitterArrays } from '../scene/emitterPacking.js';
+import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import {
   applyEmitterCountMutation,
   buildPackedScene,

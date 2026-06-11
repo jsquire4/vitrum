@@ -31,7 +31,7 @@
  * gather, matching nrcQuery.wgsl.
  */
 
-import type { BGLCache } from '../../pipeline/bindGroupLayouts.js';
+import type { BGLCache } from '../../bglTypes.js';
 
 export function getNrcBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.nrc) return cache.nrc;

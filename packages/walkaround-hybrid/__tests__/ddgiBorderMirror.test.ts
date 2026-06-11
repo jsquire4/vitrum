@@ -26,7 +26,7 @@ import {
   makeBorderFillWGSL,
   makeProbeUpdateBorderVisWGSL,
 } from '../src/ddgi/wgsl/probeUpdateBorder.wgsl.js';
-import { IRR_CELL, IRR_STRIDE, VIS_CELL, VIS_STRIDE } from '../src/ddgi/ddgiAtlasLayout.js';
+import { VIS_CELL, VIS_STRIDE } from '../src/ddgi/ddgiAtlasLayout.js';
 
 // ---------------------------------------------------------------------------
 // TS mirror of the WGSL border-mirror logic.

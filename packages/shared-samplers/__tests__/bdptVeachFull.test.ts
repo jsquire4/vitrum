@@ -30,8 +30,8 @@ import type { BDPTFullVertex } from '../src/bdptMIS.js';
 
 // ── Helper factories ──────────────────────────────────────────────────────────
 
-/** Build a non-specular diffuse vertex on the XZ plane (normal pointing up). */
-function makeVertex(
+/** Build a non-specular diffuse vertex on the XZ plane (normal pointing up). Retained for future BDPT path tests. */
+function _makeVertex(
   x: number,
   z: number,
   pdfFwd: number,

@@ -67,13 +67,17 @@
  * than the other way around. This "inside-out" dependency is a known code
  * smell: the subsystem should not depend on its host. The correct fix is to
  * extract the shared types into a neutral module that both the subsystem and
- * the pipeline can import. Until that refactor is done, existence of the
+ * the pipeline can import.
+ *
+ * **Shape-D smell resolved (I5.2, 2026-06-11):** `BGLKey` and `BGLCache` have
+ * been extracted to `src/bglTypes.ts` (mirroring the `wgslTypes.ts` precedent).
+ * `neural/nrc/nrcBindGroupLayout.ts` now imports from `bglTypes.ts` directly;
+ * `pipeline/bindGroupLayouts.ts` re-exports them for back-compat. The
  * `NrcSubsystem` instance IS the enabled gate (it is only constructed when
  * `nrcEnabled` is true); there is no separate `enabled` property.
  *
  * Use this shape only as a temporary arrangement when a new subsystem has a
  * genuine circular dep that cannot be resolved without a larger restructure.
- * Plan the dep-inversion fix as a follow-up task.
  *
  * ---
  *

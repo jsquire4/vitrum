@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';

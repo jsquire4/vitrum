@@ -26,16 +26,13 @@ import {
   serialiseSTree,
   gpuTraverseSTreeLeaf,
   gpuTraverseDTreeLeaf,
-  DTREE_HEADER_F32,
-  STREE_HEADER_F32,
 } from '../src/ppg/serialise.js';
-import { buildSTree, sTreeAccumulate, splitOverflowLeaves } from '../src/ppg/sTree.js';
+import { buildSTree, sTreeAccumulate } from '../src/ppg/sTree.js';
 import { dTreePdf, refineDTree, findDTreeLeaf } from '../src/ppg/dTree.js';
 import type { AABB, STree } from '../src/ppg/types.js';
 import { RIS_GI_WGSL, RIS_GI_MODULE } from '../src/shaders/risGi.wgsl.js';
 import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { PPG_MIS_ALPHA } from '../src/ppg/ppgConstants.js';
-import { vi } from 'vitest';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 

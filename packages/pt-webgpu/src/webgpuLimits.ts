@@ -26,6 +26,7 @@ export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
  * Full-tier storage-buffer bindings visible to the compute stage.
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
  * Total: g0(8) + g1(11) + g2(7) + g3(5) = 31.
+ * @public — public device-limit constant; consumed by host device-acquisition code and tests.
  */
 export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 31;
 
@@ -33,6 +34,7 @@ export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 31;
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
 
+/** @public — back-compat alias for PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE; test consumers reference this name. */
 export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
 

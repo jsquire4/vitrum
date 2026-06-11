@@ -96,7 +96,8 @@ function perezCoeffsY_chroma(T: number): [number, number, number, number, number
 // turbidity T and solar zenith angle χ (radians).  Eq. A.4.
 function zenithLuminance(T: number, chi: number): number {
   const chi2 = chi * chi;
-  const chi3 = chi2 * chi;
+  // Preetham A.4 cubic term — retained in case the polynomial form is later restored.
+  const _chi3 = chi2 * chi;
   return (4.0453 * T - 4.9710) * Math.tan(((4.0 / 9.0) - T / 120.0) * (Math.PI - 2 * chi)) - 0.2155 * T + 2.4192;
 }
 

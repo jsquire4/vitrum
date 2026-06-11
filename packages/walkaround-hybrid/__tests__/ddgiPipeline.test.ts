@@ -32,8 +32,9 @@ const PI = Math.PI;
 // ---------------------------------------------------------------------------
 // LCG — deterministic pseudo-random (not used in ray sampling, kept for
 // helpers that need a reproducible float stream).
+// Retained as a deterministic RNG for future simulation tests.
 // ---------------------------------------------------------------------------
-function makeLCG(seed: number): () => number {
+function _makeLCG(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
     s = (Math.imul(1664525, s) + 1013904223) >>> 0;
@@ -291,8 +292,9 @@ function receiverMultiply(
 /**
  * Verbatim copy of borderMirror from ddgiBorderMirror.test.ts.
  * Per spec: "Reuse the M8 borderMirror from existing test file".
+ * Retained for future atlas-layout border-verify tests in this file.
  */
-function borderMirror(
+function _borderMirror(
   N: number,
   lx: number,
   ly: number,
@@ -397,7 +399,7 @@ describe('DDGI pipeline CPU emulation — behavior tests', () => {
     { timeout: 30_000 },
     () => {
       const FRAMES = 50;
-      const CELL_N = 8;
+      const _CELL_N = 8; // interior cell dimension; retained for potential per-cell assertions
       const cellDirs = irradianceCellDirections();
       const numCells = cellDirs.length; // 64
 

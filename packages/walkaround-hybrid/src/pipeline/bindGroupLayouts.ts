@@ -24,23 +24,11 @@
 
 import { bglEntriesFor } from './bindGroupDescriptors.js';
 
-/**
- * Universe of all bind-group layout cache keys (D3.16). Adding a new pass BGL
- * = one string here + one `getBGL*` getter below. No other edits required.
- */
-export type BGLKey =
-  | 'frame' | 'scene' | 'ubo' | 'atrous' | 'composite' | 'accum'
-  | 'hybridLayers' | 'sampleBudget' | 'resolve' | 'motionVectors'
-  | 'gtao' | 'gtaoUpsample' | 'temporalGi' | 'spatialGi'
-  | 'indirectCombine' | 'indirectTemporalAccum'
-  | 'lightTree' | 'regirBuild' | 'nrc' | 'cbPrefill';
-
-/**
- * Memoization cache for all bind-group layouts. `Partial<Record<…>>` is
- * structurally identical to the prior 20-field optional interface (same keys,
- * same `GPUBindGroupLayout | undefined` values) — no callers need to change.
- */
-export type BGLCache = Partial<Record<BGLKey, GPUBindGroupLayout>>;
+// BGLKey and BGLCache now live in the neutral bglTypes module so the NRC
+// subsystem (neural/nrc/nrcBindGroupLayout.ts) can import them without
+// reaching into the pipeline layer (Shape-D smell resolved, I5.2, 2026-06-11).
+import type { BGLKey, BGLCache } from '../bglTypes.js';
+export type { BGLKey, BGLCache };
 
 // frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14/15)
 // are declared in bindGroupDescriptors.ts with per-binding rationale notes.

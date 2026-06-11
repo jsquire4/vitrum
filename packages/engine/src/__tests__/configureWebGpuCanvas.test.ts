@@ -8,7 +8,7 @@ import { configureWebGpuCanvas } from '../configureWebGpuCanvas.js';
 
 const FAKE_DEVICE = { destroy() {} } as unknown as GPUDevice;
 
-function makeCanvas(ctx: { configure: (...args: any[]) => unknown } | null): HTMLCanvasElement {
+function makeCanvas(ctx: { configure: (...args: unknown[]) => unknown } | null): HTMLCanvasElement {
   return {
     getContext: (kind: string) => (kind === 'webgpu' ? ctx : null),
   } as unknown as HTMLCanvasElement;

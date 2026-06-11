@@ -9,6 +9,7 @@ f0     : Amount of light reflected when looking at a surface head on - "fresnel 
 f90    : Amount of light reflected at grazing angles
 */
 
+/** @public — dynamic-access test-load-bearing; accessed via namespace import in b9Multiscatter.test.ts */
 export const bsdf_functions = /* glsl */`
 
 	// Sprint 7: TRANSLUCENT material flag bit for SSS single-scatter path.

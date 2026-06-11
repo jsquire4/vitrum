@@ -42,7 +42,7 @@ import {
   materialIndexForPrimitive,
 } from './scene/incrementalPatch.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
-import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
+import { MATERIAL_FLOAT_STRIDE } from './scene/materialPacking.js';
 import {
   defaultDirectionalAngularDiameter,
   defaultDirectionalIrradiance,

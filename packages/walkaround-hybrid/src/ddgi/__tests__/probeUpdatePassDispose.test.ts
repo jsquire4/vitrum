@@ -11,7 +11,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProbeUpdatePass as ProbeUpdatePassType } from '../probeUpdatePass.js';
 import { installWebGPUPolyfills } from '../../../__tests__/helpers/webgpuPolyfills.js';
 
 // Install GPUBufferUsage / GPUTextureUsage globals so init() doesn't throw in
@@ -20,8 +19,8 @@ installWebGPUPolyfills();
 
 // ─── GPU mock helpers ────────────────────────────────────────────────────────
 
-/** Returns a tracking mock GPUBuffer. Each call to destroy() records itself. */
-function makeBuffer(destroyedList: GPUBuffer[]): GPUBuffer {
+/** Returns a tracking mock GPUBuffer. Each call to destroy() records itself. Retained for dispose tests. */
+function _makeBuffer(destroyedList: GPUBuffer[]): GPUBuffer {
   const buf = {
     size: 16,
     destroy: vi.fn(() => { destroyedList.push(buf); }),
@@ -29,8 +28,8 @@ function makeBuffer(destroyedList: GPUBuffer[]): GPUBuffer {
   return buf;
 }
 
-/** Returns a tracking mock GPUTexture. destroy() is tracked. */
-function makeTexture(destroyedList: GPUTexture[]): GPUTexture {
+/** Returns a tracking mock GPUTexture. destroy() is tracked. Retained for dispose tests. */
+function _makeTexture(destroyedList: GPUTexture[]): GPUTexture {
   const tex = {
     width: 64, height: 64, depthOrArrayLayers: 1,
     destroy: vi.fn(() => { destroyedList.push(tex); }),

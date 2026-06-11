@@ -18,10 +18,15 @@ import { addMaterialInspectorFallback } from './vanilla/overlayMaterialInspector
 
 // Re-export sub-module symbols so existing callers that import directly from
 // this module (if any) remain working.
+/** @public — public dev API surface; consumed by host apps and debug tooling. */
 export type { FrameMonitor } from './vanilla/frameMonitor.js';
+/** @public — public dev API surface; consumed by host apps and debug tooling. */
 export { createFrameMonitor } from './vanilla/frameMonitor.js';
+/** @public — public dev API surface; utility ring buffer for overlay metrics. */
 export { NumberRing } from './vanilla/numberRing.js';
+/** @public — public dev API surface; BVH diagnostic stats type for debug overlays. */
 export type { BvhStats } from './vanilla/bvhStats.js';
+/** @public — public dev API surface; BVH diagnostic helpers for debug overlays. */
 export { computeBvhStats, renderBvhBars } from './vanilla/bvhStats.js';
 
 type OverlayId =

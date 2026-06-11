@@ -43,7 +43,7 @@ function encCfg(aabbMin: [number, number, number], aabbMax: [number, number, num
 
 // CPU dense MLP forward for the trainer's concatenated layout (ReLU hidden,
 // linear out). Mirrors fusedMlpHarness.cpuGrads' forward sweep.
-function cpuForward(w: Float32Array, b: Float32Array, x: Float32Array, plan: ReturnType<typeof nrcQueryLayerPlan>, W: number, outW: number): number[] {
+function cpuForward(w: Float32Array, b: Float32Array, x: Float32Array, plan: ReturnType<typeof nrcQueryLayerPlan>, W: number, _outW: number): number[] {
   const wl = plan.wlayers;
   let a: number[] = new Array<number>(W).fill(0);
   for (let i = 0; i < W; i++) a[i] = (i < x.length) ? x[i]! : 0;

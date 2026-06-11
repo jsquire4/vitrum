@@ -44,7 +44,7 @@
  *     tree descent per pixel.
  */
 
-import { dist2ToAabb, nodeImportance, sampleLightTreeCPU, type LightTreeNode } from './lightTree.js';
+import { nodeImportance, sampleLightTreeCPU, type LightTreeNode } from './lightTree.js';
 
 /** Floats per ReGIR cell-reservoir survivor slot in the packed grid buffer:
  *  [0] emitterIndex (as f32; -1 ⇒ empty slot), [1] pSel (effective selection

@@ -11,7 +11,8 @@
 // live via the pt-webgl2 present pass (glResources.ts #runPresentPass).
 
 /** GLSL 300 es fragment body providing `vitrumTonemap` + `vt_linearToSrgb`.
- *  Included verbatim into the present-pass fragment shader body. */
+ *  Included verbatim into the present-pass fragment shader body.
+ * @public — dynamic-access test-load-bearing; accessed via namespace import in tonemapPresent.test.ts */
 export const tonemap_functions = /* glsl */ `
 // --- vitrum tonemap operators (port of @vitrum/shared-samplers) ---
 

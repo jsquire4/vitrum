@@ -19,7 +19,7 @@ import {
   refreshEmissiveTexture,
   type EmissiveTexture,
 } from './bvhEmissiveTexture.js';
-import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
+import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import { PipelineResourceCache } from './PipelineResourceCache.js';
 import {
   createPlaceholderEnvironment,

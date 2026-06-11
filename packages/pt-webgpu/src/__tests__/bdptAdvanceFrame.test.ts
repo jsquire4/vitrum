@@ -14,7 +14,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResources } from '../gpuResources.js';
 import { installGpuConstStubs } from './gpuStub.js';
-import { textureStubMethods } from './gpuStub.js';
 
 /** Build a minimal UploadedSceneBuffers-like object for rebuildGroup2Only. */
 function makeSceneBuffers() {

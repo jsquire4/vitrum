@@ -3,7 +3,7 @@ import { installWebGPUPolyfills } from '../../../__tests__/helpers/webgpuPolyfil
 
 installWebGPUPolyfills();
 
-import { DDGIBindingState } from '../DDGIBindingState.js';
+import { OptionalSubsystemBindingState } from '../OptionalSubsystemBindingState.js';
 import { PipelineResourceCache } from '../PipelineResourceCache.js';
 import type { FrameResources } from '../resourceManager.js';
 
@@ -55,10 +55,10 @@ function makeFrameResources(): FrameResources {
   } as unknown as FrameResources;
 }
 
-describe('DDGIBindingState resource cache and memory sections', () => {
+describe('OptionalSubsystemBindingState resource cache and memory sections', () => {
   it('reuses the hybrid-layers bind group while resource identities are unchanged', () => {
     const device = makeDevice();
-    const state = new DDGIBindingState(device);
+    const state = new OptionalSubsystemBindingState(device);
     const frameResources = makeFrameResources();
     const resourceCache = new PipelineResourceCache();
     const bglCache = {};
@@ -74,7 +74,7 @@ describe('DDGIBindingState resource cache and memory sections', () => {
 
   it('reports binding-state-owned placeholder and RC params buffers for GPU memory estimates', () => {
     const device = makeDevice();
-    const state = new DDGIBindingState(device);
+    const state = new OptionalSubsystemBindingState(device);
     const externalCascade0 = { size: 1024, usage: GPUBufferUsage.STORAGE } as GPUBuffer;
 
     state.setRCInputs({ cascade0Buffer: externalCascade0, paramsBytes: new ArrayBuffer(64) });

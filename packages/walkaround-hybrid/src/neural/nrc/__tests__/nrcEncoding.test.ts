@@ -140,7 +140,7 @@ describe('NRC hash-grid — TRAINABLE backward (gradient scatter)', () => {
     // with dOut = feature must equal the FD gradient of L w.r.t. each table cell.
     const grid = makeGrid(7);
     const pos: [number, number, number] = [0.11, 0.62, -0.27];
-    const F = grid.featuresPerEntry, L = grid.levels.length;
+    const _F = grid.featuresPerEntry, L = grid.levels.length; // _F reserved for per-feature assertions
     const fwd = hashGridForward(grid, pos);
     const dOut = fwd.slice(); // dL/dfeature = feature
     const grads = hashGridBackward(grid, pos, dOut);

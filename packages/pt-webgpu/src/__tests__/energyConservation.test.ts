@@ -705,7 +705,7 @@ describe('VNDF GGX properties (Item 33-B, Item 14 VNDF landed)', () => {
       // Weight = BRDF * NdotL / pdf. For VNDF sampling this collapses to G/G1(wo).
       // We just check that weights are finite and bounded, not NaN.
       const nDotH = Math.max(h[2], 0);
-      const vDotH = Math.max(dot3(wo, h), 1e-6);
+      const _vDotH = Math.max(dot3(wo, h), 1e-6); // available for Fresnel term if test is extended
       const D = ggxD(nDotH, alpha);
       const G = smithG1(wo[2], Math.sqrt(alpha)) * smithG1(cosTheta, Math.sqrt(alpha));
       const brdfSpec = (D * G) / Math.max(4 * wo[2] * cosTheta, 1e-6);

@@ -1,3 +1,4 @@
+/** @public — dynamic-access test-load-bearing; accessed via namespace import in b9Multiscatter.test.ts */
 export const ggx_functions = /* glsl */`
 
 	// The GGX functions provide sampling and distribution information for normals as output so

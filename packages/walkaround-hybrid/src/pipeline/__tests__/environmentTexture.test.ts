@@ -59,12 +59,12 @@ describe('environmentTexture — B3 directional IBL host', () => {
 
   it('upload writes hasEnv=1 + dims + rotationY + intensity', () => {
     const { device, writeBufferCalls, writeTextureCalls } = mockDevice();
-    let env = createPlaceholderEnvironment(device);
+    const env = createPlaceholderEnvironment(device);
     const data = buildDirectionalEnv({
       width: 4, height: 2, stride: 3,
       data: new Float32Array(4 * 2 * 3).fill(1),
     })!;
-    env = uploadEnvironment(device, env, data, 0.5, 2.0);
+    void uploadEnvironment(device, env, data, 0.5, 2.0);
     const last = writeBufferCalls.at(-1)!;
     const p = readParams(last.data);
     expect(p.hasEnv).toBe(1);
@@ -78,12 +78,12 @@ describe('environmentTexture — B3 directional IBL host', () => {
 
   it('clear resets to hasEnv=0', () => {
     const { device, writeBufferCalls } = mockDevice();
-    let env = createPlaceholderEnvironment(device);
+    const env0 = createPlaceholderEnvironment(device);
     const data = buildDirectionalEnv({
       width: 2, height: 1, stride: 3, data: new Float32Array([1, 1, 1, 2, 2, 2]),
     })!;
-    env = uploadEnvironment(device, env, data, 0, 1);
-    env = clearEnvironment(device, env);
+    const env1 = uploadEnvironment(device, env0, data, 0, 1);
+    void clearEnvironment(device, env1);
     expect(readParams(writeBufferCalls.at(-1)!.data).hasEnv).toBe(0);
   });
 

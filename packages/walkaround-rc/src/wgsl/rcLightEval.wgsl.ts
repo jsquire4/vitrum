@@ -179,13 +179,14 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
 }`;
 
 /**
- * Combined export: RC_SUN_VISIBILITY_WGSL + '\n\n' + RC_NEE_POINTSPOT_WGSL
- * with a leading '\n' to match the original single-block format.
- * Kept for external consumers that want the full light-eval block.
- * probeRayCast.wgsl.ts uses the two sub-exports for their respective
- * insertion points (byte-identity verified in F6 completion, 2026-06-11).
+ * Combined WGSL block: RC_SUN_VISIBILITY_WGSL + '\n\n' + RC_NEE_POINTSPOT_WGSL.
+ * Retained as a convenience export for external consumers that want the full
+ * light-eval block in one string. probeRayCast.wgsl.ts uses the two
+ * sub-exports (RC_SUN_VISIBILITY_WGSL / RC_NEE_POINTSPOT_WGSL) for their
+ * respective insertion points (byte-identity verified in F6 completion, 2026-06-11).
+ * Export this constant if/when external callers need the combined block.
  */
-const RC_LIGHT_EVAL_WGSL = /* wgsl */`
+const _RC_LIGHT_EVAL_WGSL = /* wgsl */`
 // ─── Sun visibility helper ────────────────────────────────────────────────────
 // Glass-aware sun shadow test.  Verbatim from sunVisibilityHelper wgslFn.
 

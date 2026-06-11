@@ -14,7 +14,7 @@
  * injected before initialize() overwrites _regir.
  */
 
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ReGIRCoordinator,
   resolveReGIRConfig,

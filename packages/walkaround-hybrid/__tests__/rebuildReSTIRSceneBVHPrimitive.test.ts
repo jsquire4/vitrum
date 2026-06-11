@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
-import { packSceneFromCore, rebuildPrimitiveBlas } from '@vitrum/shared-bvh';
+import { rebuildPrimitiveBlas } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import {
   buildReSTIRSceneBVHForCoreScene,

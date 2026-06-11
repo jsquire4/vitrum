@@ -26,6 +26,7 @@ import {
   MNEE_CHAIN_MAX_ITERS,
 } from './mneeNewton.wgsl.js';
 
+/** @public — oracle-referenced: wsl-gpu/scripts/mnee-*-validate.ts harnesses embed these as WGSL literal constants. */
 export { MNEE_NEWTON_MAX_ITERS, MNEE_CHAIN_MAX_ITERS };
 
 /** Floats per harness input record (vec4-aligned: 3 × vec4 = 12 floats). */

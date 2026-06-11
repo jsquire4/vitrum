@@ -22,7 +22,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC, deriveParamCount } from '../src/neural/unetArchitecture.js';
-import type { LayerSpec, UNetSpec } from '../src/neural/unetArchitecture.js';
+import type { UNetSpec } from '../src/neural/unetArchitecture.js';
 import {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
@@ -227,7 +227,8 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
     4: ['params'],
   };
 
-  function checkBindings(name: string, wgsl: string, skip1?: number, skip2?: number): void {
+  // _checkBindings: retained for binding-role validation if tests are extended.
+  function _checkBindings(name: string, wgsl: string, skip1?: number, skip2?: number): void {
     const bindings = parseBindings(wgsl);
 
     for (const [slot, varName] of bindings) {

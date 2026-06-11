@@ -106,7 +106,7 @@ describe('FusedMlpTrainer.dispose()', () => {
 
 describe('NrcSubsystem.dispose() forwards to the trainer', () => {
   it('calls trainer.dispose() so the trainer buffers are released', () => {
-    const { device } = mockDevice();
+    const { device: _device } = mockDevice(); // available if NrcSubsystem constructor is tested directly
     // Build a subsystem without running the async initialize() (which would need
     // a far heavier device mock). Inject a trainer stub directly and assert the
     // dispose forwards. The subsystem's own buffer fields are undefined → the

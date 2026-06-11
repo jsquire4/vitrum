@@ -20,7 +20,7 @@ import {
   type AtrousSigmas,
 } from '../src/pipeline/bindGroupBuilders.js';
 import type { HybridEngineOptions } from '../src/HybridEngineOptions.js';
-import type { PipelineFrameInputs, PipelineFrameFilter } from '../src/pipeline/WalkaroundGPUPipeline.js';
+import type { PipelineFrameFilter } from '../src/pipeline/WalkaroundGPUPipeline.js';
 import type { DenoiserDispatchContext } from '../src/pipeline/denoisers/index.js';
 
 describe('atrous sigmas override (B3a)', () => {

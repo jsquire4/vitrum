@@ -23,7 +23,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type {
-  HybridEngineFrameDeps,
   HybridEngineFrameTelemetry,
 } from '../HybridEngineFrameOrchestrator.js';
 import type { DenoiserState } from '../pipeline/denoisers/index.js';

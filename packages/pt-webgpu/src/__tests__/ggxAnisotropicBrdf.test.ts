@@ -212,7 +212,8 @@ function sampleVndfIso(
   return norm3([alpha * Nh[0], alpha * Nh[1], Math.max(1e-6, Nh[2])]);
 }
 
-function isoFurnaceMean(roughness: number, nDotV: number, N: number = 60): number {
+// _isoFurnaceMean: retained as a furnace-test oracle for isotropic GGX; extend tests to call it.
+function _isoFurnaceMean(roughness: number, nDotV: number, N: number = 60): number {
   const alpha = Math.max(roughness * roughness, 0.001);
   const sinV = Math.sqrt(Math.max(0, 1 - nDotV * nDotV));
   const wo: [number, number, number] = [sinV, 0, nDotV];

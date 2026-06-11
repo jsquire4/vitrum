@@ -48,22 +48,22 @@ function powerHeuristic(pdfA: number, pdfB: number): number {
   return a2 / Math.max(a2 + b2, 1e-6);
 }
 
-/** Mirror of ggxD (WGSL line 296). */
-function ggxD(nDotH: number, alpha: number): number {
+/** Mirror of ggxD (WGSL line 296). Retained for specular MIS tests. */
+function _ggxD(nDotH: number, alpha: number): number {
   const a2 = alpha * alpha;
   const d = nDotH * nDotH * (a2 - 1.0) + 1.0;
   return a2 / Math.max(Math.PI * d * d, 1e-6);
 }
 
-/** Mirror of smithG1 (WGSL line 302). */
-function smithG1(nDotV: number, roughness: number): number {
+/** Mirror of smithG1 (WGSL line 302). Retained for specular MIS tests. */
+function _smithG1(nDotV: number, roughness: number): number {
   const r = roughness + 1.0;
   const k = (r * r) * 0.125;
   return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
 }
 
-/** Mirror of fresnelSchlick (WGSL line 289), scalar f0. */
-function schlickScalar(f0: number, cosTheta: number): number {
+/** Mirror of fresnelSchlick (WGSL line 289), scalar f0. Retained for specular MIS tests. */
+function _schlickScalar(f0: number, cosTheta: number): number {
   const m = Math.min(Math.max(1.0 - cosTheta, 0.0), 1.0);
   const m5 = m * m * m * m * m;
   return f0 + (1.0 - f0) * m5;

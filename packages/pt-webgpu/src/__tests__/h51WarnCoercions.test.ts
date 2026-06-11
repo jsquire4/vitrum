@@ -72,7 +72,7 @@ describe('H51-A: maxBounces clamp warns', () => {
 
 // ── H51-B ─────────────────────────────────────────────────────────────────────
 describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
-  const srgbTex = { handle: { label: 'baseColor' } };
+  const _srgbTex = { handle: { label: 'baseColor' } }; // retained: use in baseColorMap test cases if added
   const roughTex = { handle: { label: 'roughness' } };
   const metallicTex = { handle: { label: 'metallic' } }; // different handle
 

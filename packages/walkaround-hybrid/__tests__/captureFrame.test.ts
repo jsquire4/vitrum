@@ -205,7 +205,7 @@ function makeCaptureHarness(W: number, H: number) {
   const mockPipeline = {};
   const mockBgl = {};
 
-  let textureCallCount = 0;
+  let _textureCallCount = 0;
   const device = {
     limits: {
       maxStorageBuffersPerShaderStage: 32,
@@ -238,7 +238,7 @@ function makeCaptureHarness(W: number, H: number) {
       return { destroy: vi.fn(), getMappedRange: vi.fn(() => new ArrayBuffer(16)), unmap: vi.fn(), mapAsync: vi.fn(() => Promise.resolve()) };
     }),
     createTexture: vi.fn((desc: { label?: string }) => {
-      textureCallCount++;
+      _textureCallCount++;
       if (desc?.label?.includes('capture-offscreen')) return offscreenTex;
       return { destroy: vi.fn(), createView: vi.fn(() => ({})), width: W, height: H };
     }),

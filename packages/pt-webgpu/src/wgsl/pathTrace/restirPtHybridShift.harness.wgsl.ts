@@ -14,6 +14,7 @@ import {
   RESTIR_PT_HYBRID_SHIFT_WGSL,
 } from './restirPtHybridShift.wgsl.js';
 
+/** @public — oracle-referenced: wsl-gpu/scripts/restir-pt-hybrid-shift-validate.ts imports this harness for GPU validation. */
 export { RESTIR_PT_HYBRID_SHIFT_WGSL };
 
 /** Floats per harness config record. A single-replayed-segment hybrid-shift config

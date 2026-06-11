@@ -19,7 +19,6 @@
 import {
   readOidnInputsFromTextures,
   type OidnReadbackFn,
-  type OidnReadbackResult,
   type OidnTextureSources,
 } from './rgba16fReadback.js';
 

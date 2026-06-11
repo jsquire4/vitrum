@@ -164,7 +164,7 @@ describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
 
   // ── 1. Validity: R·R^T = I, det(R) = 1 ──────────────────────────────────────
   it('R·R^T ≈ I and det(R) ≈ 1 for 1000 frame indices', () => {
-    const identity: Mat3 = [1,0,0, 0,1,0, 0,0,1];
+    const _identity: Mat3 = [1,0,0, 0,1,0, 0,0,1]; // retained for future direct-compare assertions
     for (let f = 0; f < 1000; f++) {
       const R = buildRotationMatrix(f);
       const RT = matTranspose(R);

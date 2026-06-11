@@ -4,6 +4,7 @@ import type { WebGl2TraceTier } from './traceTier.js';
 // `WebGl2TraceTier` is owned by ./traceTier.ts (the tier-selection module);
 // re-exported here so consumers of the options surface keep importing it from
 // one place. (Previously this module re-declared an identical union — D9 dedup.)
+/** @public — public option type for pt-webgl2 consumers; controls quality tier selection. */
 export type { WebGl2TraceTier };
 
 /**

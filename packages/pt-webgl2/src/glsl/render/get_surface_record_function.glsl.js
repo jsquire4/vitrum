@@ -1,4 +1,5 @@
 
+/** @public — dynamic-access test-load-bearing; accessed via namespace import in wsl-gpu/scripts and untestedMaterialMaps.test.ts */
 export const get_surface_record_function = /* glsl */`
 
 	#define SKIP_SURFACE 0

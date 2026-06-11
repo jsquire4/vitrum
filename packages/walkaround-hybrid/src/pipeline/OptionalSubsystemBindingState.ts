@@ -22,9 +22,6 @@
  * Extracted from {@link WalkaroundGPUPipeline} in the 2026-05-18 refactor
  * sweep. Public surface: `setInputs` called from `HybridLayeredStage`;
  * `buildBindGroup` called once per frame from `renderFrame`.
- *
- * @deprecated Use `OptionalSubsystemBindingState` directly.
- * The name `DDGIBindingState` is a back-compat alias (see bottom of file).
  */
 
 import { buildHybridLayersBindGroup } from './bindGroupBuilders.js';
@@ -33,9 +30,9 @@ import {
   buildDDGIPlaceholderUBO,
   type FrameResources,
 } from './resourceManager.js';
-import type { BGLCache } from './bindGroupLayouts.js';
+import type { BGLCache } from '../bglTypes.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
-import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
+import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
 interface DDGISetInputs {
@@ -53,7 +50,7 @@ interface RCSetInputs {
   paramsBytes: ArrayBuffer;
 }
 
-class OptionalSubsystemBindingState implements PipelineSubsystem {
+export class OptionalSubsystemBindingState implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   /** DDGI inputs (layered hybrid). Null → placeholder textures. */
   private _irrTex: GPUTexture | null = null;
@@ -278,18 +275,3 @@ class OptionalSubsystemBindingState implements PipelineSubsystem {
     if (this._ppgPlaceholder) { this._ppgPlaceholder.destroy(); this._ppgPlaceholder = null; }
   }
 }
-
-/**
- * Back-compat re-export: importers outside `pipeline/` (e.g.
- * `HybridEngine*.ts`, `pipelineBindGroupFactory.ts`) continue to import
- * `DDGIBindingState` without modification. The alias will be removed in a
- * later pass when those callers are migrated to `OptionalSubsystemBindingState`.
- *
- * **Importers still on the alias (as of 2026-06-11):**
- *   - `packages/walkaround-hybrid/src/pipeline/pipelineBindGroupFactory.ts`
- *   - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts`
- *   - `packages/walkaround-hybrid/src/pipeline/__tests__/ddgiBindingStateCache.test.ts`
- *   - `packages/walkaround-hybrid/__tests__/rcParamsCodegen.test.ts` (indirect via HybridEngineRC)
- */
- 
-export { OptionalSubsystemBindingState as DDGIBindingState };

@@ -36,7 +36,7 @@ function pointAabb(
 
 /** Build minimal LightTreeBuildInput for N emitters at distinct positions. */
 function makeInput(powers: number[]): LightTreeBuildInput {
-  const n = powers.length;
+  const _n = powers.length; // available for bounds assertions
   return {
     powers,
     centroids: powers.map((_, i) => [i * 2, 0, 0] as const),

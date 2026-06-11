@@ -13,7 +13,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
-import { hasMeshAreaEmitterForPrimitive, packEmitterArrays } from '../scene/emitterPacking.js';
+import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import type { MutationHost } from '../sceneMutationRouter.js';

@@ -27,7 +27,7 @@ import {
   packEmissiveIorAdjointInput,
   ADJOINT_EMISSIVE_IOR_INPUT_FLOATS,
 } from '../inverse/adjointHarness.wgsl.js';
-import type { Scene, InverseSessionOptions, MaterialSpec, SceneEmitter } from '@vitrum/core';
+import type { Scene, MaterialSpec, SceneEmitter } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,

@@ -141,7 +141,7 @@ function makeHarness(fluxBacking: Uint32Array) {
   return { device, frameResources, copies, writes, getMappedActiveBytes: () => mappedActiveBytes };
 }
 
-const AABB = { min: [0, 0, 0] as [number, number, number], max: [1, 1, 1] as [number, number, number] };
+const _AABB = { min: [0, 0, 0] as [number, number, number], max: [1, 1, 1] as [number, number, number] }; // retained for spatial-query test extensions
 
 describe('PPGCoordinator — bounded flux readback', () => {
   it('copies and clears only the active prefix, not the full buffer', async () => {

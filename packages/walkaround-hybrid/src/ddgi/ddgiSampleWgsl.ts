@@ -21,7 +21,7 @@
  * call site's 16 arguments.
  */
 
-import { IRR_CELL, VIS_CELL, IRR_STRIDE, VIS_STRIDE } from './ddgiAtlasLayout.js';
+import { VIS_CELL, IRR_STRIDE, VIS_STRIDE } from './ddgiAtlasLayout.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 // Atlas-layout constants are template-substituted at module-load time so

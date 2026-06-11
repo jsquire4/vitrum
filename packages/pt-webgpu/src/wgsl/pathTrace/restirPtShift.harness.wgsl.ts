@@ -13,6 +13,7 @@ import {
   RESTIR_PT_SHIFT_WGSL,
 } from './restirPtShift.wgsl.js';
 
+/** @public — oracle-referenced: wsl-gpu/scripts/restir-pt-shift-validate.ts imports this harness for GPU validation. */
 export { RESTIR_PT_SHIFT_WGSL };
 
 /** Floats per harness config record (vec4-aligned: 3 × vec4 = 12 floats):

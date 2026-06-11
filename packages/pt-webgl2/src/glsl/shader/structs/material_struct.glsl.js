@@ -1,5 +1,6 @@
 import { MATERIAL_PIXELS } from './materialStride.js';
 
+/** @public — dynamic-access test-load-bearing; accessed via namespace import in untestedMaterialMaps.test.ts */
 export const material_struct = /* glsl */ `
 
 	struct Material {

@@ -91,8 +91,8 @@ function makeStubDevice() {
 }
 
 /** N distinct dummy GPUBindingResources (the parity test ignores resource
- *  shape — it only checks binding-index correspondence). */
-function dummyResources(n: number): GPUBindingResource[] {
+ *  shape — it only checks binding-index correspondence). Retained for bind-group parity tests. */
+function _dummyResources(n: number): GPUBindingResource[] {
   return Array.from({ length: n }, (_, i) => ({ buffer: { __i: i } } as unknown as GPUBindingResource));
 }
 const view = {} as GPUTextureView;

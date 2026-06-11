@@ -26,7 +26,7 @@
 import { createCommonFrameResources } from './frameResources/createCommonFrameResources.js';
 
 // `buildDDGIPlaceholderUBO` is re-exported here because two pipeline-side
-// consumers (frameResources/createDdgiFrameResources.ts, DDGIBindingState.ts)
+// consumers (frameResources/createDdgiFrameResources.ts, OptionalSubsystemBindingState.ts)
 // import it via this module. `packDDGIGridParams` / `DDGIGridParamsInput` were
 // also re-exported but had zero importers-via-this-path — all consumers pull
 // them from the canonical `../ddgi/ddgiGridUbo.js` directly — so they were

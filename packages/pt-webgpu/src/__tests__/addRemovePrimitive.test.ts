@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene, ScenePrimitive } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
 import { buildTlas, tlasIntersect, type TlasInstance } from '@vitrum/shared-bvh';
 import { createPTEngine_WebGPU } from '../index.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';

@@ -19,15 +19,12 @@ import {
   type Scene,
   type Triangle,
   type Material,
-  type Light,
   integratePath,
   lcg,
   dot,
   sub,
-  add,
   scale,
   safeNormalize,
-  cross,
 } from './cpuTracer.js';
 
 // ---------------------------------------------------------------------------
@@ -58,8 +55,9 @@ function makeUpwardQuad(halfSize: number, materialId: number): Triangle[] {
  *   -X face: normal = +X  (verts ordered so geometric normal faces inward)
  *    +X face: normal = -X, etc.
  * For the furnace test the cube is closed and all faces have materialId=0.
+ * Retained as a scene builder for future furnace tests.
  */
-function makeUnitCube(materialId: number): Triangle[] {
+function _makeUnitCube(materialId: number): Triangle[] {
   // Each face: 2 tris, wound so cross(e1,e2) points INWARD.
   const faces: Triangle[] = [];
   // Helper: push a quad with vertices in CCW-from-inside order.
@@ -90,11 +88,9 @@ function lambertMat(albedo: Vec3): Material {
   return { albedo, roughness: 1.0, metallic: 0.0, transmission: 0.0, ior: 1.5, emission: [0,0,0] };
 }
 
-function mirrorMat(): Material {
-  // For the mirror test we use a special path: integratePath() treats
-  // all materials as Lambertian. To test mirror reflection we bypass
-  // integratePath and use a single reflect + env-lookup directly.
-  // This material is only used as a placeholder in the scene.
+// _mirrorMat: placeholder material for mirror-reflection scene (Test 4 setup).
+// Retained for future mirror-reflection test cases that use it directly.
+function _mirrorMat(): Material {
   return { albedo: [1,1,1], roughness: 0.0, metallic: 1.0, transmission: 0.0, ior: 1.5, emission: [0,0,0] };
 }
 
@@ -207,8 +203,9 @@ const TEST4_TOL = 0.001;
  * Build a 1×1 area light quad at (y=2, centred at origin, XZ plane).
  * Returns 2 triangles with the given emissive materialId.
  * Faces downward (normal = -Y).
+ * Retained as a scene builder for future area-light MC tests.
  */
-function makeAreaLight(materialId: number): Triangle[] {
+function _makeAreaLight(materialId: number): Triangle[] {
   const h = 0.5;
   const y = 2.0;
   // For a -Y facing quad, wind CCW from below (+Y view = CW, so reversed):

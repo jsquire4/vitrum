@@ -177,9 +177,10 @@ function intersectTriangleMT(
 // ---------------------------------------------------------------------------
 // Ray-AABB slab test — mirror of intersectAabb (pathTraceBruteforce.wgsl.ts:545).
 // Returns { tNear, tFar } or null on miss.
+// Retained as a CPU reference oracle; not all tests invoke it.
 // ---------------------------------------------------------------------------
 
-function intersectAabb(
+function _intersectAabb(
   rayOrigin: Vec3,
   rayDir: Vec3,
   bMin: Vec3,
@@ -254,9 +255,10 @@ function cosineHemisphereSample(
 // ---------------------------------------------------------------------------
 // GGX VNDF sampler — mirror of sampleGgxVndfTangent (WGSL:981-1004).
 // Heitz 2018, Algorithm 1. Input/output in tangent-space (N = +Z).
+// Retained as a CPU reference oracle; used in companion tests.
 // ---------------------------------------------------------------------------
 
-function sampleGgxVndfTangent(
+function _sampleGgxVndfTangent(
   wo: Vec3,
   alpha: number,
   rng: Rng,
@@ -286,9 +288,10 @@ function sampleGgxVndfTangent(
 
 // ---------------------------------------------------------------------------
 // frDielectric — mirror of WGSL:303 (PBR4e §9.3).
+// Retained as a CPU reference oracle for glass-refraction tests.
 // ---------------------------------------------------------------------------
 
-function frDielectric(cosTheta_i: number, eta: number): number {
+function _frDielectric(cosTheta_i: number, eta: number): number {
   let ct = Math.min(Math.max(cosTheta_i, -1.0), 1.0);
   let e  = eta;
   if (ct < 0.0) { e = 1.0 / e; ct = -ct; }
@@ -303,9 +306,10 @@ function frDielectric(cosTheta_i: number, eta: number): number {
 
 // ---------------------------------------------------------------------------
 // Schlick Fresnel — mirror of fresnelSchlick (WGSL:289), scalar variant.
+// Retained as a CPU reference oracle for Fresnel tests.
 // ---------------------------------------------------------------------------
 
-function schlickFresnel(f0: number, cos: number): number {
+function _schlickFresnel(f0: number, cos: number): number {
   const m  = Math.min(Math.max(1.0 - cos, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
@@ -314,9 +318,10 @@ function schlickFresnel(f0: number, cos: number): number {
 
 // ---------------------------------------------------------------------------
 // Power heuristic (β=2) — mirror of powerHeuristic (WGSL:332, Veach §9.2).
+// Retained as a CPU reference oracle; companion tests may import it.
 // ---------------------------------------------------------------------------
 
-function powerHeuristic(a: number, b: number): number {
+function _powerHeuristic(a: number, b: number): number {
   const a2 = a * a;
   const b2 = b * b;
   return a2 / Math.max(a2 + b2, 1e-6);
@@ -468,8 +473,8 @@ export function integratePath(
     const { dir: wi, pdf } = cosineHemisphereSample(rng, normal);
     if (pdf <= 1e-8) break;
 
-    const cosTheta = Math.max(dot(wi, normal), 0.0);
-    // throughput *= BRDF(wi) * cosTheta / pdf.  For Lambert: (albedo/π)·cosθ/(cosθ/π) = albedo.
+    const _cosTheta = Math.max(dot(wi, normal), 0.0);
+    // throughput *= BRDF(wi) * _cosTheta / pdf.  For Lambert: (albedo/π)·cosθ/(cosθ/π) = albedo.
     throughput = mul(throughput, mat.albedo);
 
     // Russian roulette after bounce 2 (mirrors WGSL:1891).

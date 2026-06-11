@@ -30,7 +30,6 @@ import {
 } from '../src/ppg/dTree.js';
 import {
   PPG_CELL_SPLIT_THRESHOLD,
-  PPG_DTREE_FLUX_FRACTION,
   PPG_DTREE_INITIAL_DEPTH,
 } from '../src/ppg/ppgConstants.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/ppgUpdate.wgsl.js';

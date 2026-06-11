@@ -87,7 +87,9 @@ function sampleSpectralCurve(curve: MaterialSpec['spectralAttenuation'], lambdaN
  * id to assign, so every texture id is -1 (none). When the atlas lands this is
  * the one hook that changes (and the GLSL stays byte-compatible).
  */
-const NO_TEXTURE = -1;
+// _NO_TEXTURE: retained as the named sentinel for the pending atlas integration.
+// When the atlas lands, replace every literal `-1` texture id with this constant.
+const _NO_TEXTURE = -1;
 
 /** Default attenuation color when `attenuationColor` is absent — fork default (1,1,1). */
 const DEFAULT_ATTENUATION_COLOR: Vec3 = [1.0, 1.0, 1.0];

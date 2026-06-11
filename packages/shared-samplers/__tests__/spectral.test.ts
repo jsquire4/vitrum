@@ -339,7 +339,7 @@ describe('wavelengthToRGB', () => {
     // At 450 nm, z̄(λ) ≈ 1.77 which is the largest CMF value there.
     // xyzToLinearSRGB converts high Z to significant blue contribution.
     const pdf = 0.005;
-    const [r, g, b] = wavelengthToRGB(450, 1.0, pdf);
+    const [r, _g, b] = wavelengthToRGB(450, 1.0, pdf);
     // b should be positive and larger than r
     expect(b).toBeGreaterThan(0);
     expect(b).toBeGreaterThan(r);
@@ -349,7 +349,7 @@ describe('wavelengthToRGB', () => {
     // At 700 nm: Y ≈ 0.004, Z = 0, X ≈ 0.011.
     // sRGB reconstruction: r > 0, g < r.
     const pdf = 0.001;
-    const [r, g, b] = wavelengthToRGB(700, 1.0, pdf);
+    const [r, _g, b] = wavelengthToRGB(700, 1.0, pdf);
     // X is the dominant CMF value at 700 nm; r should be positive
     expect(r).toBeGreaterThan(0);
     expect(r).toBeGreaterThan(b);

@@ -25,6 +25,7 @@ export interface GltfJson {
   extensionsRequired?: string[];
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfScene {
   name?: string;
   nodes?: number[];
@@ -44,11 +45,13 @@ export interface GltfNode {
   extensions?: Record<string, unknown>;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfMesh {
   name?: string;
   primitives: GltfPrimitive[];
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfPrimitive {
   attributes: {
     POSITION?: number;
@@ -91,12 +94,14 @@ export const enum GltfComponentType {
   FLOAT = 5126,
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfAccessorSparse {
   count: number;
   indices: { bufferView: number; byteOffset?: number; componentType: GltfComponentType };
   values: { bufferView: number; byteOffset?: number };
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfBufferView {
   buffer: number;
   byteOffset?: number;
@@ -105,17 +110,20 @@ export interface GltfBufferView {
   target?: number;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfBuffer {
   uri?: string;
   byteLength: number;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfTexture {
   sampler?: number;
   source?: number;
   extensions?: Record<string, unknown>;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfImage {
   uri?: string;
   mimeType?: string;
@@ -123,6 +131,7 @@ export interface GltfImage {
   name?: string;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfSampler {
   magFilter?: number;
   minFilter?: number;
@@ -130,6 +139,7 @@ export interface GltfSampler {
   wrapT?: number;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfSkin {
   inverseBindMatrices?: number;
   skeleton?: number;
@@ -141,6 +151,7 @@ export interface GltfSkin {
 // Reference: KHR_lights_punctual extension specification
 // https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface KhrLightsPunctualLight {
   type: 'point' | 'spot' | 'directional';
   name?: string;
@@ -223,6 +234,7 @@ export interface GltfMaterial {
   };
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfTextureInfo {
   index: number;
   texCoord?: number;
@@ -232,14 +244,17 @@ export interface GltfTextureInfo {
   };
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfNormalTextureInfo extends GltfTextureInfo {
   scale?: number;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfOcclusionTextureInfo extends GltfTextureInfo {
   strength?: number;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfPbrMetallicRoughness {
   baseColorFactor?: [number, number, number, number];
   baseColorTexture?: GltfTextureInfo;
@@ -248,6 +263,7 @@ export interface GltfPbrMetallicRoughness {
   metallicRoughnessTexture?: GltfTextureInfo;
 }
 
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfTextureTransform {
   offset?: [number, number];
   rotation?: number;

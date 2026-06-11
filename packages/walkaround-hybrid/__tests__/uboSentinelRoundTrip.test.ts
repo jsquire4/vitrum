@@ -247,7 +247,7 @@ function buildSentinelInputs(): {
   // restirPtReuse: u32 → u32[103]
   const restirPtReuse = s();
 
-  const m4 = new Float32Array(16).fill(0);
+  const _m4 = new Float32Array(16).fill(0); // zero mat4 available for matrix-field assertions
 
   const inputs: PipelineFrameInputs = {
     camera: {
