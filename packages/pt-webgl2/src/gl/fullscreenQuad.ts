@@ -10,6 +10,21 @@
  * The pass-through vertex shader BODY (no `#version`/preamble — GlProgram prepends those).
  * Generates a fullscreen triangle from gl_VertexID and emits `vUv` in [0,1].
  *   vertex 0 → (-1,-1) uv(0,0)   vertex 1 → (3,-1) uv(2,0)   vertex 2 → (-1,3) uv(0,2)
+ *
+ * Provenance note: the fork's literal vertex shader (PhysicalPathTracingMaterial.js:212-225)
+ * was a quad-geometry pass-through that read THREE's auto-injected `position`/`uv`
+ * attributes and `modelViewMatrix`/`projectionMatrix` uniforms:
+ *
+ *   varying vec2 vUv;
+ *   void main() {
+ *     vec4 mvPosition = vec4( position, 1.0 );
+ *     mvPosition = modelViewMatrix * mvPosition;
+ *     gl_Position = projectionMatrix * mvPosition;
+ *     vUv = uv;
+ *   }
+ *
+ * The attribute-less variant below is radiometrically equivalent for a fullscreen pass
+ * (same vUv coverage) and needs no vertex buffer or matrix uniforms.
  */
 export const FULLSCREEN_VERT = `
 out vec2 vUv;

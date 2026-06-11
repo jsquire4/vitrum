@@ -58,7 +58,7 @@
  *     [11..15] _pad
  *
  * All integer fields (splitAxis/leftChild/rightChild/dTreeIndex) round-trip
- * losslessly through f32 — with the PPG_MAX_SPATIAL_CELLS ≈ 16k cap we are far
+ * losslessly through f32 — with the ≈ 16k spatial-cell cap we are far
  * below the 2^24 exact-integer limit — so a single f32-only binding suffices.
  *
  * The per-cell dTree blocks are concatenated into a SINGLE flat dTree buffer

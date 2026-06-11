@@ -32,7 +32,7 @@ import { ProbeGrid } from './probeGrid.js';
 import type { ProbeGridParams } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
 import type { DDGILight } from './types.js';
-import { makeDdgiRestirBvhSnapshot, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
+import { makeRestirBvhSnapshot, type RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import type { SceneBVHBuffers } from '../restir/bvhCore.js';
 
 // Default probe round-robin stride. STRIDE=8 means each probe updates every
@@ -94,7 +94,7 @@ export class DDGI {
   private _grid:        ProbeGrid;
   private _pass:        ProbeUpdatePass;
   /** PR-5.1 — when set, skips SceneBvh rebuild and uses ReSTIR GPU buffers. */
-  private _restirSnapshot: DdgiRestirBvhSnapshot | null = null;
+  private _restirSnapshot: RestirBvhSnapshot | null = null;
   private _ready:       boolean  = false;
   private _lastFrameMs: number   = 0;
   private _frame:       number   = 0;
@@ -333,7 +333,7 @@ export class DDGI {
       this._pass.setRestirBvhSnapshot(null);
       return;
     }
-    this._restirSnapshot = makeDdgiRestirBvhSnapshot(buffers, scene);
+    this._restirSnapshot = makeRestirBvhSnapshot(buffers, scene);
     this._pass.setRestirBvhSnapshot(this._restirSnapshot);
   }
 

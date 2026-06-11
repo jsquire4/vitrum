@@ -36,7 +36,7 @@ import type { MaterialSpec } from '@vitrum/core';
 import type { PbrScalarSource } from '../pbrScalars.js';
 import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
-import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
+import { isRestirTlasOnlyRefit, type RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { makeProbeUpdateBlendIrrWGSL, makeProbeUpdateBlendVisWGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { makeProbeUpdateBorderVisWGSL } from './wgsl/probeUpdateBorder.wgsl.js';
@@ -95,7 +95,7 @@ export class ProbeUpdatePass {
   private _gpu:  ProbeUpdateGpuState | null = null;
   private _atlasCache = new ProbeUpdateAtlasTextureCache();
   /** When set, probe rays use ReSTIR buffers (PR-5.1) instead of SceneBvh rebuild. */
-  private _restirSnapshot: DdgiRestirBvhSnapshot | null = null;
+  private _restirSnapshot: RestirBvhSnapshot | null = null;
   private _lastBvhVersion = -1;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
@@ -179,7 +179,7 @@ export class ProbeUpdatePass {
   }
 
   /** PR-5.1 — share ReSTIR scene buffers; pass `null` to fall back to SceneBvh. */
-  setRestirBvhSnapshot(snapshot: DdgiRestirBvhSnapshot | null): void {
+  setRestirBvhSnapshot(snapshot: RestirBvhSnapshot | null): void {
     this._restirSnapshot = snapshot;
   }
 
@@ -526,7 +526,7 @@ export class ProbeUpdatePass {
       if (snap.contentVersion !== this._lastBvhVersion) {
         const tlasOnly =
           this._gpu != null &&
-          isDdgiRestirTlasOnlyRefit(snap, {
+          isRestirTlasOnlyRefit(snap, {
             blasContentVersion: this._lastBlasVersion,
             tlasContentVersion: this._lastTlasVersion,
           });

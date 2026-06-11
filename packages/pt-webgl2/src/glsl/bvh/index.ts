@@ -13,8 +13,6 @@
 import * as CommonNS from './common_functions.glsl.js';
 import * as StructNS from './bvh_struct_definitions.glsl.js';
 import * as RayNS from './bvh_ray_functions.glsl.js';
-import * as DistanceNS from './bvh_distance_functions.glsl.js';
-
 function pick(ns: unknown, name: string): string {
   const value = (ns as Record<string, unknown>)[name];
   if (typeof value !== 'string') {
@@ -26,4 +24,3 @@ function pick(ns: unknown, name: string): string {
 export const BVH_COMMON_FUNCTIONS: string = pick(CommonNS, 'common_functions');
 export const BVH_STRUCT: string = pick(StructNS, 'bvh_struct_definitions');
 export const BVH_RAY_FUNCTIONS: string = pick(RayNS, 'bvh_ray_functions');
-export const BVH_DISTANCE_FUNCTIONS: string = pick(DistanceNS, 'bvh_distance_functions');

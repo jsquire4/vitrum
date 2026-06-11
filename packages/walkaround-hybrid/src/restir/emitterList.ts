@@ -24,7 +24,6 @@ import {
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
 import { classifyTriangleEmitterCore } from '@vitrum/shared-bvh';
-import { materialEmissiveLe, type PbrMaterialLike } from './packingHelpers.js';
 
 interface Vector3Like {
   readonly x: number;
@@ -32,7 +31,6 @@ interface Vector3Like {
   readonly z: number;
 }
 
-const WHITE_COLOR = { r: 1, g: 1, b: 1 };
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -50,51 +48,6 @@ const WHITE_COLOR = { r: 1, g: 1, b: 1 };
 const EMITTER_STRIDE = 80;
 const EMITTER_FLOATS = EMITTER_STRIDE / 4;
 
-/**
- * Classify a material + face normal as an emitter, or null if the face
- * isn't selected. Implements the priority order described in the file
- * header (emissive > transmissive with skipEmitter override). Extracted so
- * the per-triangle loop body is "classify → if not null, accumulate."
- *
- * `lightDir` should already be the configured primary-light direction;
- * `intensity` is the configured primary-light irradiance.
- */
-function classifyTriangleEmitter(
-  mat: PbrMaterialLike,
-  normal: { x: number; y: number; z: number },
-  lightDir: Vector3Like,
-  primaryIntensity: number,
-): { color: [number, number, number]; intensity: number } | null {
-  // Emissive surface → direct emitter. Shares `materialEmissiveLe` with the
-  // camera-visible-glow packer (packBVHEmissiveLe) so the NEE-sampled radiance
-  // and the camera glow Le are GUARANTEED identical (no drift).
-  const emissiveLe = materialEmissiveLe(mat);
-  if (emissiveLe != null) {
-    return { color: emissiveLe, intensity: mat.emissiveIntensity ?? 1 };
-  }
-  const physMat = mat;
-  if (!physMat.transmission || physMat.transmission <= 0.1) return null;
-
-  const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
-  if (skipEmitter) return null;
-
-  const sunDot = Math.abs(
-    lightDir.x * normal.x + lightDir.y * normal.y + lightDir.z * normal.z,
-  );
-  if (sunDot <= 0.05) return null;
-
-  const baseColor = physMat.color ?? WHITE_COLOR;
-  const attenColor = physMat.attenuationColor ?? WHITE_COLOR;
-  const trans = physMat.transmission;
-  return {
-    color: [
-      baseColor.r * attenColor.r * trans * primaryIntensity * sunDot,
-      baseColor.g * attenColor.g * trans * primaryIntensity * sunDot,
-      baseColor.b * attenColor.b * trans * primaryIntensity * sunDot,
-    ],
-    intensity: primaryIntensity * trans * sunDot,
-  };
-}
 
 interface EmitterListOptions {
   primaryLightDir?: Vector3Like;
@@ -159,7 +112,7 @@ export interface LightTreeBuffer {
  * tree inputs. Returns a zeroed 1-node placeholder + `enabled:false` when there
  * are fewer than 2 emitters (or no positive-power emitters), so RIS falls back
  * to the flat power-CDF path. Leaf `emitterIndex` values index the SAME GPU
- * emitter array RIS samples a point on (built 1:1 with `buildEmitterList`).
+ * emitter array RIS samples a point on (built 1:1 with the emitter list).
  */
 export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuffer {
   const n = treeInput.powers.length;
@@ -186,61 +139,11 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
 }
 
 /**
- * Build the ReSTIR-DI emitter list from a merged world-space triangle stream +
- * structural PBR-like materials. Thin wrapper over {@link buildEmitterListCore}
- * that supplies the material classifier ({@link classifyTriangleEmitter}).
- * Kept structural so core modules can import this file without pulling a host
- * scene-graph runtime.
- */
-export function buildEmitterList(
-  indices: Uint32Array,
-  positions: Float32Array,    // stride-4: read .xyz only
-  normals: Float32Array,      // stride-4: read .xyz only
-  triMatIdMap: Uint32Array,
-  materials: PbrMaterialLike[],
-  options: EmitterListOptions,
-): {
-  emitterFloats: Float32Array;
-  cdfArray: Float32Array;
-  totalEmissivePower: number;
-  /** Light-tree build inputs aligned 1:1 with the emitter list. */
-  treeInput: EmitterTreeInput;
-} {
-  const lightDir = options.primaryLightDir ?? { x: 0, y: 1, z: 0 };
-  const primaryIntensity = options.primaryLightIntensity ?? 3.0;
-  return buildEmitterListCore(
-    indices,
-    positions,
-    normals,
-    (t, normal) => {
-      const mat = materials[triMatIdMap[t]!];
-      if (!mat) return null;
-      return classifyTriangleEmitter(mat, normal, lightDir, primaryIntensity);
-    },
-    options,
-  );
-}
-
-/**
- * THREE-free counterpart to {@link buildEmitterList}: build the ReSTIR-DI emitter
- * list from a merged world-space triangle stream + core `MaterialSpec[]`. Thin
- * wrapper over {@link buildEmitterListCore} that supplies the core-material
- * classifier ({@link classifyTriangleEmitterCore}, a verified line-by-line mirror
- * of `classifyTriangleEmitter`). Used when the geometry is ingested from a
- * `@vitrum/core` `Scene` via `mergeWorldSpaceFromCore` — no THREE BVH build and
- * no THREE material reads (the THREE-decouple path; see
- * `plan/three-decouple-analysis-2026-06-03.md`).
- *
- * The emitter SET this produces is identical to {@link buildEmitterList} for an
- * equivalent scene (pinned by the CPU set-equivalence test
- * `__tests__/emitterListCoreEquivalence.test.ts`), but the triangle ORDER differs
- * because `mergeWorldSpaceFromCore`'s SAH builder permutes triangles differently
- * than `buildSceneBVH` — so the CDF indexing / per-sample RIS selection differ,
- * and a low-spp pixel A/B is expected to differ on noise while the CONVERGED
- * result matches.
- *
- * `primaryLightDir` is read as a plain `{x,y,z}` (a `THREE.Vector3` satisfies
- * this structurally, so existing callers can pass the same value).
+ * THREE-free ReSTIR-DI emitter list builder from a merged world-space triangle
+ * stream + core `MaterialSpec[]`. Thin wrapper over {@link buildEmitterListCore}
+ * that supplies the core-material classifier ({@link classifyTriangleEmitterCore}).
+ * Used when the geometry is ingested from a `@vitrum/core` `Scene` via
+ * `mergeWorldSpaceFromCore`.
  */
 export function buildEmitterListFromCore(
   indices: Uint32Array,
@@ -289,11 +192,11 @@ type TriangleEmitterClassifier = (
  * Shared emitter-list builder core. Iterates the merged world-space triangle
  * stream, derives each triangle's area + face normal (cross-product, then
  * the per-vertex-normal-average override identical to the original
- * `buildEmitterList`), runs the supplied `classify` callback, gates on
+ * `buildEmitterListCore`), runs the supplied `classify` callback, gates on
  * `power < 1e-8`, then packs the 80-byte EmitterTri buffer + power CDF +
- * light-tree inputs. Both {@link buildEmitterList} (THREE materials) and
- * {@link buildEmitterListFromCore} (`MaterialSpec[]`) call this with their own
- * classifier — the geometry + packing math is byte-identical across both.
+ * light-tree inputs. {@link buildEmitterListFromCore} (`MaterialSpec[]`) calls
+ * this with the core-material classifier — the geometry + packing math is
+ * independent of the material system.
  */
 function buildEmitterListCore(
   indices: Uint32Array,

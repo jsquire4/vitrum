@@ -72,7 +72,7 @@ export function packBdptLightPathColumns(
  *
  * @internal Kept CPU oracle for the GPU BDPT light-path fill; not public API.
  */
-export function fillBdptLightPathCpu(
+function fillBdptLightPathCpu(
   device: GPUDevice,
   buffer: GPUBuffer,
   maxLightBounces: number,

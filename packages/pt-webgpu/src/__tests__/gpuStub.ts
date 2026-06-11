@@ -44,30 +44,3 @@ export function textureStubMethods() {
   };
 }
 
-/**
- * Stub GPUDevice error-surface methods (item 28: EngineError surface).
- * Spread into a mock device literal to satisfy the constructor's
- * `addEventListener('uncapturederror', …)` + `device.lost.then(…)` calls.
- *
- * Returns an object with:
- *   - `addEventListener` / `removeEventListener` spy-functions (capture
- *     listeners so tests can fire fake uncapturederror events)
- *   - `lost` — a never-resolving Promise (device never "loses" in the test)
- *
- * Usage:
- *   const errStubs = deviceErrorStubMethods();
- *   const device = { createCommandEncoder: vi.fn(), ...errStubs } as unknown as GPUDevice;
- *   // To fire a fake error:
- *   const listeners = errStubs.addEventListener.mock.calls
- *     .filter(([t]) => t === 'uncapturederror').map(([, cb]) => cb);
- *   listeners.forEach(cb => cb({ error: { message: 'oops', constructor: { name: 'GPUValidationError' } } }));
- */
-export function deviceErrorStubMethods() {
-  return {
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    // A promise that never resolves — device stays alive for the duration of
-    // the test. Tests that need device.lost to settle create their own stub.
-    lost: new Promise<never>(() => {}),
-  };
-}

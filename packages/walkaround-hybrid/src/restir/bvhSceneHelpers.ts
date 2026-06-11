@@ -23,40 +23,8 @@ type MeshVertexRangeWithMatrix = RawMeshVertexRange & {
   matrixWorldAtBuild: Float32Array;
 };
 
-interface MatrixWorldLike {
-  readonly elements: ArrayLike<number>;
-}
-
-interface Object3DLike {
-  readonly name: string;
-  readonly uuid?: string;
-  readonly type?: string;
-  readonly isRectAreaLight?: boolean;
-  readonly matrixWorld: MatrixWorldLike;
-  updateMatrixWorld?: (force?: boolean) => void;
-  traverseVisible: (cb: (obj: Object3DLike) => void) => void;
-}
-
-interface RectAreaLightLike extends Object3DLike {
-  readonly width: number;
-  readonly height: number;
-  readonly color: { readonly r: number; readonly g: number; readonly b: number };
-  readonly intensity: number;
-}
-
 function cloneMat4(m: Mat4 | Float32Array | undefined): Float32Array {
   return m != null ? new Float32Array(m) : new Float32Array(IDENTITY_MAT4);
-}
-
-function isRectAreaLightLike(obj: Object3DLike): obj is RectAreaLightLike {
-  const candidate = obj as Partial<RectAreaLightLike>;
-  return (
-    (obj.isRectAreaLight === true || obj.type === 'RectAreaLight') &&
-    typeof candidate.width === 'number' &&
-    typeof candidate.height === 'number' &&
-    candidate.color != null &&
-    typeof candidate.intensity === 'number'
-  );
 }
 
 function transformPoint(
@@ -74,53 +42,8 @@ function transformPoint(
   ];
 }
 
-function negatedNormalizedColumnZ(m: ArrayLike<number>): [number, number, number] {
-  let x = -(m[8] ?? 0);
-  let y = -(m[9] ?? 0);
-  let z = -(m[10] ?? 1);
-  const len = Math.sqrt(x * x + y * y + z * z);
-  if (len > 1e-8) {
-    x /= len;
-    y /= len;
-    z /= len;
-  }
-  return [x, y, z];
-}
-
 /**
- * Walk `sceneRoots` once to find each named mesh and snapshot its
- * `matrixWorld.elements` — required by `HybridEngine.updatePrimitive`'s
- * transform-only refit path.
- */
-export function enrichMeshVertexRangesWithMatrix(
-  sceneRoots: Object3DLike[],
-  rawRanges: ReadonlyArray<RawMeshVertexRange>,
-): ReadonlyArray<MeshVertexRangeWithMatrix> {
-  const byName = new Map<string, Object3DLike>();
-  for (const root of sceneRoots) {
-    root.traverseVisible((obj) => {
-      if (!byName.has(obj.name)) byName.set(obj.name, obj);
-    });
-  }
-  return rawRanges.map((r) => {
-    const obj = byName.get(r.name);
-    const m = obj
-      ? new Float32Array(obj.matrixWorld.elements)
-      : new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-    return {
-      name: r.name,
-      vertexStart: r.vertexStart,
-      vertexCount: r.vertexCount,
-      triStart: r.triStart,
-      triCount: r.triCount,
-      matrixWorldAtBuild: m,
-    };
-  });
-}
-
-/**
- * Core-scene counterpart to {@link enrichMeshVertexRangesWithMatrix}. It
- * derives the build-time world matrix snapshots from the core primitive
+ * Derive the build-time world matrix snapshots from the core primitive
  * transforms directly, so core BVH/update paths do not need a synthesized
  * `THREE.Scene` solely to populate `matrixWorldAtBuild`.
  */
@@ -156,74 +79,6 @@ export function enrichMeshVertexRangesWithCoreMatrix(
   });
 }
 
-/** RectAreaLight → emitter triangles for ReSTIR DI (not in merged BVH). */
-export function collectRectAreaLightEmitterTris(
-  sceneRoots: Object3DLike[],
-): {
-  vA: [number, number, number];
-  vB: [number, number, number];
-  vC: [number, number, number];
-  normal: [number, number, number];
-  area: number;
-  Le: [number, number, number];
-}[] {
-  const out: {
-    vA: [number, number, number];
-    vB: [number, number, number];
-    vC: [number, number, number];
-    normal: [number, number, number];
-    area: number;
-    Le: [number, number, number];
-  }[] = [];
-  for (const root of sceneRoots) {
-    root.updateMatrixWorld?.(true);
-    root.traverseVisible((obj) => {
-      if (!isRectAreaLightLike(obj)) return;
-      const light = obj;
-      const wHalf = light.width * 0.5;
-      const hHalf = light.height * 0.5;
-
-      const m = light.matrixWorld.elements;
-      const ll = transformPoint(m, -wHalf, -hHalf, 0);
-      const lr = transformPoint(m, wHalf, -hHalf, 0);
-      const ur = transformPoint(m, wHalf, hHalf, 0);
-      const ul = transformPoint(m, -wHalf, hHalf, 0);
-
-      const abx = lr[0] - ll[0], aby = lr[1] - ll[1], abz = lr[2] - ll[2];
-      const acx = ur[0] - ll[0], acy = ur[1] - ll[1], acz = ur[2] - ll[2];
-      const cx = aby * acz - abz * acy;
-      const cy = abz * acx - abx * acz;
-      const cz = abx * acy - aby * acx;
-      const crossLen = Math.sqrt(cx * cx + cy * cy + cz * cz);
-      if (crossLen < 1e-8) return;
-
-      const N = negatedNormalizedColumnZ(m);
-
-      const triArea = crossLen * 0.5;
-      const c = light.color;
-      const I = light.intensity;
-      const Le: [number, number, number] = [c.r * I, c.g * I, c.b * I];
-
-      out.push({
-        vA: ll,
-        vB: lr,
-        vC: ur,
-        normal: N,
-        area: triArea,
-        Le,
-      });
-      out.push({
-        vA: ll,
-        vB: ur,
-        vC: ul,
-        normal: N,
-        area: triArea,
-        Le,
-      });
-    });
-  }
-  return out;
-}
 
 export interface ExtraEmitterTri {
   vA: [number, number, number];
@@ -323,17 +178,13 @@ function discPoint(
 }
 
 /**
- * Core-scene counterpart to {@link collectRectAreaLightEmitterTris}: derive the
- * extra ReSTIR emitter triangles for every `kind: 'rect-area'` emitter DIRECTLY
- * from a `@vitrum/core` `Scene`.
+ * Derive the extra ReSTIR emitter triangles for every `kind: 'rect-area'` emitter
+ * DIRECTLY from a `@vitrum/core` `Scene`.
  *
- * Geometry parity with the historical bridge path:
- *
- *  - `buildRectAreaLight` builds an orthonormal basis X=normalize(uAxis),
- *    Y=normalize(vAxis), Z=X×Y, with full width `2|uAxis|` / height `2|vAxis|`,
- *    then `collectRectAreaLightEmitterTris` derives the four corners as
- *    `(±w/2, ±h/2, 0)·matrixWorld`. Because the half-width is EXACTLY `|uAxis|`
- *    and X is EXACTLY `normalize(uAxis)`, that corner reduces to
+ * Geometry derivation: `buildRectAreaLight` builds an orthonormal basis
+ *    X=normalize(uAxis), Y=normalize(vAxis), Z=X×Y, with full width `2|uAxis|`
+ *    / height `2|vAxis|`. The half-width is EXACTLY `|uAxis|` and X is EXACTLY
+ *    `normalize(uAxis)`, so that corner reduces to
  *    `position ± uAxis ± vAxis` — the four corners computed here directly.
  *  - The face normal is `-(Z column of matrixWorld) = -normalize(X×Y) =
  *    -normalize(uAxis × vAxis)` (THREE negates the basis Z).

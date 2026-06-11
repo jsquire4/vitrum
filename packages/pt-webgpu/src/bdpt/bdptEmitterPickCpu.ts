@@ -17,12 +17,12 @@ import {
 const PI = Math.PI;
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
-export function bdptLightLuminance(rgb: readonly [number, number, number]): number {
+function bdptLightLuminance(rgb: readonly [number, number, number]): number {
   return Math.max(luminance709(rgb[0], rgb[1], rgb[2]), 1e-20);
 }
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
-export function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
+function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
   if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
     return true;
   }
@@ -31,7 +31,7 @@ export function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
 }
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
-export function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
+function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
   if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
     const count = sb.environmentMapWidth * sb.environmentMapHeight;
     if (sb.environmentMapCdf.length >= count + 1) {

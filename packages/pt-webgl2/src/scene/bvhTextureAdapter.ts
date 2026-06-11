@@ -18,8 +18,6 @@ import type { ScenePackResult, WorldSpaceMergeResult } from '@vitrum/shared-bvh'
  * all fetched row-major via uTexelFetch1D(uv.x = i % width, uv.y = i / width), NEAREST.
  */
 
-export const BVH_LEAF_FLAG = 0xffff0000;
-
 /** ceil(sqrt(n)) — the square dimension that holds `n` texels row-major. */
 export function squareDim(texelCount: number): number {
   return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, texelCount))));

@@ -13,7 +13,7 @@ src/glsl/
   bsdf/        # ggx/sheen/iridescence/fog/volume_march/spectral_accumulator/thin_film_tmm/bsdf_functions (1472) — copied
   render/      # render_structs/camera_util/trace_scene/attenuate_hit/direct_light/get_surface_record/bdpt_* (1432) — copied
   composeTraceGlsl.ts   # the compose root (analog of composePtWebgpuTraceWgsl) — §3
-  fullscreenVert.ts     # trivial pass-through vertex shader writing vUv (fork PhysicalPathTracingMaterial:212-225)
+  # (fullscreenVert.ts removed 2026-06-10 — dead; runtime uses gl/fullscreenQuad.ts FULLSCREEN_VERT, fork VS preserved as a comment there)
 ```
 
 ## 1. THE FROZEN SCHEMA — uniforms + defines the kernels read (the contract WS2/WS3/WS5 satisfy)

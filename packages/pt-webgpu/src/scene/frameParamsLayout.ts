@@ -5,7 +5,6 @@
 
 export {
   FRAME_PARAMS_BYTE_SIZE,
-  FRAME_PARAMS_F32_SLOTS,
   FrameParamsSlot,
   FRAME_PARAMS_WGSL_FIELDS,
 } from './frameParamsLayout.generated.js';

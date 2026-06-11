@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
 import {
-  isDdgiRestirTlasOnlyRefit,
-  makeDdgiRestirBvhSnapshot,
-} from '../src/ddgi/ddgiRestirBvh.js';
+  isRestirTlasOnlyRefit,
+  makeRestirBvhSnapshot,
+} from '../src/restir/restirBvhSnapshot.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { RestirMergedGeometryLike } from '../src/restir/bvhTypes.js';
 
@@ -47,16 +47,16 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
   };
 }
 
-describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
+describe('makeRestirBvhSnapshot (PR-5.1)', () => {
   it('uses merged geometry bounds when bvhMode is merged', () => {
-    const snap = makeDdgiRestirBvhSnapshot(minimalSceneBVH());
+    const snap = makeRestirBvhSnapshot(minimalSceneBVH());
     expect(snap.bvhMode).toBe('merged');
     expect(snap.tlasNodeCount).toBe(0);
     expect(snap.boundingBox.max.x).toBeCloseTo(2);
   });
 
   it('bumps contentVersion when TLAS nodes change', () => {
-    const a = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+    const a = makeRestirBvhSnapshot(minimalSceneBVH({
       bvhMode: 'tlas',
       tlas: {
         nodes: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 2 },
@@ -67,7 +67,7 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
         nodeCount: 2,
       },
     }));
-    const b = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+    const b = makeRestirBvhSnapshot(minimalSceneBVH({
       bvhMode: 'tlas',
       tlas: {
         nodes: { cpuData: new ArrayBuffer(128), byteLength: 128, count: 4 },
@@ -97,8 +97,8 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
         nodeCount: 2,
       },
     });
-    const snapA = makeDdgiRestirBvhSnapshot(base);
-    const snapB = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+    const snapA = makeRestirBvhSnapshot(base);
+    const snapB = makeRestirBvhSnapshot(minimalSceneBVH({
       bvhMode: 'tlas',
       tlas: {
         nodes: { cpuData: nodesB.buffer, byteLength: nodesB.byteLength, count: 2 },
@@ -125,8 +125,8 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
       localToWorld: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
       nodeCount: 2,
     };
-    const snapA = makeDdgiRestirBvhSnapshot(minimalSceneBVH({ bvhMode: 'tlas', tlas: tlasBase }));
-    const snapB = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+    const snapA = makeRestirBvhSnapshot(minimalSceneBVH({ bvhMode: 'tlas', tlas: tlasBase }));
+    const snapB = makeRestirBvhSnapshot(minimalSceneBVH({
       bvhMode: 'tlas',
       tlas: { ...tlasBase, worldToLocal: { cpuData: w2lB.buffer, byteLength: w2lB.byteLength, count: 1 } },
     }));
@@ -134,13 +134,13 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.tlasContentVersion).not.toBe(snapB.tlasContentVersion);
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
     expect(
-      isDdgiRestirTlasOnlyRefit(snapB, {
+      isRestirTlasOnlyRefit(snapB, {
         blasContentVersion: snapA.blasContentVersion,
         tlasContentVersion: snapA.tlasContentVersion,
       }),
     ).toBe(true);
     expect(
-      isDdgiRestirTlasOnlyRefit(snapB, {
+      isRestirTlasOnlyRefit(snapB, {
         blasContentVersion: snapB.blasContentVersion,
         tlasContentVersion: snapB.tlasContentVersion,
       }),
@@ -167,7 +167,7 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    const snap = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+    const snap = makeRestirBvhSnapshot(minimalSceneBVH({
       bvhMode: 'tlas',
       primitiveTlasBindings: [{
         primitiveId: 'box',

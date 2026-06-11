@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickPrimitiveCpu, type PickCamera } from '../debug/pickPrimitive.js';
+import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import type { Scene, MeshPrimitive, AnalyticPrimitive, MaterialSpec, Mat4 } from '@vitrum/core';
 
 // three.js-style symmetric perspective (column-major, NDC z ∈ [-1,1]).

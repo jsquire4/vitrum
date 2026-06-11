@@ -13,12 +13,8 @@
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
-// Bytes-per-pixel constants for the formats we upload to.
-// RGBA32F_BPP is `export`ed because `hdrLuminanceBilateralWebGPU.ts` imports
-// it alongside `uploadRgbAsRgba32f`. The other five (RGBA16F / RG32F / R32F /
-// R32U / R16U) are file-local helper constants used by the upload functions
-// below; 2026-05-18 dead-code sweep verified zero external consumers.
-export const RGBA32F_BPP = 16 as const;
+// Bytes-per-pixel constants for the formats we upload to — all file-local.
+const RGBA32F_BPP = 16 as const;
 const RGBA16F_BPP = 8  as const;
 const RG32F_BPP   = 8  as const;
 const R32F_BPP    = 4  as const;

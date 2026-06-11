@@ -608,7 +608,7 @@ export function allocatePPGResources(
      * Hard cap on sTree leaf count. Default 1 024 — large enough for
      * meaningful spatial refinement while keeping VRAM bounded at ~6 MB.
      * Hosts that expect dense scenes can raise this up to
-     * `PPG_MAX_SPATIAL_CELLS` (16 384).
+     * 16 384 (the maximum supported).
      */
     maxSpatialCells?: number;
     /**

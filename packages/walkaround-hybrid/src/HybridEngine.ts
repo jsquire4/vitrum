@@ -59,7 +59,7 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { packStainedGlassFlags } from './pipeline/uboUpdater.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
-import type { PickCamera } from './debug/pickPrimitive.js';
+import type { PickCamera } from '@vitrum/shared-bvh';
 import {
   fingerprintHybridPipelineRebuildKey,
   getPreferredSwapChainFormat,

@@ -3,7 +3,7 @@
  */
 
 import type { SceneBvhBuffers } from '@vitrum/shared-bvh';
-import type { DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
+import type { RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import { padTriangleIndicesToVec4 } from './probeUpdateMaterials.js';
 
 const RO = 0x80 | 0x08; // STORAGE | COPY_DST — literal for Node vitest import chain
@@ -40,7 +40,7 @@ function replaceStorageBuffer(
 export function refitProbeTlasBuffersInPlace(
   device: GPUDevice,
   g: ProbeUpdateBvhGpuBuffers,
-  tlas: NonNullable<DdgiRestirBvhSnapshot['tlas']>,
+  tlas: NonNullable<RestirBvhSnapshot['tlas']>,
 ): void {
   device.queue.writeBuffer(g.tlasNodesBuf, 0, tlas.nodes);
   device.queue.writeBuffer(g.tlasW2lBuf, 0, tlas.worldToLocal);
@@ -50,7 +50,7 @@ export function refitProbeTlasBuffersInPlace(
 export function rebuildProbeBvhFromRestir(
   device: GPUDevice,
   g: ProbeUpdateBvhGpuBuffers,
-  snap: DdgiRestirBvhSnapshot,
+  snap: RestirBvhSnapshot,
 ): void {
   const upload = (old: GPUBuffer, data: ArrayBufferLike) => replaceStorageBuffer(device, old, data);
   g.bvhBuf = upload(g.bvhBuf, snap.bvhNodes);

@@ -3,7 +3,7 @@
  */
 import type { EngineDebugSurface, GpuMemoryBreakdown, Scene } from '@vitrum/core';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
-import { pickPrimitiveCpu, type PickCamera } from './debug/pickPrimitive.js';
+import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import { estimateFrameResourcesMemory, type GpuMemoryExternalSections } from './pipeline/gpuMemoryEstimate.js';
 import type { FrameResources } from './pipeline/resourceManager.js';
 import type { PipelineDebugTextures } from './pipeline/PipelineDebugTextures.js';

@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "ignore": [
     "_staging/**",
+    "packages/walkaround-hybrid/src/legacy/**",
     "plan/**",
     "external_requests/**",
     "tools/reference-renders/**",
@@ -17,7 +18,7 @@
       "entry": [
         "scripts/*.{js,mjs,ts}",
         "eslint.config.js",
-        "tools/gpu-env/*.{ts,mjs,js,mts}"
+        "tools/**/*.{ts,mjs,js,mts}"
       ]
     },
     "packages/*": {

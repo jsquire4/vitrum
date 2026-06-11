@@ -144,7 +144,7 @@ export function convertDensitySAtoArea(
 }
 
 /** Lambertian outgoing solid-angle density at `surf` along `dir`: |cosθ|/π. */
-export function lambertianDirectionalPdf(surfNormal: Vec3, dir: Vec3): number {
+function lambertianDirectionalPdf(surfNormal: Vec3, dir: Vec3): number {
   return Math.abs(dot(surfNormal, normalize(dir))) * INV_PI;
 }
 

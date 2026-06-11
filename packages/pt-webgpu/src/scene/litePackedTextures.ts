@@ -31,13 +31,6 @@
  * env map, so the bind-group layout is always satisfied.
  */
 
-/** Vec4 texels per point light (3 × vec4f = 12 floats). */
-export const LITE_POINT_VEC4S = 3;
-/** Vec4 texels per spot light (4 × vec4f = 16 floats). */
-export const LITE_SPOT_VEC4S = 4;
-/** Vec4 texels per rect-area light (4 × vec4f = 16 floats). */
-export const LITE_RECT_VEC4S = 4;
-
 /**
  * Minimum texture width for the light data texture.  A 1×1 placeholder is used
  * when the scene has no point/spot/rect-area lights so the binding is always valid.

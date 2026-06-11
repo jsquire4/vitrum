@@ -42,7 +42,7 @@ export interface LightingOptions {
  * Consumed by {@link assertKnownLightingKeys} for the runtime unknown-key
  * guard in `HybridEngine.updateLighting`.
  */
-export const LIGHTING_OPTION_KEYS = [
+const LIGHTING_OPTION_KEYS = [
   'primaryLightDir',
   'primaryLightIntensity',
   'skyTint',
@@ -727,9 +727,9 @@ export interface HybridEngineOptions extends EngineOptions {
    * Each cell consumes memory for a flat dTree node buffer on the GPU.
    *
    * Default: 1 024 — large enough for meaningful spatial refinement while
-   * keeping VRAM bounded at ~6 MB. The absolute ceiling is `PPG_MAX_SPATIAL_CELLS`
-   * (16 384); raise this only for dense, complex scenes where 1 024 cells are
-   * insufficient for guided sampling coverage.
+   * keeping VRAM bounded at ~6 MB. The absolute ceiling is 16 384; raise this
+   * only for dense, complex scenes where 1 024 cells are insufficient for
+   * guided sampling coverage.
    *
    * This cap is **active**: `PPGCoordinator` calls `splitOverflowLeaves` with
    * this value as the hard ceiling, so the CPU sTree and the GPU flux/dTree

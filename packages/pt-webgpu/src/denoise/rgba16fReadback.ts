@@ -34,7 +34,7 @@ export function rgba16fBufferToRgbaF32(
 }
 
 /** Row-major rgba16float → interleaved RGB Float32 (OIDN layout). */
-export function rgba16fBufferToRgbF32(
+function rgba16fBufferToRgbF32(
   src: ArrayBuffer,
   bytesPerRow: number,
   width: number,

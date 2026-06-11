@@ -300,6 +300,3 @@ export class ProgressiveHandoffCoordinator {
   }
 }
 
-// Re-export the camera-delta helpers so hosts / tests can reuse the exact
-// motion-detection the coordinator uses.
-export const __testing = { maxAbsDelta, cameraMoved };
