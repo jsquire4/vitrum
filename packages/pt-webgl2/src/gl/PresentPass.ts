@@ -51,7 +51,7 @@ void main() {
   // Guard against negative values that can appear from alpha-compositing precision.
   vec3 tonemapped = vitrumTonemap(max(hdr, vec3(0.0)), uTonemapMode, uExposure);
   // outputColorSpace 0 = srgb (default) — apply the IEC 61966-2-1 OETF before
-  // writing to the 8-bit output (the framebuffer is RGBA8 unorm, not auto-sRGB).
+  // writing the display-referred output (the framebuffer is RGBA32F, not auto-sRGB).
   // outputColorSpace 1 = linear — skip the OETF (useful for HDR/linear pipeline).
   if (uOutputColorSpace == 0) {
     pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);
@@ -90,8 +90,8 @@ export class PresentPass {
   /**
    * Allocate (or reallocate) the present target at the given dimensions.
    * Call whenever ensureAccumResources reallocates (width or height changed).
-   * D10.11: uses RGBA8 (sufficient for display output; HDR precision is in the
-   * RGBA32F accumulation target). readPixels from this FBO uses UNSIGNED_BYTE.
+   * RGBA32F — deliberate; the present texture is the public primaryRadiance
+   * and must stay FLOAT-readable (see createPresentTexture's format note).
    */
   allocate(w: number, h: number): void {
     this.destroy();

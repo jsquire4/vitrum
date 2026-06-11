@@ -389,11 +389,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    * scene radiance units). Requires EXT_color_buffer_float (enforced at engine
    * creation; always present when the engine is alive).
    *
-   * `colorSpace:'output'` reads the RGBA8 present FBO — the tonemapped output
+   * `colorSpace:'output'` reads the RGBA32F present FBO — the tonemapped output
    * written by the present pass (tonemap + optional OETF). The present FBO is
-   * RGBA8 (display-referred; D10.11), so readPixels uses the UNSIGNED_BYTE path
-   * and values are normalised to [0,1] floats (/255) for the CapturedFrame
-   * contract.
+   * DELIBERATELY RGBA32F (not RGBA8): the present texture is also the public
+   * `primaryRadiance`, which hosts and the GPU validation harnesses read with
+   * FLOAT readPixels — a UNORM8 target makes that read fail silently
+   * (all-zeros). See createPresentTexture.
    *
    * Returns `null` before the first frame (FBO not yet allocated).
    * Synchronous (WebGL readPixels is always synchronous — no async stall). Wraps

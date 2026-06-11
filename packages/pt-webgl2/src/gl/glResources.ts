@@ -202,7 +202,8 @@ export class GlResources {
     if (w === this.#accumWidth && h === this.#accumHeight && this.#accum != null) return false;
     this.#destroyTargets();
     this.#accum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
-    // Present target — RGBA8 (sufficient for display output; the HDR lives in #accum).
+    // Present target — RGBA32F (deliberate: it is the public primaryRadiance
+    // and must stay FLOAT-readable; see createPresentTexture).
     this.#presentPass.allocate(w, h);
     this.#accumWidth = w;
     this.#accumHeight = h;
@@ -600,9 +601,10 @@ export class GlResources {
    * EXT_color_buffer_float is required (enforced by resolveWebGl2TraceTier; the
    * engine never reaches this point without it).
    *
-   * `source:'output'` reads the present FBO — the RGBA8 tonemapped output
-   * written by PresentPass (D10.11: RGBA8 is sufficient for display output).
-   * Readback uses UNSIGNED_BYTE + /255 normalisation to return [0,1] floats.
+   * `source:'output'` reads the present FBO — the RGBA32F tonemapped output
+   * written by PresentPass. DELIBERATELY RGBA32F: the present texture is the
+   * public `primaryRadiance`, and hosts/harnesses read it with FLOAT
+   * readPixels (see createPresentTexture's format note).
    *
    * Returns `null` when the requested FBO has not been allocated yet (before
    * the first frame).
@@ -632,17 +634,10 @@ export class GlResources {
     if (fbo == null) return null;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    let pixels: Float32Array;
-    if (source === 'output') {
-      // D10.11: present target is RGBA8 — read as UNSIGNED_BYTE, normalize to [0,1].
-      const raw = new Uint8Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
-      pixels = new Float32Array(w * h * 4);
-      for (let i = 0; i < raw.length; i++) pixels[i] = raw[i]! / 255;
-    } else {
-      pixels = new Float32Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
-    }
+    // Both targets are RGBA32F (accum AND present — see createPresentTexture),
+    // so both read with the FLOAT path.
+    const pixels = new Float32Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     // WebGL readPixels writes bottom-left origin (row 0 = bottom).

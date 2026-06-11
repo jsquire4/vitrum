@@ -1131,6 +1131,17 @@ export class GpuResources {
    * are the SAME logical "current" reservoir. We bind `rptReservoirCur` to BOTH
    * b20 and b21 so the producer's output IS the temporal's input (one buffer),
    * and `rptReservoirPrev` to b22.
+   *
+   * **Aliasing-safety rationale** — `rptReservoirCur` is bound simultaneously at
+   * b20 (`rpt_reservoirOut`, read_write) and b21 (`rpt_resCurrent`, read_write).
+   * This is safe because the producer, temporal, spatial, and resolve passes are
+   * SEQUENTIAL compute passes: each pass encodes into its own
+   * `GPUComputePassEncoder` and the encoder submits them in order. WebGPU (§19.4)
+   * guarantees an implicit memory barrier at each `computePassEncoder.end()`, so
+   * the producer's writes to b20 are fully visible before the temporal pass reads
+   * b21 — there is no within-pass read-write hazard. Within a single pass the
+   * producer only WRITES b20 (b21 is read by temporal, not by producer), so the
+   * dual binding is data-race-free at all times.
    */
   buildReservoirBindGroups(sb: UploadedSceneBuffers): void {
     if (!this.#restirPtReuse || this.#rsvr.rptGroup0Layout == null) return;
@@ -1190,6 +1201,15 @@ export class GpuResources {
    * Prev↔Spatial (the old Prev buffer becomes the new Spatial scratch). `Cur` is
    * producer-overwritten every frame, so it does NOT rotate. Invalidates the cached
    * reuse bind groups (they reference the now-swapped buffers). No-op when reuse OFF.
+   *
+   * **ORDERING CONSTRAINT** — this method MUST be called AFTER `device.queue.submit()`
+   * for the current frame. Calling it before submit would swap the buffer references
+   * while the GPU is still reading/writing them inside the submitted command buffer,
+   * causing temporal history corruption on the very next frame (Prev and Spatial
+   * buffers in the new bind groups would point to the wrong ping-pong half).
+   * The call site in `index.ts` (line 1371, immediately after `this.#device.queue.submit(…)`)
+   * enforces this ordering: the swap and bind-group invalidation always happen after
+   * the GPU command stream has been handed to the driver.
    */
   swapReservoirs(): void {
     if (!this.#restirPtReuse) return;

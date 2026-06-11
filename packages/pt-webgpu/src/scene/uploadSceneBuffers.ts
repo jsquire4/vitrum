@@ -193,6 +193,69 @@ export interface UploadedSceneBuffers extends PackedSceneData {
 export type { PrimitiveTlasBinding };
 
 /**
+ * D8.7 — One entry per GPU storage buffer created by {@link uploadPackedScene}.
+ *
+ * `key`         — the field name on `PackedSceneData` whose data populates the buffer.
+ * `bufferField` — the corresponding GPUBuffer handle field on `UploadedSceneBuffers`.
+ * `label`       — the label string passed to `createStorageBuffer` (and visible in GPU
+ *                 debuggers as `vitrum.pt-webgpu.scene.<name>`).
+ *
+ * **Group-0/1 sync invariant** — any change to the buffer set here must be reflected
+ * in the bind-group layout declarations in `gpuResources.ts`:
+ *   - Group 0 (bindings 0–13): `#makeGroup0LayoutEntries()` / `#buildSharedPipelineLayout()`
+ *   - Group 1 (bindings 0–10): analytic + env + area-light buffers in
+ *     `#buildSharedPipelineLayout()` → `bindGroupLayout1`
+ *   - Group 2 (bindings 0–4): TLAS table in `#buildSharedPipelineLayout()` →
+ *     `bindGroupLayout2`
+ *   - Group 3 (bindings 0–9): light-tree + P2 textures/descriptors + SPPM in
+ *     `#buildSharedPipelineLayout()` → `bindGroupLayout3`
+ *   - `buildBindGroups` and `buildReservoirBindGroups` in `gpuResources.ts` must bind
+ *     ALL buffers listed here.
+ *
+ * The registry drives the creation loop in `uploadPackedScene`. The TLAS entries
+ * (indices 20–24) must remain contiguous at the END so the texture-array creation
+ * block that sits between the non-TLAS and TLAS buffers can be inserted at the
+ * natural split point.
+ */
+export const SCENE_BUFFER_REGISTRY = [
+  // ── BLAS geometry ─────────────────────────────────────────────────────────
+  { key: 'positions',          bufferField: 'positionsBuffer',          label: 'vitrum.pt-webgpu.scene.positions' },
+  { key: 'normals',            bufferField: 'normalsBuffer',            label: 'vitrum.pt-webgpu.scene.normals' },
+  { key: 'indices',            bufferField: 'indicesBuffer',            label: 'vitrum.pt-webgpu.scene.indices' },
+  { key: 'triMaterialIds',     bufferField: 'triMaterialIdsBuffer',     label: 'vitrum.pt-webgpu.scene.triMaterialIds' },
+  { key: 'materials',          bufferField: 'materialsBuffer',          label: 'vitrum.pt-webgpu.scene.materials' },
+  { key: 'bvhNodes',           bufferField: 'bvhNodesBuffer',           label: 'vitrum.pt-webgpu.scene.bvhNodes' },
+  // ── Analytic primitives ───────────────────────────────────────────────────
+  { key: 'analyticHeaders',         bufferField: 'analyticHeadersBuffer',         label: 'vitrum.pt-webgpu.scene.analyticHeaders' },
+  { key: 'analyticParams',          bufferField: 'analyticParamsBuffer',          label: 'vitrum.pt-webgpu.scene.analyticParams' },
+  { key: 'analyticLocalToWorld',    bufferField: 'analyticLocalToWorldBuffer',    label: 'vitrum.pt-webgpu.scene.analyticLocalToWorld' },
+  { key: 'analyticWorldToLocal',    bufferField: 'analyticWorldToLocalBuffer',    label: 'vitrum.pt-webgpu.scene.analyticWorldToLocal' },
+  // ── Environment map ───────────────────────────────────────────────────────
+  { key: 'environmentMapTexels', bufferField: 'environmentMapTexelsBuffer', label: 'vitrum.pt-webgpu.scene.environmentMapTexels' },
+  { key: 'environmentMapCdf',    bufferField: 'environmentMapCdfBuffer',    label: 'vitrum.pt-webgpu.scene.environmentMapCdf' },
+  // ── Emitter arrays ────────────────────────────────────────────────────────
+  { key: 'directionalLightsData', bufferField: 'directionalLightsBuffer', label: 'vitrum.pt-webgpu.scene.directionalLights' },
+  { key: 'pointLightsData',       bufferField: 'pointLightsBuffer',       label: 'vitrum.pt-webgpu.scene.pointLights' },
+  { key: 'spotLightsData',        bufferField: 'spotLightsBuffer',        label: 'vitrum.pt-webgpu.scene.spotLights' },
+  { key: 'rectAreaLightsData',    bufferField: 'rectAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.rectAreaLights' },
+  { key: 'meshAreaLightsData',    bufferField: 'meshAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.meshAreaLights' },
+  // ── WS2 light tree ────────────────────────────────────────────────────────
+  { key: 'lightTreeNodes', bufferField: 'lightTreeBuffer', label: 'vitrum.pt-webgpu.scene.lightTree' },
+  // ── P2 per-vertex UVs + material texture descriptors ─────────────────────
+  { key: 'uvs',                    bufferField: 'uvsBuffer',                    label: 'vitrum.pt-webgpu.scene.uvs' },
+  { key: 'materialTexDescriptors', bufferField: 'materialTexDescriptorsBuffer', label: 'vitrum.pt-webgpu.scene.materialTexDescriptors' },
+  // ── TLAS (must be contiguous at the END; index 20 = TLAS_START_INDEX) ─────
+  { key: 'tlasNodes',                  bufferField: 'tlasNodesBuffer',                  label: 'vitrum.pt-webgpu.scene.tlasNodes' },
+  { key: 'tlasInstanceIndices',        bufferField: 'tlasInstanceIndicesBuffer',        label: 'vitrum.pt-webgpu.scene.tlasInstanceIndices' },
+  { key: 'tlasBlasRoots',             bufferField: 'tlasBlasRootsBuffer',             label: 'vitrum.pt-webgpu.scene.tlasBlasRoots' },
+  { key: 'tlasInstanceWorldToLocal',   bufferField: 'tlasInstanceWorldToLocalBuffer',   label: 'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal' },
+  { key: 'tlasInstanceLocalToWorld',   bufferField: 'tlasInstanceLocalToWorldBuffer',   label: 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld' },
+] as const;
+
+/** Union of all `bufferField` values in {@link SCENE_BUFFER_REGISTRY}. */
+export type SceneBufferRegistryField = (typeof SCENE_BUFFER_REGISTRY)[number]['bufferField'];
+
+/**
  * Write `data` into `buffer` when non-empty (shared by all four upload-variant
  * functions — hoisted from the identical local closures that previously lived in
  * each one separately).
