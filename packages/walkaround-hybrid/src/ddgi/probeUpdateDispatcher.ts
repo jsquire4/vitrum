@@ -58,7 +58,7 @@ export function uploadProbeUpdateBorderUbo(
   gpu: ProbeUpdateGpuState,
   grid: ProbeGrid,
   atlas: GPUTexture,
-  which: 'irr' | 'vis',
+  _which: 'irr' | 'vis', // retained for call-site clarity; always 'vis' (irr uses SH, no border pass)
 ): void {
   const data = packProbeUpdateBorderUbo({
     probeCount: grid.probeCount,
@@ -160,9 +160,9 @@ export function dispatchProbeUpdateRaysPass(
 
   const pass = encoder.beginComputePass({ label: 'ddgi-probe-rays' });
   pass.setPipeline(gpu.raysPipeline);
-  pass.setBindGroup(0, c.raysG0!);
-  pass.setBindGroup(1, c.raysG1!);
-  pass.setBindGroup(2, c.raysG2!);
+  pass.setBindGroup(0, c.raysG0);
+  pass.setBindGroup(1, c.raysG1);
+  pass.setBindGroup(2, c.raysG2);
   pass.dispatchWorkgroups(activeCount);
   pass.end();
 }
@@ -211,8 +211,8 @@ export function dispatchProbeUpdateBlendIrrPass(
 
   const pass = encoder.beginComputePass({ label: 'ddgi-blend-irr' });
   pass.setPipeline(gpu.blendIrrPipeline);
-  pass.setBindGroup(0, c.blendIrrG0!);
-  pass.setBindGroup(1, c.blendIrrG1!);
+  pass.setBindGroup(0, c.blendIrrG0);
+  pass.setBindGroup(1, c.blendIrrG1);
   pass.dispatchWorkgroups(activeCount, 1, 1);
   pass.end();
 }
@@ -263,8 +263,8 @@ export function dispatchProbeUpdateBlendVisPass(
 
   const pass = encoder.beginComputePass({ label: 'ddgi-blend-vis' });
   pass.setPipeline(gpu.blendVisPipeline);
-  pass.setBindGroup(0, c.blendVisG0!);
-  pass.setBindGroup(1, c.blendVisG1!);
+  pass.setBindGroup(0, c.blendVisG0);
+  pass.setBindGroup(1, c.blendVisG1);
   pass.dispatchWorkgroups(activeCount, 1, 1);
   pass.end();
 }
@@ -302,7 +302,7 @@ export function dispatchProbeUpdateBorderVisPass(
 
   const pass = encoder.beginComputePass({ label: 'ddgi-border-vis' });
   pass.setPipeline(gpu.borderVisPipeline);
-  pass.setBindGroup(0, c.borderG0!);
+  pass.setBindGroup(0, c.borderG0);
   pass.dispatchWorkgroups(probeCount, 1, 1);
   pass.end();
 }

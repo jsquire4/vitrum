@@ -590,7 +590,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * It is intentionally NOT included in `_perPassUboRefs` so the orchestrator's
    * `dispose()` loop does not double-destroy it.
    */
-  private _atrousIndirectUboRef: PassOwnedUboRef = { buf: undefined, __passOwned: true } as PassOwnedUboRef;
+  private _atrousIndirectUboRef: PassOwnedUboRef = { buf: undefined, __passOwned: true };
   private _accumUboRef: UboRef  = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
@@ -981,7 +981,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       regirConfig?: Partial<ReGIRConfig>;
     },
   ): Promise<void> {
-    const d = this._device;
     const { _width: W, _height: H } = this;
 
     // D3.1 — initialize() is now a sequencer of three private phases.
@@ -1564,9 +1563,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    */
   renderFrame(inputs: PipelineFrameInputs): boolean {
     if (!this._initialized) return false;
-
-    const d = this._device;
-    const { _width: W, _height: H } = this;
 
     // D3.2 — renderFrame is now a sequencer of three private phases.
     // Exact GPU-command order is preserved across the extraction boundary —

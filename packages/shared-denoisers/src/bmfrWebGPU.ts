@@ -22,7 +22,7 @@
  * persistent ping-pong history textures.
  */
 
-import { BMFR_WGSL, BMFR_WORKGROUP_SIZE } from './wgsl/bmfr.wgsl.js';
+import { BMFR_WGSL } from './wgsl/bmfr.wgsl.js';
 import { BMFR_BLOCK_SIZE } from './bmfrRegression.js';
 import {
   BMFR_DEFAULT_UNIFORMS,

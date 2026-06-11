@@ -30,14 +30,13 @@ import type { LightsTextureData } from './sceneTextures.js';
 // Gated to non-production builds (import.meta.env.DEV || process.env.NODE_ENV !== 'production').
 // Always active in the test harness (NODE_ENV=test, not production).
 const _DEV_ASSERT = /* @__PURE__ */ (() => {
+  const g = globalThis as Record<string, unknown>;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const env = (globalThis as any).__vitest_environment__;
-    if (env != null) return true;
+    if (g['__vitest_environment__'] != null) return true;
   } catch { /* noop */ }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (globalThis as any)?.process?.env?.['NODE_ENV'] !== 'production';
+    const proc = g['process'] as { env?: Record<string, string | undefined> } | undefined;
+    return proc?.env?.['NODE_ENV'] !== 'production';
   } catch { return true; }
 })();
 

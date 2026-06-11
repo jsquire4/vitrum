@@ -485,7 +485,7 @@ export function createFrameResources(
   // `HybridEngineOptions.ppgEnabled === true`. Default is an empty record so
   // the pipeline can treat PPG as truly opt-in; the ppg field is
   // `PPGFrameResources | Record<never, never>` in FrameResources.
-  const ppg: FrameResources['ppg'] = {} as Record<never, never>;
+  const ppg: FrameResources['ppg'] = {};
   const neural = createNeuralFrameResources();
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };

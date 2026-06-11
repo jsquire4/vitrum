@@ -388,7 +388,7 @@ export const HandleIdRegistry = {
 function handleId(handle: unknown): string {
   if (handle == null) return '';
   if (typeof handle === 'object' || typeof handle === 'function') {
-    return HandleIdRegistry.get(handle as object);
+    return HandleIdRegistry.get(handle);
   }
   // eslint-disable-next-line @typescript-eslint/no-base-to-string -- at this point handle is a primitive (guarded: not object/function), String() is safe
   return String(handle);

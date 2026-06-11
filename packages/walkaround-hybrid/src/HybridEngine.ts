@@ -81,11 +81,6 @@ import {
   type SceneBVHBuffers,
 } from './restir/bvhCore.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
-import {
-  collectRectAreaEmitterTrisFromCore,
-  collectMeshAreaEmitterTrisFromCore,
-  packEmitterTrisForDDGI,
-} from './restir/bvhSceneHelpers.js';
 import { solveSkin } from '@vitrum/core';
 import { readRgba16fWalkaround } from './util/gpuReadback.js';
 import {
@@ -101,11 +96,10 @@ import {
 } from './HybridEnginePrimitiveUpdates.js';
 import {
   PipelineInitCoordinator,
-  mergeDDGILightsDedupSun,
   type PipelineInitHost,
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
-import type { Tunables, InitTunables } from './HybridEngineTuning.js';
+import type { Tunables } from './HybridEngineTuning.js';
 import {
   deriveScaleAwareClamps,
   type ScaleAwareHostExplicit,
@@ -118,7 +112,6 @@ import { collectUnconsumedMaterialFields } from './restir/consumedMaterialFields
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import {
-  coreEmittersToDDGILights,
   directionalSunMultiplier,
   orientDdgiSunLights,
 } from './coreEmittersToDDGILights.js';

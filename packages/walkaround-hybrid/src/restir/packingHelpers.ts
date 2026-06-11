@@ -298,7 +298,7 @@ function packBVHBeerColorTri(
  *   `restir/bvhCore.ts` (D6.7, R6 E sweep, 2026-06-11) for subsystem-local
  *   access. Retained here for back-compatibility.
  */
-function repackBVHMaterialRange(
+function _repackBVHMaterialRange(
   indexBuf: Uint32Array,
   beerBuf: Uint32Array,
   indices: Uint32Array,
@@ -323,7 +323,7 @@ function repackBVHMaterialRange(
  *   The structural `PbrMaterialLike`-based family is legacy; production code uses
  *   the `*FromCore` counterparts. Retained for tests only.
  */
-function packBVHIndexW(
+function _packBVHIndexW(
   indices: Uint32Array,
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
@@ -364,7 +364,7 @@ export function packBVHRoughMetal(
  * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
  *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
-function packBVHBeerColors(
+function _packBVHBeerColors(
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
   triCount: number,

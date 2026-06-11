@@ -291,5 +291,5 @@ class OptionalSubsystemBindingState implements PipelineSubsystem {
  *   - `packages/walkaround-hybrid/src/pipeline/__tests__/ddgiBindingStateCache.test.ts`
  *   - `packages/walkaround-hybrid/__tests__/rcParamsCodegen.test.ts` (indirect via HybridEngineRC)
  */
-// eslint-disable-next-line @typescript-eslint/no-deprecated
+ 
 export { OptionalSubsystemBindingState as DDGIBindingState };

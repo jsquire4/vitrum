@@ -65,7 +65,7 @@ describe('packTemporalAccumUniforms — packing contract', () => {
   it('respects byte offset parameter', () => {
     // Pack into a larger buffer at offset 32; bytes before/after must be untouched.
     const buf = new ArrayBuffer(64);
-    const u8 = new Uint8Array(buf).fill(0xff); // pre-fill with non-zero sentinel
+    new Uint8Array(buf).fill(0xff); // pre-fill with non-zero sentinel
     packTemporalAccumUniforms({ alpha: 0.5 }, buf, 32);
     const f32v = new Float32Array(buf);
     // Before: should still be 0xff (as float the pattern is NaN/garbage, but

@@ -8,7 +8,6 @@
  */
 
 import { isLeafSplit } from './buildArrayBvh.js';
-import { BVH_NODE_FLOATS } from './strides.js';
 
 /**
  * Copy one 8-word BVH node from `src` (at `srcWordBase`) into `dst` (at
@@ -63,5 +62,3 @@ export function copyVec4Strided(
   dstTriMaterialIds[dstTri] = srcTriMaterialIds[srcTri] ?? 0;
 }
 
-// BVH_NODE_FLOATS is also exported from the package root (index.ts via strides.ts).
-// Import from '@vitrum/shared-bvh' or './strides.js' rather than this file.

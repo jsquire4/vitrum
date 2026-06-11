@@ -50,19 +50,17 @@ import type {
   CreateEngineBackendId,
   CreateEngineOptions,
   EngineWithBackendId,
-  SharedDeviceCtx,
   BackendConstructor,
 } from './createEngineInternals.js';
 import {
   warnCrossBackendAdvanced,
   reportCreateEngineError,
-  attachBackendId,
 } from './createEngineInternals.js';
 
 // Backend constructors (extracted bodies)
 import { constructWalkaround, constructWalkaroundForDispatch } from './backends/walkaround.js';
 import { constructPathTracerWebGPU, constructPathTracerWebGPUForDispatch } from './backends/ptWebgpu.js';
-import { constructPathTracer, constructPathTracerForDispatch } from './backends/ptWebgl2.js';
+import { constructPathTracerForDispatch } from './backends/ptWebgl2.js';
 
 export type { EnginePreference, ScaleDefaults };
 export { pickBackend, deriveScaleDefaults };

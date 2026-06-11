@@ -225,7 +225,7 @@ describe('Item 24 — remodulateAlbedo helper', () => {
     // it (no edges to stop at). Remodulation then restores the checkerboard.
     // In this CPU-side test the "filter" is identity (no GPU); we just
     // verify that demod + remod exactly round-trips the checkerboard.
-    const W = 4; const H = 1; const px = W;
+    const W = 4; const px = W;
     const albedo = new Float32Array(px * 3);
     const rgb    = new Float32Array(px * 3);
     for (let i = 0; i < px; i += 1) {

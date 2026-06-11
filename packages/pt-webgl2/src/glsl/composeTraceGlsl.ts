@@ -297,7 +297,7 @@ type _HandledSeparately =
 // _HandledSeparately. If a new field is added to FrameUniforms without updating
 // this gate, TypeScript will report a type error here.
 type _AllFrameKeys = keyof FrameUniforms;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+ 
 type _ExhaustivenessCheck = _AllFrameKeys extends (_ManifestFrameKey | _HandledSeparately)
   ? true
   : never;

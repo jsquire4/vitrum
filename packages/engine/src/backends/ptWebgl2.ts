@@ -13,7 +13,6 @@ import type { Scene, Engine } from '@vitrum/core';
 import type { EngineFactory } from '@vitrum/core';
 import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 import {
-  reportCreateEngineError,
   attachBackendId,
   wrapWithIdempotentDispose,
   type CreateEngineOptions,

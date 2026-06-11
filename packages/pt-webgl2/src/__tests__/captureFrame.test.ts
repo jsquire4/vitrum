@@ -5,7 +5,7 @@
  * contract requires top-left origin) and the null-before-first-frame guard.
  * Uses a mock GL context — no real GPU required.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createMockGl } from './mockGl.js';
 import { createPTEngine_WebGL2 } from '../index.js';
 

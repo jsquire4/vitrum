@@ -28,15 +28,12 @@ import { bglEntriesFor } from './bindGroupDescriptors.js';
  * Universe of all bind-group layout cache keys (D3.16). Adding a new pass BGL
  * = one string here + one `getBGL*` getter below. No other edits required.
  */
-const BGL_KEYS = [
-  'frame', 'scene', 'ubo', 'atrous', 'composite', 'accum',
-  'hybridLayers', 'sampleBudget', 'resolve', 'motionVectors',
-  'gtao', 'gtaoUpsample', 'temporalGi', 'spatialGi',
-  'indirectCombine', 'indirectTemporalAccum',
-  'lightTree', 'regirBuild', 'nrc', 'cbPrefill',
-] as const;
-
-type BGLKey = typeof BGL_KEYS[number];
+export type BGLKey =
+  | 'frame' | 'scene' | 'ubo' | 'atrous' | 'composite' | 'accum'
+  | 'hybridLayers' | 'sampleBudget' | 'resolve' | 'motionVectors'
+  | 'gtao' | 'gtaoUpsample' | 'temporalGi' | 'spatialGi'
+  | 'indirectCombine' | 'indirectTemporalAccum'
+  | 'lightTree' | 'regirBuild' | 'nrc' | 'cbPrefill';
 
 /**
  * Memoization cache for all bind-group layouts. `Partial<Record<…>>` is

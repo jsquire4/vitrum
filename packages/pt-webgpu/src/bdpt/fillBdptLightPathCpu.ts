@@ -70,9 +70,11 @@ export function packBdptLightPathColumns(
 /**
  * Fill the light-path scratch buffer (bounce-0 column) from a CPU-picked emitter.
  *
- * @internal Kept CPU oracle for the GPU BDPT light-path fill; not public API.
+ * @internal CPU oracle for the GPU `bdptExtendLightSubpath` pass — deliberately
+ * un-exported from the package (production uses GPU fill); _-prefixed to satisfy
+ * the no-unused-vars rule while keeping the oracle in-tree for test harnesses.
  */
-function fillBdptLightPathCpu(
+function _fillBdptLightPathCpu(
   device: GPUDevice,
   buffer: GPUBuffer,
   maxLightBounces: number,

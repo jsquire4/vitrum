@@ -35,7 +35,6 @@
 import {
   BMFR_DEFAULT_UNIFORMS,
   BMFR_UNIFORMS_SIZE_BYTES,
-  BMFR_WORKGROUP_SIZE,
   packBmfrUniforms,
   type BmfrUniforms,
 } from '@vitrum/shared-denoisers';

@@ -1168,7 +1168,7 @@ export class GpuResources {
     // #makeGroup0LayoutEntries() that #buildReservoirGroup0Layout() also uses.
     const sceneG0: GPUBindGroupEntry[] = [
       ...this.#makeGroup0BindGroupEntries(sb),
-      { binding: B + 4, resource: { buffer: this.rptParamsBuffer! } },
+      { binding: B + 4, resource: { buffer: this.rptParamsBuffer } },
     ];
     // The reuse-reservoir slots differ only in which buffer is the "current"
     // ping-pong half. All three passes share ONE bind group: b20 = b21 = Cur (the

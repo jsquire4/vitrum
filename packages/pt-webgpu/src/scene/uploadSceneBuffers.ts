@@ -252,8 +252,6 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'tlasInstanceLocalToWorld',   bufferField: 'tlasInstanceLocalToWorldBuffer',   label: 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld' },
 ] as const;
 
-/** Union of all `bufferField` values in {@link SCENE_BUFFER_REGISTRY}. */
-type SceneBufferRegistryField = (typeof SCENE_BUFFER_REGISTRY)[number]['bufferField'];
 
 /**
  * Write `data` into `buffer` when non-empty (shared by all four upload-variant
@@ -972,7 +970,7 @@ interface MutableSceneBuffers {
  * this one function instead of four separate typed-cast helpers.
  */
 function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBuffers {
-  return sb as unknown as MutableSceneBuffers;
+  return sb;
 }
 
 /**

@@ -7,7 +7,7 @@
  *   3. No tag → fallback fingerprint path (existing behaviour unchanged)
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { SceneBvh } from '../sceneBvh.js';
 
