@@ -75,22 +75,11 @@ export const RIS_GI_WGSL = /* wgsl */ `
 // where they're needed, low-variance pixels save the compute.
 @group(2) @binding(2) var gi_tier: texture_2d<u32>;
 
+// D5.1+D5.2: DDGIGridUBO struct, @group(3) @binding(3) ddgiGrid UBO, and
+// sampleDDGIAtPoint are now provided by the shared ddgiGridUbo module.
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
 @group(3) @binding(2) var ddgiSampler:    sampler;
-struct DDGIGridUBO {
-  origin:    vec3f,
-  spacing:   f32,
-  dimsX:     u32,
-  dimsY:     u32,
-  dimsZ:     u32,
-  _pad0:     u32,
-  irrW:      f32,
-  irrH:      f32,
-  visW:      f32,
-  visH:      f32,
-};
-@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 
 // Base RIS-GI candidate count. Scaled per pixel by adaptive-sampling tier:
 // tier=1 → M_GI_eff = 4; tier=2 → 8 (default); tier=4 → 16.
@@ -101,17 +90,6 @@ const NORMAL_BIAS_GI: f32 = 1e-3;
 // sampleCosineHemisphere is the canonical helper from @vitrum/shared-samplers'
 // bsdfPrimitives.wgsl, injected into the composed shade module via composeWgsl
 // (SHARED_PRIMITIVES_MODULE → BSDF_PRIMITIVES_WGSL).
-
-fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
-  return ddgiSample(
-    worldPos, surfaceNormal,
-    ddgiIrradiance, ddgiVisibility, ddgiSampler,
-    ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
-    ddgiGrid.spacing,
-    ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
-    ddgiGrid.irrW, ddgiGrid.irrH, ddgiGrid.visW, ddgiGrid.visH,
-  );
-}
 
 @compute @workgroup_size(8, 8, 1)
 fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -603,5 +581,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const RIS_GI_MODULE: WgslModule = {
   name: 'risGi',
   source: RIS_GI_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf', 'environmentSample'],
+  // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
+  // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
 };

@@ -160,8 +160,33 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // restirPtProducer.wgsl.ts, kernelLite.wgsl.ts, and bdptLightSubpath.wgsl.ts
     // all updated. The 32-triangle fan path is deleted. RENDER-CHANGING for
     // disc-lit scenes, A/B in R9-B.
-    expect(digest).toBe('5d86101050dbfaf2cde5394c734560bf8929aaae2fb0b952701a4cd2d238ae73');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(314407);
+    // Re-pinned 2026-06-10: D9.1 — computeAnisotropicAxes extracted from both
+    // anisotropy branches of sampleNextBounceDirection (bsdf.wgsl.ts). The function
+    // is mathematically identical to the inlined code (same formulas, same precision
+    // thresholds). SEMANTICALLY EQUIVALENT; axis values unchanged at every call site.
+    // Re-pinned 2026-06-10: D9.3 — buildShadingTangentFrame extracted in material.wgsl.ts;
+    // applyNormalMap + applyBumpMap now call the shared helper. Dead bitanW variable removed
+    // from applyBumpMap. SEMANTICALLY EQUIVALENT; tangent frame math unchanged.
+    // Re-pinned 2026-06-10: D9.4 — mneeChainFdJacobian4x4 extracted in mneeNewton.wgsl.ts;
+    // mneeNewtonSolveChain2 + mneeChainPdfJacobianDet now call the shared helper.
+    // SEMANTICALLY EQUIVALENT; same FD columns, same block assembly.
+    // Re-pinned 2026-06-10: D9.10 — causticReceiverRejected + causticClampedPointCount
+    // extracted in caustic.wgsl.ts; all three pointLight*Caustic functions use them.
+    // SEMANTICALLY EQUIVALENT; same receiver gate + same light-count cap.
+    // Re-pinned 2026-06-10: D9.11 — concentricDiscSample extracted to kernelCore.wgsl.ts;
+    // both kernel.wgsl.ts (full) and kernelLite.wgsl.ts (lite) use the shared helper.
+    // SEMANTICALLY EQUIVALENT; same Shirley-Chiu mapping.
+    // Re-pinned 2026-06-10: D9.13 — rotateYNeg/rotateYPos moved to connectCore.wgsl.ts;
+    // connect.wgsl.ts duplicate removed; connectLite.wgsl.ts liteRotateY* → canonical names.
+    // SEMANTICALLY EQUIVALENT; same rotation math.
+    // Re-pinned 2026-06-10: D9.9 — sppmGather deleted from sppmBindings.wgsl.ts
+    // (legacy streaming-window gather; superseded by sppmGatherProgressive; zero callers).
+    // Re-pinned 2026-06-10: D9.8/I4.1 — SPPM_GROUP4_BINDINGS_WGSL renamed to
+    // SPPM_GROUP3_BINDINGS_WGSL (bindings are at @group(3), not group 4).
+    // Re-pinned 2026-06-10: D9.17 — bdptLightSubpath.wgsl.ts for-loop body
+    // indentation corrected (2-space → 4-space; WGSL text change, zero semantic impact).
+    expect(digest).toBe('ac847bc6dd325f1ef005168515d218db539be9f94cb71e5024ade3c69a7d1370');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(313180);
   });
 });
 

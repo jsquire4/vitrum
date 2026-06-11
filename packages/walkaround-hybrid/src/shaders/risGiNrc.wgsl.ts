@@ -171,37 +171,15 @@ export const RIS_GI_NRC_BODY = /* wgsl */ `
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 @group(2) @binding(2) var gi_tier: texture_2d<u32>;
 
+// D5.1+D5.2: DDGIGridUBO struct, @group(3) @binding(3) ddgiGrid UBO, and
+// sampleDDGIAtPoint are now provided by the shared ddgiGridUbo module.
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
 @group(3) @binding(2) var ddgiSampler:    sampler;
-struct DDGIGridUBO {
-  origin:    vec3f,
-  spacing:   f32,
-  dimsX:     u32,
-  dimsY:     u32,
-  dimsZ:     u32,
-  _pad0:     u32,
-  irrW:      f32,
-  irrH:      f32,
-  visW:      f32,
-  visH:      f32,
-};
-@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 
 const M_GI_BASE: u32 = 8u;
 const RECONNECT_MAX_DIST: f32 = 100.0;
 const NORMAL_BIAS_GI: f32 = 1e-3;
-
-fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
-  return ddgiSample(
-    worldPos, surfaceNormal,
-    ddgiIrradiance, ddgiVisibility, ddgiSampler,
-    ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
-    ddgiGrid.spacing,
-    ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
-    ddgiGrid.irrW, ddgiGrid.irrH, ddgiGrid.visW, ddgiGrid.visH,
-  );
-}
 
 @compute @workgroup_size(8, 8, 1)
 fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -505,6 +483,8 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
     // Wave 4 parity: `environmentSample` added so envRadiance() is in scope for
     // the GI-escape sky-miss branch (matching risGi.wgsl:264). The @group(1)
     // env bindings 15-19 are already present in the scene BGL for NRC passes.
-    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf', 'environmentSample'],
+    // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
+    // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
+    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
   };
 }

@@ -59,6 +59,20 @@
  *
  *   WelfordVariance layout: canonical in ./welfordVariance.wgsl.ts.
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
+ *
+ * INTENTIONAL DIVERGENCE from walkaround-hybrid's SVGF edge-stop:
+ *   • This module uses a variance-guided LUMINANCE edge-stop weight:
+ *       w_l = exp(-|lum(c) - lum(c')|² / (σ_l² * var + ε))
+ *     This is the Dammertz 2010 standalone à-trous form — a single luminance
+ *     channel drives the edge-stop, and variance modulates the sigma.
+ *   • walkaround-hybrid's SVGF (svgfRealWebGPU.ts, via ATROUS_PASS_WGSL) uses
+ *     Schied 2017 Eq. 4 — separate σ_l / σ_n / σ_d terms, a 3-component
+ *     g-buffer edge-stop (luminance, world normal, linear depth), and a
+ *     per-pixel history-length-clamped α. The two formulas produce different
+ *     filtering behaviour; they are NOT interchangeable.
+ *   • Do NOT "unify" these into a single shared WGSL kernel without verifying
+ *     that both consumers produce identical output on their respective test
+ *     scenes (the behavioral gate covers both).
  */
 
 import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';

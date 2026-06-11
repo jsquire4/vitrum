@@ -64,8 +64,14 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // rect/disc loop reads shape tag from liteLightTex texel .w, applies concentric-disc
     // map for disc records (same design as full-tier kernel.wgsl.ts). 32-triangle fan
     // removed. RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
-    expect(digest).toBe('d307f62a3ad63267ed16c45c11fdb5b6433e312764003ac46e0492cefc2225f7');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(131837);
+    // Re-pinned 2026-06-10: D9.1 — computeAnisotropicAxes extracted in bsdf.wgsl.ts;
+    // shared by both tiers (SEMANTICALLY EQUIVALENT dedup).
+    // Re-pinned 2026-06-10: D9.11 — concentricDiscSample extracted to kernelCore.wgsl.ts;
+    // kernelLite.wgsl.ts uses the shared helper. SEMANTICALLY EQUIVALENT; same Shirley-Chiu mapping.
+    // Re-pinned 2026-06-10: D9.13 — rotateYNeg/rotateYPos moved to connectCore.wgsl.ts;
+    // connectLite.wgsl.ts liteRotateY* replaced with canonical names. SEMANTICALLY EQUIVALENT.
+    expect(digest).toBe('8501bfb94f1d74535d7644439aee32df08aebe83fe0bcb5aeffbda6d8029900b');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(133012);
   });
 });
 

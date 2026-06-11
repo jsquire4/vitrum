@@ -35,6 +35,8 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
+// clampCoord is provided by the screenCoordHelpers module (D5.4 dedup).
+
 export const CB_PREFILL_WGSL = /* wgsl */ `
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
@@ -58,15 +60,6 @@ struct CbPrefillUniforms {
 // hdrColorTexture (rgba16float, storage write).
 // Only gap pixels are written; shaded pixels remain as written by ShadePass.
 @group(0) @binding(3) var           t_hdr_out: texture_storage_2d<rgba16float, write>;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn clampCoord(c: vec2<i32>, w: u32, h: u32) -> vec2<i32> {
-  return vec2<i32>(
-    clamp(c.x, 0, i32(w) - 1),
-    clamp(c.y, 0, i32(h) - 1),
-  );
-}
 
 // ── Compute entry point ───────────────────────────────────────────────────────
 
@@ -98,9 +91,9 @@ fn cbPrefillKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** D5.4 dedup — clampCoord shared via screenCoordHelpers. */
 export const CB_PREFILL_MODULE: WgslModule = {
   name: 'cb-prefill',
   source: CB_PREFILL_WGSL,
-  requires: [],
+  requires: ['screenCoordHelpers'],
 };

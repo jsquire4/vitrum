@@ -31,19 +31,7 @@ fn environmentDimensions() -> vec2u {
   return vec2u(params.environmentMapWidth, params.environmentMapHeight);
 }
 
-// Y-rotation helpers — mirror the full connect module (connect.wgsl.ts) so the
-// lite tier honours params.environmentTint.w (rotationY) correctly.
-fn liteRotateYNeg(dir: vec3f, rotY: f32) -> vec3f {
-  let c = cos(rotY);
-  let s = sin(rotY);
-  return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
-}
-
-fn liteRotateYPos(dir: vec3f, rotY: f32) -> vec3f {
-  let c = cos(rotY);
-  let s = sin(rotY);
-  return vec3f(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
-}
+// D9.13 — rotateYNeg / rotateYPos are now in connectCore.wgsl.ts (shared).
 
 // B12 — look up a texel from the lite env radiance texture via textureLoad.
 // Returns (rgb=radiance, a=pdf_per_sr).  Falls back to (sampleSky, 0) when
@@ -57,7 +45,7 @@ fn liteEnvLookup(dir: vec3f) -> vec4f {
     return vec4f(sampleSky(dir), 0.0);
   }
   let rotY = params.environmentTint.w;
-  let lookupDir = liteRotateYNeg(dir, rotY);
+  let lookupDir = rotateYNeg(dir, rotY);
   let phi = atan2(lookupDir.z, lookupDir.x);
   let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
   let u = fract(phi * INV_2PI + 0.5);
@@ -131,7 +119,7 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
   let texel = textureLoad(liteEnvTex, vec2i(i32(x), i32(y)), 0);
   let rotY = params.environmentTint.w;
-  result.wi = safe_normalize(liteRotateYPos(mapDir, rotY));
+  result.wi = safe_normalize(rotateYPos(mapDir, rotY));
   result.value = texel.rgb * max(params.environmentHdriIntensity, 0.0);
   result.pdf = max(texel.a, 1e-8);
   return result;

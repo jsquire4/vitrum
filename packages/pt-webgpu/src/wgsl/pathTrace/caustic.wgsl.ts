@@ -48,7 +48,7 @@ import { MNEE_NEWTON_MAX_ITERS, MNEE_CHAIN_MAX_ITERS } from './mneeNewton.wgsl.j
  *    remains for the DIRECTIONAL-light multi-bounce-glass case the single-interface
  *    point-light refraction solve does not yet cover.
  *  - `photonMapContribution` — caustic strategy mode 2: SPPM gather shim.
- *    Reads from the @group(4) hash grid populated by the photon-emission pre-pass
+ *    Reads from the @group(3) hash grid populated by the photon-emission pre-pass
  *    (`sppmEmitPhotons` in sppmBindings.wgsl.ts / the separate sppmPhotonPass
  *    pipeline). The old per-pixel 32-photon mini-pass with a hardcoded 0.35 world-
  *    unit gather radius and a ×1.25 brightness fudge was removed in A4 (2026-06-10);
@@ -192,6 +192,19 @@ fn traceSpecularTransmissiveChain(
 const REFLECT_SEED_RAYS = 16u;       // stratified hemisphere seeds / light
 const REFLECT_ROUGH_MAX = 0.08;      // a "mirror" is near-smooth
 const REFLECT_METAL_MIN = 0.5;       // …and metallic (a polished reflector)
+
+// D9.10 — shared receiver-rejection test used by all three caustic functions.
+// Returns true when the receiver is too specular / metallic to host a diffuse caustic
+// (all three functions return vec3f(0) for these materials).
+fn causticReceiverRejected(metallic: f32, roughness: f32) -> bool {
+  return metallic > 0.5 || roughness < 0.2;
+}
+
+// D9.10 — shared point-light count helper: min(scene count, hard loop cap 16).
+fn causticClampedPointCount() -> u32 {
+  return min(params.pointLightCount, 16u);
+}
+
 fn pointLightReflectionCaustic(
   rng: ptr<function, u32>,
   hitPos: vec3f,
@@ -206,13 +219,9 @@ fn pointLightReflectionCaustic(
   // a metallic/near-mirror receiver scatters specularly (its own glossy bounce
   // already carries the reflection) — so only run the diffuse-receiver caustic on a
   // sufficiently rough, non-metallic receiver. Keeps the seed search off mirrors.
-  if (metallic > 0.5 || roughness < 0.2) {
-    return vec3f(0.0);
-  }
-  let pointCount = min(params.pointLightCount, 16u);
-  if (pointCount == 0u) {
-    return vec3f(0.0);
-  }
+  if (causticReceiverRejected(metallic, roughness)) { return vec3f(0.0); }
+  let pointCount = causticClampedPointCount();
+  if (pointCount == 0u) { return vec3f(0.0); }
   var contribution = vec3f(0.0);
   for (var li = 0u; li < 16u; li = li + 1u) {
     if (li >= pointCount) { break; }
@@ -402,13 +411,9 @@ fn pointLightRefractionCaustic(
 ) -> vec3f {
   // Same receiver gate as the reflection caustic: only a sufficiently rough,
   // non-metallic receiver hosts the diffuse refraction caustic.
-  if (metallic > 0.5 || roughness < 0.2) {
-    return vec3f(0.0);
-  }
-  let pointCount = min(params.pointLightCount, 16u);
-  if (pointCount == 0u) {
-    return vec3f(0.0);
-  }
+  if (causticReceiverRejected(metallic, roughness)) { return vec3f(0.0); }
+  let pointCount = causticClampedPointCount();
+  if (pointCount == 0u) { return vec3f(0.0); }
   var recvTu: vec3f;
   var recvTv: vec3f;
   buildOnb(normal, &recvTu, &recvTv);
@@ -625,13 +630,9 @@ fn pointLightGlassSlabCaustic(
 ) -> vec3f {
   // Same receiver gate as the other caustics: only a sufficiently rough, non-metallic
   // receiver hosts the diffuse glass-slab caustic.
-  if (metallic > 0.5 || roughness < 0.2) {
-    return vec3f(0.0);
-  }
-  let pointCount = min(params.pointLightCount, 16u);
-  if (pointCount == 0u) {
-    return vec3f(0.0);
-  }
+  if (causticReceiverRejected(metallic, roughness)) { return vec3f(0.0); }
+  let pointCount = causticClampedPointCount();
+  if (pointCount == 0u) { return vec3f(0.0); }
   var recvTu: vec3f;
   var recvTv: vec3f;
   buildOnb(normal, &recvTu, &recvTv);

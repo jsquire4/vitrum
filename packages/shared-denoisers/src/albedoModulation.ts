@@ -46,9 +46,12 @@ export function remodulateAlbedo(
 ): Float32Array {
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]     : 1;
-    const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
-    const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
+    // Float32Array indexing returns number|undefined; ?? 1 gives a white albedo
+    // fallback (neutral multiply) when the albedo buffer is shorter than the rgb
+    // buffer. Safe: Float32Array values are never null, only undefined on OOB.
+    const ar = albedo[si]     ?? 1;
+    const ag = albedo[si + 1] ?? 1;
+    const ab = albedo[si + 2] ?? 1;
     rgb[si]     = (rgb[si]     ?? 0) * ar;
     rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
     rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;

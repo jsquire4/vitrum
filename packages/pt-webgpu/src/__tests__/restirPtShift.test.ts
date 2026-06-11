@@ -7,12 +7,12 @@
 // pin the host-side packing + the kernel composition + a few analytic invariants
 // computed on the CPU (the same closed form the WGSL emits + the oracle holds).
 import { describe, it, expect } from 'vitest';
+import { RESTIR_PT_SHIFT_WGSL } from '../wgsl/pathTrace/restirPtShift.wgsl.js';
 import {
-  RESTIR_PT_SHIFT_WGSL,
   RESTIR_PT_SHIFT_HARNESS_WGSL,
   packRestirPtShiftInput,
   RESTIR_PT_SHIFT_INPUT_FLOATS,
-} from '../wgsl/pathTrace/restirPtShift.wgsl.js';
+} from '../wgsl/pathTrace/restirPtShift.harness.wgsl.js';
 
 type V3 = [number, number, number];
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

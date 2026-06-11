@@ -59,4 +59,19 @@ fn russianRoulette(rng: ptr<function, u32>, throughput: vec3f) -> RRResult {
   result.survives = true;
   result.throughputMul = 1.0 / survival;
   return result;
+}
+
+// D9.11 — Shirley & Chiu 1997 concentric-disc mapping: maps the unit square [−1,1]²
+// uniformly to the unit disc. xi = vec2f(a, b) in [−1,1]² (pre-remapped from [0,1]²
+// by the caller). Returns the 2-D disc point (x, y) with |(x,y)| ≤ 1.
+// Ref: Shirley & Chiu, "A Low Distortion Map Between Disk and Square," JGT 1997.
+fn concentricDiscSample(xi: vec2f) -> vec2f {
+  let a = xi.x; let b = xi.y;
+  var cr: f32; var cphi: f32;
+  if (abs(a) >= abs(b)) {
+    cr = a; cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+  } else {
+    cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+  }
+  return vec2f(cr * cos(cphi), cr * sin(cphi));
 }`;

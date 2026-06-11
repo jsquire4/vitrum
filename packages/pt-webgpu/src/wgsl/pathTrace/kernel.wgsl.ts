@@ -673,23 +673,11 @@ ${transmissiveBlock}
           var lpos: vec3f;
           var area: f32;
           if (isDisc) {
-            // Concentric-disc mapping (Shirley & Chiu 1997): maps the unit square
-            // uniformly to the unit disc; scale by radius (= |ru|). Uniform area
-            // measure over the disc → pdf = 1/(π·r²) in area measure.
+            // D9.11 — Shirley & Chiu 1997 concentric-disc map via shared kernelCore helper.
+            // Scale by radius (= |ru|); uniform area measure → pdf = 1/(π·r²).
             let r = length(ru);
-            let a = xi1 * 2.0 - 1.0;
-            let b = xi2 * 2.0 - 1.0;
-            var cr: f32; var cphi: f32;
-            if (abs(a) >= abs(b)) {
-              cr = a;
-              cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
-            } else {
-              cr = b;
-              cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
-            }
-            let disc_u = cr * cos(cphi);
-            let disc_v = cr * sin(cphi);
-            lpos = rpos + ru * disc_u + rv * disc_v;
+            let disc = concentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
+            lpos = rpos + ru * disc.x + rv * disc.y;
             area = max(PI * r * r, 1e-6);
           } else {
             let u = xi1 * 2.0 - 1.0;

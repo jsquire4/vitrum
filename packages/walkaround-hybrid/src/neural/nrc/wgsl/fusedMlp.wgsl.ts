@@ -62,6 +62,56 @@ export interface FusedMlpWgslOptions {
   TILE_B: number;
 }
 
+// ── Shared emitter helper ──────────────────────────────────────────────────────
+// Both fusedForwardWgsl and fusedBackwardWgsl need identical:
+//   • TS preamble: enableF16, SC, NODE, WLAYERS
+//   • WGSL const block (W/OUT_W/HIDDEN/NODE/WLAYERS/TILE_B)
+//   • WGSL saveOff() helper (actsGlob/zGlob layout accessor, same formula
+//     in both kernels: S * NODE * W + nl * W + n)
+//
+// This helper emits the shared WGSL preamble so neither kernel repeats it.
+// The backward kernel adds `const GRAD_FP` which is NOT shared (forward doesn't
+// need it), so it is emitted separately by fusedBackwardWgsl.
+
+/** Derived TS constants shared by both emitters. */
+interface FusedMlpDerived {
+  SC: string;
+  enableF16: string;
+  NODE: number;
+  WLAYERS: number;
+}
+
+function fusedMlpDerived(o: FusedMlpWgslOptions): FusedMlpDerived {
+  return {
+    SC: o.useF16 ? "f16" : "f32",
+    enableF16: o.useF16 ? "enable f16;\n" : "",
+    NODE: o.HIDDEN + 2,
+    WLAYERS: o.HIDDEN + 1,
+  };
+}
+
+/**
+ * WGSL const block + saveOff helper shared by both forward and backward kernels.
+ *
+ * Emits:
+ *   const W / OUT_W / HIDDEN / NODE / WLAYERS / TILE_B
+ *   fn saveOff(S, nl, n) -> u32  — actsGlob/zGlob index formula
+ *
+ * NOTE: backward appends its own `const GRAD_FP` after this block.
+ */
+function fusedMlpSharedPreambleWgsl(o: FusedMlpWgslOptions, d: FusedMlpDerived): string {
+  return `\
+const W : u32 = ${o.W}u;
+const OUT_W : u32 = ${o.OUT_W}u;
+const HIDDEN : u32 = ${o.HIDDEN}u;
+const NODE : u32 = ${d.NODE}u;        // node-layers incl input+output
+const WLAYERS : u32 = ${d.WLAYERS}u;  // weight layers
+const TILE_B : u32 = ${o.TILE_B}u;
+
+fn saveOff(S : u32, nl : u32, n : u32) -> u32 { return S * NODE * W + nl * W + n; }
+`;
+}
+
 // The fused forward+save kernel. One workgroup = one tile of TILE_B samples.
 // workgroup_size = (W, 1, 1): one invocation per output neuron column; each
 // invocation walks all TILE_B samples for its column (the tile is small).
@@ -75,22 +125,13 @@ export interface FusedMlpWgslOptions {
 //   zGlob    : same layout, saved pre-activations for relu'
 //   params   : uniform (offsets + sample count + tile base)
 export function fusedForwardWgsl(o: FusedMlpWgslOptions): string {
-  const f16 = o.useF16;
-  const SC = f16 ? "f16" : "f32"; // scalar type for resident tiles
-  const enableF16 = f16 ? "enable f16;\n" : "";
-  const W = o.W, OUT_W = o.OUT_W, HIDDEN = o.HIDDEN, TILE_B = o.TILE_B;
-  // node-layers total = HIDDEN + 2 (input + output). weight-layers = HIDDEN + 1.
-  const NODE = HIDDEN + 2;
-  const WLAYERS = HIDDEN + 1;
+  const d = fusedMlpDerived(o);
+  const { SC, enableF16 } = d;
+  const { W, TILE_B } = o;
+  const { WLAYERS } = d;
   return /* wgsl */`${enableF16}
-// ── Fused forward (one workgroup per tile of ${TILE_B} samples) ──
-const W : u32 = ${W}u;
-const OUT_W : u32 = ${OUT_W}u;
-const HIDDEN : u32 = ${HIDDEN}u;
-const NODE : u32 = ${NODE}u;        // node-layers incl input+output
-const WLAYERS : u32 = ${WLAYERS}u;  // weight layers
-const TILE_B : u32 = ${TILE_B}u;
-
+// ── Fused forward (one workgroup per tile of ${o.TILE_B} samples) ──
+${fusedMlpSharedPreambleWgsl(o, d)}
 // Per-layer offsets packed as vec4<u32>(wOff, bOff, inW, outW) — one per weight
 // layer. Packed into the uniform (16-byte-aligned array elements) to keep the
 // storage-buffer binding count low and portable (real adapters default to 8).
@@ -116,10 +157,6 @@ fn layOutW(l : u32) -> u32 { return p.lay[l].w; }
 // Layout: actA[s*W + n] = activation of sample s (within tile), neuron n.
 var<workgroup> actA : array<${SC}, ${TILE_B * W}>;
 var<workgroup> actB : array<${SC}, ${TILE_B * W}>;
-
-// actsGlob/zGlob layout for sample S, node-layer nl, neuron n:
-//   base = S * NODE * W + nl * W + n   (W-padded for every node-layer)
-fn saveOff(S : u32, nl : u32, n : u32) -> u32 { return S * NODE * W + nl * W + n; }
 
 @compute @workgroup_size(${W}, 1, 1)
 fn fusedForward(@builtin(workgroup_id) wg : vec3<u32>,
@@ -209,19 +246,12 @@ fn fusedForward(@builtin(workgroup_id) wg : vec3<u32>,
 // them into the trainable feature tables (Müller 2022 Instant-NGP §4). Without
 // this the hash tables stay frozen at random init and only the MLP learns.
 export function fusedBackwardWgsl(o: FusedMlpWgslOptions): string {
-  const f16 = o.useF16;
-  const SC = f16 ? "f16" : "f32";
-  const enableF16 = f16 ? "enable f16;\n" : "";
-  const W = o.W, OUT_W = o.OUT_W, HIDDEN = o.HIDDEN, TILE_B = o.TILE_B;
-  const NODE = HIDDEN + 2;
-  const WLAYERS = HIDDEN + 1;
+  const d = fusedMlpDerived(o);
+  const { SC, enableF16 } = d;
+  const { W, TILE_B } = o;
+  const { WLAYERS } = d;
   return /* wgsl */`${enableF16}
-const W : u32 = ${W}u;
-const OUT_W : u32 = ${OUT_W}u;
-const HIDDEN : u32 = ${HIDDEN}u;
-const NODE : u32 = ${NODE}u;
-const WLAYERS : u32 = ${WLAYERS}u;
-const TILE_B : u32 = ${TILE_B}u;
+${fusedMlpSharedPreambleWgsl(o, d)}
 // fixed-point scale for the i32 grad atomics (host divides back out).
 const GRAD_FP : f32 = 1048576.0;   // 2^20
 
@@ -255,8 +285,6 @@ fn layOutW(l : u32) -> u32 { return p.lay[l].w; }
 // neuron n for sample s within the tile.
 var<workgroup> deltaA : array<${SC}, ${TILE_B * W}>;
 var<workgroup> deltaB : array<${SC}, ${TILE_B * W}>;
-
-fn saveOff(S : u32, nl : u32, n : u32) -> u32 { return S * NODE * W + nl * W + n; }
 
 @compute @workgroup_size(${W}, 1, 1)
 fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,

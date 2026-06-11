@@ -140,7 +140,8 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Finalise W from the chosen sample's p̂ at this pixel.
-  finaliseGIReservoirW(&rOut, ubo.restirGiWCap);
+  // D5.3 (gris=false): standard RIS — divide by M (MIS weight 1 per candidate).
+  finaliseGIReservoirW(&rOut, ubo.restirGiWCap, false);
 
   storeReservoirGI_rw(&sgi_resOut, pixelIdx, rOut);
 }
@@ -359,11 +360,10 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Finalise W from the chosen sample's p̂ at this pixel.
-  // GRIS reuse: W = w_sum / p̂ — the per-sample MIS weights m_i ALREADY sum
-  // to 1 (they replace the 1/M averaging), so dividing by M again would
-  // under-energise the estimate. This is the GRIS generalized-RIS contribution
-  // weight (Lin 2022 §generalized RIS: W = w_sum / p̂(z) with Σ m_i = 1).
-  finaliseGIReservoirWGris(&rOut, ubo.restirGiWCap);
+  // D5.3 (gris=true): GRIS reuse — W = w_sum / p̂ (the per-sample MIS weights
+  // m_i already sum to 1; dividing by M again would under-energise the estimate).
+  // Lin 2022 §generalised RIS: W = w_sum / p̂(z) with Σ m_i = 1.
+  finaliseGIReservoirW(&rOut, ubo.restirGiWCap, true);
 
   // GRIS — refresh the Phase-0 reconnection-shift cache on the chosen sample so
   // the NEXT reuse pass (the ping-pong second spatial dispatch, or the next

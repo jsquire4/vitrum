@@ -109,9 +109,22 @@ fn featureRow(pLocal: vec3f, n: vec3f, row: ptr<function, array<f32, ${BMFR_WGSL
   (*row)[9] = pLocal.z * pLocal.z;
 }
 
+// MUST-MATCH MIRROR: householderSolve (GPU ↔ CPU)
+//
+// This WGSL kernel mirrors the CPU reference in
+// bmfrRegression.ts::householderSolve. The two implementations MUST stay
+// bit-for-bit equivalent on every convergence guard and back-substitution step:
+//
+//   • norm < 1e-20         — skip near-zero pivot columns       ← BOTH sides
+//   • vNormSq < 1e-30      — skip near-degenerate reflectors    ← BOTH sides
+//   • abs(diag) > 1e-20    — back-substitution singularity gate ← BOTH sides
+//   • back-substitution traversal order: i = F-1 .. 0 (descending via ii)
+//
+// If you change any of these guards or the back-substitution order here,
+// apply the IDENTICAL change in bmfrRegression.ts::householderSolve and vice-versa.
+//
 // Householder-QR solve of the dense f×f system M x = b. M is row-major in a
-// flat 100-entry array; b is length 10. Returns x in out. Mirrors the CPU
-// reference in bmfrRegression.ts::householderSolve.
+// flat 100-entry array; b is length 10. Returns x in out.
 fn householderSolve(
   Min:  ptr<function, array<f32, 100>>,
   bin:  ptr<function, array<f32, ${BMFR_WGSL_FEATURE_COUNT}>>,
@@ -129,7 +142,7 @@ fn householderSolve(
       normSq = normSq + v * v;
     }
     var norm = sqrt(normSq);
-    if (norm < 1e-20) { continue; }
+    if (norm < 1e-20) { continue; } // MUST-MATCH bmfrRegression.ts
     let x0 = R[col * F + col];
     let sgn = select(-1.0, 1.0, x0 >= 0.0);
     norm = norm * sgn;
@@ -139,7 +152,7 @@ fn householderSolve(
     for (var i = col + 1u; i < F; i = i + 1u) { v[i] = R[i * F + col]; }
     var vNormSq = 0.0;
     for (var i = col; i < F; i = i + 1u) { vNormSq = vNormSq + v[i] * v[i]; }
-    if (vNormSq < 1e-30) { continue; }
+    if (vNormSq < 1e-30) { continue; } // MUST-MATCH bmfrRegression.ts
 
     for (var j = col; j < F; j = j + 1u) {
       var dot = 0.0;
@@ -159,7 +172,7 @@ fn householderSolve(
     var acc = y[i];
     for (var j = i + 1u; j < F; j = j + 1u) { acc = acc - R[i * F + j] * (*out)[j]; }
     let diag = R[i * F + i];
-    (*out)[i] = select(0.0, acc / diag, abs(diag) > 1e-20);
+    (*out)[i] = select(0.0, acc / diag, abs(diag) > 1e-20); // MUST-MATCH bmfrRegression.ts
   }
 }
 

@@ -14,12 +14,12 @@
 // computed on the CPU from INDEPENDENTLY-derived closed forms (NOT copied from the
 // WGSL): the same discipline as restirPtShift.test.ts.
 import { describe, it, expect } from 'vitest';
+import { RESTIR_PT_HYBRID_SHIFT_WGSL } from '../wgsl/pathTrace/restirPtHybridShift.wgsl.js';
 import {
-  RESTIR_PT_HYBRID_SHIFT_WGSL,
   RESTIR_PT_HYBRID_SHIFT_HARNESS_WGSL,
   packRestirPtHybridShiftInput,
   RESTIR_PT_HYBRID_SHIFT_INPUT_FLOATS,
-} from '../wgsl/pathTrace/restirPtHybridShift.wgsl.js';
+} from '../wgsl/pathTrace/restirPtHybridShift.harness.wgsl.js';
 
 type V3 = [number, number, number];
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

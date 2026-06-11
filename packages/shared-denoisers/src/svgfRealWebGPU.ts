@@ -193,10 +193,11 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   // Merged variance (after 7×7 fallback)
   const varFinalTex   = device.createTexture({ label: 'svgf-var-final',size: [w,h], format: 'rg32float', usage: texS|texB|texC });
 
-  // Atrous-variance pass variance output (not actually used — we feed varFinalTex directly to atrous)
-  // We need a "varianceIn" for the atrous-variance's own svgfVarianceMain pass.
-  // For svgf-real, we skip the atrous-variance pass's variance computation and use
-  // the already-computed varFinalTex as the varianceMap directly fed to svgfAtrousMain.
+  // The atrous-variance pass computes spatial variance from moments, but for the
+  // svgf-real standalone path we already have a per-pixel variance estimate from
+  // the 7×7 spatial fallback (varFinalTex). We feed varFinalTex directly to
+  // svgfAtrousMain as the varianceMap, bypassing the atrous-variance step's own
+  // spatial variance output. A dummy texture satisfies the binding slot.
 
   // Atrous ping-pong
   const pingPongUsage = texS | texB | texC;

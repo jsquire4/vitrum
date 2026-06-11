@@ -90,7 +90,19 @@ struct AdjointParams {
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
 
-// ── BRDF primitives (mirror material.wgsl.ts / the oracle) ──────────────────
+// ── BRDF primitives ──────────────────────────────────────────────────────────
+//
+// MIRROR SITE — these four functions are intentionally duplicated here from
+// their canonical definitions so this adjoint-pass shader is a self-contained
+// compute module (it is NOT composed with the megakernel prefix stack).
+//
+//   safe_normalize   → common.wgsl.ts:42
+//   ggxD             → material.wgsl.ts:741  (GGX NDF, Trowbridge-Reitz)
+//   smithG1          → material.wgsl.ts:747  (Smith masking/shadowing term)
+//   fresnelSchlick   → material.wgsl.ts:710  (Schlick Fresnel approximation)
+//
+// If you change the body of any of these functions in their canonical location
+// you MUST apply the same change here (and vice-versa).
 fn safe_normalize(v: vec3f) -> vec3f {
   let l = length(v);
   if (l < 1e-8) { return vec3f(0.0); }

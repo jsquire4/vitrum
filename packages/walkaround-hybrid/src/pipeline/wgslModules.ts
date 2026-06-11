@@ -77,13 +77,14 @@ import { WELFORD_TEMPORAL_MODULE } from '../shaders/welfordTemporal.wgsl.js';
 import { SAMPLE_BUDGET_MODULE } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_MODULE } from '../shaders/resolve.wgsl.js';
 import { CB_PREFILL_MODULE } from '../shaders/cbPrefill.wgsl.js';
+import { SCREEN_COORD_HELPERS_MODULE } from '../shaders/screenCoordHelpers.wgsl.js';
 import { GTAO_COMMON_MODULE } from '../shaders/gtaoCommon.wgsl.js';
 import { GTAO_MODULE } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_MODULE } from '../shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_MODULE } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_MODULE } from '../shaders/indirectTemporalAccum.wgsl.js';
 import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composite.wgsl.js';
-import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
+import { DDGI_SAMPLE_MODULE, DDGI_GRID_UBO_MODULE } from '../ddgi/ddgiSampleWgsl.js';
 import { ENVIRONMENT_SAMPLE_MODULE } from '../shaders/environmentSample.wgsl.js';
 import { PPG_TREE_LAYOUT_MODULE } from '../ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
@@ -249,6 +250,9 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // Walkaround-local shader helpers
   [SURFACE_TEXTURES_MODULE.name, SURFACE_TEXTURES_MODULE],
   [DDGI_SAMPLE_MODULE.name, DDGI_SAMPLE_MODULE],
+  // D5.1+D5.2 — shared DDGIGridUBO struct + binding(3) + sampleDDGIAtPoint wrapper.
+  // Requires ddgiSample; consumed by risGi, risGiNrc, shade.
+  [DDGI_GRID_UBO_MODULE.name, DDGI_GRID_UBO_MODULE],
   // B3 — directional IBL env bindings + lookup/importance helpers (scene group
   // bindings 15-19). Required by ris/risGi/shade; bindings are runtime-gated by
   // envParams.hasEnv (0 ⇒ scalar-tint fallback, no-HDRI byte-identity).
@@ -287,6 +291,8 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // Sprint 9 — adaptive sampling
   [WELFORD_TEMPORAL_MODULE.name, WELFORD_TEMPORAL_MODULE],
   [SAMPLE_BUDGET_MODULE.name, SAMPLE_BUDGET_MODULE],
+  // D5.4 — screenCoordHelpers registered before resolve/cb-prefill which require it.
+  [SCREEN_COORD_HELPERS_MODULE.name, SCREEN_COORD_HELPERS_MODULE],
   [RESOLVE_MODULE.name, RESOLVE_MODULE],
   [CB_PREFILL_MODULE.name, CB_PREFILL_MODULE],
 

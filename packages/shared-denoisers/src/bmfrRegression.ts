@@ -132,6 +132,20 @@ export function bmfrSolveChannel(
  * Returns x as a Float32Array (single-precision to match the GPU result
  * magnitude; the accumulation is done in f64 for stability).
  */
+// MUST-MATCH MIRROR: householderSolve (CPU ↔ GPU)
+//
+// This function is the CPU reference for the WGSL kernel in
+// shared-denoisers/src/wgsl/bmfr.wgsl.ts::householderSolve.
+// The two implementations MUST stay bit-for-bit equivalent on every
+// convergence guard and back-substitution step:
+//
+//   • norm < 1e-20         — skip near-zero pivot columns       ← BOTH sides
+//   • vNormSq < 1e-30      — skip near-degenerate reflectors    ← BOTH sides
+//   • abs(diag) < 1e-20    — back-substitution singularity gate ← BOTH sides
+//   • back-substitution traversal order: i = n-1 .. 0 (descending)
+//
+// If you change any of these guards or the back-substitution order here,
+// apply the IDENTICAL change in bmfr.wgsl.ts::householderSolve and vice-versa.
 export function householderSolve(
   A: Float64Array,
   b: Float64Array,
@@ -149,7 +163,7 @@ export function householderSolve(
       normSq += v * v;
     }
     let norm = Math.sqrt(normSq);
-    if (norm < 1e-20) continue; // already zero below the pivot
+    if (norm < 1e-20) continue; // already zero below the pivot — MUST-MATCH bmfr.wgsl.ts
     // Householder vector v = x - sign(x0)*||x|| e0.
     const x0 = R[col * n + col]!;
     const sign = x0 >= 0 ? 1 : -1;
@@ -159,7 +173,7 @@ export function householderSolve(
     for (let i = col + 1; i < n; i++) v[i] = R[i * n + col]!;
     let vNormSq = 0;
     for (let i = col; i < n; i++) vNormSq += v[i]! * v[i]!;
-    if (vNormSq < 1e-30) continue;
+    if (vNormSq < 1e-30) continue; // MUST-MATCH bmfr.wgsl.ts
 
     // Apply reflector H = I - 2 v vᵀ / (vᵀv) to remaining columns of R.
     for (let j = col; j < n; j++) {
@@ -181,7 +195,7 @@ export function householderSolve(
     let acc = y[i]!;
     for (let j = i + 1; j < n; j++) acc -= R[i * n + j]! * x[j]!;
     const diag = R[i * n + i]!;
-    x[i] = Math.abs(diag) < 1e-20 ? 0 : acc / diag;
+    x[i] = Math.abs(diag) < 1e-20 ? 0 : acc / diag; // MUST-MATCH bmfr.wgsl.ts
   }
   return x;
 }

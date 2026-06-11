@@ -12,6 +12,60 @@
 
 import { TLAS_TRAVERSAL_STACK_DEPTH } from './tlasTraversal.wgsl.js';
 
+/**
+ * String anchor for the SceneHit initialisation block inside
+ * `TLAS_SCENE_HIT_TRAVERSAL_WGSL`.  Callers that augment the traversal
+ * function (e.g. pt-webgpu's `tlasSceneHitTraversalWithInstanceIndex`) must
+ * match this exact substring so their `String.replace()` targets are stable.
+ *
+ * Mirrors the WGSL text at lines 24–25 of the exported string below.
+ * If you change the normal-init or stack declaration, update this constant too.
+ */
+export const TLAS_SCENE_HIT_INIT_ANCHOR =
+  `  (*hit).normal = vec3f(0.0, 1.0, 0.0);\n  var stack: array<u32, ${TLAS_TRAVERSAL_STACK_DEPTH}>;`;
+
+/**
+ * String anchor for the SceneHit per-instance assignment block inside
+ * `TLAS_SCENE_HIT_TRAVERSAL_WGSL`.  Same stability contract as
+ * `TLAS_SCENE_HIT_INIT_ANCHOR` above.
+ *
+ * Mirrors the WGSL text at lines 68–71 of the exported string below.
+ */
+export const TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR =
+  `          (*hit).triIndex = localHit.triIndex;\n          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n          // Barycentric weights are space-invariant`;
+
+/**
+ * WGSL snippet that provides `traceTlasClosest` and `traceTlasAny`.
+ *
+ * Required symbols — the including module MUST define ALL of these before this
+ * snippet is composed in:
+ *
+ *   Types:
+ *     SceneHit  — struct with fields: didHit (bool), dist (f32), triIndex (u32),
+ *                 normal (vec3f), baryVW (vec2f)
+ *     Ray       — struct with fields: origin (vec3f), direction (vec3f)
+ *
+ *   Uniforms / globals:
+ *     params                        — uniform with field tlasNodeCount: u32
+ *     tlasNodes                     — storage array<BvhNode>
+ *     tlasInstanceIndices           — storage array<u32>
+ *     tlasBlasRoots                 — storage array<u32>
+ *     tlasInstanceWorldToLocal      — storage array<vec4f>
+ *     tlasInstanceLocalToWorld      — storage array<vec4f>
+ *
+ *   Constants:
+ *     LEAFNODE_FLAG   — u32 flag bit that marks leaf BVH nodes
+ *     INFINITY        — f32 max representable value
+ *
+ *   Functions:
+ *     intersectAabb(ray, bmin, bmax, tMin, tMax) -> bool
+ *     traceMeshBvh(ray, tMin, tMax, closest, hit, blasRoot, fullGeom) -> bool
+ *     transformPointCols(c0,c1,c2,c3, p)   -> vec3f
+ *     transformDirectionCols(c0,c1,c2, d)  -> vec3f
+ *     transformNormalFromWorldToLocalCols(c0,c1,c2, n) -> vec3f
+ *
+ * @see packages/pt-webgpu/src/wgsl/pathTrace/intersection.wgsl.ts — reference consumer
+ */
 export const TLAS_SCENE_HIT_TRAVERSAL_WGSL = /* wgsl */ `
 
 fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {

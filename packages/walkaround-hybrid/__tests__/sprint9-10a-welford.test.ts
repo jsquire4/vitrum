@@ -22,6 +22,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
+import { SCREEN_COORD_HELPERS_WGSL } from '../src/shaders/screenCoordHelpers.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { createVarianceBuffer, createFrameResources } from '../src/pipeline/resourceManager.js';
 
@@ -256,8 +257,12 @@ describe('RESOLVE_WGSL — checkerboard upsampling + temporal reprojection', () 
     expect(RESOLVE_WGSL).toContain('frameParity');
   });
 
-  it('contains clampCoord helper for safe texture access', () => {
-    expect(RESOLVE_WGSL).toContain('fn clampCoord');
+  it('contains clampCoord helper for safe texture access (D5.4: now in screenCoordHelpers)', () => {
+    // D5.4 dedup: clampCoord moved to the shared screenCoordHelpers module.
+    // Verify it exists there and that RESOLVE_WGSL references the shared module
+    // via a comment (the function is no longer inline in RESOLVE_WGSL itself).
+    expect(SCREEN_COORD_HELPERS_WGSL).toContain('fn clampCoord');
+    expect(RESOLVE_WGSL).toContain('screenCoordHelpers');
   });
 
   it('reads motion vector directly via textureLoad on full-resolution texture', () => {

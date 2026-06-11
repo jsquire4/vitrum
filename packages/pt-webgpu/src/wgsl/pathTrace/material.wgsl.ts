@@ -219,6 +219,73 @@ fn bdptLightPathIndex(col: i32, row: u32) -> u32 {
  * References: Conty Estévez & Kulla 2018 (power × proximity descent);
  * Shirley et al. 1996 (power-weighted light-list partition).
  */
+
+// D9.2 — TS template that emits both material-layer sampler variants from one
+// source of truth. The two WGSL functions differ only in:
+//   (a) their name  (b) the texture array they sample
+//   (c) the sRGB variant carries extra comment lines before `let xform` plus a
+//       trailing comment on the `let xform` line itself
+// WGSL cannot parameterise texture bindings, so a single WGSL fn is not possible;
+// a TS helper keeps the shared body in one place while emitting byte-identical output.
+// `preXformLines` is inserted verbatim before `let xform` (including its trailing newline+indent).
+// `xformSuffix` is appended to the `let xform` line (empty string = no suffix).
+function materialLayerSamplerWgsl(
+  name: string,
+  texArray: string,
+  preXformLines: string,
+  xformSuffix: string,
+): string {
+  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let texCoord = u32(materialTexDescriptors[base + 1u].w);
+  let rawUv = select(ch0, ch1, texCoord == 1u);
+  ${preXformLines}let xform = materialTexDescriptors[base + 2u];${xformSuffix}
+  let rot = materialTexDescriptors[base + 3u].x;
+  let c = cos(rot);
+  let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let uv = vec2f(
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  );
+  return textureSampleLevel(${texArray}, materialTexSampler, uv, layerIdx, 0.0);
+}`;
+}
+
+// Pre-stamp the two variants outside the template literal so the `${...}`
+// interpolations inside the WGSL template stay simple (no nested escaping).
+// sRGB variant (materialTextures — baseColor + emissive):
+const _SAMPLE_MAT_LAYER_WGSL = materialLayerSamplerWgsl(
+  'sampleMaterialLayer',
+  'materialTextures',
+  // KHR comment block that precedes `let xform` in the sRGB variant:
+  '// KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the\n' +
+  '  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/\n' +
+  "  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.\n" +
+  '  ',
+  ' // offset.xy, scale.xy',
+);
+// Linear variant (materialTexturesLinear — normal + ORM + bump):
+const _SAMPLE_MAT_LAYER_LINEAR_WGSL = materialLayerSamplerWgsl(
+  'sampleMaterialLayerLinear',
+  'materialTexturesLinear',
+  '',
+  '',
+);
+
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL =
   /* wgsl */ `
 // ============================================================
@@ -258,37 +325,7 @@ const MATERIAL_TEX_VEC4_STRIDE = 6u;
 // carry no UVs in v1), so a material lacking that map stays byte-identical.
 // textureSampleLevel (explicit LOD) keeps the call valid in non-uniform flow.
 // All maps of a material share its baseColor UV transform (v1 simplification).
-fn sampleMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
-  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
-  let tri = indices[triIndex];
-  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
-    return vec4f(1.0);
-  }
-  let v = baryVW.x;
-  let w = baryVW.y;
-  let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
-  let texCoord = u32(materialTexDescriptors[base + 1u].w);
-  let rawUv = select(ch0, ch1, texCoord == 1u);
-  // KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the
-  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/
-  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.
-  let xform = materialTexDescriptors[base + 2u]; // offset.xy, scale.xy
-  let rot = materialTexDescriptors[base + 3u].x;
-  let c = cos(rot);
-  let s = sin(rot);
-  let sx = xform.z;
-  let sy = xform.w;
-  let uv = vec2f(
-    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
-    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
-  );
-  return textureSampleLevel(materialTextures, materialTexSampler, uv, layerIdx, 0.0);
-}
+${_SAMPLE_MAT_LAYER_WGSL}
 
 // baseColor map (sRGB array) — descriptor vec4[0].x.
 fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
@@ -308,34 +345,7 @@ fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
 // — for normal + ORM maps, which must NOT be sRGB-decoded. Standalone (not a
 // refactor of sampleMaterialLayer) so the validated sRGB path is untouched;
 // WGSL can't pass a texture as an argument, hence the parallel function.
-fn sampleMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
-  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
-  let tri = indices[triIndex];
-  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
-    return vec4f(1.0);
-  }
-  let v = baryVW.x;
-  let w = baryVW.y;
-  let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
-  let texCoord = u32(materialTexDescriptors[base + 1u].w);
-  let rawUv = select(ch0, ch1, texCoord == 1u);
-  let xform = materialTexDescriptors[base + 2u];
-  let rot = materialTexDescriptors[base + 3u].x;
-  let c = cos(rot);
-  let s = sin(rot);
-  let sx = xform.z;
-  let sy = xform.w;
-  let uv = vec2f(
-    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
-    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
-  );
-  return textureSampleLevel(materialTexturesLinear, materialTexSampler, uv, layerIdx, 0.0);
-}
+${_SAMPLE_MAT_LAYER_LINEAR_WGSL}
 
 // ORM map (linear array) — descriptor vec4[0].z. glTF metallicRoughness packing:
 // G = roughness, B = metallic (R = occlusion, applied by the caller if present).
@@ -344,6 +354,50 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW);
+}
+
+// D9.3 — shared tangent-frame derivation for applyNormalMap + applyBumpMap.
+// Builds the world-space (tangent, bitangent) pair for a triangle hit using
+// Lengyel's method: position edges + UV deltas → raw tangent → TLAS instance
+// transform → Gram-Schmidt against 'normal'.  Both map functions share this
+// exact ~25-line block; extracting it keeps the formulas in one place.
+// Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
+struct ShadingTangentFrame {
+  tangent: vec3f,
+  bitangent: vec3f,
+  valid: bool,
+}
+fn buildShadingTangentFrame(triIndex: u32, normal: vec3f, instanceIndex: u32) -> ShadingTangentFrame {
+  var frame: ShadingTangentFrame;
+  frame.valid = false;
+  let tri = indices[triIndex];
+  let p0 = positions[tri.x].xyz;
+  let e1 = positions[tri.y].xyz - p0;
+  let e2 = positions[tri.z].xyz - p0;
+  let uv0 = meshUvs[tri.x].xy;
+  let duv1 = meshUvs[tri.y].xy - uv0;
+  let duv2 = meshUvs[tri.z].xy - uv0;
+  let det = duv1.x * duv2.y - duv2.x * duv1.y;
+  if (abs(det) < 1e-10) { return frame; }
+  let f = 1.0 / det;
+  var tangent = f * (duv2.y * e1 - duv1.y * e2);
+  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
+    let m = instanceIndex * 4u;
+    if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
+      let l2w0 = tlasInstanceLocalToWorld[m];
+      let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+      let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+      tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
+    }
+  }
+  tangent = tangent - normal * dot(normal, tangent);
+  let tlen = length(tangent);
+  if (tlen < 1e-8) { return frame; }
+  tangent = tangent / tlen;
+  frame.tangent = tangent;
+  frame.bitangent = cross(normal, tangent);
+  frame.valid = true;
+  return frame;
 }
 
 // Normal map (linear array) — descriptor vec4[0].y. Perturbs the geometric shading
@@ -364,34 +418,11 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return geomNormal;
   }
-  let p0 = positions[tri.x].xyz;
-  let e1 = positions[tri.y].xyz - p0;
-  let e2 = positions[tri.z].xyz - p0;
-  let uv0 = meshUvs[tri.x].xy;
-  let duv1 = meshUvs[tri.y].xy - uv0;
-  let duv2 = meshUvs[tri.z].xy - uv0;
-  let det = duv1.x * duv2.y - duv2.x * duv1.y;
-  if (abs(det) < 1e-10) { return geomNormal; }
-  let f = 1.0 / det;
-  var tangent = f * (duv2.y * e1 - duv1.y * e2);
-  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
-    let m = instanceIndex * 4u;
-    if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
-      let l2w0 = tlasInstanceLocalToWorld[m];
-      let l2w1 = tlasInstanceLocalToWorld[m + 1u];
-      let l2w2 = tlasInstanceLocalToWorld[m + 2u];
-      tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
-    }
-  }
-  // Gram-Schmidt orthonormalize against the (world) geometric normal.
-  tangent = tangent - geomNormal * dot(geomNormal, tangent);
-  let tlen = length(tangent);
-  if (tlen < 1e-8) { return geomNormal; }
-  tangent = tangent / tlen;
-  let bitangent = cross(geomNormal, tangent);
+  let frame = buildShadingTangentFrame(triIndex, geomNormal, instanceIndex);
+  if (!frame.valid) { return geomNormal; }
   let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW).xyz;
   let tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
-  let perturbed = tangent * tn.x + bitangent * tn.y + geomNormal * tn.z;
+  let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + geomNormal * tn.z;
   let plen = length(perturbed);
   return select(geomNormal, perturbed / plen, plen > 1e-6);
 }
@@ -492,33 +523,11 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
     return shadingNormal;
   }
   let bumpScale = materialTexDescriptors[base + 4u].z;
-  // Build the same world-space tangent frame applyNormalMap uses.
-  let p0 = positions[tri.x].xyz;
-  let e1 = positions[tri.y].xyz - p0;
-  let e2 = positions[tri.z].xyz - p0;
-  let uv0 = meshUvs[tri.x].xy;
-  let duv1 = meshUvs[tri.y].xy - uv0;
-  let duv2 = meshUvs[tri.z].xy - uv0;
-  let det = duv1.x * duv2.y - duv2.x * duv1.y;
-  if (abs(det) < 1e-10) { return shadingNormal; }
-  let f = 1.0 / det;
-  var tangent = f * (duv2.y * e1 - duv1.y * e2);
-  var bitanW = f * (duv1.x * e2 - duv2.x * e1);
-  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
-    let m = instanceIndex * 4u;
-    if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
-      let l2w0 = tlasInstanceLocalToWorld[m];
-      let l2w1 = tlasInstanceLocalToWorld[m + 1u];
-      let l2w2 = tlasInstanceLocalToWorld[m + 2u];
-      tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
-      bitanW = transformDirectionCols(l2w0, l2w1, l2w2, bitanW);
-    }
-  }
-  tangent = tangent - shadingNormal * dot(shadingNormal, tangent);
-  let tlen = length(tangent);
-  if (tlen < 1e-8) { return shadingNormal; }
-  tangent = tangent / tlen;
-  let bitangent = cross(shadingNormal, tangent);
+  // Build the same world-space tangent frame applyNormalMap uses (D9.3 shared helper).
+  let frame = buildShadingTangentFrame(triIndex, shadingNormal, instanceIndex);
+  if (!frame.valid) { return shadingNormal; }
+  let tangent = frame.tangent;
+  let bitangent = frame.bitangent;
   // Central finite difference of the height (R channel) in UV space. A small UV
   // step; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
   let hC = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW).r;

@@ -114,11 +114,12 @@ export {
 export type { SVGFReprojUniforms } from './svgfRealBindings.js';
 // One-shot WebGPU host pipeline (CPU-backed, allocates transient textures).
 // STANDALONE BUILDING BLOCK — intentionally has no in-engine consumer. The
-// walkaround-hybrid 'svgf-real' denoiser mode (HybridEngine.ts:156) does NOT call
-// this wrapper; it composes the SVGF_* WGSL fragments exported above into its own
-// persistent-texture pass graph (pipeline/wgslModules.ts), which is the right shape
-// for a realtime engine (no per-frame transient texture alloc/free). This one-shot
-// entry point exists for host/offline denoising and GPU-execution coverage
+// walkaround-hybrid 'svgf-real' denoiser mode (see HybridEngine `_svgfReal`
+// pass-graph, assembled in pipeline/wgslModules.ts) does NOT call this wrapper;
+// it composes the SVGF_* WGSL fragments exported above into its own
+// persistent-texture pass graph, which is the right shape for a realtime engine
+// (no per-frame transient texture alloc/free). This one-shot entry point exists
+// for host/offline denoising and GPU-execution coverage
 // (__tests__/webgpuDenoiserExecution.gpu.test.ts). So "zero engine consumers" is by
 // design, not a gap: the algorithm is wired, the convenience wrapper is standalone.
 export { runSVGFRealWebGPU } from './svgfRealWebGPU.js';

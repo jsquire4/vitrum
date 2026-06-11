@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
+import { DDGI_GRID_UBO_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
 import {
   MAX_PASS_COUNT,
   buildPassLayout,
@@ -38,7 +39,8 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('@group(2) @binding(0) var<uniform> ubo: WalkaroundUBO');
     expect(RIS_GI_WGSL).toContain('@group(3) @binding(0) var ddgiIrradiance');
     expect(RIS_GI_WGSL).toContain('@group(3) @binding(1) var ddgiVisibility');
-    expect(RIS_GI_WGSL).toContain('@group(3) @binding(3) var<uniform> ddgiGrid');
+    // D5.1: @group(3) @binding(3) ddgiGrid is now in the shared ddgiGridUbo module.
+    expect(DDGI_GRID_UBO_WGSL).toContain('@group(3) @binding(3) var<uniform> ddgiGrid');
   });
 
   it('uses an adaptive M_GI scaled from the M_GI_BASE=8 candidate count (Majercik 2021 §4.2 + Sprint 9 tier)', () => {

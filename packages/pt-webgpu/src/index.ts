@@ -78,7 +78,7 @@ import {
 import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
 import {
   sppmInitialRadius,
-} from './wgsl/pathTrace/sppmBindings.wgsl.js';
+} from './sppmParams.js';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export {

@@ -10,9 +10,9 @@
  *  3. Scale-aware initial radius (TS): sppmInitialRadius — Cornell, large scene,
  *     floor clamp at 1e-3.
  *  4. Structural WGSL assertions:
- *     - SPPM_GROUP4_BINDINGS_WGSL contains sppmGather, sppmInsertPhoton, the
- *       @group(3) @binding(6/7/8) declarations.
- *     - SPPM_GROUP4_BINDINGS_WGSL does NOT contain the old approximation artefacts
+ *     - SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive, sppmInsertPhoton,
+ *       the @group(3) @binding(6/7/8) declarations.
+ *     - SPPM_GROUP3_BINDINGS_WGSL does NOT contain the old approximation artefacts
  *       (gatherRadius = 0.35, strategyScale, 1.25).
  *     - SPPM_PHOTON_PASS_WGSL contains the sppmEmitPhotons entry point.
  *     - Both modules use the POINT_LIGHT_VEC4_STRIDE / SPOT_LIGHT_VEC4_STRIDE
@@ -33,7 +33,7 @@ import {
   SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
   sppmRadiusAtFrame,
   sppmInitialRadius,
-  SPPM_GROUP4_BINDINGS_WGSL,
+  SPPM_GROUP3_BINDINGS_WGSL,
   SPPM_PHOTON_PASS_WGSL,
 } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 
@@ -221,25 +221,27 @@ describe('SPPM scale-aware initial radius (sppmInitialRadius)', () => {
 // ── 4. Structural WGSL assertions ─────────────────────────────────────────────
 
 describe('SPPM WGSL structural assertions (A4)', () => {
-  it('SPPM_GROUP4_BINDINGS_WGSL declares @group(3) @binding(6/7/8)', () => {
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('@group(3) @binding(6)');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('@group(3) @binding(7)');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('@group(3) @binding(8)');
+  it('SPPM_GROUP3_BINDINGS_WGSL declares @group(3) @binding(6/7/8)', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('@group(3) @binding(6)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('@group(3) @binding(7)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('@group(3) @binding(8)');
     // Group 4 must NOT appear (lavapipe only supports maxBindGroups=4, i.e. 0-3).
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toContain('@group(4)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('@group(4)');
   });
 
-  it('SPPM_GROUP4_BINDINGS_WGSL contains sppmGather and sppmInsertPhoton', () => {
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('fn sppmGather(');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('fn sppmCellIndex(');
+  // D9.9 — sppmGather deleted 2026-06-10 (superseded by sppmGatherProgressive).
+  it('SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive and sppmInsertPhoton', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('fn sppmGather('); // dead — deleted D9.9
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmCellIndex(');
   });
 
-  it('SPPM_GROUP4_BINDINGS_WGSL does NOT contain old approximation artefacts', () => {
+  it('SPPM_GROUP3_BINDINGS_WGSL does NOT contain old approximation artefacts', () => {
     // The old 32-photon per-pixel approximation had these artefacts:
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toContain('gatherRadius = 0.35');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toContain('strategyScale');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toContain('1.25');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('gatherRadius = 0.35');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('strategyScale');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('1.25');
   });
 
   it('SPPM_PHOTON_PASS_WGSL contains the sppmEmitPhotons entry point', () => {
@@ -266,10 +268,10 @@ describe('SPPM WGSL structural assertions (A4)', () => {
 
   it('spmmGather uses the π r² density estimator (no hardcoded fudge)', () => {
     // The gather must divide by PI * r² — standard SPPM estimator.
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('PI * r2');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('PI * r2');
     // No hardcoded scale factor: not ×1.25 or similar.
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toMatch(/\*\s*1\.25/);
-    expect(SPPM_GROUP4_BINDINGS_WGSL).not.toMatch(/\*\s*1\.5/);
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.25/);
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.5/);
   });
 });
 
@@ -419,37 +421,37 @@ describe('A4-progressive SPPM recurrence (TS mirror vs closed form)', () => {
 // ── 7. A4-progressive: WGSL structural assertions for binding(9) ─────────────
 
 describe('A4-progressive WGSL structural assertions (binding 9 + progressive fn)', () => {
-  it('SPPM_GROUP4_BINDINGS_WGSL declares @group(3) @binding(9) for sppmPixelStats', () => {
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('@group(3) @binding(9)');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('array<SppmPixelStats>');
+  it('SPPM_GROUP3_BINDINGS_WGSL declares @group(3) @binding(9) for sppmPixelStats', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('@group(3) @binding(9)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('array<SppmPixelStats>');
   });
 
-  it('SPPM_GROUP4_BINDINGS_WGSL declares the SppmPixelStats struct with tau/radius2/N fields', () => {
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('struct SppmPixelStats');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('tau     : vec3f');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('radius2 : f32');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('N       : f32');
+  it('SPPM_GROUP3_BINDINGS_WGSL declares the SppmPixelStats struct with tau/radius2/N fields', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('struct SppmPixelStats');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('tau     : vec3f');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('radius2 : f32');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('N       : f32');
   });
 
-  it('SPPM_GROUP4_BINDINGS_WGSL contains sppmGatherProgressive (A4 entry point)', () => {
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
+  it('SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive (A4 entry point)', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
   });
 
   it('sppmGatherProgressive writes all three per-pixel stats fields back', () => {
     // The update rule must persist tau', radius2', and N' after each frame.
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].tau');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].radius2');
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].N');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].tau');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].radius2');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].N');
   });
 
   it('sppmGatherProgressive contains the Hachisuka ratio guard (M=0 stability)', () => {
     // The WGSL must guard M=0 to avoid 0/0.
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('select(Nprime / NplusM, 1.0, M < 0.5)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('select(Nprime / NplusM, 1.0, M < 0.5)');
   });
 
   it('SPPM_ALPHA_WGSL is interpolated into the bindings string', () => {
     // The alpha constant must be baked into the composed WGSL.
-    expect(SPPM_GROUP4_BINDINGS_WGSL).toMatch(/SPPM_ALPHA_WGSL\s*=\s*[\d.]+f/);
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toMatch(/SPPM_ALPHA_WGSL\s*=\s*[\d.]+f/);
   });
 });

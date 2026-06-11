@@ -163,6 +163,76 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 // (no ptr), so bvhTraceTintedVisibility takes the texture directly.
 const BVH_BEER_TEX_WIDTH: u32 = 4096u;
 
+// Per-triangle Beer-Lambert tint accumulation, shared by both the BLAS-leaf
+// traversal helper and the merged-BVH leaf body in bvhTraceTintedVisibility.
+//
+// Parameters
+//   triIdx       — absolute triangle index (for beer-texture coord lookup)
+//   idxEntry     — raw bvh_index entry: .xyz = vertex indices, .w = packed material
+//   t            — ray hit distance (from intersectTriangle, pre-computed at call site)
+//   tMaxCmp      — upper-bound for t (local t for BLAS path, world t for merged path)
+//   origin / dir — ray (needed for barycentric hit-point interpolation)
+//   bvh_position — vertex position buffer (.w = packed UV)
+//   bvh_beer     — packed Beer-Lambert texture (r32uint, width BVH_BEER_TEX_WIDTH)
+//   visibility   — in/out tinted visibility accumulator (ptr)
+//
+// Returns true if traversal should continue; false on opaque hit (zeroes *visibility).
+fn _bvhTintedTriAccumulate(
+  triIdx:       u32,
+  idxEntry:     vec4u,
+  t:            f32,
+  tMaxCmp:      f32,
+  origin:       vec3f,
+  dir:          vec3f,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh_beer:     texture_2d<u32>,
+  visibility:   ptr<function, vec3f>,
+) -> bool {
+  if (t <= 1e-4 || t >= tMaxCmp) { return true; }
+  let trans4 = (idxEntry.w >> 4u) & 0xFu;
+  if (trans4 > 4u) {
+    // Glass hit — multiply visibility by sqrt(Beer x trans x texMod).
+    let idx = idxEntry.xyz;
+    let matCol = decodeMaterialColor(idxEntry.w);
+    // WS1 — beer texel: triangle index -> vec2u(tri % W, tri / W).
+    let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
+    let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
+    let beerColor = vec3f(
+      f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+      f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+      f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+    );
+    // Re-read full vec4f for .w (packed UV) — the .xyz was already used
+    // by the caller for the intersection test; this second load is
+    // intentional (matches the pre-extracted code).
+    let pa4 = (*bvh_position)[idx.x];
+    let pb4 = (*bvh_position)[idx.y];
+    let pc4 = (*bvh_position)[idx.z];
+    let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
+    let p = origin + dir * t;
+    let ab = b - a; let ac = c - a; let ap = p - a;
+    let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
+    let d20 = dot(ap, ab); let d21 = dot(ap, ac);
+    let denom = max(d00 * d11 - d01 * d01, 1e-8);
+    var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+    var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+    let bw = 1.0 - u - v;
+    let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
+    let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
+    let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
+    let uvAt = bw * uvA + u * uvB + v * uvC;
+    let texId = decodeSurfaceTextureId(idxEntry.w);
+    let texMod = surfaceTextureMod(uvAt, texId);
+    let perHitFactor = sqrt(max(vec3f(1e-8), beerColor * matCol.a * texMod));
+    *visibility = (*visibility) * perHitFactor;
+  } else {
+    // Opaque hit — fully shadowed.
+    *visibility = vec3f(0.0);
+    return false;
+  }
+  return true;
+}
+
 // Inner helper: traverse one BLAS from blasRoot, accumulating tinted visibility.
 // Positions in bvh_position are LOCAL-space; tMax is in LOCAL t units.
 // Returns false early (sets visibility = 0) on opaque hit.
@@ -214,42 +284,8 @@ fn _bvhTraceTintedBlasLeaves(
         // Canonical intersectTriangle returns IntersectionResult; unwrap .dist.
         let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
         let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        if (t > 1e-4 && t < tMaxLocal) {
-          let trans4 = (idxEntry.w >> 4u) & 0xFu;
-          if (trans4 > 4u) {
-            // Glass hit — multiply visibility by sqrt(Beer × trans × texMod).
-            let matCol = decodeMaterialColor(idxEntry.w);
-            let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
-            let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-            let beerColor = vec3f(
-              f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-              f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-              f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-            );
-            let pa4 = (*bvh_position)[idx.x];
-            let pb4 = (*bvh_position)[idx.y];
-            let pc4 = (*bvh_position)[idx.z];
-            let p = origin + dir * t;
-            let ab = b - a; let ac = c - a; let ap = p - a;
-            let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-            let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-            let denom = max(d00 * d11 - d01 * d01, 1e-8);
-            var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-            var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-            let bw = 1.0 - u - v;
-            let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-            let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-            let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
-            let uvAt = bw * uvA + u * uvB + v * uvC;
-            let texId = decodeSurfaceTextureId(idxEntry.w);
-            let texMod = surfaceTextureMod(uvAt, texId);
-            let perHitFactor = sqrt(max(vec3f(1e-8), beerColor * matCol.a * texMod));
-            *visibility = (*visibility) * perHitFactor;
-          } else {
-            // Opaque hit — fully shadowed.
-            *visibility = vec3f(0.0);
-            return false;
-          }
+        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, tMaxLocal, origin, dir, bvh_position, bvh_beer, visibility)) {
+          return false;
         }
       }
     } else {
@@ -391,50 +427,8 @@ fn bvhTraceTintedVisibility(
         // to operate on a plain f32 t-value.
         let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
         let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        if (t > 1e-4 && t < tMax) {
-          let trans4 = (idxEntry.w >> 4u) & 0xFu;
-          if (trans4 > 4u) {
-            // Glass hit — multiply visibility by sqrt(Beer-Lambert × trans × texMod).
-            // Two hits per cell crossing → sqrt²= the full one-cell Beer-Lambert factor.
-            let matCol = decodeMaterialColor(idxEntry.w);
-            // WS1 — beer texel: triangle index → vec2u(tri % W, tri / W).
-            let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
-            let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-            let beerColor = vec3f(
-              f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-              f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-              f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-            );
-            // Procedural surface modulation at the actual hit UV.
-            let pa4 = (*bvh_position)[idx.x];
-            let pb4 = (*bvh_position)[idx.y];
-            let pc4 = (*bvh_position)[idx.z];
-            let p = origin + dir * t;
-            let ab = b - a; let ac = c - a; let ap = p - a;
-            let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-            let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-            // Floor the Gram determinant at 1e-8 so a fully-degenerate
-            // colinear-vertex triangle (Moller-Trumbore det would still
-            // be nonzero for non-parallel rays but the Gram det is 0)
-            // can't divide-by-zero. Matches pt-webgpu's intersection
-            // helper. See plan/wgsl-hotpath-lint-20260517.md LIKELY-SAFE
-            // table for the consistency-target rationale.
-            let denom = max(d00 * d11 - d01 * d01, 1e-8);
-            var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-            var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-            let bw = 1.0 - u - v;
-            let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-            let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-            let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
-            let uvAt = bw * uvA + u * uvB + v * uvC;
-            let texId = decodeSurfaceTextureId(idxEntry.w);
-            let texMod = surfaceTextureMod(uvAt, texId);
-            let perHitFactor = sqrt(max(vec3f(1e-8), beerColor * matCol.a * texMod));
-            visibility = visibility * perHitFactor;
-          } else {
-            // Opaque hit — fully shadowed.
-            return vec3f(0.0);
-          }
+        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, tMax, origin, dir, bvh_position, bvh_beer, &visibility)) {
+          return vec3f(0.0);
         }
       }
     } else {

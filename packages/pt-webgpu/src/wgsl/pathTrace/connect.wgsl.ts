@@ -46,37 +46,13 @@ struct EnvironmentLookup {
   pdf: f32,
 };
 
-// H6 (2026-06-09) — Y-axis rotation helpers for the HDRI environment dome.
-//
+// D9.13 — rotateYNeg / rotateYPos moved to connectCore.wgsl.ts (shared by both tiers).
 // Convention (matches HdriEnvironment.rotationY JSDoc and the pt-webgl2 mat4):
 //   A CCW rotationY of the environment dome means a world-space direction d
-//   looks up the UNROTATED map at rotateY(d, -rotationY).
-//   The CDF-sampled direction (in unrotated-map space) is rotated by +rotationY
+//   looks up the UNROTATED map at rotateYNeg(d, rotationY).
+//   The CDF-sampled direction (in unrotated-map space) is rotated by rotateYPos
 //   to yield the world-space light direction.
-//
-// rotationY is stored in params.environmentTint.w (the previously-zero .w lane).
-// rotationY = 0 => cos=1, sin=0 => both helpers return dir unchanged (zero-rotation
-// invariant: output is byte-identical to the pre-H6 code).
-//
-// rotateYNeg(dir, rotY) = RY(-rotY) * dir:
-//   x' =  cos(rotY)*x - sin(rotY)*z
-//   y' =  y
-//   z' =  sin(rotY)*x + cos(rotY)*z
-fn rotateYNeg(dir: vec3f, rotY: f32) -> vec3f {
-  let c = cos(rotY);
-  let s = sin(rotY);
-  return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
-}
-
-// rotateYPos(dir, rotY) = RY(+rotY) * dir:
-//   x' =  cos(rotY)*x + sin(rotY)*z
-//   y' =  y
-//   z' = -sin(rotY)*x + cos(rotY)*z
-fn rotateYPos(dir: vec3f, rotY: f32) -> vec3f {
-  let c = cos(rotY);
-  let s = sin(rotY);
-  return vec3f(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
-}
+// rotationY is stored in params.environmentTint.w.  rotationY=0 → identity.
 
 fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {

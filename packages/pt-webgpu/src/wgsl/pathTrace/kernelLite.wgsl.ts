@@ -262,16 +262,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           var lpos: vec3f;
           var area: f32;
           if (isDiscL) {
+            // D9.11 — Shirley & Chiu 1997 concentric-disc map via shared kernelCore helper.
             let rradL = length(ru);
-            let a = xi1l * 2.0 - 1.0;
-            let b = xi2l * 2.0 - 1.0;
-            var cr: f32; var cphi: f32;
-            if (abs(a) >= abs(b)) {
-              cr = a; cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
-            } else {
-              cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
-            }
-            lpos = rpos + ru * (cr * cos(cphi)) + rv * (cr * sin(cphi));
+            let discL = concentricDiscSample(vec2f(xi1l * 2.0 - 1.0, xi2l * 2.0 - 1.0));
+            lpos = rpos + ru * discL.x + rv * discL.y;
             area = max(PI * rradL * rradL, 1e-6);
           } else {
             lpos = rpos + ru * (xi1l * 2.0 - 1.0) + rv * (xi2l * 2.0 - 1.0);

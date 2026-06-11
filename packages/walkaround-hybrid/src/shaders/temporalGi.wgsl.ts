@@ -163,7 +163,8 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   rCur.M = M_total;
 
   // Finalise W with the chosen sample's p̂ at this pixel.
-  finaliseGIReservoirW(&rCur, ubo.restirGiWCap);
+  // D5.3 (gris=false): standard RIS — divide by M (MIS weight 1 per candidate).
+  finaliseGIReservoirW(&rCur, ubo.restirGiWCap, false);
 
   storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
 }
@@ -372,7 +373,8 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseGIReservoirWGris(&rGris, ubo.restirGiWCap);
+  // D5.3 (gris=true): GRIS — divide by 1 (pairwise MIS weights Σ=1, no /M).
+  finaliseGIReservoirW(&rGris, ubo.restirGiWCap, true);
   if (rGris.M > 0u) {
     // Refresh the Phase-0 cache so downstream spatial reuse sees a base edge
     // rooted at THIS pixel's visible vertex.

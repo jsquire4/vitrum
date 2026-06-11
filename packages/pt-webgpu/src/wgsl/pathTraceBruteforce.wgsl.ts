@@ -15,7 +15,7 @@ import {
   MNEE_CONNECTION_WGSL,
 } from './pathTrace/mneeNewton.wgsl.js';
 import {
-  SPPM_GROUP4_BINDINGS_WGSL,
+  SPPM_GROUP3_BINDINGS_WGSL,
   SPPM_PHOTON_PASS_WGSL,
 } from './pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
@@ -57,11 +57,11 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  *                       block-tridiagonal Newton + chain connection-PDF. Placed
  *                       AFTER `mneeNewton` (it reuses `mnee_safe_normalize`) and
  *                       BEFORE `caustic` so the glass-slab caustic can call it.
- *   6d. `sppm`        — A4 SPPM group-4 hash-grid bindings (SppmStats UBO +
+ *   6d. `sppm`        — A4 SPPM group-3 hash-grid bindings (SppmStats UBO +
  *                       sppmPhotonCells + sppmCellCounters) + sppmInsertPhoton +
- *                       sppmGather.  Composed BEFORE `caustic` because
- *                       `photonMapContribution` calls `sppmGather` (WGSL requires
- *                       callees to precede callers in source order).
+ *                       sppmGatherProgressive.  Composed BEFORE `caustic` because
+ *                       `photonMapContribution` calls `sppmGatherProgressive`
+ *                       (WGSL requires callees to precede callers in source order).
  *   7. `caustic`      — REAL MNEE reflection caustic + transmissive cone-search
  *                       MNEE + SPPM gather shim (causticStrategy modes 1 / 2).
  *   8. `kernel`       — primary-ray generation, projectToNdc, causticMode,
@@ -101,7 +101,7 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
-${SPPM_GROUP4_BINDINGS_WGSL}
+${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
@@ -143,7 +143,7 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
-${SPPM_GROUP4_BINDINGS_WGSL}
+${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
@@ -165,12 +165,12 @@ ${kernel}
  * runs BEFORE the megakernel each frame when `causticStrategy == 'photon-map'`.
  *
  * The pass needs the full module stack (PCG RNG, scene bindings, BVH
- * traceClosest, material decodeMaterial, etc.) plus the SPPM group-4 bindings
- * (read_write access — it WRITES photons into the hash grid).  The megakernel
- * separately reads from the same group-4 bind group.
+ * traceClosest, material decodeMaterial, etc.) plus the SPPM group-3 bindings
+ * (bindings 6–9; read_write — it WRITES photons into the hash grid).  The
+ * megakernel separately reads from the same group-3 bind group.
  *
  * The `sppmEmitPhotons` entry point + its helpers live in
- * `SPPM_GROUP4_BINDINGS_WGSL` + `SPPM_PHOTON_PASS_WGSL`.  BSDF helpers
+ * `SPPM_GROUP3_BINDINGS_WGSL` + `SPPM_PHOTON_PASS_WGSL`.  BSDF helpers
  * (uniformSphere, buildOnb) come from the standard module stack.
  *
  * Full-tier only; never composed on lite.
@@ -185,7 +185,7 @@ ${HERO_WAVELENGTH_WGSL}
 ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
-${SPPM_GROUP4_BINDINGS_WGSL}
+${SPPM_GROUP3_BINDINGS_WGSL}
 ${SPPM_PHOTON_PASS_WGSL}
 `;
 }
@@ -197,7 +197,7 @@ ${SPPM_PHOTON_PASS_WGSL}
  *
  * Re-pinned 2026-06-10: A4 real SPPM progressive photon map replaces the
  * per-pixel 32-photon approximation (removed: gatherRadius=0.35, ×1.25 fudge).
- * SPPM_GROUP4_BINDINGS_WGSL added to the composition (RENDER-CHANGING for
+ * SPPM_GROUP3_BINDINGS_WGSL added to the composition (RENDER-CHANGING for
  * causticStrategy:'photon-map'; off-path byte-identical for other strategies).
  * The WGSL string changes (hence this re-pin); the OFF runtime path
  * (causticStrategy:'none'/'manifold-nee') does not change radiometrically.
@@ -216,7 +216,7 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
 ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
-${SPPM_GROUP4_BINDINGS_WGSL}
+${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}

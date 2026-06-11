@@ -291,13 +291,29 @@ fn refreshPhase0Cache(r: ptr<function, ReservoirPT>) {
   (*r).prefixVertexCount = select(0u, 1u, (*r).M > 0u);
 }
 
-// Finalise the RIS unbiased-contribution weight W for a standard ReSTIR-GI
-// reservoir (temporal OFF / spatial OFF).  The estimator divides by M × p̂
-// because the M candidates each contributed with weight w_i and the M-count
-// must normalise back out.  Call AFTER the final updateReservoirGI / M update.
+// Finalise the RIS unbiased-contribution weight W for a ReSTIR-GI reservoir.
+// D5.3 — unified from the former finaliseGIReservoirW (gris=false) and
+// finaliseGIReservoirWGris (gris=true) pair.
 //
-// W = w_sum / (M × p̂(chosen sample))   — Talbot 2005 + ReSTIR DI/GI 2020.
-fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32) {
+// Non-GRIS (gris=false, standard ReSTIR-GI):
+//   W = w_sum / (M × p̂)  — Talbot 2005 + ReSTIR DI/GI 2020.
+//   The M candidates each contributed weight w_i; the M-count normalises back.
+//
+// GRIS (gris=true, Lin et al. 2022 §generalised RIS):
+//   W = w_sum / p̂  (denominator = 1, NOT M).
+//   GRIS folds each sample with a pairwise MIS weight m_i where Σ m_i = 1,
+//   so the M-count does NOT normalise the sum — dividing by M again would
+//   under-energise the estimate.
+//
+// "gris" is a literal argument at every call site (never a UBO read) so the
+// unified function does NOT introduce any cross-module UBO reference — safe to
+// emit into any includer (d0ef37b regression class avoided).
+//
+// "wCap" must be passed as a parameter (see d0ef37b lesson — this is the
+// exact function that caused that regression when wCap leaked as a UBO ref).
+//
+// Call AFTER the final updateReservoirGI / M update.
+fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32, gris: bool) {
   if ((*r).M > 0u) {
     let toSf = (*r).xs - (*r).xv;
     let distSf = length(toSf);
@@ -305,27 +321,10 @@ fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32) {
       let wiF = toSf / distSf;
       let cosThetaF = max(0.0, dot((*r).nv, wiF));
       let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, (*r).w_sum / (f32((*r).M) * pHatF), pHatF > 1e-9);
-      (*r).W = min(W_raw, wCap);
-    } else {
-      (*r).W = 0.0;
-    }
-  }
-}
-
-// Finalise W for a GRIS reservoir (temporal ON / spatial ON).  GRIS folds
-// each sample with a pairwise MIS weight m_i where Σ m_i = 1, so the M-count
-// does NOT normalise the sum — dividing by M again would under-energise the
-// estimate.  W = w_sum / p̂ only (Lin 2022 §generalized RIS).
-fn finaliseGIReservoirWGris(r: ptr<function, ReservoirPT>, wCap: f32) {
-  if ((*r).M > 0u) {
-    let toSf = (*r).xs - (*r).xv;
-    let distSf = length(toSf);
-    if (distSf > 1e-4) {
-      let wiF = toSf / distSf;
-      let cosThetaF = max(0.0, dot((*r).nv, wiF));
-      let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
+      // gris=false: divide by M (standard MIS-weight-1 RIS normalisation).
+      // gris=true:  divide by 1 (GRIS pairwise MIS weights already sum to 1).
+      let denom = select(f32((*r).M), 1.0, gris);
+      let W_raw = select(0.0, (*r).w_sum / (denom * pHatF), pHatF > 1e-9);
       (*r).W = min(W_raw, wCap);
     } else {
       (*r).W = 0.0;

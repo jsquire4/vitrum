@@ -1,3 +1,15 @@
+/**
+ * Motion-vector compute pass.
+ *
+ * Reprojects each pixel's primary-hit world position from the current frame
+ * into the previous frame's clip space using the stored depth (gNormalDepthIn.w)
+ * and the per-frame camera matrices from WalkaroundUBO. The resulting 2D
+ * screen-space delta (uv_cur - uv_prev) is written to motionVectorsOut and
+ * consumed by the SVGF reprojection pass for temporal history accumulation.
+ *
+ * Sky pixels (depth <= 1e-6) write (0,0) — SVGF discards them via the
+ * velocity-magnitude gate rather than trying to reproject an infinite-depth hit.
+ */
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const MOTION_VECTORS_WGSL = /* wgsl */ `

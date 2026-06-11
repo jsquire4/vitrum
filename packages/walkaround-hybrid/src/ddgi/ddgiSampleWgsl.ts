@@ -193,3 +193,80 @@ export const DDGI_SAMPLE_MODULE: WgslModule = {
   source: DDGI_SAMPLE_WGSL,
   requires: [],
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D5.1 / D5.2 dedup (2026-06-10):
+//
+// DDGIGridUBO was declared character-identically in risGi.wgsl, risGiNrc.wgsl,
+// and shade.wgsl. sampleDDGIAtPoint (a thin wrapper over ddgiSample) was also
+// duplicated in risGi and risGiNrc (risGiNrc's header even noted "Redeclares
+// sampleDDGIAtPoint"). Both are extracted here:
+//
+//   DDGIGridUBO struct + @group(3) @binding(3) ddgiGrid UBO declaration
+//   sampleDDGIAtPoint — calls ddgiSample with all 16 arguments extracted from ddgiGrid.*
+//
+// Requires: ['ddgiSample'] so fn ddgiSample is in scope for sampleDDGIAtPoint.
+//
+// shade.wgsl: the @group(3) @binding(0..2) irradiance/visibility/sampler
+// bindings remain in shade's own body; only the struct + @binding(3) are here.
+// The binding sequence 0-1-2 (shade body) and 3 (this module, emitted first)
+// is fine in a single composed string — naga sees them in one pass.
+//
+// Group(3) layout compat: shade uses @group(3) purely for layout compatibility
+// (it does not call sampleDDGIAtPoint or read ddgiGrid fields); the binding
+// declarations here keep the group slot occupied for pipeline layout validation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const DDGI_GRID_UBO_WGSL = /* wgsl */`
+// DDGIGridUBO — shared @group(3) @binding(3) layout for risGi, risGiNrc, shade.
+// D5.1 dedup: extracted from three char-identical declarations (2026-06-10).
+struct DDGIGridUBO {
+  origin:    vec3f,
+  spacing:   f32,
+  dimsX:     u32,
+  dimsY:     u32,
+  dimsZ:     u32,
+  _pad0:     u32,
+  irrW:      f32,
+  irrH:      f32,
+  visW:      f32,
+  visH:      f32,
+};
+@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
+
+// sampleDDGIAtPoint — thin wrapper over ddgiSample using the ddgiGrid UBO fields.
+// D5.2 dedup: extracted from duplicate definitions in risGi + risGiNrc (2026-06-10).
+// The ddgiIrradiance / ddgiVisibility / ddgiSampler bindings are declared in
+// the per-shader body (@group(3) @binding(0..2)) — those are in scope here
+// because the composer emits this module BEFORE the consumer's own source.
+fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
+  return ddgiSample(
+    worldPos, surfaceNormal,
+    ddgiIrradiance, ddgiVisibility, ddgiSampler,
+    ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
+    ddgiGrid.spacing,
+    ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
+    ddgiGrid.irrW, ddgiGrid.irrH, ddgiGrid.visW, ddgiGrid.visH,
+  );
+}
+`;
+
+/**
+ * D5.1+D5.2 — shared DDGI grid UBO struct + binding + sampleDDGIAtPoint wrapper.
+ * Requires ddgiSample so fn ddgiSample is available for sampleDDGIAtPoint.
+ *
+ * NOTE: sampleDDGIAtPoint references ddgiIrradiance / ddgiVisibility / ddgiSampler
+ * which are declared in the CONSUMER shader's own body (@group(3) @binding(0..2)).
+ * The WGSL composer emits required modules BEFORE the root's source (see
+ * wgslComposer.ts), so those bindings are NOT yet declared when this module's
+ * source is emitted. This means ddgiGridUbo CANNOT be a standalone composed root.
+ * It must always be used as a REQUIRED module of a consumer that declares those
+ * three bindings in its own source string — which is exactly the case for
+ * risGi, risGiNrc, and shade. Naga resolves all declarations in the final
+ * concatenated string, so forward references are fine.
+ */
+export const DDGI_GRID_UBO_MODULE: WgslModule = {
+  name: 'ddgiGridUbo',
+  source: DDGI_GRID_UBO_WGSL,
+  requires: ['ddgiSample'],
+};

@@ -5,7 +5,7 @@
  *
  * The `GpuResources.writeSppmStats` host packer writes an 8-field × 4-byte
  * UBO (32 bytes total).  The WGSL struct `SppmStats` inside
- * `SPPM_GROUP4_BINDINGS_WGSL` (sppmBindings.wgsl.ts) must mirror that layout
+ * `SPPM_GROUP3_BINDINGS_WGSL` (sppmBindings.wgsl.ts) must mirror that layout
  * exactly or GPU reads will silently fetch the wrong values.
  *
  * This test asserts:
@@ -17,7 +17,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  SPPM_GROUP4_BINDINGS_WGSL,
+  SPPM_GROUP3_BINDINGS_WGSL,
   SPPM_STATS_BYTES,
   SPPM_STATS_FIELDS,
 } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
@@ -53,7 +53,7 @@ function parseWgslStructFields(wgsl: string, structName: string): ParsedField[] 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe('SppmStats WGSL struct ↔ host packer pin (I4.5)', () => {
-  const wgslFields = parseWgslStructFields(SPPM_GROUP4_BINDINGS_WGSL, 'SppmStats');
+  const wgslFields = parseWgslStructFields(SPPM_GROUP3_BINDINGS_WGSL, 'SppmStats');
 
   it('SPPM_STATS_BYTES is 32 (8 × 4-byte fields)', () => {
     expect(SPPM_STATS_BYTES).toBe(32);

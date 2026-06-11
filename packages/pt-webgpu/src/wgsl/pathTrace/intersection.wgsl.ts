@@ -20,30 +20,28 @@
  * `material.wgsl.ts`; the Möller-Trumbore `intersectTriangle` lives in
  * `common.wgsl.ts` and is referenced through the shared global scope.
  */
-import { TLAS_SCENE_HIT_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
+import {
+  TLAS_SCENE_HIT_TRAVERSAL_WGSL,
+  TLAS_SCENE_HIT_INIT_ANCHOR,
+  TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR,
+} from '@vitrum/shared-bvh';
 import { PT_WEBGPU_INTERSECTION_CORE_WGSL } from './intersectionCore.wgsl.js';
 
 function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
+  // Use the named anchor constants from @vitrum/shared-bvh so any edit to the
+  // traversal WGSL is caught at the source (updating the anchor constant) rather
+  // than by grep for a stale hardcoded string here.
   const withInit = wgsl.replace(
-    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);
-  var stack: array<u32, 64>;`,
-    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);
-  (*hit).baryVW = vec2f(0.0);
-  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
-  var stack: array<u32, 64>;`,
+    TLAS_SCENE_HIT_INIT_ANCHOR,
+    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);\n  (*hit).baryVW = vec2f(0.0);\n  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;\n  var stack: array<u32, 64>;`,
   );
   if (withInit === wgsl) {
     throw new Error('TLAS SceneHit init anchor changed; update pt-webgpu instance-index augmentation.');
   }
 
   const withAssignment = withInit.replace(
-    `          (*hit).triIndex = localHit.triIndex;
-          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
-          // Barycentric weights are space-invariant`,
-    `          (*hit).triIndex = localHit.triIndex;
-          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
-          (*hit).instanceIndex = instIdx;
-          // Barycentric weights are space-invariant`,
+    TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR,
+    `          (*hit).triIndex = localHit.triIndex;\n          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n          (*hit).instanceIndex = instIdx;\n          // Barycentric weights are space-invariant`,
   );
   if (withAssignment === withInit) {
     throw new Error('TLAS SceneHit assignment anchor changed; update pt-webgpu instance-index augmentation.');

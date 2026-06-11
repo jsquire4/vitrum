@@ -838,6 +838,15 @@ struct BounceSample {
   exitedMedium: bool,
 }
 
+// D9.1 — shared anisotropy axis helper (deduplicates two identical blocks in
+// sampleNextBounceDirection). Returns vec2f(ax, ay).
+fn computeAnisotropicAxes(alpha: f32, anisotropy: f32) -> vec2f {
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  return vec2f(ax, ay);
+}
+
 fn sampleNextBounceDirection(
   rng: ptr<function, u32>,
   incomingDir: vec3f,
@@ -913,13 +922,10 @@ fn sampleNextBounceDirection(
       let nDotL = max(dot(normal, result.sampledDir), 0.0);
       var g1Wi: f32;
       if (anisotropy > 1e-4) {
-        let alpha = max(roughness * roughness, 1e-3);
-        let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
-        let ax = max(alpha / aspect, 1e-4);
-        let ay = max(alpha * aspect, 1e-4);
+        let axes = computeAnisotropicAxes(max(roughness * roughness, 1e-3), anisotropy);
         let wiT = dot(result.sampledDir, tanT);
         let wiB = dot(result.sampledDir, tanB);
-        g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), ax, ay);
+        g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), axes.x, axes.y);
       } else {
         g1Wi = smithG1(nDotL, roughness);
       }
@@ -1002,11 +1008,8 @@ fn sampleNextBounceDirection(
     let nDotL2 = max(dot(normal, result.sampledDir), 0.0);
     var g1Wi2: f32;
     if (anisotropy > 1e-4) {
-      let alpha = max(roughness * roughness, 1e-3);
-      let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
-      let ax = max(alpha / aspect, 1e-4);
-      let ay = max(alpha * aspect, 1e-4);
-      g1Wi2 = smithG1Anis(dot(result.sampledDir, tanT), dot(result.sampledDir, tanB), max(nDotL2, 1e-6), ax, ay);
+      let axes2 = computeAnisotropicAxes(max(roughness * roughness, 1e-3), anisotropy);
+      g1Wi2 = smithG1Anis(dot(result.sampledDir, tanT), dot(result.sampledDir, tanB), max(nDotL2, 1e-6), axes2.x, axes2.y);
     } else {
       g1Wi2 = smithG1(nDotL2, roughness);
     }

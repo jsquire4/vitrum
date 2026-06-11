@@ -73,6 +73,7 @@ import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_WGSL } from '../src/shaders/indirectTemporalAccum.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
+import { SCREEN_COORD_HELPERS_WGSL } from '../src/shaders/screenCoordHelpers.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../src/shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../src/shaders/restirCastPrimary.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
@@ -92,7 +93,7 @@ import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
 import { TEMPORAL_WGSL } from '../src/shaders/temporal.wgsl.js';
 import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
-import { DDGI_SAMPLE_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
+import { DDGI_SAMPLE_WGSL, DDGI_GRID_UBO_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
 import { PPG_TREE_LAYOUT_WGSL } from '../src/ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/ppgUpdate.wgsl.js';
 
@@ -249,27 +250,22 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + STAINED_GLASS_SHADE_WGSL + SHADE_WGSL', () => {
-    // W8 Phase 3 (2026-05-18) — SHADE_MODULE.requires includes
-    // 'sampleCascadeC0', which itself requires 'octahedralCore'. The
-    // composer emits dependencies depth-first, so the order becomes:
-    //   common → surfaceTextures (requires common) → ddgiSample (requires
-    //   common) → sampleCascadeC0 (requires common + octahedralCore) →
-    //   stainedGlassShade (requires common) → shade. `common` is emitted
-    //   once at the top via the dedup rule. `octahedralCore` is emitted
-    //   just before sampleCascadeC0 since it has no other deps.
+  it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + DDGI_GRID_UBO_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + STAINED_GLASS_SHADE_WGSL + SHADE_WGSL', () => {
+    // W8 Phase 3 (2026-05-18) — original shade composition.
     //
-    // T5 (2026-05-28) — SHADE_MODULE.requires now ends with
-    // 'stainedGlassShade' (lo_sg_caustic / lo_sg_aperture). It requires only
-    // 'common' (already emitted), so it contributes exactly
-    // STAINED_GLASS_SHADE_WGSL immediately before SHADE_WGSL.
-    // B3 — SHADE_MODULE.requires now ends with 'environmentSample' (the sky-miss
-    // pixel samples the directional IBL map). It requires [] (common already
-    // emitted), so it contributes ENVIRONMENT_SAMPLE_WGSL immediately before SHADE_WGSL.
+    // T5 (2026-05-28) — SHADE_MODULE.requires ends with 'stainedGlassShade'.
+    // B3 — SHADE_MODULE.requires ends with 'environmentSample'.
+    //
+    // D5.1+D5.2 (2026-06-10) — 'ddgiSample' replaced by 'ddgiGridUbo' in
+    // SHADE_MODULE.requires. ddgiGridUbo requires ['ddgiSample'], so the
+    // composition now emits ddgiSample (no deps) then ddgiGridUbo (DDGIGridUBO
+    // struct + binding(3) + sampleDDGIAtPoint) before the cascade/stainedGlass
+    // modules and shade body. common is emitted once via dedup.
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL +
       SURFACE_TEXTURES_WGSL +
       DDGI_SAMPLE_WGSL +
+      DDGI_GRID_UBO_WGSL +
       OCTAHEDRAL_CORE_WGSL +
       SAMPLE_CASCADE_C0_WGSL +
       STAINED_GLASS_SHADE_WGSL +
@@ -294,8 +290,11 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES)).toBe(WELFORD_TAIL_WGSL + SAMPLE_BUDGET_WGSL);
   });
 
-  it('resolve: standalone (no prepend)', () => {
-    expect(composeWgsl(RESOLVE_MODULE, WGSL_MODULES)).toBe(RESOLVE_WGSL);
+  it('resolve: screenCoordHelpers + RESOLVE_WGSL (D5.4 dedup — clampCoord extracted)', () => {
+    // D5.4: clampCoord moved to screenCoordHelpers; RESOLVE_MODULE now
+    // requires: ['screenCoordHelpers']. The composed output is the shared helper
+    // prepended to the resolve body (byte-identical rule: SCREEN_COORD_HELPERS_WGSL + RESOLVE_WGSL).
+    expect(composeWgsl(RESOLVE_MODULE, WGSL_MODULES)).toBe(SCREEN_COORD_HELPERS_WGSL + RESOLVE_WGSL);
   });
 
   it('gtao: GTAO_COMMON_WGSL + GTAO_WGSL', () => {
@@ -311,14 +310,18 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
   // composition is pinned below (focused-module sources concatenated in the
   // pass's declared `requires` order, deps-first, deduped).
-  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+ppgTreeLayout) + environmentSample + RIS_GI', () => {
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiGridUbo(ddgiSample) + ppgPdf(+ppgTreeLayout) + environmentSample + RIS_GI', () => {
     // W9 guided sampling — risGi now requires `ppgPdf` (the gi-ris dTree
     // pdf-eval + guided sampler). ppgPdf requires only `ppgTreeLayout` (the
     // 2026-06-09 equal-area fix dropped its octahedralCore dependency — it now
     // uses an inline cylindrical map), so the composer emits PPG_TREE_LAYOUT_WGSL
-    // then PPG_PDF_WGSL after DDGI_SAMPLE, before the RIS_GI root source. No
+    // then PPG_PDF_WGSL after DDGI_GRID_UBO, before the RIS_GI root source. No
     // module in this unit calls the shared octEncode/octDecode (ddgiSample
     // inlines its own), so OCTAHEDRAL_CORE_WGSL is correctly absent here.
+    //
+    // D5.1+D5.2 (2026-06-10) — 'ddgiSample' replaced by 'ddgiGridUbo' which
+    // requires ['ddgiSample']. ddgiSample emits first (no deps), then ddgiGridUbo
+    // (DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint wrapper).
     expect(composeWgsl(RIS_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -327,6 +330,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       MATERIAL_DECODE_WGSL +
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
+      DDGI_GRID_UBO_WGSL +
       PPG_TREE_LAYOUT_WGSL +
       PPG_PDF_WGSL +
       ENVIRONMENT_SAMPLE_WGSL +

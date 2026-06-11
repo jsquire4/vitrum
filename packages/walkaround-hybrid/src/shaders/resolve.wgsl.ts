@@ -46,6 +46,8 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
+// clampCoord is provided by the screenCoordHelpers module (D5.4 dedup).
+
 export const RESOLVE_WGSL = /* wgsl */ `
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
@@ -74,12 +76,7 @@ struct ResolveUniforms {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Clamp coordinates to valid texture bounds.
-fn clampCoord(c: vec2<i32>, w: u32, h: u32) -> vec2<i32> {
-  let cx = clamp(c.x, 0, i32(w) - 1);
-  let cy = clamp(c.y, 0, i32(h) - 1);
-  return vec2<i32>(cx, cy);
-}
+// clampCoord is provided by screenCoordHelpers (D5.4 dedup — shared with cbPrefill).
 
 // Determine whether a pixel is shaded this frame.
 // When checkerboardOn is 0 (passthrough mode), all pixels are treated as
@@ -153,9 +150,9 @@ fn resolveKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** D5.4 dedup — clampCoord shared via screenCoordHelpers. */
 export const RESOLVE_MODULE: WgslModule = {
   name: 'resolve',
   source: RESOLVE_WGSL,
-  requires: [],
+  requires: ['screenCoordHelpers'],
 };

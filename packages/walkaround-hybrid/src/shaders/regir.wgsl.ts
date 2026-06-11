@@ -56,6 +56,9 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+// D5.5/I2.4: template-interpolate REGIR_FLOATS_PER_SURVIVOR from the shared-samplers
+// TS constant so the WGSL value is always in sync with the host value.
+import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
 
 export const REGIR_WGSL = /* wgsl */ `// ============================================================
 // ReGIR — grid build + cell sampling. Reuses the combined light-tree storage
@@ -63,7 +66,7 @@ export const REGIR_WGSL = /* wgsl */ `// =======================================
 // the same buffer read_write as regirGridRW in its own group).
 // ============================================================
 
-const REGIR_FLOATS_PER_SURVIVOR: u32 = 2u;
+const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
 
 struct ReGIRCellSample {
   emitterIndex: i32,
@@ -168,7 +171,7 @@ export const REGIR_BUILD_WGSL = /* wgsl */ `// =================================
 // survivor (emitterIndex + pSel) into the grid region of the combined buffer.
 // ============================================================
 
-const REGIR_FLOATS_PER_SURVIVOR: u32 = 2u;
+const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
 
 // The combined light-tree + grid buffer, bound READ_WRITE here (the build pass
 // reads the tree region for sampleLightTree, writes the grid region). RIS binds

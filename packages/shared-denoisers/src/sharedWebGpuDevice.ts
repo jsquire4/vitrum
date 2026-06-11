@@ -14,6 +14,14 @@ let deviceGeneration = 0;
 const SUPERSEDED_MSG = 'getSharedWebGPUDevice: superseded by dispose';
 
 /**
+ * Maximum number of acquire+retry cycles before giving up. Each cycle awaits
+ * one `acquireSharedDevice` completion; 16 covers race conditions between
+ * concurrent callers and a `disposeSharedWebGPUDevice()` that bumps the
+ * generation mid-flight.
+ */
+const MAX_DEVICE_ACQUIRE_RETRIES = 16;
+
+/**
  * Returns a shared high-performance adapter device, creating it on first use.
  * Clears automatically if the device is lost (then the next call recreates).
  */
@@ -22,7 +30,7 @@ export async function getSharedWebGPUDevice(): Promise<GPUDevice> {
     throw new Error('WebGPU not available');
   }
 
-  for (let attempt = 0; attempt < 16; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_DEVICE_ACQUIRE_RETRIES; attempt += 1) {
     if (cachedDevice != null) {
       return cachedDevice;
     }

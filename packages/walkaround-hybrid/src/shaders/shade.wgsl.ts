@@ -127,22 +127,14 @@ export const SHADE_WGSL = /* wgsl */ `
 // atlas read with reservoir consumption). Shade does not reference these
 // bindings; they are declared only to keep the layout valid for layout
 // compatibility checks and to leave the door open for future fallback paths.
+//
+// D5.1+D5.2: DDGIGridUBO struct and @group(3) @binding(3) are now provided by
+// the shared ddgiGridUbo module (declared canonical in ddgiSampleWgsl.ts).
+// The binding(0..2) atlas + sampler remain here for layout completeness.
+// Cross-reference: ddgiGridUbo → ddgiSampleWgsl.ts (canonical source).
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
 @group(3) @binding(2) var ddgiSampler:    sampler;
-struct DDGIGridUBO {
-  origin:    vec3f,
-  spacing:   f32,
-  dimsX:     u32,
-  dimsY:     u32,
-  dimsZ:     u32,
-  _pad0:     u32,
-  irrW:      f32,
-  irrH:      f32,
-  visW:      f32,
-  visH:      f32,
-};
-@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
 
@@ -169,6 +161,17 @@ fn stableSvgfObjectId(hit: IntersectionResult) -> u32 {
 // state (ubo, bvh, emitters, spatialReservoir, reservoirGiCurrent, bvh_beer)
 // directly; only the per-pixel locals are passed as params. Gating (isGlass /
 // isMetal) lives inside each helper so shadeMain stays a flat composition.
+//
+// D5.8b (deferred — composer limitation):
+// The lo_* helpers cannot be extracted into a shared 'shadingTerms' WGSL
+// module because they reference binding declarations (@group(N) @binding(M))
+// and the WalkaroundUBO binding that are declared in THIS shader body
+// (SHADE_WGSL). The wgslComposer emits required modules BEFORE the consumer's
+// own source, so a 'shadingTerms' module source would appear before those
+// declarations exist in the concatenated string. Moving the declarations into
+// the module would duplicate them if any other shade-chain module also
+// required 'shadingTerms'. Resolution requires a composer feature that supports
+// post-consumer or peer-level injection ordering, which does not exist today.
 // ──────────────────────────────────────────────────────────────────────────
 
 // ── Self-emission for primary glass hits ─────────────────────────────────
@@ -1048,5 +1051,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SHADE_MODULE: WgslModule = {
   name: 'shade',
   source: SHADE_WGSL,
-  requires: ['common', 'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
+  // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
+  // transitively, and adds DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint).
+  requires: ['common', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
 };

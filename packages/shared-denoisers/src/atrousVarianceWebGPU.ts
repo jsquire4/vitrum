@@ -395,8 +395,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   // colorPingA when N is even (the loop's pre-fix swap convention).
   const readTex = atrousIterations % 2 === 0 ? colorPingA : colorPingB;
 
-  const finalTex = readTex;
-  const rgbOut = await readRgba16fToRgb(device, finalTex, w, h);
+  const rgbOut = await readRgba16fToRgb(device, readTex, w, h);
 
   // Item 24 — albedo re-modulation: multiply the filtered lighting by albedo
   // to restore the correct denoised outgoing radiance.

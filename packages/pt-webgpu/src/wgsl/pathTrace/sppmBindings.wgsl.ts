@@ -1,21 +1,23 @@
 /**
- * SPPM group-4 bindings — shared between the photon-emission compute pass
+ * SPPM group-3 bindings — shared between the photon-emission compute pass
  * (`sppmPhotonPass.wgsl.ts`) and the megakernel gather path in
  * `caustic.wgsl.ts`.
  *
  * SPPM = Stochastic Progressive Photon Mapping (Hachisuka & Jensen 2009).
  *
- * Binding layout (@group(4)):
- *   binding(0)  sppmPhotonCells   — PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY]
+ * Binding layout (@group(3), bindings 6–9):
+ *   binding(6)  sppmPhotonCells   — PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY]
  *               Each cell has SPPM_CELL_CAPACITY slots.  The photon pass writes
  *               photons here atomically (modulo capacity) and the megakernel
  *               reads from them.  access = read_write on both pipelines.
- *   binding(1)  sppmCellCounters  — atomic<u32>[SPPM_MAX_CELLS]
+ *   binding(7)  sppmCellCounters  — atomic<u32>[SPPM_MAX_CELLS]
  *               Cumulative photon-insertion counter per cell.  Modulo
  *               SPPM_CELL_CAPACITY gives the ring slot; min-cap gives the true
  *               count for the density estimate.
- *   binding(2)  sppmStats         — SppmStats (uniform UBO, 32 bytes)
+ *   binding(8)  sppmStats         — SppmStats (uniform UBO, 32 bytes)
  *               currentRadius, frameIndex, photonCount, sceneExtent.
+ *   binding(9)  sppmPixelStats    — SppmPixelStats[W×H] (per-pixel progressive
+ *               statistics: tau.rgb, radius2, N, _pad×3).
  *
  * Geometry (PhotonRecord, 48 bytes = 3 vec4f):
  *   vec0:  position.xyz + padding
@@ -27,7 +29,7 @@
  * photons stored.
  *
  * Both pipelines are full-tier only.  When causticStrategy != 'photon-map' a
- * 16-byte placeholder buffer is bound so the group-4 layout slot is satisfied
+ * 16-byte placeholder buffer is bound so the group-3 layout slots are satisfied
  * without allocating the real photon map.  The gather code in caustic.wgsl.ts
  * is guarded by `if (causticMode() == 2u)` so it never executes.
  *
@@ -35,120 +37,36 @@
  * (ACM SIGGRAPH Asia 2009); spatial-hash scheme follows the survey in
  * Ihrke et al. 2007 § 4 (prime-multiplied coordinate hash, no collision
  * resolution — overflow counter protects memory, not energy).
+ *
+ * Host-side physics constants and helper functions (SPPM_MAX_CELLS,
+ * SPPM_CELL_CAPACITY, SPPM_ALPHA, SPPM_STATS_FIELDS, sppmRadiusAtFrame,
+ * sppmInitialRadius, etc.) live in ../../sppmParams.ts — this file only
+ * holds WGSL string exports.
  */
 
-/** Number of spatial-hash cells.  Power-of-2 avoids the modulo's division for
- *  non-power-of-2 table sizes, but an odd prime-ish size gives better hash
- *  distribution; 65521 is the largest prime below 2^16. */
-export const SPPM_MAX_CELLS = 65521;
+// Re-export host constants so existing importers that reach through this
+// module for the TS helpers continue to work (they can also import from
+// sppmParams.ts directly).
+export {
+  SPPM_MAX_CELLS,
+  SPPM_CELL_CAPACITY,
+  SPPM_PHOTON_RECORD_BYTES,
+  SPPM_PHOTON_CELLS_BYTES,
+  SPPM_CELL_COUNTERS_BYTES,
+  SPPM_STATS_BYTES,
+  SPPM_STATS_FIELDS,
+  SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
+  SPPM_PHOTON_CELLS_MAX_BYTES,
+  SPPM_ALPHA,
+  sppmRadiusAtFrame,
+  sppmInitialRadius,
+} from '../../sppmParams.js';
 
-/** Photons stored per cell (ring buffer).  Over-capacity photons are dropped
- *  (their slot is counted but not written); the density estimator clamps to
- *  this capacity so only the most-recent SPPM_CELL_CAPACITY photons contribute
- *  per cell.  R7a behavioral-gate fix (2026-06-10): capacity 128 made the cells
- *  buffer 65521 × 128 × 48 B ≈ 402 MiB — EXCEEDING WebGPU's default
- *  maxBufferSize (256 MiB), so every photon-map render failed buffer validation
- *  on default-limit devices.  32 → ≈ 100 MiB, inside BOTH the default maxBufferSize (256 MiB) AND the default maxStorageBufferBindingSize (128 MiB — the binding limit binds first); the
- *  host additionally guards against the live device limit at allocation and
- *  degrades to manifold-nee with a warning. */
-export const SPPM_CELL_CAPACITY = 32;
-
-/** Bytes per PhotonRecord: 3 × vec4f = 48 bytes. */
-export const SPPM_PHOTON_RECORD_BYTES = 48;
-
-/** Bytes for the sppmPhotonCells buffer:
- *  SPPM_MAX_CELLS × SPPM_CELL_CAPACITY × SPPM_PHOTON_RECORD_BYTES. */
-export const SPPM_PHOTON_CELLS_BYTES =
-  SPPM_MAX_CELLS * SPPM_CELL_CAPACITY * SPPM_PHOTON_RECORD_BYTES;
-
-/** Bytes for the sppmCellCounters buffer: SPPM_MAX_CELLS × 4 (atomic<u32>). */
-export const SPPM_CELL_COUNTERS_BYTES = SPPM_MAX_CELLS * 4;
-
-/** Bytes for the SppmStats UBO: 4 × f32 = 32 bytes (padded to 32 for alignment). */
-export const SPPM_STATS_BYTES = 32;
-
-/**
- * I4.5 — Structural pin descriptor for the `SppmStats` WGSL struct.
- *
- * Each entry mirrors a field in the `struct SppmStats { … }` definition below.
- * The host packer (`GpuResources.writeSppmStats`) writes these slots in this
- * order; this descriptor lets a test assert:
- *   (a) the WGSL struct fields parse out in this exact order, and
- *   (b) the total size equals SPPM_STATS_BYTES (= 32).
- */
-export const SPPM_STATS_FIELDS = [
-  { name: 'currentRadius',    byteOffset:  0, type: 'f32' },
-  { name: 'r0',               byteOffset:  4, type: 'f32' },
-  { name: 'frameAccumulated', byteOffset:  8, type: 'u32' },
-  { name: 'photonCount',      byteOffset: 12, type: 'u32' },
-  { name: 'sceneExtent',      byteOffset: 16, type: 'f32' },
-  { name: '_pad0',            byteOffset: 20, type: 'f32' },
-  { name: '_pad1',            byteOffset: 24, type: 'f32' },
-  { name: '_pad2',            byteOffset: 28, type: 'f32' },
-] as const;
-
-/**
- * Bytes per per-pixel SPPM statistics record:
- *   tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad (f32×3) = 8 × f32 = 32 bytes.
- *
- * A4-progressive: each pixel accumulates τ, R², and N across frames so the
- * Hachisuka progressive update rule can run without re-visiting previous frames.
- * The buffer is sized W×H×32 bytes and reset whenever the PT accumulator resets
- * (camera move, setScene, reset()) — the same static-eye-point assumption that
- * makes progressive accumulation valid also gates the SPPM stats.
- */
-export const SPPM_PIXEL_STATS_BYTES_PER_PIXEL = 32; // 8 × f32
-
-/**
- * Safety ceiling for the photon-cells buffer.  ~512 MiB at default params;
- * the warn-once pattern mirrors the BDPT eye-stack ceiling.
- */
-export const SPPM_PHOTON_CELLS_MAX_BYTES = 512 * 1024 * 1024; // 512 MiB
-
-/**
- * SPPM progressive-radius schedule.
- *
- * After `n` accumulated frames:
- *   r(n) = r₀ × sqrt((n × α + α) / (n + 1))
- * with α = 2/3 (Hachisuka & Jensen 2009, Eq.4).  For n=0 (first frame)
- * r(0) = r₀ × sqrt(α) ≈ r₀ × 0.8165, converging to 0 as n → ∞.
- *
- * The closed form for progressive shrink over one frame is:
- *   r(n+1) = r(n) × sqrt((n × α + α) / (n × α + 1))
- *
- * We store `r₀` and `frameIndex` in the UBO and recompute `currentRadius` in
- * the shader from the closed form, keeping radius state on the CPU.
- */
-export const SPPM_ALPHA = 2.0 / 3.0; // Hachisuka & Jensen 2009 α
-
-/**
- * Compute the SPPM radius for frame index `n` (0-based) given initial radius `r0`.
- * Used on the CPU host side (TypeScript) to write the UBO each frame.
- */
-export function sppmRadiusAtFrame(r0: number, n: number): number {
-  if (n <= 0) return r0 * Math.sqrt(SPPM_ALPHA);
-  return r0 * Math.sqrt((n * SPPM_ALPHA + SPPM_ALPHA) / (n + 1));
-}
-
-/**
- * Compute the scale-aware initial radius `r₀` from the scene AABB diagonal.
- *
- * r₀ = max(diagonal / 100, 1e-3)
- *
- * The divisor 100 ensures that even on a 1 m Cornell box (diagonal ~1.7 m)
- * the initial radius is ~0.017 m (17 mm) — a reasonable first-frame footprint
- * that shrinks to sub-millimetre over thousands of frames.
- */
-export function sppmInitialRadius(
-  sceneMin: readonly [number, number, number],
-  sceneMax: readonly [number, number, number],
-): number {
-  const dx = sceneMax[0] - sceneMin[0];
-  const dy = sceneMax[1] - sceneMin[1];
-  const dz = sceneMax[2] - sceneMin[2];
-  const diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  return Math.max(diagonal / 100, 1e-3);
-}
+import {
+  SPPM_MAX_CELLS,
+  SPPM_CELL_CAPACITY,
+  SPPM_ALPHA,
+} from '../../sppmParams.js';
 
 /**
  * SPPM group-3 WGSL bindings (bindings 6/7/8/9) — composed into the megakernel
@@ -170,7 +88,9 @@ export function sppmInitialRadius(
  * Both the megakernel and the photon pass declare `read_write` storage for
  * (6) and (7) so a SINGLE GPUBindGroup can serve both pipelines.
  */
-export const SPPM_GROUP4_BINDINGS_WGSL = /* wgsl */ `
+// D9.8/I4.1 — renamed from SPPM_GROUP4_BINDINGS_WGSL (misnomer: bindings are
+// at @group(3), not group 4 — lavapipe only supports maxBindGroups=4, i.e. 0–3).
+export const SPPM_GROUP3_BINDINGS_WGSL = /* wgsl */ `
 // ── SPPM group-3 extension (bindings 6/7/8/9): photon hash-grid + per-pixel stats
 // Stochastic Progressive Photon Mapping (Hachisuka & Jensen 2009).
 // Full-tier only; lit binding exists when causticStrategy == 'photon-map';
@@ -392,73 +312,11 @@ fn sppmGatherProgressive(
   return tauPrime / (Ne * PI * r2prime);
 }
 
-// Legacy streaming-window gather — kept for reference; no longer called by the
-// megakernel (A4-progressive replaced it).  The photon pass still uses
-// sppmInsertPhoton / sppmCellIndex / the hash grid (unchanged).  The gather
-// function below is superseded by sppmGatherProgressive above.
-//
-// Item 21 — spectral × photon-map regime fix:
-// Photons store RGB flux; the eye path carries a hero-λ throughput. In spectral
-// mode we must resolve the photon flux at the hero wavelength at gather time,
-// exactly like all other RGB emission sources (rect lights, point lights, env —
-// all use spectralEmissionAtHero). The gather conversion mirrors the NEE half:
-//   fluxOut = select(flux.rgb, spectralEmissionAtHero(flux.rgb, heroLambda), spectralEnabled)
-// Non-spectral path (spectralEnabled=0): fluxOut = flux.rgb — byte-identical.
-// The heroLambda parameter carries the per-path hero wavelength from the kernel
-// (already sampled by sampleHeroWavelengthMIS / params.heroLambdaNm).
-fn sppmGather(
-  pos: vec3f,
-  normal: vec3f,
-  wo: vec3f,
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  throughput: vec3f,
-  heroLambda: f32,
-) -> vec3f {
-  let r = sppmStats.currentRadius;
-  let r2 = r * r;
-  let nPhotons = sppmStats.photonCount;
-  if (r <= 1e-9 || nPhotons == 0u) { return vec3f(0.0); }
-  var acc = vec3f(0.0);
-
-  // 3×3×3 neighbourhood in the hash grid to avoid boundary-straddling misses.
-  for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
-    for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
-      for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
-        let probe = pos + vec3f(f32(dx), f32(dy), f32(dz)) * r;
-        let cellIdx = sppmCellIndex(probe, r);
-        // Number of photons actually stored (capped at capacity).
-        let stored = min(atomicLoad(&sppmCellCounters[cellIdx]), SPPM_CELL_CAPACITY_WGSL);
-        let base = cellIdx * SPPM_CELL_CAPACITY_WGSL;
-        for (var si = 0u; si < stored; si = si + 1u) {
-          let ph = sppmPhotonCells[base + si];
-          let diff = ph.position.xyz - pos;
-          let dist2 = dot(diff, diff);
-          if (dist2 > r2) { continue; }
-          let nDotL = max(dot(normal, -ph.incidentDir.xyz), 0.0);
-          if (nDotL <= 1e-6) { continue; }
-          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz);
-          // Item 21 — spectral mode: resolve the stored RGB flux at the eye path's
-          // hero wavelength before gathering. This mirrors the NEE half where every
-          // other RGB emission source (rect/point/spot lights, env) applies
-          // spectralEmissionAtHero. Non-spectral path uses flux.rgb directly —
-          // byte-identical to the pre-fix behaviour.
-          let fluxRgb = ph.flux.rgb;
-          let fluxOut = select(fluxRgb, spectralEmissionAtHero(fluxRgb, heroLambda), params.spectralEnabled != 0u);
-          // Flat disk kernel: 1 / (π r²) area normalisation.
-          acc = acc + throughput * brdf * fluxOut * nDotL / max(PI * r2, 1e-12);
-        }
-      }
-    }
-  }
-  // Scale by (total cells / photon count) to convert from per-cell to per-area
-  // density.  The photon pass emits \`photonCount\` photons across the scene; each
-  // has already been divided by photonCount in the emission flux, so no further
-  // normalisation is needed here.  The π r² denominator above is the SPPM area
-  // estimator in its standard form.
-  return acc;
-}
+// D9.9 — sppmGather (legacy streaming-window gather, superseded by
+// sppmGatherProgressive above) DELETED 2026-06-10.  It was never called by the
+// megakernel after A4 landed; photonMapContribution in caustic.wgsl.ts calls
+// sppmGatherProgressive directly.  sppmInsertPhoton + sppmCellIndex + the hash
+// grid remain (still used by the photon-emission pass).
 `;
 
 /**

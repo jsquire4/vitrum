@@ -5,20 +5,22 @@
 import { describe, it, expect } from 'vitest';
 import {
   MNEE_NEWTON_WGSL,
+  MNEE_CHAIN_WGSL,
+  MNEE_CONNECTION_WGSL,
+  MNEE_NEWTON_MAX_ITERS,
+  MNEE_CHAIN_MAX_ITERS,
+} from '../wgsl/pathTrace/mneeNewton.wgsl.js';
+import {
   MNEE_NEWTON_HARNESS_WGSL,
   MNEE_NEWTON_JAC_HARNESS_WGSL,
   MNEE_JACOBIAN_HARNESS_WGSL,
   MNEE_PDF_HARNESS_WGSL,
-  MNEE_CHAIN_WGSL,
   MNEE_CHAIN_HARNESS_WGSL,
   MNEE_CHAIN_PDF_HARNESS_WGSL,
-  MNEE_CHAIN_MAX_ITERS,
-  MNEE_CONNECTION_WGSL,
   MNEE_REFLECTION_HARNESS_WGSL,
   packMneeHarnessInput,
   MNEE_HARNESS_INPUT_FLOATS,
-  MNEE_NEWTON_MAX_ITERS,
-} from '../wgsl/pathTrace/mneeNewton.wgsl.js';
+} from '../wgsl/pathTrace/mneeNewton.harness.wgsl.js';
 
 describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
   it('packs a config into the 12-float vec4-aligned record', () => {

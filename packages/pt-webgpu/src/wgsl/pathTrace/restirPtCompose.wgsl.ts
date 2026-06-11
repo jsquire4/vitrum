@@ -152,10 +152,28 @@ function monomorphiseReservoirHelpers(
   const roBody = extractFn(out, 'loadReservoirPTHero_ro');
   const rwBody = extractFn(out, 'loadReservoirPTHero_rw');
   const stBody = extractFn(out, 'storeReservoirPTHero_rw');
-  if (roBody == null || rwBody == null || stBody == null) {
-    // Helpers not present (composition changed) — leave the string untouched; the
-    // naga gate will catch any resulting error.
-    return out;
+  // Fail loudly so a composition change never silently produces broken WGSL
+  // (the old silent return-untouched left naga-illegal ptr<storage> bodies in
+  // place and the error would only surface at shader compile time, far from the
+  // root cause). If any body is missing, the caller changed the reservoir-helper
+  // names or the composition order — fix the caller.
+  if (roBody == null) {
+    throw new Error(
+      'monomorphiseReservoirHelpers: could not extract fn loadReservoirPTHero_ro — ' +
+      'did the reservoir-helper composition change in reservoirPtHero.wgsl.ts?',
+    );
+  }
+  if (rwBody == null) {
+    throw new Error(
+      'monomorphiseReservoirHelpers: could not extract fn loadReservoirPTHero_rw — ' +
+      'did the reservoir-helper composition change in reservoirPtHero.wgsl.ts?',
+    );
+  }
+  if (stBody == null) {
+    throw new Error(
+      'monomorphiseReservoirHelpers: could not extract fn storeReservoirPTHero_rw — ' +
+      'did the reservoir-helper composition change in reservoirPtHero.wgsl.ts?',
+    );
   }
 
   // Build the specialized variants for each requested global. A specialization
