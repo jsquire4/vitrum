@@ -10,6 +10,12 @@ import {
   isTlasOnlyVersionBump,
 } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './bvhTypes.js';
+import {
+  makeEmptyAabb,
+  setAabb,
+  copyBoxLike,
+  isAabbEmpty,
+} from './aabbHelpers.js';
 
 export interface RestirBvhVector3 {
   readonly x: number;
@@ -148,40 +154,3 @@ export function isRestirTlasOnlyRefit(
   );
 }
 
-function makeEmptyAabb(): {
-  min: { x: number; y: number; z: number };
-  max: { x: number; y: number; z: number };
-} {
-  return {
-    min: { x: Infinity, y: Infinity, z: Infinity },
-    max: { x: -Infinity, y: -Infinity, z: -Infinity },
-  };
-}
-
-function setAabb(
-  out: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } },
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-): void {
-  out.min.x = minX;
-  out.min.y = minY;
-  out.min.z = minZ;
-  out.max.x = maxX;
-  out.max.y = maxY;
-  out.max.z = maxZ;
-}
-
-function copyBoxLike(
-  out: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } },
-  box: RestirBvhAabb,
-): void {
-  setAabb(out, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z);
-}
-
-function isAabbEmpty(box: RestirBvhAabb): boolean {
-  return box.max.x < box.min.x || box.max.y < box.min.y || box.max.z < box.min.z;
-}

@@ -81,6 +81,10 @@ fn ppgUvToDir(uv: vec2<f32>) -> vec3<f32> {
 
 // ── sTree descent (mirror of serialise.gpuTraverseSTreeLeaf) ────────────────
 // Returns the f32 base offset of the sNode whose AABB contains 'pos'.
+// MUST-MATCH: this descent body is semantically identical to sTreeFindLeafBase
+// in ppgUpdate.wgsl.ts — only the buffer name differs (ppgSTreeBuf_gi here vs
+// ppgSTreeBuf there). If you edit the logic here, mirror the change there,
+// and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
   let nodeCount = u32(ppgSTreeBuf_gi[0]);
   var idx: u32 = 0u;
@@ -107,30 +111,31 @@ fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
 // ── dTree descent to the leaf containing an arbitrary UV ────────────────────
 // Mirror of dTree.findDTreeLeaf: at each interior node, descend the quadrant
 // of octUV. Returns the leaf's f32 base offset within ppgDTreeBuf_gi.
+// MUST-MATCH: this descent body is semantically identical to dTreeFindLeafBase
+// in ppgUpdate.wgsl.ts — only the buffer name differs (ppgDTreeBuf_gi here vs
+// ppgDTreeBuf there). If you edit the logic here, mirror the change there,
+// and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn ppgDTreeFindLeafBase(dTreeOffset: u32, octUV: vec2<f32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
     let isLeafFlag = ppgDTreeBuf_gi[base + 7u];
     if (isLeafFlag > 0.5) { return base; }
-    let firstChildF = ppgDTreeBuf_gi[base + 6u];
-    if (firstChildF < 0.0) { return base; } // defensive: malformed interior
-    let firstChild = u32(firstChildF);
     let u0 = ppgDTreeBuf_gi[base + 0u];
     let v0 = ppgDTreeBuf_gi[base + 1u];
     let u1 = ppgDTreeBuf_gi[base + 2u];
     let v1 = ppgDTreeBuf_gi[base + 3u];
     let uMid = (u0 + u1) * 0.5;
     let vMid = (v0 + v1) * 0.5;
-    // firstChild ordering: 0=NW, 1=NE, 2=SW, 3=SE (consecutive children).
-    let goRight = octUV.x >= uMid;
-    let goDown  = octUV.y >= vMid;
+    let firstChildF = ppgDTreeBuf_gi[base + 6u];
+    if (firstChildF < 0.0) { return base; }
+    let firstChild = u32(firstChildF);
     var off: u32 = 0u;
-    if (goDown)  { off = off + 2u; }
-    if (goRight) { off = off + 1u; }
+    if (octUV.x >= uMid) { off = off + 1u; }
+    if (octUV.y >= vMid) { off = off + 2u; }
     idx = firstChild + off;
   }
-  return dTreeOffset + DTREE_HEADER_F32; // unreachable on a well-formed tree
+  return dTreeOffset + DTREE_HEADER_F32;
 }
 
 // ── Guide pdf for an arbitrary world direction (Müller §3.2/§3.4) ───────────

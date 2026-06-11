@@ -33,6 +33,19 @@ export interface CamePackedUBO {
   readonly nodeCount: number;
 }
 
+/**
+ * Float layout per packed segment (std140 vec4 rows, 4 rows × 4 floats = 16):
+ *
+ *  Row 0 — [0] startWorld.x  [1] startWorld.y  [2] startWorld.z  [3] railWidth
+ *  Row 1 — [4] endWorld.x    [5] endWorld.y    [6] endWorld.z    [7] blockHeight
+ *  Row 2 — [8] webThickness  [9–11] RESERVED (future: profile curve A/B/C control points)
+ *  Row 3 — [12–15] RESERVED (future: per-segment material override index + 3 spare)
+ *
+ * Reserved slots are zero-initialized. The host shader must declare the struct
+ * with matching padding (e.g. `struct CameSegment { ...; _pad0: vec3f; _pad1: vec4f; }`).
+ * Do not rely on reserved slots being zero in future versions once road-to-100
+ * first-class came-backend lands and starts populating them.
+ */
 const SEGMENT_FLOATS = 16;
 const NODE_FLOATS = 4;
 const DEFAULT_MAX_SEGMENTS = 500;

@@ -19,30 +19,14 @@
  * correct; not for content production).
  */
 
+import { float16BitsToFloat32 } from '@vitrum/shared-denoisers';
+
 const DEFAULT_THROTTLE_MS = 100; // ~10 Hz
 
 /** Round up to the WebGPU 256-byte row alignment required by
  *  `copyTextureToBuffer`. */
 function alignBytesPerRow(rowBytes: number): number {
   return Math.ceil(rowBytes / 256) * 256;
-}
-
-/** Decode an IEEE 754 binary16 (half-float) bit pattern to a 32-bit float.
- *  Mirrors `shared-denoisers/halfFloat` but inlined to avoid a cross-
- *  package dep just for this dev-only helper. */
-function halfBitsToFloat(bits: number): number {
-  const sign = (bits >> 15) & 0x1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  let value: number;
-  if (exponent === 0) {
-    value = (mantissa / 1024) * Math.pow(2, -14);
-  } else if (exponent === 31) {
-    value = mantissa === 0 ? Infinity : NaN;
-  } else {
-    value = (1 + mantissa / 1024) * Math.pow(2, exponent - 15);
-  }
-  return sign ? -value : value;
 }
 
 /** Reinhard tonemap a linear scalar to [0, 1], gamma-encode to sRGB. */
@@ -90,9 +74,9 @@ export function startGpuTextureBlit(
     case 'rgba16float':
       bytesPerPixel = 8;
       decode = (dv, b, outRGB) => {
-        outRGB[0] = halfBitsToFloat(dv.getUint16(b + 0, true));
-        outRGB[1] = halfBitsToFloat(dv.getUint16(b + 2, true));
-        outRGB[2] = halfBitsToFloat(dv.getUint16(b + 4, true));
+        outRGB[0] = float16BitsToFloat32(dv.getUint16(b + 0, true));
+        outRGB[1] = float16BitsToFloat32(dv.getUint16(b + 2, true));
+        outRGB[2] = float16BitsToFloat32(dv.getUint16(b + 4, true));
       };
       break;
     case 'rgba32float':

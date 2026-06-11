@@ -25,8 +25,10 @@
 //   in the entry point — we do NOT factor it into a helper taking the storage
 //   buffer by ptr (that is what nrcEncoding.wgsl.ts's nrcHashLevelBackward did,
 //   and it is unusable from a real dispatch for exactly this reason). The hash +
-//   trilinear arithmetic is duplicated here so it stays byte-identical to the
-//   forward; both are pinned to the CPU oracle by the tests.
+//   AABB-normalise functions are COMPOSED from nrcEncoding.wgsl.ts
+//   nrcEncodeHashHelpersWgsl (D7.7 — no more eb* duplicates); only the trilinear
+//   corner loop remains inlined (MUST-MATCH mirror, see the comment at the loop).
+//   Both are pinned to the CPU oracle by the tests.
 //
 // LAYOUT CONTRACT (must match nrcSubsystem + nrcQuery):
 //   posBuf      : [numSamples × 3]  query world positions (densely packed, the
@@ -38,6 +40,8 @@
 //                 forward feature tables; the host divides out NRC_GRAD_FP after.
 //   uniforms    : aabbMin/Max (normalisation), numActive (densely-packed count),
 //                 inW (dL/dX row stride), L, F.
+
+import { nrcEncodeHashHelpersWgsl } from './nrcEncoding.wgsl.js';
 
 export interface NrcEncodeBackwardWgslOptions {
   /** Hash-grid resolution levels L. */
@@ -55,7 +59,11 @@ export interface NrcEncodeBackwardWgslOptions {
  */
 export function nrcEncodeBackwardWgsl(o: NrcEncodeBackwardWgslOptions): string {
   const L = o.levels, F = o.featuresPerEntry, IN_W = o.inWidth;
-  return /* wgsl */`
+  // Compose the SHARED hash + AABB-normalise helpers (D7.7) — binding-safe:
+  // they reference no bindings and no module-scope consts. This module is only
+  // ever compiled STANDALONE (HashGridTableTrainer + the harness/tests), never
+  // concatenated with nrcEncodeHelpersWgsl, so the definitions appear once.
+  return nrcEncodeHashHelpersWgsl() + /* wgsl */`
 // fixed-point scale for the i32 grad atomics — MUST match the host's divisor and
 // the fusedMlp / nrcEncoding.wgsl scale (2^20).
 const NRC_GRAD_FP : f32 = 1048576.0;
@@ -83,19 +91,9 @@ struct EncBwdParams {
 @group(0) @binding(3) var<storage, read_write> gradTablesFx : array<atomic<i32>>; // fixed-point
 @group(0) @binding(4) var<uniform>             p            : EncBwdParams;
 
-// WGSL-required duplicate of nrcEncoding.wgsl.ts nrcSpatialHash3D — keep in sync.
-// (Müller 2022 §3 Eq.4; u32 wraparound matches CPU oracle Math.imul/>>>0.)
-fn ebSpatialHash3D(ix: u32, iy: u32, iz: u32, tableSize: u32) -> u32 {
-  let h: u32 = (ix * 1u) ^ (iy * 2654435761u) ^ (iz * 805459861u);
-  return h % tableSize;
-}
-
-// WGSL-required duplicate of nrcEncoding.wgsl.ts nrcNormalizeToAabb — keep in sync.
-fn ebNormalizeToAabb(pos: vec3f, aabbMin: vec3f, aabbMax: vec3f) -> vec3f {
-  let ext = aabbMax - aabbMin;
-  let safeExt = max(ext, vec3f(1e-20));
-  return clamp((pos - aabbMin) / safeExt, vec3f(0.0), vec3f(1.0));
-}
+// (D7.7: the former ebSpatialHash3D / ebNormalizeToAabb duplicates were deleted;
+// the prefix composed above provides the canonical nrcSpatialHash3D /
+// nrcNormalizeToAabb from nrcEncoding.wgsl.ts.)
 
 @compute @workgroup_size(64, 1, 1)
 fn nrcEncodeBackward(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -103,12 +101,19 @@ fn nrcEncodeBackward(@builtin(global_invocation_id) gid : vec3<u32>) {
   if (s >= p.numActive) { return; }
 
   let pos = vec3f(posBuf[s * 3u + 0u], posBuf[s * 3u + 1u], posBuf[s * 3u + 2u]);
-  let nrm = ebNormalizeToAabb(pos, p.aabbMin, p.aabbMax);
+  let nrm = nrcNormalizeToAabb(pos, p.aabbMin, p.aabbMax);
   let rowBase = s * NRC_IN_W;   // dL/dX row for this sample
 
   // For each level: recompute the 8 trilinear corners and scatter weight·dOut[f]
   // into the hashed row. dOut for level l, feature f is dL/dX[ l·F + f ] (the
   // hash-grid features occupy feat[0 .. L·F-1]). INLINED scatter (no ptr arg).
+  //
+  // MUST-MATCH (WGSL forbids a shared helper taking the storage buffer by ptr):
+  // this 8-corner trilinear loop (i0/frac/wx·wy·wz/hash-row) is mirrored at
+  //   • nrcEncoding.wgsl.ts  nrcHashLevelForward        (forward, ptr-arg tables)
+  //   • nrcQuery.wgsl.ts     nrcHashLevelForwardInline  (inline gi-ris forward)
+  //   • nrcEncoding.ts       trilinearCorners/hashGridForward (CPU oracle)
+  // Change one → change ALL FOUR; the tests pin each against the CPU oracle.
   for (var l: u32 = 0u; l < NRC_LEVELS; l = l + 1u) {
     let desc = nrcLevels[l];
     let N = f32(desc.resolution);
@@ -124,7 +129,7 @@ fn nrcEncodeBackward(@builtin(global_invocation_id) gid : vec3<u32>) {
       let wy = select(1.0 - frac.y, frac.y, cy == 1u);
       let wz = select(1.0 - frac.z, frac.z, cz == 1u);
       let weight = wx * wy * wz;
-      let row = ebSpatialHash3D(i0.x + cx, i0.y + cy, i0.z + cz, desc.tableSize);
+      let row = nrcSpatialHash3D(i0.x + cx, i0.y + cy, i0.z + cz, desc.tableSize);
       let rb = desc.tableOffset + row * NRC_FEAT;
       for (var f: u32 = 0u; f < NRC_FEAT; f = f + 1u) {
         let g = weight * gradInputF[rowBase + outBase + f];

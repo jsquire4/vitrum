@@ -15,8 +15,9 @@
 //
 // Self-contained; NOT wired into the path tracer.
 
-import { FusedMlpTrainer, type FusedNetSpec, ADAM_WGSL } from "./fusedMlpTrainer.ts";
+import { FusedMlpTrainer, type FusedNetSpec } from "./fusedMlpTrainer.ts";
 import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
+import { HashGridTableTrainer } from "./hashGridTableTrainer.ts";
 import { gradFinalizeWgsl } from "./wgsl/fusedMlp.wgsl.ts";
 import { nrcEncodeBackwardWgsl } from "./wgsl/nrcEncodeBackward.wgsl.ts";
 import {
@@ -112,8 +113,6 @@ async function main() {
   const gradTablesFx = device.createBuffer({ size: tableScalars * 4, usage: ST });
   const gradTablesF = device.createBuffer({ size: tableScalars * 4, usage: ST });
   const tablesBuf = device.createBuffer({ size: tableScalars * 4, usage: ST });
-  const mT = device.createBuffer({ size: tableScalars * 4, usage: ST });
-  const vT = device.createBuffer({ size: tableScalars * 4, usage: ST });
   const posBuf = device.createBuffer({ size: B * 3 * 4, usage: ST });
   const levelsBuf = device.createBuffer({ size: L * 16, usage: ST });
 
@@ -143,13 +142,12 @@ async function main() {
     device.createComputePipelineAsync({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint: entry } });
   const pEnc = await mkPipe(nrcEncodeBackwardWgsl({ levels: L, featuresPerEntry: F, inWidth: inW }), "nrcEncodeBackward");
   const pFin = await mkPipe(gradFinalizeWgsl(), "gradFinalize");
-  const pAdam = await mkPipe(ADAM_WGSL, "adamMain");
 
   // clear + dispatch encode-backward
   { const e = device.createCommandEncoder(); e.clearBuffer(gradTablesFx); device.queue.submit([e.finish()]); }
   { const e = device.createCommandEncoder();
     const bg = device.createBindGroup({ layout: pEnc.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: posBuf } }, { binding: 1, resource: { buffer: trainer.gradInputF } },
+      { binding: 0, resource: { buffer: posBuf } }, { binding: 1, resource: { buffer: trainer.gradInputF! } },
       { binding: 2, resource: { buffer: levelsBuf } }, { binding: 3, resource: { buffer: gradTablesFx } },
       { binding: 4, resource: { buffer: encParams } } ] });
     const p = e.beginComputePass(); p.setPipeline(pEnc); p.setBindGroup(0, bg); p.dispatchWorkgroups(Math.ceil(B / 64)); p.end();
@@ -176,35 +174,34 @@ async function main() {
   console.log(`encode-backward scatter GPU-vs-CPU: maxAbsErr=${maxAbs.toExponential(3)} (peak |g|=${maxMag.toExponential(3)}) → ${scatterOK ? "PASS" : "FAIL"}`);
 
   // ── LIVENESS: run 8 table Adam steps; tables must move > 1e-6 ──
+  // D7.3: the steps are driven by the PRODUCTION HashGridTableTrainer (the class
+  // NrcSubsystem runs every frame) instead of a hand-rolled re-implementation of
+  // its dispatch sequence — the harness now proves the production driver moves
+  // the tables. Per step it performs the SAME work the old inline loop did:
+  // upload dense positions + numActive, clear its scatter target, encode-backward
+  // scatter from trainer.gradInputF, grad finalize, then a table Adam (lr=0.1,
+  // β₁=0.9, β₂=0.999, ε=1e-8, bias-correction from its internal step counter —
+  // identical hyperparameters/UBO bytes via packAdamUbo, fresh zero moments).
+  // The liveness criterion is unchanged: the SHARED external tablesBuf must move.
+  const tableTrainer = new HashGridTableTrainer(device, {
+    levels: L, featuresPerEntry: F, inW, tableScalars,
+    recordCap: B, tableLearningRate: 0.1,
+  });
+  await tableTrainer.build(
+    { gradInputF: trainer.gradInputF!, tablesBuf, levelsBuf },
+    grid.aabbMin, grid.aabbMax,
+  );
   const before = await readF32(device, tablesBuf, tableScalars);
   for (let step = 1; step <= 8; step++) {
     // recompute grads each step (positions/targets fixed → grad steady)
     trainer.setBatch(x, y); trainerProbe.computeGradsStep();
-    { const e = device.createCommandEncoder(); e.clearBuffer(gradTablesFx); device.queue.submit([e.finish()]); }
-    const e = device.createCommandEncoder();
-    const bg = device.createBindGroup({ layout: pEnc.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: posBuf } }, { binding: 1, resource: { buffer: trainer.gradInputF } },
-      { binding: 2, resource: { buffer: levelsBuf } }, { binding: 3, resource: { buffer: gradTablesFx } },
-      { binding: 4, resource: { buffer: encParams } } ] });
-    const p = e.beginComputePass(); p.setPipeline(pEnc); p.setBindGroup(0, bg); p.dispatchWorkgroups(Math.ceil(B / 64)); p.end();
-    const u = new Uint32Array(4); u[0] = tableScalars;
-    const ub = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(ub, 0, u);
-    const bgF = device.createBindGroup({ layout: pFin.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: gradTablesFx } }, { binding: 1, resource: { buffer: gradTablesF } }, { binding: 2, resource: { buffer: ub } } ] });
-    const p2 = e.beginComputePass(); p2.setPipeline(pFin); p2.setBindGroup(0, bgF); p2.dispatchWorkgroups(Math.ceil(tableScalars / 64)); p2.end();
-    const ab = new ArrayBuffer(48); new Uint32Array(ab, 0, 1)[0] = tableScalars; const af = new Float32Array(ab);
-    af[4] = 0.1; af[5] = 0.9; af[6] = 0.999; af[7] = 1e-8; af[8] = 1 - Math.pow(0.9, step); af[9] = 1 - Math.pow(0.999, step);
-    const aub = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(aub, 0, ab);
-    const bgA = device.createBindGroup({ layout: pAdam.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: tablesBuf } }, { binding: 1, resource: { buffer: gradTablesF } },
-      { binding: 2, resource: { buffer: mT } }, { binding: 3, resource: { buffer: vT } }, { binding: 4, resource: { buffer: aub } } ] });
-    const p3 = e.beginComputePass(); p3.setPipeline(pAdam); p3.setBindGroup(0, bgA); p3.dispatchWorkgroups(Math.ceil(tableScalars / 64)); p3.end();
-    device.queue.submit([e.finish()]);
+    tableTrainer.step(posFlat, B);
   }
   const after = await readF32(device, tablesBuf, tableScalars);
+  tableTrainer.dispose();
   let maxDelta = 0; for (let i = 0; i < tableScalars; i++) maxDelta = Math.max(maxDelta, Math.abs(after[i]! - before[i]!));
   const live = maxDelta > 1e-6;
-  console.log(`LIVENESS (8 table Adam steps): maxTableDelta=${maxDelta.toExponential(3)} → ${live ? "PASS (tables LEARN)" : "FAIL (FROZEN)"}`);
+  console.log(`LIVENESS (8 table Adam steps, production HashGridTableTrainer): maxTableDelta=${maxDelta.toExponential(3)} → ${live ? "PASS (tables LEARN)" : "FAIL (FROZEN)"}`);
 
   console.log(JSON.stringify({ scatterOK, live }));
   device.destroy?.();

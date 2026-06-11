@@ -9,6 +9,15 @@ import { asMat4, type Mat4, type Scene, type ScenePrimitive, type Vec3 } from '@
 import { buildArrayBvh, isLeafSplit } from './buildArrayBvh.js';
 import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
 import { buildTlas, refitTlas } from './tlas.js';
+import { invertMat4 as _invertMat4 } from './mathUtils.js';
+import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided } from './splicePack.js';
+
+// ── Back-compat re-exports from extracted modules ─────────────────────────────
+// These were previously defined in this file; they are now canonical in their
+// new modules. The re-exports keep all existing `from './scenePack.js'` imports
+// working without change (D11.1 back-compat guarantee).
+export { invertMat4 } from './mathUtils.js';
+export { rebaseLeafTriOffset, copyVec4Strided } from './splicePack.js';
 
 const IDENTITY_MAT4 = asMat4([
   1, 0, 0, 0,
@@ -87,47 +96,6 @@ interface PendingTlasInstance {
   readonly worldToLocal: Float32Array;
   readonly localToWorld: Float32Array;
   readonly blasRoot: number;
-}
-
-export function invertMat4(m: Mat4): Float32Array | null {
-  const at = (index: number): number => m[index] ?? 0;
-  const out = new Float32Array(16);
-  const a00 = at(0), a01 = at(1), a02 = at(2), a03 = at(3);
-  const a10 = at(4), a11 = at(5), a12 = at(6), a13 = at(7);
-  const a20 = at(8), a21 = at(9), a22 = at(10), a23 = at(11);
-  const a30 = at(12), a31 = at(13), a32 = at(14), a33 = at(15);
-  const b00 = a00 * a11 - a01 * a10;
-  const b01 = a00 * a12 - a02 * a10;
-  const b02 = a00 * a13 - a03 * a10;
-  const b03 = a01 * a12 - a02 * a11;
-  const b04 = a01 * a13 - a03 * a11;
-  const b05 = a02 * a13 - a03 * a12;
-  const b06 = a20 * a31 - a21 * a30;
-  const b07 = a20 * a32 - a22 * a30;
-  const b08 = a20 * a33 - a23 * a30;
-  const b09 = a21 * a32 - a22 * a31;
-  const b10 = a21 * a33 - a23 * a31;
-  const b11 = a22 * a33 - a23 * a32;
-  const det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (Math.abs(det) < 1e-10) return null;
-  const invDet = 1.0 / det;
-  out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * invDet;
-  out[1] = (-a01 * b11 + a02 * b10 - a03 * b09) * invDet;
-  out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * invDet;
-  out[3] = (-a21 * b05 + a22 * b04 - a23 * b03) * invDet;
-  out[4] = (-a10 * b11 + a12 * b08 - a13 * b07) * invDet;
-  out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * invDet;
-  out[6] = (-a30 * b05 + a32 * b02 - a33 * b01) * invDet;
-  out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * invDet;
-  out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * invDet;
-  out[9] = (-a00 * b10 + a01 * b08 - a03 * b06) * invDet;
-  out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * invDet;
-  out[11] = (-a20 * b04 + a21 * b02 - a23 * b00) * invDet;
-  out[12] = (-a10 * b09 + a11 * b07 - a12 * b06) * invDet;
-  out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * invDet;
-  out[14] = (-a30 * b03 + a31 * b01 - a32 * b00) * invDet;
-  out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
-  return out;
 }
 
 function transformPoint(m: Mat4, p: Vec3): [number, number, number] {
@@ -416,7 +384,7 @@ function resolveOneTransform(
   blasRoot: number,
 ): ResolvedInstance {
   const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-  const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
+  const maybeWorldToLocal = _invertMat4(candidateLocalToWorld);
   const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
   const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
   const worldAabb = transformAabb(localAabbMin, localAabbMax, localToWorld);
@@ -481,59 +449,6 @@ function collectTlasInstancesFromBindings(
     }
   }
   return { ok: true, instances };
-}
-
-/**
- * Copy one 8-word BVH node from `src` (at `srcWordBase`) into `dst` (at
- * `dstWordBase`), adding `leafTriDelta` to word[6] iff the node is a LEAF.
- *
- * Word[6] of a leaf is a GLOBAL triangle offset; of an interior node it is a
- * RELATIVE child offset (which must NOT shift when the subtree moves rigidly).
- * Shared by both BLAS-splice paths — an off-by-one here silently corrupts BVH
- * traversal, so it lives in exactly one place.
- */
-function rebaseLeafTriOffset(
-  dst: Uint32Array,
-  dstWordBase: number,
-  src: ArrayLike<number>,
-  srcWordBase: number,
-  leafTriDelta: number,
-): void {
-  const splitOrCount = src[srcWordBase + 7] ?? 0;
-  const isLeaf = isLeafSplit(splitOrCount);
-  dst[dstWordBase] = src[srcWordBase] ?? 0;
-  dst[dstWordBase + 1] = src[srcWordBase + 1] ?? 0;
-  dst[dstWordBase + 2] = src[srcWordBase + 2] ?? 0;
-  dst[dstWordBase + 3] = src[srcWordBase + 3] ?? 0;
-  dst[dstWordBase + 4] = src[srcWordBase + 4] ?? 0;
-  dst[dstWordBase + 5] = src[srcWordBase + 5] ?? 0;
-  dst[dstWordBase + 6] = isLeaf ? (src[srcWordBase + 6] ?? 0) + leafTriDelta : (src[srcWordBase + 6] ?? 0);
-  dst[dstWordBase + 7] = splitOrCount;
-}
-
-/**
- * Copy `triCount` stride-4 (vec4u) index triangles from `src` (starting at
- * triangle `srcTri`) into `dst` (starting at triangle `dstTri`), shifting each
- * of the three GLOBAL vertex refs (.x.y.z) by `vertexDelta` and zeroing the .w
- * padding lane. Also copies the parallel per-triangle material id.
- *
- * This is the downstream-rebase inner loop of the resize splice — the one place
- * a wrong stride or delta corrupts which vertices a triangle references.
- */
-function copyVec4Strided(
-  dstIndices: Uint32Array,
-  dstTriMaterialIds: Uint32Array,
-  srcIndices: Uint32Array,
-  srcTriMaterialIds: Uint32Array,
-  srcTri: number,
-  dstTri: number,
-  vertexDelta: number,
-): void {
-  for (let k = 0; k < 3; k += 1) {
-    dstIndices[dstTri * 4 + k] = (srcIndices[srcTri * 4 + k] ?? 0) + vertexDelta;
-  }
-  dstIndices[dstTri * 4 + 3] = 0;
-  dstTriMaterialIds[dstTri] = srcTriMaterialIds[srcTri] ?? 0;
 }
 
 /**
@@ -633,7 +548,7 @@ function spliceResizedPrimitiveBlasIntoPack(
   }
   // Downstream triangles: copy with vertex refs shifted by deltaVert.
   for (let t = oldTriEnd; t < prevTotalTris; t += 1) {
-    copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
+    _copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
   }
 
   // ── BVH nodes (BVH_NODE_FLOATS words/node) ───────────────────────────────
@@ -645,13 +560,13 @@ function spliceResizedPrimitiveBlasIntoPack(
   // its (unchanged) triStart.
   const newBlasRoot = oldNodeStart; // unchanged for the spliced primitive
   for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
-    rebaseLeafTriOffset(newNodeView, newBlasRoot * BVH_NODE_FLOATS + n, slice.bvhNodeWords, n, binding.triStart);
+    _rebaseLeafTriOffset(newNodeView, newBlasRoot * BVH_NODE_FLOATS + n, slice.bvhNodeWords, n, binding.triStart);
   }
   // Downstream nodes shifted by deltaNode. Leaf global tri offsets shift by
   // deltaTri; interior relative child offsets are unchanged (the subtree shape
   // moves rigidly).
   for (let n = oldNodeEnd; n < prevTotalNodes; n += 1) {
-    rebaseLeafTriOffset(newNodeView, (n + deltaNode) * BVH_NODE_FLOATS, prevNodeView, n * BVH_NODE_FLOATS, deltaTri);
+    _rebaseLeafTriOffset(newNodeView, (n + deltaNode) * BVH_NODE_FLOATS, prevNodeView, n * BVH_NODE_FLOATS, deltaTri);
   }
 
   const bvhNodes = new Float32Array(newNodeView.buffer);
@@ -764,7 +679,7 @@ function splicePrimitiveBlasIntoPack(
   const nodeWordStart = nodeStart * BVH_NODE_FLOATS;
   const nodeView = new Uint32Array(bvhNodes.buffer);
   for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
-    rebaseLeafTriOffset(nodeView, nodeWordStart + n, slice.bvhNodeWords, n, binding.triStart);
+    _rebaseLeafTriOffset(nodeView, nodeWordStart + n, slice.bvhNodeWords, n, binding.triStart);
   }
 
   const primitiveTlasBindings = prev.primitiveTlasBindings.map((b, i) =>

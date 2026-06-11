@@ -27,7 +27,7 @@
 //   - KHR_lights_punctual extension
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md
 
-import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, MaterialSpec, Mat4 } from '@vitrum/core';
 import type { GltfJson, KhrLightsPunctualRoot } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 import type { DecodeImageFn } from './textures.js';
@@ -229,53 +229,10 @@ export async function gltfToScene(
     // ── Skin data for this node (if any) ──────────────────────────────────
     // glTF 2.0 §3.8: a node may reference a skin by index. All primitives in
     // the node's mesh share the same skin.
-    const skinIdx = node.skin;
-    const gltfSkin = skinIdx !== undefined ? gltfSkins[skinIdx] : undefined;
-
-    // Build per-joint rest-pose bone matrices (world transforms of joint nodes).
-    // We use the same worldTransforms map already computed from the scene graph,
-    // so the joint matrices are in world space — matching SkinnedMeshPrimitive
-    // contract: `bones` = bone-local-to-world column-major f32s.
-    let bones: Float32Array | undefined;
-    let boneInverses: Float32Array | undefined;
-    if (gltfSkin) {
-      const jointCount = gltfSkin.joints.length;
-      bones = new Float32Array(jointCount * 16);
-      for (let j = 0; j < jointCount; j++) {
-        const jointNodeIdx = gltfSkin.joints[j]!;
-        const jointWorld = worldTransforms.get(jointNodeIdx);
-        if (jointWorld) {
-          for (let k = 0; k < 16; k++) {
-            bones[j * 16 + k] = jointWorld[k] ?? 0;
-          }
-        } else {
-          // Joint node not in the scene graph — use identity.
-          bones[j * 16 + 0] = 1; bones[j * 16 + 5] = 1;
-          bones[j * 16 + 10] = 1; bones[j * 16 + 15] = 1;
-        }
-      }
-
-      // Inverse bind matrices — required by glTF spec to exist when skinning is
-      // used, though the accessor is technically optional (identity if absent).
-      if (gltfSkin.inverseBindMatrices !== undefined) {
-        try {
-          boneInverses = unpackAccessorFloat(gltf, buffers, gltfSkin.inverseBindMatrices, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
-              String(e) + '. Using identity inverses.',
-          );
-        }
-      }
-      if (!boneInverses || boneInverses.length < jointCount * 16) {
-        // Spec fallback: identity inverse bind matrices.
-        boneInverses = new Float32Array(jointCount * 16);
-        for (let j = 0; j < jointCount; j++) {
-          boneInverses[j * 16 + 0] = 1; boneInverses[j * 16 + 5] = 1;
-          boneInverses[j * 16 + 10] = 1; boneInverses[j * 16 + 15] = 1;
-        }
-      }
-    }
+    const skinData = _extractSkinData(
+      gltf, buffers, gltfSkins, node.skin, worldTransforms, warnings,
+    );
+    const { bones, boneInverses } = skinData ?? {};
 
     for (const prim of mesh.primitives) {
       // Mode check — only TRIANGLES (4) or absent (default=4) is supported.
@@ -338,88 +295,53 @@ export async function gltfToScene(
         }
       }
 
-      // Normals — generate flat normals if absent.
-      let normals: Float32Array;
+      // Normals — generate flat normals if absent or unreadable.
       const normIdx = prim.attributes['NORMAL'];
-      if (normIdx !== undefined) {
-        try {
-          normals = unpackAccessorFloat(gltf, buffers, normIdx, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read NORMAL for mesh "${mesh.name ?? node.mesh}": ` +
-              String(e) + '. Generating flat normals.',
-          );
-          normals = generateFlatNormals(positions, indices);
-        }
-      } else {
+      const normAttempt = _tryUnpackFloat(
+        gltf, buffers, normIdx,
+        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings,
+      );
+      if (normAttempt === undefined && normIdx === undefined) {
         warnings.push(
           `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
             'Generating flat normals.',
         );
-        normals = generateFlatNormals(positions, indices);
+      } else if (normAttempt === undefined) {
+        warnings.push(
+          `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
+            'Generating flat normals.',
+        );
       }
+      const normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
 
       // UVs — optional.
-      let uvs: Float32Array | undefined;
-      const uv0Idx = prim.attributes['TEXCOORD_0'];
-      if (uv0Idx !== undefined) {
-        try {
-          uvs = unpackAccessorFloat(gltf, buffers, uv0Idx, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read TEXCOORD_0 for "${mesh.name ?? node.mesh}": ` +
-              String(e),
-          );
-        }
-      }
-
-      let uv1: Float32Array | undefined;
-      const uv1Idx = prim.attributes['TEXCOORD_1'];
-      if (uv1Idx !== undefined) {
-        try {
-          uv1 = unpackAccessorFloat(gltf, buffers, uv1Idx, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read TEXCOORD_1 for "${mesh.name ?? node.mesh}": ` +
-              String(e),
-          );
-        }
-      }
+      const uvs = _tryUnpackFloat(
+        gltf, buffers, prim.attributes['TEXCOORD_0'],
+        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings,
+      );
+      const uv1 = _tryUnpackFloat(
+        gltf, buffers, prim.attributes['TEXCOORD_1'],
+        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings,
+      );
 
       // Tangents — optional (xyzw per vertex).
-      let tangents: Float32Array | undefined;
-      const tangentIdx = prim.attributes['TANGENT'];
-      if (tangentIdx !== undefined) {
-        try {
-          tangents = unpackAccessorFloat(gltf, buffers, tangentIdx, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read TANGENT for "${mesh.name ?? node.mesh}": ` +
-              String(e),
-          );
-        }
-      }
+      const tangents = _tryUnpackFloat(
+        gltf, buffers, prim.attributes['TANGENT'],
+        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings,
+      );
 
       // Vertex colors — optional (COLOR_0).
-      let colors: Float32Array | undefined;
-      const colorIdx = prim.attributes['COLOR_0'];
-      if (colorIdx !== undefined) {
-        try {
-          colors = unpackAccessorFloat(gltf, buffers, colorIdx, warnings);
-        } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read COLOR_0 for "${mesh.name ?? node.mesh}": ` +
-              String(e),
-          );
-        }
-      }
+      const colors = _tryUnpackFloat(
+        gltf, buffers, prim.attributes['COLOR_0'],
+        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings,
+      );
 
       // ── Skinning attributes ────────────────────────────────────────────────
       // Only unpacked when this node has a skin; JOINTS_0 / WEIGHTS_0 without a
       // node.skin are silently ignored (they carry no semantics without a skin).
       let skinIndices: Uint32Array | undefined;
       let skinWeights: Float32Array | undefined;
-      if (gltfSkin && bones && boneInverses) {
+      if (skinData && bones && boneInverses) {
         const jointsIdx = prim.attributes['JOINTS_0'];
         const weightsIdx = prim.attributes['WEIGHTS_0'];
         if (jointsIdx !== undefined && weightsIdx !== undefined) {
@@ -474,44 +396,16 @@ export async function gltfToScene(
 
       const id = `gltf-prim-${primIdCounter++}`;
 
-      if (skinIndices && skinWeights && bones && boneInverses) {
-        // ── SkinnedMeshPrimitive ─────────────────────────────────────────────
-        // glTF §3.8: for typical glTF files (mesh at origin, bind at origin),
-        // bindMatrix is identity and can be omitted. Pose = rest pose from the
-        // scene graph (animations are not imported).
-        primitives.push({
-          kind: 'skinned-mesh',
-          id,
-          positions,
-          normals,
-          ...(uvs ? { uvs } : {}),
-          ...(uv1 ? { uv1 } : {}),
-          ...(tangents ? { tangents } : {}),
-          ...(colors ? { colors } : {}),
-          ...(indices ? { indices } : {}),
-          skinIndices,
-          skinWeights,
-          bones,
-          boneInverses,
-          material,
-          transform: worldMat,
-        });
-      } else {
-        // ── MeshPrimitive ────────────────────────────────────────────────────
-        primitives.push({
-          kind: 'mesh',
-          id,
-          positions,
-          normals,
-          ...(uvs ? { uvs } : {}),
-          ...(uv1 ? { uv1 } : {}),
-          ...(tangents ? { tangents } : {}),
-          ...(colors ? { colors } : {}),
-          ...(indices ? { indices } : {}),
-          material,
-          transform: worldMat,
-        });
-      }
+      // glTF §3.8: for typical glTF files (mesh at origin, bind at origin),
+      // bindMatrix is identity and can be omitted. Pose = rest pose from the
+      // scene graph (animations are not imported).
+      const skinArg = (skinIndices && skinWeights && bones && boneInverses)
+        ? { skinIndices, skinWeights, bones, boneInverses }
+        : undefined;
+      primitives.push(_buildPrimitive(
+        id, worldMat, positions, normals, indices,
+        uvs, uv1, tangents, colors, material, skinArg,
+      ));
     }
   }
 
@@ -557,87 +451,9 @@ export async function gltfToScene(
         continue;
       }
 
-      const color: [number, number, number] = light.color
-        ? [light.color[0], light.color[1], light.color[2]]
-        : [1, 1, 1];
-      const intensity = light.intensity ?? 1;
       const id = `gltf-light-${emitterIdCounter++}`;
-
-      // Extract world-space position from the node's world matrix (column 3).
-      // Column-major 4×4: translation is at indices 12, 13, 14.
-      const px = worldMat[12] ?? 0;
-      const py = worldMat[13] ?? 0;
-      const pz = worldMat[14] ?? 0;
-
-      // Extract the forward direction (-Z in glTF/node space) transformed to world.
-      // In a column-major matrix, the local Z axis (third column) is at indices 8,9,10.
-      // glTF lights point along -Z in their local space.
-      const lzx = -(worldMat[8] ?? 0);
-      const lzy = -(worldMat[9] ?? 0);
-      const lzz = -(worldMat[10] ?? 0);
-      const lzLen = Math.hypot(lzx, lzy, lzz);
-      const dirX = lzLen > 1e-10 ? lzx / lzLen : 0;
-      const dirY = lzLen > 1e-10 ? lzy / lzLen : 0;
-      const dirZ = lzLen > 1e-10 ? lzz / lzLen : 1;
-
-      switch (light.type) {
-        case 'point':
-          emitters.push({
-            kind: 'point',
-            id,
-            color,
-            intensity,
-            position: [px, py, pz],
-            ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
-            decay: 2, // glTF punctual always uses physical inverse-square falloff
-          });
-          break;
-
-        case 'spot': {
-          // glTF innerConeAngle / outerConeAngle are half-angles in radians.
-          // vitrum SpotEmitter.angle = half-cone angle in radians (= outerConeAngle).
-          // vitrum SpotEmitter.penumbra = 0..1 blend fraction from inner to outer edge.
-          const inner = light.spot?.innerConeAngle ?? 0;
-          const outer = light.spot?.outerConeAngle ?? (Math.PI / 4);
-          // penumbra: fraction of the cone that is the penumbra band.
-          // 0 = hard edge (inner === outer), 1 = full penumbra (inner === 0).
-          const penumbra = outer > 1e-10 ? 1 - inner / outer : 0;
-          emitters.push({
-            kind: 'spot',
-            id,
-            color,
-            intensity,
-            position: [px, py, pz],
-            direction: [dirX, dirY, dirZ],
-            angle: outer,
-            penumbra: Math.max(0, Math.min(1, penumbra)),
-            ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
-            decay: 2, // physical inverse-square
-          });
-          break;
-        }
-
-        case 'directional':
-          // Core contract: DirectionalEmitter.direction points AT the light
-          // (i.e., the direction light COMES FROM in the scene). In glTF, the
-          // light faces -Z in local space, so the world-space -Z column is the
-          // direction rays travel FROM the light. Negate once more so that
-          // direction = "toward the light source" per core contract.
-          emitters.push({
-            kind: 'directional',
-            id,
-            color,
-            intensity,
-            direction: [-dirX, -dirY, -dirZ],
-          });
-          break;
-
-        default:
-          warnings.push(
-            `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
-              `has unsupported type "${(light as { type: string }).type}". Emitter skipped.`,
-          );
-      }
+      const emitter = _convertPunctualLight(light, worldMat, id, warnings);
+      if (emitter) emitters.push(emitter);
     }
   }
 
@@ -651,6 +467,207 @@ export async function gltfToScene(
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Attempt to unpack a float accessor, returning `undefined` and appending a
+ * warning on failure.  Used for optional attributes (NORMAL, TEXCOORD_*, etc.)
+ * that the caller may substitute or skip when missing.
+ */
+function _tryUnpackFloat(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  accessorIndex: number | undefined,
+  label: string,
+  warnings: string[],
+): Float32Array | undefined {
+  if (accessorIndex === undefined) return undefined;
+  try {
+    return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings);
+  } catch (e) {
+    warnings.push(`[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`);
+    return undefined;
+  }
+}
+
+interface SkinData {
+  bones: Float32Array;
+  boneInverses: Float32Array;
+}
+
+/**
+ * Build rest-pose bone matrices and inverse bind matrices for a glTF skin.
+ * Returns `undefined` if the node has no skin.
+ */
+function _extractSkinData(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  gltfSkins: NonNullable<GltfJson['skins']>,
+  skinIdx: number | undefined,
+  worldTransforms: Map<number, Float32Array>,
+  warnings: string[],
+): SkinData | undefined {
+  if (skinIdx === undefined) return undefined;
+  const gltfSkin = gltfSkins[skinIdx];
+  if (!gltfSkin) return undefined;
+
+  const jointCount = gltfSkin.joints.length;
+  const bones = new Float32Array(jointCount * 16);
+  for (let j = 0; j < jointCount; j++) {
+    const jointNodeIdx = gltfSkin.joints[j]!;
+    const jointWorld = worldTransforms.get(jointNodeIdx);
+    if (jointWorld) {
+      for (let k = 0; k < 16; k++) {
+        bones[j * 16 + k] = jointWorld[k] ?? 0;
+      }
+    } else {
+      // Joint node not in the scene graph — use identity.
+      bones[j * 16 + 0] = 1; bones[j * 16 + 5] = 1;
+      bones[j * 16 + 10] = 1; bones[j * 16 + 15] = 1;
+    }
+  }
+
+  let boneInverses: Float32Array | undefined;
+  if (gltfSkin.inverseBindMatrices !== undefined) {
+    try {
+      boneInverses = unpackAccessorFloat(gltf, buffers, gltfSkin.inverseBindMatrices, warnings);
+    } catch (e) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
+          String(e) + '. Using identity inverses.',
+      );
+    }
+  }
+  if (!boneInverses || boneInverses.length < jointCount * 16) {
+    boneInverses = new Float32Array(jointCount * 16);
+    for (let j = 0; j < jointCount; j++) {
+      boneInverses[j * 16 + 0] = 1; boneInverses[j * 16 + 5] = 1;
+      boneInverses[j * 16 + 10] = 1; boneInverses[j * 16 + 15] = 1;
+    }
+  }
+
+  return { bones, boneInverses };
+}
+
+/**
+ * Assemble a ScenePrimitive from already-unpacked attribute buffers.
+ * Returns a skinned or static primitive depending on which optional fields
+ * are present.
+ */
+function _buildPrimitive(
+  id: string,
+  worldMat: Mat4,
+  positions: Float32Array,
+  normals: Float32Array,
+  indices: Uint32Array | undefined,
+  uvs: Float32Array | undefined,
+  uv1: Float32Array | undefined,
+  tangents: Float32Array | undefined,
+  colors: Float32Array | undefined,
+  material: MaterialSpec,
+  skin?: { skinIndices: Uint32Array; skinWeights: Float32Array; bones: Float32Array; boneInverses: Float32Array },
+): ScenePrimitive {
+  const base = {
+    id,
+    positions,
+    normals,
+    ...(uvs ? { uvs } : {}),
+    ...(uv1 ? { uv1 } : {}),
+    ...(tangents ? { tangents } : {}),
+    ...(colors ? { colors } : {}),
+    ...(indices ? { indices } : {}),
+    material,
+    transform: worldMat,
+  };
+  if (skin) {
+    return {
+      kind: 'skinned-mesh' as const,
+      ...base,
+      skinIndices: skin.skinIndices,
+      skinWeights: skin.skinWeights,
+      bones: skin.bones,
+      boneInverses: skin.boneInverses,
+    };
+  }
+  return { kind: 'mesh' as const, ...base };
+}
+
+/**
+ * Convert one KHR_lights_punctual light (with its node world transform) to a
+ * core SceneEmitter. Returns `null` if the light type is unsupported.
+ */
+function _convertPunctualLight(
+  light: NonNullable<KhrLightsPunctualRoot['lights']>[number],
+  worldMat: Mat4,
+  id: string,
+  warnings: string[],
+): SceneEmitter | null {
+  const color: [number, number, number] = light.color
+    ? [light.color[0], light.color[1], light.color[2]]
+    : [1, 1, 1];
+  const intensity = light.intensity ?? 1;
+
+  // Column-major 4×4: translation at indices 12, 13, 14.
+  const px = worldMat[12] ?? 0;
+  const py = worldMat[13] ?? 0;
+  const pz = worldMat[14] ?? 0;
+
+  // glTF lights point along -Z in local space; world -Z column is at indices 8,9,10.
+  const lzx = -(worldMat[8] ?? 0);
+  const lzy = -(worldMat[9] ?? 0);
+  const lzz = -(worldMat[10] ?? 0);
+  const lzLen = Math.hypot(lzx, lzy, lzz);
+  const dirX = lzLen > 1e-10 ? lzx / lzLen : 0;
+  const dirY = lzLen > 1e-10 ? lzy / lzLen : 0;
+  const dirZ = lzLen > 1e-10 ? lzz / lzLen : 1;
+
+  switch (light.type) {
+    case 'point':
+      return {
+        kind: 'point',
+        id,
+        color,
+        intensity,
+        position: [px, py, pz],
+        ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
+        decay: 2, // glTF punctual always uses physical inverse-square falloff
+      };
+
+    case 'spot': {
+      const inner = light.spot?.innerConeAngle ?? 0;
+      const outer = light.spot?.outerConeAngle ?? (Math.PI / 4);
+      const penumbra = outer > 1e-10 ? 1 - inner / outer : 0;
+      return {
+        kind: 'spot',
+        id,
+        color,
+        intensity,
+        position: [px, py, pz],
+        direction: [dirX, dirY, dirZ],
+        angle: outer,
+        penumbra: Math.max(0, Math.min(1, penumbra)),
+        ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
+        decay: 2,
+      };
+    }
+
+    case 'directional':
+      // Core contract: direction points AT the light (toward source).
+      return {
+        kind: 'directional',
+        id,
+        color,
+        intensity,
+        direction: [-dirX, -dirY, -dirZ],
+      };
+
+    default:
+      warnings.push(
+        `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
+          `has unsupported type "${(light as { type: string }).type}". Emitter skipped.`,
+      );
+      return null;
+  }
+}
 
 /**
  * Unpack a JOINTS_0 accessor into a Uint32Array (4 indices per vertex).

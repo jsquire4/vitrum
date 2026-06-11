@@ -13,6 +13,10 @@
 // not blending.  It has no MaterialSpec field, so we attach it to extensions.
 //
 // KHR_materials_emissive_strength: scales emissiveIntensity (default 1).
+//
+// D13.5: per-extension parsers extracted to private helpers (_parse*Ext).
+// Each returns a Partial<MaterialSpec> merged into the final spec at the end.
+// This keeps the 215-line convertMaterial down to a flat base-PBR + merge.
 
 import type { GltfMaterial } from './gltfTypes.js';
 import type { MaterialSpec, Vec3 } from '@vitrum/core';
@@ -30,6 +34,186 @@ const KNOWN_KHR_EXTENSIONS = new Set([
   'KHR_materials_emissive_strength',
   'KHR_texture_transform', // per-texture, handled at TextureRef level
 ]);
+
+// ── Per-extension parsers (D13.5) ──────────────────────────────────────────────
+
+function _parseTransmissionExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const txExt = ext['KHR_materials_transmission'] as
+    | { transmissionFactor?: number; transmissionTexture?: { index: number; texCoord?: number } }
+    | undefined;
+  if (!txExt) return {};
+  const transmission = txExt.transmissionFactor ?? 0;
+  const transmissionMap = resolveTextureRef(txExt.transmissionTexture, handleMap);
+  return {
+    ...(transmission > 0 ? { transmission } : {}),
+    ...(transmissionMap ? { transmissionMap } : {}),
+  };
+}
+
+function _parseVolumeExt(
+  ext: Record<string, unknown>,
+): Partial<MaterialSpec> {
+  const volExt = ext['KHR_materials_volume'] as
+    | { thicknessFactor?: number; attenuationDistance?: number; attenuationColor?: [number, number, number] }
+    | undefined;
+  if (!volExt) return {};
+  const thickness = volExt.thicknessFactor ?? 0;
+  const attenuationDistance = volExt.attenuationDistance ?? Infinity;
+  const attenuationColor: Vec3 | undefined = volExt.attenuationColor;
+  return {
+    thickness,
+    attenuationDistance,
+    ...(attenuationColor ? { attenuationColor } : {}),
+  };
+}
+
+function _parseIorExt(ext: Record<string, unknown>): Partial<MaterialSpec> {
+  const iorExt = ext['KHR_materials_ior'] as { ior?: number } | undefined;
+  if (!iorExt) return {};
+  return { ior: iorExt.ior ?? 1.5 };
+}
+
+function _parseSpecularExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const specExt = ext['KHR_materials_specular'] as
+    | {
+        specularFactor?: number;
+        specularTexture?: { index: number; texCoord?: number };
+        specularColorFactor?: [number, number, number];
+        specularColorTexture?: { index: number; texCoord?: number };
+      }
+    | undefined;
+  if (!specExt) return {};
+  const specularIntensity = specExt.specularFactor ?? 1;
+  const specularColor: Vec3 | undefined = specExt.specularColorFactor;
+  const specularIntensityMap = resolveTextureRef(specExt.specularTexture, handleMap);
+  const specularColorMap = resolveTextureRef(specExt.specularColorTexture, handleMap);
+  return {
+    ...(specularIntensity !== 1 ? { specularIntensity } : {}),
+    ...(specularColor ? { specularColor } : {}),
+    ...(specularIntensityMap ? { specularIntensityMap } : {}),
+    ...(specularColorMap ? { specularColorMap } : {}),
+  };
+}
+
+function _parseSheenExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const sheenExt = ext['KHR_materials_sheen'] as
+    | {
+        sheenColorFactor?: [number, number, number];
+        sheenColorTexture?: { index: number; texCoord?: number };
+        sheenRoughnessFactor?: number;
+        sheenRoughnessTexture?: { index: number; texCoord?: number };
+      }
+    | undefined;
+  if (!sheenExt) return {};
+  const sheenColor: Vec3 | undefined = sheenExt.sheenColorFactor;
+  const sheenRoughness = sheenExt.sheenRoughnessFactor ?? 0;
+  const sheenColorMap = resolveTextureRef(sheenExt.sheenColorTexture, handleMap);
+  const sheenRoughnessMap = resolveTextureRef(sheenExt.sheenRoughnessTexture, handleMap);
+  return {
+    sheen: 1 as const,
+    sheenRoughness,
+    ...(sheenColor ? { sheenColor } : {}),
+    ...(sheenColorMap ? { sheenColorMap } : {}),
+    ...(sheenRoughnessMap ? { sheenRoughnessMap } : {}),
+  };
+}
+
+function _parseClearcoatExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const ccExt = ext['KHR_materials_clearcoat'] as
+    | {
+        clearcoatFactor?: number;
+        clearcoatTexture?: { index: number; texCoord?: number };
+        clearcoatRoughnessFactor?: number;
+        clearcoatRoughnessTexture?: { index: number; texCoord?: number };
+        clearcoatNormalTexture?: { index: number; texCoord?: number; scale?: number };
+      }
+    | undefined;
+  if (!ccExt) return {};
+  const clearcoat = ccExt.clearcoatFactor ?? 0;
+  if (clearcoat <= 0) return {};
+  const clearcoatRoughness = ccExt.clearcoatRoughnessFactor ?? 0;
+  const clearcoatMap = resolveTextureRef(ccExt.clearcoatTexture, handleMap);
+  const clearcoatRoughnessMap = resolveTextureRef(ccExt.clearcoatRoughnessTexture, handleMap);
+  const clearcoatNormalMap = resolveTextureRef(ccExt.clearcoatNormalTexture, handleMap);
+  const clearcoatNormalScale = (ccExt.clearcoatNormalTexture as { scale?: number } | undefined)?.scale ?? 1;
+  return {
+    clearcoat,
+    clearcoatRoughness,
+    ...(clearcoatMap ? { clearcoatMap } : {}),
+    ...(clearcoatRoughnessMap ? { clearcoatRoughnessMap } : {}),
+    ...(clearcoatNormalMap ? { clearcoatNormalMap } : {}),
+    ...(clearcoatNormalScale !== 1 ? { clearcoatNormalScale } : {}),
+  };
+}
+
+function _parseIridescenceExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const iridExt = ext['KHR_materials_iridescence'] as
+    | {
+        iridescenceFactor?: number;
+        iridescenceTexture?: { index: number; texCoord?: number };
+        iridescenceIor?: number;
+        iridescenceThicknessMinimum?: number;
+        iridescenceThicknessMaximum?: number;
+        iridescenceThicknessTexture?: { index: number; texCoord?: number };
+      }
+    | undefined;
+  if (!iridExt) return {};
+  const iridescence = iridExt.iridescenceFactor ?? 0;
+  if (iridescence <= 0) return {};
+  const iridescenceIor = iridExt.iridescenceIor ?? 1.3;
+  const iridescenceThicknessRange: readonly [number, number] = [
+    iridExt.iridescenceThicknessMinimum ?? 100,
+    iridExt.iridescenceThicknessMaximum ?? 400,
+  ];
+  const iridescenceMap = resolveTextureRef(iridExt.iridescenceTexture, handleMap);
+  const iridescenceThicknessMap = resolveTextureRef(iridExt.iridescenceThicknessTexture, handleMap);
+  return {
+    iridescence,
+    iridescenceIor,
+    iridescenceThicknessRange,
+    ...(iridescenceMap ? { iridescenceMap } : {}),
+    ...(iridescenceThicknessMap ? { iridescenceThicknessMap } : {}),
+  };
+}
+
+function _parseAnisotropyExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+): Partial<MaterialSpec> {
+  const anisoExt = ext['KHR_materials_anisotropy'] as
+    | {
+        anisotropyStrength?: number;
+        anisotropyRotation?: number;
+        anisotropyTexture?: { index: number; texCoord?: number };
+      }
+    | undefined;
+  if (!anisoExt) return {};
+  const anisotropy = anisoExt.anisotropyStrength ?? 0;
+  const anisotropyRotation = anisoExt.anisotropyRotation ?? 0;
+  const anisotropyMap = resolveTextureRef(anisoExt.anisotropyTexture, handleMap);
+  return {
+    anisotropy,
+    anisotropyRotation,
+    ...(anisotropyMap ? { anisotropyMap } : {}),
+  };
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
  * Convert one glTF material to a core MaterialSpec.
@@ -87,111 +271,7 @@ export function convertMaterial(
   // Combine baseColor alpha factor into opacity for blend/mask materials.
   const opacity = baseColorAlpha < 1 && alphaMode !== 'opaque' ? baseColorAlpha : undefined;
 
-  // ── KHR_materials_transmission ────────────────────────────────────────────
-  const txExt = ext['KHR_materials_transmission'] as
-    | { transmissionFactor?: number; transmissionTexture?: { index: number; texCoord?: number } }
-    | undefined;
-  const transmission = txExt?.transmissionFactor ?? 0;
-  const transmissionMap = resolveTextureRef(txExt?.transmissionTexture, handleMap);
-
-  // ── KHR_materials_ior ─────────────────────────────────────────────────────
-  const iorExt = ext['KHR_materials_ior'] as { ior?: number } | undefined;
-  const ior = iorExt?.ior ?? 1.5;
-
-  // ── KHR_materials_volume ──────────────────────────────────────────────────
-  const volExt = ext['KHR_materials_volume'] as
-    | {
-        thicknessFactor?: number;
-        attenuationDistance?: number;
-        attenuationColor?: [number, number, number];
-      }
-    | undefined;
-  const thickness = volExt?.thicknessFactor ?? 0;
-  const attenuationDistance = volExt?.attenuationDistance ?? Infinity;
-  const attenuationColor: Vec3 | undefined = volExt?.attenuationColor;
-
-  // ── KHR_materials_specular ────────────────────────────────────────────────
-  const specExt = ext['KHR_materials_specular'] as
-    | {
-        specularFactor?: number;
-        specularTexture?: { index: number; texCoord?: number };
-        specularColorFactor?: [number, number, number];
-        specularColorTexture?: { index: number; texCoord?: number };
-      }
-    | undefined;
-  const specularIntensity = specExt?.specularFactor ?? 1;
-  const specularColor: Vec3 | undefined = specExt?.specularColorFactor;
-  const specularIntensityMap = resolveTextureRef(specExt?.specularTexture, handleMap);
-  const specularColorMap = resolveTextureRef(specExt?.specularColorTexture, handleMap);
-
-  // ── KHR_materials_sheen ───────────────────────────────────────────────────
-  const sheenExt = ext['KHR_materials_sheen'] as
-    | {
-        sheenColorFactor?: [number, number, number];
-        sheenColorTexture?: { index: number; texCoord?: number };
-        sheenRoughnessFactor?: number;
-        sheenRoughnessTexture?: { index: number; texCoord?: number };
-      }
-    | undefined;
-  const _sheen = sheenExt ? 1 : 0; // unused — kept for documentation of the computed value
-  const sheenColor: Vec3 | undefined = sheenExt?.sheenColorFactor;
-  const sheenRoughness = sheenExt?.sheenRoughnessFactor ?? 0;
-  const sheenColorMap = resolveTextureRef(sheenExt?.sheenColorTexture, handleMap);
-  const sheenRoughnessMap = resolveTextureRef(sheenExt?.sheenRoughnessTexture, handleMap);
-
-  // ── KHR_materials_clearcoat ───────────────────────────────────────────────
-  const ccExt = ext['KHR_materials_clearcoat'] as
-    | {
-        clearcoatFactor?: number;
-        clearcoatTexture?: { index: number; texCoord?: number };
-        clearcoatRoughnessFactor?: number;
-        clearcoatRoughnessTexture?: { index: number; texCoord?: number };
-        clearcoatNormalTexture?: { index: number; texCoord?: number; scale?: number };
-      }
-    | undefined;
-  const clearcoat = ccExt?.clearcoatFactor ?? 0;
-  const clearcoatRoughness = ccExt?.clearcoatRoughnessFactor ?? 0;
-  const clearcoatMap = resolveTextureRef(ccExt?.clearcoatTexture, handleMap);
-  const clearcoatRoughnessMap = resolveTextureRef(ccExt?.clearcoatRoughnessTexture, handleMap);
-  const clearcoatNormalMap = resolveTextureRef(ccExt?.clearcoatNormalTexture, handleMap);
-  const clearcoatNormalScale = (ccExt?.clearcoatNormalTexture as { scale?: number } | undefined)?.scale ?? 1;
-
-  // ── KHR_materials_iridescence ─────────────────────────────────────────────
-  const iridExt = ext['KHR_materials_iridescence'] as
-    | {
-        iridescenceFactor?: number;
-        iridescenceTexture?: { index: number; texCoord?: number };
-        iridescenceIor?: number;
-        iridescenceThicknessMinimum?: number;
-        iridescenceThicknessMaximum?: number;
-        iridescenceThicknessTexture?: { index: number; texCoord?: number };
-      }
-    | undefined;
-  const iridescence = iridExt?.iridescenceFactor ?? 0;
-  const iridescenceIor = iridExt?.iridescenceIor ?? 1.3;
-  const iridescenceThicknessRange =
-    iridExt
-      ? ([iridExt.iridescenceThicknessMinimum ?? 100, iridExt.iridescenceThicknessMaximum ?? 400] as const)
-      : undefined;
-  const iridescenceMap = resolveTextureRef(iridExt?.iridescenceTexture, handleMap);
-  const iridescenceThicknessMap = resolveTextureRef(
-    iridExt?.iridescenceThicknessTexture,
-    handleMap,
-  );
-
-  // ── KHR_materials_anisotropy ──────────────────────────────────────────────
-  const anisoExt = ext['KHR_materials_anisotropy'] as
-    | {
-        anisotropyStrength?: number;
-        anisotropyRotation?: number;
-        anisotropyTexture?: { index: number; texCoord?: number };
-      }
-    | undefined;
-  const anisotropy = anisoExt?.anisotropyStrength ?? 0;
-  const anisotropyRotation = anisoExt?.anisotropyRotation ?? 0;
-  const anisotropyMap = resolveTextureRef(anisoExt?.anisotropyTexture, handleMap);
-
-  // ── doubleSided (no MaterialSpec field — kept in extensions) ──────────────
+  // ── doubleSided ────────────────────────────────────────────────────────────
   const doubleSided = gltfMat.doubleSided ?? false;
 
   // ── Unknown extension warnings ────────────────────────────────────────────
@@ -203,6 +283,16 @@ export function convertMaterial(
       );
     }
   }
+
+  // ── Per-extension partial specs (D13.5) ────────────────────────────────────
+  const transmissionPartial = _parseTransmissionExt(ext, handleMap);
+  const volumePartial       = _parseVolumeExt(ext);
+  const iorPartial          = _parseIorExt(ext);
+  const specularPartial     = _parseSpecularExt(ext, handleMap);
+  const sheenPartial        = _parseSheenExt(ext, handleMap);
+  const clearcoatPartial    = _parseClearcoatExt(ext, handleMap);
+  const iridescencePartial  = _parseIridescenceExt(ext, handleMap);
+  const anisotropyPartial   = _parseAnisotropyExt(ext, handleMap);
 
   // ── Assemble MaterialSpec ─────────────────────────────────────────────────
   const mat: MaterialSpec = {
@@ -221,30 +311,14 @@ export function convertMaterial(
     ...(roughnessMap ? { roughnessMap } : {}),
     ...(aoMap ? { aoMap } : {}),
     ...(aoMapIntensity !== 1 ? { aoMapIntensity } : {}),
-    ...(transmission > 0 ? { transmission } : {}),
-    ...(transmissionMap ? { transmissionMap } : {}),
-    ...(iorExt ? { ior } : {}),
-    ...(volExt ? { thickness, attenuationDistance } : {}),
-    ...(attenuationColor ? { attenuationColor } : {}),
-    ...(specExt && specularIntensity !== 1 ? { specularIntensity } : {}),
-    ...(specularColor ? { specularColor } : {}),
-    ...(specularIntensityMap ? { specularIntensityMap } : {}),
-    ...(specularColorMap ? { specularColorMap } : {}),
-    ...(sheenExt ? { sheen: 1 as const, sheenRoughness } : {}),
-    ...(sheenColor ? { sheenColor } : {}),
-    ...(sheenColorMap ? { sheenColorMap } : {}),
-    ...(sheenRoughnessMap ? { sheenRoughnessMap } : {}),
-    ...(clearcoat > 0 ? { clearcoat, clearcoatRoughness } : {}),
-    ...(clearcoatMap ? { clearcoatMap } : {}),
-    ...(clearcoatRoughnessMap ? { clearcoatRoughnessMap } : {}),
-    ...(clearcoatNormalMap ? { clearcoatNormalMap } : {}),
-    ...(clearcoatNormalScale !== 1 ? { clearcoatNormalScale } : {}),
-    ...(iridescence > 0 ? { iridescence, iridescenceIor } : {}),
-    ...(iridescenceThicknessRange ? { iridescenceThicknessRange } : {}),
-    ...(iridescenceMap ? { iridescenceMap } : {}),
-    ...(iridescenceThicknessMap ? { iridescenceThicknessMap } : {}),
-    ...(anisoExt ? { anisotropy, anisotropyRotation } : {}),
-    ...(anisotropyMap ? { anisotropyMap } : {}),
+    ...transmissionPartial,
+    ...iorPartial,
+    ...volumePartial,
+    ...specularPartial,
+    ...sheenPartial,
+    ...clearcoatPartial,
+    ...iridescencePartial,
+    ...anisotropyPartial,
     extensions: {
       ...(doubleSided ? { doubleSided: true } : {}),
       // Preserve unknown extensions as raw data under their original key.

@@ -32,7 +32,7 @@
 import type { BGLCache } from './bindGroupLayouts.js';
 import type { FrameResources } from './resourceManager.js';
 import type { PassLabel } from './timestampQueries.js';
-import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
+import type { PipelineFrameInputs } from './pipelineFrameInputs.js';
 import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
 /** Engine-state surface a pass may inspect when deciding whether to run.

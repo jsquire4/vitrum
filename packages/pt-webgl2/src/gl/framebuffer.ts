@@ -9,6 +9,25 @@
 
 /** Allocate one RGBA32F, NEAREST, CLAMP_TO_EDGE color texture sized w×h (no data upload). */
 export function createColorTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
+  return createTexture(gl, w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT);
+}
+
+/**
+ * D10.11: Allocate one RGBA8 UNORM, NEAREST, CLAMP_TO_EDGE texture for the
+ * present (tonemapped) target. RGBA8 is sufficient for display output — the HDR
+ * precision lives in the RGBA32F accumulation target; the present target only
+ * needs enough precision for 8-bit display. `readPixels` from an RGBA8 FBO uses
+ * `UNSIGNED_BYTE` and values are in [0,255].
+ */
+export function createPresentTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
+  return createTexture(gl, w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+}
+
+/** Internal helper: allocate a 2D texture with the given internalFormat/format/type. */
+function createTexture(
+  gl: WebGL2RenderingContext, w: number, h: number,
+  internalFormat: number, format: number, type: number,
+): WebGLTexture {
   const tex = gl.createTexture();
   if (tex == null) throw new Error('pt-webgl2: failed to create render-target texture');
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -16,7 +35,7 @@ export function createColorTexture(gl: WebGL2RenderingContext, w: number, h: num
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
   gl.bindTexture(gl.TEXTURE_2D, null);
   return tex;
 }

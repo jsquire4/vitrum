@@ -1,4 +1,13 @@
 export * from './aabb.js';
+export {
+  mat4Mul,
+  mat4MulVec4,
+  v3Sub,
+  v3Cross,
+  v3Dot,
+  v3Normalize,
+  type V3,
+} from './mathUtils.js';
 export { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
 export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
@@ -10,6 +19,7 @@ export {
   mergeWorldSpaceFromCore,
   materialSig,
   DEFAULT_MERGE_FILTER,
+  HandleIdRegistry,
   type WorldSpaceMergeResult,
   type WorldSpaceMergeOptions,
   type MergedMeshVertexRange,

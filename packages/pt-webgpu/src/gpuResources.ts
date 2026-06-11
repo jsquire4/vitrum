@@ -48,6 +48,233 @@ import {
   RPT_GROUP0_BINDING_BASE,
 } from './wgsl/pathTrace/restirPtCompose.wgsl.js';
 
+// ── Module-level binding-layout helpers (D8.3) ─────────────────────────────
+// These are hoisted out of the per-method local-scope to eliminate the
+// duplication that previously existed between #buildSharedPipelineLayout and
+// #buildReservoirGroup0Layout.  All values are pure constants; the only
+// runtime dependency is GPUShaderStage.COMPUTE which is defined before any
+// GpuResources method can execute.
+
+/** All layout entries in this file are COMPUTE-only. */
+function _vis(): number { return GPUShaderStage.COMPUTE; }
+/** WGSL `var<storage, read>` → 'read-only-storage'. */
+const _ro: GPUBufferBindingLayout = { type: 'read-only-storage' };
+/** WGSL `var<storage, read_write>` → 'storage'. */
+const _rw: GPUBufferBindingLayout = { type: 'storage' };
+/** WGSL `var<uniform>` → 'uniform'. */
+const _uniform: GPUBufferBindingLayout = { type: 'uniform' };
+/** WGSL `texture_storage_2d<rgba16float, write>`. */
+const _storageTex: GPUStorageTextureBindingLayout = {
+  access: 'write-only',
+  format: 'rgba16float',
+  viewDimension: '2d',
+};
+/** Buffer binding entry. */
+function _buf(binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayoutEntry {
+  return { binding, visibility: _vis(), buffer: layout };
+}
+/** Storage texture (rgba16float write-only) binding entry. */
+function _tex(binding: number): GPUBindGroupLayoutEntry {
+  return { binding, visibility: _vis(), storageTexture: _storageTex };
+}
+/**
+ * Sampled texture (unfilterable-float 2d) binding entry — used by B12 lite-tier
+ * textures.  Trust-audit F2 (2026-06-10): rgba32float is UNFILTERABLE; declaring
+ * 'float' (filterable) made every lite-tier pipeline fail validation.
+ */
+function _sampledTex(binding: number): GPUBindGroupLayoutEntry {
+  return { binding, visibility: _vis(), texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } };
+}
+
+// ── D8.1 Sub-object: ReservoirResources ─────────────────────────────────────
+/**
+ * Owns the ReSTIR-PT reuse resources: reservoir ping-pong buffers, result
+ * buffer, params UBO, the four reuse compute pipelines + composite megakernel,
+ * and the cached per-pass reuse bind groups. Gated by `restirPtReuse &&
+ * traceTier === 'full'`. GpuResources delegates to this sub-object and exposes
+ * all its fields via read-write accessors so the existing external surface
+ * (index.ts / tests) remains byte-identical.
+ */
+class ReservoirResources {
+  /**
+   * Full-res ReservoirPTHero ping-pong buffers (144 B/px = 36 u32). `Cur` is the
+   * producer output that the temporal pass fuses in place; `Prev` is last frame's
+   * temporal output (read-only this frame). `swapReservoirs()` exchanges them at
+   * frame end so this frame's resolved reservoir becomes next frame's history.
+   * STORAGE | COPY_SRC | COPY_DST (COPY_* so a future readback / clear works).
+   */
+  rptReservoirCur: GPUBuffer | null = null;
+  rptReservoirPrev: GPUBuffer | null = null;
+  /** A1 — the SPATIAL pass output (post-temporal → spatial → resolve). The spatial
+   *  pass reads the temporal output (`Cur`) for neighbour sampling and writes here;
+   *  resolve reads this. A dedicated buffer (not a ping-pong slot) so the spatial
+   *  pass never writes the slot it samples (hazard-free neighbour reads). */
+  rptReservoirSpatial: GPUBuffer | null = null;
+  /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
+   *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
+  rptResultBuffer: GPUBuffer | null = null;
+  /** RestirPtParams UBO (32 B: width/height/mClamp/_padA u32 + wCap/3×_pad f32). */
+  rptParamsBuffer: GPUBuffer | null = null;
+  rptReservoirByteSize = 0;
+  rptResultByteSize = 0;
+  /** The four reuse compute pipelines (lazy, gated). */
+  rptProducerPipeline: GPUComputePipeline | null = null;
+  rptTemporalPipeline: GPUComputePipeline | null = null;
+  rptSpatialPipeline: GPUComputePipeline | null = null;
+  rptResolvePipeline: GPUComputePipeline | null = null;
+  /** A1 — the COMPOSITE megakernel (E0-direct-only + resolve indirect). */
+  rptCompositePipeline: GPUComputePipeline | null = null;
+  /** Explicit group-0 layout for the reuse passes (megakernel g0 + reuse bindings 20..25). */
+  rptGroup0Layout: GPUBindGroupLayout | null = null;
+  /** Cached per-pass reuse bind groups (rebuilt on scene-buffer / reservoir recreation). */
+  rptProducerGroup0: GPUBindGroup | null = null;
+  rptTemporalGroup0: GPUBindGroup | null = null;
+  rptSpatialGroup0: GPUBindGroup | null = null;
+  rptResolveGroup0: GPUBindGroup | null = null;
+
+  dispose(): void {
+    this.rptReservoirCur?.destroy();
+    this.rptReservoirCur = null;
+    this.rptReservoirPrev?.destroy();
+    this.rptReservoirPrev = null;
+    this.rptReservoirSpatial?.destroy();
+    this.rptReservoirSpatial = null;
+    this.rptResultBuffer?.destroy();
+    this.rptResultBuffer = null;
+    this.rptParamsBuffer?.destroy();
+    this.rptParamsBuffer = null;
+    this.rptReservoirByteSize = 0;
+    this.rptResultByteSize = 0;
+    this.rptProducerPipeline = null; // GPUComputePipeline has no destroy()
+    this.rptTemporalPipeline = null;
+    this.rptSpatialPipeline = null;
+    this.rptResolvePipeline = null;
+    this.rptCompositePipeline = null;
+    this.rptGroup0Layout = null;
+    this.rptProducerGroup0 = null;
+    this.rptTemporalGroup0 = null;
+    this.rptSpatialGroup0 = null;
+    this.rptResolveGroup0 = null;
+  }
+}
+
+// ── D8.1 Sub-object: SppmResources ───────────────────────────────────────────
+/**
+ * Owns the SPPM photon-map resources: photon cells buffer, cell counters,
+ * stats UBO, per-pixel statistics buffer, and the photon-emission pipeline.
+ * Gated by `causticStrategy === 'photon-map' && traceTier === 'full'`.
+ * GpuResources delegates to this sub-object and exposes all its fields via
+ * read-write accessors so the existing external surface remains unchanged.
+ */
+class SppmResources {
+  /**
+   * A4 — SPPM photon hash-grid cells buffer.
+   * PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY], 48 B/record ≈ 402 MiB.
+   * Bound at group(3) binding(6).  A 64-byte placeholder is used when SPPM is
+   * off so the group-3 layout slot is satisfied without allocating the real buffer.
+   */
+  sppmPhotonCellsBuffer: GPUBuffer | null = null;
+  /**
+   * A4 — SPPM cell-insertion counters: atomic<u32>[SPPM_MAX_CELLS] ≈ 256 KiB.
+   * Cleared at the start of each frame before the photon pass writes into it.
+   * Bound at group(3) binding(7).
+   */
+  sppmCellCountersBuffer: GPUBuffer | null = null;
+  /**
+   * A4 — SppmStats UBO (32 bytes): currentRadius, r0, frameAccumulated,
+   * photonCount, sceneExtent, _pad×3.  Written per-frame by the host.
+   * Bound at group(3) binding(8).
+   */
+  sppmStatsBuffer: GPUBuffer | null = null;
+  /**
+   * A4-progressive — per-pixel SPPM statistics buffer.
+   * SppmPixelStats[W×H] = {tau.rgb, radius2, N, _pad×3} × 32 bytes/px.
+   * Allocated in `ensureSppmPixelStatsBuffer`; reset (GPU-cleared) whenever
+   * the PT accumulator resets. Bound at group(3) binding(9).
+   */
+  sppmPixelStatsBuffer: GPUBuffer | null = null;
+  sppmPixelStatsWidth  = 0;
+  sppmPixelStatsHeight = 0;
+  /** Compute pipeline for the photon-emission pre-pass (sppmEmitPhotons). */
+  sppmPhotonPipeline: GPUComputePipeline | null = null;
+  /** true if the SPPM buffers have been allocated at full size (not placeholder). */
+  sppmBuffersReady = false;
+
+  dispose(): void {
+    this.sppmPhotonCellsBuffer?.destroy();
+    this.sppmPhotonCellsBuffer = null;
+    this.sppmCellCountersBuffer?.destroy();
+    this.sppmCellCountersBuffer = null;
+    this.sppmStatsBuffer?.destroy();
+    this.sppmStatsBuffer = null;
+    this.sppmPixelStatsBuffer?.destroy();
+    this.sppmPixelStatsBuffer = null;
+    this.sppmPixelStatsWidth  = 0;
+    this.sppmPixelStatsHeight = 0;
+    this.sppmPhotonPipeline = null; // GPUComputePipeline has no destroy()
+    // The SPPM bind-group layout is part of group-3 (bindGroupLayout3 / the shared
+    // pipeline layout); it is released via the normal bindGroupLayout3 null-out in
+    // GpuResources.dispose() — no separate ref to drop here.
+    this.sppmBuffersReady = false;
+  }
+}
+
+// ── D8.1 Sub-object: PresentResources ────────────────────────────────────────
+/**
+ * Owns the present-pass pipeline, params UBO, seed-blit pipeline + sampler +
+ * params + variance-placeholder, and the present texture/view. GpuResources
+ * delegates to this sub-object; the present texture is ALSO exposed as a
+ * top-level field on GpuResources for the accum-size-tied lifecycle
+ * (destroyAccumTexture clears it; ensureAccumResources recreates it).
+ */
+class PresentResources {
+  /**
+   * Present-pass output texture (rgba16float, TEXTURE_BINDING | STORAGE_BINDING).
+   * Sized to match accumTexture; recreated when the accum dims change.
+   * The present compute pass reads accumTexture and writes the tonemapped +
+   * OETF-encoded result here. Null before the first ensureAccumResources call.
+   */
+  presentTexture: GPUTexture | null = null;
+  presentView: GPUTextureView | null = null;
+
+  /**
+   * PresentParams UBO (16 bytes): tonemapMode (u32), exposure (f32),
+   * outputColorSpace (u32), _pad (u32).
+   */
+  presentParamsBuffer: GPUBuffer | null = null;
+  /** The present compute pipeline (lazily built on first ensurePresentPipeline). */
+  presentPipeline: GPUComputePipeline | null = null;
+
+  /** Seed-blit compute pipeline (P8 progressive handoff). */
+  seedBlitPipeline: GPUComputePipeline | null = null;
+  seedBlitParamsBuffer: GPUBuffer | null = null;
+  seedBlitSampler: GPUSampler | null = null;
+  /**
+   * Placeholder storage buffer at the seed-blit's varianceMoments slot on the
+   * lite tier (which has no real varianceMomentsBuffer). Discarded at write time.
+   */
+  seedBlitVarPlaceholder: GPUBuffer | null = null;
+
+  dispose(): void {
+    // Seed-blit resources (freed before present, matching original dispose order).
+    this.seedBlitParamsBuffer?.destroy();
+    this.seedBlitParamsBuffer = null;
+    this.seedBlitVarPlaceholder?.destroy();
+    this.seedBlitVarPlaceholder = null;
+    this.seedBlitSampler = null;     // GPUSampler has no destroy(); drop the ref
+    this.seedBlitPipeline = null;    // GPUComputePipeline has no destroy(); drop the ref
+    // Present-pass resources.
+    this.presentParamsBuffer?.destroy();
+    this.presentParamsBuffer = null;
+    this.presentPipeline = null;     // GPUComputePipeline has no destroy(); drop the ref
+    // presentTexture / presentView are destroyed by GpuResources.destroyAccumTexture()
+    // (their lifecycle is tied to the accum dims); PresentResources.dispose() only
+    // drops the refs if the texture has already been nulled by that path.
+    this.presentTexture = null;
+    this.presentView = null;
+  }
+}
+
 export class GpuResources {
   readonly #device: GPUDevice;
   readonly #traceTier: PtWebgpuTraceTier;
@@ -60,6 +287,14 @@ export class GpuResources {
    * SHA pin + every existing test stay green. Mirrors the `#bdpt` flag.
    */
   readonly #restirPtReuse: boolean;
+
+  // ── D8.1 Sub-objects (cohesive resource clusters) ─────────────────────────
+  /** D8.1 — ReSTIR-PT reservoir + pipeline + bind-group cluster. */
+  readonly #rsvr: ReservoirResources = new ReservoirResources();
+  /** D8.1 — SPPM photon-map resource cluster. */
+  readonly #sppm: SppmResources = new SppmResources();
+  /** D8.1 — Present-pass + seed-blit resource cluster. */
+  readonly #present: PresentResources = new PresentResources();
 
   accumTexture: GPUTexture | null = null;
   accumView: GPUTextureView | null = null;
@@ -115,91 +350,66 @@ export class GpuResources {
   bdptEyeStackBuffer: GPUBuffer | null = null;
   bdptEyeStackByteSize = 0;
 
-  // ── ReSTIR-PT reuse resources (gated by #restirPtReuse; full tier only) ──────
-  /**
-   * Full-res ReservoirPTHero ping-pong buffers (144 B/px = 36 u32). `Cur` is the
-   * producer output that the temporal pass fuses in place; `Prev` is last frame's
-   * temporal output (read-only this frame). `swapReservoirs()` exchanges them at
-   * frame end so this frame's resolved reservoir becomes next frame's history.
-   * STORAGE | COPY_SRC | COPY_DST (COPY_* so a future readback / clear works).
-   */
-  rptReservoirCur: GPUBuffer | null = null;
-  rptReservoirPrev: GPUBuffer | null = null;
-  /** A1 — the SPATIAL pass output (post-temporal → spatial → resolve). The spatial
-   *  pass reads the temporal output (`Cur`) for neighbour sampling and writes here;
-   *  resolve reads this. A dedicated buffer (not a ping-pong slot) so the spatial
-   *  pass never writes the slot it samples (hazard-free neighbour reads). */
-  rptReservoirSpatial: GPUBuffer | null = null;
-  /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
-   *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
-  rptResultBuffer: GPUBuffer | null = null;
-  /** RestirPtParams UBO (32 B: width/height/mClamp/_padA u32 + wCap/3×_pad f32). */
-  rptParamsBuffer: GPUBuffer | null = null;
-  rptReservoirByteSize = 0;
-  rptResultByteSize = 0;
-  /** The three reuse compute pipelines (lazy, gated). Each carries its OWN
-   *  minimal explicit pipeline layout (groups it statically uses + group-0 reuse
-   *  bindings) — see #buildReservoirPipelines. */
-  rptProducerPipeline: GPUComputePipeline | null = null;
-  rptTemporalPipeline: GPUComputePipeline | null = null;
-  rptSpatialPipeline: GPUComputePipeline | null = null;
-  rptResolvePipeline: GPUComputePipeline | null = null;
-  /** A1 — the COMPOSITE megakernel: E0-direct-only + adds the resolve indirect from
-   *  rpt_result (relocated @group(0)@binding(23)). Built alongside the reuse passes
-   *  (it needs the reuse-extended group-0 layout for the rpt_result binding). When
-   *  reuse is active the engine dispatches THIS instead of the default megakernel. */
-  rptCompositePipeline: GPUComputePipeline | null = null;
-  /** Explicit group-0 layout for the reuse passes: the megakernel's group-0
-   *  bindings PLUS the relocated reuse bindings (20..25). Built once. */
-  #rptGroup0Layout: GPUBindGroupLayout | null = null;
-  /** Cached per-pass reuse bind groups (rebuilt on scene-buffer / reservoir
-   *  recreation via invalidateBindGroups). */
-  rptProducerGroup0: GPUBindGroup | null = null;
-  rptTemporalGroup0: GPUBindGroup | null = null;
-  rptSpatialGroup0: GPUBindGroup | null = null;
-  rptResolveGroup0: GPUBindGroup | null = null;
+  // ── D8.1 ReservoirResources delegating accessors (keep public surface unchanged) ──
+  /** @see ReservoirResources */
+  get rptReservoirCur(): GPUBuffer | null { return this.#rsvr.rptReservoirCur; }
+  set rptReservoirCur(v: GPUBuffer | null) { this.#rsvr.rptReservoirCur = v; }
+  get rptReservoirPrev(): GPUBuffer | null { return this.#rsvr.rptReservoirPrev; }
+  set rptReservoirPrev(v: GPUBuffer | null) { this.#rsvr.rptReservoirPrev = v; }
+  get rptReservoirSpatial(): GPUBuffer | null { return this.#rsvr.rptReservoirSpatial; }
+  set rptReservoirSpatial(v: GPUBuffer | null) { this.#rsvr.rptReservoirSpatial = v; }
+  get rptResultBuffer(): GPUBuffer | null { return this.#rsvr.rptResultBuffer; }
+  set rptResultBuffer(v: GPUBuffer | null) { this.#rsvr.rptResultBuffer = v; }
+  get rptParamsBuffer(): GPUBuffer | null { return this.#rsvr.rptParamsBuffer; }
+  set rptParamsBuffer(v: GPUBuffer | null) { this.#rsvr.rptParamsBuffer = v; }
+  get rptReservoirByteSize(): number { return this.#rsvr.rptReservoirByteSize; }
+  set rptReservoirByteSize(v: number) { this.#rsvr.rptReservoirByteSize = v; }
+  get rptResultByteSize(): number { return this.#rsvr.rptResultByteSize; }
+  set rptResultByteSize(v: number) { this.#rsvr.rptResultByteSize = v; }
+  get rptProducerPipeline(): GPUComputePipeline | null { return this.#rsvr.rptProducerPipeline; }
+  set rptProducerPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptProducerPipeline = v; }
+  get rptTemporalPipeline(): GPUComputePipeline | null { return this.#rsvr.rptTemporalPipeline; }
+  set rptTemporalPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptTemporalPipeline = v; }
+  get rptSpatialPipeline(): GPUComputePipeline | null { return this.#rsvr.rptSpatialPipeline; }
+  set rptSpatialPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptSpatialPipeline = v; }
+  get rptResolvePipeline(): GPUComputePipeline | null { return this.#rsvr.rptResolvePipeline; }
+  set rptResolvePipeline(v: GPUComputePipeline | null) { this.#rsvr.rptResolvePipeline = v; }
+  get rptCompositePipeline(): GPUComputePipeline | null { return this.#rsvr.rptCompositePipeline; }
+  set rptCompositePipeline(v: GPUComputePipeline | null) { this.#rsvr.rptCompositePipeline = v; }
+  get rptProducerGroup0(): GPUBindGroup | null { return this.#rsvr.rptProducerGroup0; }
+  set rptProducerGroup0(v: GPUBindGroup | null) { this.#rsvr.rptProducerGroup0 = v; }
+  get rptTemporalGroup0(): GPUBindGroup | null { return this.#rsvr.rptTemporalGroup0; }
+  set rptTemporalGroup0(v: GPUBindGroup | null) { this.#rsvr.rptTemporalGroup0 = v; }
+  get rptSpatialGroup0(): GPUBindGroup | null { return this.#rsvr.rptSpatialGroup0; }
+  set rptSpatialGroup0(v: GPUBindGroup | null) { this.#rsvr.rptSpatialGroup0 = v; }
+  get rptResolveGroup0(): GPUBindGroup | null { return this.#rsvr.rptResolveGroup0; }
+  set rptResolveGroup0(v: GPUBindGroup | null) { this.#rsvr.rptResolveGroup0 = v; }
 
-  // ── SPPM photon-map resources (A4; gated by causticStrategy == 'photon-map' + full-tier) ──
+  // ── D8.1 SppmResources delegating accessors (keep public surface unchanged) ──
+  /** @see SppmResources */
+  get sppmPhotonCellsBuffer(): GPUBuffer | null { return this.#sppm.sppmPhotonCellsBuffer; }
+  set sppmPhotonCellsBuffer(v: GPUBuffer | null) { this.#sppm.sppmPhotonCellsBuffer = v; }
+  get sppmCellCountersBuffer(): GPUBuffer | null { return this.#sppm.sppmCellCountersBuffer; }
+  set sppmCellCountersBuffer(v: GPUBuffer | null) { this.#sppm.sppmCellCountersBuffer = v; }
+  get sppmStatsBuffer(): GPUBuffer | null { return this.#sppm.sppmStatsBuffer; }
+  set sppmStatsBuffer(v: GPUBuffer | null) { this.#sppm.sppmStatsBuffer = v; }
+  get sppmPixelStatsBuffer(): GPUBuffer | null { return this.#sppm.sppmPixelStatsBuffer; }
+  set sppmPixelStatsBuffer(v: GPUBuffer | null) { this.#sppm.sppmPixelStatsBuffer = v; }
+  get sppmPixelStatsWidth(): number { return this.#sppm.sppmPixelStatsWidth; }
+  set sppmPixelStatsWidth(v: number) { this.#sppm.sppmPixelStatsWidth = v; }
+  get sppmPixelStatsHeight(): number { return this.#sppm.sppmPixelStatsHeight; }
+  set sppmPixelStatsHeight(v: number) { this.#sppm.sppmPixelStatsHeight = v; }
+  get sppmPhotonPipeline(): GPUComputePipeline | null { return this.#sppm.sppmPhotonPipeline; }
+  set sppmPhotonPipeline(v: GPUComputePipeline | null) { this.#sppm.sppmPhotonPipeline = v; }
+  get sppmBuffersReady(): boolean { return this.#sppm.sppmBuffersReady; }
+  set sppmBuffersReady(v: boolean) { this.#sppm.sppmBuffersReady = v; }
 
-  /**
-   * A4 — SPPM photon hash-grid cells buffer.
-   * PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY], 48 B/record ≈ 402 MiB.
-   * Bound at group(3) binding(6).  A 16-byte placeholder is used when SPPM is
-   * off so the group-3 layout slot is satisfied without allocating the real buffer.
-   */
-  sppmPhotonCellsBuffer: GPUBuffer | null = null;
-
-  /**
-   * A4 — SPPM cell-insertion counters: atomic<u32>[SPPM_MAX_CELLS] ≈ 256 KiB.
-   * Cleared at the start of each frame before the photon pass writes into it.
-   * Bound at group(3) binding(7).
-   */
-  sppmCellCountersBuffer: GPUBuffer | null = null;
-
-  /**
-   * A4 — SppmStats UBO (32 bytes): currentRadius, r0, frameAccumulated,
-   * photonCount, sceneExtent, _pad×3.  Written per-frame by the host.
-   * Bound at group(3) binding(8).
-   */
-  sppmStatsBuffer: GPUBuffer | null = null;
-
-  /**
-   * A4-progressive — per-pixel SPPM statistics buffer.
-   * SppmPixelStats[W×H] = {tau.rgb, radius2, N, _pad×3} × 32 bytes/px.
-   * Allocated in `ensureSppmPixelStatsBuffer`; reset (GPU-cleared) whenever
-   * the PT accumulator resets (same condition as `clearAccumBuffer` in reset()).
-   * Bound at group(3) binding(9) on the full tier (megakernel only; the photon
-   * pass does not need it).  64-byte placeholder when SPPM is off.
-   */
-  sppmPixelStatsBuffer: GPUBuffer | null = null;
-  sppmPixelStatsWidth  = 0;
-  sppmPixelStatsHeight = 0;
-
-  /** Compute pipeline for the photon-emission pre-pass (sppmEmitPhotons). */
-  sppmPhotonPipeline: GPUComputePipeline | null = null;
-
-  /** true if the SPPM buffers have been allocated at full size (not placeholder). */
-  sppmBuffersReady = false;
+  // ── D8.1 PresentResources delegating accessors (keep public surface unchanged) ──
+  /** @see PresentResources */
+  get presentTexture(): GPUTexture | null { return this.#present.presentTexture; }
+  set presentTexture(v: GPUTexture | null) { this.#present.presentTexture = v; }
+  get presentView(): GPUTextureView | null { return this.#present.presentView; }
+  set presentView(v: GPUTextureView | null) { this.#present.presentView = v; }
 
   // ── B12 — Lite-tier packed textures (group-0 bindings 12–14) ─────────────────
   /**
@@ -234,44 +444,6 @@ export class GpuResources {
    */
   static readonly RESTIR_PT_RESERVOIR_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
 
-  /**
-   * Progressive walkaround→PT handoff (P8) — the seed-blit compute pipeline +
-   * its uniform buffer + filtering sampler. Lazily created on the first
-   * `seedAccumBuffer` call and reused thereafter (engine-owned; freed in
-   * dispose). The bind group is per-call (it references the caller's seed
-   * texture + the current accum buffers), so it is not cached.
-   */
-  #seedBlitPipeline: GPUComputePipeline | null = null;
-  #seedBlitParamsBuffer: GPUBuffer | null = null;
-  #seedBlitSampler: GPUSampler | null = null;
-  /**
-   * Placeholder storage buffer bound at the seed-blit's varianceMoments slot on
-   * the lite tier (which has no real `varianceMomentsBuffer`). Keeps the single
-   * seed-blit bind-group layout satisfied for both tiers; the seed luminance
-   * moments written here are discarded.
-   */
-  #seedBlitVarPlaceholder: GPUBuffer | null = null;
-
-  // ── Present-pass resources (tonemap / exposure / outputColorSpace) ────────────
-  /**
-   * Present-pass output texture (rgba16float, TEXTURE_BINDING | STORAGE_BINDING).
-   * Sized to match `accumTexture`; recreated when the accum dims change (inside
-   * `ensureAccumResources`).  The present compute pass reads `accumTexture` (the
-   * running-mean linear HDR stored by `accumulateFrame`) and writes the
-   * tonemapped + OETF-encoded result here.  `renderFrame` returns this texture as
-   * `primaryRadiance`; adjoint/OIDN readbacks continue using `accumTexture`.
-   * Null before the first `ensureAccumResources` call.
-   */
-  presentTexture: GPUTexture | null = null;
-  presentView: GPUTextureView | null = null;
-  /**
-   * PresentParams UBO (16 bytes): tonemapMode (u32), exposure (f32),
-   * outputColorSpace (u32), _pad (u32). Written per-frame by `writePresentParams`.
-   * Null until `ensurePresentPipeline` is first called.
-   */
-  #presentParamsBuffer: GPUBuffer | null = null;
-  /** The present compute pipeline (lazily built on first `ensurePresentPipeline`). */
-  #presentPipeline: GPUComputePipeline | null = null;
   /** Byte size of the PresentParams UBO: 4 × 4 bytes. */
   static readonly PRESENT_PARAMS_BYTES = 16;
 
@@ -467,71 +639,94 @@ export class GpuResources {
    * may declare bindings an entry point doesn't statically use, so one layout
    * serves both pipelines.
    */
+  /**
+   * D8.2 — The full-tier group-0 bind-group layout entries (bindings 0..13).
+   * This is the CANONICAL definition shared by BOTH `#buildSharedPipelineLayout`
+   * (which builds the megakernel's group-0 layout) and `#buildReservoirGroup0Layout`
+   * (which extends the same 0..13 base with the reuse bindings 20..25). Keeping
+   * one definition eliminates the historical F1 full-tier crash class: any future
+   * binding-slot change only needs to be made HERE and is automatically reflected
+   * in both pipeline layouts, guaranteeing byte-identical group-0 layouts across
+   * the megakernel and the ReSTIR-PT reuse passes.
+   *
+   * Full tier only — callers must not invoke this on the lite tier.
+   */
+  #makeGroup0LayoutEntries(): GPUBindGroupLayoutEntry[] {
+    return [
+      _tex(0),        // outputTexture (storage texture, write)
+      _buf(1, _uniform), // params (uniform)
+      _buf(2, _rw),   // accumBuffer (read_write)
+      _buf(3, _ro),   // positions
+      _buf(4, _ro),   // indices
+      _buf(5, _ro),   // triMaterialIds
+      _buf(6, _ro),   // materials
+      _buf(7, _ro),   // bvhNodes
+      _buf(8, _ro),   // normals
+      _tex(9),        // normalDepthTexture
+      _tex(10),       // albedoTexture
+      _tex(11),       // varianceTexture
+      _tex(12),       // motionVectorsTexture (full tier)
+      _buf(13, _rw),  // varianceMomentsBuffer (read_write, full tier)
+    ];
+  }
+
+  /**
+   * D8.2 — The full-tier group-0 bind-group entries (bindings 0..13) that bind
+   * the current accum/aux views + scene geometry buffers.  Both `buildBindGroups`
+   * and `buildReservoirBindGroups` need an identical 0..13 prefix; extracting it
+   * here eliminates the prior duplication and guarantees the two sites always bind
+   * the same resources to the same slots — any change is propagated automatically.
+   *
+   * Callers supply the `sb` scene buffers; this method reads the current accum/
+   * aux views + varianceMomentsBuffer off `this`.  Full tier only.
+   */
+  #makeGroup0BindGroupEntries(sb: UploadedSceneBuffers): GPUBindGroupEntry[] {
+    return [
+      { binding: 0, resource: this.accumView! },
+      { binding: 1, resource: { buffer: this.paramsBuffer! } },
+      { binding: 2, resource: { buffer: this.accumBuffer! } },
+      { binding: 3, resource: { buffer: sb.positionsBuffer } },
+      { binding: 4, resource: { buffer: sb.indicesBuffer } },
+      { binding: 5, resource: { buffer: sb.triMaterialIdsBuffer } },
+      { binding: 6, resource: { buffer: sb.materialsBuffer } },
+      { binding: 7, resource: { buffer: sb.bvhNodesBuffer } },
+      { binding: 8, resource: { buffer: sb.normalsBuffer } },
+      { binding: 9, resource: this.normalDepthView! },
+      { binding: 10, resource: this.albedoView! },
+      { binding: 11, resource: this.varianceView! },
+      { binding: 12, resource: this.motionVectorsView! },
+      { binding: 13, resource: { buffer: this.varianceMomentsBuffer! } },
+    ];
+  }
+
   #buildSharedPipelineLayout(): GPUPipelineLayout {
-    const VIS = GPUShaderStage.COMPUTE;
-    // WGSL `var<storage, read>`  → 'read-only-storage'.
-    const ro: GPUBufferBindingLayout = { type: 'read-only-storage' };
-    // WGSL `var<storage, read_write>` → 'storage'.
-    const rw: GPUBufferBindingLayout = { type: 'storage' };
-    // WGSL `var<uniform>` → 'uniform'.
-    const uniform: GPUBufferBindingLayout = { type: 'uniform' };
-    // WGSL `texture_storage_2d<rgba16float, write>`.
-    const storageTex: GPUStorageTextureBindingLayout = {
-      access: 'write-only',
-      format: 'rgba16float',
-      viewDimension: '2d',
-    };
-    const buf = (binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: VIS,
-      buffer: layout,
-    });
-    const tex = (binding: number): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: VIS,
-      storageTexture: storageTex,
-    });
-
-    // Helper for sampled texture_2d<f32> bindings (B12 lite-tier textures).
-    // Trust-audit F2 (2026-06-10): these textures are rgba32float, which WebGPU
-    // classifies as UNFILTERABLE-float — declaring them 'float' (filterable) made
-    // every lite-tier pipeline fail validation and render black. The kernel only
-    // ever textureLoad()s them, so 'unfilterable-float' is exactly right.
-    const sampledTex = (binding: number): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: VIS,
-      texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-    });
-
     // Group 0 — bindings 0..11 (both tiers) + 12..14 (lite texture slots) / 12..13 (full).
     // Mirrors material.wgsl.ts.
-    const group0Entries: GPUBindGroupLayoutEntry[] = [
-      tex(0), // outputTexture (storage texture, write)
-      buf(1, uniform), // params (uniform)
-      buf(2, rw), // accumBuffer (read_write)
-      buf(3, ro), // positions
-      buf(4, ro), // indices
-      buf(5, ro), // triMaterialIds
-      buf(6, ro), // materials
-      buf(7, ro), // bvhNodes
-      buf(8, ro), // normals
-      tex(9), // normalDepthTexture
-      tex(10), // albedoTexture
-      tex(11), // varianceTexture
-    ];
+    let group0Entries: GPUBindGroupLayoutEntry[];
     if (this.#traceTier === 'full') {
-      group0Entries.push(
-        tex(12), // motionVectorsTexture
-        buf(13, rw), // varianceMomentsBuffer (read_write)
-      );
+      // D8.2: delegate to the shared extractor — keeps megakernel + reuse passes
+      // byte-identical at group 0.
+      group0Entries = this.#makeGroup0LayoutEntries();
     } else {
-      // B12 — lite-tier sampled texture bindings 12–14.
+      // Lite tier: bindings 0-11 shared + B12 sampled texture bindings 12-14.
       // Uses maxSampledTexturesPerShaderStage (≥ 16 baseline), NOT storage buffers.
-      group0Entries.push(
-        sampledTex(12), // liteEnvTex    — RGBA32F env radiance+pdf
-        sampledTex(13), // liteEnvCdfTex — RGBA32F (.r = CDF entry)
-        sampledTex(14), // liteLightTex  — RGBA32F packed light data
-      );
+      group0Entries = [
+        _tex(0),              // outputTexture (storage texture, write)
+        _buf(1, _uniform),    // params (uniform)
+        _buf(2, _rw),         // accumBuffer (read_write)
+        _buf(3, _ro),         // positions
+        _buf(4, _ro),         // indices
+        _buf(5, _ro),         // triMaterialIds
+        _buf(6, _ro),         // materials
+        _buf(7, _ro),         // bvhNodes
+        _buf(8, _ro),         // normals
+        _tex(9),              // normalDepthTexture
+        _tex(10),             // albedoTexture
+        _tex(11),             // varianceTexture
+        _sampledTex(12),      // liteEnvTex    — RGBA32F env radiance+pdf
+        _sampledTex(13),      // liteEnvCdfTex — RGBA32F (.r = CDF entry)
+        _sampledTex(14),      // liteLightTex  — RGBA32F packed light data
+      ];
     }
     this.bindGroupLayout = this.#device.createBindGroupLayout({
       label: `vitrum.pt-webgpu.layout.group0.${this.#traceTier}`,
@@ -543,19 +738,19 @@ export class GpuResources {
       // Group 1 — 11 read-only storage buffers (analytics + env + area lights).
       this.bindGroupLayout1 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group1.full',
-        entries: Array.from({ length: 11 }, (_unused, binding) => buf(binding, ro)),
+        entries: Array.from({ length: 11 }, (_unused, binding) => _buf(binding, _ro)),
       });
       // Group 2 — TLAS table (5 read-only) + BDPT light-path + eye-stack (read_write).
       this.bindGroupLayout2 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group2.full',
         entries: [
-          buf(0, ro), // tlasNodes
-          buf(1, ro), // tlasInstanceIndices
-          buf(2, ro), // tlasBlasRoots
-          buf(3, ro), // tlasInstanceWorldToLocal
-          buf(4, ro), // tlasInstanceLocalToWorld
-          buf(5, rw), // bdptLightPath (read_write)
-          buf(6, rw), // bdptEyeStack (read_write)
+          _buf(0, _ro), // tlasNodes
+          _buf(1, _ro), // tlasInstanceIndices
+          _buf(2, _ro), // tlasBlasRoots
+          _buf(3, _ro), // tlasInstanceWorldToLocal
+          _buf(4, _ro), // tlasInstanceLocalToWorld
+          _buf(5, _rw), // bdptLightPath (read_write)
+          _buf(6, _rw), // bdptEyeStack (read_write)
         ],
       });
       // Group 3 — WS2 light-tree node buffer + P2 material textures (per-vertex
@@ -567,19 +762,20 @@ export class GpuResources {
       // maxBindGroups ≥ 5 (lavapipe only supports 4 bind groups). Placeholder
       // buffers are bound when SPPM is off; the gather code is guarded by
       // causticMode() == 2u so they are never accessed.
+      const VIS = _vis();
       this.bindGroupLayout3 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group3.full',
         entries: [
-          buf(0, ro), // lightTree (read-only storage)
-          buf(1, ro), // meshUvs (P2)
-          buf(2, ro), // materialTexDescriptors (P2)
+          _buf(0, _ro), // lightTree (read-only storage)
+          _buf(1, _ro), // meshUvs (P2)
+          _buf(2, _ro), // materialTexDescriptors (P2)
           { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures sRGB (P2)
           { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
           { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/ORM (P2)
-          buf(6, rw), // A4: sppmPhotonCells (read_write storage)
-          buf(7, rw), // A4: sppmCellCounters (read_write storage, atomic)
-          buf(8, uniform), // A4: sppmStats (uniform)
-          buf(9, rw), // A4-progressive: sppmPixelStats (read_write storage)
+          _buf(6, _rw), // A4: sppmPhotonCells (read_write storage)
+          _buf(7, _rw), // A4: sppmCellCounters (read_write storage, atomic)
+          _buf(8, _uniform), // A4: sppmStats (uniform)
+          _buf(9, _rw), // A4-progressive: sppmPixelStats (read_write storage)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -821,55 +1017,25 @@ export class GpuResources {
    * statically use the full-tier scene groups).
    */
   #buildReservoirGroup0Layout(): GPUBindGroupLayout {
-    const VIS = GPUShaderStage.COMPUTE;
-    const ro: GPUBufferBindingLayout = { type: 'read-only-storage' };
-    const rw: GPUBufferBindingLayout = { type: 'storage' };
-    const uniform: GPUBufferBindingLayout = { type: 'uniform' };
-    const storageTex: GPUStorageTextureBindingLayout = {
-      access: 'write-only',
-      format: 'rgba16float',
-      viewDimension: '2d',
-    };
-    const buf = (binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: VIS,
-      buffer: layout,
-    });
-    const tex = (binding: number): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: VIS,
-      storageTexture: storageTex,
-    });
     const B = RPT_GROUP0_BINDING_BASE; // 20
-    // Megakernel group-0 (0..13) — byte-for-byte the same as the trace layout's
-    // group0 (full tier) so the same group-0 scene/G-buffer resources bind.
+    // D8.2: Megakernel group-0 (0..13) sourced from #makeGroup0LayoutEntries() —
+    // byte-for-byte the same as the trace layout's group0 (full tier) so the same
+    // group-0 scene/G-buffer resources bind.  Previously duplicated inline; using
+    // the shared extractor guarantees the two layouts can never diverge.
     const entries: GPUBindGroupLayoutEntry[] = [
-      tex(0),
-      buf(1, uniform),
-      buf(2, rw),
-      buf(3, ro),
-      buf(4, ro),
-      buf(5, ro),
-      buf(6, ro),
-      buf(7, ro),
-      buf(8, ro),
-      tex(9),
-      tex(10),
-      tex(11),
-      tex(12),
-      buf(13, rw),
+      ...this.#makeGroup0LayoutEntries(),
       // Relocated reuse bindings (20..24). The composed WGSL keeps rpt_resPrev /
       // rpt_resResolved as `var<storage, read>` (the naga-gap fix is to MONOMORPHISE
       // the reservoir helpers so the read-only global is indexed DIRECTLY rather
       // than passed as a storage pointer — see restirPtCompose.wgsl.ts
       // monomorphiseReservoirHelpers; the access modes are unchanged). So the layout
       // matches the shader access modes exactly: rpt_resPrev (b22) is read-only.
-      buf(B + 0, rw), // rpt_reservoirOut  (producer write)
-      buf(B + 1, rw), // rpt_resCurrent    (temporal in/out; spatial reads same slot as `read`)
-      buf(B + 2, ro), // rpt_resPrev       (temporal history, read-only)
-      buf(B + 3, rw), // rpt_result        (resolve write)
-      buf(B + 4, uniform), // rptParams
-      buf(B + 5, rw), // rpt_resSpatial    (spatial write; resolve reads same slot as `read`)
+      _buf(B + 0, _rw),      // rpt_reservoirOut  (producer write)
+      _buf(B + 1, _rw),      // rpt_resCurrent    (temporal in/out; spatial reads same slot as `read`)
+      _buf(B + 2, _ro),      // rpt_resPrev       (temporal history, read-only)
+      _buf(B + 3, _rw),      // rpt_result        (resolve write)
+      _buf(B + 4, _uniform), // rptParams
+      _buf(B + 5, _rw),      // rpt_resSpatial    (spatial write; resolve reads same slot as `read`)
     ];
     return this.#device.createBindGroupLayout({
       label: 'vitrum.pt-webgpu.restirPt.layout.group0',
@@ -900,11 +1066,11 @@ export class GpuResources {
         'ensureReservoirPipelines: full-tier group-1/2/3 layouts missing — call ensurePipeline() first.',
       );
     }
-    this.#rptGroup0Layout = this.#buildReservoirGroup0Layout();
+    this.#rsvr.rptGroup0Layout = this.#buildReservoirGroup0Layout();
     const pipelineLayout = this.#device.createPipelineLayout({
       label: 'vitrum.pt-webgpu.restirPt.pipelineLayout',
       bindGroupLayouts: [
-        this.#rptGroup0Layout,
+        this.#rsvr.rptGroup0Layout,
         this.bindGroupLayout1,
         this.bindGroupLayout2,
         this.bindGroupLayout3,
@@ -967,7 +1133,7 @@ export class GpuResources {
    * and `rptReservoirPrev` to b22.
    */
   buildReservoirBindGroups(sb: UploadedSceneBuffers): void {
-    if (!this.#restirPtReuse || this.#rptGroup0Layout == null) return;
+    if (!this.#restirPtReuse || this.#rsvr.rptGroup0Layout == null) return;
     if (this.rptProducerGroup0 != null) return;
     if (
       this.rptReservoirCur == null ||
@@ -986,23 +1152,12 @@ export class GpuResources {
       return;
     }
     const B = RPT_GROUP0_BINDING_BASE;
-    // Shared megakernel group-0 scene/G-buffer entries (0..13).
+    // D8.2: Shared megakernel group-0 scene/G-buffer entries (0..13) sourced from
+    // #makeGroup0BindGroupEntries() — guaranteed to match the layout produced by
+    // #makeGroup0LayoutEntries() that #buildReservoirGroup0Layout() also uses.
     const sceneG0: GPUBindGroupEntry[] = [
-      { binding: 0, resource: this.accumView },
-      { binding: 1, resource: { buffer: this.paramsBuffer } },
-      { binding: 2, resource: { buffer: this.accumBuffer! } },
-      { binding: 3, resource: { buffer: sb.positionsBuffer } },
-      { binding: 4, resource: { buffer: sb.indicesBuffer } },
-      { binding: 5, resource: { buffer: sb.triMaterialIdsBuffer } },
-      { binding: 6, resource: { buffer: sb.materialsBuffer } },
-      { binding: 7, resource: { buffer: sb.bvhNodesBuffer } },
-      { binding: 8, resource: { buffer: sb.normalsBuffer } },
-      { binding: 9, resource: this.normalDepthView },
-      { binding: 10, resource: this.albedoView },
-      { binding: 11, resource: this.varianceView },
-      { binding: 12, resource: this.motionVectorsView },
-      { binding: 13, resource: { buffer: this.varianceMomentsBuffer } },
-      { binding: B + 4, resource: { buffer: this.rptParamsBuffer } },
+      ...this.#makeGroup0BindGroupEntries(sb),
+      { binding: B + 4, resource: { buffer: this.rptParamsBuffer! } },
     ];
     // The reuse-reservoir slots differ only in which buffer is the "current"
     // ping-pong half. All three passes share ONE bind group: b20 = b21 = Cur (the
@@ -1010,7 +1165,7 @@ export class GpuResources {
     // b23 = result.
     const group0 = this.#device.createBindGroup({
       label: 'vitrum.pt-webgpu.restirPt.bindgroup0',
-      layout: this.#rptGroup0Layout,
+      layout: this.#rsvr.rptGroup0Layout,
       entries: [
         ...sceneG0,
         { binding: B + 0, resource: { buffer: this.rptReservoirCur } }, // rpt_reservoirOut → Cur
@@ -1049,28 +1204,8 @@ export class GpuResources {
 
   /** Tear down all ReSTIR-PT reuse resources. Called from dispose(). */
   #disposeReservoirResources(): void {
-    this.rptReservoirCur?.destroy();
-    this.rptReservoirCur = null;
-    this.rptReservoirPrev?.destroy();
-    this.rptReservoirPrev = null;
-    this.rptReservoirSpatial?.destroy();
-    this.rptReservoirSpatial = null;
-    this.rptResultBuffer?.destroy();
-    this.rptResultBuffer = null;
-    this.rptParamsBuffer?.destroy();
-    this.rptParamsBuffer = null;
-    this.rptReservoirByteSize = 0;
-    this.rptResultByteSize = 0;
-    this.rptProducerPipeline = null; // GPUComputePipeline has no destroy()
-    this.rptTemporalPipeline = null;
-    this.rptSpatialPipeline = null;
-    this.rptResolvePipeline = null;
-    this.rptCompositePipeline = null;
-    this.#rptGroup0Layout = null;
-    this.rptProducerGroup0 = null;
-    this.rptTemporalGroup0 = null;
-    this.rptSpatialGroup0 = null;
-    this.rptResolveGroup0 = null;
+    // D8.1: delegate to the ReservoirResources sub-object.
+    this.#rsvr.dispose();
   }
 
   /**
@@ -1097,7 +1232,8 @@ export class GpuResources {
     // lite array (duplicate bindings 12/13 + a stray 14) — WebGPU rejected the
     // bind group, so EVERY full-tier render crashed before frame 1. The mock
     // device suite validated nothing; the lavapipe behavioral harness caught it.
-    const sharedEntries: GPUBindGroupEntry[] = [
+    // Lite-tier group-0: bindings 0-11 (shared geometry/accum) + 12-14 (B12 textures).
+    const liteEntries: GPUBindGroupEntry[] = [
       { binding: 0, resource: this.accumView! },
       { binding: 1, resource: { buffer: this.paramsBuffer! } },
       { binding: 2, resource: { buffer: this.accumBuffer! } },
@@ -1110,19 +1246,14 @@ export class GpuResources {
       { binding: 9, resource: this.normalDepthView! },
       { binding: 10, resource: this.albedoView! },
       { binding: 11, resource: this.varianceView! },
-    ];
-    const liteEntries: GPUBindGroupEntry[] = [
-      ...sharedEntries,
       // B12 — lite-tier texture bindings 12–14 (sampled, not storage).
       { binding: 12, resource: this.liteEnvTextureView! },
       { binding: 13, resource: this.liteEnvCdfTextureView! },
       { binding: 14, resource: this.liteLightTextureView! },
     ];
-    const fullGroup0Entries: GPUBindGroupEntry[] = [
-      ...sharedEntries,
-      { binding: 12, resource: this.motionVectorsView! },
-      { binding: 13, resource: { buffer: this.varianceMomentsBuffer! } },
-    ];
+    // D8.2: Full-tier group-0: delegate to the shared extractor — the same
+    // 0..13 definition used by the ReSTIR-PT reuse group-0.
+    const fullGroup0Entries: GPUBindGroupEntry[] = this.#makeGroup0BindGroupEntries(sb);
     const fullGroup1Entries: GPUBindGroupEntry[] = [
       { binding: 0, resource: { buffer: sb.analyticHeadersBuffer } },
       { binding: 1, resource: { buffer: sb.analyticParamsBuffer } },
@@ -1256,21 +1387,21 @@ export class GpuResources {
     const W = Math.max(0, weight);
 
     // Lazily build the seed-blit pipeline + sampler + params UBO (engine-owned).
-    if (this.#seedBlitPipeline == null) {
+    if (this.#present.seedBlitPipeline == null) {
       const module = this.#device.createShaderModule({
         label: 'vitrum.pt-webgpu.seedBlit',
         code: PT_WEBGPU_SEED_BLIT_WGSL,
       });
-      this.#seedBlitPipeline = this.#device.createComputePipeline({
+      this.#present.seedBlitPipeline = this.#device.createComputePipeline({
         label: 'vitrum.pt-webgpu.seedBlit.pipeline',
         layout: 'auto',
         compute: { module, entryPoint: 'main' },
       });
     }
-    if (this.#seedBlitSampler == null) {
+    if (this.#present.seedBlitSampler == null) {
       // Filtering sampler so a differently-sized seed is bilinearly resampled
       // onto the accum grid; clamp so edge UVs don't wrap.
-      this.#seedBlitSampler = this.#device.createSampler({
+      this.#present.seedBlitSampler = this.#device.createSampler({
         label: 'vitrum.pt-webgpu.seedBlit.sampler',
         magFilter: 'linear',
         minFilter: 'linear',
@@ -1278,8 +1409,8 @@ export class GpuResources {
         addressModeV: 'clamp-to-edge',
       });
     }
-    if (this.#seedBlitParamsBuffer == null) {
-      this.#seedBlitParamsBuffer = this.#device.createBuffer({
+    if (this.#present.seedBlitParamsBuffer == null) {
+      this.#present.seedBlitParamsBuffer = this.#device.createBuffer({
         label: 'vitrum.pt-webgpu.seedBlit.params',
         size: 32, // vec4u seedDim (16) + vec4f seedWeight (16)
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1290,29 +1421,29 @@ export class GpuResources {
     const ubo = new ArrayBuffer(32);
     new Uint32Array(ubo, 0, 4).set([width >>> 0, height >>> 0, 0, 0]);
     new Float32Array(ubo, 16, 4).set([W, 0, 0, 0]);
-    this.#device.queue.writeBuffer(this.#seedBlitParamsBuffer, 0, ubo);
+    this.#device.queue.writeBuffer(this.#present.seedBlitParamsBuffer, 0, ubo);
 
     // varianceMoments slot: the real buffer on the full tier; a discardable
     // placeholder on the lite tier (which has none) so the layout stays valid.
     let varBuffer = this.varianceMomentsBuffer;
     if (varBuffer == null) {
-      if (this.#seedBlitVarPlaceholder == null) {
-        this.#seedBlitVarPlaceholder = this.#device.createBuffer({
+      if (this.#present.seedBlitVarPlaceholder == null) {
+        this.#present.seedBlitVarPlaceholder = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.seedBlit.varPlaceholder',
           size: this.accumBufferByteSize > 0 ? this.accumBufferByteSize : 16,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
       }
-      varBuffer = this.#seedBlitVarPlaceholder;
+      varBuffer = this.#present.seedBlitVarPlaceholder;
     }
 
     const bindGroup = this.#device.createBindGroup({
       label: 'vitrum.pt-webgpu.seedBlit.bindgroup',
-      layout: this.#seedBlitPipeline.getBindGroupLayout(0),
+      layout: this.#present.seedBlitPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: this.#seedBlitParamsBuffer } },
+        { binding: 0, resource: { buffer: this.#present.seedBlitParamsBuffer } },
         { binding: 1, resource: seedTex.createView() },
-        { binding: 2, resource: this.#seedBlitSampler },
+        { binding: 2, resource: this.#present.seedBlitSampler },
         { binding: 3, resource: { buffer: this.accumBuffer } },
         { binding: 4, resource: { buffer: varBuffer } },
       ],
@@ -1320,11 +1451,55 @@ export class GpuResources {
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.seedBlit.encoder' });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.seedBlit.pass' });
-    pass.setPipeline(this.#seedBlitPipeline);
+    pass.setPipeline(this.#present.seedBlitPipeline);
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
     pass.end();
     this.#device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * D8.5 — Returns `true` when all GPU resources required for `renderFrame` are
+   * in a valid (non-null) state.  Codifies the 12 null-guard conditions that
+   * `index.ts renderFrame` tests inline immediately after `ensurePipeline()`.
+   *
+   * The 13th condition in `renderFrame` (`this.#sceneBuffers == null`) lives on the
+   * engine, not on GpuResources, so it is NOT included here.  Callers MUST check
+   * both this method AND that the engine's scene buffers are present before
+   * dispatching.
+   *
+   * MAINTENANCE: This method MUST be kept in sync with the `buildBindGroups` resource
+   * set.  Any new resource that becomes required for a valid dispatch must be added
+   * here simultaneously.
+   */
+  isReadyToRender(): boolean {
+    if (
+      this.accumView == null ||
+      this.normalDepthView == null ||
+      this.albedoView == null ||
+      this.varianceView == null ||
+      this.accumBuffer == null ||
+      this.paramsBuffer == null ||
+      this.computePipeline == null ||
+      this.bindGroupLayout == null
+    ) {
+      return false;
+    }
+    if (this.#traceTier === 'full') {
+      if (this.motionVectorsView == null || this.varianceMomentsBuffer == null) {
+        return false;
+      }
+    } else {
+      // B12 — lite-tier texture views must be present before rendering.
+      if (
+        this.liteEnvTextureView == null ||
+        this.liteEnvCdfTextureView == null ||
+        this.liteLightTextureView == null
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Invalidate the cached bind groups (scene-buffer / accum-view recreation). */
@@ -1682,21 +1857,8 @@ export class GpuResources {
 
   /** Dispose SPPM-specific GPU resources. Called from dispose(). */
   #disposeSppmResources(): void {
-    this.sppmPhotonCellsBuffer?.destroy();
-    this.sppmPhotonCellsBuffer = null;
-    this.sppmCellCountersBuffer?.destroy();
-    this.sppmCellCountersBuffer = null;
-    this.sppmStatsBuffer?.destroy();
-    this.sppmStatsBuffer = null;
-    this.sppmPixelStatsBuffer?.destroy();
-    this.sppmPixelStatsBuffer = null;
-    this.sppmPixelStatsWidth  = 0;
-    this.sppmPixelStatsHeight = 0;
-    this.sppmPhotonPipeline = null; // GPUComputePipeline has no destroy()
-    // The SPPM bind-group layout is part of group-3 (bindGroupLayout3 / the shared
-    // pipeline layout); it is released via the normal bindGroupLayout3 null-out in
-    // dispose() — no separate ref to drop here.
-    this.sppmBuffersReady = false;
+    // D8.1: delegate to the SppmResources sub-object.
+    this.#sppm.dispose();
   }
 
   // ── Present-pass public API ──────────────────────────────────────────────────
@@ -1708,17 +1870,17 @@ export class GpuResources {
    * Uses `layout: 'auto'` (the present pass has no cross-pipeline layout sharing).
    */
   ensurePresentPipeline(): void {
-    if (this.#presentPipeline != null) return;
+    if (this.#present.presentPipeline != null) return;
     const module = this.#device.createShaderModule({
       label: 'vitrum.pt-webgpu.present',
       code: PT_WEBGPU_PRESENT_WGSL,
     });
-    this.#presentPipeline = this.#device.createComputePipeline({
+    this.#present.presentPipeline = this.#device.createComputePipeline({
       label: 'vitrum.pt-webgpu.present.pipeline',
       layout: 'auto',
       compute: { module, entryPoint: 'presentMain' },
     });
-    this.#presentParamsBuffer = this.#device.createBuffer({
+    this.#present.presentParamsBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.present.params',
       size: GpuResources.PRESENT_PARAMS_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1740,7 +1902,7 @@ export class GpuResources {
     exposure: number,
     outputColorSpace: number,
   ): void {
-    if (this.#presentParamsBuffer == null) return;
+    if (this.#present.presentParamsBuffer == null) return;
     const ubo = new ArrayBuffer(GpuResources.PRESENT_PARAMS_BYTES);
     const u = new Uint32Array(ubo);
     const f = new Float32Array(ubo);
@@ -1748,7 +1910,7 @@ export class GpuResources {
     f[1] = exposure;
     u[2] = outputColorSpace >>> 0;
     u[3] = 0; // _pad
-    this.#device.queue.writeBuffer(this.#presentParamsBuffer, 0, ubo);
+    this.#device.queue.writeBuffer(this.#present.presentParamsBuffer, 0, ubo);
   }
 
   /**
@@ -1762,8 +1924,8 @@ export class GpuResources {
    */
   dispatchPresentPass(encoder: GPUCommandEncoder, width: number, height: number): void {
     if (
-      this.#presentPipeline == null ||
-      this.#presentParamsBuffer == null ||
+      this.#present.presentPipeline == null ||
+      this.#present.presentParamsBuffer == null ||
       this.accumTexture == null ||
       this.presentTexture == null ||
       this.presentView == null
@@ -1773,15 +1935,15 @@ export class GpuResources {
     // Per-frame bind group: PresentParams UBO + accumTex (sampled) + presentTex (storage write).
     const bg = this.#device.createBindGroup({
       label: 'vitrum.pt-webgpu.present.bindgroup',
-      layout: this.#presentPipeline.getBindGroupLayout(0),
+      layout: this.#present.presentPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: this.#presentParamsBuffer } },
+        { binding: 0, resource: { buffer: this.#present.presentParamsBuffer } },
         { binding: 1, resource: this.accumTexture.createView() },
         { binding: 2, resource: this.presentView },
       ],
     });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.present.pass' });
-    pass.setPipeline(this.#presentPipeline);
+    pass.setPipeline(this.#present.presentPipeline);
     pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
     pass.end();
@@ -1801,15 +1963,11 @@ export class GpuResources {
     this.bdptEyeStackBuffer?.destroy();
     this.bdptEyeStackBuffer = null;
     this.bdptEyeStackByteSize = 0;
-    this.#seedBlitParamsBuffer?.destroy();
-    this.#seedBlitParamsBuffer = null;
-    this.#seedBlitVarPlaceholder?.destroy();
-    this.#seedBlitVarPlaceholder = null;
-    this.#seedBlitSampler = null; // GPUSampler has no destroy(); drop the ref
-    this.#seedBlitPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
-    this.#presentParamsBuffer?.destroy();
-    this.#presentParamsBuffer = null;
-    this.#presentPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
+    // D8.1: PresentResources.dispose() tears down seed-blit resources (in order:
+    // seedBlitParamsBuffer → seedBlitVarPlaceholder → seedBlitSampler → seedBlitPipeline)
+    // then present-pass resources (presentParamsBuffer → presentPipeline).
+    // presentTexture/presentView are already nulled by destroyAccumTexture() above.
+    this.#present.dispose();
     this.paramsBuffer?.destroy();
     this.paramsBuffer = null;
     this.computePipeline = null;

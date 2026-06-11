@@ -21,6 +21,7 @@ import type { EngineCapabilities, Scene } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
 import { mergeWorldSpaceFromCore, type WorldSpaceMergeResult, type MergedMeshVertexRange } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
+import { allocGlTexture } from '../gl/texAlloc.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
@@ -241,63 +242,10 @@ function buildMergedUv1(
 
 // ──────────────────────────────────────────────────────────────────────────
 // GL upload helpers — RGBA32F sampler2D / sampler2DArray, NEAREST + ClampToEdge.
+// D10.14: delegate to allocGlTexture (gl/texAlloc.ts) — the shared helper that
+// also covers bvhTextureAdapter.ts's `makeTex`. This removes the duplicated
+// guard+create+bind+sampling+upload sequence.
 // ──────────────────────────────────────────────────────────────────────────
-
-function setSampling2D(gl: WebGL2RenderingContext, target: number): void {
-  gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-}
-
-/**
- * Guard a 2D texture dimension against the device's `MAX_TEXTURE_SIZE`.
- * Throws a clear, actionable error naming the resource, the required size, and
- * the device limit before any GL call is attempted — so the host gets a
- * JavaScript Error with an accurate message instead of a silent texImage2D
- * failure followed by a black render.
- *
- * @param gl           the live WebGL2 context
- * @param dim          the required square dimension (or the larger of width/height)
- * @param resourceName human-readable name for the error message (e.g. "scene BVH position")
- * @throws Error with actionable text when `dim > MAX_TEXTURE_SIZE`
- */
-function guardTexSize(gl: WebGL2RenderingContext, dim: number, resourceName: string): void {
-  // isContextLost() returns true after a context-loss event; gl.getParameter would
-  // return 0 in that state, producing a misleading "needs 0² > 0²" message.
-  // Guard here so resource-creation paths fail with the correct error.
-  if (gl.isContextLost()) {
-    throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
-  }
-  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-  if (dim > maxSize) {
-    throw new Error(
-      `pt-webgl2: ${resourceName} needs a ${dim}² RGBA32F texture but this device only supports ` +
-        `${maxSize}² — reduce scene complexity (fewer triangles / materials / lights) or split the scene.`,
-    );
-  }
-}
-
-/**
- * Guard an array-texture layer count against the device's `MAX_ARRAY_TEXTURE_LAYERS`.
- *
- * @param gl           the live WebGL2 context
- * @param layers       the required layer count
- * @param resourceName human-readable name (e.g. "material texture atlas")
- * @throws Error with actionable text when `layers > MAX_ARRAY_TEXTURE_LAYERS`
- */
-function guardArrayLayers(gl: WebGL2RenderingContext, layers: number, resourceName: string): void {
-  if (gl.isContextLost()) {
-    throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} array texture`);
-  }
-  const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
-  if (layers > maxLayers) {
-    throw new Error(
-      `pt-webgl2: ${resourceName} needs ${layers} array-texture layers but this device only supports ` +
-        `${maxLayers} — reduce the number of unique material textures in the scene.`,
-    );
-  }
-}
 
 /** Square RGBA32F sampler2D (dim×dim), NEAREST/ClampToEdge. Accepts the
  *  `TexelGrid.data` union; the materials/lights grids are `kind: 'rgba32f'`, so
@@ -308,13 +256,12 @@ function uploadRgba32f(
   dim: number,
   resourceName: string,
 ): WebGLTexture {
-  guardTexSize(gl, dim, resourceName);
-  const tex = gl.createTexture();
-  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  setSampling2D(gl, gl.TEXTURE_2D);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, dim, dim, 0, gl.RGBA, gl.FLOAT, data);
-  return tex;
+  return allocGlTexture(gl, {
+    kind: '2d', dim,
+    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
+    data,
+    resourceName,
+  });
 }
 
 /** Non-square RGBA32F sampler2D (width×height) — for the equirect map / CDF slabs. */
@@ -325,13 +272,12 @@ function uploadRgba32fRect(
   height: number,
   resourceName: string,
 ): WebGLTexture {
-  guardTexSize(gl, Math.max(width, height), resourceName);
-  const tex = gl.createTexture();
-  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  setSampling2D(gl, gl.TEXTURE_2D);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, data);
-  return tex;
+  return allocGlTexture(gl, {
+    kind: 'rect', width, height,
+    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
+    data,
+    resourceName,
+  });
 }
 
 /** RGBA32F TEXTURE_2D_ARRAY (dim×dim × `layers`), NEAREST/ClampToEdge — the
@@ -343,23 +289,10 @@ function uploadRgba32fArray(
   layers: number,
   resourceName: string,
 ): WebGLTexture {
-  guardTexSize(gl, dim, resourceName);
-  guardArrayLayers(gl, layers, resourceName);
-  const tex = gl.createTexture();
-  if (tex == null) throw new Error(`pt-webgl2: WebGL context lost — cannot create ${resourceName} array texture`);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-  setSampling2D(gl, gl.TEXTURE_2D_ARRAY);
-  gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    gl.RGBA32F,
-    dim,
-    dim,
-    layers,
-    0,
-    gl.RGBA,
-    gl.FLOAT,
+  return allocGlTexture(gl, {
+    kind: 'array', dim, layers,
+    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
     data,
-  );
-  return tex;
+    resourceName,
+  });
 }

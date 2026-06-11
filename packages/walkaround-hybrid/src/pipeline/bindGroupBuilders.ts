@@ -239,47 +239,39 @@ export function buildUboBindGroup(
 export interface UboRef { buf: GPUBuffer | undefined }
 
 /**
- * Atrous edge-stop sigmas. Defaults are the direct-channel tuning
- * (tight stops to preserve hard shadow boundaries); the Sprint 18
- * indirect chain overrides these with broader values since the indirect
- * signal is already temporally smoothed by ReSTIR-GI and tolerates
- * wider blurs across depth / normal / chroma transitions.
+ * D4.3 — Branded variant of {@link UboRef} for UBO buffers that are
+ * PASS-OWNED (constructed by a {@link Pass} sub-class, managed inside
+ * the pass's own `initialize`/`dispose`).
+ *
+ * Pass-owned UBOs MUST NOT appear in `WalkaroundGPUPipeline._perPassUboRefs`
+ * (the list the orchestrator's `dispose()` iterates to release pipeline-owned
+ * UBOs). Callers that receive a `PassOwnedUboRef` should forward it to the
+ * pass and let the pass manage the GPU lifetime.
+ *
+ * Convention enforcement: the brand makes misuse a compile-time error —
+ * assigning a `PassOwnedUboRef` directly into the `readonly UboRef[]`
+ * disposal list requires an explicit cast, making the oversight visible in
+ * code review.
+ *
+ * Current holder: `_atrousIndirectUboRef` (owned by {@link AtrousIndirectPass},
+ * excluded from `_perPassUboRefs` — see the comment block at ~line 820 in
+ * WalkaroundGPUPipeline.ts).
  */
-export interface AtrousSigmas {
-  sigmaN: number;
-  sigmaZ: number;
-  sigmaC: number;
+export interface PassOwnedUboRef extends UboRef {
+  readonly __passOwned: true;
 }
 
-/** Direct-channel default — tight stops, preserves shadow / caustic edges.
- *  Exported for AtrousDenoiser's default; per-frame overrides flow from
- *  `HybridEngineOptions.atrousDirectSigmas` through `PipelineFrameInputs`
- *  (B3a, 2026-05-19). */
-export const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
-  sigmaN: 128.0,
-  sigmaZ: 5.0,
-  sigmaC: 0.05,
-});
-
-/**
- * Indirect-channel sigmas. Broader on every axis because ReSTIR-GI already
- * smooths the indirect signal temporally + spatially; the remaining 2×2 quad
- * variance (from half-res GI reservoir reads) just needs a wide low-pass.
- *   σn=32  → still rejects perpendicular surfaces but happily blurs through
- *            mild curvature.
- *   σz=20  → ~4× the direct depth tolerance — fine for indirect, which has
- *            no hard-shadow edges to preserve.
- *   σc=0.5 → ~10× direct's color tolerance — allows blur across color-bleed
- *            transitions which are low-frequency anyway.
- *
- * Per-frame overrides flow from `HybridEngineOptions.atrousIndirectSigmas`
- * through `PipelineFrameInputs` (B3a, 2026-05-19).
- */
-export const ATROUS_INDIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
-  sigmaN: 32.0,
-  sigmaZ: 20.0,
-  sigmaC: 0.5,
-});
+// I3.1 — AtrousSigmas + sigma defaults moved to pipeline/constants.ts.
+// Re-exported here so existing consumers (AtrousIndirectPass, tests, etc.)
+// continue to import from this file without modification.
+import type { AtrousSigmas as _AtrousSigmas } from './constants.js';
+export type { _AtrousSigmas as AtrousSigmas };
+export {
+  ATROUS_DIRECT_SIGMAS,
+  ATROUS_INDIRECT_SIGMAS,
+} from './constants.js';
+// Local alias so the function signatures below resolve.
+type AtrousSigmas = _AtrousSigmas;
 
 export function buildAtrousBindGroup(
   device: GPUDevice,

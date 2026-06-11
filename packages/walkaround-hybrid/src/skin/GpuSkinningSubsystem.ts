@@ -148,6 +148,19 @@ export class GpuSkinningSubsystem {
     this.#preferGpu = preferGpu;
   }
 
+  /**
+   * CPU skinning fallback: solve the skin on the CPU and push the solved
+   * positions + normals through the standard incremental geometry update.
+   *
+   * Used when: preferGpu is false, the mesh has active morph targets, the
+   * bind matrix is non-identity, the pipeline is unavailable, or no vertex
+   * range exists for the primitive.
+   */
+  #cpuFallback(host: GpuSkinningHost, prim: SkinnedMeshPrimitive, id: string): void {
+    const { positions, normals } = solveSkin(prim);
+    host.updatePrimitive(id, { positions, normals });
+  }
+
   dispose(): void {
     for (const state of this.#meshes.values()) {
       destroyMeshState(state);
@@ -184,15 +197,13 @@ export class GpuSkinningSubsystem {
         hasNonIdentityBind(prim) ||
         typeof this.#device.createComputePipeline !== 'function'
       ) {
-        const { positions, normals } = solveSkin(prim);
-        host.updatePrimitive(id, { positions, normals });
+        this.#cpuFallback(host, prim, id);
         continue;
       }
 
       const range = meshVertexRanges.find((r) => r.name === id);
       if (range == null || range.vertexCount === 0) {
-        const { positions, normals } = solveSkin(prim);
-        host.updatePrimitive(id, { positions, normals });
+        this.#cpuFallback(host, prim, id);
         continue;
       }
 
@@ -201,8 +212,7 @@ export class GpuSkinningSubsystem {
       if (bvhMode === 'tlas') {
         const binding = host.getPrimitiveTlasBindings()?.find((b) => b.primitiveId === id);
         if (binding == null || binding.vertexCount === 0) {
-          const { positions, normals } = solveSkin(prim);
-          host.updatePrimitive(id, { positions, normals });
+          this.#cpuFallback(host, prim, id);
           continue;
         }
         baseVertex = binding.vertexStart;

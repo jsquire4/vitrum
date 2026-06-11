@@ -24,6 +24,7 @@
 import { gradFinalizeWgsl } from './wgsl/fusedMlp.wgsl.js';
 import { nrcEncodeBackwardWgsl } from './wgsl/nrcEncodeBackward.wgsl.js';
 import { ADAM_WGSL } from './fusedMlpTrainer.js';
+import { packAdamUbo } from './adamUbo.js';
 
 /** Sizing + external buffers the table trainer needs. */
 export interface HashGridTableTrainerConfig {
@@ -205,11 +206,7 @@ export class HashGridTableTrainer {
     const bc1 = 1 - Math.pow(0.9, this._tableAdamT);
     const bc2 = 1 - Math.pow(0.999, this._tableAdamT);
     {
-      const ab = new ArrayBuffer(48);
-      new Uint32Array(ab, 0, 1)[0] = cfg.tableScalars;
-      const f = new Float32Array(ab);
-      f[4] = cfg.tableLearningRate; f[5] = 0.9; f[6] = 0.999; f[7] = 1e-8; f[8] = bc1; f[9] = bc2;
-      d.queue.writeBuffer(this._adamUbo, 0, ab);
+      d.queue.writeBuffer(this._adamUbo, 0, packAdamUbo(cfg.tableScalars, cfg.tableLearningRate, bc1, bc2));
       const bg = d.createBindGroup({
         layout: this._pTableAdam.getBindGroupLayout(0),
         entries: [

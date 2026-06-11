@@ -4,8 +4,6 @@
 import type { EngineDebugSurface, GpuMemoryBreakdown, Scene } from '@vitrum/core';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
-import { estimateFrameResourcesMemory, type GpuMemoryExternalSections } from './pipeline/gpuMemoryEstimate.js';
-import type { FrameResources } from './pipeline/resourceManager.js';
 import type { PipelineDebugTextures } from './pipeline/PipelineDebugTextures.js';
 
 export interface HybridEngineDebugDeps {
@@ -18,12 +16,11 @@ export interface HybridEngineDebugDeps {
    */
   debugTextures: () => PipelineDebugTextures | null;
   /**
-   * Full frame-resources struct for the GPU memory estimator
-   * (`estimatedGpuMemoryBytes`). Backed by the `@internal`
-   * `WalkaroundGPUPipeline.frameResources` getter.
+   * GPU memory breakdown delegate — backed by
+   * `WalkaroundGPUPipeline.getMemoryBreakdown()` (I3.2). Returns null before
+   * the pipeline initialises.
    */
-  pipelineResources: () => FrameResources | null;
-  pipelineMemoryExternalSections: () => GpuMemoryExternalSections;
+  getMemoryBreakdown: () => GpuMemoryBreakdown | null;
   denoiserPassEnabled: () => boolean;
   setDenoiserPassEnabled: (enabled: boolean) => void;
   setPipelineDenoiserPassEnabled: (enabled: boolean) => void;
@@ -60,11 +57,7 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
       deps.setDenoiserPassEnabled(enabled);
       deps.setPipelineDenoiserPassEnabled(enabled);
     },
-    estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
-      const res = deps.pipelineResources();
-      if (res == null) return null;
-      return estimateFrameResourcesMemory(res, deps.pipelineMemoryExternalSections());
-    },
+    estimatedGpuMemoryBytes: deps.getMemoryBreakdown,
     // T3.G click-to-pick: CPU ray-cast of pixel (x,y) against the retained core
     // scene using the last-frame camera. Returns null before the first frame
     // (no camera), before a scene is set, or on a miss.

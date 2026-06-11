@@ -13,6 +13,23 @@ import type { EngineOptions } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { CascadeDim } from '@vitrum/walkaround-rc';
+
+/**
+ * All denoiser ids supported by walkaround-hybrid.
+ * Single source of truth — the union type is derived from this array so
+ * adding a new denoiser is a one-edit change.
+ */
+export const VALID_DENOISERS = [
+  'atrous',
+  'atrous-variance',
+  'svgf-real',
+  'bmfr',
+  'neural',
+  'oidn-final',
+] as const;
+
+/** Union of all supported walkaround-hybrid denoiser identifiers. */
+export type ValidDenoiser = (typeof VALID_DENOISERS)[number];
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
 
@@ -184,7 +201,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (URL or path to the bundled .onnx model file). Optional peer dep
    *   `onnxruntime-web` must be installed at runtime.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
+  readonly denoiser?: ValidDenoiser;
 
   /**
    * Pre-loaded model weights for the neural denoiser (T2.H2).

@@ -22,7 +22,8 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../core",
-    "@vitrum/shared-bvh": "file:../shared-bvh"
+    "@vitrum/shared-bvh": "file:../shared-bvh",
+    "@vitrum/shared-denoisers": "file:../shared-denoisers"
   },
   "peerDependencies": {
     "react": ">=17",

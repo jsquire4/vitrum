@@ -3,7 +3,7 @@
 // order (struct-before-use is load-bearing — plan/three-removal/04-glsl-kernels.md §3).
 
 import { describe, it, expect } from 'vitest';
-import { composeTraceGlsl } from './composeTraceGlsl.js';
+import { composeTraceGlsl, RENDER_MAIN_SECTIONS } from './composeTraceGlsl.js';
 import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
 
 describe('composeTraceGlsl', () => {
@@ -151,6 +151,19 @@ describe('composeTraceGlsl', () => {
     expect(src).not.toContain('uniform sampler2DArray iesProfiles');
     expect(src).not.toContain('getPhotometricAttenuation');
     expect(src).not.toContain('iesProfile !=');
+  });
+
+  // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
+  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32297', () => {
+    const assembled = RENDER_MAIN_SECTIONS.join('');
+    expect(assembled).toHaveLength(32297);
+    // All 9 sections must be non-empty and together contain the key anchor points.
+    expect(RENDER_MAIN_SECTIONS).toHaveLength(9);
+    expect(assembled).toContain('void main() {');
+    expect(assembled).toContain('// get camera ray');
+    expect(assembled).toContain('// Sprint 7: Volume scatter event');
+    expect(assembled).toContain('if ( uRadianceClamp > 0.0 )');
+    expect(assembled).toContain('gNormalDepth = vec4( gbufNormalEnc, gbufLinearDepth );');
   });
 
   it('flag-plumbing: camera-type + DOF GLSL gates are present (host-controllable)', () => {

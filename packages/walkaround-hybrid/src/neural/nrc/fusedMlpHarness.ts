@@ -43,16 +43,25 @@ function makeBatch(B: number, inW: number, seed: { s: number }, outW: number) {
 // This is the ground-truth oracle (the GPU kernel must match THIS); FD is a
 // secondary sanity check that carries ReLU-kink + step-size error. Layout:
 // node-layers padded to W (matching the GPU saveOff scheme).
-function cpuGrads(
+//
+// SHARED CORE (D7.1): one forward+backprop sweep produces ALL THREE gradient
+// surfaces — gw/gb (the weight/bias grads the Adam step consumes) and dX (the
+// dL/dX upstream signal the NRC hash-grid encode-backward scatters; the input
+// layer is LINEAR so dX[S,i] = Σ_o W[0][o,i]·δ₁[S,o] with NO relu' factor —
+// Müller 2022 Instant-NGP §4). `cpuGrads` / `cpuInputGrads` below are thin
+// wrappers; the per-cell float-op sequence is identical to the previous two
+// standalone copies, so all FD pins are unchanged.
+function cpuForwardBackward(
   w: Float32Array, b: Float32Array, x: Float32Array, y: Float32Array,
   spec: FusedNetSpec, plan: { wOff: number[]; bOff: number[]; inW: number[]; outW: number[]; wlayers: number; totalW: number; totalB: number },
   B: number,
-): { gw: Float32Array; gb: Float32Array } {
+): { gw: Float32Array; gb: Float32Array; dX: Float32Array } {
   const { W, outW, inW: rawInW } = spec;
   const wl = plan.wlayers;
   const node = spec.hidden + 2;
   const gw = new Float32Array(plan.totalW);
   const gb = new Float32Array(plan.totalB);
+  const dX = new Float32Array(B * rawInW);
   for (let S = 0; S < B; S++) {
     // forward; a[nl][n], z[nl][n] padded to W
     const a: number[][] = [], z: number[][] = [];
@@ -92,63 +101,35 @@ function cpuGrads(
         }
       }
     }
+    // l==0: LINEAR input → dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[o].
+    const iN0 = plan.inW[0]!, oN0 = plan.outW[0]!, wOff0 = plan.wOff[0]!;
+    const delta1 = delta[1]!;
+    for (let i = 0; i < Math.min(iN0, rawInW); i++) {
+      let acc = 0;
+      for (let o = 0; o < oN0; o++) acc += w[wOff0 + o * iN0 + i]! * delta1[o]!;
+      dX[S * rawInW + i] = acc;
+    }
   }
+  return { gw, gb, dX };
+}
+
+// Thin wrapper: weight/bias grads only (the primary GPU==CPU oracle).
+function cpuGrads(
+  w: Float32Array, b: Float32Array, x: Float32Array, y: Float32Array,
+  spec: FusedNetSpec, plan: { wOff: number[]; bOff: number[]; inW: number[]; outW: number[]; wlayers: number; totalW: number; totalB: number },
+  B: number,
+): { gw: Float32Array; gb: Float32Array } {
+  const { gw, gb } = cpuForwardBackward(w, b, x, y, spec, plan, B);
   return { gw, gb };
 }
 
-// CPU reference for dL/dX (the gradient w.r.t. the RAW network input). The input
-// layer is LINEAR, so dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[S,o] with NO relu' factor —
-// this is the upstream signal the NRC hash-grid encode-backward scatters into the
-// trainable feature tables (Müller 2022 Instant-NGP §4). Returns [B × rawInW].
+// Thin wrapper: dL/dX only (the NRC encode-backward upstream signal). [B × rawInW].
 function cpuInputGrads(
   w: Float32Array, b: Float32Array, x: Float32Array, y: Float32Array,
   spec: FusedNetSpec, plan: { wOff: number[]; bOff: number[]; inW: number[]; outW: number[]; wlayers: number; totalW: number; totalB: number },
   B: number,
 ): Float32Array {
-  const { W, outW, inW: rawInW } = spec;
-  const wl = plan.wlayers;
-  const node = spec.hidden + 2;
-  const dXall = new Float32Array(B * rawInW);
-  for (let S = 0; S < B; S++) {
-    const a: number[][] = [], z: number[][] = [];
-    for (let nl = 0; nl < node; nl++) { a.push(new Array<number>(W).fill(0)); z.push(new Array<number>(W).fill(0)); }
-    const inputA = a[0]!;
-    for (let i = 0; i < W; i++) inputA[i] = (i < rawInW) ? x[S * rawInW + i]! : 0;
-    for (let l = 0; l < wl; l++) {
-      const iN = plan.inW[l]!, oN = plan.outW[l]!, isOut = l === wl - 1;
-      const wOff = plan.wOff[l]!, bOff = plan.bOff[l]!;
-      const aPrev = a[l]!, zNext = z[l + 1]!, aNext = a[l + 1]!;
-      for (let o = 0; o < oN; o++) {
-        let acc = b[bOff + o]!;
-        for (let i = 0; i < iN; i++) acc += w[wOff + o * iN + i]! * aPrev[i]!;
-        zNext[o] = acc;
-        aNext[o] = isOut ? acc : Math.max(0, acc);
-      }
-    }
-    const delta: number[][] = [];
-    for (let nl = 0; nl < node; nl++) delta.push(new Array<number>(W).fill(0));
-    const outA = a[node - 1]!, outDelta = delta[node - 1]!;
-    for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
-    for (let l = wl - 1; l >= 1; l--) {
-      const iN = plan.inW[l]!, oN = plan.outW[l]!;
-      const wOff = plan.wOff[l]!;
-      const deltaCur = delta[l]!, deltaNext = delta[l + 1]!, zCur = z[l]!;
-      for (let i = 0; i < iN; i++) {
-        let acc = 0;
-        for (let o = 0; o < oN; o++) acc += w[wOff + o * iN + i]! * deltaNext[o]!;
-        deltaCur[i] = acc * (zCur[i]! > 0 ? 1 : 0);
-      }
-    }
-    // l==0: LINEAR input → dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[o].
-    const iN = plan.inW[0]!, oN = plan.outW[0]!, wOff0 = plan.wOff[0]!;
-    const delta1 = delta[1]!;
-    for (let i = 0; i < Math.min(iN, rawInW); i++) {
-      let acc = 0;
-      for (let o = 0; o < oN; o++) acc += w[wOff0 + o * iN + i]! * delta1[o]!;
-      dXall[S * rawInW + i] = acc;
-    }
-  }
-  return dXall;
+  return cpuForwardBackward(w, b, x, y, spec, plan, B).dX;
 }
 
 function relErr(a: Float32Array, b: Float32Array) {
@@ -173,37 +154,12 @@ function relErr(a: Float32Array, b: Float32Array) {
   return { maxRel, maxAbs, maxRelMeaningful, worstRelIdx, worstAbsIdx, maxMag, floor };
 }
 
-async function main() {
-  const gpu = (navigator as unknown as { gpu?: GPU }).gpu;
-  if (!gpu) { console.log(JSON.stringify({ ok: false, reason: "no navigator.gpu" })); Deno.exit(1); }
-  const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
-  if (!adapter) { console.log(JSON.stringify({ ok: false, reason: "no adapter" })); Deno.exit(1); }
-  const info = (adapter as unknown as { info?: Record<string, string> }).info ?? {};
-  const hasF16 = adapter.features.has("shader-f16");
-  const useF16 = wantF16 && hasF16;
-
-  const required: GPUFeatureName[] = useF16 ? ["shader-f16"] : [];
-  // Request the workgroup-shared-memory + storage-buffer headroom the fused
-  // kernel needs (lavapipe exposes far more than the WebGPU defaults of
-  // 16384 B shared / 8 storage buffers). On a real adapter the harness should
-  // clamp these to adapter.limits; here lavapipe grants them outright.
-  const want = (k: string, fallback: number) =>
-    Math.min((adapter.limits as unknown as Record<string, number>)[k] ?? fallback, fallback);
-  const requiredLimits: Record<string, number> = {
-    maxComputeWorkgroupStorageSize: want("maxComputeWorkgroupStorageSize", 32768),
-    maxStorageBuffersPerShaderStage: want("maxStorageBuffersPerShaderStage", 10),
-  };
-  const device = await adapter.requestDevice({ requiredFeatures: required, requiredLimits });
-  device.addEventListener?.("uncapturederror", (e: unknown) => {
-    const ev = e as { error?: { message?: string } };
-    console.error("WGPU ERROR:", ev?.error?.message ?? e);
-  });
-
-  console.log("=== NRC FUSED/TILED MLP KERNEL — VALIDATION ===");
-  console.log("adapter:", info.description ?? info.vendor ?? "(unknown)");
-  console.log("shader-f16 supported:", hasF16, "| requested:", wantF16, "| ACTIVE precision:", useF16 ? "f16 (mixed)" : "f32");
-  console.log("maxComputeWorkgroupStorageSize:", device.limits.maxComputeWorkgroupStorageSize, "bytes");
-
+/** PART 1 (+1b): GPU-vs-CPU-analytic gradient check (weights, biases, dL/dX) on
+ *  a tiny fused net, plus the secondary FD sanity sweep. Returns the gate
+ *  verdict (GPU == CPU analytic, incl. dL/dX). Exported so other harnesses can
+ *  drive the same check on an existing device; pure reorganization of main()
+ *  (D7.2) — the command sequence and log output are unchanged. */
+export async function checkGradients(device: GPUDevice, useF16: boolean): Promise<boolean> {
   // ── PART 1: finite-difference gradient check on a TINY fused net ──
   // Tiny so the FD sweep (one extra forward per param) is cheap. We still use
   // the FULL fused forward+backward kernels — same code path as the big net.
@@ -301,7 +257,12 @@ async function main() {
     `(FD carries ReLU-kink error on boundary cells; CPU-analytic match above is the oracle)`);
   const gradOK = cpuMatch && dxMatch;
   console.log("GRADIENT CHECK:", gradOK ? "PASS (GPU kernel == exact backprop, incl. dL/dX)" : "FAIL");
+  return gradOK;
+}
 
+/** PART 2: full fused train loop must LEARN the target function (loss falls
+ *  ≥4×). Exported peer of {@link checkGradients}; pure reorganization (D7.2). */
+export async function checkLearning(device: GPUDevice, useF16: boolean): Promise<boolean> {
   // ── PART 2: actually LEARN the target function (full fused train loop) ──
   console.log("\n--- PART 2: fit a known function (FUSED train loop) ---");
   const trSpec: FusedNetSpec = { inW: 2, W: 64, outW: 3, hidden: 6 }; // the Müller core sizing
@@ -337,6 +298,42 @@ async function main() {
   const learned = last < first * 0.25;
   console.log("LEARNING CHECK:", learned ? `PASS (loss fell ${(first / last).toFixed(1)}x)` : "FAIL (loss did not drop)");
   console.log(`wall time ${steps} steps (lavapipe=CPU, NOT perf-representative): ${(t1 - t0).toFixed(0)} ms`);
+  return learned;
+}
+
+async function main() {
+  const gpu = (navigator as unknown as { gpu?: GPU }).gpu;
+  if (!gpu) { console.log(JSON.stringify({ ok: false, reason: "no navigator.gpu" })); Deno.exit(1); }
+  const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
+  if (!adapter) { console.log(JSON.stringify({ ok: false, reason: "no adapter" })); Deno.exit(1); }
+  const info = (adapter as unknown as { info?: Record<string, string> }).info ?? {};
+  const hasF16 = adapter.features.has("shader-f16");
+  const useF16 = wantF16 && hasF16;
+
+  const required: GPUFeatureName[] = useF16 ? ["shader-f16"] : [];
+  // Request the workgroup-shared-memory + storage-buffer headroom the fused
+  // kernel needs (lavapipe exposes far more than the WebGPU defaults of
+  // 16384 B shared / 8 storage buffers). On a real adapter the harness should
+  // clamp these to adapter.limits; here lavapipe grants them outright.
+  const want = (k: string, fallback: number) =>
+    Math.min((adapter.limits as unknown as Record<string, number>)[k] ?? fallback, fallback);
+  const requiredLimits: Record<string, number> = {
+    maxComputeWorkgroupStorageSize: want("maxComputeWorkgroupStorageSize", 32768),
+    maxStorageBuffersPerShaderStage: want("maxStorageBuffersPerShaderStage", 10),
+  };
+  const device = await adapter.requestDevice({ requiredFeatures: required, requiredLimits });
+  device.addEventListener?.("uncapturederror", (e: unknown) => {
+    const ev = e as { error?: { message?: string } };
+    console.error("WGPU ERROR:", ev?.error?.message ?? e);
+  });
+
+  console.log("=== NRC FUSED/TILED MLP KERNEL — VALIDATION ===");
+  console.log("adapter:", info.description ?? info.vendor ?? "(unknown)");
+  console.log("shader-f16 supported:", hasF16, "| requested:", wantF16, "| ACTIVE precision:", useF16 ? "f16 (mixed)" : "f32");
+  console.log("maxComputeWorkgroupStorageSize:", device.limits.maxComputeWorkgroupStorageSize, "bytes");
+
+  const gradOK = await checkGradients(device, useF16);
+  const learned = await checkLearning(device, useF16);
 
   // ── PART 3: global-memory-traffic model — fused vs the spike's per-layer ──
   console.log("\n--- PART 3: global-memory-traffic model (fused vs per-layer spike) ---");

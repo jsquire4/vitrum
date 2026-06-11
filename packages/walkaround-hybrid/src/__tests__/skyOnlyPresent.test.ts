@@ -106,7 +106,6 @@ function makeDeps(
     },
     dims: { width: 64, height: 64, internalWidth: 64, internalHeight: 64 },
     control: {
-      consumeRebuildKeyChange: () => false,
       targetFrameIntervalMs: null,
       getLastFrameTs: () => 0,
       setLastFrameTs: () => {},

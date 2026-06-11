@@ -15,9 +15,8 @@
  * The irradiance atlas stores 9-coefficient L2 spherical harmonics in a 3×3
  * texel block per probe (IRR_CELL=3); the visibility atlas uses a 16×16
  * octahedral layout per probe (VIS_CELL=16). Both atlases are allocated and
- * owned here; the TSL-side applyDDGIShading.ts consumer reads them as
- * StorageTexture handles — that is the only remaining three/webgpu import in
- * the DDGI subsystem.
+ * owned here; applyDDGIShading.ts reads them via the atlas-slot WeakMap
+ * pattern (ProbeUpdateAtlasTextureCache / ProbeGrid).
  */
 
 import { type SceneBvh } from '@vitrum/shared-bvh';
@@ -348,6 +347,18 @@ export class ProbeUpdatePass {
    */
   async init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
     this._initAttempted = true;
+    const device = await this._acquireDevice(renderer);
+    if (!device) return false;
+    const pipelines = await this._compilePipelines(device);
+    if (!pipelines) return false;
+    this._allocateResources(device, pipelines);
+    return true;
+  }
+
+  /** Acquire a GPUDevice from the renderer backend or navigator.gpu. */
+  private async _acquireDevice(
+    renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } },
+  ): Promise<GPUDevice | null> {
     // Hardware-GPU gate. detectGpu() publishes window.__WG__ BEFORE we
     // touch the device, so e2e validation can read the flag even if we
     // refuse to proceed. SwiftShader (Chromium's software rasterizer)
@@ -360,66 +371,79 @@ export class ProbeUpdatePass {
         `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
         `Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.`,
       );
-      return false;
+      return null;
     }
 
-    // Try renderer's backend first (three.js WebGPURenderer).
-    let device: GPUDevice | null = null;
+    // Try renderer's backend first (accepts any WebGPU-capable renderer backend).
     const backend = renderer.backend;
     if (backend?.isWebGPUBackend && backend.device) {
-      device = backend.device;
-    } else if (typeof navigator !== 'undefined' && navigator.gpu) {
-      // Direct WebGPU path — works when three.js uses WebGLRenderer but
-      // the browser exposes WebGPU (Chromium with --enable-unsafe-webgpu).
+      return backend.device;
+    }
+    if (typeof navigator !== 'undefined' && navigator.gpu) {
+      // Direct WebGPU path — used when the renderer uses WebGL but the browser
+      // exposes WebGPU (Chromium with --enable-unsafe-webgpu).
       try {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
         if (adapter) {
-          device = await adapter.requestDevice();
+          return await adapter.requestDevice();
         }
       } catch (e) {
         console.warn('[DDGI] navigator.gpu.requestAdapter failed:', e);
       }
     }
-    if (!device) {
-      console.warn('[DDGI] WebGPU not available (no renderer backend and no navigator.gpu).');
-      return false;
-    }
+    console.warn('[DDGI] WebGPU not available (no renderer backend and no navigator.gpu).');
+    return null;
+  }
 
-    // Compile shaders.
-    let raysPipeline: GPUComputePipeline;
-    let blendIrrPipeline: GPUComputePipeline;
-    let blendVisPipeline: GPUComputePipeline;
-    let borderVisPipeline: GPUComputePipeline;   // irradiance is SH (seam-free) — no border pass
+  /** Compile all four compute pipelines. Returns null on compilation failure. */
+  private async _compilePipelines(device: GPUDevice): Promise<{
+    raysPipeline: GPUComputePipeline;
+    blendIrrPipeline: GPUComputePipeline;
+    blendVisPipeline: GPUComputePipeline;
+    borderVisPipeline: GPUComputePipeline;
+  } | null> {
     try {
       // M9: compile with the host-specified material array size so scenes with
       // more than 64 materials don't overflow the uniform buffer.
       const raysModule = device.createShaderModule({ code: makeProbeUpdateRaysWGSL(this._ddgiMaxMaterials) });
-      raysPipeline = await device.createComputePipelineAsync({
+      const raysPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
       });
 
       const blendIrrModule = device.createShaderModule({ code: makeProbeUpdateBlendIrrWGSL() });
-      blendIrrPipeline = await device.createComputePipelineAsync({
+      const blendIrrPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: blendIrrModule, entryPoint: 'probeUpdateBlendIrradiance' },
       });
       const blendVisModule = device.createShaderModule({ code: makeProbeUpdateBlendVisWGSL() });
-      blendVisPipeline = await device.createComputePipelineAsync({
+      const blendVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: blendVisModule, entryPoint: 'probeUpdateBlendVisibility' },
       });
       // No irradiance border pipeline — SH irradiance is seam-free.
       const borderVisModule = device.createShaderModule({ code: makeProbeUpdateBorderVisWGSL() });
-      borderVisPipeline = await device.createComputePipelineAsync({
+      const borderVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: borderVisModule, entryPoint: 'probeUpdateBorderVisibility' },
       });
+      return { raysPipeline, blendIrrPipeline, blendVisPipeline, borderVisPipeline };
     } catch (e) {
       console.error('[DDGI] Shader compilation failed:', e);
-      return false;
+      return null;
     }
+  }
 
+  /** Allocate all GPU resources and wire this._gpu. */
+  private _allocateResources(
+    device: GPUDevice,
+    pipelines: {
+      raysPipeline: GPUComputePipeline;
+      blendIrrPipeline: GPUComputePipeline;
+      blendVisPipeline: GPUComputePipeline;
+      borderVisPipeline: GPUComputePipeline;
+    },
+  ): void {
     const linearSampler = device.createSampler({
       magFilter: 'linear',
       minFilter: 'linear',
@@ -449,10 +473,7 @@ export class ProbeUpdatePass {
 
     this._gpu = {
       device,
-      raysPipeline,
-      blendIrrPipeline,
-      blendVisPipeline,
-      borderVisPipeline,
+      ...pipelines,
       irrScratchTex:  null,
       visScratchTex:  null,
       bvhBuf:          makeBuffer(16, RO),
@@ -488,7 +509,6 @@ export class ProbeUpdatePass {
     // If setEnvironment() was called before init (engine wires env before GPU is
     // ready), apply those values now.
     this._syncEnvViewsToGpu();
-    return true;
   }
 
   /**

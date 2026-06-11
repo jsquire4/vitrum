@@ -145,6 +145,71 @@ function _readBufferViewIntoResult(
   }
 }
 
+interface SparseViews {
+  idxView: DataView;
+  idxCt: GltfComponentType;
+  idxCompSize: number;
+  valView: DataView;
+  valCt: GltfComponentType;
+  valCompSize: number;
+  count: number;
+}
+
+/**
+ * Resolve the DataViews and component metadata for an accessor's sparse patch.
+ * Returns `null` (with a warning) if the required bufferViews or buffers are
+ * unavailable, which allows callers to degrade gracefully.
+ */
+function _resolveSparseViews(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  accessor: GltfAccessor,
+  warnings: string[] | null,
+): SparseViews | null {
+  const sparse = accessor.sparse!;
+
+  const idxBv = gltf.bufferViews?.[sparse.indices.bufferView];
+  if (!idxBv) {
+    if (warnings) warnings.push('[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.');
+    else throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
+    return null;
+  }
+  const idxBuf = buffers.get(idxBv.buffer);
+  if (!idxBuf) {
+    if (warnings) warnings.push(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable; patch skipped.`);
+    else throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);
+    return null;
+  }
+
+  const valBv = gltf.bufferViews?.[sparse.values.bufferView];
+  if (!valBv) {
+    if (warnings) warnings.push('[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.');
+    else throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
+    return null;
+  }
+  const valBuf = buffers.get(valBv.buffer);
+  if (!valBuf) {
+    if (warnings) warnings.push(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable; patch skipped.`);
+    else throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);
+    return null;
+  }
+
+  const idxCt = sparse.indices.componentType;
+  const idxCompSize = componentByteSize(idxCt);
+  const valCt = accessor.componentType;
+  const valCompSize = componentByteSize(valCt);
+
+  return {
+    idxView: new DataView(idxBuf, (idxBv.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0)),
+    idxCt,
+    idxCompSize,
+    valView: new DataView(valBuf, (valBv.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0)),
+    valCt,
+    valCompSize,
+    count: sparse.count,
+  };
+}
+
 function _applySparsePatch(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
@@ -153,37 +218,21 @@ function _applySparsePatch(
   result: Float32Array,
   warnings: string[],
 ): void {
-  const sparse = accessor.sparse!;
   warnings.push(
-    `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${sparse.count}); applying patch.`,
+    `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${accessor.sparse!.count}); applying patch.`,
   );
 
-  // Read indices
-  const idxBv = gltf.bufferViews?.[sparse.indices.bufferView];
-  if (!idxBv) throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
-  const idxBuf = _getBuffer(buffers, idxBv.buffer, gltf);
-  const idxOffset = (idxBv.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0);
-  const idxView = new DataView(idxBuf, idxOffset);
-  const idxCt = sparse.indices.componentType;
-  const idxCompSize = componentByteSize(idxCt);
+  const sv = _resolveSparseViews(gltf, buffers, accessor, warnings);
+  if (!sv) return;
 
-  // Read values
-  const valBv = gltf.bufferViews?.[sparse.values.bufferView];
-  if (!valBv) throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
-  const valBuf = _getBuffer(buffers, valBv.buffer, gltf);
-  const valOffset = (valBv.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0);
-  const valView = new DataView(valBuf, valOffset);
-  const valCt = accessor.componentType;
-  const valCompSize = componentByteSize(valCt);
   const normalized = accessor.normalized ?? false;
-
-  for (let s = 0; s < sparse.count; s++) {
-    const idx = Math.round(readScalar(idxView, s * idxCompSize, idxCt, false));
+  for (let s = 0; s < sv.count; s++) {
+    const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
     for (let c = 0; c < componentCount; c++) {
       result[idx * componentCount + c] = readScalar(
-        valView,
-        (s * componentCount + c) * valCompSize,
-        valCt,
+        sv.valView,
+        (s * componentCount + c) * sv.valCompSize,
+        sv.valCt,
         normalized,
       );
     }
@@ -244,31 +293,12 @@ export function unpackAccessorUint32(
 
   if (accessor.sparse) {
     // Sparse integer index buffers are legal but extremely rare.
-    // Apply the patch directly using the same logic as _applySparsePatch.
-    const sparse = accessor.sparse;
-    const idxBv = gltf.bufferViews?.[sparse.indices.bufferView];
-    if (idxBv) {
-      const idxBuf = buffers.get(idxBv.buffer);
-      if (idxBuf) {
-        const idxOffset = (idxBv.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0);
-        const idxView = new DataView(idxBuf, idxOffset);
-        const idxCt = sparse.indices.componentType;
-        const idxCompSize = componentByteSize(idxCt);
-
-        const valBv = gltf.bufferViews?.[sparse.values.bufferView];
-        if (valBv) {
-          const valBuf = buffers.get(valBv.buffer);
-          if (valBuf) {
-            const valOffset = (valBv.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0);
-            const valView = new DataView(valBuf, valOffset);
-            const valCompSize = componentByteSize(ct);
-
-            for (let s = 0; s < sparse.count; s++) {
-              const idx = Math.round(readScalar(idxView, s * idxCompSize, idxCt, false));
-              result[idx] = Math.round(readScalar(valView, s * valCompSize, ct, false));
-            }
-          }
-        }
+    // Uses null warnings → missing bufferViews silently skip (graceful degrade).
+    const sv = _resolveSparseViews(gltf, buffers, accessor, null);
+    if (sv) {
+      for (let s = 0; s < sv.count; s++) {
+        const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
+        result[idx] = Math.round(readScalar(sv.valView, s * sv.valCompSize, sv.valCt, false));
       }
     }
   }

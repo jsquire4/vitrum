@@ -33,6 +33,7 @@ import {
   type FusedTrainerConfig,
 } from './fusedMlpTrainer.js';
 import { HashGridTableTrainer } from './hashGridTableTrainer.js';
+import { unpackRecords } from './recordUnpack.js';
 import {
   levelResolution,
   nrcInputWidth,
@@ -251,7 +252,7 @@ export class NrcSubsystem implements PipelineSubsystem {
       tableLearningRate: cfg.tableLearningRate,
     });
     await this._tableTrainer.build(
-      { gradInputF: this._trainer.gradInputF, tablesBuf: this._tablesBuf, levelsBuf: this._levelsBuf },
+      { gradInputF: this._trainer.gradInputF!, tablesBuf: this._tablesBuf, levelsBuf: this._levelsBuf },
       aabbMin, aabbMax,
     );
 
@@ -303,8 +304,8 @@ export class NrcSubsystem implements PipelineSubsystem {
       label: 'nrc-bind-group',
       layout: getNrcBindGroupLayout(d, this._bglCache),
       entries: [
-        { binding: 0, resource: { buffer: this._trainer.wMasterGpu } },
-        { binding: 1, resource: { buffer: this._trainer.bMasterGpu } },
+        { binding: 0, resource: { buffer: this._trainer.wMasterGpu! } },
+        { binding: 1, resource: { buffer: this._trainer.bMasterGpu! } },
         { binding: 2, resource: { buffer: this._tablesBuf } },
         { binding: 3, resource: { buffer: this._levelsBuf } },
         { binding: 4, resource: { buffer: this._recordsBuf } },
@@ -400,40 +401,14 @@ export class NrcSubsystem implements PipelineSubsystem {
     try {
       await this._recordReadback.mapAsync(GPUMapMode.READ);
       const raw = new Float32Array(this._recordReadback.getMappedRange());
-      const cap = this.cfg.recordCap;
-      const stride = this._recordStride;
-      const inW = this._inW;
-      let filled = 0;
-      // Zero the batch, then pack the non-empty records densely. The pos column
-      // (offset inW + OUT_W) is repacked in lockstep so sample index s in the
-      // trainer batch == sample index s in posBuf == dL/dX row s.
-      this._batchX.fill(0);
-      this._batchY.fill(0);
-      this._batchPos.fill(0);
-      for (let rIdx = 0; rIdx < cap; rIdx++) {
-        const base = rIdx * stride;
-        // A6 empty-slot detection: check the first encoded-input float (index 0).
-        // An unfilled slot (NRC never fired) has all-zero input because the GPU
-        // record buffer is zero-initialized and nrcWriteRecord only runs when
-        // nrcFired is set. A genuine record has at least one non-zero hash-grid
-        // feature. Checking input[0] is sufficient — a slot aliased by two pixels
-        // (pixelIdx % recordCap) is claimed first-writer-wins atomically in the
-        // shader (nrcSlotClaims), so the first writer's fully-assembled record is
-        // the one we read back. Do NOT skip zero-target records — r.Lo==0 is a
-        // valid training signal (occluded surface; NRC should predict black).
-        if (raw[base] === 0) continue; // empty slot: encoded input never written
-        const tx = raw[base + inW + 0]!;
-        const ty = raw[base + inW + 1]!;
-        const tz = raw[base + inW + 2]!;
-        for (let i = 0; i < inW; i++) this._batchX[filled * inW + i] = raw[base + i]!;
-        this._batchY[filled * OUT_W + 0] = tx;
-        this._batchY[filled * OUT_W + 1] = ty;
-        this._batchY[filled * OUT_W + 2] = tz;
-        this._batchPos[filled * 3 + 0] = raw[base + inW + OUT_W + 0]!;
-        this._batchPos[filled * 3 + 1] = raw[base + inW + OUT_W + 1]!;
-        this._batchPos[filled * 3 + 2] = raw[base + inW + OUT_W + 2]!;
-        filled++;
-      }
+      // Gap-detection + dense repack (A6 empty-slot semantics documented at
+      // unpackRecords). The pos column (offset inW + OUT_W) is repacked in
+      // lockstep so sample index s in the trainer batch == sample index s in
+      // posBuf == dL/dX row s. Re-uses the pre-allocated staging arrays.
+      const { filled } = unpackRecords(
+        raw, this.cfg.recordCap, this._recordStride, this._inW,
+        { x: this._batchX, y: this._batchY, pos: this._batchPos },
+      );
       this._recordReadback.unmap();
       if (filled === 0) return; // nothing to learn this frame
       // The trainer dispatch is fixed-size (recordCap samples); the zero-padded

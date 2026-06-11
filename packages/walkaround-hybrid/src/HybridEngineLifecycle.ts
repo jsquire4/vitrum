@@ -50,12 +50,7 @@ import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
-import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
-import {
-  collectRectAreaEmitterTrisFromCore,
-  collectMeshAreaEmitterTrisFromCore,
-  packEmitterTrisForDDGI,
-} from './restir/bvhSceneHelpers.js';
+import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
 import type { Scene } from '@vitrum/core';
 
 /**
@@ -496,65 +491,37 @@ export class PipelineInitCoordinator {
         return;
       }
 
-      // Wire the sun intensity multiplier into DDGI. Single-count: when the
-      // core scene supplies a `directional` emitter, `coreEmittersToDDGILights`
-      // emits a `sun` DDGILight carrying `intensity = emitter.intensity`, so
-      // the multiplier must be 1 (a multiplier of primaryLightIntensity would
-      // double-apply). When NO scene directional is present, the legacy config
-      // multiplier (primaryLightIntensity) is preserved — see
-      // `directionalSunMultiplier`. `setSunIntensityMultiplier` is a public
-      // method on ProbeUpdatePass — no cast needed.
+      // DDGI light sync (H18/H41/B3 — 5-step sequence, shared with engine
+      // fast-update path via syncDdgiFromCoreScene in HybridEngineDdgiSync.ts).
+      // R3 B-chain step 4.
+      //
+      // Intentional differences vs engine path (preserved):
+      //   - setLightsConditional: true (only call setLights if scene has emitters)
+      //   - No primaryLightDir supplied (lifecycle does NOT call orientDdgiSunLights)
+      //   - No invalidateProbeCache (fresh init — probe cache is cold already)
+      //
+      // When sceneForSun is null (no core mesh scene), only set the multiplier
+      // (preserves the legacy config intensity); skip the 4 mesh-dependent steps.
       const sceneForSun =
         host.coreSceneSuppliesMeshes() && host.lastScene != null
           ? host.lastScene
           : null;
-      host.ddgi.setSunIntensityMultiplier(
-        directionalSunMultiplier(sceneForSun, host.primaryLightIntensity),
-      );
-
-      // Collect the scene's analytic lights as DDGI lights. DDGI's per-probe
-      // ray-cast pass uses 'sun' + 'fixture'/'teaLight' kinds — without this
-      // bridge, area/point lights never reach DDGI's `evalDirectLighting`,
-      // so probe rays hitting walls return zero radiance and the irradiance
-      // atlas stays black → no colour bleed onto boxes, surfaces render
-      // flat-gray even with DDGI mechanically running.
-      //
-      // Theme T16 — prefer the lossless core-emitter projection when a core
-      // scene is available. `coreEmittersToDDGILights` consumes the
-      // `@vitrum/core` `SceneEmitter` union directly, preserving chroma,
-      // using the true emissive area `4·|uAxis × vAxis|` for rect emitters,
-      // carrying the source emitter id, and — for `directional` emitters —
-      // emitting a `sun` DDGILight with the emitter's REAL direction/colour
-      // (replacing the packer's old hardcoded straight-down warm-white sun).
-      //
-      // Concrete walkaround-hybrid now reads DDGI lights from the retained core
-      // emitter list only. Raw Three light walking lives outside this runtime
-      // path.
-      const ddgiSceneLights = sceneForSun != null ? coreEmittersToDDGILights(sceneForSun) : [];
-      if (ddgiSceneLights.length > 0) {
-        // De-dup the sun: if the scene contributes a directional→sun AND the
-        // host passed an `opts.lights` sun, drop the host sun (scene wins) so
-        // DDGI doesn't double-count the sun. See `mergeDDGILightsDedupSun`.
-        host.ddgi.setLights(mergeDDGILightsDedupSun(host.ctorLights, ddgiSceneLights));
-      }
-      // H18 Stage 2 — supply area-emitter NEE triangles for the probe-ray kernel.
-      // rect-area/disc-area: same geometry as ReSTIR-DI (collectRectAreaEmitterTrisFromCore).
-      // mesh-area: DDGI-only (collectMeshAreaEmitterTrisFromCore) — the geometry
-      // stream carries them for ReSTIR; DDGI's probe-NEE path has no geometry
-      // stream, so they must be added explicitly. Count=0 is a no-op.
-      // (mesh-area tris added to probe NEE, 2026-06-10)
       if (sceneForSun != null) {
-        const emitterTris = [
-          ...collectRectAreaEmitterTrisFromCore(sceneForSun),
-          ...collectMeshAreaEmitterTrisFromCore(sceneForSun),
-        ];
-        const packed = packEmitterTrisForDDGI(emitterTris);
-        host.ddgi.setEmitterTris(packed.data, packed.count);
-        // H41 — upload the analytic point/spot lights buffer for shade NEE.
-        // Must be called BEFORE publishPipeline (pipeline still held locally here).
-        // The uploadInitial placeholder is zero-count; this uploads the real data
-        // so the first rendered frame sees point/spot lights.
-        pipeline?.updateAnalyticLights(sceneForSun);
+        // H18/H41/sun-single-count: steps 1–4 via shared helper.
+        // setLightsConditional=true: only merges if scene has ≥1 emitter.
+        // No primaryLightDir: lifecycle omits orientDdgiSunLights (engine path adds it).
+        syncDdgiFromCoreScene({
+          ddgi: host.ddgi,
+          pipeline,
+          ctorLights: host.ctorLights,
+          primaryLightIntensity: host.primaryLightIntensity,
+          setLightsConditional: true,
+          // primaryLightDir intentionally absent — lifecycle does not orient sun lights here
+        }, sceneForSun);
+      } else {
+        // No core mesh scene: still set the sun intensity multiplier to the
+        // config value (legacy path — no scene directional to single-count).
+        host.ddgi.setSunIntensityMultiplier(host.primaryLightIntensity);
       }
 
       host.publishPipeline(pipeline);

@@ -120,6 +120,10 @@ fn encodeFlux(f: f32) -> u32 {
 }
 
 // ── sTree descent — same serialised layout as ppgPdf.gi-ris sampling ─────────
+// MUST-MATCH: this descent body is semantically identical to ppgSTreeFindLeafBase
+// in ppgPdf.wgsl.ts — only the buffer name differs (ppgSTreeBuf here vs
+// ppgSTreeBuf_gi there). If you edit the logic here, mirror the change there,
+// and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn sTreeFindLeafBase(pos: vec3<f32>) -> u32 {
   let nodeCount = u32(ppgSTreeBuf[0]);
   var idx: u32 = 0u;
@@ -145,6 +149,10 @@ fn sTreeFindLeafBase(pos: vec3<f32>) -> u32 {
 // ── dTree descent — locate the leaf containing (u, v) in a given cell ────────
 // Mirror of dTree.findDTreeLeaf: at each interior node compare uv against the
 // quadrant midpoints, descend to firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0).
+// MUST-MATCH: this descent body is semantically identical to ppgDTreeFindLeafBase
+// in ppgPdf.wgsl.ts — only the buffer name differs (ppgDTreeBuf here vs
+// ppgDTreeBuf_gi there). If you edit the logic here, mirror the change there,
+// and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn dTreeFindLeafBase(dTreeOffset: u32, uv: vec2<f32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {

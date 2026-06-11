@@ -171,8 +171,6 @@ export interface HybridEngineFrameDims {
 
 /** Write-back closures and frame-rate control. */
 export interface HybridEngineFrameControl {
-  /** When true, caller already called reset() and frame should skip. */
-  consumeRebuildKeyChange: () => boolean;
   targetFrameIntervalMs: number | null;
   getLastFrameTs: () => number;
   setLastFrameTs: (ts: number) => void;
@@ -383,36 +381,22 @@ export function getPreferredSwapChainFormat(): GPUTextureFormat {
     : 'bgra8unorm');
 }
 
-function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
-  const ddgiLayerOn = deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi');
-  const coreScene = deps.subsystems.lastScene;
-
-  // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
-  // post-publish paths use, but tlas-sync-only (allowRcSceneRebuild=false so
-  // merged-mode RC is NOT rebuilt every frame), and the DDGI sync gated on the
-  // resolved DDGI layer exactly as before.
-  propagateBvhToGiSubsystems({
-    ddgi: deps.subsystems.ddgi,
-    rc: deps.subsystems.rc,
-    bvhBuffers: deps.subsystems.bvhBuffers,
-    lastScene: coreScene,
-    syncDdgi: ddgiLayerOn,
-    allowRcSceneRebuild: false,
-  });
-
-  if (ddgiLayerOn) {
-    deps.subsystems.ddgi.setSkyParams?.(deps.lighting.skyTint, deps.lighting.skyIrradiance);
-    void deps.subsystems.ddgi.updateFrame({
-      ...(coreScene != null ? { coreScene } : {}),
-      device: deps.flags.device,
-      enabled: true,
-    });
-    if (deps.subsystems.ddgi.ready) {
-      deps.subsystems.ddgi.setGlassMixScale(deps.flags.tunables.glassMixScale);
-    }
-  }
-
-  const pipeline = deps.subsystems.pipeline!;
+/**
+ * D2.9 — dispatch one RC frame and push the resulting inputs into the
+ * pipeline. Extracted from `runDdgiAndRc` to isolate the 55-line RC assembly.
+ *
+ * Responsibilities:
+ *  - syncs analytic lights into RC (A7, idempotent)
+ *  - resolves chromatic sun color from the scene directional emitter
+ *  - forwards rect-area emitters + env bindings from the main pipeline
+ *  - calls `rc.dispatchFrame` then `pipeline.setRCInputs`
+ *  - sets `pipeline.setRCInputs(null)` when RC is absent
+ */
+function dispatchRcAndSetInputs(
+  deps: HybridEngineFrameDeps,
+  input: FrameInput,
+  pipeline: WalkaroundGPUPipeline,
+): void {
   if (deps.subsystems.rc) {
     // Share the main pipeline's rect-area emitter buffer into RC so its probe
     // cast can NEE-sample the emitter list (closes the RC out-of-model regime
@@ -469,6 +453,39 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   } else {
     pipeline.setRCInputs(null);
   }
+}
+
+function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
+  const ddgiLayerOn = deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi');
+  const coreScene = deps.subsystems.lastScene;
+
+  // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
+  // post-publish paths use, but tlas-sync-only (allowRcSceneRebuild=false so
+  // merged-mode RC is NOT rebuilt every frame), and the DDGI sync gated on the
+  // resolved DDGI layer exactly as before.
+  propagateBvhToGiSubsystems({
+    ddgi: deps.subsystems.ddgi,
+    rc: deps.subsystems.rc,
+    bvhBuffers: deps.subsystems.bvhBuffers,
+    lastScene: coreScene,
+    syncDdgi: ddgiLayerOn,
+    allowRcSceneRebuild: false,
+  });
+
+  if (ddgiLayerOn) {
+    deps.subsystems.ddgi.setSkyParams?.(deps.lighting.skyTint, deps.lighting.skyIrradiance);
+    void deps.subsystems.ddgi.updateFrame({
+      ...(coreScene != null ? { coreScene } : {}),
+      device: deps.flags.device,
+      enabled: true,
+    });
+    if (deps.subsystems.ddgi.ready) {
+      deps.subsystems.ddgi.setGlassMixScale(deps.flags.tunables.glassMixScale);
+    }
+  }
+
+  const pipeline = deps.subsystems.pipeline!;
+  dispatchRcAndSetInputs(deps, input, pipeline);
 
   if (!ddgiLayerOn) {
     pipeline.setDDGIInputs(null);
@@ -599,9 +616,8 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
 
-  if (deps.control.consumeRebuildKeyChange()) {
-    return HYBRID_FRAME_SKIP_OUTPUT;
-  }
+  // Rebuild-key check moved to HybridEngine.renderFrame() (D2.5 — R3 B-chain
+  // step 5). Engine-state mutation (reset()) no longer lives in the deps bundle.
 
   const dbg = deps.telemetry.dbg;
   const pipeline = deps.subsystems.pipeline;

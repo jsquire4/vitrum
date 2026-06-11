@@ -26,25 +26,27 @@ export class FusedMlpTrainerProbe {
   computeGradsStep(): void {
     const t = this.t;
     const d = t.device;
-    // clear fixed-point grad buffers (incl. dL/dX)
+    // clear fixed-point grad buffers (incl. dL/dX). The `!`s are safe: the
+    // probe is only ever constructed around a built, undisposed trainer (the
+    // trainer's own public methods #assertUsable-guard the disposed case).
     const enc0 = d.createCommandEncoder();
-    enc0.clearBuffer(t.gradWfx); enc0.clearBuffer(t.gradBfx);
-    enc0.clearBuffer(t.gradInputFx);
+    enc0.clearBuffer(t.gradWfx!); enc0.clearBuffer(t.gradBfx!);
+    enc0.clearBuffer(t.gradInputFx!);
     d.queue.submit([enc0.finish()]);
     const enc = d.createCommandEncoder();
     t.recordForward(enc);
     t.recordBackward(enc);
-    t.recordGradFinalize(enc, t.gradWfx, t.gradWf, t.plan.totalW, t._gradFinUboW);
-    t.recordGradFinalize(enc, t.gradBfx, t.gradBf, t.plan.totalB, t._gradFinUboB);
-    t.recordGradFinalize(enc, t.gradInputFx, t.gradInputF, t.numSamples * t.spec.inW, t._gradFinUboX);
+    t.recordGradFinalize(enc, t.gradWfx!, t.gradWf!, t.plan.totalW, t._gradFinUboW!);
+    t.recordGradFinalize(enc, t.gradBfx!, t.gradBf!, t.plan.totalB, t._gradFinUboB!);
+    t.recordGradFinalize(enc, t.gradInputFx!, t.gradInputF!, t.numSamples * t.spec.inW, t._gradFinUboX!);
     d.queue.submit([enc.finish()]);
   }
 
   async readGrads(): Promise<{ gw: Float32Array; gb: Float32Array }> {
     const t = this.t;
     return {
-      gw: await this.readF32(t.gradWf, t.plan.totalW),
-      gb: await this.readF32(t.gradBf, t.plan.totalB),
+      gw: await this.readF32(t.gradWf!, t.plan.totalW),
+      gb: await this.readF32(t.gradBf!, t.plan.totalB),
     };
   }
 
@@ -52,7 +54,7 @@ export class FusedMlpTrainerProbe {
    *  the FD gradient check and (debug) inspection of the hash-grid upstream grad. */
   async readInputGrads(): Promise<Float32Array> {
     const t = this.t;
-    return this.readF32(t.gradInputF, t.numSamples * t.spec.inW);
+    return this.readF32(t.gradInputF!, t.numSamples * t.spec.inW);
   }
 
   /** Forward-only + CPU MSE from prediction readback (for FD loss probe). */
@@ -63,8 +65,8 @@ export class FusedMlpTrainerProbe {
     t.recordForward(enc);
     d.queue.submit([enc.finish()]);
     const W = t.spec.W, node = t.node, outW = t.spec.outW;
-    const acts = await this.readScalar(t.actsGlob, t.numSamples * node * W);
-    const tgt = await this.readF32(t.targets, t.numSamples * outW);
+    const acts = await this.readScalar(t.actsGlob!, t.numSamples * node * W);
+    const tgt = await this.readF32(t.targets!, t.numSamples * outW);
     let loss = 0;
     for (let S = 0; S < t.numSamples; S++) {
       for (let o = 0; o < outW; o++) {

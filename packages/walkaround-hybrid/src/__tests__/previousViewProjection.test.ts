@@ -90,7 +90,6 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
     },
     dims: { width: 64, height: 64, internalWidth: 64, internalHeight: 64 },
     control: {
-      consumeRebuildKeyChange: () => false,
       targetFrameIntervalMs: null,
       getLastFrameTs: () => lastTs,
       setLastFrameTs: (t: number) => { lastTs = t; },

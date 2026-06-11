@@ -4,6 +4,13 @@
  * One workgroup per probe in the active set. Each thread handles
  * ceil(RAYS_PER_PROBE / 32) rays (192 rays / 32 threads today). Writes ray hit results to a storage buffer for
  * Pass 2 (the atlas blend pass).
+ *
+ * The factory `makeProbeUpdateRaysWGSL(maxMaterials)` composes three
+ * sub-template functions:
+ *   makeTraceSunVisibilityWGSL()   — glass-aware sun-visibility helper
+ *   makeDirectLightingWGSL()       — analytic lights + area-emitter NEE
+ *   makeProbeMainEntryWGSL()       — probe world pos, sky/env sampling,
+ *                                    main compute entry point
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
@@ -36,14 +43,25 @@ const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
  */
 export function makeProbeUpdateRaysWGSL(maxMaterials: number): string {
   if (maxMaterials < 1) throw new RangeError(`makeProbeUpdateRaysWGSL: maxMaterials must be >= 1, got ${maxMaterials}`);
-  return makeProbeUpdateRaysWGSLImpl(maxMaterials);
+  return (
+    _makeProbeUpdateRaysHeader(maxMaterials) +
+    makeTraceSunVisibilityWGSL() +
+    makeDirectLightingWGSL() +
+    makeProbeMainEntryWGSL()
+  );
 }
 
 // @deprecated `PROBE_UPDATE_RAYS_WGSL` (bound to a 64-ray default)
 // removed 2026-05-18 dead-code sweep — supplanted by
 // `makeProbeUpdateRaysWGSL(64)`; zero non-self consumers.
 
-function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* wgsl */`
+// ─── Sub-template functions ────────────────────────────────────────────────
+
+/**
+ * Shared header: includes, struct declarations, constants, and bindings.
+ * (Not exported — composed internally by makeProbeUpdateRaysWGSL.)
+ */
+function _makeProbeUpdateRaysHeader(maxMaterials: number): string { return /* wgsl */`
 
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
@@ -279,7 +297,15 @@ fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
 fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
   return traceSceneFirstHitDdgi(ray);
 }
+`; }
 
+/**
+ * Glass-aware sun-visibility helper (traceSunVisibility function).
+ *
+ * Exported so test harnesses can compile + verify this section independently.
+ * Composed first after the header in makeProbeUpdateRaysWGSL.
+ */
+export function makeTraceSunVisibilityWGSL(): string { return /* wgsl */`
 // -----------------------------------------------------------------
 // Direct lighting at a hit point
 // -----------------------------------------------------------------
@@ -357,7 +383,15 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
   // Loop exhausted (more than 3 glass crossings) — treat as fully attenuated.
   return vec3f(0.0);
 }
+`; }
 
+/**
+ * Analytic-light + area-emitter NEE block (sun + point/spot + mesh-area NEE).
+ *
+ * Exported for independent compile/test. Composed after makeTraceSunVisibilityWGSL
+ * in makeProbeUpdateRaysWGSL.
+ */
+export function makeDirectLightingWGSL(): string { return /* wgsl */`
 fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
                 hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
@@ -488,7 +522,14 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
   }
   return Lo;
 }
+`; }
 
+/**
+ * Probe world-position helper, sky/env sampling, and the main compute entry point.
+ *
+ * Exported for independent compile/test. Composed last in makeProbeUpdateRaysWGSL.
+ */
+export function makeProbeMainEntryWGSL(): string { return /* wgsl */`
 // -----------------------------------------------------------------
 // Probe world position from flat index
 // -----------------------------------------------------------------

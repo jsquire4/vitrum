@@ -195,56 +195,17 @@ export async function allocateGraph(
     device.queue.writeBuffer(uniformBuf, 0, packLayerUniform(layer, tensorDimsMap, H, W));
     uniformWriteCount++;
 
-    // H28 — ReLU in-place aliasing fix:
-    // When a relu layer lists the same name as both input and output (e.g.
-    // `inputs: ['enc1_feat'], output: 'enc1_feat'`), `buildBindGroup` would
-    // assign the SAME GPU buffer to binding 0 (read) AND binding 3 (read_write),
-    // which is undefined behavior in WebGPU (aliased storage bindings with
-    // mixed access modes). Fix: allocate a distinct `${layer.name}_out` buffer
-    // for the relu output, build the bind group with that as binding 3, then
-    // remap `tensors` so downstream layers reading `layer.output` see the
-    // relu-written buffer. This is host-only; no WGSL changes are required.
+    // H28 — ReLU in-place aliasing fix (see patchReLUInPlaceAliasing): a relu
+    // layer whose input name == output name would alias the same GPU buffer at
+    // binding 0 (read) and binding 3 (read_write). Falls through to the normal
+    // path when the input tensor is missing (returns null).
     if (layer.kind === 'relu' && layer.inputs[0] === layer.output) {
-      const inName  = layer.inputs[0];
-      const outKey  = `${layer.name}_out`;
-      const srcTb   = tensors.get(inName);
-      if (srcTb) {
-        const floatCount = srcTb.dims.H * srcTb.dims.W * srcTb.dims.C;
-        const outBuf = device.createBuffer({
-          label: `neural/${outKey}`,
-          size: floatCount * 4,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        });
-        // Do NOT push to allocatedBuffers — the buffer lives in tensors and
-        // will be destroyed via tensors cleanup.  Consistent with other tensors.
-        const outTb: TensorBuffer = { buf: outBuf, dims: srcTb.dims, label: `neural/${outKey}` };
-        // Temporarily inject the distinct output tensor so buildBindGroup picks
-        // it up as binding 3 while keeping the original for binding 0.
-        tensors.set(outKey, outTb);
-        // Swap the output name → outKey for this layer's bind-group build.
-        const patchedLayer = { ...layer, output: outKey };
-        const { bindGroup, bufKeys } = buildBindGroup(
-          device, pipeline, patchedLayer, weightsByName, uniformBuf,
-          tensors, placeholderBuf, allocatedBuffers,
-        );
-        // Leak guard: the line below overwrites the `inName` entry, which is the
-        // ONLY reference to the relu's binding-0 INPUT buffer (the upstream
-        // conv's output). Without preserving it, dispose()'s tensor-map loop
-        // would never destroy it → GPU memory leak on engine teardown (7 such
-        // buffers in the default UNet spec). Stash it under a unique key so it
-        // stays in the map and is destroyed normally; the key is never read by
-        // any layer's bind-group build (layers reference `inName`, not this key).
-        tensors.set(`${layer.name}_in_orig`, srcTb);
-        // Remap: downstream layers reading `inName` (= `layer.output`) should
-        // now see the relu-written buffer.
-        tensors.set(inName, outTb);
-        layerStates[i] = {
-          layerName:      layer.name,
-          pipeline,
-          uniformBuf,
-          cachedBindGroup: bindGroup,
-          cachedBufKeys:   bufKeys,
-        };
+      const patched = patchReLUInPlaceAliasing(
+        device, pipeline, layer, weightsByName, uniformBuf,
+        tensors, placeholderBuf, allocatedBuffers,
+      );
+      if (patched) {
+        layerStates[i] = patched;
         continue;
       }
     }
@@ -272,6 +233,76 @@ export async function allocateGraph(
     allocatedBuffers,
     weightsByName,
     uniformWriteCount,
+  };
+}
+
+/**
+ * H28 — ReLU in-place aliasing fix (D7.9: extracted from the allocateGraph loop).
+ * When a relu layer lists the same name as both input and output (e.g.
+ * `inputs: ['enc1_feat'], output: 'enc1_feat'`), `buildBindGroup` would
+ * assign the SAME GPU buffer to binding 0 (read) AND binding 3 (read_write),
+ * which is undefined behavior in WebGPU (aliased storage bindings with
+ * mixed access modes). Fix: allocate a distinct `${layer.name}_out` buffer
+ * for the relu output, build the bind group with that as binding 3, then
+ * remap `tensors` so downstream layers reading `layer.output` see the
+ * relu-written buffer. This is host-only; no WGSL changes are required.
+ *
+ * Tensor-map mutations are identical to the previous inline block:
+ *   • `${layer.name}_out`     → the new distinct relu output buffer
+ *   • `${layer.name}_in_orig` → the original input tensor (leak guard: the
+ *     remap below overwrites the only reference to the relu's binding-0 INPUT
+ *     buffer — the upstream conv's output. Without preserving it, dispose()'s
+ *     tensor-map loop would never destroy it → GPU memory leak on engine
+ *     teardown, 7 such buffers in the default UNet spec. The key is never read
+ *     by any layer's bind-group build.)
+ *   • `inName`                → remapped to the relu-written buffer so
+ *     downstream readers of `layer.output` see it.
+ * The new output buffer is deliberately NOT pushed to allocatedBuffers — it
+ * lives in `tensors` and is destroyed via the tensors cleanup, consistent with
+ * other tensors.
+ *
+ * Returns the layer's GPU state, or null when the input tensor is missing
+ * (caller falls through to the unpatched buildBindGroup path).
+ */
+function patchReLUInPlaceAliasing(
+  device: GPUDevice,
+  pipeline: GPUComputePipeline,
+  layer: LayerSpec,
+  weightsByName: Map<string, LayerWeights>,
+  uniformBuf: GPUBuffer,
+  tensors: Map<string, TensorBuffer>,
+  placeholderBuf: GPUBuffer,
+  allocatedBuffers: GPUBuffer[],
+): LayerGPUState | null {
+  const inName = layer.inputs[0]!;
+  const outKey = `${layer.name}_out`;
+  const srcTb  = tensors.get(inName);
+  if (!srcTb) return null;
+
+  const floatCount = srcTb.dims.H * srcTb.dims.W * srcTb.dims.C;
+  const outBuf = device.createBuffer({
+    label: `neural/${outKey}`,
+    size: floatCount * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
+  const outTb: TensorBuffer = { buf: outBuf, dims: srcTb.dims, label: `neural/${outKey}` };
+  // Temporarily inject the distinct output tensor so buildBindGroup picks
+  // it up as binding 3 while keeping the original for binding 0.
+  tensors.set(outKey, outTb);
+  // Swap the output name → outKey for this layer's bind-group build.
+  const patchedLayer = { ...layer, output: outKey };
+  const { bindGroup, bufKeys } = buildBindGroup(
+    device, pipeline, patchedLayer, weightsByName, uniformBuf,
+    tensors, placeholderBuf, allocatedBuffers,
+  );
+  tensors.set(`${layer.name}_in_orig`, srcTb); // leak guard (see doc comment)
+  tensors.set(inName, outTb);                  // downstream remap
+  return {
+    layerName:      layer.name,
+    pipeline,
+    uniformBuf,
+    cachedBindGroup: bindGroup,
+    cachedBufKeys:   bufKeys,
   };
 }
 

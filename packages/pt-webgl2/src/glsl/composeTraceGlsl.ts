@@ -331,8 +331,14 @@ const INLINE_HELPERS = /* glsl */ `
  * the whole orchestration loop inline in the material (no `RENDER.main` chunk), so it is
  * transcribed verbatim here. All FEATURE_ and DEBUG_MODE gates resolve from the preamble
  * defines at compile time.
+ *
+ * D10.4 (2026-06-11): split into named section constants assembled in order.
+ * BYTE-IDENTITY CONTRACT: RENDER_MAIN_SECTIONS.join('') === original RENDER_MAIN string.
+ * Sections are split at natural inline-comment boundaries; no whitespace is added or removed.
  */
-const RENDER_MAIN = /* glsl */ `
+
+// ── Section 1: function header + RNG init + BDPT light-subpath pass ───────
+const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 					void main() {
 
 						// init
@@ -427,7 +433,10 @@ const RENDER_MAIN = /* glsl */ `
 						}
 
 						#endif
+`;
 
+// ── Section 2: camera ray + env rotation + G-buffer init + BDPT eye stack ─
+const RENDER_MAIN_GBUFFER = /* glsl */ `
 						// get camera ray
 						Ray ray = getCameraRay();
 
@@ -510,7 +519,10 @@ const RENDER_MAIN = /* glsl */ `
 
 							int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
 							vec3 throughputRgb = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
+`;
 
+// ── Section 3: volume scatter event (Sprint 7) ────────────────────────────
+const RENDER_MAIN_VOLUME_SCATTER = /* glsl */ `
 							// Sprint 7: Volume scatter event — homogeneous medium march.
 							// If u_volumeDensity > 0, sample a potential scatter distance.
 							// If tScatter < tSurface, a scatter event occurs before the surface hit.
@@ -546,7 +558,10 @@ const RENDER_MAIN = /* glsl */ `
 									continue;
 								}
 							}
+`;
 
+// ── Section 4: forward analytic-light hit + NO_HIT/env + surface setup ────
+const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							// check if we intersect any lights and accumulate the light contribution
 							// TODO: we can add support for light surface rendering in the else condition if we
 							// add the ability to toggle visibility of the the light
@@ -710,7 +725,10 @@ const RENDER_MAIN = /* glsl */ `
 								continue;
 
 							}
+`;
 
+// ── Section 5: G-buffer capture + surface shading + NEE + BDPT connection ─
+const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 							// Sprint 5: G-buffer primary-hit capture (once per path, at first real surface hit).
 							// Linear depth: project world-space hit point onto camera -Z axis.
 							//   camForward = camera's -Z world-space direction (Three.js convention).
@@ -812,7 +830,10 @@ const RENDER_MAIN = /* glsl */ `
 							}
 
 							#endif
+`;
 
+// ── Section 6: caustic manifold-NEE heuristic (strategy 1) ─────────────── 
+const RENDER_MAIN_CAUSTIC_MANIFOLD = /* glsl */ `
 							// RFE-05 strategy behavior hook:
 							// strategy 1 ('manifold-nee') => deterministic refraction-walk heuristic.
 							//   NOT the Newton-solve MNEE of pt-webgpu. Walks the refracted chain,
@@ -878,7 +899,10 @@ const RENDER_MAIN = /* glsl */ `
 											}
 										}
 									}
-								} else if ( uCausticStrategy == 2 ) {
+								} else if ( uCausticStrategy == 2 ) {`;
+
+// ── Section 7: caustic photon-density estimate (strategy 2) ─────────────── 
+const RENDER_MAIN_CAUSTIC_PHOTON = /* glsl */ `
 									// Photon-density style estimate: cast a deterministic refracted cone
 									// and estimate visible light density with an inverse-distance kernel.
 									float etaP = surf.frontFace ? ( 1.0 / max( surf.ior, 1.0 ) ) : max( surf.ior, 1.0 );
@@ -913,7 +937,10 @@ const RENDER_MAIN = /* glsl */ `
 									}
 								}
 							}
+`;
 
+// ── Section 8: roughness accum + emissive MIS + scatter + throughput + RR ─
+const RENDER_MAIN_SCATTER = /* glsl */ `
 							// accumulate a roughness value to offset diffuse, specular, diffuse rays that have high contribution
 							// to a single pixel resulting in fireflies
 							// TODO: handle transmissive surfaces
@@ -1049,7 +1076,10 @@ const RENDER_MAIN = /* glsl */ `
 							ray.origin = hitPoint;
 
 						}
+`;
 
+// ── Section 9: post-loop radiance clamp + alpha + debug + G-buffer write ──
+const RENDER_MAIN_POST_LOOP = /* glsl */ `
 						if ( uRadianceClamp > 0.0 ) {
 							float sampleLuminance = dot( pc_fragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
 							if ( sampleLuminance > uRadianceClamp ) {
@@ -1090,6 +1120,26 @@ const RENDER_MAIN = /* glsl */ `
 
 					}
 `;
+
+/**
+ * The sections array — assembled in order, byte-identical to the original RENDER_MAIN.
+ * Verified at module load time (see assertion below).
+ */
+/** @internal — exported for byte-identity test pin (D10.4). */
+export const RENDER_MAIN_SECTIONS = [
+  RENDER_MAIN_BDPT_SUBPATH,
+  RENDER_MAIN_GBUFFER,
+  RENDER_MAIN_VOLUME_SCATTER,
+  RENDER_MAIN_BDPT_EYE,
+  RENDER_MAIN_SURFACE_BDPT_EYE,
+  RENDER_MAIN_CAUSTIC_MANIFOLD,
+  RENDER_MAIN_CAUSTIC_PHOTON,
+  RENDER_MAIN_SCATTER,
+  RENDER_MAIN_POST_LOOP,
+] as const;
+
+/** Assembled RENDER_MAIN — concatenation of all sections in order (byte-identical to original). */
+const RENDER_MAIN = RENDER_MAIN_SECTIONS.join('');
 
 /**
  * Compose the fragment-shader BODY for the WebGL2 path tracer (no `#version`/precision/

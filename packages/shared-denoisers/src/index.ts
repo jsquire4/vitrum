@@ -200,3 +200,11 @@ export {
   float32ToFloat16Bits,
 } from './halfFloat.js';
 export { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+
+// ── RGBA16F ↔ Float32-RGB conversion helpers ─────────────────────────────────
+// Shared by walkaround-hybrid OIDNFinalDenoiser and any future backend that
+// needs the same rgba16float readback / upload round-trip (e.g. pt-webgpu).
+export {
+  rgba16fBufferToRgbF32,
+  rgbF32ToRgba16fRowAligned,
+} from './rgba16fConversions.js';

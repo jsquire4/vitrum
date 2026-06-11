@@ -45,6 +45,12 @@ export interface NrcQueryWgslOptions extends NrcEncodeWgslOptions {
   outWidth: number;
   /** Hidden node-layers (Müller: 6). */
   hidden: number;
+  /** Bind-group index for the NRC bindings. Default 4 — the real gi-ris pipeline
+   *  binds NRC as the 5th group (full-tier maxBindGroups). Isolated harnesses
+   *  (e.g. nrcQueryHarness.ts) pass 0 to fit lavapipe's default maxBindGroups=4;
+   *  the binding NUMBERS are unchanged. Production callers omit it, so the
+   *  emitted production WGSL is byte-identical to the pre-option literal. */
+  group?: number;
 }
 
 /** Per-weight-layer offset plan, mirroring FusedMlpTrainer.planLayers exactly:
@@ -91,9 +97,18 @@ export function nrcQueryLayerPlan(o: NrcQueryWgslOptions): QueryLayerPlan {
  * passed to the builder, so the inline loop reads the trainer's concatenated
  * buffers at exactly the offsets the trainer wrote (FusedMlpTrainer.planLayers).
  */
+// MUST-MATCH (D7.7): the emitted `nrcHashLevelForwardInline` below carries an
+// inline copy of the 8-corner trilinear loop (i0/frac/wx·wy·wz/hash-row) — WGSL
+// forbids a shared helper taking the tables storage buffer by pointer. The same
+// loop is mirrored at
+//   • nrcEncoding.wgsl.ts       nrcHashLevelForward (forward, ptr-arg tables)
+//   • nrcEncodeBackward.wgsl.ts inlined scatter in nrcEncodeBackward (backward)
+//   • nrcEncoding.ts            trilinearCorners/hashGridForward (CPU oracle)
+// Change one → change ALL FOUR; the tests pin each against the CPU oracle.
 export function nrcQueryWgsl(o: NrcQueryWgslOptions): string {
   const plan = nrcQueryLayerPlan(o);
   const L = o.levels, F = o.featuresPerEntry, K = o.oneBlobBins, W = o.width;
+  const G = o.group ?? 4;
   const inWidth = L * F + 2 * K + 7; // hash-grid + one-blob(u,v) + normal(3)+rough(1)+albedo(3)
   // Per-weight-layer offset constants (mirror the trainer's concatenated layout).
   const wOffArr = plan.wOff.join('u, ') + 'u';
@@ -147,22 +162,22 @@ struct NrcCfgUBO {
   _pad1 : u32, _pad2 : u32,
 }
 
-@group(4) @binding(0) var<storage, read>       nrcWeights : array<f32>;
-@group(4) @binding(1) var<storage, read>       nrcBiases  : array<f32>;
-@group(4) @binding(2) var<storage, read>       nrcTables  : array<f32>;
-@group(4) @binding(3) var<storage, read>       nrcLevels  : array<NrcLevelDesc>;
+@group(${G}) @binding(0) var<storage, read>       nrcWeights : array<f32>;
+@group(${G}) @binding(1) var<storage, read>       nrcBiases  : array<f32>;
+@group(${G}) @binding(2) var<storage, read>       nrcTables  : array<f32>;
+@group(${G}) @binding(3) var<storage, read>       nrcLevels  : array<NrcLevelDesc>;
 // Record-gather buffer. We use a deterministic per-pixel slot = pixelIdxGi %
 // recordCap, which is race-free because each invocation owns one pixel. Records
 // are [NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos]
 // (recordStride = NRC_IN_W + OUT_W + 3). A record with target == 0 across all
 // channels is treated as empty by the host gather.
-@group(4) @binding(4) var<storage, read_write> nrcRecords    : array<f32>;
-@group(4) @binding(5) var<uniform>             nrcCfg        : NrcCfgUBO;
+@group(${G}) @binding(4) var<storage, read_write> nrcRecords    : array<f32>;
+@group(${G}) @binding(5) var<uniform>             nrcCfg        : NrcCfgUBO;
 // H27 — per-slot claim flags (atomic u32, one per recordCap slot). 0=unclaimed,
 // 1=claimed. A compare-exchange in nrcWriteRecord ensures the first invocation to
 // claim a slot wins; subsequent racers see 1 and skip the write (torn-record fix).
 // The host clears this buffer to zero at the start of each frame window.
-@group(4) @binding(6) var<storage, read_write> nrcSlotClaims : array<atomic<u32>>;
+@group(${G}) @binding(6) var<storage, read_write> nrcSlotClaims : array<atomic<u32>>;
 
 // ── One-blob encode of a scalar into NRC_BLOB_BINS bins, L1-normalised. Writes
 // the bins into a function-local scratch (exact mirror of nrcEncoding.ts). ──

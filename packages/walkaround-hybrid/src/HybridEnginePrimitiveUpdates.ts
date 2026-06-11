@@ -284,40 +284,46 @@ function refitBvhNodesAndUploadSlice(
 
 /**
  * H19 — apply the inverse-transpose of the upper-3×3 of a 4×4 column-major
- * matrix (the transform delta) to the per-vertex world-space normals in
- * `bvhNormals.cpuData`, writing only the affected
- * `[baseVertex, baseVertex + sliceVerts)` range, then upload the updated
- * slice to the GPU via `pipeline.refreshBvhNormalsSlice`.
+ * matrix to per-vertex normals, then upload the affected slice to the GPU.
  *
- * The inverse-transpose is required for correct normal transformation under
- * non-uniform scale (raw upper-3×3 would mis-orient normals perpendicular
- * to scaled axes). Under uniform scale or pure rotation the
- * inverse-transpose equals the rotation part — the path is always correct.
+ * Two modes controlled by the optional `inputNormals` argument:
+ *  - **Rotate in-place** (`inputNormals` absent): reads existing world-space
+ *    normals from `bvhNormals.cpuData` and applies the transform delta (used
+ *    by `transformRefit` when the mesh has been rigidly moved).
+ *  - **Write from local-space** (`inputNormals` provided, stride-3): writes
+ *    caller-supplied local-space normals after transforming to world space
+ *    (used by the positions-patch path that supplies new normals alongside
+ *    new positions).
  *
- * The normal buffer is stride-4 (vec4f, .w=0 unchanged).
- * Skipped when `pipeline` is null (init in flight).
+ * The inverse-transpose is required for correctness under non-uniform scale
+ * (plain upper-3×3 would mis-orient normals perpendicular to scaled axes).
+ * Under uniform scale or pure rotation the paths are equivalent.
+ *
+ * Output: stride-4 (vec4f, .w=0). Skipped when `pipeline` is null.
  */
-function rotateNormalsAndUploadSlice(
+function applyNormalTransformAndUpload(
   bvh: SceneBVHBuffers,
-  rotMat4: ArrayLike<number>,
+  mat4: ArrayLike<number>,
   baseVertex: number,
   sliceVerts: number,
   pipeline: BvhUpdateSink | null | undefined,
+  inputNormals?: ArrayLike<number>,
 ): void {
   if (!pipeline) return;
   const NORM_STRIDE = 4; // vec4f per vertex (.w unused)
   const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
   // Inverse-transpose of the upper-3×3 for correct normal transform under
   // non-uniform scale. Falls back to the raw submatrix when degenerate.
-  const it = mat3InverseTransposeFromMat4(rotMat4);
+  const it = mat3InverseTransposeFromMat4(mat4);
   const r00 = it[0]!; const r10 = it[1]!; const r20 = it[2]!;
   const r01 = it[3]!; const r11 = it[4]!; const r21 = it[5]!;
   const r02 = it[6]!; const r12 = it[7]!; const r22 = it[8]!;
   for (let v = 0; v < sliceVerts; v++) {
     const off = (baseVertex + v) * NORM_STRIDE;
-    const nx = normalsF32[off]!;
-    const ny = normalsF32[off + 1]!;
-    const nz = normalsF32[off + 2]!;
+    // Source: caller-supplied local-space (stride-3) or existing world-space buffer.
+    const nx = inputNormals != null ? inputNormals[v * 3]!     : normalsF32[off]!;
+    const ny = inputNormals != null ? inputNormals[v * 3 + 1]! : normalsF32[off + 1]!;
+    const nz = inputNormals != null ? inputNormals[v * 3 + 2]! : normalsF32[off + 2]!;
     let wx = r00 * nx + r01 * ny + r02 * nz;
     let wy = r10 * nx + r11 * ny + r12 * nz;
     let wz = r20 * nx + r21 * ny + r22 * nz;
@@ -326,7 +332,8 @@ function rotateNormalsAndUploadSlice(
     normalsF32[off]     = wx;
     normalsF32[off + 1] = wy;
     normalsF32[off + 2] = wz;
-    // .w unchanged (always 0)
+    if (inputNormals != null) normalsF32[off + 3] = 0; // .w=0 when writing fresh
+    // When rotating in-place: .w already=0 from build time, left unchanged.
   }
   const byteOffset = baseVertex * NORM_STRIDE * 4;
   const byteLength = sliceVerts * NORM_STRIDE * 4;
@@ -334,55 +341,6 @@ function rotateNormalsAndUploadSlice(
   pipeline.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
 }
 
-/**
- * H19 — write caller-supplied local-space normals into the bvhNormals buffer
- * after applying the inverse-transpose of matrixWorld's upper-3×3, then
- * normalizing and uploading the slice. Handles the positions-patch path where
- * the host supplies new normals alongside new positions.
- *
- * Using the inverse-transpose is required for correctness under non-uniform
- * scale (plain upper-3×3 would tilt normals away from the geometric surface).
- *
- * `localNormals` is stride-3 (same convention as MeshPrimitive.normals).
- * The output is stride-4 (vec4f, .w=0).
- */
-function writeTransformedNormalsAndUploadSlice(
-  bvh: SceneBVHBuffers,
-  localNormals: ArrayLike<number>,
-  matrixWorld: ArrayLike<number>,
-  baseVertex: number,
-  sliceVerts: number,
-  pipeline: BvhUpdateSink | null | undefined,
-): void {
-  if (!pipeline) return;
-  const NORM_STRIDE = 4;
-  const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
-  // Inverse-transpose of the upper-3×3 for correct normal transform under
-  // non-uniform scale. Falls back to the raw submatrix when degenerate.
-  const it = mat3InverseTransposeFromMat4(matrixWorld);
-  const r00 = it[0]!; const r10 = it[1]!; const r20 = it[2]!;
-  const r01 = it[3]!; const r11 = it[4]!; const r21 = it[5]!;
-  const r02 = it[6]!; const r12 = it[7]!; const r22 = it[8]!;
-  for (let v = 0; v < sliceVerts; v++) {
-    const lx = localNormals[v * 3]!;
-    const ly = localNormals[v * 3 + 1]!;
-    const lz = localNormals[v * 3 + 2]!;
-    let wx = r00 * lx + r01 * ly + r02 * lz;
-    let wy = r10 * lx + r11 * ly + r12 * lz;
-    let wz = r20 * lx + r21 * ly + r22 * lz;
-    const len = Math.sqrt(wx * wx + wy * wy + wz * wz);
-    if (len > 1e-12) { wx /= len; wy /= len; wz /= len; }
-    const off = (baseVertex + v) * NORM_STRIDE;
-    normalsF32[off] = wx;
-    normalsF32[off + 1] = wy;
-    normalsF32[off + 2] = wz;
-    normalsF32[off + 3] = 0;
-  }
-  const byteOffset = baseVertex * NORM_STRIDE * 4;
-  const byteLength = sliceVerts * NORM_STRIDE * 4;
-  const sliceData = bvh.bvhNormals.cpuData.slice(byteOffset, byteOffset + byteLength);
-  pipeline.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
-}
 
 /** Aggregated resources the primitive-update paths need from the engine. */
 export interface PrimitiveUpdateContext {
@@ -583,7 +541,7 @@ export function transformRefit(
   // H19 — apply the same rotation delta to bvhNormals so smooth-shading
   // normals stay correct after a transform refit (skin path exempt — the GPU
   // skin kernel writes normals directly every frame).
-  rotateNormalsAndUploadSlice(bvh, delta, baseVertex, sliceVerts, ctx.pipeline);
+  applyNormalTransformAndUpload(bvh, delta, baseVertex, sliceVerts, ctx.pipeline);
 
   // Reset the accumulator — temporal history is invalid because the
   // primitive moved (history pixels reference the old world position).
@@ -746,8 +704,8 @@ export function positionsRefit(
   // move (smooth-shading references stale normals until a topology rebuild).
   const meshPosPatch0 = patch as Partial<MeshPrimitive>;
   if (meshPosPatch0.normals !== undefined && meshPosPatch0.normals.length === sliceVerts * 3) {
-    writeTransformedNormalsAndUploadSlice(
-      bvh, meshPosPatch0.normals, matWorld, baseVertex, sliceVerts, ctx.pipeline);
+    applyNormalTransformAndUpload(
+      bvh, matWorld, baseVertex, sliceVerts, ctx.pipeline, meshPosPatch0.normals);
   }
 
   // Reset the accumulator + invalidate DDGI — vertex positions changed,

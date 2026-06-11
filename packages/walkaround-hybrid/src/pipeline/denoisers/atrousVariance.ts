@@ -132,8 +132,16 @@ export class AtrousVarianceDenoiser implements Denoiser {
    *
    * This must be read BEFORE calling dispatch() for the current frame, because
    * dispatch() flips the ping at the end.
+   *
+   * Exposed as both a method (for internal call sites) and as the `welfordPing`
+   * getter required by the {@link Denoiser} interface (D3.4).
    */
   getWelfordPing(): number {
+    return this._welfordPing;
+  }
+
+  /** D3.4 — {@link Denoiser.welfordPing} interface property. */
+  get welfordPing(): number {
     return this._welfordPing;
   }
 

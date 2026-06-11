@@ -147,6 +147,30 @@ export interface RCDispatchOptsRaw {
 // ─── Uniform data builders ────────────────────────────────────────────────────
 // These are the exact same packing functions as the original cascadeDispatch.ts.
 
+/**
+ * Named options bag for {@link buildCascadeUniformDataInto} (D13.2).
+ *
+ * Field order and packing are identical to the old positional-params signature;
+ * this object form is used internally to eliminate the 13-param call.
+ */
+interface CascadeUniformInputs {
+  readonly probeOriginWorld: readonly [number, number, number];
+  readonly roomSize:         readonly [number, number, number];
+  readonly sunDir:           readonly [number, number, number];
+  readonly sunColor:         readonly [number, number, number];
+  readonly envIntensity:     number;
+  readonly frameSeed:        number;
+  /** E2: Möller–Trumbore coplanarity threshold (was local WGSL const). */
+  readonly triIntersectEpsilon: number;
+  readonly bvhMode:          number;
+  readonly tlasNodeCount:    number;
+  readonly emitterCount:     number;
+  /** A7: point/spot analytic light count. */
+  readonly lightCount:       number;
+  /** Per-instance cascade dimensions. Defaults to {@link CASCADE_DIMS}. */
+  readonly dims?:            readonly CascadeDim[];
+}
+
 /** Write CascadeUniforms into an existing Float32Array (avoids realloc per frame).
  *
  * sunDir / sunColor / cascade geometry are plain `readonly [number, number, number]`
@@ -159,19 +183,23 @@ export interface RCDispatchOptsRaw {
 function buildCascadeUniformDataInto(
   d: Float32Array,
   k: number,
-  probeOriginWorld: readonly [number, number, number],
-  roomSize:         readonly [number, number, number],
-  sunDir:           readonly [number, number, number],
-  sunColor:         readonly [number, number, number],
-  envIntensity: number,
-  frameSeed: number,
-  triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
-  bvhMode: number,
-  tlasNodeCount: number,
-  emitterCount: number,
-  lightCount: number,           // A7: point/spot analytic light count
-  dims: readonly CascadeDim[] = CASCADE_DIMS,
+  inputs: CascadeUniformInputs,
 ): void {
+  const {
+    probeOriginWorld,
+    roomSize,
+    sunDir,
+    sunColor,
+    envIntensity,
+    frameSeed,
+    triIntersectEpsilon,
+    bvhMode,
+    tlasNodeCount,
+    emitterCount,
+    lightCount,
+    dims: inputDims,
+  } = inputs;
+  const dims = inputDims ?? CASCADE_DIMS;
   const dim = dims[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
   const o = probeOriginWorld;
@@ -309,22 +337,20 @@ export class RCDispatcher {
     const dims = this._cascadeDims;
     for (let k = 0; k < dims.length; k++) {
       const pass = handles.castPasses[k]!;
-      const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
-      const tlasNodeCount = opts.tlasNodeCount ?? 0;
-      const emitterCount = opts.emitterCount ?? 0;
-      const lightCount = opts.lightCount ?? 0;
-      buildCascadeUniformDataInto(
-        pass.cascadeParamsRaw, k,
-        opts.probeOriginWorld, opts.roomSize,
-        opts.sunDirection, opts.sunColor,
-        1.0, opts.frameSeed,
-        opts.triIntersectEpsilon ?? 1e-5,
-        bvhMode,
-        tlasNodeCount,
-        emitterCount,
-        lightCount,
+      buildCascadeUniformDataInto(pass.cascadeParamsRaw, k, {
+        probeOriginWorld: opts.probeOriginWorld,
+        roomSize:         opts.roomSize,
+        sunDir:           opts.sunDirection,
+        sunColor:         opts.sunColor,
+        envIntensity:     1.0,
+        frameSeed:        opts.frameSeed,
+        triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
+        bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
+        tlasNodeCount:    opts.tlasNodeCount ?? 0,
+        emitterCount:     opts.emitterCount ?? 0,
+        lightCount:       opts.lightCount ?? 0,
         dims,
-      );
+      });
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
     }
 
@@ -510,21 +536,52 @@ export class RCDispatcher {
 
     const castBGL  = this._castBindGroupLayout(device);
     const mergeBGL = this._mergeBindGroupLayout(device);
-
     const castPipelineLayout  = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
     const mergePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] });
 
-    // BVH GPU buffers (shared across all cast passes; caller-provided).
-    const bvhBuf      = opts.bvhNodesBuf;
-    const idxBuf      = opts.bvhIndicesBuf;
-    const posBuf      = opts.bvhPositionsBuf;
-    const matBuf      = opts.materialsBuf;
-    const triMatBuf   = opts.triMaterialIdBuf;
+    const bvhBindings = this._resolveBvhBindings(device, opts);
+    const { envTextureView, envSampler, placeholderEnvTexture } = this._resolveEnvBindingRaw(device, opts);
+
+    const { castPasses, castBindGroups } = this._buildCastPasses(
+      device, opts, castBGL, castPipelineLayout, bvhBindings, envTextureView, envSampler,
+    );
+    const { mergePasses, mergeBindGroups } = this._buildMergePasses(
+      device, opts, mergeBGL, mergePipelineLayout,
+    );
+
+    return {
+      castPasses,
+      mergePasses,
+      envTextureView,
+      envSampler,
+      castBindGroups,
+      mergeBindGroups,
+      ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
+    };
+  }
+
+  /**
+   * Resolve all BVH + TLAS + emitter + lights GPUBuffers, substituting
+   * sized dummy placeholders for any that the caller omitted. Extracted from
+   * `_buildHandlesRaw` (D13.1).
+   */
+  private _resolveBvhBindings(device: GPUDevice, opts: RCDispatchOptsRaw): {
+    bvhBuf: GPUBuffer; idxBuf: GPUBuffer; posBuf: GPUBuffer;
+    matBuf: GPUBuffer; triMatBuf: GPUBuffer;
+    tlasNodesBuf: GPUBuffer; tlasInstBuf: GPUBuffer; tlasBlasBuf: GPUBuffer;
+    tlasW2lBuf: GPUBuffer; tlasL2wBuf: GPUBuffer;
+    emittersBuf: GPUBuffer; lightsBuf: GPUBuffer;
+  } {
+    const bvhBuf    = opts.bvhNodesBuf;
+    const idxBuf    = opts.bvhIndicesBuf;
+    const posBuf    = opts.bvhPositionsBuf;
+    const matBuf    = opts.materialsBuf;
+    const triMatBuf = opts.triMaterialIdBuf;
     const tlasNodesBuf = opts.tlasNodesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-nodes-dummy');
-    const tlasInstBuf = opts.tlasInstanceIndicesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-inst-dummy');
-    const tlasBlasBuf = opts.tlasBlasRootsBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-blas-dummy');
-    const tlasW2lBuf = opts.tlasInstanceWorldToLocalBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-w2l-dummy');
-    const tlasL2wBuf = opts.tlasInstanceLocalToWorldBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-l2w-dummy');
+    const tlasInstBuf  = opts.tlasInstanceIndicesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-inst-dummy');
+    const tlasBlasBuf  = opts.tlasBlasRootsBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-blas-dummy');
+    const tlasW2lBuf   = opts.tlasInstanceWorldToLocalBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-w2l-dummy');
+    const tlasL2wBuf   = opts.tlasInstanceLocalToWorldBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-l2w-dummy');
     // Rect-area emitter NEE buffer (binding 14, array<EmitterTri>). When absent,
     // bind an 80-byte zero placeholder — one EmitterTri stride, the minimum
     // binding size for the runtime array. emitterCount==0 ⇒ the shader's NEE
@@ -536,30 +593,41 @@ export class RCDispatcher {
     // When absent, bind a 1040-byte zero placeholder (count=0 → loop no-op).
     // 1040 bytes ≥ the RCLightBuffer struct stride so strict backends accept it.
     const lightsBuf = opts.lightsBuf ?? this._dummyStorageBuffer(device, 'rc-lights-dummy', 1040);
+    return { bvhBuf, idxBuf, posBuf, matBuf, triMatBuf, tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf, emittersBuf, lightsBuf };
+  }
 
-    // Env texture + sampler. If the caller supplied both, use them; otherwise
-    // create a 1×1 black placeholder.
+  /**
+   * Build one cast pipeline + bind group + uniform buffer per cascade level.
+   * Extracted from `_buildHandlesRaw` (D13.1).
+   */
+  private _buildCastPasses(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+    castBGL: GPUBindGroupLayout,
+    castPipelineLayout: GPUPipelineLayout,
+    bvhBindings: ReturnType<typeof RCDispatcher.prototype._resolveBvhBindings>,
+    envTextureView: GPUTextureView,
+    envSampler: GPUSampler,
+  ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
-      envTextureView,
-      envSampler,
-      placeholderEnvTexture,
-    } = this._resolveEnvBindingRaw(device, opts);
+      bvhBuf, idxBuf, posBuf, matBuf, triMatBuf,
+      tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf,
+      emittersBuf, lightsBuf,
+    } = bvhBindings;
 
-    // ── Cast passes (one per cascade) ──────────────────────────────────────
     const castPasses: CastPassHandles[] = [];
     const castBindGroups: GPUBindGroup[] = [];
-
     const cascadeDims = this._cascadeDims;
+
     for (let k = 0; k < cascadeDims.length; k++) {
       const dim = cascadeDims[k]!;
       const totalRays = dim.probes[0] * dim.probes[1] * dim.probes[2] * dim.rays;
 
-      // Create per-pass pipeline.
       const pipeline = device.createComputePipeline({
         label:  `rc-cast-C${k}`,
         layout: castPipelineLayout,
         compute: {
-          module:     this._castShaderModule,
+          module:     this._castShaderModule!,
           entryPoint: 'probeRayCastKernel',
         },
       });
@@ -574,22 +642,20 @@ export class RCDispatcher {
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
       const cascadeParamsRaw = new Float32Array(40);
-      const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
-      const tlasNodeCount = opts.tlasNodeCount ?? 0;
-      const emitterCount = opts.emitterCount ?? 0;
-      const lightCount = opts.lightCount ?? 0;
-      buildCascadeUniformDataInto(
-        cascadeParamsRaw, k,
-        opts.probeOriginWorld, opts.roomSize,
-        opts.sunDirection, opts.sunColor,
-        1.0, opts.frameSeed,
-        opts.triIntersectEpsilon ?? 1e-5,
-        bvhMode,
-        tlasNodeCount,
-        emitterCount,
-        lightCount,
-        cascadeDims,
-      );
+      buildCascadeUniformDataInto(cascadeParamsRaw, k, {
+        probeOriginWorld: opts.probeOriginWorld,
+        roomSize:         opts.roomSize,
+        sunDir:           opts.sunDirection,
+        sunColor:         opts.sunColor,
+        envIntensity:     1.0,
+        frameSeed:        opts.frameSeed,
+        triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
+        bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
+        tlasNodeCount:    opts.tlasNodeCount ?? 0,
+        emitterCount:     opts.emitterCount ?? 0,
+        lightCount:       opts.lightCount ?? 0,
+        dims:             cascadeDims,
+      });
       const cascadeParamsBuf = device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
         size:   cascadeParamsRaw.byteLength,
@@ -599,10 +665,7 @@ export class RCDispatcher {
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(cascadeParamsRaw);
       cascadeParamsBuf.unmap();
 
-      // Cascade output buffer (caller-provided raw GPUBuffer).
-      const cascadeBuf  = opts.cascadeBufs[k]!;
-
-      // Build bind group.
+      const cascadeBuf = opts.cascadeBufs[k]!;
       const bindGroup = device.createBindGroup({
         label:  `rc-cast-C${k}-bg`,
         layout: castBGL,
@@ -630,9 +693,22 @@ export class RCDispatcher {
       castBindGroups.push(bindGroup);
     }
 
-    // ── Merge passes (bottom-up: C(N-2) → C0) ────────────────────────────
+    return { castPasses, castBindGroups };
+  }
+
+  /**
+   * Build one merge pipeline + bind group + uniform buffer per cascade boundary
+   * (bottom-up: C(N-2) → C0). Extracted from `_buildHandlesRaw` (D13.1).
+   */
+  private _buildMergePasses(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+    mergeBGL: GPUBindGroupLayout,
+    mergePipelineLayout: GPUPipelineLayout,
+  ): { mergePasses: MergePassHandles[]; mergeBindGroups: GPUBindGroup[] } {
     const mergePasses: MergePassHandles[] = [];
     const mergeBindGroups: GPUBindGroup[] = [];
+    const cascadeDims = this._cascadeDims;
 
     for (let lower = cascadeDims.length - 2; lower >= 0; lower--) {
       const lowerDim = cascadeDims[lower]!;
@@ -643,7 +719,7 @@ export class RCDispatcher {
         label:  `rc-merge-${lower}→${lower + 1}`,
         layout: mergePipelineLayout,
         compute: {
-          module:     this._mergeShaderModule,
+          module:     this._mergeShaderModule!,
           entryPoint: 'cascadeMergeKernel',
         },
       });
@@ -659,10 +735,8 @@ export class RCDispatcher {
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(mergeRaw);
       cascadeParamsBuf.unmap();
 
-      // Caller-provided raw cascade GPUBuffers (lower + upper).
       const lowerBuf = opts.cascadeBufs[lower]!;
       const upperBuf = opts.cascadeBufs[lower + 1]!;
-
       const bindGroup = device.createBindGroup({
         label:  `rc-merge-${lower}-bg`,
         layout: mergeBGL,
@@ -677,15 +751,7 @@ export class RCDispatcher {
       mergeBindGroups.push(bindGroup);
     }
 
-    return {
-      castPasses,
-      mergePasses,
-      envTextureView,
-      envSampler,
-      castBindGroups,
-      mergeBindGroups,
-      ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
-    };
+    return { mergePasses, mergeBindGroups };
   }
 }
 

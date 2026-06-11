@@ -48,11 +48,12 @@ describe('Denoiser.state', () => {
       _unpackPipeline: GPUComputePipeline;
       _packParamsBuf: GPUBuffer;
       _unpackParamsBuf: GPUBuffer;
-      _noisyBuf: GPUBuffer;
-      _albedoBuf: GPUBuffer;
-      _normalsBuf: GPUBuffer;
-      _outputBuf: GPUBuffer;
-      _outputTex: GPUTexture;
+      // The four tensor GPU buffers are now grouped under _tensorBuffers (D4.9).
+      _tensorBuffers: {
+        noisyBuf: GPUBuffer; albedoBuf: GPUBuffer;
+        normalsBuf: GPUBuffer; outputBuf: GPUBuffer;
+        outputTex: GPUTexture; width: number; height: number;
+      } | null;
       _lastFallbackReason: string | null;
     };
     seam._device = {} as GPUDevice;
@@ -60,11 +61,15 @@ describe('Denoiser.state', () => {
     seam._unpackPipeline = {} as GPUComputePipeline;
     seam._packParamsBuf = {} as GPUBuffer;
     seam._unpackParamsBuf = {} as GPUBuffer;
-    seam._noisyBuf = {} as GPUBuffer;
-    seam._albedoBuf = {} as GPUBuffer;
-    seam._normalsBuf = {} as GPUBuffer;
-    seam._outputBuf = {} as GPUBuffer;
-    seam._outputTex = {} as GPUTexture;
+    seam._tensorBuffers = {
+      noisyBuf: {} as GPUBuffer,
+      albedoBuf: {} as GPUBuffer,
+      normalsBuf: {} as GPUBuffer,
+      outputBuf: {} as GPUBuffer,
+      outputTex: {} as GPUTexture,
+      width: 64,
+      height: 64,
+    };
 
     expect(denoiser.state()).toEqual({ status: 'ready' } satisfies DenoiserState);
 

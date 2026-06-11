@@ -43,25 +43,17 @@ import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import { BvhBufferHost } from './BvhBufferHost.js';
-import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
+import { estimateFrameResourcesMemory, type GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
+import type { GpuMemoryBreakdown } from '@vitrum/core';
 import {
   createFrameResources,
   destroyFrameResources,
   type FrameResources,
 } from './resourceManager.js';
-import {
-  type BGLCache,
-  getCompositeBindGroupLayout,
-} from './bindGroupLayouts.js';
-import type { UboRef } from './bindGroupBuilders.js';
-import { buildCompositeBindGroup, buildLightTreeBindGroup } from './bindGroupBuilders.js';
-import { composeWgsl } from './wgslComposer.js';
-import {
-  COMPOSITE_FRAG_MODULE,
-  COMPOSITE_VERT_MODULE,
-  WGSL_MODULES,
-} from './wgslModules.js';
-import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
+import type { BGLCache } from './bindGroupLayouts.js';
+import type { UboRef, PassOwnedUboRef } from './bindGroupBuilders.js';
+import { buildLightTreeBindGroup } from './bindGroupBuilders.js';
+import { FrameCaptureHelper } from './frameCapture.js';
 import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
@@ -77,7 +69,6 @@ import {
   type DenoiserId,
 } from './denoisers/index.js';
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
-import { AtrousVarianceDenoiser } from './denoisers/atrousVariance.js';
 import { PassRegistry } from './PassRegistry.js';
 import type {
   Pass,
@@ -124,6 +115,27 @@ import {
 import { RESERVOIR_GI_STRIDE } from '../ppg/ppgConstants.js';
 import type { RestirGISnapshot } from '../giStateSnapshot.js';
 
+// D3.5 — PipelineFrame* interfaces extracted to pipelineFrameInputs.ts.
+// Re-exported here for back-compat (existing importers such as Pass.ts,
+// HybridEngineTuning.ts, uboUpdater.ts, and the test harnesses keep their
+// current import paths intact).
+export type {
+  PipelineFrameCamera,
+  PipelineFrameScreen,
+  PipelineFrameLighting,
+  PipelineFrameRestirDI,
+  PipelineFrameRestirGI,
+  PipelineFrameGtao,
+  PipelineFrameFilter,
+  PipelineFrameBvh,
+  PipelineFrameNrc,
+  PipelineFrameComposite,
+  PipelineFrameInputs,
+} from './pipelineFrameInputs.js';
+import type {
+  PipelineFrameInputs,
+} from './pipelineFrameInputs.js';
+
 /**
  * Dependencies the {@link registerPasses} free function needs to construct +
  * register the non-denoiser Pass set. Bundled so the orchestrator's
@@ -145,7 +157,8 @@ interface RegisterPassesDeps {
   sampleCountUboRef: UboRef;
   accumUboRef: UboRef;
   resolveUboRef: UboRef;
-  atrousIndirectUboRef: UboRef;
+  /** D4.3 — pass-owned: excluded from `_perPassUboRefs` disposal. */
+  atrousIndirectUboRef: PassOwnedUboRef;
   compositeUboRef: UboRef;
   indirectAccumPingPongRef: PingPongRef;
   regir: ReGIRCoordinator;
@@ -408,254 +421,6 @@ const DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ = 0.004;
  */
 const DEFAULT_TEMPORAL_ACCUM_ALPHA = 0.01;
 
-/** Camera matrices + position for one frame. */
-export interface PipelineFrameCamera {
-  /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
-   *  composes VP = projMatrix * viewMatrix internally; do NOT pre-multiply. */
-  viewMatrix: Float32Array;
-  /** Camera projection matrix (column-major mat4x4f, 16 floats). */
-  projMatrix: Float32Array;
-  /** Previous-frame view-projection matrix (prevProj * prevView). Pass
-   *  the current projection/view product on the first frame to avoid a
-   *  one-frame ghost from uninitialized previous-frame state. */
-  prevViewProjMatrix: Float32Array;
-  /** World-space camera position [x, y, z]. */
-  cameraPos: [number, number, number];
-}
-
-/** Swap-chain + frame-seed for one frame. */
-export interface PipelineFrameScreen {
-  /** Render-target dimensions in pixels. Used by all compute kernels for
-   *  workgroup dispatch sizing — must match the swap chain's actual size. */
-  screenWidth: number;
-  screenHeight: number;
-  /** u32 frame counter / per-frame randomness seed. Drives PCG hash inits
-   *  for ray jitter, RIS candidate sampling, and temporal reservoir update.
-   *  Caller may use a frame index, performance.now()|0, or any monotone u32. */
-  frameSeed: number;
-  /** The WebGPU swap-chain texture view to render into for this frame.
-   *  Caller must obtain via context.getCurrentTexture().createView()
-   *  inside the same animation-frame callback that calls renderFrame. */
-  swapChainView: GPUTextureView;
-  /** The format of swapChainView. The composite pass's render-pipeline
-   *  is recompiled if this changes (rare — usually fixed at canvas mount). */
-  swapChainFormat: GPUTextureFormat;
-}
-
-/** Lighting scalars, emitter budget, and light-tree configuration. */
-export interface PipelineFrameLighting {
-  /** Sum of (Le * area) over all emitter triangles, computed at BVH build
-   *  time. Used by RIS importance-sampling weight normalization. Must match
-   *  the value baked into the emitter CDF in SceneBVHBuffers. */
-  totalEmissivePower: number;
-  /** Number of entries in the emitter list (length of EmitterTri[] array
-   *  in SceneBVHBuffers.emitters). Used by RIS to bound candidate selection. */
-  emitterCount: number;
-  /** Primary directional light direction [x, y, z] in world space, normalized.
-   *  Today this is the sun for cathedral-window glass tracing; the field is
-   *  named generically because the path tracer is light-source-agnostic. */
-  primaryLightDir: [number, number, number];
-  /** Primary directional light irradiance multiplier (linear, unitless).
-   *  Uploaded to the shade-side WalkaroundUBO each frame (offset ~220) to
-   *  scale Lo_emit on primary-panel hits in the glass/stained-glass path.
-   *  NOTE (H21): directional/sun emitters NEVER enter the rect-area emitter
-   *  CDF (`collectRectAreaEmitterTrisFromCore` collects only `rect-area` and
-   *  `disc-area` kinds), so this field does NOT need to stay in sync with
-   *  BVH-build time emitter baking. The "must match at BVH-build time" claim
-   *  in earlier docs was an over-broad carry-over from the stained-glass path;
-   *  `updateLighting({primaryLightIntensity})` correctly mutates it without
-   *  rebuilding the emitter list. */
-  primaryLightIntensity: number;
-  /** Diffuse-sky-dome RGB tint, derived from computeLightingState. Replaces
-   *  four formerly-hardcoded sky tints in WGSL. Consumed by sky-aperture
-   *  probe + second-bounce sky-miss paths. */
-  skyTint: [number, number, number];
-  /** Sky-dome irradiance scalar paired with skyTint. ~0.5×sun at noon. */
-  skyIrradiance: number;
-  /** Audit M12 — emitter geometry term dist² floor; default `0.01` for
-   *  Cornell-scale; hosts on different scales should pass `(diag * 1e-3)²`. */
-  emitterDist2Floor: number;
-  /** Audit B4 — per-channel max HDR radiance clamp on the direct channel.
-   *  Default 4.0 calibrated to Le=12. */
-  directFireflyClamp: number;
-  /** Audit B1 — stained-glass caustic boost. Cornell uses 22.0; generic
-   *  scenes pass 1.0 (no boost). */
-  causticBoost: number;
-  /** Audit B1 — clamp applied to the tinted-visibility vector before the
-   *  caustic-boost multiplication. Cornell uses 0.6; generic scenes pass 1.0. */
-  causticVisClamp: number;
-  /** Light-tree gate for ReSTIR-DI initial-candidate light SELECTION (UBO
-   *  offset 356). `1` ⇒ the RIS candidate loop draws lights via the
-   *  spatially-aware light tree (`sampleLightTree`) and divides the WRS weight
-   *  by the tree selection pdf; `0` ⇒ RIS uses the flat power-CDF path
-   *  (`sampleEmitterIdx` + the `emitterPmf` weight) verbatim. Built `1` only
-   *  when the tree has ≥ 2 emitters AND the host left light-tree selection on;
-   *  see `SceneBVHBuffers.lightTreeEnabled`. The estimator is unbiased in BOTH
-   *  states because the WRS weight always divides p̂ by the EXACT pdf the
-   *  selection used. */
-  lightTreeEnabled: number;
-  /** Number of nodes in the packed light tree (UBO offset 360). Bounds the
-   *  `sampleLightTree` descent loop. `0` when the tree is disabled. */
-  lightTreeNodeCount: number;
-}
-
-/** ReSTIR-DI temporal + spatial reuse tuning knobs. */
-export interface PipelineFrameRestirDI {
-  /** Audit M6 — ReSTIR-DI temporal M-clamp; Cornell default 20. */
-  temporalMClampDI: number;
-  /** Audit M7 — ReSTIR-DI spatial reuse radius in pixels; Cornell default 30. */
-  spatialReuseRadiusPx: number;
-  /** Audit M8 — ReSTIR-DI spatial depth-tolerance world-units floor; Cornell
-   *  default 0.05 (5 cm). Hosts on different scales should pass
-   *  `sceneDiagonal * 1e-3`. */
-  spatialDepthTolFloor: number;
-}
-
-/** ReSTIR-GI / GRIS tuning + reuse gate. */
-export interface PipelineFrameRestirGI {
-  /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap (risGi,
-   *  spatialGi). Cornell default 16.0. */
-  restirGiWCap: number;
-  /** 2026-05-18 sweep — DDGI irradiance clamp applied at the ReSTIR-GI
-   *  reconnection vertex (risGi). Cornell default 5.0. */
-  restirGiIrrClamp: number;
-  /** 2026-05-18 sweep — ReSTIR-GI temporal previous-frame M clamp
-   *  (temporalGi). Cornell default 50. */
-  restirGiMClamp: number;
-  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse disc radius (half-res
-   *  pixels). Cornell default 12.0. */
-  restirGiSpatialRadiusPx: number;
-  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse normal-alignment cosine
-   *  minimum (spatialGi). Cornell default 0.906 ≈ cos(25°). */
-  restirGiSpatialNormalDotMin: number;
-  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse tangent-plane distance
-   *  tolerance (spatialGi). Cornell default 0.05 (5 cm world units). */
-  restirGiSpatialCoplanarTol: number;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (UBO offset 412). `1` ⇒
-   *  the GI spatial + temporal reuse passes apply the unbiased GRIS
-   *  reconnection shift, its change-of-variables Jacobian, a reconnection-
-   *  visibility ray, and the pairwise generalized-balance MIS (Lin et al.
-   *  2022). `0`/omitted ⇒ the reuse runs the legacy clamped-Jacobian path
-   *  BIT-FOR-BIT (the GRIS branch is gated behind `ubo.restirPtReuse == 1`).
-   *  Host opt-in via HybridEngineOptions.restirPtReuse — the same
-   *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
-  restirPtReuse?: number;
-}
-
-/** GTAO + adaptive-sampling tuning knobs. */
-export interface PipelineFrameGtao {
-  /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
-  gtaoRadiusPx: number;
-  /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */
-  gtaoIntensity: number;
-  /** Audit M1 — GTAO depth threshold in world units; Cornell default 2.0. */
-  gtaoDepthThreshold: number;
-  /** Audit B3 — GTAO upsample bilateral depth sigma (world units);
-   *  Cornell default 0.25 (= 1/√(2*4); see legacy `exp(-Δ * 4)`). */
-  gtaoBilateralDepthSigma: number;
-  /** Audit M2 — adaptive-sampling tier classifier low-variance threshold;
-   *  Cornell default 0.01.  Variance below this → tier 1 (converged). */
-  adaptiveSamplingThresholdLow: number;
-  /** Audit M2 — adaptive-sampling tier classifier high-variance threshold;
-   *  Cornell default 0.10.  Variance above this → tier 4 (high noise). */
-  adaptiveSamplingThresholdHigh: number;
-}
-
-/** Denoiser filter parameters, firefly clamps, and stained-glass gate. */
-export interface PipelineFrameFilter {
-  /** D12 — Möller-Trumbore coplanarity epsilon.  Controls the `abs(det) < ε`
-   *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
-   *  (metre-scale).  Reduce for millimetre-scale geometry. */
-  triIntersectEpsilon: number;
-  /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale.
-   *  Cornell default 0.7. */
-  glassMixScale: number;
-  /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
-   *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
-  indirectFireflyClamp: readonly [number, number, number];
-  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
-   *  direct-path chain. */
-  atrousDirectSigmas: readonly [number, number, number];
-  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[32.0, 20.0, 0.5]`. Consumed by AtrousIndirectPass. */
-  atrousIndirectSigmas: readonly [number, number, number];
-  /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
-   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
-   *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
-   *  generic scene gets zero stained-glass physics. Hosts opt in via
-   *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
-   *  `packStainedGlassFlags`. */
-  stainedGlassFlags: number;
-}
-
-/** BVH traversal mode + TLAS configuration. */
-export interface PipelineFrameBvh {
-  /** PR-3 — 0 = merged world BVH, 1 = TLAS + local BLAS traversal. */
-  bvhMode: number;
-  /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
-  tlasNodeCount: number;
-}
-
-/** Optional per-frame NRC gate. */
-export interface PipelineFrameNrc {
-  /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
-   *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
-   *  neural radiance cache (spread heuristic + MLP query) and radiance records
-   *  self-train it. `0`/omitted ⇒ the gi-ris suffix runs the verbatim
-   *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
-   *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
-   *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
-   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. WIRED (2026-05-29): the gi-ris
-   *  NRC variant runs the MLP query + writes self-training records;
-   *  `NrcSubsystem.trainFromRecords` runs an MLP `trainStep` AND the hash-grid
-   *  encode-backward + table Adam each frame — so with the gate at 1 the suffix
-   *  uses the (biased) learned MLP prediction when the spread heuristic fires. */
-  nrcEnabled?: number;
-}
-
-/** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
-export interface PipelineFrameComposite {
-  /** Tonemap operator mode index — matches TONEMAP_MODE_INDEX from
-   *  @vitrum/shared-samplers: 0=aces(default) 1=agx 2=reinhard 3=linear 4=none. */
-  tonemapMode: number;
-  /** Linear-exposure multiplier applied before the tonemap operator. Default: 1.0. */
-  exposure: number;
-  /** Output color space: 0 = srgb (default, OETF applied), 1 = linear (OETF skipped). */
-  outputColorSpace: number;
-}
-
-/**
- * Per-frame inputs to {@link WalkaroundGPUPipeline.renderFrame}.
- *
- * Fields are grouped into named sub-objects so each sprint's new field
- * lands in the right semantic bucket rather than growing a flat list.
- * UBO byte layout is unchanged — the sub-objects are TypeScript-only;
- * `uboUpdater.ts` unpacks them field-by-field as before.
- */
-export interface PipelineFrameInputs {
-  /** Camera matrices and world-space position. */
-  camera: PipelineFrameCamera;
-  /** Swap-chain targets and per-frame seed. */
-  screen: PipelineFrameScreen;
-  /** Lighting scalars, emitter budget, and light-tree gate. */
-  lighting: PipelineFrameLighting;
-  /** ReSTIR-DI temporal + spatial reuse tuning. */
-  restirDI: PipelineFrameRestirDI;
-  /** ReSTIR-GI / GRIS tuning and reconnection gate. */
-  restirGI: PipelineFrameRestirGI;
-  /** GTAO + adaptive-sampling tuning. */
-  gtao: PipelineFrameGtao;
-  /** Denoiser filter parameters, firefly clamps, and stained-glass gate. */
-  filter: PipelineFrameFilter;
-  /** BVH traversal mode and TLAS configuration. */
-  bvh: PipelineFrameBvh;
-  /** NRC cache gate (optional; absent ⇒ OFF, bit-identical). */
-  nrc: PipelineFrameNrc;
-  /** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
-  composite: PipelineFrameComposite;
-}
-
 export class WalkaroundGPUPipeline implements BvhUpdateSink {
   // Private fields use the `_field` underscore prefix, matching HybridEngine.
   private _device: GPUDevice;
@@ -669,17 +434,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   /** Swap-chain format this pipeline was compiled for (stored at initialize()). */
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
   /**
-   * Lazily-compiled capture render pipeline targeting rgba8unorm.  Only
-   * allocated when `captureOutputFrame` is first called AND the swap-chain
-   * format is not already rgba8unorm (in which case `_compositePass.pipeline`
-   * is reused directly).  Destroyed on `dispose()`.
+   * D3.3 — capture helper owning the lazily-compiled rgba8unorm render
+   * pipeline and the offscreen capture texture.  Extracted from the inline
+   * fields `_captureRenderPipeline` / `_captureOffscreenTex` to
+   * {@link FrameCaptureHelper}; `captureOutputFrame` delegates to it.
+   * `dispose()` calls `_captureHelper.dispose()` in the same order the
+   * original inline destroy calls occupied.
    */
-  private _captureRenderPipeline: GPURenderPipeline | null = null;
-  /**
-   * Lazily-created offscreen rgba8unorm texture for captureOutputFrame.
-   * Recreated whenever the pipeline's render dimensions change (resize-aware).
-   */
-  private _captureOffscreenTex: { tex: GPUTexture; w: number; h: number } | null = null;
+  private readonly _captureHelper = new FrameCaptureHelper();
 
   // Per-frame GPU resources (created by resourceManager.createFrameResources)
   private _res!: FrameResources;
@@ -828,9 +590,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   // Eager pipeline-owned refs are allocated upfront in initialize().
   // dispose() walks those via `_perPassUboRefs` so adding a new eager UBO only
   // requires registering it there.
-  /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
-   *  doesn't race the legacy denoiser's per-iteration sigma writes. */
-  private _atrousIndirectUboRef: UboRef = { buf: undefined };
+  /**
+   * Sprint 18 — separate UBO for the indirect-channel atrous chain so it
+   * doesn't race the legacy denoiser's per-iteration sigma writes.
+   *
+   * D4.3 — typed as {@link PassOwnedUboRef}: this UBO is passed by reference
+   * into {@link AtrousIndirectPass}, which owns its GPU lifetime (lazy-allocates
+   * in `buildAtrousBindGroup` and destroys in `AtrousIndirectPass.dispose()`).
+   * It is intentionally NOT included in `_perPassUboRefs` so the orchestrator's
+   * `dispose()` loop does not double-destroy it.
+   */
+  private _atrousIndirectUboRef: PassOwnedUboRef = { buf: undefined, __passOwned: true } as PassOwnedUboRef;
   private _accumUboRef: UboRef  = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
@@ -877,6 +647,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized
       ? { ...this._bvhHost.gpuMemorySections(), ...this._ddgi.gpuMemorySections() }
       : {};
+  }
+
+  /**
+   * I3.2 — convenience wrapper that computes the full GPU memory breakdown for
+   * the current frame resources. Returns `null` before `initialize()` resolves.
+   *
+   * Replaces the two-step dance (`pipeline.frameResources` +
+   * `pipeline.gpuMemoryExternalSections`) that debug consumers previously had
+   * to perform. The `frameResources` getter remains for callers that need the
+   * raw struct, but debug-surface thunks should prefer this method.
+   */
+  getMemoryBreakdown(): GpuMemoryBreakdown | null {
+    if (!this._initialized) return null;
+    return estimateFrameResourcesMemory(this._res, this.gpuMemoryExternalSections);
   }
 
   /**
@@ -1041,20 +825,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * and read it back to a Float32Array (RGBA, unorm → [0,1], row-major,
    * top-left origin).
    *
-   * This is the 'output' capture path: the same tonemap / OETF / exposure
-   * settings last written by `renderFrame` (or `presentLastFrame`) are reused
-   * from the live `_compositeUboRef` buffer — the output is display-encoded,
-   * post-OETF, unlike the 'linear' path that reads the pre-tonemap
-   * `resolvedTexture`.
-   *
-   * Pipeline decision — the composite render pipeline is format-specialised
-   * (compiled for `swapChainFormat`).  For the offscreen capture target we fix
-   * the format at `rgba8unorm` (universally supports RENDER_ATTACHMENT + COPY_SRC):
-   *   • If `swapChainFormat === 'rgba8unorm'`, the existing pipeline is reused
-   *     (zero extra compile cost).
-   *   • Otherwise a second render pipeline targeting `rgba8unorm` is compiled
-   *     lazily on the first call and cached for the lifetime of this engine
-   *     instance.  It is destroyed in `dispose()`.
+   * D3.3 — delegates to {@link FrameCaptureHelper.captureFrame}. All GPU
+   * resource management (lazy pipeline compile, offscreen texture create/resize,
+   * unorm decode) lives in the helper. The pipeline holds an instance at
+   * `_captureHelper`; `dispose()` calls `_captureHelper.dispose()` in the same
+   * position the original inline destroy calls occupied.
    *
    * Returns `null` when:
    *   - the pipeline is not yet initialised (no frame rendered), OR
@@ -1065,132 +840,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    */
   async captureOutputFrame(): Promise<Float32Array | null> {
     if (!this._initialized) return null;
-    const d = this._device;
     const compositeUbo = this._compositeUboRef.buf;
     if (compositeUbo == null) return null;
-
     const compositePass = this._compositePass;
     if (compositePass == null) return null;
-
-    const W = this._width;
-    const H = this._height;
-    if (W <= 0 || H <= 0) return null;
-
-    // ── Resolve / lazily compile the capture render pipeline ──────────────
-    const CAPTURE_FORMAT: GPUTextureFormat = 'rgba8unorm';
-    let capturePipeline: GPURenderPipeline;
-    if (this._swapChainFormat === CAPTURE_FORMAT) {
-      // Format matches — reuse the existing compiled pipeline.
-      capturePipeline = compositePass.pipeline;
-    } else {
-      // Compile a capture-format pipeline lazily (once per engine instance).
-      if (this._captureRenderPipeline === null) {
-        const compVertSM = d.createShaderModule({
-          label: 'comp-vert-capture',
-          code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES),
-        });
-        const compFragSM = d.createShaderModule({
-          label: 'comp-frag-capture',
-          code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES),
-        });
-        const captureLayout = d.createPipelineLayout({
-          bindGroupLayouts: [getCompositeBindGroupLayout(d, this._bglCache)],
-        });
-        this._captureRenderPipeline = await d.createRenderPipelineAsync({
-          label: 'composite-capture',
-          layout: captureLayout,
-          vertex:   { module: compVertSM, entryPoint: 'vertMain' },
-          fragment: {
-            module: compFragSM,
-            entryPoint: 'fragMain',
-            targets: [{ format: CAPTURE_FORMAT }],
-          },
-          primitive: { topology: 'triangle-list' },
-        });
-      }
-      capturePipeline = this._captureRenderPipeline;
-    }
-
-    // ── Lazy-create / resize the offscreen capture texture ────────────────
-    if (
-      this._captureOffscreenTex === null ||
-      this._captureOffscreenTex.w !== W ||
-      this._captureOffscreenTex.h !== H
-    ) {
-      this._captureOffscreenTex?.tex.destroy();
-      this._captureOffscreenTex = {
-        tex: d.createTexture({
-          label: 'composite-capture-offscreen',
-          size: { width: W, height: H },
-          format: CAPTURE_FORMAT,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-        }),
-        w: W,
-        h: H,
-      };
-    }
-    const offscreenTex = this._captureOffscreenTex.tex;
-
-    // ── Build composite bind group (reuse the same inputs as renderFrame) ─
-    const bg = buildCompositeBindGroup(
-      d,
-      this._bglCache,
-      this._res.common.resolvedTexture.createView(),
-      this._res.common.compositeSampler,
+    return this._captureHelper.captureFrame(
+      this._device,
+      this._width,
+      this._height,
+      this._swapChainFormat,
+      compositePass,
       compositeUbo,
+      this._bglCache,
+      this._res,
     );
-
-    // ── Record the render pass into the offscreen texture ─────────────────
-    const bytesPerRow = alignedTextureCopyBytesPerRow(W, 4); // 4 bytes per rgba8unorm pixel
-    const readSize = bytesPerRow * H;
-    const staging = d.createBuffer({
-      label: 'composite-capture-staging',
-      size: readSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-
-    try {
-      const encoder = d.createCommandEncoder({ label: 'composite-capture' });
-      const pass = encoder.beginRenderPass({
-        label: 'composite-capture',
-        colorAttachments: [{
-          view: offscreenTex.createView(),
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        }],
-      });
-      pass.setPipeline(capturePipeline);
-      pass.setBindGroup(0, bg);
-      pass.draw(3, 1, 0, 0); // fullscreen triangle
-      pass.end();
-      encoder.copyTextureToBuffer(
-        { texture: offscreenTex },
-        { buffer: staging, bytesPerRow },
-        { width: W, height: H, depthOrArrayLayers: 1 },
-      );
-      d.queue.submit([encoder.finish()]);
-      await staging.mapAsync(GPUMapMode.READ);
-      const src = new Uint8Array(staging.getMappedRange().slice(0));
-      staging.unmap();
-
-      // Decode rgba8unorm → float32 RGBA, 4 channels per pixel, [0, 1] range.
-      const out = new Float32Array(W * H * 4);
-      for (let y = 0; y < H; y++) {
-        const rowOff = y * bytesPerRow;
-        for (let x = 0; x < W; x++) {
-          const srcOff = rowOff + x * 4;
-          const dstOff = (y * W + x) * 4;
-          out[dstOff]     = (src[srcOff]!     & 0xff) / 255;
-          out[dstOff + 1] = (src[srcOff + 1]! & 0xff) / 255;
-          out[dstOff + 2] = (src[srcOff + 2]! & 0xff) / 255;
-          out[dstOff + 3] = (src[srcOff + 3]! & 0xff) / 255;
-        }
-      }
-      return out;
-    } finally {
-      staging.destroy();
-    }
   }
 
   /** Temporal-accumulator history depth: frames accumulated since the last
@@ -1331,6 +994,43 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const d = this._device;
     const { _width: W, _height: H } = this;
 
+    // D3.1 — initialize() is now a sequencer of three private phases.
+    // Exact statement order is preserved across the extraction boundary —
+    // init order is load-bearing (each phase's outputs feed the next).
+    const { compiled, ppgEnabled } = await this.#initGpuResources(bvhBuffers, swapChainFormat, options);
+    await this.#initPasses(compiled, bvhBuffers, options);
+    this.#initSubsystems(bvhBuffers, ppgEnabled, W, H, options);
+
+    this._initialized = true;
+    if (options?.verbose) {
+      console.log('[ReSTIR] Pipeline initialized', { W, H, bvhNodes: bvhBuffers.bvhNodes.count, emitters: bvhBuffers.emitterCount });
+    }
+  }
+
+  /**
+   * D3.1 — Phase 1: GPU resource allocation + shader compilation.
+   *
+   * Covers (in exact original order):
+   *   - ReGIR coordinator construction + BVH buffer upload
+   *   - GTAO mode + denoiser mode resolution (must precede frame-resource alloc)
+   *   - Per-frame GPU resource allocation (`createFrameResources`)
+   *   - GRIS / checkerboard / NRC structural gate resolution (must precede compile)
+   *   - NRC subsystem construction + initialization (compile-time gate)
+   *   - Shader pipeline compilation (`compilePipelines`)
+   *   - Scalar tuning field assignments
+   *   - PPG enabled-flag derivation (used by both #initPasses and #initSubsystems)
+   *
+   * Returns the compiled pipeline bundle and the resolved ppgEnabled flag so
+   * the subsequent phases can consume them without re-deriving.
+   */
+  async #initGpuResources(
+    bvhBuffers: SceneBVHBuffers,
+    swapChainFormat: GPUTextureFormat,
+    options: Parameters<WalkaroundGPUPipeline['initialize']>[2],
+  ): Promise<{ compiled: Awaited<ReturnType<typeof compilePipelines>>; ppgEnabled: boolean }> {
+    const d = this._device;
+    const { _width: W, _height: H } = this;
+
     // ── ReGIR coordinator (Boksansky 2021) ────────────────────────────────
     // Construct from the resolved config so the grid byte count is known
     // BEFORE the light-tree buffer is uploaded (the grid is co-located in the
@@ -1438,6 +1138,30 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const ppgEnabled = (options?.ppgEnabled ?? false) &&
       compiled.ppgUpdatePipeline !== undefined;
 
+    return { compiled, ppgEnabled };
+  }
+
+  /**
+   * D3.1 — Phase 2: denoiser registry, timestamp init, UBO allocation, and
+   * pass registration + parallel initialization.
+   *
+   * Covers (in exact original order):
+   *   - Denoiser registry construction, builtin registration, active-denoiser
+   *     lookup + initialization
+   *   - InferenceGraph forward-compat handle store
+   *   - Timestamp query init
+   *   - Eager pipeline-owned UBO allocation
+   *   - Pass registry construction via `registerPasses` + sorted-pass cache
+   *   - Parallel pass initialization
+   */
+  async #initPasses(
+    compiled: Awaited<ReturnType<typeof compilePipelines>>,
+    bvhBuffers: SceneBVHBuffers,
+    options: Parameters<WalkaroundGPUPipeline['initialize']>[2],
+  ): Promise<void> {
+    const d = this._device;
+    const { _width: W, _height: H } = this;
+
     // ── Denoiser registry: build, register builtins, look up + initialise
     //    the active denoiser. `neural` / `oidn-final` are REAL denoisers; they
     //    register as DISABLED only when their host config is absent (no
@@ -1525,22 +1249,28 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     await Promise.all(this._sortedPasses.map((p) => p.initialize({
       device: d, width: W, height: H, bglCache: this._bglCache, frameResources: this._res,
     })));
+  }
 
-    // ── W9 — PPG GPU buffer init (opt-in) ────────────────────────────────
-    // Delegated to PPGCoordinator: derives scene-bounds AABB from the BVH,
-    // builds a fresh single-cell sTree, allocates PPG GPU storage buffers,
-    // and uploads the serialised tree + both UBOs. No-op when ppgEnabled
-    // is false. The kernels descend the serialised buffers each frame; the
-    // CPU refines + re-uploads on rebuild cycles (Phase 2 follow-up).
+  /**
+   * D3.1 — Phase 3: subsystem initialization (PPG).
+   *
+   * Delegated to {@link PPGCoordinator.initialize}: derives scene-bounds AABB
+   * from the BVH, builds a fresh single-cell sTree, allocates PPG GPU storage
+   * buffers, and uploads the serialised tree + both UBOs. No-op when ppgEnabled
+   * is false. The kernels descend the serialised buffers each frame; the
+   * CPU refines + re-uploads on rebuild cycles (Phase 2 follow-up).
+   */
+  #initSubsystems(
+    bvhBuffers: SceneBVHBuffers,
+    ppgEnabled: boolean,
+    W: number,
+    H: number,
+    options: Parameters<WalkaroundGPUPipeline['initialize']>[2],
+  ): void {
     this._ppg.initialize(
       bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount,
       options?.ppgMaxSpatialCells,
     );
-
-    this._initialized = true;
-    if (options?.verbose) {
-      console.log('[ReSTIR] Pipeline initialized', { W, H, bvhNodes: bvhBuffers.bvhNodes.count, emitters: bvhBuffers.emitterCount });
-    }
   }
 
   /** Re-upload emitter data (called on light/panel change).
@@ -1848,32 +1578,71 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const d = this._device;
     const { _width: W, _height: H } = this;
 
-    // ── Camera motion (computed up-front for the checkerboard motion fallback) ─
-    // The checkerboard sparse path (shade + spatial compaction + resolve
-    // gap-fill) reuses last-frame reservoirs/radiance for the gap-parity half.
-    // Under camera motion that lag is exposed as softening, so we force
-    // FULL-RATE shading on a moving frame: the per-frame `cbActiveThisFrame` flag
-    // is `_checkerboard && !cbMotionExceeded`, threaded identically into the UBO
-    // (shade/spatial read checkerboardOn/frameParity), the ShadePass/
-    // SpatialReservoirPass dispatch compaction (passCtx.checkerboardOn), and the
-    // ResolvePass gap-fill — so all three agree every frame.
+    // D3.2 — renderFrame is now a sequencer of three private phases.
+    // Exact GPU-command order is preserved across the extraction boundary —
+    // the gpu-call-trace goldens pin the sequence.
+
+    // ── Camera motion (computed up-front — shared by UBO packing and the
+    //    checkerboard motion fallback).
     //
     // The checkerboard fallback uses its OWN, finer threshold
     // (`_checkerboardMotionThresholdSq`, default 0.004 = 0.063²) — NOT the much
     // coarser temporal-accumulator reset (`_cameraMoveResetThresholdSq`, 1.0):
     // half-rate reservoir lag shows at far smaller motion than a full history
-    // discard, so checkerboard must drop to full-rate earlier (GPU-validated on
-    // dzn — at the coarse 1.0 threshold the motion A/B fell to ~24 dB; the 0.004
-    // threshold keeps checkerboard sparse through a slow drag (~50 dB) and flips
-    // a faster pan to full-rate, where ON==OFF bit-identically). `_lastCameraPos`
-    // is written only at end-of-frame, so reading it here matches the post-UBO
-    // motion calc exactly.
+    // discard. The `cbActive`/`parity` record is threaded identically into
+    // updateUBO (UBO fields) and passCtx (dispatch compaction) so all three
+    // consumers agree every frame.
     const mdx = inputs.camera.cameraPos[0] - this._lastCameraPos[0];
     const mdy = inputs.camera.cameraPos[1] - this._lastCameraPos[1];
     const mdz = inputs.camera.cameraPos[2] - this._lastCameraPos[2];
     const camMoveSqUpfront = mdx * mdx + mdy * mdy + mdz * mdz;
-    const cbMotionExceeded = camMoveSqUpfront > this._checkerboardMotionThresholdSq;
-    const cbActiveThisFrame = this._checkerboard && !cbMotionExceeded;
+    /** Single checkerboard state record consumed by updateUBO AND #buildFrameContext. */
+    const checkerboardState = {
+      active: this._checkerboard && !(camMoveSqUpfront > this._checkerboardMotionThresholdSq),
+      parity: this._frameCount & 1,
+    } as const;
+
+    const { passCtx, gateOpts, passLayout, encoder } =
+      this.#buildFrameContext(inputs, camMoveSqUpfront, checkerboardState);
+
+    this.#dispatchPasses(passCtx, gateOpts, passLayout, encoder);
+    this.#tickSubsystemTraining(passLayout);
+
+    this._frameCount++;
+    return true;
+  }
+
+  /**
+   * D3.2 — Per-frame Phase 1: UBO update, bind-group assembly, and
+   * PassDispatchContext construction.
+   *
+   * Covers (in exact original order):
+   *   - UBO write (updateUBO + NRC camera-pdf update)
+   *   - Bind-group builds (frame/scene/ubo/hybridLayers/lightTree)
+   *   - passLayout + encoder creation
+   *   - workgroup count derivation
+   *   - computeDesc / renderTimestampWrites helpers
+   *   - isMoving accumulator-reset (mutates `_accumFrameIndex`)
+   *   - ping-pong texture resolution
+   *   - alpha derivation
+   *   - PassFrameState + PassDispatchContext construction
+   *   - PassGateOptions construction
+   *
+   * Returns everything the caller needs to dispatch passes and finalize.
+   */
+  #buildFrameContext(
+    inputs: PipelineFrameInputs,
+    camMoveSqUpfront: number,
+    checkerboardState: { readonly active: boolean; readonly parity: number },
+  ): {
+    passCtx: PassDispatchContext;
+    gateOpts: PassGateOptions;
+    passLayout: ReturnType<typeof buildPassLayout>;
+    encoder: GPUCommandEncoder;
+  } {
+    const d = this._device;
+    const { _width: W, _height: H } = this;
+    const cbActiveThisFrame = checkerboardState.active;
 
     // ── Update UBO ────────────────────────────────────────────────────────
     // Inject the LIVE PPG gate (PPGCoordinator.enabled is true only when the
@@ -1893,7 +1662,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       mixAlpha: this._ppg.mixAlpha,
     }, this._regir.uboState(), {
       enabled: cbActiveThisFrame,
-      frameParity: this._frameCount & 1,
+      frameParity: checkerboardState.parity,
     });
 
     // H26 — update the NRC camera pdf every frame so the a0 primary footprint
@@ -2020,15 +1789,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // the WalkaroundUBO above, so the shade/spatial shaders' compacted-gid
       // decode, their UBO reads, and the resolve gap-fill all agree this frame.
       checkerboardOn: cbActiveThisFrame,
-      frameParity: this._frameCount & 1,
-      // Welford ping-pong state at the START of this frame (before
-      // AtrousVarianceDenoiser.dispatch() flips it). SampleBudgetPass reads
-      // this to bind the freshest variance side — ping===0 means varianceBuffer
-      // holds the previous frame's write; ping===1 means varianceBufferAux does.
-      // For other denoisers that don't ping-pong variance, always 0.
-      welfordPing: this._activeDenoiser instanceof AtrousVarianceDenoiser
-        ? this._activeDenoiser.getWelfordPing()
-        : 0,
+      frameParity: checkerboardState.parity,
+      // Welford ping-pong state at the START of this frame (before the
+      // denoiser's dispatch() flips it). SampleBudgetPass reads this to bind
+      // the freshest variance side — ping===0 means varianceBuffer holds the
+      // previous frame's write; ping===1 means varianceBufferAux does.
+      // For denoisers that don't ping-pong variance, welfordPing is undefined
+      // and we fall back to 0 (D3.4 — Denoiser interface property).
+      welfordPing: this._activeDenoiser?.welfordPing ?? 0,
       gtaoDownscale: this._gtaoDownscale,
       gNormalDepthView,
       computeDesc,
@@ -2058,6 +1826,33 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       checkerboardOn: cbActiveThisFrame,
     };
 
+    return { passCtx, gateOpts, passLayout, encoder };
+  }
+
+  /**
+   * D3.2 — Per-frame Phase 2: sorted-pass dispatch + end-of-frame
+   * housekeeping (reservoir ping-pong copies, NRC record fold, timestamp
+   * resolve, queue submit).
+   *
+   * Covers (in exact original order):
+   *   - Sorted-pass loop with gate filtering
+   *   - Accumulator ping-pong advance + lastCameraPos write
+   *   - Reservoir current→previous copies (DI + GI)
+   *   - NRC self-training-record copy
+   *   - Timestamp resolve + queue submit
+   *   - Timestamp readback kick + public telemetry mirror
+   *
+   * The two `copyBufferToBuffer` calls MUST be in the SAME encoder as the
+   * pass dispatch — see the B6 race-condition note on the original site.
+   */
+  #dispatchPasses(
+    passCtx: PassDispatchContext,
+    gateOpts: PassGateOptions,
+    passLayout: ReturnType<typeof buildPassLayout>,
+    encoder: GPUCommandEncoder,
+  ): void {
+    const d = this._device;
+
     // ── Unified pass loop ────────────────────────────────────────────────
     // Polymorphic denoiser dispatch is one of the sorted passes
     // ({@link DenoiserAdapterPass}); its dependency on `gtao-upsample` +
@@ -2078,7 +1873,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // ── End-of-frame: swap-chain present sentinel + reservoir housekeeping ─
     this._accumPingPongIndex = 1 - this._accumPingPongIndex;
     this._accumFrameIndex++;
-    this._lastCameraPos = [...inputs.camera.cameraPos];
+    this._lastCameraPos = [...passCtx.inputs.camera.cameraPos];
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
     // Sprint 17 + audit B6 fix: copies must be folded into the *same*
@@ -2115,6 +1910,28 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
     d.queue.submit([encoder.finish()]);
 
+    // Kick async readback of the timestamp buffer we just copied into.
+    // Pass the layout labels so the async callback labels each slot
+    // correctly even if the pipeline reconfigures between frames.
+    kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
+    // Mirror public telemetry fields from the state object so callers
+    // can read them as before.
+    this.lastGpuTimings      = this._tsState.lastGpuTimings;
+    this.lastGpuTimingsFrame = this._tsState.lastGpuTimingsFrame;
+  }
+
+  /**
+   * D3.2 — Per-frame Phase 3: post-submit subsystem training ticks.
+   *
+   * Covers (in exact original order):
+   *   - PPG `maybeRunTrainingRefine` (W9 follow-up, fire-and-forget CPU async)
+   *   - NRC `trainFromRecords` (Müller §5, fire-and-forget async, one step/frame)
+   *
+   * Both calls happen AFTER `d.queue.submit()` so they do not block the
+   * GPU timeline. PPG is CPU-side; NRC maps a staging buffer async — both
+   * are re-entrant-guarded inside their subsystems.
+   */
+  #tickSubsystemTraining(_passLayout: ReturnType<typeof buildPassLayout>): void {
     // W9 follow-up — periodic training/refine cycle:
     // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
     this._ppg.maybeRunTrainingRefine(this._res, this._frameCount);
@@ -2129,26 +1946,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     if (this._nrc !== null) {
       void this._nrc.trainFromRecords().catch(() => { /* device lost / disposed */ });
     }
-
-    // Kick async readback of the timestamp buffer we just copied into.
-    // Pass the layout labels so the async callback labels each slot
-    // correctly even if the pipeline reconfigures between frames.
-    kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
-    // Mirror public telemetry fields from the state object so callers
-    // can read them as before.
-    this.lastGpuTimings      = this._tsState.lastGpuTimings;
-    this.lastGpuTimingsFrame = this._tsState.lastGpuTimingsFrame;
-
-    this._frameCount++;
-    return true;
   }
 
   dispose(): void {
     this._bvhHost.dispose();
     this._compositePass = null;
-    this._captureRenderPipeline = null;
-    this._captureOffscreenTex?.tex.destroy();
-    this._captureOffscreenTex = null;
+    // D3.3 — delegate capture-resource teardown to the helper (same order as
+    // the original inline _captureRenderPipeline=null / _captureOffscreenTex destroy).
+    this._captureHelper.dispose();
     if (this._res) destroyFrameResources(this._res);
     for (const ref of this._perPassUboRefs) ref.buf?.destroy();
     disposeTimestampState(this._tsState);

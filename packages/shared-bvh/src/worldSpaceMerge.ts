@@ -347,20 +347,48 @@ export function materialSig(m: MaterialSpec): string {
   return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}|${acS}|${adS}|${thS}`;
 }
 
-/** A stable per-handle identity string for the dedup signature. Objects use a
- *  WeakMap-assigned id (analogue of THREE's per-instance `uuid`); primitives
- *  stringify directly; absent handles contribute the empty string. */
-const _handleIds = new WeakMap<object, string>();
-let _handleSeq = 0;
+/**
+ * Stable per-object identity registry for the material dedup signature.
+ *
+ * The module-level WeakMap is LOAD-BEARING: handle identity must persist
+ * ACROSS merge calls so the same object (e.g. the same decoded ImageBitmap)
+ * always maps to the same signature token. Wrapping it in an exported object
+ * enables test-time reset without exposing the raw module globals.
+ *
+ * `reset()` is intentionally not called in production — it would invalidate
+ * cached signatures and break dedup continuity. Call it only in test teardown
+ * to prevent cross-test object-identity bleed.
+ */
+export const HandleIdRegistry = {
+  _ids: new WeakMap<object, string>(),
+  _seq: 0,
+  /** Return the stable id for `handle`. Assigns a new one on first encounter. */
+  get(handle: object): string {
+    let id = this._ids.get(handle);
+    if (id === undefined) {
+      id = `h${this._seq++}`;
+      this._ids.set(handle, id);
+    }
+    return id;
+  },
+  /**
+   * Reset the registry — for TEST USE ONLY.
+   * Clears all assigned ids and resets the sequence counter.
+   * Do NOT call in production: existing handle ids become stale.
+   */
+  reset(): void {
+    this._ids = new WeakMap();
+    this._seq = 0;
+  },
+};
+
+/** A stable per-handle identity string for the dedup signature. Objects use
+ *  {@link HandleIdRegistry}; primitives stringify directly; absent handles
+ *  contribute the empty string. */
 function handleId(handle: unknown): string {
   if (handle == null) return '';
   if (typeof handle === 'object' || typeof handle === 'function') {
-    let id = _handleIds.get(handle);
-    if (id === undefined) {
-      id = `h${_handleSeq++}`;
-      _handleIds.set(handle, id);
-    }
-    return id;
+    return HandleIdRegistry.get(handle as object);
   }
   // eslint-disable-next-line @typescript-eslint/no-base-to-string -- at this point handle is a primitive (guarded: not object/function), String() is safe
   return String(handle);

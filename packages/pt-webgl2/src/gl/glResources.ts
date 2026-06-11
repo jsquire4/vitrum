@@ -10,6 +10,9 @@
 // The per-sample draw (drawAccumStep) replaces the fork's renderTask generator: bind the
 // accum FBO + MRT draw buffers, set the blend regime, bind scene textures + params UBO, and
 // draw the fullscreen triangle (fork PathTracingRenderer.js:144-167, §6 of plan 02).
+//
+// D10.1 (2026-06-10): BDPT light-subpath machinery extracted to BdptSubpathBuilder.ts;
+// present-pass (tonemap/exposure/outputColorSpace) extracted to PresentPass.ts.
 
 import type { TraceFeatures, AccumRegime } from '../featureTypes.js';
 import { featureDefines } from '../featureTypes.js';
@@ -19,7 +22,6 @@ import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
 import {
   createRenderTarget,
-  createColorTexture,
   bindRenderTarget,
   clearRenderTarget,
   type RenderTarget,
@@ -31,9 +33,8 @@ import {
   X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF,
   X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL,
 } from '@vitrum/shared-samplers';
-// Present-pass tonemap GLSL functions (port of @vitrum/shared-samplers,
-// kept numerically identical — see tonemap_functions.glsl.js for provenance).
-import * as TonemapFunctions from '../glsl/shader/common/tonemap_functions.glsl.js';
+import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
+import { PresentPass } from './PresentPass.js';
 
 // H2 — spectral CMF upload tables (constant; precomputed Float32 copies so the
 // per-frame upload allocates nothing). The spectral path importance-samples the
@@ -93,8 +94,8 @@ export interface FrameUniforms {
   // ── Tonemap / present-pass dials (2026-06-10) ──────────────────────────
   // Wired from FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
   // These are NOT used by the PT accumulation shader — they drive the separate
-  // present pass (glResources #runPresentPass) that blits the HDR accum
-  // texture to a tonemapped output.
+  // present pass (PresentPass) that blits the HDR accum texture to a tonemapped
+  // output.
   //
   // CONTRACT-DEFAULT TENSION: the contract (FrameQualitySettings) documents
   // default 'aces' @ 1.0 @ 'srgb'. pt-webgl2 previously had NO present pass,
@@ -111,16 +112,6 @@ export interface FrameUniforms {
   /** Output color space: 0 = srgb (OETF applied, default), 1 = linear (OETF skipped). */
   readonly outputColorSpace: number;
 }
-
-/**
- * A5 — BDPT light-path ping-pong dimensions. The light-subpath kernel writes a
- * (BDPT_MAX_LIGHT_BOUNCES columns × 3 rows) RGBA32F texture: one column per light
- * bounce, three rows per vertex (pos|kind, normal|pdfFwd, throughput|pdfRev). The
- * width MUST stay 3 — the connection sweep caps the merged path at BDPT_MAX_MERGED
- * (=19) with `n = c + e + 3`, and the kernel comment fixes the layout at width 3.
- */
-const BDPT_LIGHT_PATH_COLS = 3;
-const BDPT_LIGHT_PATH_ROWS = 3;
 
 /**
  * The Regime-2 composite quad fragment (verbatim port of the fork's BlendMaterial.js:31-59,
@@ -147,45 +138,6 @@ void main() {
 }
 `;
 
-/**
- * Present-pass fragment shader body (no `#version`/preamble — GlProgram prepends those).
- * Reads the HDR accumulation texture (RGBA32F), applies exposure + the selected tonemap
- * operator, and optionally applies the sRGB OETF before writing to the present target.
- *
- * Uniforms:
- *   uAccumTex       — RGBA32F accumulation texture (sampler2D)
- *   uTonemapMode    — operator index (0=aces, 1=agx, 2=reinhard, 3=linear, 4=none)
- *   uExposure       — linear-exposure multiplier (default 1.0)
- *   uOutputColorSpace — 0=srgb (apply OETF, default), 1=linear (skip OETF)
- *
- * Wired 2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
- */
-function buildPresentFragBody(tonemapGlsl: string): string {
-  return /* glsl */ `
-in vec2 vUv;
-uniform sampler2D uAccumTex;
-uniform int uTonemapMode;
-uniform float uExposure;
-uniform int uOutputColorSpace;
-
-${tonemapGlsl}
-
-void main() {
-  vec3 hdr = texture(uAccumTex, vUv).rgb;
-  // Guard against negative values that can appear from alpha-compositing precision.
-  vec3 tonemapped = vitrumTonemap(max(hdr, vec3(0.0)), uTonemapMode, uExposure);
-  // outputColorSpace 0 = srgb (default) — apply the IEC 61966-2-1 OETF before
-  // writing to the 8-bit output (the framebuffer is RGBA8 unorm, not auto-sRGB).
-  // outputColorSpace 1 = linear — skip the OETF (useful for HDR/linear pipeline).
-  if (uOutputColorSpace == 0) {
-    pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);
-  } else {
-    pc_fragColor = vec4(tonemapped, 1.0);
-  }
-}
-`;
-}
-
 export class GlResources {
   readonly #gl: WebGL2RenderingContext;
   readonly #caps: GlCaps;
@@ -207,33 +159,16 @@ export class GlResources {
   #ptProgram: GlProgram | null = null;
   #blendProgram: GlProgram | null = null;
 
-  // ── Present pass (tonemap / exposure / outputColorSpace) ────────────────────
-  // A separate single-attachment RGBA8 render target + fullscreen quad program
-  // that blits the HDR accum texture through the tonemap+OETF chain.
-  // Allocated lazily on the first drawAccumStep call (ensured once per
-  // ensureAccumResources cycle); destroyed/reallocated on resize.
-  #presentTex: WebGLTexture | null = null;
-  #presentFbo: WebGLFramebuffer | null = null;
-  #presentProgram: GlProgram | null = null;
+  // ── Present pass (D10.1: extracted to PresentPass) ────────────────────────
+  readonly #presentPass: PresentPass;
 
   #accumWidth = 0;
   #accumHeight = 0;
   /** Samples already accumulated since the last clearAccum() — drives opacity 1/(N+1). */
   #samples = 0;
 
-  /**
-   * A5 — BDPT light-path ping-pong pair (3×3 single-attachment RGBA32F). Bounce 0
-   * writes column 0 (emitter vertex; reads nothing); bounce k reads column k-1 from
-   * the "read" texture and writes column k to the "write" texture. The light-subpath
-   * kernel `discard`s every column except `uBdptVertexCol`, so to keep already-built
-   * columns alive across passes we blit the read texture into the write texture
-   * before each column draw, then overwrite just that column. After the last bounce
-   * the read texture holds all columns and is bound as `uBdptLightPathTex` for the
-   * connection sweep. Allocated lazily only when bdpt is on (null otherwise → the
-   * unidirectional path never touches this). */
-  #bdptLightPath: [RenderTarget, RenderTarget] | null = null;
-  /** Scratch FBO for the copy-source side of the per-column blit. */
-  #bdptCopyFbo: WebGLFramebuffer | null = null;
+  // ── BDPT light-subpath (D10.1: extracted to BdptSubpathBuilder) ───────────
+  readonly #bdptBuilder: BdptSubpathBuilder;
 
   /**
    * @param supportsAuxBuffers host policy for the MRT g-buffers; intersected here with the
@@ -249,6 +184,8 @@ export class GlResources {
         ? (dbi as { disableiOES(target: number, index: number): void })
         : null;
     this.#quad = new FullscreenQuad(gl);
+    this.#presentPass = new PresentPass(gl, this.#quad);
+    this.#bdptBuilder = new BdptSubpathBuilder(gl);
   }
 
   /** Probed device capabilities (regime selection, MRT/sampler budgets). */
@@ -266,15 +203,7 @@ export class GlResources {
     this.#destroyTargets();
     this.#accum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
     // Present target — RGBA8 (sufficient for display output; the HDR lives in #accum).
-    this.#destroyPresentTarget();
-    this.#presentTex = createColorTexture(this.#gl, w, h);
-    // RGBA8 FBO for the present-pass output.
-    const fbo = this.#gl.createFramebuffer();
-    if (fbo == null) throw new Error('pt-webgl2: failed to create present-pass FBO');
-    this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, fbo);
-    this.#gl.framebufferTexture2D(this.#gl.FRAMEBUFFER, this.#gl.COLOR_ATTACHMENT0, this.#gl.TEXTURE_2D, this.#presentTex, 0);
-    this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, null);
-    this.#presentFbo = fbo;
+    this.#presentPass.allocate(w, h);
     this.#accumWidth = w;
     this.#accumHeight = h;
     this.#samples = 0;
@@ -329,7 +258,16 @@ export class GlResources {
     // pass, then bind it as `uBdptLightPathTex`. Only runs when bdpt is on; the
     // unidirectional path skips this entirely (byte-identical when bdpt:false).
     const bdptResult =
-      frame.bdpt ? this.#buildBdptLightSubpath(prog, scene, seed, frame) : null;
+      frame.bdpt
+        ? this.#bdptBuilder.build(
+            prog,
+            scene,
+            seed,
+            frame,
+            (p, s, t) => this.#bindSceneTextures(p, s, t),
+            () => this.#quad.draw(gl),
+          )
+        : null;
 
     bindRenderTarget(gl, this.#accum);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
@@ -423,8 +361,17 @@ export class GlResources {
 
     this.#samples += 1;
 
-    // Present pass — blit the HDR accum through tonemap + OETF into #presentTex.
-    this.#runPresentPass(frame.tonemapMode, frame.exposure, frame.outputColorSpace);
+    // Present pass — blit the HDR accum through tonemap + OETF into the present target.
+    let srcTex: WebGLTexture | null = null;
+    if (this.#blend != null) {
+      const [a, b] = this.#blend;
+      srcTex = (this.#blendReadIndex === 0 ? a : b).color;
+    } else {
+      srcTex = this.#accum?.color ?? null;
+    }
+    if (srcTex != null) {
+      this.#presentPass.run(srcTex, this.#accumWidth, this.#accumHeight, frame.tonemapMode, frame.exposure, frame.outputColorSpace);
+    }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -436,7 +383,7 @@ export class GlResources {
 
   /**
    * The tonemapped present texture (the output of the most-recent present pass).
-   * Always points to the presentTex (RGBA32F) written by #runPresentPass after
+   * Always points to the presentTex (RGBA32F) written by PresentPass after
    * each drawAccumStep. When no present pass has run yet (before the first
    * drawAccumStep), returns the raw HDR accum as a fallback.
    *
@@ -445,7 +392,7 @@ export class GlResources {
    */
   resultTexture(): WebGLTexture | null {
     // Prefer the present-pass output (tonemapped) when it has been allocated.
-    if (this.#presentTex != null) return this.#presentTex;
+    if (this.#presentPass.tex != null) return this.#presentPass.tex;
     // Fallback: raw HDR accum (pre-present, e.g. before the first frame).
     if (this.#blend != null) {
       const [a, b] = this.#blend;
@@ -467,26 +414,20 @@ export class GlResources {
   dispose(): void {
     const gl = this.#gl;
     this.#destroyTargets();
-    this.#destroyPresentTarget();
+    this.#presentPass.destroy();
+    this.#presentPass.disposeProgram();
     this.#ptProgram?.dispose();
     this.#ptProgram = null;
     this.#blendProgram?.dispose();
     this.#blendProgram = null;
-    this.#presentProgram?.dispose();
-    this.#presentProgram = null;
     this.#quad.dispose(gl);
     // H7 FIX (2026-06-09): delete the lazily-allocated dummy textures — dispose()
     // freed the programs/targets/quad but LEAKED these two GPU textures on every
     // engine teardown (Canvas remount / route change churn would accumulate them).
     if (this.#dummy2dTex != null) { gl.deleteTexture(this.#dummy2dTex); this.#dummy2dTex = null; }
     if (this.#dummy2dArrTex != null) { gl.deleteTexture(this.#dummy2dArrTex); this.#dummy2dArrTex = null; }
-    // A5 — free the BDPT light-path ping-pong pair + copy FBO.
-    if (this.#bdptLightPath != null) {
-      this.#bdptLightPath[0].destroy();
-      this.#bdptLightPath[1].destroy();
-      this.#bdptLightPath = null;
-    }
-    if (this.#bdptCopyFbo != null) { gl.deleteFramebuffer(this.#bdptCopyFbo); this.#bdptCopyFbo = null; }
+    // A5 — free the BDPT light-path ping-pong pair + copy FBO (D10.1: via BdptSubpathBuilder).
+    this.#bdptBuilder.dispose();
   }
 
   // ----- internals -------------------------------------------------------------------------
@@ -521,125 +462,6 @@ export class GlResources {
   #ensureBlendProgram(): GlProgram {
     this.#blendProgram ??= new GlProgram(this.#gl, FULLSCREEN_VERT, BLEND_FRAG, {});
     return this.#blendProgram;
-  }
-
-  /**
-   * A5 — build the BDPT light subpath for this sample and return the texture holding
-   * all light-path vertex columns (to be bound as `uBdptLightPathTex` for the eye
-   * pass's connection sweep). Returns null when there is nothing to connect to (no
-   * analytic lights) — the caller then leaves the dummy bound and the frame renders
-   * unidirectionally.
-   *
-   * Per-column protocol (one fullscreen draw over a 3×3 viewport per bounce):
-   *   read  = the texture holding columns < col already built this frame
-   *   write = the other ping-pong slot
-   *   1. blit read → write (copy already-built columns forward; the kernel `discard`s
-   *      every column != uBdptVertexCol, so without this they'd be lost on the swap)
-   *   2. set uBdptLightSubpathPass=1, uBdptVertexCol=col, uBdptMaxLightBounces
-   *   3. bind read as uBdptLightPathTex (bounce k reads column k-1 from it)
-   *   4. draw → write column `col` is overwritten with the new vertex
-   *   5. swap read/write
-   * After the loop, `read` holds all columns. Reading and writing the SAME texture in
-   * one draw is a WebGL2 feedback loop (undefined), which the read≠write ping-pong +
-   * pre-blit avoids.
-   */
-  #buildBdptLightSubpath(
-    prog: GlProgram,
-    scene: UploadedSceneTextures,
-    seed: number,
-    frame: FrameUniforms,
-  ): WebGLTexture | null {
-    if (scene.lightCount === 0) return null; // nothing to sample → unidirectional fallback
-    const gl = this.#gl;
-    this.#ensureBdptLightPath();
-    const pair = this.#bdptLightPath;
-    if (pair == null) return null;
-    const copyFbo = this.#bdptCopyFbo;
-    if (copyFbo == null) return null;
-
-    const cols = Math.max(1, Math.min(frame.bdptMaxLightBounces, BDPT_LIGHT_PATH_COLS));
-
-    // Clear both slots so unbuilt columns read as (0,0,0,0); column 0 row 0 .w==0 is
-    // BDPT_KIND_LIGHT, so an all-zero column is NOT auto-invalid — but the kernel only
-    // ever connects to columns it actually wrote, and the connection sweep iterates
-    // [0, uBdptMaxLightBounces); a failed sample writes BDPT_KIND_INVALID (.w==3)
-    // explicitly. Clearing keeps stale prior-frame columns out.
-    clearRenderTarget(gl, pair[0]);
-    clearRenderTarget(gl, pair[1]);
-
-    prog.use();
-    // The light-subpath pass shares the eye program; flip the pass flag + upload the
-    // per-pass scalars. The scene textures (BVH/materials/lights) are bound below.
-    prog.setInt('seed', seed);
-    prog.setInt('uBdptLightSubpathPass', 1);
-    prog.setInt('uBdptMaxLightBounces', cols);
-    // The light subpath traces scene rays → needs the same per-frame transforms the
-    // eye pass reads (lightsDenom uses environmentIntensity; traceScene reads none of
-    // the camera matrices but initRenderState / fog do touch a few). Upload the load-
-    // bearing ones; the kernel ignores the rest in the subpath branch.
-    prog.setVec2('resolution', BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
-    prog.setInt('bounces', frame.bounces);
-    prog.setInt('transmissiveBounces', frame.transmissiveBounces);
-    prog.setFloat('environmentIntensity', frame.environmentIntensity);
-    prog.setMat4('environmentRotation', frame.environmentRotation);
-    prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
-    prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
-
-    gl.disable(gl.BLEND); // vertex writes overwrite; no accumulation in the subpath.
-
-    let readIdx = 0;
-    for (let col = 0; col < cols; col += 1) {
-      const read = pair[readIdx]!;
-      const write = pair[1 - readIdx]!;
-
-      // 1. Copy already-built columns (< col) read → write so they survive the swap.
-      if (col > 0) this.#blitBdpt(read, write, copyFbo);
-
-      // 2/3. Per-column scalars + the read texture as uBdptLightPathTex.
-      prog.setInt('uBdptVertexCol', col);
-      // Bind scene textures with the read slot as the light-path source. (For col 0
-      // the kernel ignores the texture; binding the read slot is harmless.)
-      this.#bindSceneTextures(prog, scene, read.color);
-
-      // 4. Draw the 3×3 viewport into the write slot.
-      bindRenderTarget(gl, write);
-      gl.viewport(0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
-      this.#quad.draw(gl);
-
-      // 5. Swap — `write` now holds columns ≤ col.
-      readIdx = 1 - readIdx;
-    }
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    // After the loop, pair[readIdx] is the most-recently-written slot (all columns).
-    return pair[readIdx]!.color;
-  }
-
-  /** A5 — copy `src` color into `dst` color via a framebuffer blit (preserve built columns). */
-  #blitBdpt(src: RenderTarget, dst: RenderTarget, copyFbo: WebGLFramebuffer): void {
-    const gl = this.#gl;
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, copyFbo);
-    gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, src.color, 0);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fbo);
-    gl.blitFramebuffer(
-      0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS,
-      0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS,
-      gl.COLOR_BUFFER_BIT, gl.NEAREST,
-    );
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-  }
-
-  /** A5 — lazily allocate the BDPT light-path ping-pong pair + copy FBO. */
-  #ensureBdptLightPath(): void {
-    if (this.#bdptLightPath != null) return;
-    const gl = this.#gl;
-    this.#bdptLightPath = [
-      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
-      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
-    ];
-    this.#bdptCopyFbo = gl.createFramebuffer();
-    if (this.#bdptCopyFbo == null) throw new Error('pt-webgl2: failed to create BDPT copy FBO');
   }
 
   #ensureBlendPair(): void {
@@ -768,69 +590,6 @@ export class GlResources {
     this.#blendReadIndex = 0;
   }
 
-  #destroyPresentTarget(): void {
-    const gl = this.#gl;
-    if (this.#presentTex != null) { gl.deleteTexture(this.#presentTex); this.#presentTex = null; }
-    if (this.#presentFbo != null) { gl.deleteFramebuffer(this.#presentFbo); this.#presentFbo = null; }
-  }
-
-  #ensurePresentProgram(): GlProgram {
-    if (this.#presentProgram == null) {
-      const tonemapGlsl = (TonemapFunctions as Record<string, unknown>)['tonemap_functions'];
-      if (typeof tonemapGlsl !== 'string') throw new Error('pt-webgl2: tonemap_functions GLSL not found');
-      this.#presentProgram = new GlProgram(
-        this.#gl,
-        FULLSCREEN_VERT,
-        buildPresentFragBody(tonemapGlsl),
-        {}, // no compile-time defines; all dials are uniforms
-      );
-    }
-    return this.#presentProgram;
-  }
-
-  /**
-   * Run the present pass: blit the current HDR accumulation (or ping-pong blend
-   * result) through the tonemap + OETF chain into #presentTex.
-   *
-   * Called once per drawAccumStep, after the PT accumulation draw and the
-   * optional alpha-composite step. The present target is already allocated by
-   * ensureAccumResources so this is a no-alloc hot path.
-   *
-   * Default dials match the contract (FrameQualitySettings) defaults and the
-   * walkaround-hybrid orchestrator (HybridEngineFrameOrchestrator.ts:764):
-   *   tonemapMode = 0 (aces), exposure = 1.0, outputColorSpace = 0 (srgb).
-   */
-  #runPresentPass(tonemapMode: number, exposure: number, outputColorSpace: number): void {
-    const gl = this.#gl;
-    const presentFbo = this.#presentFbo;
-    if (presentFbo == null) return;
-
-    // The HDR source is the ping-pong read slot (Regime 2) or the primary accum.
-    let srcTex: WebGLTexture | null = null;
-    if (this.#blend != null) {
-      const [a, b] = this.#blend;
-      srcTex = (this.#blendReadIndex === 0 ? a : b).color;
-    } else {
-      srcTex = this.#accum?.color ?? null;
-    }
-    if (srcTex == null) return;
-
-    const prog = this.#ensurePresentProgram();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, presentFbo);
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    gl.disable(gl.BLEND); // no blending in the present pass — overwrite only
-
-    prog.use();
-    prog.bindTexture('uAccumTex', srcTex);
-    prog.setInt('uTonemapMode', tonemapMode);
-    prog.setFloat('uExposure', exposure);
-    prog.setInt('uOutputColorSpace', outputColorSpace);
-    this.#quad.draw(gl);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  }
-
   /**
    * CPU readback of the HDR accumulation or present FBO, row-flipped to
    * top-left origin (WebGL uses bottom-left, so row 0 in `readPixels` is the
@@ -841,13 +600,16 @@ export class GlResources {
    * EXT_color_buffer_float is required (enforced by resolveWebGl2TraceTier; the
    * engine never reaches this point without it).
    *
-   * `source:'output'` reads the present FBO — the RGBA32F tonemapped output
-   * written by #runPresentPass. Note: the present FBO texture is RGBA32F even
-   * though the present target is conceptually display-referred (the texture was
-   * created by createColorTexture which always uses RGBA32F).
+   * `source:'output'` reads the present FBO — the RGBA8 tonemapped output
+   * written by PresentPass (D10.11: RGBA8 is sufficient for display output).
+   * Readback uses UNSIGNED_BYTE + /255 normalisation to return [0,1] floats.
    *
    * Returns `null` when the requested FBO has not been allocated yet (before
    * the first frame).
+   *
+   * NOTE: readPixelsRgba32f has access to #blend/#accum/#presentPass.fbo and
+   * cannot be extracted as a free function without passing those in — left here
+   * as a method (D10.1 analysis: too coupled, leaving and reporting).
    */
   readPixelsRgba32f(source: 'linear' | 'output'): Float32Array | null {
     const w = this.#accumWidth;
@@ -857,7 +619,7 @@ export class GlResources {
 
     let fbo: WebGLFramebuffer | null = null;
     if (source === 'output') {
-      fbo = this.#presentFbo;
+      fbo = this.#presentPass.fbo;
     } else {
       // 'linear': use the ping-pong read slot (Regime 2) or the primary accum FBO.
       if (this.#blend != null) {
@@ -869,9 +631,18 @@ export class GlResources {
     }
     if (fbo == null) return null;
 
-    const pixels = new Float32Array(w * h * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
+    let pixels: Float32Array;
+    if (source === 'output') {
+      // D10.11: present target is RGBA8 — read as UNSIGNED_BYTE, normalize to [0,1].
+      const raw = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+      pixels = new Float32Array(w * h * 4);
+      for (let i = 0; i < raw.length; i++) pixels[i] = raw[i]! / 255;
+    } else {
+      pixels = new Float32Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     // WebGL readPixels writes bottom-left origin (row 0 = bottom).

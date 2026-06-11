@@ -21,18 +21,35 @@ export interface SkyParams {
   mieDirectionalG: number;
 }
 
-export function skyParamsFor(timeOfDay: number): SkyParams {
+export interface SkyParamsOptions {
+  /**
+   * Scale factor for the sun Y altitude. Default 0.4 — caps noon altitude at
+   * ~22° above horizon to keep the sun mostly behind the stained-glass panel
+   * along Z. Increase toward 1.0 for a more overhead midday sun.
+   * (Documented 2026-06-11; was previously a hardcoded stained-glass calibration constant.)
+   */
+  yScale?: number;
+  /**
+   * Constant Z bias applied to the sun position. Default -0.5 — pushes the sun
+   * slightly behind the panel so glass reads as backlit. Increase toward 0 to
+   * move the sun forward.
+   * (Documented 2026-06-11; was previously a hardcoded stained-glass calibration constant.)
+   */
+  zBias?: number;
+}
+
+export function skyParamsFor(timeOfDay: number, opts: SkyParamsOptions = {}): SkyParams {
+  const { yScale = 0.4, zBias = -0.5 } = opts;
   const t = Math.max(0, Math.min(1, timeOfDay));
   // Solar arc: theta swings from -PI/2 (east) through 0 (zenith) to +PI/2 (west)
   const theta = (t - 0.5) * Math.PI;
   const x = Math.sin(theta);
   const y = Math.cos(theta); // 1 at noon, 0 at horizons
-  // Y×0.4 caps the noon altitude at ~22° above horizon, putting the sun
-  // mostly behind the panel along Z. Eliminates the "sunlight entering through
+  // yScale caps the noon altitude; eliminates the "sunlight entering through
   // the top of the building" artifact reported 2026-05-08.
-  const sunY = Math.max(0.05, y * 0.4);
-  // Push the sun slightly behind the panel (-Z) so glass reads as backlit.
-  const sunZ = -Math.cos(theta) * 0.5 - 0.5;
+  const sunY = Math.max(0.05, y * yScale);
+  // zBias pushes the sun behind the panel (-Z) so glass reads as backlit.
+  const sunZ = -Math.cos(theta) * 0.5 + zBias;
 
   const horizonProx = 1 - y; // 0 at noon, ~1 at horizons
   const turbidity = 2 + horizonProx * 6; // 2..8

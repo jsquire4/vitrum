@@ -97,82 +97,11 @@ export interface OIDNFinalDenoiserOptions {
   readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
 }
 
-// Local aliases routed to the canonical half-float and row-alignment helpers
-// in @vitrum/shared-denoisers. Earlier revisions inlined these (~40 LOC); the
-// canonical versions are byte-identical with one tiny exception:
-// `alignedTextureCopyBytesPerRow(width, bpp)` does not impose the `max(256, …)`
-// lower bound — for any width > 0 the result is already ≥ 256, so behaviour is
-// equivalent. `decoupledF32` ensures the local call sites read like the
-// inline originals.
 import {
-  float16BitsToFloat32 as f16ToF32,
-  float32ToFloat16Bits as f32ToF16,
+  alignedTextureCopyBytesPerRow,
+  rgba16fBufferToRgbF32,
+  rgbF32ToRgba16fRowAligned,
 } from '@vitrum/shared-denoisers';
-import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
-
-/**
- * Read 4 channels of a row-major rgba16float buffer into a Float32 RGB
- * (3-channel) layout matching {@link OIDNDenoiseInputs.color}. `decode`
- * is applied per-pixel post-extraction — used by the normal channel to
- * convert from `[0, 1]` packed normals back to `[-1, 1]`.
- */
-function rgba16fBufferToRgbF32(
-  src: ArrayBuffer,
-  bytesPerRow: number,
-  width: number,
-  height: number,
-  decode?: (r: number, g: number, b: number) => [number, number, number],
-): Float32Array {
-  const dst = new Float32Array(width * height * 3);
-  const view = new DataView(src);
-  for (let y = 0; y < height; y++) {
-    const rowOff = y * bytesPerRow;
-    for (let x = 0; x < width; x++) {
-      const texOff = rowOff + x * 8; // 4 channels × 2 bytes
-      const r = f16ToF32(view.getUint16(texOff,     true));
-      const g = f16ToF32(view.getUint16(texOff + 2, true));
-      const b = f16ToF32(view.getUint16(texOff + 4, true));
-      const [or, og, ob] = decode ? decode(r, g, b) : [r, g, b];
-      const dstIdx = (y * width + x) * 3;
-      dst[dstIdx    ] = or;
-      dst[dstIdx + 1] = og;
-      dst[dstIdx + 2] = ob;
-    }
-  }
-  return dst;
-}
-
-/**
- * Pack a Float32 RGB (HxWx3) buffer into rgba16float layout suitable
- * for `queue.writeTexture` into a `rgba16float` storage texture. The
- * alpha channel is set to 1.0.
- */
-function rgbF32ToRgba16fRowAligned(
-  src: Float32Array,
-  width: number,
-  height: number,
-): { buffer: ArrayBuffer; bytesPerRow: number } {
-  const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8);
-  // Allocate as ArrayBuffer (not ArrayBufferLike via `new Uint8Array(N).buffer`)
-  // so the return type stays narrow enough for GPUAllowSharedBufferSource —
-  // TS 5.5+ widens `Uint8Array<...>` to `Uint8Array<ArrayBufferLike>` which
-  // GPUQueue.writeTexture's strict overload rejects.
-  const buf = new ArrayBuffer(bytesPerRow * height);
-  const view = new DataView(buf);
-  const oneF16 = f32ToF16(1.0);
-  for (let y = 0; y < height; y++) {
-    const rowOff = y * bytesPerRow;
-    for (let x = 0; x < width; x++) {
-      const srcIdx = (y * width + x) * 3;
-      const texOff = rowOff + x * 8;
-      view.setUint16(texOff,     f32ToF16(src[srcIdx    ] ?? 0), true);
-      view.setUint16(texOff + 2, f32ToF16(src[srcIdx + 1] ?? 0), true);
-      view.setUint16(texOff + 4, f32ToF16(src[srcIdx + 2] ?? 0), true);
-      view.setUint16(texOff + 6, oneF16,                           true);
-    }
-  }
-  return { buffer: buf, bytesPerRow };
-}
 
 function errorReason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -338,14 +267,15 @@ export class OIDNFinalDenoiser implements Denoiser {
 
   /**
    * Background pipeline: GPU readback → CPU decode → OIDN inference →
-   * GPU upload. All four steps run async (the await boundaries are
-   * explicit). Awaiting a queue submission is implicit — we let
-   * `encoder` finish + submit normally as part of the frame's loop, then
-   * map the readback buffers on the queue once that submit completes.
+   * GPU upload.  Delegates the three async stages to the private helpers
+   * below so each concern can be read and tested in isolation.
+   *
+   * Awaiting the queue submission is implicit — we let `encoder` finish +
+   * submit normally as part of the frame's loop, then map the readback
+   * buffers on the queue once that submit completes.
    */
   private async _runInferenceCycle(ctx: DenoiserDispatchContext): Promise<void> {
     const device = this._device!;
-    const common = ctx.resources.common;
     const W = ctx.width;
     const H = ctx.height;
     // Capture the generation at dispatch time. If resize() is called before
@@ -354,11 +284,67 @@ export class OIDNFinalDenoiser implements Denoiser {
     // new (different-size) texture (WebGPU validation error / stale frame).
     const dispatchGeneration = this._resizeGeneration;
 
-    // Allocate transient readback buffers + queue the copies into the
-    // current frame's encoder. WebGPU requires bytesPerRow to be a
-    // multiple of 256 in copyTextureToBuffer, hence the alignment.
+    const { colorReadback, albedoReadback, normalReadback, bytesPerRow } =
+      this._readbackTextures(device, ctx, W, H);
+
+    try {
+      const { color, albedo, normal } =
+        await this._decodeReadbacks(colorReadback, albedoReadback, normalReadback, bytesPerRow, W, H);
+
+      if (this._disposed) return;
+
+      const inputs: OIDNDenoiseInputs = { color, albedo, normal, width: W, height: H };
+      const denoised = await denoiseFinal(inputs, {
+        modelUrl: this._modelUrl,
+        ...(this._executionProviders !== undefined
+          ? { executionProviders: this._executionProviders }
+          : {}),
+      });
+
+      if (this._disposed || !this._denoisedOutputTexture) return;
+      // Abort if resize() was called while we were awaiting — the output
+      // texture is now a different size, so writing W×H into it is wrong.
+      if (this._resizeGeneration !== dispatchGeneration) return;
+
+      this._uploadResult(device, denoised, W, H);
+      this._haveDenoisedOutput = true;
+      this._lastFailureReason = null;
+    } catch (err) {
+      // Swallow + log. The stale output texture remains visible; the next
+      // dispatch will retry. Hosts can detect persistent failure by
+      // observing that `_haveDenoisedOutput` never flips true (no public
+      // surface for this yet — W11 follow-up could expose a status hook).
+      this._lastFailureReason = `OIDN inference cycle failed: ${errorReason(err)}`;
+      this._lastFailureRetryable = true;
+      console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
+    } finally {
+      // Release the readback buffers — they're transient per-cycle.
+      try { colorReadback.destroy(); } catch { /* already destroyed */ }
+      try { albedoReadback.destroy(); } catch { /* already destroyed */ }
+      try { normalReadback.destroy(); } catch { /* already destroyed */ }
+    }
+  }
+
+  /**
+   * Stage 1 — Allocate three transient readback buffers and enqueue GPU
+   * `copyTextureToBuffer` commands into `ctx.encoder`.  The copies execute
+   * as part of the same `queue.submit` as the rest of the frame's work.
+   * WebGPU requires `bytesPerRow` to be a multiple of 256.
+   */
+  private _readbackTextures(
+    device: GPUDevice,
+    ctx: DenoiserDispatchContext,
+    W: number,
+    H: number,
+  ): {
+    colorReadback: GPUBuffer;
+    albedoReadback: GPUBuffer;
+    normalReadback: GPUBuffer;
+    bytesPerRow: number;
+  } {
     const bytesPerRow = alignedTextureCopyBytesPerRow(W, 8); // rgba16float = 8 B / texel
     const readSize = bytesPerRow * H;
+    const common = ctx.resources.common;
 
     const colorReadback = device.createBuffer({
       label: 'oidn-readback-color',
@@ -392,80 +378,67 @@ export class OIDNFinalDenoiser implements Denoiser {
       { width: W, height: H, depthOrArrayLayers: 1 },
     );
 
-    try {
-      // mapAsync resolves once the GPU has finished writing the copy,
-      // i.e. once the pipeline's queue.submit has flushed.
-      await Promise.all([
-        colorReadback.mapAsync(GPUMapMode.READ),
-        albedoReadback.mapAsync(GPUMapMode.READ),
-        normalReadback.mapAsync(GPUMapMode.READ),
-      ]);
+    return { colorReadback, albedoReadback, normalReadback, bytesPerRow };
+  }
 
-      if (this._disposed) return;
+  /**
+   * Stage 2 — `mapAsync` all three readback buffers, unpack rgba16float →
+   * Float32 RGB, then unmap so the buffers can be destroyed while the OIDN
+   * inference awaits.
+   *
+   * gNormalDepth packs normals as `xyz*0.5+0.5`; the decode lambda converts
+   * back to `[-1, 1]` for the OIDN normal input.
+   */
+  private async _decodeReadbacks(
+    colorReadback: GPUBuffer,
+    albedoReadback: GPUBuffer,
+    normalReadback: GPUBuffer,
+    bytesPerRow: number,
+    W: number,
+    H: number,
+  ): Promise<{ color: Float32Array; albedo: Float32Array; normal: Float32Array }> {
+    // mapAsync resolves once the GPU has finished writing the copy,
+    // i.e. once the pipeline's queue.submit has flushed.
+    await Promise.all([
+      colorReadback.mapAsync(GPUMapMode.READ),
+      albedoReadback.mapAsync(GPUMapMode.READ),
+      normalReadback.mapAsync(GPUMapMode.READ),
+    ]);
 
-      const color = rgba16fBufferToRgbF32(
-        colorReadback.getMappedRange().slice(0), bytesPerRow, W, H,
-      );
-      const albedo = rgba16fBufferToRgbF32(
-        albedoReadback.getMappedRange().slice(0), bytesPerRow, W, H,
-      );
-      // gNormalDepth packs normals as xyz*0.5+0.5 in rgb; decode back to [-1,1].
-      const normal = rgba16fBufferToRgbF32(
-        normalReadback.getMappedRange().slice(0), bytesPerRow, W, H,
-        (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
-      );
+    const color  = rgba16fBufferToRgbF32(colorReadback.getMappedRange().slice(0), bytesPerRow, W, H);
+    const albedo = rgba16fBufferToRgbF32(albedoReadback.getMappedRange().slice(0), bytesPerRow, W, H);
+    // gNormalDepth packs normals as xyz*0.5+0.5 in rgb; decode back to [-1,1].
+    const normal = rgba16fBufferToRgbF32(
+      normalReadback.getMappedRange().slice(0), bytesPerRow, W, H,
+      (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
+    );
 
-      // Unmap before the await so the buffers don't block destruction
-      // if the OIDN run takes a while.
-      colorReadback.unmap();
-      albedoReadback.unmap();
-      normalReadback.unmap();
+    // Unmap before the caller awaits OIDN inference so the buffers don't
+    // block destruction if the inference run takes a while.
+    colorReadback.unmap();
+    albedoReadback.unmap();
+    normalReadback.unmap();
 
-      const inputs: OIDNDenoiseInputs = {
-        color,
-        albedo,
-        normal,
-        width: W,
-        height: H,
-      };
-      const denoised = await denoiseFinal(inputs, {
-        modelUrl: this._modelUrl,
-        ...(this._executionProviders !== undefined
-          ? { executionProviders: this._executionProviders }
-          : {}),
-      });
+    return { color, albedo, normal };
+  }
 
-      if (this._disposed || !this._denoisedOutputTexture) return;
-      // Abort if resize() was called while we were awaiting — the output
-      // texture is now a different size, so writing W×H into it is wrong.
-      if (this._resizeGeneration !== dispatchGeneration) return;
-
-      // Pad RGB → RGBA16F and upload back to the owned output texture.
-      const { buffer, bytesPerRow: uploadBpr } = rgbF32ToRgba16fRowAligned(
-        denoised, W, H,
-      );
-      device.queue.writeTexture(
-        { texture: this._denoisedOutputTexture },
-        buffer,
-        { offset: 0, bytesPerRow: uploadBpr },
-        { width: W, height: H, depthOrArrayLayers: 1 },
-      );
-      this._haveDenoisedOutput = true;
-      this._lastFailureReason = null;
-    } catch (err) {
-      // Swallow + log. The stale output texture remains visible; the next
-      // dispatch will retry. Hosts can detect persistent failure by
-      // observing that `_haveDenoisedOutput` never flips true (no public
-      // surface for this yet — W11 follow-up could expose a status hook).
-      this._lastFailureReason = `OIDN inference cycle failed: ${errorReason(err)}`;
-      this._lastFailureRetryable = true;
-      console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
-    } finally {
-      // Release the readback buffers — they're transient per-cycle.
-      try { colorReadback.destroy(); } catch { /* already destroyed */ }
-      try { albedoReadback.destroy(); } catch { /* already destroyed */ }
-      try { normalReadback.destroy(); } catch { /* already destroyed */ }
-    }
+  /**
+   * Stage 3 — Pad the denoised Float32 RGB result to rgba16float and
+   * upload it to the owned `_denoisedOutputTexture` via `queue.writeTexture`.
+   */
+  private _uploadResult(
+    device: GPUDevice,
+    denoised: Float32Array,
+    W: number,
+    H: number,
+  ): void {
+    const { buffer, bytesPerRow: uploadBpr } = rgbF32ToRgba16fRowAligned(denoised, W, H);
+    device.queue.writeTexture(
+      { texture: this._denoisedOutputTexture! },
+      buffer,
+      { offset: 0, bytesPerRow: uploadBpr },
+      { width: W, height: H, depthOrArrayLayers: 1 },
+    );
   }
 
   resize(width: number, height: number): void {

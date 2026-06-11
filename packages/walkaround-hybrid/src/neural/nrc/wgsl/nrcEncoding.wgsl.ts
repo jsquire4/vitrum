@@ -47,9 +47,13 @@ export interface NrcEncodeWgslOptions {
   oneBlobBins: number;
 }
 
-// Shared hash + trilinear + one-blob helpers. Kept as a separate emitter so the
-// forward and backward modules both include them without duplication.
-export function nrcEncodeHelpersWgsl(): string {
+// Hash + AABB-normalise helpers ONLY (no consts, no bindings, no one-blob).
+// Split out of nrcEncodeHelpersWgsl (D7.7) so the standalone encode-backward
+// kernel (nrcEncodeBackward.wgsl.ts) can compose the SAME definitions instead
+// of carrying eb*-prefixed duplicates. Binding-safe by construction: these two
+// functions reference no module-scope consts (NRC_MAX_*), no resource bindings,
+// and only function-scope values.
+export function nrcEncodeHashHelpersWgsl(): string {
   return /* wgsl */`
 // Instant-NGP spatial hash (Müller 2022 §3 Eq.4). u32 wraparound matches the
 // CPU oracle's Math.imul / >>>0 emulation exactly.
@@ -65,7 +69,18 @@ fn nrcNormalizeToAabb(pos: vec3f, aabbMin: vec3f, aabbMax: vec3f) -> vec3f {
   let safeExt = max(ext, vec3f(1e-20));
   return clamp((pos - aabbMin) / safeExt, vec3f(0.0), vec3f(1.0));
 }
+`;
+}
 
+// Shared hash + trilinear + one-blob helpers. Kept as a separate emitter so the
+// forward and backward modules both include them without duplication. The
+// concatenation below is byte-identical to the pre-split single template
+// (pinned by nrcEncoding.test.ts + the shader-gate's composed risGiNrc compile).
+// NOTE: nrcOneBlobScalar references the module-scope const NRC_MAX_BLOB, which
+// the COMPOSING pass must emit — that is why the encode-backward kernel composes
+// only nrcEncodeHashHelpersWgsl().
+export function nrcEncodeHelpersWgsl(): string {
+  return nrcEncodeHashHelpersWgsl() + /* wgsl */`
 // One-blob encode one scalar u∈[0,1] into k Gaussian bins, L1-normalised
 // (Müller 2019 §4.3). Writes to out[base + 0 .. base + k-1].
 fn nrcOneBlobScalar(out: ptr<function, array<f32, NRC_MAX_BLOB>>, base: u32, u: f32, k: u32, sigma: f32) {
@@ -95,6 +110,14 @@ fn nrcOneBlobScalar(out: ptr<function, array<f32, NRC_MAX_BLOB>>, base: u32, u: 
  * Layout of `tables` (storage, read): all levels' feature tables concatenated
  * by `levelTableOffset[l]` (in FEATURE-scalar units), row-major [row × F].
  */
+// MUST-MATCH (D7.7): the emitted `nrcHashLevelForward` below carries the
+// 8-corner trilinear loop (i0/frac/wx·wy·wz/hash-row), mirrored at
+//   • nrcQuery.wgsl.ts          nrcHashLevelForwardInline (inline gi-ris forward)
+//   • nrcEncodeBackward.wgsl.ts inlined scatter in nrcEncodeBackward (backward)
+//   • nrcEncoding.ts            trilinearCorners/hashGridForward (CPU oracle)
+// Change one → change ALL FOUR; the tests pin each against the CPU oracle.
+// (WGSL forbids a shared helper taking the tables/grad storage buffer by
+// pointer, so the loop cannot be deduplicated across these emitters.)
 export function nrcHashGridForwardWgsl(_o: NrcEncodeWgslOptions): string {
   return /* wgsl */`
 struct NrcLevelDesc {

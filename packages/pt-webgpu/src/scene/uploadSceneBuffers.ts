@@ -192,6 +192,17 @@ export interface UploadedSceneBuffers extends PackedSceneData {
 
 export type { PrimitiveTlasBinding };
 
+/**
+ * Write `data` into `buffer` when non-empty (shared by all four upload-variant
+ * functions — hoisted from the identical local closures that previously lived in
+ * each one separately).
+ */
+function writeBufferIfNonEmpty(buffer: GPUBuffer, data: ArrayBufferView, device: GPUDevice): void {
+  if (data.byteLength > 0) {
+    device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+  }
+}
+
 function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBufferView): GPUBuffer {
   const minSize = data.byteLength === 0 ? 16 : data.byteLength;
   const buffer = device.createBuffer({
@@ -558,22 +569,17 @@ export function uploadScenePackGeometry(
   sb: UploadedSceneBuffers,
   pack: ScenePackResult,
 ): void {
-  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
-    if (data.byteLength > 0) {
-      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
-    }
-  };
-  write(sb.positionsBuffer, pack.positions);
-  write(sb.normalsBuffer, pack.normals);
-  write(sb.uvsBuffer, pack.uvs);
-  write(sb.indicesBuffer, pack.indices);
-  write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
-  write(sb.bvhNodesBuffer, pack.bvhNodes);
-  write(sb.tlasNodesBuffer, pack.tlasNodes);
-  write(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices);
-  write(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots);
-  write(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal);
-  write(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld);
+  writeBufferIfNonEmpty(sb.positionsBuffer, pack.positions, device);
+  writeBufferIfNonEmpty(sb.normalsBuffer, pack.normals, device);
+  writeBufferIfNonEmpty(sb.uvsBuffer, pack.uvs, device);
+  writeBufferIfNonEmpty(sb.indicesBuffer, pack.indices, device);
+  writeBufferIfNonEmpty(sb.triMaterialIdsBuffer, pack.triMaterialIds, device);
+  writeBufferIfNonEmpty(sb.bvhNodesBuffer, pack.bvhNodes, device);
+  writeBufferIfNonEmpty(sb.tlasNodesBuffer, pack.tlasNodes, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices, device);
+  writeBufferIfNonEmpty(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld, device);
   sb.positions.set(pack.positions);
   sb.normals.set(pack.normals);
   sb.uvs.set(pack.uvs);
@@ -585,11 +591,7 @@ export function uploadScenePackGeometry(
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.tlasNodeCount = pack.tlasNodeCount;
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
-  mutable.triangleCount = pack.triangleCount;
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+  applyScenePackCounts(sb, pack);
 }
 
 /** C2 — upload BLAS concat buffers only (TLAS instance data unchanged). */
@@ -608,27 +610,19 @@ export function uploadScenePackBlasOnly(
     | 'primitiveTlasBindings'
   >,
 ): void {
-  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
-    if (data.byteLength > 0) {
-      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
-    }
-  };
-  write(sb.positionsBuffer, pack.positions);
-  write(sb.normalsBuffer, pack.normals);
-  write(sb.uvsBuffer, pack.uvs);
-  write(sb.indicesBuffer, pack.indices);
-  write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
-  write(sb.bvhNodesBuffer, pack.bvhNodes);
+  writeBufferIfNonEmpty(sb.positionsBuffer, pack.positions, device);
+  writeBufferIfNonEmpty(sb.normalsBuffer, pack.normals, device);
+  writeBufferIfNonEmpty(sb.uvsBuffer, pack.uvs, device);
+  writeBufferIfNonEmpty(sb.indicesBuffer, pack.indices, device);
+  writeBufferIfNonEmpty(sb.triMaterialIdsBuffer, pack.triMaterialIds, device);
+  writeBufferIfNonEmpty(sb.bvhNodesBuffer, pack.bvhNodes, device);
   sb.positions.set(pack.positions);
   sb.normals.set(pack.normals);
   sb.uvs.set(pack.uvs);
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
-  mutable.triangleCount = pack.triangleCount;
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+  applyScenePackCounts(sb, pack);
 }
 
 /**
@@ -693,7 +687,7 @@ export function uploadScenePackTlasRealloc(
   // Swap the new handles + CPU mirrors onto the (otherwise readonly) struct. The
   // `destroy` closure built in `uploadPackedScene` resolves these TLAS handles
   // off the struct at teardown-time, so no closure rewire is needed here.
-  const buffers = asMutableSceneBufferBuffers(sb);
+  const buffers = asMutableSceneBuffers(sb);
   buffers.tlasNodesBuffer = tlasNodesBuffer;
   buffers.tlasInstanceIndicesBuffer = tlasInstanceIndicesBuffer;
   buffers.tlasBlasRootsBuffer = tlasBlasRootsBuffer;
@@ -705,9 +699,7 @@ export function uploadScenePackTlasRealloc(
   buffers.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
   buffers.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
 
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.tlasNodeCount = pack.tlasNodeCount;
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+  applyScenePackCounts(sb, pack);
 }
 
 /**
@@ -742,57 +734,52 @@ export function uploadScenePackGeometryRealloc(
   sb.tlasInstanceWorldToLocalBuffer.destroy();
   sb.tlasInstanceLocalToWorldBuffer.destroy();
 
-  const blas = asMutableSceneBufferBlasHandles(sb);
-  blas.positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', pack.positions);
-  blas.normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', pack.normals);
-  blas.uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', pack.uvs);
-  blas.indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', pack.indices);
-  blas.triMaterialIdsBuffer = createStorageBuffer(
+  const handles = asMutableSceneBuffers(sb);
+  handles.positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', pack.positions);
+  handles.normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', pack.normals);
+  handles.uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', pack.uvs);
+  handles.indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', pack.indices);
+  handles.triMaterialIdsBuffer = createStorageBuffer(
     device,
     'vitrum.pt-webgpu.scene.triMaterialIds',
     pack.triMaterialIds,
   );
-  blas.bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', pack.bvhNodes);
-  blas.positions = new Float32Array(pack.positions);
-  blas.normals = new Float32Array(pack.normals);
-  blas.uvs = new Float32Array(pack.uvs);
-  blas.indices = new Uint32Array(pack.indices);
-  blas.triMaterialIds = new Uint32Array(pack.triMaterialIds);
-  blas.bvhNodes = new Float32Array(pack.bvhNodes);
+  handles.bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', pack.bvhNodes);
+  handles.positions = new Float32Array(pack.positions);
+  handles.normals = new Float32Array(pack.normals);
+  handles.uvs = new Float32Array(pack.uvs);
+  handles.indices = new Uint32Array(pack.indices);
+  handles.triMaterialIds = new Uint32Array(pack.triMaterialIds);
+  handles.bvhNodes = new Float32Array(pack.bvhNodes);
 
-  const tlas = asMutableSceneBufferBuffers(sb);
-  tlas.tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', pack.tlasNodes);
-  tlas.tlasInstanceIndicesBuffer = createStorageBuffer(
+  handles.tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', pack.tlasNodes);
+  handles.tlasInstanceIndicesBuffer = createStorageBuffer(
     device,
     'vitrum.pt-webgpu.scene.tlasInstanceIndices',
     pack.tlasInstanceIndices,
   );
-  tlas.tlasBlasRootsBuffer = createStorageBuffer(
+  handles.tlasBlasRootsBuffer = createStorageBuffer(
     device,
     'vitrum.pt-webgpu.scene.tlasBlasRoots',
     pack.tlasBlasRoots,
   );
-  tlas.tlasInstanceWorldToLocalBuffer = createStorageBuffer(
+  handles.tlasInstanceWorldToLocalBuffer = createStorageBuffer(
     device,
     'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal',
     pack.tlasInstanceWorldToLocal,
   );
-  tlas.tlasInstanceLocalToWorldBuffer = createStorageBuffer(
+  handles.tlasInstanceLocalToWorldBuffer = createStorageBuffer(
     device,
     'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld',
     pack.tlasInstanceLocalToWorld,
   );
-  tlas.tlasNodes = new Uint32Array(pack.tlasNodes);
-  tlas.tlasInstanceIndices = new Uint32Array(pack.tlasInstanceIndices);
-  tlas.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
-  tlas.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
-  tlas.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
+  handles.tlasNodes = new Uint32Array(pack.tlasNodes);
+  handles.tlasInstanceIndices = new Uint32Array(pack.tlasInstanceIndices);
+  handles.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
+  handles.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
+  handles.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
 
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
-  mutable.triangleCount = pack.triangleCount;
-  mutable.tlasNodeCount = pack.tlasNodeCount;
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+  applyScenePackCounts(sb, pack);
 }
 
 /** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
@@ -810,82 +797,46 @@ export function uploadScenePackTlasOnly(
     | 'primitiveTlasBindings'
   >,
 ): void {
-  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
-    if (data.byteLength > 0) {
-      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
-    }
-  };
-  write(sb.tlasNodesBuffer, pack.tlasNodes);
-  write(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices);
-  write(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots);
-  write(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal);
-  write(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld);
+  writeBufferIfNonEmpty(sb.tlasNodesBuffer, pack.tlasNodes, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices, device);
+  writeBufferIfNonEmpty(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal, device);
+  writeBufferIfNonEmpty(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld, device);
   sb.tlasNodes.set(pack.tlasNodes);
   sb.tlasInstanceIndices.set(pack.tlasInstanceIndices);
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.tlasNodeCount = pack.tlasNodeCount;
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+  applyScenePackCounts(sb, pack);
 }
 
 /**
- * Typed mutators for the (otherwise `readonly`) derived count / lighting /
- * environment fields on {@link UploadedSceneBuffers}. The CPU-side mirror of an
- * `UploadedSceneBuffers` is logically immutable except for these fields, which
- * the incremental `updateEmitter` / `updateEnvironment` fast paths rewrite in
- * place after a partial GPU upload. Centralizing the structural
- * `as unknown as { … }` casts here (instead of scattering them across `index.ts`
- * and the geometry/BLAS/TLAS uploaders) keeps the unsafe surface in one typed
- * place. Behavior-preserving.
+ * `MutableSceneBuffers` — the SINGLE mutable view onto an otherwise-readonly
+ * {@link UploadedSceneBuffers}. It unions all four field sets that the incremental
+ * fast paths need to rewrite:
+ *
+ *   - Geometry-pack derived counts (BLAS / TLAS uploads).
+ *   - TLAS GPU buffer handles + CPU mirrors (realloc'd on instance-count change).
+ *   - BLAS GPU buffer handles + CPU mirrors (realloc'd on vertex/index-count change).
+ *   - Emitter buffer handles + CPU mirrors (realloc'd when emitter arrays grow/shrink).
+ *   - Emitter counts + directional aggregate (incremental emitter patches).
+ *   - Environment fields (incremental environment patches).
+ *   - Light-tree state + buffer handle (rebuilt after emitter/environment patches).
+ *
+ * Having ONE interface + ONE cast function (`asMutableSceneBuffers`) is the single
+ * unsafe-cast surface. The former four separate interfaces
+ * (`MutableSceneBufferFields`, `MutableTlasBufferHandles`, `MutableEmitterBufferHandles`,
+ * `MutableBlasBufferHandles`) and their four cast functions have been merged here
+ * to eliminate the scattered `as unknown as { … }` sites. Behavior-preserving.
  */
-interface MutableSceneBufferFields {
-  // Geometry-pack derived counts (BLAS / TLAS uploads).
+interface MutableSceneBuffers {
+  // ── Geometry-pack derived counts ─────────────────────────────────────────
   bvhNodeCount: number;
   tlasNodeCount: number;
   triangleCount: number;
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
-  // Emitter counts + directional aggregate (updateEmitter fast path).
-  directionalLightCount: number;
-  pointLightCount: number;
-  spotLightCount: number;
-  rectAreaLightCount: number;
-  meshAreaLightCount: number;
-  directionalLight: readonly [number, number, number];
-  directionalIrradiance: readonly [number, number, number];
-  /** D3 — Item 2d: angular diameter must be kept in sync on incremental emitter patches. */
-  directionalAngularDiameter: number;
-  // Environment fields (updateEnvironment fast path).
-  environmentTint: readonly [number, number, number];
-  environmentSunDirection: readonly [number, number, number];
-  environmentSunStrength: number;
-  environmentHdriIntensity: number;
-  environmentHdriRotationY: number;
-  environmentMapWidth: number;
-  environmentMapHeight: number;
-  hasEnvironmentMap: boolean;
-  // WS2 — light-tree state + buffer handle / CPU mirror (rebuilt on emitter /
-  // environment incremental patches; the buffer reallocates if the node count
-  // — hence its byte length — changes).
-  lightTreeNodeCount: number;
-  lightTreeEnabled: boolean;
-  lightTreeNodes: Float32Array;
-  lightTreeBuffer: GPUBuffer;
-}
 
-/** Single typed view onto the mutable subset of an UploadedSceneBuffers. */
-function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBufferFields {
-  return sb;
-}
-
-/**
- * The five TLAS GPU buffer handles + their CPU-mirror typed arrays, normally
- * `readonly`, are reassigned in place by {@link uploadScenePackTlasRealloc} when
- * an instanced-mesh instance count changes (the buffers must be reallocated at
- * the new size). This single typed view localizes that one unsafe write site.
- */
-interface MutableTlasBufferHandles {
+  // ── TLAS GPU handles + CPU mirrors (realloc'd on instance-count change) ──
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -896,41 +847,8 @@ interface MutableTlasBufferHandles {
   tlasBlasRoots: Uint32Array;
   tlasInstanceWorldToLocal: Float32Array;
   tlasInstanceLocalToWorld: Float32Array;
-}
 
-function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBufferHandles {
-  return sb;
-}
-
-/**
- * Light-buffer handles + CPU mirrors are reassigned by the incremental
- * updateEmitter path when dynamic emitter expansion changes byte lengths.
- */
-interface MutableEmitterBufferHandles {
-  directionalLightsBuffer: GPUBuffer;
-  pointLightsBuffer: GPUBuffer;
-  spotLightsBuffer: GPUBuffer;
-  rectAreaLightsBuffer: GPUBuffer;
-  meshAreaLightsBuffer: GPUBuffer;
-  directionalLightsData: Float32Array;
-  pointLightsData: Float32Array;
-  spotLightsData: Float32Array;
-  rectAreaLightsData: Float32Array;
-  meshAreaLightsData: Float32Array;
-}
-
-function asMutableSceneBufferEmitterHandles(sb: UploadedSceneBuffers): MutableEmitterBufferHandles {
-  return sb;
-}
-
-/**
- * The five BLAS GPU buffer handles + their CPU-mirror typed arrays, normally
- * `readonly`, are reassigned in place by {@link uploadScenePackGeometryRealloc}
- * when a mesh vertex/index count changes (the concat buffers grow/shrink, so the
- * buffers must be reallocated at the new size). This single typed view localizes
- * that one unsafe write site, mirroring {@link MutableTlasBufferHandles}.
- */
-interface MutableBlasBufferHandles {
+  // ── BLAS GPU handles + CPU mirrors (realloc'd on vertex/index-count change)
   positionsBuffer: GPUBuffer;
   normalsBuffer: GPUBuffer;
   uvsBuffer: GPUBuffer;
@@ -943,10 +861,87 @@ interface MutableBlasBufferHandles {
   indices: Uint32Array;
   triMaterialIds: Uint32Array;
   bvhNodes: Float32Array;
+
+  // ── Emitter buffer handles + CPU mirrors (realloc'd on array-size change) ─
+  directionalLightsBuffer: GPUBuffer;
+  pointLightsBuffer: GPUBuffer;
+  spotLightsBuffer: GPUBuffer;
+  rectAreaLightsBuffer: GPUBuffer;
+  meshAreaLightsBuffer: GPUBuffer;
+  directionalLightsData: Float32Array;
+  pointLightsData: Float32Array;
+  spotLightsData: Float32Array;
+  rectAreaLightsData: Float32Array;
+  meshAreaLightsData: Float32Array;
+
+  // ── Emitter counts + directional aggregate (incremental emitter patches) ──
+  directionalLightCount: number;
+  pointLightCount: number;
+  spotLightCount: number;
+  rectAreaLightCount: number;
+  meshAreaLightCount: number;
+  directionalLight: readonly [number, number, number];
+  directionalIrradiance: readonly [number, number, number];
+  /** D3 — Item 2d: angular diameter must be kept in sync on incremental emitter patches. */
+  directionalAngularDiameter: number;
+
+  // ── Environment fields (incremental environment patches) ─────────────────
+  environmentTint: readonly [number, number, number];
+  environmentSunDirection: readonly [number, number, number];
+  environmentSunStrength: number;
+  environmentHdriIntensity: number;
+  environmentHdriRotationY: number;
+  environmentMapWidth: number;
+  environmentMapHeight: number;
+  hasEnvironmentMap: boolean;
+
+  // ── Light-tree state + buffer handle (rebuilt on emitter/env patches) ─────
+  lightTreeNodeCount: number;
+  lightTreeEnabled: boolean;
+  lightTreeNodes: Float32Array;
+  lightTreeBuffer: GPUBuffer;
 }
 
-function asMutableSceneBufferBlasHandles(sb: UploadedSceneBuffers): MutableBlasBufferHandles {
-  return sb;
+/**
+ * Single unsafe-cast entry point for all in-place mutations of an
+ * {@link UploadedSceneBuffers}. All incremental fast paths (geometry realloc,
+ * TLAS realloc, emitter patch, environment patch, light-tree rebuild) go through
+ * this one function instead of four separate typed-cast helpers.
+ */
+function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBuffers {
+  return sb as unknown as MutableSceneBuffers;
+}
+
+/**
+ * Apply geometry-pack derived count fields onto `sb` from `pack`. Extracted from
+ * the repeated tail blocks in all four upload-variant functions; each variant
+ * only supplies the fields it recomputes.
+ *
+ * - `bvhNodes` present → updates `bvhNodeCount` (BLAS uploads).
+ * - `triangleCount` present → updates `triangleCount` (BLAS uploads).
+ * - `tlasNodeCount` present → updates `tlasNodeCount` (TLAS uploads).
+ * - `primitiveTlasBindings` always required (every upload variant refreshes it).
+ */
+function applyScenePackCounts(
+  sb: UploadedSceneBuffers,
+  pack: {
+    readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+    readonly bvhNodes?: Float32Array;
+    readonly triangleCount?: number;
+    readonly tlasNodeCount?: number;
+  },
+): void {
+  const mutable = asMutableSceneBuffers(sb);
+  if (pack.bvhNodes !== undefined) {
+    mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
+  }
+  if (pack.triangleCount !== undefined) {
+    mutable.triangleCount = pack.triangleCount;
+  }
+  if (pack.tlasNodeCount !== undefined) {
+    mutable.tlasNodeCount = pack.tlasNodeCount;
+  }
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
 /** Rewrite emitter counts + directional aggregate after an in-place light upload. */
@@ -1019,7 +1014,7 @@ export function uploadEmitterArrays(
     readonly directionalAngularDiameter?: number;
   },
 ): boolean {
-  const handles = asMutableSceneBufferEmitterHandles(sb);
+  const handles = asMutableSceneBuffers(sb);
   let reallocated = false;
   reallocated = uploadOrReallocateEmitterBuffer(
     device,

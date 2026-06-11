@@ -194,6 +194,24 @@ export interface Denoiser {
    *  rejects disabled IDs at validation time. Reserved for W10
    *  (neural) and W11 (oidn-final) before those workstreams ship. */
   readonly disabled?: boolean;
+
+  /**
+   * D3.4 — Welford variance ping-pong index at the START of the current
+   * frame (before this frame's dispatch() flips it).
+   *
+   * Only meaningful for the `atrous-variance` denoiser, which maintains a
+   * ping-pong pair of variance buffers. The orchestrator reads this so
+   * `SampleBudgetPass` can bind the freshest variance side without an
+   * `instanceof AtrousVarianceDenoiser` cast.
+   *
+   *   welfordPing === 0 → freshest data is in `varianceBuffer`
+   *   welfordPing === 1 → freshest data is in `varianceBufferAux`
+   *
+   * Returns `undefined` for all other denoisers (no Welford ping-pong).
+   * The orchestrator falls back to `0` when `undefined`, matching the
+   * pre-D3.4 behaviour for non-Welford denoisers.
+   */
+  readonly welfordPing?: number;
 }
 
 export class DenoiserRegistry {

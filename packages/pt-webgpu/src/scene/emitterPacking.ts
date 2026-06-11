@@ -341,6 +341,69 @@ function packMeshAreaTriangles(
   return packed;
 }
 
+/**
+ * Luminance threshold for implicit mesh-area emitter synthesis (H14-A).
+ * A material must have `luminance(emissive · emissiveIntensity) ≥ IMPLICIT_EMITTER_THRESHOLD`
+ * to be treated as an area light by NEE/BDPT. The same constant is used by both
+ * `packEmitterArrays` (synthesis) and `hasMeshAreaEmitterForPrimitive` (staleness
+ * check), so the threshold cannot drift between the two paths.
+ */
+export const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
+
+/**
+ * H14-A — Synthesize implicit mesh-area emitters for every mesh-like primitive
+ * whose material has non-zero emissive energy (luminance ≥
+ * {@link IMPLICIT_EMITTER_LUMINANCE_THRESHOLD}) AND that has NO explicit
+ * `mesh-area` emitter already referencing it.
+ *
+ * Without this synthesis, an emissive mesh is invisible to NEE/BDPT — the
+ * kernel's emissive-on-hit term fires, but the direct-lighting estimators never
+ * enumerate it. The synthetic emitters are virtual (id = `__implicit__<primitiveId>`)
+ * and carry the material's emissive radiance as `color · intensity = 1`.
+ *
+ * Guard: explicit mesh-area emitters take priority — if a `mesh-area` entry in
+ * `scene.emitters` already references a primitive, that primitive is skipped to
+ * prevent double-counting. Disc-area emitters are packed natively into the rect
+ * stream and do NOT generate mesh-area triangles, so they are not excluded here.
+ *
+ * This function is the single source of truth for the implicit-emitter synthesis
+ * logic and is reused by `hasMeshAreaEmitterForPrimitive` to avoid duplicating
+ * the threshold check.
+ */
+export function synthesizeImplicitEmitters(
+  scene: Scene,
+  /** When set, only consider this primitive id (early-exit fast path for the
+   *  `hasMeshAreaEmitterForPrimitive` staleness predicate). */
+  onlyPrimitiveId?: string,
+): Extract<Scene['emitters'][number], { kind: 'mesh-area' }>[] {
+  const explicitMeshAreaIds = new Set<string>(
+    scene.emitters
+      .filter((e) => e.kind === 'mesh-area')
+      .map((e) => (e as { meshId?: string }).meshId ?? '')
+      .filter(Boolean),
+  );
+  const result: Extract<Scene['emitters'][number], { kind: 'mesh-area' }>[] = [];
+  for (const primitive of scene.primitives) {
+    if (onlyPrimitiveId !== undefined && primitive.id !== onlyPrimitiveId) continue;
+    if (primitive.kind === 'analytic') continue;
+    if (explicitMeshAreaIds.has(primitive.id)) continue;
+    const em = primitive.material.emissive ?? [0, 0, 0];
+    const ei = primitive.material.emissiveIntensity ?? 1;
+    const emR = em[0] * ei;
+    const emG = em[1] * ei;
+    const emB = em[2] * ei;
+    if (luminance(emR, emG, emB) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) continue;
+    result.push({
+      kind: 'mesh-area',
+      id: `__implicit__${primitive.id}`,
+      meshId: primitive.id,
+      color: [emR, emG, emB],
+      intensity: 1,
+    });
+  }
+  return result;
+}
+
 export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   const warnings: string[] = [];
 
@@ -478,42 +541,10 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     meshAreaTriangles.push(...packMeshAreaTriangles(emitter, scene, warnings));
   }
 
-  // H14-A: synthesize an implicit mesh-area emitter for every mesh-like primitive
-  // whose material has non-zero emissive energy (luminance > 0) AND that has NO
-  // explicit `mesh-area` emitter already pointing to it. Without this synthesis,
-  // the emissive primitive is invisible to NEE/BDPT because the light loops never
-  // enumerate it — the kernel's emissive-on-hit term fires, but there's no sampled
-  // contribution from direct-lighting estimators.
-  //
-  // Guard: explicit emitters take priority — if a `mesh-area` emitter already
-  // references this primitive we skip it (no double-counting). Disc-area emitters
-  // that were lowered above are also excluded.
-  // disc-area emitters are now packed natively into the rect stream (no longer
-  // lowered into mesh-area triangles), so only mesh-area emitters are excluded here.
-  const explicitMeshAreaIds = new Set<string>(
-    scene.emitters
-      .filter((e) => e.kind === 'mesh-area')
-      .map((e) => (e as { meshId?: string }).meshId ?? '')
-      .filter(Boolean),
-  );
-  for (const primitive of scene.primitives) {
-    if (primitive.kind === 'analytic') continue;
-    if (explicitMeshAreaIds.has(primitive.id)) continue;
-    const em = primitive.material.emissive ?? [0, 0, 0];
-    const ei = primitive.material.emissiveIntensity ?? 1;
-    const emR = em[0] * ei;
-    const emG = em[1] * ei;
-    const emB = em[2] * ei;
-    if (luminance(emR, emG, emB) < 1e-6) continue;
-    // Synthesize a virtual mesh-area emitter carrying the material's emissive radiance.
-    const syntheticEmitter: Extract<Scene['emitters'][number], { kind: 'mesh-area' }> = {
-      kind: 'mesh-area',
-      id: `__implicit__${primitive.id}`,
-      meshId: primitive.id,
-      color: [emR, emG, emB],
-      intensity: 1,
-    };
-    meshAreaTriangles.push(...packMeshAreaTriangles(syntheticEmitter, scene, warnings));
+  // H14-A: synthesize implicit mesh-area emitters and pack their triangles.
+  // See `synthesizeImplicitEmitters` for the synthesis contract.
+  for (const synthetic of synthesizeImplicitEmitters(scene)) {
+    meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
   }
 
   // Mesh-area NEE cap: cap the total triangle count to MESH_AREA_LIGHT_TRI_CAP.
@@ -614,19 +645,11 @@ export function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string
     const meshId = (e as { meshId?: string }).meshId;
     if (meshId === primitiveId) return true;
   }
-  // Item 2b — also check for implicit emitters: a non-analytic primitive with
-  // non-zero emissive luminance synthesizes `__implicit__<id>` at pack time.
-  // Only check when the primitive has no explicit mesh-area emitter (already
-  // handled above) to avoid double-counting.
-  const primitive = scene.primitives.find((p) => p.id === primitiveId);
-  if (primitive != null && primitive.kind !== 'analytic') {
-    const em = primitive.material.emissive ?? [0, 0, 0];
-    const ei = primitive.material.emissiveIntensity ?? 1;
-    if (luminance(em[0] * ei, em[1] * ei, em[2] * ei) >= 1e-6) {
-      return true;
-    }
-  }
-  return false;
+  // Item 2b — also check for implicit emitters synthesized at pack time.
+  // `synthesizeImplicitEmitters` is the single source of the threshold check
+  // (IMPLICIT_EMITTER_LUMINANCE_THRESHOLD), so the staleness predicate here
+  // cannot drift from the synthesis path in `packEmitterArrays`.
+  return synthesizeImplicitEmitters(scene, primitiveId).length > 0;
 }
 
 /** The core positional area-emitter kinds (carry a finite area for the power term). */
@@ -707,7 +730,23 @@ export interface EnvSummaryForTree {
  * potentially-expensive HDRI/sky bake a second time for the same scene):
  *   - `packed`: result of a prior `packEmitterArrays(scene)` call.
  *   - `envSummary`: narrow env metadata derived from a prior `environmentParams(scene)`.
- * Both are verified to be passed from the SAME scene to preserve byte-identity.
+ * Both are assumed to come from the SAME scene to preserve byte-identity.
+ *
+ * Callers (all within `@vitrum/pt-webgpu` — not exported to external packages):
+ *   - `buildPackedScene` (uploadSceneBuffers.ts): always passes both `packed` and
+ *     `envSummary` from the same-scene results already computed above it.
+ *   - `rebuildLightTreeForScene` (uploadSceneBuffers.ts): forwards its own optional
+ *     `precomputed` parameter; callers supply it when available.
+ *   - `sceneMutationRouter.ts` (via `rebuildLightTreeForScene`): passes `packed`
+ *     and/or `envSummary` from already-computed incremental update results.
+ *   - Test files (`lightTreeImportance`, `scenePack.emitters`, `nDirectionalPacking`,
+ *     `packingNoDoubleWork`): legitimately omit `precomputed` — they exercise the
+ *     internal recompute path for correctness verification.
+ *
+ * Because test callers legitimately omit `precomputed`, the parameter MUST remain
+ * optional. No `console.warn` is appropriate here — omitting precomputed is valid
+ * and intentional for tests and for incremental callers that don't hold stale
+ * intermediate results.
  */
 export function buildLightTreeInputForScene(
   scene: Scene,

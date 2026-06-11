@@ -83,8 +83,12 @@ export interface PTEngineWebGL2Surface {
  * against the fork on a real-GPU WebGL2 capture host (plan 06 — the one external gate).
  */
 class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
+  // ── Device + lifecycle ────────────────────────────────────────────────────
   readonly #slot: StateSlot;
   readonly #gl: WebGL2RenderingContext;
+  readonly #gpu: GlResources;
+
+  // ── Rendering config ──────────────────────────────────────────────────────
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
   readonly #causticStrategy: EngineCapabilities['causticStrategy'];
@@ -93,13 +97,14 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
   readonly #backgroundAlpha: number;
-  readonly #cameraType: 0 | 1 | 2;
-  readonly #dof: PTEngineWebGL2Options['dof'];
+  readonly #regime: AccumRegime;
   // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
-  readonly #regime: AccumRegime;
-  readonly #gpu: GlResources;
+
+  // ── Camera + optics ───────────────────────────────────────────────────────
+  readonly #cameraType: 0 | 1 | 2;
+  readonly #dof: PTEngineWebGL2Options['dof'];
 
   // ── Context-loss state ─────────────────────────────────────────────────────
   // `#contextLost` is set to true on `webglcontextlost` (before the user-space
@@ -111,12 +116,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #onContextLost: (e: Event) => void;
   readonly #onContextRestored: () => void;
 
+  // ── Scene state ───────────────────────────────────────────────────────────
   #scene: Scene | null = null;
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
   #samplesAccumulated = 0;
   /** Last-frame input retained for the debug click-to-pick surface (T3.G #30). */
   #lastFrameInput: FrameInput | null = null;
+
+  // ── Subscriptions ─────────────────────────────────────────────────────────
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
   #onErrorSubs = new Set<(e: EngineError) => void>();
@@ -146,15 +154,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#dof = opts.cameraType === 'equirectangular' ? undefined : opts.dof;
     this.#traceTier = traceTier;
     this.#supportsAuxBuffers = traceTier === 'full';
-    // Additive HDR accumulation needs EXT_float_blend; otherwise the alpha-composite
-    // ping-pong regime is the unbiased fallback (plan 02 §3). A transparent
-    // background (backgroundAlpha < 1) ALSO forces alpha-composite — the 'normal'
-    // SRC_ALPHA running-average blend cannot composite partial background coverage
-    // (mirrors the fork's `needsAlphaComposite = bgAlpha !== 1 || !floatBlend`).
-    this.#regime =
-      probeGlCaps(opts.device).floatBlend && this.#backgroundAlpha === 1
-        ? 'normal'
-        : 'alpha-composite';
+    this.#regime = PTEngineWebGL2.#resolveRegime(opts.device, this.#backgroundAlpha);
     this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
 
     // ── Context-loss listeners ────────────────────────────────────────────────
@@ -389,10 +389,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    * scene radiance units). Requires EXT_color_buffer_float (enforced at engine
    * creation; always present when the engine is alive).
    *
-   * `colorSpace:'output'` reads the RGBA32F present FBO — the tonemapped output
-   * written by the present pass (tonemap + optional OETF). The present FBO uses
-   * RGBA32F (not RGBA8) so readPixels uses the same FLOAT path without a format
-   * change.
+   * `colorSpace:'output'` reads the RGBA8 present FBO — the tonemapped output
+   * written by the present pass (tonemap + optional OETF). The present FBO is
+   * RGBA8 (display-referred; D10.11), so readPixels uses the UNSIGNED_BYTE path
+   * and values are normalised to [0,1] floats (/255) for the CapturedFrame
+   * contract.
    *
    * Returns `null` before the first frame (FBO not yet allocated).
    * Synchronous (WebGL readPixels is always synchronous — no async stall). Wraps
@@ -557,6 +558,22 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // pt-webgl2 does not have a per-frame denoiser pipeline; always report 'disabled'.
     for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples, denoiserState: { status: 'disabled', reason: null } });
     return out;
+  }
+
+  /**
+   * D10.13: Determine the accumulation regime from the device capabilities and
+   * the configured background alpha.
+   *
+   * Additive HDR accumulation (`'normal'`) requires `EXT_float_blend`; otherwise the
+   * alpha-composite ping-pong regime is the unbiased fallback (plan 02 §3). A
+   * transparent background (`backgroundAlpha < 1`) ALSO forces `'alpha-composite'` —
+   * the `SRC_ALPHA` running-average blend cannot composite partial background coverage
+   * (mirrors the fork's `needsAlphaComposite = bgAlpha !== 1 || !floatBlend`).
+   */
+  static #resolveRegime(device: WebGL2RenderingContext, backgroundAlpha: number): AccumRegime {
+    return probeGlCaps(device).floatBlend && backgroundAlpha === 1
+      ? 'normal'
+      : 'alpha-composite';
   }
 
   #guardLive(method: string): void {

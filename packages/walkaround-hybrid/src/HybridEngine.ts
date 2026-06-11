@@ -56,8 +56,12 @@ import type { BackendTexture } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
-import { packStainedGlassFlags } from './pipeline/uboUpdater.js';
+import {
+  parseHybridEngineOptions,
+  validateHybridEngineOptions,
+  deriveHybridEngineConfig,
+  type ParsedHybridEngineConfig,
+} from './HybridEngineConfig.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import type { PickCamera } from '@vitrum/shared-bvh';
 import {
@@ -65,6 +69,7 @@ import {
   getPreferredSwapChainFormat,
   resolveInternalRenderSize,
   runHybridEngineFrame,
+  HYBRID_FRAME_SKIP_OUTPUT,
   type HybridEngineFrameDeps,
   type HybridLightingDeps,
   type HybridDenoiserFilterDeps,
@@ -82,11 +87,7 @@ import {
   packEmitterTrisForDDGI,
 } from './restir/bvhSceneHelpers.js';
 import { solveSkin } from '@vitrum/core';
-import {
-  alignedTextureCopyBytesPerRow,
-  float16BitsToFloat32,
-} from '@vitrum/shared-denoisers';
-import type { ModelWeights } from './neural/weights.js';
+import { readRgba16fWalkaround } from './util/gpuReadback.js';
 import {
   transformRefit,
   positionsRefit,
@@ -104,12 +105,11 @@ import {
   type PipelineInitHost,
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
-import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
+import type { Tunables, InitTunables } from './HybridEngineTuning.js';
 import {
   deriveScaleAwareClamps,
   type ScaleAwareHostExplicit,
 } from './HybridEngineScaleAwareClamps.js';
-import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import { FrameBudgetController } from './FrameBudgetController.js';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
@@ -129,6 +129,11 @@ import {
   resolveHybridEnvironment,
   type HybridEnvironmentResolverExtensions,
 } from './environment/resolveHybridEnvironment.js';
+import {
+  exportGIStateImpl,
+  importGIStateImpl,
+} from './HybridEngineGIState.js';
+import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
 
 function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
   let changed = false;
@@ -145,427 +150,25 @@ function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
 // unchanged after the type split (refactor sweep 2026-05-18).
 export type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 
-/** Default per-frame target interval (~60 FPS soft-cap). */
-const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
-
+// ────────────────────────────────────────────────────────────────────────────
+// Option parsing + validation
+//
+// `ParsedHybridEngineConfig`, `validateHybridEngineOptions`,
+// `deriveHybridEngineConfig`, and `parseHybridEngineOptions` have been moved to
+// `HybridEngineConfig.ts` (R3 B-chain decomposition sweep). Re-imported above.
+//
 // `HybridEngineOptions` + `LightingOptions` interface bodies live in
 // `HybridEngineOptions.ts` (~340 LOC of pure JSDoc, extracted refactor sweep
 // 2026-05-18). Re-exported above so the package surface is unchanged.
-
-// ────────────────────────────────────────────────────────────────────────────
-// Option parsing + validation
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * The construction-time-immutable config the engine derives PURELY from its
- * options — no `this` dependency, no GPU side effects. Extracting the ~80 LOC
- * of defaulting + validation that produced these out of the constructor (WD
- * decomposition sweep) keeps the constructor focused on object wiring (DDGI /
- * RC subsystem creation, capabilities, init coordinator, debug surface) that
- * genuinely needs `this`.
- *
- * Behaviour-preserving: `parseHybridEngineOptions` throws the same three
- * `TypeError`s in the same order as the inline constructor did, and applies
- * the same defaults. The constructor assigns each field verbatim from the
- * returned record.
- */
-interface ParsedHybridEngineConfig {
-  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
-  readonly neuralWeights: ModelWeights | undefined;
-  readonly oidnModelUrl: string | undefined;
-  readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
-  readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
-  readonly targetFrameIntervalMs: number | null;
-  readonly tunables: Tunables;
-  readonly initTunables: InitTunables;
-  readonly indirectFireflyClamp: readonly [number, number, number];
-  readonly atrousDirectSigmas: readonly [number, number, number];
-  readonly atrousIndirectSigmas: readonly [number, number, number];
-  readonly stainedGlassFlags: number;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = off / legacy reuse,
-   *  1 = unbiased GRIS shift + visibility + pairwise MIS). The STRUCTURE is
-   *  COMPILE-TIME (the boolean selects the GI pipeline layout + shader variant
-   *  at init); this number is also threaded into the per-frame UBO. */
-  readonly restirPtReuse: number;
-  /** NRC (Müller et al. 2021) cache flag mirrored into the per-frame UBO
-   *  (0 = off / verbatim DDGI suffix, 1 = on). The load-bearing gate is
-   *  COMPILE-TIME: `nrcEnabled` selects the `risGiNrc` GI shader variant at
-   *  engine creation (a UBO flag alone can't add the @group(4) NRC bindings).
-   *  When ON, the suffix cache-query + per-frame training passes are live.
-   *  FORBIDDEN on tier:'lite'. */
-  readonly nrcEnabled: number;
-  /** PPG (Müller 2017) guided-sampling flag (0 = off, 1 = on). COMPILE-TIME
-   *  at the pipeline level: `ppgEnabled` builds the ppg-update pipeline and
-   *  drives the UBO gate; OFF is bit-identical to the cosine kernel.
-   *  FORBIDDEN on tier:'lite'. (G-P1.1 follow-up: opts.ppgEnabled used to be
-   *  read only by the lite-tier guard and never forwarded to the pipeline —
-   *  PPG was inert through the public API.) */
-  readonly ppgEnabled: number;
-  /** H47 — maximum PPG sTree spatial cells, threaded to `allocatePPGResources`.
-   *  `undefined` ⇒ use allocatePPGResources default (1 024). */
-  readonly ppgMaxSpatialCells: number | undefined;
-  /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
-   *  `false` by default (no preset ⇒ ultra ⇒ off); the `medium`/`low` presets
-   *  enable it, `ultra`/`high` keep it off. Threaded into
-   *  `pipeline.initialize({ checkerboard, checkerboardMotionThresholdSq })`; OFF
-   *  is bit-identical to the pre-checkerboard pipeline (shade + both spatial
-   *  passes + ris dispatch full-res and ResolvePass passes through).
-   *  GPU-validated on dzn — see WalkaroundGPUPipeline `_checkerboard`. */
-  readonly checkerboard: boolean;
-  readonly staticPipelineRebuildKey: string | number | null;
-  readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
-  readonly rebuildKeyFingerprintSeen: string;
-  readonly maxBounces: number;
-  readonly verbose: boolean;
-  readonly debug: boolean;
-  // ── Phase-0 productization — quality-preset-resolved knobs ───────────────
-  /** Resolved GTAO dispatch mode (preset, overridden by `opts.gtaoMode`). */
-  readonly gtaoMode: 'on' | 'quarter' | 'off';
-  /** Resolved ReSTIR-DI spatial pass count (preset, overridden by opts). */
-  readonly diSpatialPasses: 1 | 2;
-  /** Resolved ReSTIR-GI spatial pass count (preset, overridden by opts). */
-  readonly giSpatialPasses: 1 | 2;
-  /** Resolved DDGI round-robin probe-update divisor (preset, overridden by opts). */
-  readonly ddgiUpdateDivisor: number;
-  /** Resolved PPG train-pass dispatch cadence (preset, overridden by opts).
-   *  Threaded into `pipeline.initialize` so the ppg-update pass gates on
-   *  `frameCount % ppgDispatchInterval`. Always >= 1. */
-  readonly ppgDispatchInterval: number;
-  /** ReGIR (Boksansky 2021) grid-based DI light-selection config (pass-through
-   *  from opts; `undefined` ⇒ off). Threaded into `pipeline.initialize`. */
-  readonly regirConfig: Partial<import('./pipeline/ReGIRCoordinator.js').ReGIRConfig> | undefined;
-  /** Resolved initial internal-resolution factor (preset; per-frame
-   *  `quality.resolutionFactor` still overrides at runtime). */
-  readonly resolutionFactor: number;
-}
+// Unused import guard: `validateHybridEngineOptions` and `deriveHybridEngineConfig`
+// are exported by HybridEngineConfig.ts and re-exported from this file for
+// back-compat (any external caller that imported them from HybridEngine.ts directly).
+export { validateHybridEngineOptions, deriveHybridEngineConfig };
 
-/**
- * The extracted `extensions['walkaround-hybrid']` sub-object shape — read by
- * both {@link validateHybridEngineOptions} (oidnModelUrl presence) and
- * {@link deriveHybridEngineConfig} (oidnModelUrl / providers / bvhMode).
- */
-type WalkaroundHybridExt = {
-  oidnModelUrl?: string;
-  oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-  bvhMode?: 'merged' | 'tlas';
-};
-
-function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
-  return (opts.extensions as undefined | {
-    'walkaround-hybrid'?: WalkaroundHybridExt;
-  })?.['walkaround-hybrid'];
-}
-
-/**
- * Pure construction-time validation of `HybridEngineOptions` — throws the
- * three (well, six) `TypeError`s the constructor relies on, in the exact same
- * order as the pre-Theme-H inline path. No defaulting, no derived config, no
- * `this`, no GPU side effects: this is the independently-testable "does this
- * option object describe a buildable engine?" gate.
- *
- * Throw order (load-bearing — tests pin it):
- *   1. tier:'lite' forbids rcEnabled / ppgEnabled / denoiser:'neural' /
- *      nrcEnabled (lite validated FIRST so it is the host's first signal);
- *   2. unsupported denoiser enum;
- *   3. denoiser:'neural' without neuralWeights;
- *   4. denoiser:'oidn-final' without extensions['walkaround-hybrid'].oidnModelUrl.
- */
-export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
-  // Phase-0 productization — hybrid LITE tier (Deliverable 3). Lite runs the
-  // same pipeline but on a reduced resource budget: it forbids the
-  // resource-heavy optional subsystems and forces the merged-BVH path (drops
-  // the 5 TLAS scene-group buffers). Validated FIRST so the throws are the
-  // host's first signal.
-  if (opts.tier === 'lite') {
-    if (opts.rcEnabled === true) {
-      throw new TypeError(
-        `[HybridEngine] tier:'lite' forbids rcEnabled — Radiance Cascades ` +
-        `allocate 5 extra cascade GPUBuffers + a separate BVH that the lite ` +
-        `resource budget cannot fit. Use tier:'full' (needs a 16-buffer / ` +
-        `8-texture adapter) for RC.`,
-      );
-    }
-    if (opts.ppgEnabled === true) {
-      throw new TypeError(
-        `[HybridEngine] tier:'lite' forbids ppgEnabled — Practical Path ` +
-        `Guiding allocates an sTree/dTree GPU buffer set the lite budget ` +
-        `cannot fit. Use tier:'full' for PPG.`,
-      );
-    }
-    if (opts.denoiser === 'neural') {
-      throw new TypeError(
-        `[HybridEngine] tier:'lite' forbids denoiser:'neural' — the U-Net ` +
-        `InferenceGraph + weight buffers exceed the lite budget. Use ` +
-        `'atrous-variance' / 'atrous' on lite, or tier:'full' for neural.`,
-      );
-    }
-    if (opts.nrcEnabled === true) {
-      throw new TypeError(
-        `[HybridEngine] tier:'lite' forbids nrcEnabled — Neural Radiance ` +
-        `Caching allocates a multiresolution hash-grid feature-table set + the ` +
-        `fused-MLP weight/Adam buffers the lite budget cannot fit. Use ` +
-        `tier:'full' for NRC.`,
-      );
-    }
-  }
-
-  // Audit B7: validate the denoiser option at construction so an unsupported
-  // value (e.g. `'none'` from the @vitrum/core EngineOptions contract) does
-  // not silently coerce to atrous-variance and produce wrong output. Supported
-  // values are explicitly enumerated here. `'bmfr'` is now a real denoiser
-  // (Koskela 2019 — see denoisers/bmfr.ts), so it is accepted.
-  if (
-    opts.denoiser !== undefined &&
-    opts.denoiser !== 'atrous' &&
-    opts.denoiser !== 'atrous-variance' &&
-    opts.denoiser !== 'svgf-real' &&
-    opts.denoiser !== 'bmfr' &&
-    opts.denoiser !== 'neural' &&
-    opts.denoiser !== 'oidn-final'
-  ) {
-    throw new TypeError(
-      `[HybridEngine] unsupported denoiser '${String(opts.denoiser)}'. ` +
-      `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'. ` +
-      `If you need 'none' from @vitrum/core, pick a backend that implements that mode.`,
-    );
-  }
-  // T2.H2 — 'neural' requires neuralWeights to be provided.
-  if (opts.denoiser === 'neural' && !opts.neuralWeights) {
-    throw new TypeError(
-      `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
-      `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
-      `or train one with tools/neural-denoiser-training/train.py. ` +
-      `See tools/neural-denoiser-training/README.md for instructions.`,
-    );
-  }
-  // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
-  const oidnModelUrl = readWalkaroundHybridExt(opts)?.oidnModelUrl;
-  if (opts.denoiser === 'oidn-final' &&
-      (typeof oidnModelUrl !== 'string' || oidnModelUrl.length === 0)) {
-    throw new TypeError(
-      `[HybridEngine] denoiser: 'oidn-final' requires ` +
-      `extensions['walkaround-hybrid'].oidnModelUrl (non-empty string) ` +
-      `pointing at the bundled OIDN ONNX model file ` +
-      `(e.g. '/models/oidn_rt_hdr_alb_nrm.onnx'). ` +
-      `See plan/premium-grade-refactor-20260517.md §W11 + ` +
-      `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
-    );
-  }
-}
-
-/**
- * Pure defaulting of `HybridEngineOptions` into the immutable derived config,
- * given an already-resolved quality `preset`. ASSUMES the options have already
- * passed {@link validateHybridEngineOptions} (it does not re-throw the
- * validation `TypeError`s). Behaviour-preserving: every field is defaulted
- * exactly as the pre-Theme-H inline path produced it.
- *
- * @param preset resolved {@link resolveQualityPreset} output for the engine's
- *   effective quality tier (the caller resolves the tier so the lite-biased
- *   `'medium'` default + explicit `qualityTier` override live in one place).
- */
-export function deriveHybridEngineConfig(
-  opts: HybridEngineOptions,
-  preset: ReturnType<typeof resolveQualityPreset>,
-): ParsedHybridEngineConfig {
-  const isLite = opts.tier === 'lite';
-  // Effective options overlay: the preset supplies fallbacks for the knobs it
-  // governs, so the existing table-driven `readTunables` / denoiser /
-  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
-  const effectiveOpts: HybridEngineOptions = {
-    ...opts,
-    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
-      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
-      : {}),
-  };
-
-  const whExt = readWalkaroundHybridExt(opts);
-  const oidnModelUrl = whExt?.oidnModelUrl;
-
-  return {
-    // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
-    // opts.denoiser wins, then the engine default 'atrous-variance'.
-    denoiser: opts.denoiser ?? preset.denoiser ?? 'atrous-variance',
-    neuralWeights: opts.neuralWeights,
-    oidnModelUrl,
-    oidnExecutionProviders: whExt?.oidnExecutionProviders,
-    // Lite forces merged BVH (drops the 5 TLAS scene-group buffers — the lite
-    // buffer-axis win) regardless of any host bvhMode override; warn so the
-    // host knows instanced-scene fidelity is reduced on this weak adapter.
-    restirBvhModeOverride: isLite
-      ? (whExt?.bvhMode === 'tlas'
-          ? (console.warn(
-              `[HybridEngine] tier:'lite' overrides bvhMode:'tlas' → 'merged' ` +
-              `(TLAS scene buffers exceed the lite resource budget). Instanced/` +
-              `multi-mesh scene fidelity is reduced. Use tier:'full' for TLAS.`,
-            ), 'merged')
-          : 'merged')
-      : whExt?.bvhMode,
-    // Precedence: explicit opts → preset → engine default (~60 FPS cap).
-    // The preset never carries `null`, so it cannot accidentally disable the
-    // cap; only an explicit `opts.targetFrameIntervalMs: null` does that.
-    targetFrameIntervalMs: opts.targetFrameIntervalMs !== undefined
-      ? opts.targetFrameIntervalMs
-      : preset.targetFrameIntervalMs !== undefined
-        ? preset.targetFrameIntervalMs
-        : DEFAULT_TARGET_FRAME_INTERVAL_MS,
-    // Library-generality tunables — table-driven; defaults preserve Cornell
-    // behaviour, hosts override via HybridEngineOptions. `effectiveOpts`
-    // carries the preset's adaptiveSamplingThresholds fallback.
-    tunables: readTunables(effectiveOpts),
-    initTunables: readInitTunables(opts),
-    // 2026-05-18 sweep — `indirectFireflyClamp` is tuple-typed so it lives
-    // outside the number-typed Tunables table; default preserves Cornell.
-    indirectFireflyClamp: opts.indirectFireflyClamp ?? [1.0, 1.0, 1.0],
-    // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas; tuple-typed same as
-    // indirectFireflyClamp. Defaults sourced from the single-source-of-truth
-    // constants in bindGroupBuilders.ts (no duplicated literals).
-    atrousDirectSigmas: opts.atrousDirectSigmas
-      ?? [ATROUS_DIRECT_SIGMAS.sigmaN, ATROUS_DIRECT_SIGMAS.sigmaZ, ATROUS_DIRECT_SIGMAS.sigmaC],
-    atrousIndirectSigmas: opts.atrousIndirectSigmas
-      ?? [ATROUS_INDIRECT_SIGMAS.sigmaN, ATROUS_INDIRECT_SIGMAS.sigmaZ, ATROUS_INDIRECT_SIGMAS.sigmaC],
-    // T5 — stained-glass opt-in flag bits. Default 0 (both terms OFF); hosts
-    // opt in via opts.stainedGlass. Packed once here (construction-time
-    // config); threaded into pipeline.renderFrame via _denoiserFilterDeps.
-    stainedGlassFlags: packStainedGlassFlags({
-      sunCaustic: opts.stainedGlass?.sunCaustic,
-      skyAperture: opts.stainedGlass?.skyAperture,
-    }),
-    // GRIS / ReSTIR-PT reconnection-shift reuse gate. Default 0 (OFF) so the
-    // GI spatial/temporal reuse is bit-identical to the legacy clamped-Jacobian
-    // path unless a host opts in via opts.restirPtReuse.
-    restirPtReuse: opts.restirPtReuse === true ? 1 : 0,
-    // NRC cache flag. Default 0 (OFF) so the gi-ris suffix is bit-identical to
-    // the verbatim DDGI-atlas estimate unless a host opts in via opts.nrcEnabled
-    // (which tier:'lite' forbids — validated above). The real gate is compile-time
-    // (selects the risGiNrc variant); this value is mirrored into the UBO.
-    nrcEnabled: opts.nrcEnabled === true ? 1 : 0,
-    // PPG guided sampling. Default 0 (OFF) — bit-identical cosine kernel.
-    // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
-    // built when a host opts in (tier:'lite' forbids it — validated above).
-    ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
-    // Checkerboard half-res shading. Explicit opt wins, else the preset value
-    // (ON for medium/low degradation tiers, OFF for ultra/high). No preset ⇒
-    // ultra ⇒ OFF ⇒ shade + both spatial passes + ris shade every pixel +
-    // ResolvePass passes through = bit-identical to the pre-checkerboard
-    // pipeline. GPU-validated on dzn (whole-frame 1.46× at medium/low).
-    checkerboard: opts.checkerboardRendering ?? preset.checkerboard,
-    staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
-    getPipelineRebuildKey: opts.getPipelineRebuildKey,
-    rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
-      opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
-    ),
-    maxBounces: opts.maxBounces ?? 4,
-    verbose: opts.verbose ?? false,
-    debug: opts.debug ?? false,
-    // Phase-0 productization — quality-preset-resolved structural / gating
-    // knobs. Explicit per-knob opts override the preset.
-    gtaoMode: opts.gtaoMode ?? preset.gtaoMode,
-    diSpatialPasses: opts.diSpatialPasses ?? preset.diSpatialPasses,
-    giSpatialPasses: opts.giSpatialPasses ?? preset.giSpatialPasses,
-    ddgiUpdateDivisor: opts.ddgiUpdateDivisor ?? preset.ddgiUpdateDivisor,
-    // PPG train-pass cadence: explicit opt wins, else the preset value. Clamp
-    // to ≥ 1 here too (the pipeline re-clamps, but keep the resolved config
-    // honest so a debug surface reading it sees the effective value).
-    ppgDispatchInterval: Math.max(
-      1,
-      Math.floor(opts.ppgDispatchInterval ?? preset.ppgDispatchInterval),
-    ),
-    // H47 — PPG max spatial cells. Pass-through; undefined = allocatePPGResources
-    // default (1 024). No clamping here — the allocator handles its own floor.
-    ppgMaxSpatialCells: opts.ppgMaxSpatialCells,
-    // ReGIR (Boksansky 2021) grid-based DI light selection. Pass-through from
-    // opts; `undefined` ⇒ off (the pipeline's resolveReGIRConfig default).
-    regirConfig: opts.regir,
-    resolutionFactor: preset.resolutionFactor,
-  };
-}
-
-/**
- * Parse + validate `HybridEngineOptions` into the immutable derived config.
- * Thin orchestrator over the two independently-testable halves:
- *   1. {@link validateHybridEngineOptions} — the pure throws (lite-mode
- *      violations, bad denoiser/neural/OIDN combos), in load-bearing order.
- *   2. {@link deriveHybridEngineConfig} — the 45-field defaulting record, given
- *      the already-resolved quality preset.
- *
- * The quality-tier resolution (`opts.qualityTier ?? (isLite ? 'medium' :
- * 'ultra')`) lives HERE — between the throws and the derive — so the
- * lite-biased default + explicit override exist in exactly one place. Pure
- * (no `this`, no GPU). Behaviour-preserving over the pre-Theme-H inline path:
- * same throws in the same order, same derived config. See
- * {@link ParsedHybridEngineConfig}.
- */
-function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
-  validateHybridEngineOptions(opts);
-
-  // Phase-0 productization — resolve the coarse quality preset, then let
-  // explicit per-knob options OVERRIDE it inside `deriveHybridEngineConfig`
-  // (preset is a baseline, not a lock). `ultra` (the default) is byte-identical
-  // to the pre-Phase-0 defaults. Lite biases the default tier to `'medium'`
-  // (still overridable by an explicit `qualityTier`).
-  const effectiveQualityTier = opts.qualityTier ?? (opts.tier === 'lite' ? 'medium' : 'ultra');
-  const preset = resolveQualityPreset(effectiveQualityTier);
-
-  return deriveHybridEngineConfig(opts, preset);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// captureFrame GPU→CPU readback helper (walkaround-hybrid)
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Read a single rgba16float GPUTexture to a Float32 RGBA array, row-major,
- * top-left origin. Returns `null` if dimensions are invalid. Pipeline stall
- * (copyTextureToBuffer + mapAsync).
- *
- * Module-private: only called by HybridEngine.captureFrame for 'linear'.
- */
-async function readRgba16fWalkaround(
-  device: GPUDevice,
-  texture: GPUTexture,
-  width: number,
-  height: number,
-): Promise<Float32Array | null> {
-  if (width <= 0 || height <= 0) return null;
-  const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8); // 4 ch × 2 B per f16
-  const readSize = bytesPerRow * height;
-  const staging = device.createBuffer({
-    label: 'vitrum.walkaround-hybrid.captureFrame.staging',
-    size: readSize,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-  try {
-    const encoder = device.createCommandEncoder({
-      label: 'vitrum.walkaround-hybrid.captureFrame.encoder',
-    });
-    encoder.copyTextureToBuffer(
-      { texture },
-      { buffer: staging, bytesPerRow },
-      { width, height, depthOrArrayLayers: 1 },
-    );
-    device.queue.submit([encoder.finish()]);
-    await staging.mapAsync(GPUMapMode.READ);
-    const src = new DataView(staging.getMappedRange().slice(0));
-    staging.unmap();
-    // Decode rgba16float → float32 RGBA, 4 channels per pixel.
-    const out = new Float32Array(width * height * 4);
-    for (let y = 0; y < height; y++) {
-      const rowOff = y * bytesPerRow;
-      for (let x = 0; x < width; x++) {
-        const texOff = rowOff + x * 8;
-        const di = (y * width + x) * 4;
-        out[di]     = float16BitsToFloat32(src.getUint16(texOff,     true));
-        out[di + 1] = float16BitsToFloat32(src.getUint16(texOff + 2, true));
-        out[di + 2] = float16BitsToFloat32(src.getUint16(texOff + 4, true));
-        out[di + 3] = float16BitsToFloat32(src.getUint16(texOff + 6, true));
-      }
-    }
-    return out;
-  } finally {
-    staging.destroy();
-  }
-}
+// `readRgba16fWalkaround` moved to `src/util/gpuReadback.ts` (R3 B-chain step 2).
+// Re-imported above.
 
 // ────────────────────────────────────────────────────────────────────────────
 // HybridEngine
@@ -872,17 +475,6 @@ export class HybridEngine implements Engine {
   // via the {@link PipelineInitHost} surface built in `_buildInitHost()`.
   private readonly _initCoordinator: PipelineInitCoordinator;
 
-  // Underscore-prefixed forwarders for the coordinator's race-tracking
-  // state. These exist so existing dispose / init-race tests that reach
-  // in via `engine['_initSeq']` / `engine['_pendingTeardown']` /
-  // `engine['_initRunning']` continue to see the live values without
-  // duplicating state on the engine. They're test seams, not part of any
-  // documented engine surface.
-  private get _initSeq(): number { return this._initCoordinator.initSeq; }
-  private get _initRunning(): boolean { return this._initCoordinator.initRunning; }
-  private get _pendingTeardown(): boolean { return this._initCoordinator.pendingTeardown; }
-  private get _disposed(): boolean { return this._initCoordinator.disposed; }
-
   // Task 4.2 / Theme A — the construction-immutable tunable-cluster values live
   // on `_cfg` (one parsed record instead of ~25 splatted `_x` fields). Consumers
   // read `this._cfg.x` directly; tests pin resolved knobs via the `_cfg` seam.
@@ -1121,8 +713,7 @@ export class HybridEngine implements Engine {
       readAtlas: () => this._ddgi?.pass?.getReadAtlasGPUTextures?.() ?? null,
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
       debugTextures: () => this._pipeline?.getDebugTextures() ?? null,
-      pipelineResources: () => this._pipeline?.frameResources ?? null,
-      pipelineMemoryExternalSections: () => this._pipeline?.gpuMemoryExternalSections ?? {},
+      getMemoryBreakdown: () => this._pipeline?.getMemoryBreakdown() ?? null,
       // T3.G click-to-pick: the retained core scene + last-frame camera + canvas
       // size feed the CPU ray-cast in createHybridEngineDebugSurface.
       pickScene: () => this._lastScene,
@@ -1685,36 +1276,16 @@ export class HybridEngine implements Engine {
 
   private _syncDdgiLightsFromCoreScene(): void {
     if (this._renderScene == null || !this._coreSceneSuppliesMeshes()) return;
-    const sceneLights = coreEmittersToDDGILights(this._renderScene);
-    // Single-count the sun: a scene directional emits a `sun` DDGILight that
-    // already carries its own intensity, so the multiplier must be 1; absent a
-    // scene directional, keep the legacy config multiplier. Mirrors the init
-    // coordinator's resolution so an incremental emitter edit can't drift the
-    // sun magnitude away from the freshly-built init state.
-    this._ddgi.setSunIntensityMultiplier(
-      directionalSunMultiplier(this._renderScene, this._primaryLightIntensity),
-    );
-    this._ddgi.setLights(
-      orientDdgiSunLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights), this._primaryLightDir),
-    );
-    // H18 Stage 2 — supply area-emitter NEE triangles to the probe-ray kernel.
-    // rect-area/disc-area: same geometry as ReSTIR (collectRectAreaEmitterTrisFromCore).
-    // mesh-area: DDGI-only expansion (collectMeshAreaEmitterTrisFromCore) — these
-    // tris are NOT in the extraEmitters stream for ReSTIR (the geometry stream
-    // already carries them), but DDGI has no geometry stream, so they must be
-    // added explicitly here. Count=0 (sun+point-only scenes) → no-op guard.
-    // (mesh-area tris added to probe NEE, 2026-06-10)
-    const emitterTris = [
-      ...collectRectAreaEmitterTrisFromCore(this._renderScene),
-      ...collectMeshAreaEmitterTrisFromCore(this._renderScene),
-    ];
-    const packed = packEmitterTrisForDDGI(emitterTris);
-    this._ddgi.setEmitterTris(packed.data, packed.count);
-    // H41 — re-upload the analytic point/spot lights buffer for shade NEE.
-    // Called here because _syncDdgiLightsFromCoreScene is invoked after any
-    // emitter change (both initial scene load via HybridEngineLifecycle and
-    // fast-update via updateEmitter). No-op when pipeline is not yet initialized.
-    this._pipeline?.updateAnalyticLights(this._renderScene);
+    // Steps 1–4 (sun intensity, lights merge, emitter tris H18, analytic lights H41)
+    // delegated to the shared helper (R3 B-chain step 4). Engine path always
+    // merges lights (setLightsConditional: false = default).
+    syncDdgiFromCoreScene({
+      ddgi: this._ddgi,
+      pipeline: this._pipeline,
+      ctorLights: this._ctorLights,
+      primaryLightIntensity: this._primaryLightIntensity,
+      primaryLightDir: this._primaryLightDir,
+    }, this._renderScene);
     // B3 — push the scene's directional IBL map+CDFs to the pipeline (or reset to
     // the no-HDRI placeholder). Called here so both the initial scene load and any
     // emitter/scene fast-update re-resolve the env; no-op before pipeline init.
@@ -1723,6 +1294,8 @@ export class HybridEngine implements Engine {
   }
 
   // ── GI state persistence ────────────────────────────────────────────────
+  // Implementation bodies moved to HybridEngineGIState.ts (R3 B-chain step 3).
+  // These thin delegates preserve the public API contract unchanged.
 
   /**
    * Export the converged DDGI global-illumination state (the "cached light
@@ -1732,37 +1305,7 @@ export class HybridEngine implements Engine {
    * run at least one frame). Async (atlas readback uses mapAsync).
    */
   async exportGIState(): Promise<GIStateSnapshot | null> {
-    const atlas = await this._ddgi.pass.exportAtlasData(this._device);
-    if (!atlas) return null;
-    const grid = this._ddgi.probeGrid;
-    // Also snapshot the ReSTIR-GI temporal reservoirs when the pipeline is live,
-    // so a restore continues the temporal+spatial GI reuse instead of dropping
-    // the high-frequency indirect history and re-converging it from scratch.
-    // (The RC subsystem carries no cross-frame state — it regenerates every
-    // cascade from the BVH each frame — so there is nothing to persist for RC.)
-    const restirGI = (await this._pipeline?.exportRestirGIReservoirs(this._device)) ?? undefined;
-    // Also snapshot the PPG (Müller 2017) adaptive sTree / dTree guiding
-    // distribution so a restore can resume guided sampling immediately from the
-    // converged distribution instead of rebuilding the guide from cold. The PPG
-    // section is OPTIONAL — a null return (PPG disabled or not yet initialised)
-    // simply omits the section; importGIState treats its absence as a cold start.
-    const ppgRaw = this._pipeline?.exportPPGSTree() ?? null;
-    const ppg = ppgRaw != null ? {
-      maxSpatialCells: ppgRaw.maxSpatialCells,
-      sTreeBuf: ppgRaw.sTreeBuf,
-      dTreeBuf: ppgRaw.dTreeBuf,
-      dTreeOffsets: ppgRaw.dTreeOffsets,
-      sceneBoundsMin: ppgRaw.sceneBoundsMin,
-      sceneBoundsMax: ppgRaw.sceneBoundsMax,
-    } : undefined;
-    return {
-      dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
-      origin: [grid.worldOrigin.x, grid.worldOrigin.y, grid.worldOrigin.z],
-      spacing: grid.worldSpacing,
-      ...atlas,
-      ...(restirGI ? { restirGI } : {}),
-      ...(ppg ? { ppg } : {}),
-    };
+    return exportGIStateImpl({ device: this._device, ddgi: this._ddgi, pipeline: this._pipeline });
   }
 
   /**
@@ -1781,54 +1324,7 @@ export class HybridEngine implements Engine {
    * starts cold without error.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
-    // Validate grid origin, spacing, and dims before touching GPU buffers.
-    // Two scenes can have identical probe-atlas pixel dimensions but different
-    // grid origin/spacing/dims — restoring into such a mismatched grid would
-    // corrupt the GI with probes from the wrong world-space layout. The atlas
-    // dim check in importAtlasData is necessary but not sufficient.
-    const grid = this._ddgi.probeGrid;
-    const epsilon = 1e-4;
-    const dimsMismatch =
-      snapshot.dims.x !== grid.dims.x ||
-      snapshot.dims.y !== grid.dims.y ||
-      snapshot.dims.z !== grid.dims.z;
-    const originMismatch =
-      Math.abs(snapshot.origin[0] - grid.worldOrigin.x) > epsilon ||
-      Math.abs(snapshot.origin[1] - grid.worldOrigin.y) > epsilon ||
-      Math.abs(snapshot.origin[2] - grid.worldOrigin.z) > epsilon;
-    const spacingMismatch = Math.abs(snapshot.spacing - grid.worldSpacing) > epsilon;
-    if (dimsMismatch || originMismatch || spacingMismatch) {
-      console.warn(
-        '[HybridEngine] importGIState: snapshot grid layout does not match the current grid ' +
-        '(dims/origin/spacing mismatch) — restore rejected to avoid garbage GI.',
-      );
-      return false;
-    }
-    const atlasOk = this._ddgi.pass.importAtlasData(this._device, snapshot);
-    if (!atlasOk) return false;
-    if (snapshot.restirGI == null) {
-      // v3 (or earlier) / no reservoir section — atlas-only restore.
-      // PPG section absent at this point means cold start; not a failure.
-      if (snapshot.ppg != null) {
-        // Best-effort: try to restore the PPG guide even without ReSTIR-GI.
-        this._pipeline?.importPPGSTree(snapshot.ppg);
-      }
-      return true;
-    }
-    // A reservoir section is present: require it to restore too, else report
-    // failure rather than a misleadingly-partial success.
-    const reservoirOk = this._pipeline?.importRestirGIReservoirs(this._device, snapshot.restirGI) ?? false;
-    if (!reservoirOk) return false;
-    // PPG section (v4+): restore is best-effort — a PPG mismatch (different
-    // maxSpatialCells or scene bounds) causes a warm log + cold restart rather
-    // than failing the whole importGIState call. The DDGI probes and ReSTIR-GI
-    // reservoirs are already restored at this point; losing only the PPG guide
-    // is not a correctness failure (guided sampling falls back to cosine until
-    // the next training window converges).
-    if (snapshot.ppg != null) {
-      this._pipeline?.importPPGSTree(snapshot.ppg);
-    }
-    return true;
+    return importGIStateImpl({ device: this._device, ddgi: this._ddgi, pipeline: this._pipeline }, snapshot);
   }
 
   /**
@@ -2301,6 +1797,19 @@ export class HybridEngine implements Engine {
           'resolution scaling use FrameInput.quality.resolutionFactor instead.',
       );
     }
+    // Rebuild-key check (D2.5 — moved out of the orchestrator dep bundle so
+    // engine-state mutations don't live inside the FrameDeps closure). Must
+    // run BEFORE _buildFrameDeps / runHybridEngineFrame — same position as the
+    // former orchestrator-side check, so skip-output semantics are preserved.
+    const fp = fingerprintHybridPipelineRebuildKey(
+      this._cfg.getPipelineRebuildKey?.() ?? this._cfg.staticPipelineRebuildKey,
+    );
+    if (fp !== this._rebuildKeyFingerprintSeen) {
+      this._rebuildKeyFingerprintSeen = fp;
+      this.reset();
+      return HYBRID_FRAME_SKIP_OUTPUT;
+    }
+
     // Retain the camera (copied — decoupled from host mutation) for debug
     // click-to-pick (EngineDebugSurface.pickPrimitive, T3.G).
     this._lastFrameCamera = {
@@ -2373,17 +1882,6 @@ export class HybridEngine implements Engine {
         internalHeight: self._internalHeight,
       },
       control: {
-        consumeRebuildKeyChange: () => {
-          const fp = fingerprintHybridPipelineRebuildKey(
-            self._cfg.getPipelineRebuildKey?.() ?? self._cfg.staticPipelineRebuildKey,
-          );
-          if (fp !== self._rebuildKeyFingerprintSeen) {
-            self._rebuildKeyFingerprintSeen = fp;
-            self.reset();
-            return true;
-          }
-          return false;
-        },
         targetFrameIntervalMs: self._cfg.targetFrameIntervalMs,
         getLastFrameTs: () => self._lastFrameTs,
         setLastFrameTs: (ts) => {

@@ -20,10 +20,18 @@
  * three/webgpu coupling; the raw compute path is host-neutral.
  */
 
-import type { PlainAabb } from '@vitrum/shared-bvh';
 // Atlas-layout constants imported from the canonical source so producer
 // and consumers (ddgiSampleWgsl.ts + shade.wgsl.ts) stay in lockstep.
 import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
+
+/**
+ * D6.10 — PlainAabbArrayLike covers @vitrum/shared-bvh PlainAabb where
+ * min/max are array-tuples [x,y,z] rather than { x, y, z } objects.
+ */
+export interface PlainAabbArrayLike {
+  readonly min: readonly [number, number, number];
+  readonly max: readonly [number, number, number];
+}
 
 export interface ProbeGridVector3 {
   readonly x: number;
@@ -66,7 +74,30 @@ export interface ProbeGridBoxLike {
   readonly max: ProbeGridVector3;
 }
 
-export type ProbeGridBounds = ProbeGridBoxLike | PlainAabb;
+/**
+ * ProbeGridBounds accepts both forms:
+ *  1. { min: {x,y,z}, max: {x,y,z} }  — RestirBvhAabb, THREE.Box3, ProbeGridBoxLike
+ *  2. { min: [x,y,z], max: [x,y,z] }  — PlainAabb from @vitrum/shared-bvh SceneBvh
+ *
+ * D6.10: computeFromBounds normalises both via _normaliseBounds(); callers
+ * pass whichever form they have without conversion.
+ */
+export type ProbeGridBounds = ProbeGridBoxLike | PlainAabbArrayLike;
+
+/** @internal Normalise either bounds form to a ProbeGridBoxLike { x,y,z } pair. */
+function _normaliseBounds(b: ProbeGridBounds): ProbeGridBoxLike {
+  // Discriminate on whether .min has numeric properties 0/1/2 (array-tuple)
+  // vs x/y/z (box-like).
+  const minIsArray = !('x' in (b.min as object));
+  if (minIsArray) {
+    const a = b as PlainAabbArrayLike;
+    return {
+      min: { x: a.min[0], y: a.min[1], z: a.min[2] },
+      max: { x: a.max[0], y: a.max[1], z: a.max[2] },
+    };
+  }
+  return b as ProbeGridBoxLike;
+}
 
 export interface ProbeGridDims {
   x: number;
@@ -151,23 +182,15 @@ export class ProbeGrid {
     spacingInches?: number,
     maxProbesPerAxis = 16,
   ): boolean {
+    const box = _normaliseBounds(boundingBox);
     const size = new ProbeGridVector3Value();
     const min = new ProbeGridVector3Value();
-    if (isBoxLike(boundingBox)) {
-      size.set(
-        boundingBox.max.x - boundingBox.min.x,
-        boundingBox.max.y - boundingBox.min.y,
-        boundingBox.max.z - boundingBox.min.z,
-      );
-      min.copy(boundingBox.min);
-    } else {
-      size.set(
-        boundingBox.max[0] - boundingBox.min[0],
-        boundingBox.max[1] - boundingBox.min[1],
-        boundingBox.max[2] - boundingBox.min[2],
-      );
-      min.set(boundingBox.min[0], boundingBox.min[1], boundingBox.min[2]);
-    }
+    size.set(
+      box.max.x - box.min.x,
+      box.max.y - box.min.y,
+      box.max.z - box.min.z,
+    );
+    min.copy(box.min);
     // Target ~13 probes along the longest axis (`/ 12`). The denser the
     // grid, the smaller the trilinear-interp blocks visible at shadow
     // boundaries. At 5×5×5 the 0.5-unit cells produce screen-visible
@@ -259,17 +282,3 @@ export class ProbeGrid {
   }
 }
 
-function isBoxLike(bounds: ProbeGridBounds): bounds is ProbeGridBoxLike {
-  const min = (bounds as ProbeGridBoxLike).min as Partial<ProbeGridVector3> | undefined;
-  const max = (bounds as ProbeGridBoxLike).max as Partial<ProbeGridVector3> | undefined;
-  return (
-    min != null &&
-    max != null &&
-    typeof min.x === 'number' &&
-    typeof min.y === 'number' &&
-    typeof min.z === 'number' &&
-    typeof max.x === 'number' &&
-    typeof max.y === 'number' &&
-    typeof max.z === 'number'
-  );
-}

@@ -274,7 +274,7 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
       trainer._paramsUbo,
       trainer._gradFinUboW, trainer._gradFinUboB, trainer._gradFinUboX,
       trainer._adamUboW, trainer._adamUboB,
-    ].filter(Boolean);
+    ].filter((u): u is GPUBuffer => u !== undefined); // D7.5: fields are now honestly `GPUBuffer | undefined`
     const destroyCounts = new Map(ubos.map(u => [u, 0]));
     for (const ubo of ubos) {
       const orig = ubo.destroy.bind(ubo);

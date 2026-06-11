@@ -65,7 +65,16 @@ async function main() {
   if (!gpu) { console.log(JSON.stringify({ ok: false, reason: 'no navigator.gpu' })); Deno.exit(1); }
   const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) { console.log(JSON.stringify({ ok: false, reason: 'no adapter' })); Deno.exit(1); }
-  const device = await adapter.requestDevice();
+  // The test kernel binds 9 storage buffers (the query module's 6 incl. the H27
+  // nrcSlotClaims + the 3 harness-only qins/qout/qfeat) — above the WebGPU
+  // default maxStorageBuffersPerShaderStage of 8, so request headroom (same
+  // clamp-to-adapter discipline as fusedMlpHarness).
+  const device = await adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBuffersPerShaderStage:
+        Math.min(adapter.limits.maxStorageBuffersPerShaderStage ?? 10, 10),
+    },
+  });
   device.addEventListener?.('uncapturederror', (ev: unknown) => {
     const e = ev as { error?: { message?: string } };
     console.log('WGPU UNCAPTURED ERROR:', e?.error?.message ?? ev);
@@ -116,23 +125,27 @@ async function main() {
   }
 
   // Test kernel: one invocation per query → nrcQueryRadiance into out[q].
-  // The query module declares its NRC buffers on @group(4) (the real gi-ris
-  // pipeline binds them as the 5th group with the full-tier maxBindGroups). The
-  // isolated harness only validates the FORWARD MATH, so we remap @group(4) →
-  // @group(0) to fit lavapipe's default maxBindGroups=4 — the binding NUMBERS
-  // (0..5) are preserved, so the bind group below maps 1:1.
-  const queryWgsl =
-    (nrcEncodeHelpersWgsl() + nrcQueryWgsl(CFG))
-      .replace(/@group\(4\)/g, '@group(0)');
+  // The query module declares its NRC buffers on @group(4) by default (the real
+  // gi-ris pipeline binds them as the 5th group with the full-tier
+  // maxBindGroups). The isolated harness only validates the FORWARD MATH, so we
+  // emit the bindings on @group(0) via the builder's `group` option to fit
+  // lavapipe's default maxBindGroups=4 — the binding NUMBERS (0..5) are
+  // preserved, so the bind group below maps 1:1.
+  const queryWgsl = nrcEncodeHelpersWgsl() + nrcQueryWgsl({ ...CFG, group: 0 });
   // Stub the spread-termination + reservoir symbols the query module does NOT
   // need (it only needs the encode/forward). nrcQuery references nrcCfg fields
   // recordCap/recordStride/spreadC/aabb — declared in nrcQuery's own NrcCfgUBO.
+  // Harness-only buffers live at bindings 7..9: the query module itself owns
+  // bindings 0..6 on the remapped group — including nrcSlotClaims at binding 6
+  // (H27), which nrcWriteRecord below exercises. (The harness previously placed
+  // qins at binding 6 and never bound the claims buffer — a naga "bindings
+  // conflict" compile error since H27 landed; fixed here.)
   const kernel = /* wgsl */`
 ${queryWgsl}
 struct QIn { pos: vec3f, rough: f32, n: vec3f, _p0: f32, d: vec3f, _p1: f32, alb: vec3f, _p2: f32 }
-@group(0) @binding(6) var<storage, read> qins : array<QIn>;
-@group(0) @binding(7) var<storage, read_write> qout : array<vec4f>;
-@group(0) @binding(8) var<storage, read_write> qfeat : array<f32>;
+@group(0) @binding(7) var<storage, read> qins : array<QIn>;
+@group(0) @binding(8) var<storage, read_write> qout : array<vec4f>;
+@group(0) @binding(9) var<storage, read_write> qfeat : array<f32>;
 @compute @workgroup_size(1,1,1)
 fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
@@ -167,8 +180,14 @@ fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
     return buf;
   };
   const wBuf = mk(w), bBuf = mk(b), tBuf = mk(tables), lBuf = mk(levelDescs);
-  const recStride = inW + 3;
+  // Production record layout: [inW input | 3 target | 3 query world pos]
+  // (nrcWriteRecord writes through base + inW + 5; the old `inW + 3` stride
+  // silently clamped the last record's pos tail out of bounds).
+  const recStride = inW + 3 + 3;
   const recBuf = device.createBuffer({ size: Math.max(16, N * recStride * 4), usage: ST });
+  // H27 per-slot claim flags (atomic u32, one per record slot; zero = unclaimed).
+  const claimsBuf = device.createBuffer({ size: Math.max(16, N * 4), usage: ST });
+  device.queue.writeBuffer(claimsBuf, 0, new Uint32Array(N));
   // cfg UBO
   const cfgAb = new ArrayBuffer(48);
   const cf = new Float32Array(cfgAb), cu = new Uint32Array(cfgAb);
@@ -202,9 +221,10 @@ fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
       { binding: 3, resource: { buffer: lBuf } },
       { binding: 4, resource: { buffer: recBuf } },
       { binding: 5, resource: { buffer: cfgBuf } },
-      { binding: 6, resource: { buffer: qinBuf } },
-      { binding: 7, resource: { buffer: qoutBuf } },
-      { binding: 8, resource: { buffer: qfeatBuf } },
+      { binding: 6, resource: { buffer: claimsBuf } },
+      { binding: 7, resource: { buffer: qinBuf } },
+      { binding: 8, resource: { buffer: qoutBuf } },
+      { binding: 9, resource: { buffer: qfeatBuf } },
     ],
   });
   const e = device.createCommandEncoder();

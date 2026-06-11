@@ -157,33 +157,34 @@ function buildMeshAreaLeOverrides(
   const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
   if (meshAreaEmitters.length === 0) return new Map();
 
-  // Build primitive-id → material index (slot in mergedMaterials)
+  // Build material-signature → slot index in O(M) using a Map.
+  // The signature is the same 6-field JSON key used by the old inner loop;
+  // hashing it once per material rather than per-primitive-per-material
+  // reduces the matching work from O(P×M) to O(P+M).
+  function matSig(m: MaterialSpec): string {
+    return JSON.stringify({
+      emissive: m.emissive,
+      emissiveIntensity: m.emissiveIntensity,
+      baseColor: m.baseColor,
+      roughness: m.roughness,
+      metallic: m.metallic,
+      transmission: m.transmission,
+    });
+  }
+  const sigToSlot = new Map<string, number>();
+  for (let s = 0; s < mergedMaterials.length; s++) {
+    const sig = matSig(mergedMaterials[s]!);
+    if (!sigToSlot.has(sig)) sigToSlot.set(sig, s);
+  }
+
+  // Build primitive-id → material slot via one O(P) pass.
   const primitiveIdToMaterialSlot = new Map<string, number>();
   for (const p of scene.primitives) {
     if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
-      const sig = JSON.stringify({
-        emissive: p.material.emissive,
-        emissiveIntensity: p.material.emissiveIntensity,
-        baseColor: p.material.baseColor,
-        roughness: p.material.roughness,
-        metallic: p.material.metallic,
-        transmission: p.material.transmission,
-      });
-      // Find the slot by scanning mergedMaterials — O(M) but called once per build.
-      for (let s = 0; s < mergedMaterials.length; s++) {
-        const m = mergedMaterials[s]!;
-        const mSig = JSON.stringify({
-          emissive: m.emissive,
-          emissiveIntensity: m.emissiveIntensity,
-          baseColor: m.baseColor,
-          roughness: m.roughness,
-          metallic: m.metallic,
-          transmission: m.transmission,
-        });
-        if (mSig === sig) {
-          primitiveIdToMaterialSlot.set(String(p.id), s);
-          break;
-        }
+      const sig = matSig(p.material);
+      const s = sigToSlot.get(sig);
+      if (s !== undefined) {
+        primitiveIdToMaterialSlot.set(String(p.id), s);
       }
     }
   }

@@ -17,7 +17,16 @@
  * element (row, col) = m[col*4 + row].
  */
 import type { Mat4, Scene, ScenePrimitive, Vec3 } from '@vitrum/core';
-import { invertMat4 } from './scenePack.js';
+import {
+  invertMat4,
+  mat4Mul,
+  mat4MulVec4,
+  v3Sub,
+  v3Cross,
+  v3Dot,
+  v3Normalize,
+  type V3,
+} from './mathUtils.js';
 
 export interface PickCamera {
   /** Column-major world→view matrix (three.js convention), length-16. */
@@ -28,50 +37,11 @@ export interface PickCamera {
   readonly cameraPosition: Vec3;
 }
 
-type V3 = readonly [number, number, number];
-
-// ── column-major mat4 helpers (element (row,col) = m[col*4+row]) ──────────────
-function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
-  const o = new Float32Array(16);
-  for (let col = 0; col < 4; col++) {
-    for (let row = 0; row < 4; row++) {
-      let s = 0;
-      for (let k = 0; k < 4; k++) s += (a[k * 4 + row] ?? 0) * (b[col * 4 + k] ?? 0);
-      o[col * 4 + row] = s;
-    }
-  }
-  return o;
-}
-
-/** m · (x,y,z,w) → [x',y',z',w']. */
-function mat4MulVec4(m: Float32Array, x: number, y: number, z: number, w: number): [number, number, number, number] {
-  const g = (i: number): number => m[i] ?? 0;
-  return [
-    g(0) * x + g(4) * y + g(8) * z + g(12) * w,
-    g(1) * x + g(5) * y + g(9) * z + g(13) * w,
-    g(2) * x + g(6) * y + g(10) * z + g(14) * w,
-    g(3) * x + g(7) * y + g(11) * z + g(15) * w,
-  ];
-}
-
 /** Transform an affine point (w = 1, no perspective divide). */
 function transformPoint(m: Float32Array | undefined, p: V3): V3 {
   if (m == null) return p;
   const r = mat4MulVec4(m, p[0], p[1], p[2], 1);
   return [r[0], r[1], r[2]];
-}
-
-// ── vec3 helpers ─────────────────────────────────────────────────────────────
-const v3Sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const v3Cross = (a: V3, b: V3): V3 => [
-  a[1] * b[2] - a[2] * b[1],
-  a[2] * b[0] - a[0] * b[2],
-  a[0] * b[1] - a[1] * b[0],
-];
-const v3Dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-function v3Normalize(a: V3): V3 {
-  const l = Math.hypot(a[0], a[1], a[2]);
-  return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : a;
 }
 
 // ── ray construction ─────────────────────────────────────────────────────────
