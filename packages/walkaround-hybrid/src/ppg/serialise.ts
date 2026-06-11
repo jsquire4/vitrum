@@ -309,7 +309,7 @@ export function serialiseSTree(sTree: STree, maxDTreeNodesPerCell?: number): Ser
  * `depth` is informational for the CPU; the GPU traversal never reads it. We
  * derive it with a single BFS pass over the recovered nodes array.
  */
-export function deserialiseDTree(buf: Float32Array): DTree {
+function deserialiseDTree(buf: Float32Array): DTree {
   const nodeCount = Math.floor(buf[0] ?? 0);
   const totalFlux = buf[2] ?? 0;
   const nodes: DTreeNode[] = [];

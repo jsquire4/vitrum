@@ -253,7 +253,7 @@ export const SCENE_BUFFER_REGISTRY = [
 ] as const;
 
 /** Union of all `bufferField` values in {@link SCENE_BUFFER_REGISTRY}. */
-export type SceneBufferRegistryField = (typeof SCENE_BUFFER_REGISTRY)[number]['bufferField'];
+type SceneBufferRegistryField = (typeof SCENE_BUFFER_REGISTRY)[number]['bufferField'];
 
 /**
  * Write `data` into `buffer` when non-empty (shared by all four upload-variant

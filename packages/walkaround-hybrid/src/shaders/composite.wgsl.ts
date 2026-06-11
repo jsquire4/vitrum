@@ -58,7 +58,7 @@ fn vertMain(@builtin(vertex_index) idx: u32) -> CompositeVaryings {
 }
 `;
 
-export function buildCompositFragWgsl(): string {
+function buildCompositFragWgsl(): string {
   return /* wgsl */ `
 @group(0) @binding(0) var denoisedTex: texture_2d<f32>;
 @group(0) @binding(1) var _compositeSampler: sampler;

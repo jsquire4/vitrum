@@ -305,7 +305,7 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
  * Exported so test harnesses can compile + verify this section independently.
  * Composed first after the header in makeProbeUpdateRaysWGSL.
  */
-export function makeTraceSunVisibilityWGSL(): string { return /* wgsl */`
+function makeTraceSunVisibilityWGSL(): string { return /* wgsl */`
 // -----------------------------------------------------------------
 // Direct lighting at a hit point
 // -----------------------------------------------------------------
@@ -391,7 +391,7 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
  * Exported for independent compile/test. Composed after makeTraceSunVisibilityWGSL
  * in makeProbeUpdateRaysWGSL.
  */
-export function makeDirectLightingWGSL(): string { return /* wgsl */`
+function makeDirectLightingWGSL(): string { return /* wgsl */`
 fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
                 hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
@@ -529,7 +529,7 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
  *
  * Exported for independent compile/test. Composed last in makeProbeUpdateRaysWGSL.
  */
-export function makeProbeMainEntryWGSL(): string { return /* wgsl */`
+function makeProbeMainEntryWGSL(): string { return /* wgsl */`
 // -----------------------------------------------------------------
 // Probe world position from flat index
 // -----------------------------------------------------------------

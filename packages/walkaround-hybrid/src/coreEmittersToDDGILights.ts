@@ -77,7 +77,7 @@ import type { Scene, SceneEmitter } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 
 /** Convert the core/lighting toward-light vector into DDGI's sun travel vector. */
-export function primaryLightDirToDdgiSunDirection(
+function primaryLightDirToDdgiSunDirection(
   dir: readonly [number, number, number],
 ): DDGILight['direction'] | null {
   const len = Math.hypot(dir[0], dir[1], dir[2]);
@@ -212,7 +212,7 @@ export function coreEmittersToDDGILights(scene: Scene): DDGILight[] {
 /** True when the scene supplies at least one `directional` emitter — i.e. the
  *  DDGI sun is driven by a scene-emitter `sun` DDGILight (carrying its own
  *  intensity) rather than the host's config-only `primaryLightIntensity`. */
-export function sceneHasDirectionalEmitter(scene: Scene): boolean {
+function sceneHasDirectionalEmitter(scene: Scene): boolean {
   return scene.emitters.some((e) => e.kind === 'directional');
 }
 

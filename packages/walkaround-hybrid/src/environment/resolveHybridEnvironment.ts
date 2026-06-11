@@ -5,9 +5,9 @@ import type {
 } from '@vitrum/core';
 import { buildDirectionalEnv, type DirectionalEnvData } from './equirectDirectional.js';
 
-export type HybridSkyVec3 = [number, number, number];
+type HybridSkyVec3 = [number, number, number];
 
-export type HybridEnvironmentResolveMode =
+type HybridEnvironmentResolveMode =
   | 'none'
   | 'hdri-intensity-only'
   | 'hdri-raw-average'
@@ -41,7 +41,7 @@ export interface HybridResolvedEnvironment {
   readonly directionalIntensity?: number;
 }
 
-export interface HybridEnvironmentMapResolverResult {
+interface HybridEnvironmentMapResolverResult {
   /**
    * Unit-intensity tint for the opaque environment map handle. The resolver
    * applies SceneEnvironment.intensity to skyIrradiance after this callback.
@@ -60,7 +60,7 @@ export type HybridEnvironmentMapResolver = (
   environment: HdriEnvironment,
 ) => HybridEnvironmentMapResolverResult | null | undefined;
 
-export interface HybridEnvironmentResolverExtensionNamespace {
+interface HybridEnvironmentResolverExtensionNamespace {
   readonly resolveEnvironmentMap?: HybridEnvironmentMapResolver;
 }
 

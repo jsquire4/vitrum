@@ -58,8 +58,8 @@ export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
  * Forward-hit MIS (connect.wgsl): ray-plane + |rel_u|²+|rel_v|²≤1 circle test for disc;
  *   uCoord/vCoord ∈ [-1,1] box test for rect.  |shape.w - 1.0| < 0.5 discriminates disc.
  */
-export const RECT_DISC_SHAPE_RECT = 0.0;
-export const RECT_DISC_SHAPE_DISC = 1.0;
+const RECT_DISC_SHAPE_RECT = 0.0;
+const RECT_DISC_SHAPE_DISC = 1.0;
 
 type Vec3 = [number, number, number];
 
@@ -348,7 +348,7 @@ function packMeshAreaTriangles(
  * `packEmitterArrays` (synthesis) and `hasMeshAreaEmitterForPrimitive` (staleness
  * check), so the threshold cannot drift between the two paths.
  */
-export const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
+const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
 
 /**
  * H14-A — Synthesize implicit mesh-area emitters for every mesh-like primitive
@@ -370,7 +370,7 @@ export const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
  * logic and is reused by `hasMeshAreaEmitterForPrimitive` to avoid duplicating
  * the threshold check.
  */
-export function synthesizeImplicitEmitters(
+function synthesizeImplicitEmitters(
   scene: Scene,
   /** When set, only consider this primitive id (early-exit fast path for the
    *  `hasMeshAreaEmitterForPrimitive` staleness predicate). */

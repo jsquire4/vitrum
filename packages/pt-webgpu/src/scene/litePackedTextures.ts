@@ -35,11 +35,11 @@
  * Minimum texture width for the light data texture.  A 1×1 placeholder is used
  * when the scene has no point/spot/rect-area lights so the binding is always valid.
  */
-export const LITE_LIGHT_TEX_MIN_WIDTH = 1;
+const LITE_LIGHT_TEX_MIN_WIDTH = 1;
 
 /** Minimum env-texture size (1×1) when no HDRI / procedural-sky is present. */
-export const LITE_ENV_TEX_MIN_WIDTH  = 1;
-export const LITE_ENV_TEX_MIN_HEIGHT = 1;
+const LITE_ENV_TEX_MIN_WIDTH  = 1;
+const LITE_ENV_TEX_MIN_HEIGHT = 1;
 
 /**
  * Packed light data texture descriptor.

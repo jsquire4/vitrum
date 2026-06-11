@@ -8,7 +8,7 @@
  */
 
 /** Camera matrices + position for one frame. */
-export interface PipelineFrameCamera {
+interface PipelineFrameCamera {
   /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
    *  composes VP = projMatrix * viewMatrix internally; do NOT pre-multiply. */
   viewMatrix: Float32Array;
@@ -23,7 +23,7 @@ export interface PipelineFrameCamera {
 }
 
 /** Swap-chain + frame-seed for one frame. */
-export interface PipelineFrameScreen {
+interface PipelineFrameScreen {
   /** Render-target dimensions in pixels. Used by all compute kernels for
    *  workgroup dispatch sizing — must match the swap chain's actual size. */
   screenWidth: number;
@@ -42,7 +42,7 @@ export interface PipelineFrameScreen {
 }
 
 /** Lighting scalars, emitter budget, and light-tree configuration. */
-export interface PipelineFrameLighting {
+interface PipelineFrameLighting {
   /** Sum of (Le * area) over all emitter triangles, computed at BVH build
    *  time. Used by RIS importance-sampling weight normalization. Must match
    *  the value baked into the emitter CDF in SceneBVHBuffers. */
@@ -99,7 +99,7 @@ export interface PipelineFrameLighting {
 }
 
 /** ReSTIR-DI temporal + spatial reuse tuning knobs. */
-export interface PipelineFrameRestirDI {
+interface PipelineFrameRestirDI {
   /** Audit M6 — ReSTIR-DI temporal M-clamp; Cornell default 20. */
   temporalMClampDI: number;
   /** Audit M7 — ReSTIR-DI spatial reuse radius in pixels; Cornell default 30. */
@@ -111,7 +111,7 @@ export interface PipelineFrameRestirDI {
 }
 
 /** ReSTIR-GI / GRIS tuning + reuse gate. */
-export interface PipelineFrameRestirGI {
+interface PipelineFrameRestirGI {
   /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap (risGi,
    *  spatialGi). Cornell default 16.0. */
   restirGiWCap: number;
@@ -142,7 +142,7 @@ export interface PipelineFrameRestirGI {
 }
 
 /** GTAO + adaptive-sampling tuning knobs. */
-export interface PipelineFrameGtao {
+interface PipelineFrameGtao {
   /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
   gtaoRadiusPx: number;
   /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */
@@ -189,7 +189,7 @@ export interface PipelineFrameFilter {
 }
 
 /** BVH traversal mode + TLAS configuration. */
-export interface PipelineFrameBvh {
+interface PipelineFrameBvh {
   /** PR-3 — 0 = merged world BVH, 1 = TLAS + local BLAS traversal. */
   bvhMode: number;
   /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
@@ -197,7 +197,7 @@ export interface PipelineFrameBvh {
 }
 
 /** Optional per-frame NRC gate. */
-export interface PipelineFrameNrc {
+interface PipelineFrameNrc {
   /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
    *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
    *  neural radiance cache (spread heuristic + MLP query) and radiance records
@@ -214,7 +214,7 @@ export interface PipelineFrameNrc {
 }
 
 /** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
-export interface PipelineFrameComposite {
+interface PipelineFrameComposite {
   /** Tonemap operator mode index — matches TONEMAP_MODE_INDEX from
    *  @vitrum/shared-samplers: 0=aces(default) 1=agx 2=reinhard 3=linear 4=none. */
   tonemapMode: number;

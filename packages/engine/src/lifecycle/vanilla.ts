@@ -289,9 +289,9 @@ export const AUTO_RECREATE_WINDOW_MS = 30_000;
  * accepted for back-compat; this function handles only the construction-phase
  * channel.
  *
- * @internal — exported for unit-test access.
+ * @internal
  */
-export function buildEngineFromOpts(opts: AttachVitrumOptions): Promise<EngineWithBackendId> {
+function buildEngineFromOpts(opts: AttachVitrumOptions): Promise<EngineWithBackendId> {
   return createEngine({
     canvas: opts.canvas,
     scene: opts.scene,

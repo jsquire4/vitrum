@@ -37,7 +37,7 @@
 
 import { tonemapWgsl } from '@vitrum/shared-samplers';
 
-export function buildPresentWgsl(): string {
+function buildPresentWgsl(): string {
   return /* wgsl */ `
 struct PresentParams {
   tonemapMode:      u32,

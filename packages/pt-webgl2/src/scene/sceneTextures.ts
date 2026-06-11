@@ -3,7 +3,7 @@
 // (uploadSceneTextures builds the bundle; GlResources binds it to the program).
 
 /** A square CPU texel grid ready for `gl.texImage2D` (dim×dim, RGBA-strided). */
-export interface TexelGrid {
+interface TexelGrid {
   readonly data: Float32Array | Uint32Array;
   readonly dim: number;
   readonly kind: 'rgba32f' | 'rgba32ui';

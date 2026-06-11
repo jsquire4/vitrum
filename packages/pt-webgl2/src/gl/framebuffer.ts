@@ -8,7 +8,7 @@
 // "harmlessly ignored" by the shader then (fork comment, plan 02 §4).
 
 /** Allocate one RGBA32F, NEAREST, CLAMP_TO_EDGE color texture sized w×h (no data upload). */
-export function createColorTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
+function createColorTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
   return createTexture(gl, w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT);
 }
 

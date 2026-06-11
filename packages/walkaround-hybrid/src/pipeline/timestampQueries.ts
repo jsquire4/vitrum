@@ -42,7 +42,7 @@ import { composePassLabels } from './passes/passOrder.js';
  * `MAX_PASS_COUNT` is maintained separately and represents the maximum number
  * of passes that can be simultaneously active in a single frame configuration.
  */
-export const PASS_LABELS = [
+const PASS_LABELS = [
   'sample-budget',
   // ReGIR (Boksansky 2021) grid-build — opt-in; dispatched before RIS when live.
   'regir-build',

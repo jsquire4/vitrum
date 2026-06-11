@@ -29,7 +29,7 @@ export const VALID_DENOISERS = [
 ] as const;
 
 /** Union of all supported walkaround-hybrid denoiser identifiers. */
-export type ValidDenoiser = (typeof VALID_DENOISERS)[number];
+type ValidDenoiser = (typeof VALID_DENOISERS)[number];
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
 

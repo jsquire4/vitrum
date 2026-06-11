@@ -28,7 +28,7 @@ import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
  * D6.10 — PlainAabbArrayLike covers @vitrum/shared-bvh PlainAabb where
  * min/max are array-tuples [x,y,z] rather than { x, y, z } objects.
  */
-export interface PlainAabbArrayLike {
+interface PlainAabbArrayLike {
   readonly min: readonly [number, number, number];
   readonly max: readonly [number, number, number];
 }
@@ -69,7 +69,7 @@ export class ProbeGridVector3Value implements ProbeGridVector3 {
   }
 }
 
-export interface ProbeGridBoxLike {
+interface ProbeGridBoxLike {
   readonly min: ProbeGridVector3;
   readonly max: ProbeGridVector3;
 }

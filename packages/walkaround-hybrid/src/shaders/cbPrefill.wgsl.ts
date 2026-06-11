@@ -37,7 +37,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 // clampCoord is provided by the screenCoordHelpers module (D5.4 dedup).
 
-export const CB_PREFILL_WGSL = /* wgsl */ `
+const CB_PREFILL_WGSL = /* wgsl */ `
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 

@@ -28,13 +28,13 @@
  * assertions in tests.
  */
 
-export interface RecordedBuffer {
+interface RecordedBuffer {
   label: string;
   size: number;
   usage: number;
 }
 
-export interface BindGroupValidationError {
+interface BindGroupValidationError {
   binding: number;
   actualSize: number;
   minBindingSize: number;

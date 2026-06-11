@@ -128,7 +128,7 @@ function resolveTriColor(mat: PbrMaterialLike, applyBeer: boolean): ColorLike {
  *   The structural `PbrMaterialLike`-based family is legacy; production code uses
  *   the `*FromCore` counterparts. Retained for tests and legacy adapters only.
  */
-export function packBVHIndexWTri(
+function packBVHIndexWTri(
   indexBuf: Uint32Array,
   indices: Uint32Array,
   triMaterialId: Uint32Array,
@@ -252,7 +252,7 @@ function resolveRoughMetal(
  * @deprecated Superseded by {@link packBVHRoughMetalFromCore} (core `MaterialSpec[]`).
  *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
-export function packBVHRoughMetalTri(
+function packBVHRoughMetalTri(
   rmBuf: Uint32Array,
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
@@ -271,7 +271,7 @@ export function packBVHRoughMetalTri(
  * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
  *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
-export function packBVHBeerColorTri(
+function packBVHBeerColorTri(
   beerBuf: Uint32Array,
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
@@ -298,7 +298,7 @@ export function packBVHBeerColorTri(
  *   `restir/bvhCore.ts` (D6.7, R6 E sweep, 2026-06-11) for subsystem-local
  *   access. Retained here for back-compatibility.
  */
-export function repackBVHMaterialRange(
+function repackBVHMaterialRange(
   indexBuf: Uint32Array,
   beerBuf: Uint32Array,
   indices: Uint32Array,
@@ -323,7 +323,7 @@ export function repackBVHMaterialRange(
  *   The structural `PbrMaterialLike`-based family is legacy; production code uses
  *   the `*FromCore` counterparts. Retained for tests only.
  */
-export function packBVHIndexW(
+function packBVHIndexW(
   indices: Uint32Array,
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
@@ -364,7 +364,7 @@ export function packBVHRoughMetal(
  * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
  *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
  */
-export function packBVHBeerColors(
+function packBVHBeerColors(
   triMaterialId: Uint32Array,
   materials: readonly PbrMaterialLike[],
   triCount: number,

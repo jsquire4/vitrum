@@ -5,7 +5,7 @@ import type { Vec3 } from '@vitrum/core';
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 
 /** Threshold above which 'auto' falls back from walkaround-hybrid to a PT backend. */
-export const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
+const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
 
 export const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]);
 export const DEFAULT_PRIMARY_LIGHT_INTENSITY = 1.0;

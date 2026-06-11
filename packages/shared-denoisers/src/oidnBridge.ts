@@ -81,7 +81,7 @@ export interface OIDNDenoiseInputs {
   readonly height: number;
 }
 
-export interface OIDNModelTensorNames {
+interface OIDNModelTensorNames {
   /** ONNX input name for the noisy color tensor. Default: `"color"`. */
   readonly color?: string;
   /** Optional normals aux input name. Default: `"normal"`. */

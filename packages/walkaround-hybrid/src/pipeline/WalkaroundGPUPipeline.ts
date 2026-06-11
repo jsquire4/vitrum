@@ -116,20 +116,10 @@ import { RESERVOIR_GI_STRIDE } from '../ppg/ppgConstants.js';
 import type { RestirGISnapshot } from '../giStateSnapshot.js';
 
 // D3.5 — PipelineFrame* interfaces extracted to pipelineFrameInputs.ts.
-// Re-exported here for back-compat (existing importers such as Pass.ts,
-// HybridEngineTuning.ts, uboUpdater.ts, and the test harnesses keep their
-// current import paths intact).
+// Re-exported here for back-compat (test harnesses import PipelineFrameInputs
+// and PipelineFrameFilter from this path).
 export type {
-  PipelineFrameCamera,
-  PipelineFrameScreen,
-  PipelineFrameLighting,
-  PipelineFrameRestirDI,
-  PipelineFrameRestirGI,
-  PipelineFrameGtao,
   PipelineFrameFilter,
-  PipelineFrameBvh,
-  PipelineFrameNrc,
-  PipelineFrameComposite,
   PipelineFrameInputs,
 } from './pipelineFrameInputs.js';
 import type {

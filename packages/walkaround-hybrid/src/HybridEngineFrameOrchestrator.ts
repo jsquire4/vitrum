@@ -146,7 +146,7 @@ export interface HybridDenoiserFilterDeps {
 }
 
 /** Subsystem handles (pipeline, BVH, GI, skinning). */
-export interface HybridEngineFrameSubsystems {
+interface HybridEngineFrameSubsystems {
   pipeline: WalkaroundGPUPipeline | null;
   bvhBuffers: SceneBVHBuffers | null;
   ddgi: DDGI;
@@ -156,7 +156,7 @@ export interface HybridEngineFrameSubsystems {
 }
 
 /** Canvas + internal render dimensions for this frame. */
-export interface HybridEngineFrameDims {
+interface HybridEngineFrameDims {
   /** Canvas (swap-chain) width — what the composite pass blits TO. */
   width: number;
   /** Canvas (swap-chain) height. */
@@ -170,7 +170,7 @@ export interface HybridEngineFrameDims {
 }
 
 /** Write-back closures and frame-rate control. */
-export interface HybridEngineFrameControl {
+interface HybridEngineFrameControl {
   targetFrameIntervalMs: number | null;
   getLastFrameTs: () => number;
   setLastFrameTs: (ts: number) => void;
@@ -206,7 +206,7 @@ export interface HybridEngineFrameTelemetry {
 }
 
 /** Engine state flags, device handle, and per-frame tuning. */
-export interface HybridEngineFrameFlags {
+interface HybridEngineFrameFlags {
   state: EngineState;
   debug: boolean;
   ddgiOn: boolean;

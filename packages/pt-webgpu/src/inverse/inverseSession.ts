@@ -94,7 +94,7 @@ export interface InverseEngineHooks {
 }
 
 /** One optimized parameter, located for the engine's adjoint scatter. */
-export interface AdjointParamSlotDesc {
+interface AdjointParamSlotDesc {
   readonly domain: 'materials' | 'emitters';
   readonly id: string;
   readonly field: string;

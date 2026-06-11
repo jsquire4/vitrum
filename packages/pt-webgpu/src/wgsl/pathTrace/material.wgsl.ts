@@ -127,7 +127,7 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_BASE_WGSL = frameParamsGroup0B
  *                                full-tier pointLights/spotLights/rectAreaLights
  *                                storage buffers; loaded via integer texel index).
  */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */ `
+const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */ `
 @group(0) @binding(12) var liteEnvTex:    texture_2d<f32>;
 @group(0) @binding(13) var liteEnvCdfTex: texture_2d<f32>;
 @group(0) @binding(14) var liteLightTex:  texture_2d<f32>;
@@ -137,11 +137,11 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */
  * Lite-tier group-0 bindings: base (0–11) + B12 texture slots (12–14).
  * Used in the composed lite trace shader.
  */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL =
+const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL =
   PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_BASE_WGSL +
   PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL;
 
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = frameParamsGroup0Bindings(
+const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = frameParamsGroup0Bindings(
   ' // UBO-plumbed (D12); default metre-scale',
   `
 @group(0) @binding(12) var motionVectorsTexture: texture_storage_2d<rgba16float, write>;
@@ -149,7 +149,7 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = framePara
 );
 
 /** Group 1 — analytics + env + area lights + directional lights (11 storage buffers; adapters ≥11/stage). */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
+const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> analyticHeaders: array<vec4f>;
 @group(1) @binding(1) var<storage, read> analyticParams: array<vec4f>;
 @group(1) @binding(2) var<storage, read> analyticLocalToWorld: array<vec4f>;
@@ -186,7 +186,7 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl *
  *  eye-vertex pdf/pos/normal data (2× vec4 / vertex; specular packed as a
  *  negative-pdfFwd sentinel) consumed by the full Veach §10.3 connection
  *  sweep. */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
+const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<storage, read> tlasNodes: array<BVHNode>;
 @group(2) @binding(1) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(2) @binding(2) var<storage, read> tlasBlasRoots: array<u32>;
@@ -569,7 +569,7 @@ fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, rng: ptr<funct
 }
 `;
 
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
+const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL +
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL +
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL +

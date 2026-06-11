@@ -185,7 +185,7 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
  * probeRayCast.wgsl.ts uses the two sub-exports for their respective
  * insertion points (byte-identity verified in F6 completion, 2026-06-11).
  */
-export const RC_LIGHT_EVAL_WGSL = /* wgsl */`
+const RC_LIGHT_EVAL_WGSL = /* wgsl */`
 // ─── Sun visibility helper ────────────────────────────────────────────────────
 // Glass-aware sun shadow test.  Verbatim from sunVisibilityHelper wgslFn.
 

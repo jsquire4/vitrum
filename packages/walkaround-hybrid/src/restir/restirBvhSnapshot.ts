@@ -17,13 +17,13 @@ import {
   isAabbEmpty,
 } from './aabbHelpers.js';
 
-export interface RestirBvhVector3 {
+interface RestirBvhVector3 {
   readonly x: number;
   readonly y: number;
   readonly z: number;
 }
 
-export interface RestirBvhAabb {
+interface RestirBvhAabb {
   readonly min: RestirBvhVector3;
   readonly max: RestirBvhVector3;
 }

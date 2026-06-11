@@ -39,15 +39,11 @@ export type {
   CreateEngineOptions,
   EngineWithBackendId,
   SharedDeviceCtx,
-  BackendConstructor,
-  WebGL2PathTracerAdvancedOptions,
 } from './createEngineInternals.js';
 export {
   mergeWalkaroundTlasExtension,
   stripOwnershipCriticalKeys,
   warnCrossBackendAdvanced,
-  reportCreateEngineError,
-  attachBackendId,
 } from './createEngineInternals.js';
 
 import type {
@@ -89,7 +85,7 @@ export { wrapWithIdempotentDispose } from './idempotentDispose.js';
 
 /** Dispatch table mapping each backend id to its constructor wrapper.
  *  @internal */
-export const BACKEND_CONSTRUCTORS: Record<CreateEngineBackendId, BackendConstructor> = {
+const BACKEND_CONSTRUCTORS: Record<CreateEngineBackendId, BackendConstructor> = {
   'walkaround-hybrid': constructWalkaroundForDispatch,
   'pt-webgpu': constructPathTracerWebGPUForDispatch,
   'pt-webgl2': constructPathTracerForDispatch,

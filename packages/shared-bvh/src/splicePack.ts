@@ -63,6 +63,5 @@ export function copyVec4Strided(
   dstTriMaterialIds[dstTri] = srcTriMaterialIds[srcTri] ?? 0;
 }
 
-// Re-export strides constant used internally so callers that import from
-// splicePack can get BVH_NODE_FLOATS without a separate import.
-export { BVH_NODE_FLOATS };
+// BVH_NODE_FLOATS is also exported from the package root (index.ts via strides.ts).
+// Import from '@vitrum/shared-bvh' or './strides.js' rather than this file.

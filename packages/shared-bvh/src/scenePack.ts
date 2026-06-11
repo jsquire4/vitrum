@@ -12,12 +12,10 @@ import { buildTlas, refitTlas } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
 import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided } from './splicePack.js';
 
-// ── Back-compat re-exports from extracted modules ─────────────────────────────
-// These were previously defined in this file; they are now canonical in their
-// new modules. The re-exports keep all existing `from './scenePack.js'` imports
-// working without change (D11.1 back-compat guarantee).
+// ── Back-compat re-export from extracted module ───────────────────────────────
+// invertMat4 was previously defined in this file; now canonical in mathUtils.
+// The re-export keeps existing `from './scenePack.js'` imports working (D11.1).
 export { invertMat4 } from './mathUtils.js';
-export { rebaseLeafTriOffset, copyVec4Strided } from './splicePack.js';
 
 const IDENTITY_MAT4 = asMat4([
   1, 0, 0, 0,

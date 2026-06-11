@@ -38,7 +38,7 @@ import type { PipelineSubsystem } from './PipelineSubsystem.js';
 import type { GpuMemoryExternalSections, GpuMemoryResourceSection } from './gpuMemoryEstimate.js';
 import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
-export interface DDGISetInputs {
+interface DDGISetInputs {
   irradianceTex: GPUTexture;
   visibilityTex: GPUTexture;
   gridParams: ArrayBuffer;
@@ -46,14 +46,14 @@ export interface DDGISetInputs {
 
 /** W8 Phase 3 (2026-05-18) — RC cascade-0 + params handed to the shade
  *  pass alongside the DDGI atlas (same bind group, slots 4-5). */
-export interface RCSetInputs {
+interface RCSetInputs {
   /** Raw cascade-0 GPUBuffer from RCSubsystem (probeX·probeY·probeZ·rays × vec4f). */
   cascade0Buffer: GPUBuffer;
   /** Packed RCParams uniform bytes (64 bytes) — see packRCParams in HybridEngineRC.ts. */
   paramsBytes: ArrayBuffer;
 }
 
-export class OptionalSubsystemBindingState implements PipelineSubsystem {
+class OptionalSubsystemBindingState implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   /** DDGI inputs (layered hybrid). Null → placeholder textures. */
   private _irrTex: GPUTexture | null = null;

@@ -4,13 +4,13 @@ import type { PrimitiveTlasBinding, ScenePackResult } from '@vitrum/shared-bvh';
 export type ReSTIRBvhMode = 'merged' | 'tlas';
 
 /** A CPU-side byte payload that will be uploaded to a WebGPU storage binding. */
-export interface StorageBufferHandle {
+interface StorageBufferHandle {
   cpuData: ArrayBuffer;
   byteLength: number;
   count: number;
 }
 
-export interface RestirBoundsLike {
+interface RestirBoundsLike {
   readonly min: { readonly x: number; readonly y: number; readonly z: number };
   readonly max: { readonly x: number; readonly y: number; readonly z: number };
 }

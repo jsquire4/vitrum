@@ -10,7 +10,6 @@
 
 export { enrichMeshVertexRangesWithCoreMatrix } from './sceneHelpers.js';
 
-export type { ExtraEmitterTri, PackedAnalyticLights } from './emitterHelpers.js';
 export {
   packEmitterTrisForDDGI,
   collectRectAreaEmitterTrisFromCore,

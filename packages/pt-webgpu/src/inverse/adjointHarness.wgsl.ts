@@ -27,7 +27,7 @@ export const ADJOINT_SHADING_INPUT_FLOATS = 24;
 export const ADJOINT_EMISSIVE_IOR_INPUT_FLOATS = 8;
 
 /** Fixed-point scale the adjoint atomics use (mirror of ADJOINT_GRAD_FP = 2^20). */
-export const ADJOINT_GRAD_FP_TS = 1048576;
+const ADJOINT_GRAD_FP_TS = 1048576;
 
 /**
  * Pack one single-bounce shading-adjoint input (24 floats), matching the WGSL

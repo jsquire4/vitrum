@@ -5,8 +5,8 @@
 // Mirrors the fork's PhysicalPathTracingMaterial defines (plan/three-removal/
 // 04-glsl-kernels.md §1a), verified at PhysicalPathTracingMaterial.js:55-90.
 
-export type RandomType = 0 | 1 | 2; // 0=PCG, 1=Sobol, 2=Stratified
-export type CameraType = 0 | 1 | 2; // 0=Perspective, 1=Orthographic, 2=Equirectangular
+type RandomType = 0 | 1 | 2; // 0=PCG, 1=Sobol, 2=Stratified
+type CameraType = 0 | 1 | 2; // 0=Perspective, 1=Orthographic, 2=Equirectangular
 
 export interface TraceFeatures {
   // ── Host-controllable (an engine option drives these) ──────────────────────
@@ -63,7 +63,7 @@ export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
 /** The fixed attribute-slot defines the GLSL `texelFetch1D(attributesArray, ATTR_*, ...)` reads.
  *  ATTR_UV1 (layer 4) carries the second UV channel (TextureRef.texCoord 1); filled from
  *  primitive.uv1, falling back to uv0 when absent so the layer is always valid. */
-export const ATTR_DEFINES = { ATTR_NORMAL: 0, ATTR_TANGENT: 1, ATTR_UV: 2, ATTR_COLOR: 3, ATTR_UV1: 4 } as const;
+const ATTR_DEFINES = { ATTR_NORMAL: 0, ATTR_TANGENT: 1, ATTR_UV: 2, ATTR_COLOR: 3, ATTR_UV1: 4 } as const;
 
 /** Build the `#define NAME VALUE` map the GlProgram preamble injects. */
 export function featureDefines(f: TraceFeatures): Record<string, number> {
