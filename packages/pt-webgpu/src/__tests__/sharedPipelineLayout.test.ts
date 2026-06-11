@@ -179,8 +179,9 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     // Group 3 — WS2 light-tree buffer (0) + P2 material textures: meshUvs (1),
     // descriptors (2), sRGB texture_2d_array (3), sampler (4), LINEAR
     // texture_2d_array for normal/ORM (5) + A4 SPPM buffers: sppmPhotonCells (6),
-    // sppmCellCounters (7), sppmStats uniform (8).
-    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    // sppmCellCounters (7), sppmStats uniform (8) + A4-progressive per-pixel
+    // stats buffer (9): SppmPixelStats[W×H] read_write.
+    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     const g3m = new Map(g3!.entries.map((e) => [e.binding, e]));
     expect(g3m.get(0)!.buffer?.type).toBe('read-only-storage'); // lightTree
     expect(g3m.get(1)!.buffer?.type).toBe('read-only-storage'); // meshUvs (P2)
@@ -191,6 +192,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(g3m.get(6)!.buffer?.type).toBe('storage'); // A4: sppmPhotonCells (read_write)
     expect(g3m.get(7)!.buffer?.type).toBe('storage'); // A4: sppmCellCounters (read_write, atomic)
     expect(g3m.get(8)!.buffer?.type).toBe('uniform'); // A4: sppmStats (uniform)
+    expect(g3m.get(9)!.buffer?.type).toBe('storage'); // A4-progressive: sppmPixelStats (read_write)
     expect(g3m.get(0)!.visibility).toBe(COMPUTE);
   });
 

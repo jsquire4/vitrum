@@ -45,10 +45,10 @@ export interface ModelWeights {
  * Build a ModelWeights matching a U-Net spec with deterministic He-initialized
  * random weights. The denoising output will NOT be meaningful — this is for
  * pipeline-wiring smoke tests and the W10 example.
- * A starter trained checkpoint ships in-repo at
- * `tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model`
- * (535,107 params, ~2.04 MB f32; trained briefly on a CPU-rendered Cornell
- * set — quality is starter-grade, not production).
+ * Two trained checkpoints ship in-repo under
+ * `tools/neural-denoiser-training/checkpoints/`:
+ *   - `starter-v1.vitrum-model`  — baseline, Cornell-only (see below)
+ *   - `v2-random.vitrum-model`   — diverse-data v2 (see below)
  * See `buildRandomWeightsForSpec` JSDoc for full checkpoint provenance.
  *
  * Deterministic via a Park-Miller LCG seeded from `seed` so the same call
@@ -58,8 +58,9 @@ export interface ModelWeights {
  * @param seed  LCG seed (default 0xDEAF1984 — matches the model magic).
  *
  * ---
- * Bundled starter checkpoint
- * --------------------------
+ * Bundled checkpoints
+ * -------------------
+ *
  * `tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model`
  *   Produced: 2026-06-10, CPU training (torch 2.12.0+cpu, Python 3.14).
  *   Dataset:  32 pairs × 128×128, Cornell box (CPU brute-force path tracer,
@@ -67,14 +68,38 @@ export interface ModelWeights {
  *   Training: 20 epochs, batch=2, lr=1e-4, CosineAnnealingLR.
  *   Loss:     L1 + 0.1×SSIM, epoch-1 = 0.2965 → epoch-20 = 0.1198 (monotonic decrease).
  *   Params:   535,107 (f32), file size: ~2.04 MB.
- *   Quality:  STARTER artifact only — trained on a tiny CPU-rendered set.
- *             Reduces obvious 1-spp noise on Cornell-style scenes; will not
- *             generalise well to complex geometry or high-frequency content.
- *             Intended as a pipeline smoke-test and a bootstrap for further
- *             training. A production-quality checkpoint requires a GPU-rendered
- *             dataset (see tools/neural-denoiser-training/README.md §GPU capture).
- *   Validation: round-trip loader test (neuralWeightsRoundTrip.test.ts) passes
- *               against this artifact. Quality A/B is V28-B work.
+ *   Quality:  STARTER artifact only — trained on a tiny Cornell-only CPU-rendered set.
+ *             Reduces obvious 1-spp noise on Cornell-style scenes; generalizes
+ *             poorly to varied geometry, materials, or lighting configurations.
+ *             Kept for compatibility (the v2 checkpoint supersedes it for general use).
+ *   Validation: round-trip loader test (neuralWeightsRoundTrip.test.ts) passes.
+ *
+ * `tools/neural-denoiser-training/checkpoints/v2-random.vitrum-model`
+ *   Produced: 2026-06-10, CPU training (torch 2.12.0+cpu, Python 3.14).
+ *   Dataset:  256 pairs × 128×128 — DIVERSE:
+ *               128 Cornell box (CPU path tracer, seed=1984, 1-spp noisy / 256-spp clean)
+ *               128 random scenes (per-pair randomized geometry, materials, lights,
+ *               cameras — see capture-dataset.mjs --scene random):
+ *                 • 2–5 objects (axis-aligned boxes + sphere approximations)
+ *                 • Random diffuse albedo per object (full hue+saturation range)
+ *                 • Random area-light position/size/intensity (5–20 W/sr·m²)
+ *                 • 50% chance of coloured sky (gradient environment)
+ *                 • Random camera position/aim/FOV (50°–90° vertical)
+ *               Generated with capture-dataset.mjs --scene random --seed 42.
+ *   Training: 100 epochs, batch=4, lr=1e-4, CosineAnnealingLR, patch=128
+ *             (full-image, no random crop — dataset images are exactly 128×128).
+ *   Loss:     L1 + 0.1×SSIM, epoch-1 = 0.1776 → epoch-100 = 0.0931 (monotonic).
+ *             Loss plateau visible from epoch ~50 onward (0.095 → 0.093).
+ *   Params:   535,107 (f32), file size: ~2.04 MB.
+ *   Quality:  Better generalisation than v1 due to scene diversity — handles varied
+ *             normals, depth distributions, albedo statistics, and multiple light
+ *             placement configurations. Still CPU-trained at 128×128 resolution.
+ *             Produces visibly smoother denoising on non-Cornell scenes compared to
+ *             v1. Known ceiling: all training data is 128px Lambertian-only with no
+ *             specular/metal/glass materials; will struggle on highly glossy content.
+ *             Production-quality denoising requires a GPU-rendered HD dataset
+ *             (see tools/neural-denoiser-training/README.md §GPU capture).
+ *   Validation: round-trip loader test (neuralWeightsRoundTrip.test.ts) passes.
  */
 export function buildRandomWeightsForSpec(
   spec: { layers: readonly { name: string; weightLayout: 'OIKW' | 'IOKW' | 'none'; params: { inC: number; outC: number; kH?: number; kW?: number } }[] },

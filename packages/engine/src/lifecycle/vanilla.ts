@@ -16,6 +16,8 @@
 import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
+import type { GIStatePersistable } from '../idempotentDispose.js';
+import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
 
 // ────────────────────────────────────────────────────────────────────────────
 // A2 — WebGPU swap-chain detection + per-frame view acquisition.
@@ -174,8 +176,40 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *
    *  `fatal: true` means the engine is in `'error'` state — the host should
    *  call `handle.dispose()` and recreate.  Non-fatal errors are informational;
-   *  rendering continues. */
+   *  rendering continues.
+   *
+   *  When {@link autoRecreateOnDeviceLoss} is enabled, this callback fires
+   *  BEFORE the auto-recreate logic runs so the host always sees every error
+   *  regardless of whether the engine is about to be reconstructed.  It also
+   *  fires for the final error if the retry cap is exceeded. */
   readonly onEngineError?: (error: EngineError) => void;
+  /**
+   * Automatically recreate the engine after a fatal device-lost or
+   * context-lost error (`EngineError.kind === 'device-lost'` or
+   * `'context-lost'`).
+   *
+   * When `true`, on a fatal loss event:
+   *  1. `onEngineError` is called first (host sees the event regardless).
+   *  2. The RAF loop is stopped.
+   *  3. If the engine exposes `exportGIState` (walkaround-hybrid backend),
+   *     the DDGI probe state is exported before the engine is torn down.
+   *  4. The engine is disposed.
+   *  5. `createEngine` is called again with the original options, minting a
+   *     fresh GPU device automatically.
+   *  6. If GI state was exported and the new engine exposes `importGIState`,
+   *     it is imported — warm DDGI probes survive the recreate.
+   *  7. The RAF loop resumes.
+   *
+   * Retries are capped at **2 attempts within 30 seconds**.  If the cap is
+   * exceeded, the final `onEngineError` is delivered with `fatal: true` and
+   * the loop stays stopped (same as if `autoRecreateOnDeviceLoss` were false).
+   *
+   * `onEngineError` receives every event — before auto-recreate and on the
+   * final failure after the cap.
+   *
+   * Default: `false`.
+   */
+  readonly autoRecreateOnDeviceLoss?: boolean;
   /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
@@ -223,6 +257,11 @@ export interface AttachVitrumHandle {
   captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null>;
 }
 
+/** @internal — maximum number of auto-recreate attempts within the window. */
+export const AUTO_RECREATE_MAX_ATTEMPTS = 2;
+/** @internal — window duration (ms) within which retry attempts are counted. */
+export const AUTO_RECREATE_WINDOW_MS = 30_000;
+
 export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVitrumHandle> {
   const reportError = (error: unknown, event: CreateEngineErrorEvent): void => {
     try {
@@ -230,7 +269,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     } catch {}
   };
 
-  const engine = await createEngine({
+  // ── Initial engine construction ─────────────────────────────────────────
+  // `engine` is mutable so the auto-recreate path can swap it in place while
+  // the stable handle facade (returned to the host) continues to work.
+  let engine = await createEngine({
     canvas: opts.canvas,
     scene: opts.scene,
     ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
@@ -240,22 +282,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     ...(opts.onError != null ? { onError: opts.onError } : {}),
   });
 
-  // Telemetry forwarders. We use the engine's own subscription API rather
-  // than wrapping renderFrame because subscribers must run even if the
-  // host-supplied onFrame throws (engine swallows callback throws).
-  const unsubFrame = opts.onFrame && engine.onFrame
-    ? engine.onFrame(opts.onFrame)
-    : undefined;
-  const unsubProgress = opts.onProgress && engine.onProgress
-    ? engine.onProgress(opts.onProgress)
-    : undefined;
-  // Forward engine-level GPU errors to the host's onEngineError callback.
-  const unsubEngineError = opts.onEngineError && engine.onError
-    ? engine.onError((err) => { try { opts.onEngineError!(err); } catch {} })
-    : undefined;
-
-  // Resize: track the canvas's CSS pixel size + DPR. Renderframe receives
-  // the latest values via FrameInput.viewport.
+  // ── Resize state ─────────────────────────────────────────────────────────
   //
   // H30 — synchronous initial sizing: set canvas.width/height from CSS client
   // size × DPR so the backing store matches the visible area before the first
@@ -284,12 +311,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   opts.canvas.height = initH;
   let viewportW = initW;
   let viewportH = initH;
-  // A4 — Only backends with `presentationMode === 'swapchain-required'`
-  // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
-  // offscreen-texture backends (pt-webgl2, pt-webgpu) honour
-  // `FrameInput.viewport` per-frame and declare `setSize` absent.
-  const needsExplicitSetSize =
-    engine.capabilities.presentationMode === 'swapchain-required';
+
+  // ── ResizeObserver ───────────────────────────────────────────────────────
   let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
@@ -307,7 +330,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       // viewport/swapchain mismatches until the next createEngine call.
       opts.canvas.width = viewportW;
       opts.canvas.height = viewportH;
-      if (needsExplicitSetSize) {
+      // A4 — Only backends with `presentationMode === 'swapchain-required'`
+      // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
+      // offscreen-texture backends (pt-webgl2, pt-webgpu) honour
+      // `FrameInput.viewport` per-frame and declare `setSize` absent.
+      if (engine.capabilities.presentationMode === 'swapchain-required') {
         try {
           engine.setSize?.(viewportW, viewportH);
         } catch (err) {
@@ -318,14 +345,18 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     resizeObserver.observe(opts.canvas);
   }
 
+  // ── WebGPU swap-chain detection ──────────────────────────────────────────
   // A2 — WebGPU backend detection. createEngine's walkaround constructor
   // configured the canvas's WebGPU context; we re-observe it here so the
   // RAF tick can acquire a fresh GPUTextureView per frame and pass it as
   // FrameInput.swapChainView. WebGL hosts return { context: null } and the
   // tick omits the swap-chain fields.
+  // NOTE: After auto-recreate the same canvas context is reused (createEngine
+  // re-configures it); re-reading detectWebGPUSwapChain after recreate would
+  // yield the same context object, so we capture it once here.
   const { context: webgpuContext, format: webgpuFormat } = detectWebGPUSwapChain(opts.canvas);
 
-  // Pause-on-hidden. Default ON.
+  // ── Pause-on-hidden ──────────────────────────────────────────────────────
   const pauseOnHidden = opts.pauseOnHidden ?? true;
   let visibilityHandler: (() => void) | undefined;
   if (pauseOnHidden && typeof document !== 'undefined') {
@@ -341,7 +372,135 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     visibilityHandler();
   }
 
-  // RAF loop.
+  // ── Telemetry subscriptions ──────────────────────────────────────────────
+  // Subscriptions are set up through a helper so they can be re-subscribed
+  // after auto-recreate.  The host-facing callbacks are stable closures that
+  // read opts.onFrame / opts.onProgress / opts.onEngineError by value at
+  // call time (not captured once).
+  let unsubFrame: (() => void) | undefined;
+  let unsubProgress: (() => void) | undefined;
+  let unsubEngineError: (() => void) | undefined;
+
+  const subscribeToEngine = (): void => {
+    unsubFrame?.();
+    unsubProgress?.();
+    unsubEngineError?.();
+    unsubFrame = opts.onFrame && engine.onFrame
+      ? engine.onFrame(opts.onFrame)
+      : undefined;
+    unsubProgress = opts.onProgress && engine.onProgress
+      ? engine.onProgress(opts.onProgress)
+      : undefined;
+    unsubEngineError = engine.onError
+      ? engine.onError((err) => {
+          // Always deliver to the host first, before any internal handling.
+          try { opts.onEngineError?.(err); } catch {}
+          if (err.fatal) handleFatalEngineError(err);
+        })
+      : undefined;
+  };
+  subscribeToEngine();
+
+  // ── Auto-recreate state machine ──────────────────────────────────────────
+  // Retry budget: at most AUTO_RECREATE_MAX_ATTEMPTS within AUTO_RECREATE_WINDOW_MS.
+  const recreateTimes: number[] = [];
+  let recreating = false;
+
+  const handleFatalEngineError = (err: EngineError): void => {
+    if (!opts.autoRecreateOnDeviceLoss) return;
+    if (!isLossKind(err.kind)) return;
+    if (disposed || recreating) return;
+
+    const now = Date.now();
+    // Prune attempts outside the window.
+    while (recreateTimes.length > 0 && now - recreateTimes[0]! > AUTO_RECREATE_WINDOW_MS) {
+      recreateTimes.shift();
+    }
+    if (recreateTimes.length >= AUTO_RECREATE_MAX_ATTEMPTS) {
+      // Cap exceeded — final error already delivered above; stay stopped.
+      console.error(
+        `[attachVitrum] auto-recreate cap (${AUTO_RECREATE_MAX_ATTEMPTS} attempts / ` +
+        `${AUTO_RECREATE_WINDOW_MS}ms) exceeded; RAF loop will not be restarted.`,
+      );
+      return;
+    }
+
+    recreating = true;
+    recreateTimes.push(now);
+
+    // Fire-and-forget; errors inside recreate are surface-logged.
+    void performAutoRecreate();
+  };
+
+  const performAutoRecreate = async (): Promise<void> => {
+    // 1. Stop the RAF loop while we recreate.
+    stopped = true;
+    if (rafHandle != null) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
+
+    // 2. Export GI state before dispose (walkaround-hybrid backend only).
+    const giEngine = engine as Engine & Partial<GIStatePersistable>;
+    let savedGI: GIStateSnapshot | null = null;
+    try {
+      if (typeof giEngine.exportGIState === 'function') {
+        savedGI = await giEngine.exportGIState();
+      }
+    } catch {
+      // Best-effort; proceed without GI state.
+    }
+
+    // 3. Dispose the broken engine.
+    unsubFrame?.();
+    unsubProgress?.();
+    unsubEngineError?.();
+    unsubFrame = undefined;
+    unsubProgress = undefined;
+    unsubEngineError = undefined;
+    try { engine.dispose(); } catch {}
+
+    // 4. Recreate.
+    try {
+      engine = await createEngine({
+        canvas: opts.canvas,
+        scene: opts.scene,
+        ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
+        ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
+        ...(opts.debug != null ? { debug: opts.debug } : {}),
+        ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
+        ...(opts.onError != null ? { onError: opts.onError } : {}),
+      });
+    } catch (createErr) {
+      console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
+      recreating = false;
+      return;
+    }
+
+    // 5. Re-subscribe telemetry on the new engine.
+    subscribeToEngine();
+
+    // 6. Restore GI state if available.
+    if (savedGI != null) {
+      try {
+        const newGiEngine = engine as Engine & Partial<GIStatePersistable>;
+        if (typeof newGiEngine.importGIState === 'function') {
+          newGiEngine.importGIState(savedGI);
+        }
+      } catch {
+        // Best-effort.
+      }
+    }
+
+    // 7. Resume the RAF loop (unless the handle was disposed while we were recreating).
+    recreating = false;
+    if (!disposed) {
+      stopped = false;
+      rafHandle = requestAnimationFrame(tick);
+    }
+  };
+
+  // ── RAF loop ─────────────────────────────────────────────────────────────
   let frameIndex = 0;
   let prevView: Mat4 | undefined;
   let prevProj: Mat4 | undefined;
@@ -416,7 +575,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
   let disposed = false;
   return {
-    engine,
+    get engine() { return engine; },
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -431,9 +590,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       try { unsubEngineError?.(); } catch {}
       try { engine.dispose(); } catch {}
     },
-    captureFrame: (opts?: CaptureFrameOptions) => {
+    captureFrame: (captureOpts?: CaptureFrameOptions) => {
       if (typeof engine.captureFrame !== 'function') return Promise.resolve(null);
-      return engine.captureFrame(opts);
+      return engine.captureFrame(captureOpts);
     },
   };
+}
+
+/** Return true when the given error kind represents a device/context loss. */
+function isLossKind(kind: EngineError['kind']): boolean {
+  return kind === 'device-lost' || kind === 'context-lost';
 }

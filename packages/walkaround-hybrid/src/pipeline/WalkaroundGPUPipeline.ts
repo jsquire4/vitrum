@@ -51,9 +51,17 @@ import {
 } from './resourceManager.js';
 import {
   type BGLCache,
+  getCompositeBindGroupLayout,
 } from './bindGroupLayouts.js';
 import type { UboRef } from './bindGroupBuilders.js';
-import { buildLightTreeBindGroup } from './bindGroupBuilders.js';
+import { buildCompositeBindGroup, buildLightTreeBindGroup } from './bindGroupBuilders.js';
+import { composeWgsl } from './wgslComposer.js';
+import {
+  COMPOSITE_FRAG_MODULE,
+  COMPOSITE_VERT_MODULE,
+  WGSL_MODULES,
+} from './wgslModules.js';
+import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
 import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
@@ -658,6 +666,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private readonly _bvhHost = new BvhBufferHost();
   /** Cached composite pass — avoids registry lookup in presentLastFrame. */
   private _compositePass: CompositePass | null = null;
+  /** Swap-chain format this pipeline was compiled for (stored at initialize()). */
+  private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
+  /**
+   * Lazily-compiled capture render pipeline targeting rgba8unorm.  Only
+   * allocated when `captureOutputFrame` is first called AND the swap-chain
+   * format is not already rgba8unorm (in which case `_compositePass.pipeline`
+   * is reused directly).  Destroyed on `dispose()`.
+   */
+  private _captureRenderPipeline: GPURenderPipeline | null = null;
+  /**
+   * Lazily-created offscreen rgba8unorm texture for captureOutputFrame.
+   * Recreated whenever the pipeline's render dimensions change (resize-aware).
+   */
+  private _captureOffscreenTex: { tex: GPUTexture; w: number; h: number } | null = null;
 
   // Per-frame GPU resources (created by resourceManager.createFrameResources)
   private _res!: FrameResources;
@@ -1014,6 +1036,163 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._res.common.resolvedTexture;
   }
 
+  /**
+   * Run the composite pass into an engine-owned offscreen `rgba8unorm` texture
+   * and read it back to a Float32Array (RGBA, unorm → [0,1], row-major,
+   * top-left origin).
+   *
+   * This is the 'output' capture path: the same tonemap / OETF / exposure
+   * settings last written by `renderFrame` (or `presentLastFrame`) are reused
+   * from the live `_compositeUboRef` buffer — the output is display-encoded,
+   * post-OETF, unlike the 'linear' path that reads the pre-tonemap
+   * `resolvedTexture`.
+   *
+   * Pipeline decision — the composite render pipeline is format-specialised
+   * (compiled for `swapChainFormat`).  For the offscreen capture target we fix
+   * the format at `rgba8unorm` (universally supports RENDER_ATTACHMENT + COPY_SRC):
+   *   • If `swapChainFormat === 'rgba8unorm'`, the existing pipeline is reused
+   *     (zero extra compile cost).
+   *   • Otherwise a second render pipeline targeting `rgba8unorm` is compiled
+   *     lazily on the first call and cached for the lifetime of this engine
+   *     instance.  It is destroyed in `dispose()`.
+   *
+   * Returns `null` when:
+   *   - the pipeline is not yet initialised (no frame rendered), OR
+   *   - the `_compositeUboRef` buffer is absent (UBO not yet allocated).
+   *
+   * Pipeline stall: submits copyTextureToBuffer + mapAsync.  Use for
+   * debugging / screenshot export, not per-frame readback.
+   */
+  async captureOutputFrame(): Promise<Float32Array | null> {
+    if (!this._initialized) return null;
+    const d = this._device;
+    const compositeUbo = this._compositeUboRef.buf;
+    if (compositeUbo == null) return null;
+
+    const compositePass = this._compositePass;
+    if (compositePass == null) return null;
+
+    const W = this._width;
+    const H = this._height;
+    if (W <= 0 || H <= 0) return null;
+
+    // ── Resolve / lazily compile the capture render pipeline ──────────────
+    const CAPTURE_FORMAT: GPUTextureFormat = 'rgba8unorm';
+    let capturePipeline: GPURenderPipeline;
+    if (this._swapChainFormat === CAPTURE_FORMAT) {
+      // Format matches — reuse the existing compiled pipeline.
+      capturePipeline = compositePass.pipeline;
+    } else {
+      // Compile a capture-format pipeline lazily (once per engine instance).
+      if (this._captureRenderPipeline === null) {
+        const compVertSM = d.createShaderModule({
+          label: 'comp-vert-capture',
+          code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES),
+        });
+        const compFragSM = d.createShaderModule({
+          label: 'comp-frag-capture',
+          code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES),
+        });
+        const captureLayout = d.createPipelineLayout({
+          bindGroupLayouts: [getCompositeBindGroupLayout(d, this._bglCache)],
+        });
+        this._captureRenderPipeline = await d.createRenderPipelineAsync({
+          label: 'composite-capture',
+          layout: captureLayout,
+          vertex:   { module: compVertSM, entryPoint: 'vertMain' },
+          fragment: {
+            module: compFragSM,
+            entryPoint: 'fragMain',
+            targets: [{ format: CAPTURE_FORMAT }],
+          },
+          primitive: { topology: 'triangle-list' },
+        });
+      }
+      capturePipeline = this._captureRenderPipeline;
+    }
+
+    // ── Lazy-create / resize the offscreen capture texture ────────────────
+    if (
+      this._captureOffscreenTex === null ||
+      this._captureOffscreenTex.w !== W ||
+      this._captureOffscreenTex.h !== H
+    ) {
+      this._captureOffscreenTex?.tex.destroy();
+      this._captureOffscreenTex = {
+        tex: d.createTexture({
+          label: 'composite-capture-offscreen',
+          size: { width: W, height: H },
+          format: CAPTURE_FORMAT,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        }),
+        w: W,
+        h: H,
+      };
+    }
+    const offscreenTex = this._captureOffscreenTex.tex;
+
+    // ── Build composite bind group (reuse the same inputs as renderFrame) ─
+    const bg = buildCompositeBindGroup(
+      d,
+      this._bglCache,
+      this._res.common.resolvedTexture.createView(),
+      this._res.common.compositeSampler,
+      compositeUbo,
+    );
+
+    // ── Record the render pass into the offscreen texture ─────────────────
+    const bytesPerRow = alignedTextureCopyBytesPerRow(W, 4); // 4 bytes per rgba8unorm pixel
+    const readSize = bytesPerRow * H;
+    const staging = d.createBuffer({
+      label: 'composite-capture-staging',
+      size: readSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    try {
+      const encoder = d.createCommandEncoder({ label: 'composite-capture' });
+      const pass = encoder.beginRenderPass({
+        label: 'composite-capture',
+        colorAttachments: [{
+          view: offscreenTex.createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        }],
+      });
+      pass.setPipeline(capturePipeline);
+      pass.setBindGroup(0, bg);
+      pass.draw(3, 1, 0, 0); // fullscreen triangle
+      pass.end();
+      encoder.copyTextureToBuffer(
+        { texture: offscreenTex },
+        { buffer: staging, bytesPerRow },
+        { width: W, height: H, depthOrArrayLayers: 1 },
+      );
+      d.queue.submit([encoder.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const src = new Uint8Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+
+      // Decode rgba8unorm → float32 RGBA, 4 channels per pixel, [0, 1] range.
+      const out = new Float32Array(W * H * 4);
+      for (let y = 0; y < H; y++) {
+        const rowOff = y * bytesPerRow;
+        for (let x = 0; x < W; x++) {
+          const srcOff = rowOff + x * 4;
+          const dstOff = (y * W + x) * 4;
+          out[dstOff]     = (src[srcOff]!     & 0xff) / 255;
+          out[dstOff + 1] = (src[srcOff + 1]! & 0xff) / 255;
+          out[dstOff + 2] = (src[srcOff + 2]! & 0xff) / 255;
+          out[dstOff + 3] = (src[srcOff + 3]! & 0xff) / 255;
+        }
+      }
+      return out;
+    } finally {
+      staging.destroy();
+    }
+  }
+
   /** Temporal-accumulator history depth: frames accumulated since the last
    *  α=1 reset (camera motion, `requestAccumReset`, or `resize`). Increments
    *  once per rendered frame; reset to 0 on each of those events. Read by
@@ -1219,6 +1398,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);
     }
+
+    // Store the swap-chain format so captureOutputFrame can decide whether to
+    // reuse the existing composite pipeline or compile a capture variant.
+    this._swapChainFormat = swapChainFormat;
 
     // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
@@ -1963,6 +2146,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   dispose(): void {
     this._bvhHost.dispose();
     this._compositePass = null;
+    this._captureRenderPipeline = null;
+    this._captureOffscreenTex?.tex.destroy();
+    this._captureOffscreenTex = null;
     if (this._res) destroyFrameResources(this._res);
     for (const ref of this._perPassUboRefs) ref.buf?.destroy();
     disposeTimestampState(this._tsState);

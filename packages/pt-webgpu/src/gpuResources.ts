@@ -35,6 +35,7 @@ import {
   SPPM_CELL_COUNTERS_BYTES,
   SPPM_STATS_BYTES,
   SPPM_PHOTON_CELLS_MAX_BYTES,
+  SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
 } from './wgsl/pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
@@ -181,6 +182,18 @@ export class GpuResources {
    * Bound at group(3) binding(8).
    */
   sppmStatsBuffer: GPUBuffer | null = null;
+
+  /**
+   * A4-progressive — per-pixel SPPM statistics buffer.
+   * SppmPixelStats[W×H] = {tau.rgb, radius2, N, _pad×3} × 32 bytes/px.
+   * Allocated in `ensureSppmPixelStatsBuffer`; reset (GPU-cleared) whenever
+   * the PT accumulator resets (same condition as `clearAccumBuffer` in reset()).
+   * Bound at group(3) binding(9) on the full tier (megakernel only; the photon
+   * pass does not need it).  64-byte placeholder when SPPM is off.
+   */
+  sppmPixelStatsBuffer: GPUBuffer | null = null;
+  sppmPixelStatsWidth  = 0;
+  sppmPixelStatsHeight = 0;
 
   /** Compute pipeline for the photon-emission pre-pass (sppmEmitPhotons). */
   sppmPhotonPipeline: GPUComputePipeline | null = null;
@@ -566,6 +579,7 @@ export class GpuResources {
           buf(6, rw), // A4: sppmPhotonCells (read_write storage)
           buf(7, rw), // A4: sppmCellCounters (read_write storage, atomic)
           buf(8, uniform), // A4: sppmStats (uniform)
+          buf(9, rw), // A4-progressive: sppmPixelStats (read_write storage)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -1161,13 +1175,14 @@ export class GpuResources {
           { binding: 3, resource: sb.materialTextureView },
           { binding: 4, resource: sb.materialTextureSampler },
           { binding: 5, resource: sb.materialLinearTextureView },
-          // A4 — SPPM photon hash-grid (bindings 6/7/8). Placeholder buffers
-          // are bound when SPPM is off so the layout slot is satisfied; the
-          // gather code in caustic.wgsl.ts is guarded by causticMode() == 2u
-          // so the placeholders are never accessed.
+          // A4 — SPPM photon hash-grid (bindings 6/7/8) + A4-progressive per-pixel
+          // stats (binding 9). Placeholder buffers are bound when SPPM is off so the
+          // layout slot is satisfied; the gather code in caustic.wgsl.ts is guarded
+          // by causticMode() == 2u so the placeholders are never accessed.
           { binding: 6, resource: { buffer: this.sppmPhotonCellsBuffer! } },
           { binding: 7, resource: { buffer: this.sppmCellCountersBuffer! } },
           { binding: 8, resource: { buffer: this.sppmStatsBuffer! } },
+          { binding: 9, resource: { buffer: this.sppmPixelStatsBuffer! } },
         ],
       });
     }
@@ -1376,6 +1391,14 @@ export class GpuResources {
           size: 64,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
+        // A4-progressive: placeholder for binding(9) when SPPM is off.
+        if (this.sppmPixelStatsBuffer == null) {
+          this.sppmPixelStatsBuffer = this.#device.createBuffer({
+            label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
+            size: 64,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          });
+        }
         // SPPM buffers just created — invalidate group-3 so it rebuilds
         // with the new placeholder handles.
         this.invalidateGroup3BindGroup();
@@ -1583,6 +1606,80 @@ export class GpuResources {
     this.#device.queue.writeBuffer(this.sppmStatsBuffer, 0, ubo);
   }
 
+  /**
+   * A4-progressive — (Re)allocate the per-pixel SPPM statistics buffer to
+   * `width × height`.  Returns `true` when the buffer exists at the requested
+   * dims (freshly created or already cached); `false` on the lite tier or when
+   * the requested size exceeds the device's maxBufferSize / maxStorageBufferBindingSize.
+   *
+   * On (re)allocation the buffer is GPU-cleared so every pixel's (τ, R², N)
+   * starts at zero — the gather treats R²=0 as "first frame" and seeds from r₀².
+   * Called each frame from `renderFrame` just before `buildBindGroups`; also
+   * called from `reset()` + `setScene()` so the stats are wiped when the view
+   * moves or a new scene is loaded.
+   */
+  ensureSppmPixelStatsBuffer(width: number, height: number): boolean {
+    if (this.#traceTier !== 'full') return false;
+    const targetBytes = Math.max(
+      64, // minimum for valid binding
+      width * height * SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
+    );
+    // Guard against device limits (same discipline as BDPT eye-stack / photon cells).
+    const deviceMaxBuffer  = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
+    const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
+    if (targetBytes > Math.min(deviceMaxBuffer, deviceMaxBinding)) {
+      if (!this.#ceilingWarnedKeys.has('sppmPixelStats')) {
+        this.#ceilingWarnedKeys.add('sppmPixelStats');
+        const mib = (targetBytes / (1024 * 1024)).toFixed(1);
+        console.warn(
+          `[vitrum/pt-webgpu] SPPM per-pixel stats buffer would be ${mib} MiB ` +
+            `(${width}×${height} × 32 B), exceeding the device limit. ` +
+            'SPPM progressive stats disabled — caustic quality will be reduced. ' +
+            '(This warning fires once per engine instance.)',
+        );
+      }
+      return false;
+    }
+    // Cache hit — buffer already at the right size.
+    if (
+      this.sppmPixelStatsBuffer != null &&
+      this.sppmPixelStatsWidth  === width &&
+      this.sppmPixelStatsHeight === height
+    ) {
+      return true;
+    }
+    // Reallocate.
+    this.sppmPixelStatsBuffer?.destroy();
+    this.sppmPixelStatsBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.sppm.pixelStats',
+      size: targetBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.sppmPixelStatsWidth  = width;
+    this.sppmPixelStatsHeight = height;
+    // GPU-clear: all zeros → τ=0, R²=0 (→ seed r₀ on first frame), N=0.
+    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.clear' });
+    enc.clearBuffer(this.sppmPixelStatsBuffer);
+    this.#device.queue.submit([enc.finish()]);
+    // New buffer handle — invalidate group-3 so buildBindGroups picks it up.
+    this.invalidateGroup3BindGroup();
+    return true;
+  }
+
+  /**
+   * GPU-clear the per-pixel SPPM statistics buffer (τ/R²/N → 0).
+   * Called whenever the PT accumulator resets (camera move / setScene / reset())
+   * so the progressive estimate restarts from a clean state — consistent with
+   * SPPM's static-eye-point assumption (accumulation only proceeds on a still view).
+   * No-op if the buffer has not been allocated yet.
+   */
+  clearSppmPixelStats(): void {
+    if (this.sppmPixelStatsBuffer == null || this.sppmPixelStatsWidth === 0) return;
+    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.reset' });
+    enc.clearBuffer(this.sppmPixelStatsBuffer);
+    this.#device.queue.submit([enc.finish()]);
+  }
+
   /** Dispose SPPM-specific GPU resources. Called from dispose(). */
   #disposeSppmResources(): void {
     this.sppmPhotonCellsBuffer?.destroy();
@@ -1591,6 +1688,10 @@ export class GpuResources {
     this.sppmCellCountersBuffer = null;
     this.sppmStatsBuffer?.destroy();
     this.sppmStatsBuffer = null;
+    this.sppmPixelStatsBuffer?.destroy();
+    this.sppmPixelStatsBuffer = null;
+    this.sppmPixelStatsWidth  = 0;
+    this.sppmPixelStatsHeight = 0;
     this.sppmPhotonPipeline = null; // GPUComputePipeline has no destroy()
     // The SPPM bind-group layout is part of group-3 (bindGroupLayout3 / the shared
     // pipeline layout); it is released via the normal bindGroupLayout3 null-out in

@@ -61,6 +61,13 @@ export interface VitrumCanvasProps {
   onEngineError?: (error: EngineError) => void;
   /** Called when attachVitrum fails. */
   onAttachError?: (error: unknown) => void;
+  /**
+   * Automatically recreate the engine after a fatal device-lost or context-lost
+   * error.  Forwarded to {@link attachVitrum}'s `autoRecreateOnDeviceLoss` option.
+   * See that option's documentation for the full recreate sequence, GI-state
+   * preservation, and retry-cap behaviour.  Default: `false`.
+   */
+  autoRecreateOnDeviceLoss?: boolean;
   /** Forwarded to the underlying canvas element. */
   style?: React.CSSProperties;
   /** Forwarded to the underlying canvas element. */
@@ -112,6 +119,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         // each parent render. advancedRef.current is always the latest value.
         ...(advancedRef.current != null ? { advanced: advancedRef.current } : {}),
         ...(props.debug != null ? { debug: props.debug } : {}),
+        ...(props.autoRecreateOnDeviceLoss != null
+          ? { autoRecreateOnDeviceLoss: props.autoRecreateOnDeviceLoss }
+          : {}),
         // Live-propagation: pass a getter so the rAF tick reads the latest
         // `props.quality` each frame (qualityRef.current is updated by the
         // useEffect at line 67 whenever props.quality changes).

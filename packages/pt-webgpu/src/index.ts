@@ -309,10 +309,11 @@ class PTEngineWebGPU implements Engine {
   readonly #restirPtMClamp: number;
   readonly #restirPtWCap: number;
 
-  // ── SPPM state (A4, photon-map strategy) ──────────────────────────────────
+  // ── SPPM state (A4-progressive, photon-map strategy) ─────────────────────
   /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
-   *  Recomputed on every setScene.  This IS the per-frame gather radius — frozen
-   *  (not shrunk) for the streaming-window photon estimator.  See Item-2 fix. */
+   *  Recomputed on every setScene.  Used as the INITIAL per-pixel R² seed
+   *  (r₀²) in sppmGatherProgressive; the per-pixel radius then shrinks
+   *  progressively via the Hachisuka update rule (A4-progressive). */
   #sppmR0 = 0.017; // 1.7 cm — a safe pre-setScene default (1 m Cornell box)
   /** Half-diagonal of the scene used for the directional-light disk emitter. */
   #sppmSceneExtent = 10.0; // world units; refreshed on setScene
@@ -958,9 +959,10 @@ class PTEngineWebGPU implements Engine {
           this.#sppmSceneExtent = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
         }
       }
-      // Item-2 fix: radius is frozen at r₀ (streaming-window estimator).  No
-      // per-frame shrink; the streaming window naturally evicts stale photons.
-      // Invalidate SPPM buffers so they rebuild with the new scene-extent stats.
+      // A4-progressive: invalidate SPPM buffers so they rebuild with the new
+      // scene-extent stats (r₀ recomputed above).  The per-pixel stats buffer
+      // is cleared in reset() (called below) — static-eye-point invariant holds
+      // because a setScene always resets accumulation.
       this.#gpu.sppmBuffersReady = false;
     }
     if (opts.warnOnEmpty) {
@@ -1100,16 +1102,13 @@ class PTEngineWebGPU implements Engine {
     // frame (photon pass and megakernel both silently skipped group-3 → photons
     // were never written, gather read nothing, lum=0 gpuErrs=1 on full tier).
     //
-    // Item-2 fix (2026-06-10): radius is FROZEN at r₀ (streaming-window estimator,
-    // not progressive).  Per-frame counter clearing (clearBuffer) is REMOVED so
-    // photons accumulate in the ring buffer across frames (streaming window of the
-    // last SPPM_CELL_CAPACITY photons per cell).  The PT accumulation buffer
-    // averages independent-frame estimates, which gives stable, bounded-variance
-    // output.  The Hachisuka 2009 "progressive" shrinking schedule is NOT used:
-    // it requires per-hit-point τ/N accumulators that are outside the scope of
-    // the hash-grid streaming design; renaming to a streaming-window photon density
-    // estimator is the honest label.  Road-to-100 A4-progressive tracks the true
-    // SPPM with per-pixel τ/N buffers as a follow-up.
+    // A4-progressive (2026-06-10): true Hachisuka SPPM — per-pixel (τ, R², N)
+    // buffer at @group(3) @binding(9), reset on accumulator reset.  The hash
+    // grid (bindings 6/7) still re-deposits fresh photons every frame (counters
+    // are NOT cleared per frame — photons accumulate in the ring buffer across
+    // frames for stable coverage), but the gather now applies the progressive
+    // update rule (N'=N+αM, R'²=R²·N'/(N+M), τ'=(τ+Φ_M)·ratio) instead of the
+    // frozen-radius density estimate.
     const sppmActive =
       this.#causticStrategy === 'photon-map' && this.#traceTier === 'full';
     let sppmReady = false;
@@ -1119,19 +1118,34 @@ class PTEngineWebGPU implements Engine {
         // Ceiling exceeded — fall back silently (manifold-nee semantics).
         gpu.ensureSppmBuffers(false); // ensure placeholder satisfies the layout
       }
-      // Frozen radius — use r₀ directly (no per-frame shrink).
+      // A4-progressive: ensure per-pixel stats buffer at the current render dims.
+      // ensureSppmPixelStatsBuffer is idempotent on a cache hit (same W×H); on
+      // a first allocation or dim change it GPU-clears (τ/R²/N → 0) and
+      // invalidates group-3.  A 64-byte placeholder is already created by
+      // ensureSppmBuffers(false) above when SPPM is off, so the else branch below
+      // doesn't need to call it separately.
+      gpu.ensureSppmPixelStatsBuffer(width, height);
+      // A4-progressive: `frameAccumulated` counts completed frames so WGSL can
+      // compute Ne = frameAccumulated × photonCount.  This frame's photons are
+      // emitted NOW (pre-megakernel), so the completed count INCLUDING this frame
+      // is #samplesAccumulated + 1 (incremented at the end of renderFrame).
+      // `currentRadius` is still r₀ (the initial search radius); the per-pixel
+      // radius stored in sppmPixelStats shrinks progressively — the UBO field is
+      // kept for the photon-insertion pass which still needs the global grid cell
+      // size (tied to r₀, not the shrinking per-pixel radius).
       gpu.writeSppmStats(
         this.#sppmR0,
         this.#sppmR0,
-        this.#samplesAccumulated,
+        this.#samplesAccumulated + 1,
         SPPM_PHOTON_COUNT,
         this.#sppmSceneExtent,
       );
       sppmReady =
         sppmBuffersOk &&
-        gpu.sppmPhotonPipeline != null;
+        gpu.sppmPhotonPipeline != null &&
+        gpu.sppmPixelStatsBuffer != null;
     } else if (this.#traceTier === 'full') {
-      // Ensure placeholder SPPM buffers exist so group-3 binding 6/7/8 are
+      // Ensure placeholder SPPM buffers exist so group-3 bindings 6/7/8/9 are
       // satisfied (the gather is guarded by causticMode() == 2u, so the
       // placeholders are never accessed).
       gpu.ensureSppmBuffers(false);
@@ -1164,16 +1178,16 @@ class PTEngineWebGPU implements Engine {
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
 
-    // ── A4 SPPM photon-emission pass (before the megakernel) ─────────────────
+    // ── A4-progressive SPPM photon-emission pass (before the megakernel) ────────
     // The photon pass binds the SAME groups 0/1/2/3 as the megakernel.
-    // Group 3 carries the SPPM hash-grid buffers at bindings 6/7/8 alongside the
-    // light-tree / material textures (0-5), so no separate group-4 is needed.
+    // Group 3 carries the SPPM hash-grid buffers at bindings 6/7/8 (+ per-pixel
+    // stats at binding 9, read/written by the megakernel's sppmGatherProgressive)
+    // alongside the light-tree / material textures (0-5), no group-4 needed.
     //
-    // Item-2 fix: counters are NOT cleared per frame.  Photons accumulate in the
-    // ring buffer (streaming window of last SPPM_CELL_CAPACITY photons per cell),
-    // giving stable variance.  The PT accumulation buffer averages over frames.
-    // Per-frame counter clearing caused variance to GROW as frame count increased
-    // because fewer photons per cell contributed as coverage converged.
+    // Counters are NOT cleared per frame — photons accumulate in the ring buffer
+    // (streaming window of last SPPM_CELL_CAPACITY photons per cell), giving
+    // stable coverage.  The progressive radius/τ shrink is handled per-pixel in
+    // the megakernel's sppmGatherProgressive, not in the emission pass.
     if (sppmReady && gpu.sppmPhotonPipeline != null) {
       const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
       photonPass.setPipeline(gpu.sppmPhotonPipeline);
@@ -1421,6 +1435,11 @@ class PTEngineWebGPU implements Engine {
     // Item 2e — clear ReSTIR-PT reservoir history so stale temporal samples from
     // the previous scene do not bleed into the new one. No-op if not allocated.
     this.#gpu.clearReservoirBuffers();
+    // A4-progressive — reset per-pixel SPPM statistics (τ/R²/N → 0) so the
+    // progressive estimate restarts from scratch when the view resets. SPPM's
+    // convergence requires a static eye point; resetting on camera-move or
+    // setScene maintains that invariant. No-op if the buffer is not allocated.
+    this.#gpu.clearSppmPixelStats();
   }
 
   /**

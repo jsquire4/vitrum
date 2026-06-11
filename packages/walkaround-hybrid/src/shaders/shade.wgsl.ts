@@ -384,6 +384,110 @@ fn lo_direct(
   return e.Le * brdf * G * r.W;
 }
 
+// --- Direct sun NEE (default-on, item 4 plan/residue-closure-plan-2026-06-10.md) ----
+//
+// Casts one deterministic shadow ray toward the sun direction and evaluates the
+// full BRDF (diffuse + GGX specular via evalGGX) when the sun lane is live
+// (sunIntensity > eps). Default-ON for opaque, non-glass surfaces; glass keeps
+// its existing paths (lo_emit + lo_sg_caustic when stained-glass flag set).
+//
+// ── No-double-count argument ───────────────────────────────────────────────────
+// DDGI probes evaluate evalSunLight at the PROBE BOUNCE SURFACE (walls, floor,
+// etc.), store Lo_probe = (baseColor/π) · (direct_sun_at_bounce + indirect), and
+// the receiver reads that atlas to get INDIRECT irradiance = sun → wall → receiver
+// (the lo_indirect term). lo_sunNEE adds sun → receiver DIRECT — a disjoint path.
+//
+// Concretely: every probe ray that hits a wall records the sun's contribution at
+// THAT wall; the blend pass averages those records into the irradiance atlas; the
+// shade pass draws from the atlas as the per-surface INDIRECT term (lo_indirect).
+// lo_sunNEE below traces the ray from the PRIMARY-HIT SURFACE to the sun, which
+// is a DIFFERENT surface and a DIFFERENT ray path. The two estimates do not share
+// any common path segment, so they are strictly non-overlapping:
+//
+//   DDGI indirect: sun → bounce_wall → (probe stores E/π) → receiver reads E·albedo
+//   lo_sunNEE:     sun → (shadow test along sunDir) → receiver BRDF evaluation
+//
+// The DDGI term carries the first-bounce INDIRECT contribution. lo_sunNEE is the
+// DIRECT one-bounce term at the receiver. A double-count would only arise if the
+// probe also stored "direct sun AT THE RECEIVER" in its atlas, which it cannot —
+// probes are placed at grid positions, not at primary-hit surfaces.
+//
+// ── lo_sg_caustic relationship ────────────────────────────────────────────────
+// lo_sg_caustic (SG_FLAG_SUN_CAUSTIC, stained-glass flag) also traces a ray toward
+// the sun, but: (a) it only fires when the stainedGlassFlags bit is set (default
+// OFF), (b) it applies a glass-tinted tinted-visibility traversal
+// (bvhTraceTintedVisibility) + a causticBoost multiplier designed for stained-glass
+// calibration, (c) it gates glass-or-metal (same as here). lo_sunNEE gates on
+// isGlass ONLY so opaque-metal surfaces receive direct sun specular. When the
+// stained-glass flag is set on a scene, both lo_sg_caustic AND lo_sunNEE can fire on
+// the same opaque pixel — lo_sg_caustic adds tinted-glass-transmitted caustic light,
+// lo_sunNEE adds direct (unobstructed or opaque-occluded) sun NEE. They are
+// physically disjoint estimators on the same direct-sun term with different
+// visibility functions: lo_sunNEE uses binary opaque occlusion (skipGlass=true so
+// glass panes do NOT shadow here — the shadow test is conservative), while
+// lo_sg_caustic uses the tinted multi-glass traversal. Typical stained-glass scenes
+// have only glass geometry between the sun and floor/wall receivers, so the
+// lo_sunNEE shadow ray through glass passes (skipGlass=true ⇒ glass is transparent
+// to NEE), and lo_sg_caustic picks up the tinted coloured contribution. For generic
+// opaque scenes with no stained-glass flag set, lo_sg_caustic returns vec3f(0) and
+// lo_sunNEE is the sole direct-sun term.
+fn lo_sunNEE(
+  gid:       vec2u,
+  pos:       vec3f,
+  normal:    vec3f,
+  geoNormal: vec3f,
+  albedo:    vec3f,
+  rough:     f32,
+  metal:     f32,
+  wo:        vec3f,
+  isGlass:   bool,
+) -> vec3f {
+  // Skip if sun is absent (no directional emitter or intensity essentially zero).
+  if (ubo.sunIntensity < 1e-5) { return vec3f(0.0); }
+  // Glass surfaces use lo_emit (Beer-Lambert self-emission) and optionally
+  // lo_sg_caustic for transmitted caustics. lo_sunNEE is for opaque surfaces only.
+  if (isGlass) { return vec3f(0.0); }
+
+  // Sun direction: ubo.sunDirection is the unit vector from world origin toward
+  // the sun. Apply the same soft-sun angular spread as lo_sg_caustic
+  // (real sun has 0.5° angular diameter → angular radius ≈ 0.00436 rad).
+  // Per-pixel deterministic: no per-frame temporal variance; same pattern as
+  // lo_sg_caustic so the two terms have consistent directional sampling.
+  let sunBase = ubo.sunDirection;
+  let SUN_ANGULAR_RADIUS = 0.00436;
+  let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
+  let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
+  let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
+  let tan = safe_normalize(cross(upRef, sunBase));
+  let bit = cross(sunBase, tan);
+  let r2  = SUN_ANGULAR_RADIUS * sqrt(hx);
+  let phi = 6.2831853 * hy;
+  let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
+
+  let nDotSun = dot(normal, toSun);
+  if (nDotSun <= 1e-6) { return vec3f(0.0); }
+
+  // Shadow ray — offset along geometric normal (same pattern as lo_direct / lo_analyticNEE).
+  // skipGlass=true: glass panes do NOT block direct sun in this estimator —
+  // lo_sg_caustic handles the tinted-glass path separately when the stained-glass
+  // flag is set. This conservative transparency matches the analytic-NEE convention
+  // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
+  let occ = traceSceneAny(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+    pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true);
+  if (occ) { return vec3f(0.0); }
+
+  // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
+  // evalGGX already folds in nDotSun as its NdotL term (returns 0 when NdotL<1e-6).
+  let brdf = evalGGX(albedo, rough, metal, normal, wo, toSun);
+  // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
+  // No distance falloff — directional lights have infinite distance.
+  return vec3f(ubo.sunIntensity) * brdf;
+}
+
 // T5 — the sun-caustic + sky-aperture stained-glass-specific lighting terms
 // were extracted into stainedGlassShade.wgsl.ts (lo_sg_caustic /
 // lo_sg_aperture), opt-in behind ubo.stainedGlassFlags. shade no longer
@@ -716,6 +820,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
   let Lo_analyticNEE = lo_analyticNEE(pos, normal, geoNormal, albedo, rough, metal, wo, isGlass, isMetal);
+  // item 4 (2026-06-10) — direct sun NEE: deterministic shadow ray toward the sun,
+  // full BRDF (diffuse + GGX specular). Default-ON for opaque surfaces; glass skips.
+  // See lo_sunNEE above for the no-double-count argument re: DDGI indirect vs direct.
+  let Lo_sunNEE = lo_sunNEE(pix, pos, normal, geoNormal, albedo, rough, metal, wo, isGlass);
   // T5 — stained-glass-specific terms now live in stainedGlassShade.wgsl.ts
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
   // ubo.stainedGlassFlags bit is set (default OFF — generic scenes get zero
@@ -731,8 +839,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Active terms (current pipeline state):
   //   Lo_emit         glass primary hit, deterministic per pixel
   //   Lo_direct       ReSTIR DI, atrous-denoised single sample
-  //   Lo_sunCaustic   sun shadow ray through glass, deterministic
-  //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance
+  //   Lo_sunNEE       direct sun NEE, deterministic per pixel (item 4, 2026-06-10, default-ON)
+  //   Lo_sunCaustic   sun shadow ray through glass, deterministic (stainedGlass flag only)
+  //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance (stainedGlass flag only)
   //   Lo_indirect     ReSTIR-GI half-res reservoir read (Sprint 16), per-channel split (Sprint 18)
   //
   // Sprint 15 — GTAO modulates ALL non-emissive lighting terms.
@@ -782,7 +891,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // GTAO is a diffuse-occlusion term; specular reflections are not darkened by
   // it. Zero for default-diffuse surfaces, so the diffuse-default invariant
   // holds byte-for-byte (the term is identically vec3f(0) there).
-  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + (Lo_direct + Lo_analyticNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
+  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

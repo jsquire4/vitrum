@@ -60,8 +60,10 @@ export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
   debugMode: 0,
 };
 
-/** The fixed attribute-slot defines the GLSL `texelFetch1D(attributesArray, ATTR_*, ...)` reads. */
-export const ATTR_DEFINES = { ATTR_NORMAL: 0, ATTR_TANGENT: 1, ATTR_UV: 2, ATTR_COLOR: 3 } as const;
+/** The fixed attribute-slot defines the GLSL `texelFetch1D(attributesArray, ATTR_*, ...)` reads.
+ *  ATTR_UV1 (layer 4) carries the second UV channel (TextureRef.texCoord 1); filled from
+ *  primitive.uv1, falling back to uv0 when absent so the layer is always valid. */
+export const ATTR_DEFINES = { ATTR_NORMAL: 0, ATTR_TANGENT: 1, ATTR_UV: 2, ATTR_COLOR: 3, ATTR_UV1: 4 } as const;
 
 /** Build the `#define NAME VALUE` map the GlProgram preamble injects. */
 export function featureDefines(f: TraceFeatures): Record<string, number> {

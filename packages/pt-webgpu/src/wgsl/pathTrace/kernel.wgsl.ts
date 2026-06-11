@@ -402,6 +402,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     heroPdf = hero.y;
   }
 
+  // A4-progressive: per-pixel flat index for sppmPixelStats read/write.
+  let pixelIndex = gid.y * params.width + gid.x;
+
   var radiance = vec3f(0.0);
   var throughput = vec3f(1.0);
   let bounceLimit = max(1u, min(params.maxBounces, 8u));
@@ -836,11 +839,13 @@ ${transmissiveBlock}
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
-      // Item 21: heroLambda is passed so the SPPM gather can spectralise each
-      // photon's RGB flux at the eye path's hero wavelength in spectral mode.
+      // A4-progressive: pass pixelIndex so sppmGatherProgressive can read/write
+      // the per-pixel (τ, R², N) stats buffer for the Hachisuka update rule.
+      // Item 21: heroLambda lets the gather spectralise each photon's RGB flux.
       // Non-spectral path (spectralEnabled=0): heroLambda is unused → byte-identical.
       radiance = radiance + photonMapContribution(
         &rng,
+        pixelIndex,
         hitPos,
         normal,
         wo,

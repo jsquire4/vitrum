@@ -17,7 +17,7 @@
 import type { MaterialSpec, Vec3 } from '@vitrum/core';
 import type { MaterialsTextureData } from './sceneTextures.js';
 
-import { MATERIAL_PIXELS } from '../glsl/shader/structs/materialStride.js';
+import { MATERIAL_PIXELS, UV_SET_BIT } from '../glsl/shader/structs/materialStride.js';
 
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
@@ -429,6 +429,14 @@ export function packMaterialsTexture(
 
     // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
     // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
+    // texel 86.a: UV-set bitmask — bit k set means map k samples uv1 (ATTR_UV1)
+    // instead of uv0 (ATTR_UV). Bit assignments are single-sourced in materialStride.js.
+    let uvSetMask = 0;
+    for (const [key, bit] of Object.entries(UV_SET_BIT) as Array<[string, number]>) {
+      const ref = m[key as keyof MaterialSpec] as { texCoord?: number } | undefined;
+      if ((ref?.texCoord ?? 0) === 1) uvSetMask |= bit;
+    }
+
     let d3 = base + 85 * 4;
     data[d3++] = aoLayer;
     data[d3++] = lightMapLayer;
@@ -437,7 +445,7 @@ export function packMaterialsTexture(
     data[d3++] = m.aoMapIntensity ?? 1.0;
     data[d3++] = m.lightMapIntensity ?? 1.0;
     data[d3++] = m.bumpScale ?? 1.0;
-    data[d3++] = 0; // pad
+    data[d3++] = uvSetMask; // uv-set bitmask (was pad)
     // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
     if (aoLayer >= 0) writeTransform(data, base, 87, m.aoMap);
     if (lightMapLayer >= 0) writeTransform(data, base, 89, m.lightMap);

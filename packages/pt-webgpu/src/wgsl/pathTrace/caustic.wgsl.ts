@@ -887,27 +887,34 @@ fn manifoldNeeContribution(
 }
 
 // ── SPPM gather (causticStrategy == 2) ────────────────────────────────────────
-// Stochastic Progressive Photon Mapping (Hachisuka & Jensen 2009).
-// The photon-emission pass (sppmEmitPhotons in sppmBindings.wgsl.ts / the
-// separate sppmPhotonPass pipeline) runs BEFORE the megakernel each frame and
-// populates the @group(4) hash grid.  This gather reads from that grid.
+// A4-progressive: true Hachisuka & Jensen 2009 SPPM with per-pixel progressive
+// statistics (τ, R², N).  The photon-emission pass (sppmEmitPhotons in
+// sppmBindings.wgsl.ts / the separate sppmPhotonPass pipeline) runs BEFORE the
+// megakernel each frame and re-populates the hash grid with fresh photons.
+// This gather calls sppmGatherProgressive which:
+//   (1) reads per-pixel (τ, R², N) from sppmPixelStats[pixelIndex],
+//   (2) collects M new photons within the current radius sqrt(R²),
+//   (3) applies the Hachisuka §4 update: N'=N+αM, ratio=N'/(N+M),
+//       R'²=R²·ratio, τ'=(τ+Φ_M)·ratio,
+//   (4) writes (τ', R'², N') back,
+//   (5) returns τ' / (Ne · π · R'²) as the caustic estimate,
+//       where Ne = frameAccumulated · photonCount.
 //
-// The old per-pixel mini-pass (32 in-shader photons, gatherRadius=0.35 fixed,
-// ×1.25 fudge) is REMOVED entirely (A4 decision 2026-06-10). It recovered only
-// ~21% of oracle caustic energy and fired on ~1% of pixels with a hardcoded
-// world-unit radius that mis-scaled with the scene. Evidence:
-// wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md.
+// The old streaming-window gather (sppmGather, frozen radius, insertion-
+// normalised flux) is superseded; its code remains in sppmBindings.wgsl.ts
+// for reference but is no longer called here.
 //
-// Replacement: the photon pass + sppmGather from sppmBindings.wgsl.ts give a
-// physically-grounded first-order density estimate without fudge factors. The
-// progressive radius shrinks as r₀·√((n·α+α)/(n+1)), α=2/3, converging to zero
-// — the canonical SPPM convergence criterion. Radiometric A/B is tracked as
-// V28-B (hardware GPU campaign).
+// Accumulator interaction: the PT accumulator computes a running mean of
+// independent per-frame samples.  SPPM contributes L_caustic(k) each frame;
+// the running mean of a converging sequence converges to the same limit — no
+// double-averaging (see sppmGatherProgressive header for the derivation).
 //
 // Provenance: Hachisuka & Jensen 2009 "Stochastic Progressive Photon Mapping"
-// (ACM SIGGRAPH Asia 2009, §3 gather estimator).
+// (ACM SIGGRAPH Asia 2009 §4); Knaus & Zwicker 2011 formulation of the
+// progressive update rule.
 fn photonMapContribution(
   rng: ptr<function, u32>,
+  pixelIndex: u32,
   hitPos: vec3f,
   normal: vec3f,
   wo: vec3f,
@@ -918,11 +925,10 @@ fn photonMapContribution(
   throughput: vec3f,
   heroLambda: f32,
 ) -> vec3f {
-  // Delegate entirely to the SPPM grid gather (reads from @group(4) bindings
-  // written by the photon-emission pre-pass this frame).
-  // Item 21: pass heroLambda so the gather can resolve RGB photon flux at the
-  // eye path's hero wavelength in spectral mode (spectralEmissionAtHero applied
-  // per photon at gather time — same treatment as all other RGB emission sources).
-  return sppmGather(hitPos, normal, wo, baseColor, roughness, metallic, throughput, heroLambda);
+  // Delegate to the A4-progressive gather, which reads and writes the per-pixel
+  // stats buffer and returns the current SPPM caustic estimate.
+  // Item 21: heroLambda lets the gather resolve RGB photon flux at the eye path's
+  // hero wavelength in spectral mode (same treatment as all other RGB sources).
+  return sppmGatherProgressive(pixelIndex, hitPos, normal, wo, baseColor, roughness, metallic, throughput, heroLambda);
 }
 `;

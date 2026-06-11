@@ -147,8 +147,14 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // lights and env). Non-spectral path (spectralEnabled=0): fluxOut = flux.rgb —
     // byte-identical to the pre-fix behaviour. RENDER-CHANGING on spectral+photon-map
     // scenes; other caustic strategies and non-spectral paths unaffected.
-    expect(digest).toBe('9cba4e4d3db7b0bab9720ae54a5b34113ef09aa0a3c386725100228d8eba1779');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(303549);
+    // Re-pinned 2026-06-10: A4-progressive — true per-pixel SPPM statistics replace
+    // the streaming window (SppmPixelStats struct + @group(3) @binding(9) storage buf,
+    // sppmGatherProgressive with Hachisuka-Jensen 2009 radius-shrink update rule,
+    // pixelIndex computed in main and threaded through photonMapContribution).
+    // RENDER-CHANGING for causticStrategy:'photon-map'; off-path byte-identical for
+    // other strategies.
+    expect(digest).toBe('6fdf32eac91dead53aec606cd1741fc90bdc4d75e541c8e99439bd68da2fc385');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(311413);
   });
 });
 

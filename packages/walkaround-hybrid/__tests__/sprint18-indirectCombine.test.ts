@@ -54,11 +54,13 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     // outside the AO term; it sits between Lo_emit and the AO-scaled group.)
     // H41 — Lo_analyticNEE (point/spot additive NEE) inserted between Lo_direct
     // and Lo_sunCaustic inside the AO-scaled group.
+    // item 4 (2026-06-10) — Lo_sunNEE (direct sun NEE, default-ON) inserted between
+    // Lo_analyticNEE and Lo_sunCaustic in the AO-scaled group.
     // B1 — Lo_indirectSpec (glossy/metal specular indirect) joins the
     // UN-demodulated, non-AO direct group alongside Lo_emit / Lo_emitterGlow
     // (specular reflections are not albedo-demodulated and not GTAO-darkened).
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
+      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
     );
   });
 

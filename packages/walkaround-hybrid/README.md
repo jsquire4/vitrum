@@ -138,3 +138,17 @@ GI remains out of scope (empty reservoir, tracked in road-to-100). HDRI is fully
 (importance-sampled DI NEE candidate in the RIS loop + DDGI probe misses, 2026-06-10,
 `caab499`; ledger grade `native`). `updateEnvironment` rebuilds directional CDFs at
 runtime; scalar-tint fallback active when no env map is loaded. See `plan/road-to-100.md`.
+
+**Directional lighting (sun NEE):** as of 2026-06-10, the `primaryLightDir` /
+`primaryLightIntensity` directional emitter is wired to `lo_sunNEE` in `shade.wgsl`
+— a deterministic shadow ray from each opaque surface toward the sun direction,
+evaluated with the full `evalGGX` BRDF (diffuse + GGX specular). This is
+**default-ON** (no flag required); sharp sun shadows now appear on generic scenes
+without the stained-glass opt-in. Prior to this, direct sun at opaque surfaces was
+available only via the `SG_FLAG_SUN_CAUSTIC` path in `lo_sg_caustic` (the
+stained-glass extension, default OFF). The DDGI-indirect term (`lo_indirect`) carries
+sun-bounce indirect light (sun → bounce wall → receiver) which is disjoint from the
+direct term (no double-count — see `lo_sunNEE` comment in `shade.wgsl.ts`). The
+stained-glass caustic (lo_sg_caustic) remains flag-gated and handles tinted-glass
+transmittance; the two terms are non-overlapping (lo_sg_caustic uses
+`bvhTraceTintedVisibility`, lo_sunNEE uses binary opaque-only shadow ray).

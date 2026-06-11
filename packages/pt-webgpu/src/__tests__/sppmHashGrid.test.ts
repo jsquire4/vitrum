@@ -30,6 +30,7 @@ import {
   SPPM_CELL_COUNTERS_BYTES,
   SPPM_STATS_BYTES,
   SPPM_ALPHA,
+  SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
   sppmRadiusAtFrame,
   sppmInitialRadius,
   SPPM_GROUP4_BINDINGS_WGSL,
@@ -269,5 +270,186 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     // No hardcoded scale factor: not ×1.25 or similar.
     expect(SPPM_GROUP4_BINDINGS_WGSL).not.toMatch(/\*\s*1\.25/);
     expect(SPPM_GROUP4_BINDINGS_WGSL).not.toMatch(/\*\s*1\.5/);
+  });
+});
+
+// ── 5. A4-progressive: SPPM_PIXEL_STATS_BYTES_PER_PIXEL constant ─────────────
+
+describe('SPPM_PIXEL_STATS_BYTES_PER_PIXEL constant (A4-progressive)', () => {
+  it('equals 32 (8 × f32)', () => {
+    // SppmPixelStats = tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad×3 (f32×3) = 8 f32.
+    expect(SPPM_PIXEL_STATS_BYTES_PER_PIXEL).toBe(32);
+  });
+
+  it('buffer size for a 1920×1080 frame fits inside maxStorageBufferBindingSize default (128 MiB)', () => {
+    const w = 1920, h = 1080;
+    const bytes = w * h * SPPM_PIXEL_STATS_BYTES_PER_PIXEL;
+    // 1920 × 1080 × 32 = 66 355 200 bytes ≈ 63 MiB
+    expect(bytes).toBeLessThan(128 * 1024 * 1024);
+  });
+});
+
+// ── 6. A4-progressive: per-pixel recurrence vs closed form ───────────────────
+//
+// TypeScript mirror of the WGSL sppmGatherProgressive update rule.
+// Given a constant M photons per frame (idealized), the per-pixel stats evolve
+// as a first-order recurrence.  We compare the TS recurrence against the
+// closed-form N(n) and R²(n) derived from the update rule:
+//
+//   N(0) = 0,  N(k+1) = N(k) + α·M
+//   ⟹ N(k) = k·α·M  (closed form, linear for M > 0)
+//
+//   R²(0) = r0²
+//   R²(k+1) = R²(k) · (N(k)+α·M) / (N(k)+M)   [when M > 0]
+//           = R²(k) · N(k+1) / (N(k)+M)
+//
+// The asymptotic behaviour is R²(k) ~ k^(α-1) · r₀² / (α·M)^(1-α) as k→∞.
+// We test that the recurrence matches the TS step-by-step computation to
+// within floating-point precision (no WGSL involved — pure TS math).
+
+/** TS mirror of one sppmGatherProgressive update step (no rendering). */
+function sppmUpdateStep(
+  tau: [number, number, number],
+  radius2: number,
+  N: number,
+  M: number,
+  phiM: [number, number, number],
+  alpha: number,
+): { tau: [number, number, number]; radius2: number; N: number } {
+  const Nprime = N + alpha * M;
+  const NplusM = N + M;
+  const ratio = M < 0.5 ? 1.0 : Nprime / NplusM;
+  const r2prime = radius2 * ratio;
+  const tauPrime: [number, number, number] = [
+    (tau[0] + phiM[0]) * ratio,
+    (tau[1] + phiM[1]) * ratio,
+    (tau[2] + phiM[2]) * ratio,
+  ];
+  return { tau: tauPrime, radius2: r2prime, N: Nprime };
+}
+
+describe('A4-progressive SPPM recurrence (TS mirror vs closed form)', () => {
+  it('N(k) = k·α·M after k steps with constant M (linear accumulation)', () => {
+    const M = 5.0; // constant photons per frame
+    let N = 0.0;
+    for (let k = 1; k <= 100; k++) {
+      const result = sppmUpdateStep([0, 0, 0], 1.0, N, M, [0, 0, 0], SPPM_ALPHA);
+      N = result.N;
+      const closedForm = k * SPPM_ALPHA * M;
+      expect(N).toBeCloseTo(closedForm, 8);
+    }
+  });
+
+  it('R² shrinks monotonically for M > 0', () => {
+    let r2 = 0.01; // r₀² = 0.1²
+    let N = 0.0;
+    let prevR2 = r2;
+    const M = 3.0;
+    for (let k = 0; k < 100; k++) {
+      const result = sppmUpdateStep([0, 0, 0], r2, N, M, [0, 0, 0], SPPM_ALPHA);
+      r2 = result.radius2;
+      N = result.N;
+      expect(r2).toBeLessThanOrEqual(prevR2 + 1e-15);
+      expect(r2).toBeGreaterThan(0);
+      prevR2 = r2;
+    }
+  });
+
+  it('tau accumulates then shrinks (converging integral)', () => {
+    // Inject a constant phiM each frame and verify tau/Ne·π·R² converges.
+    const r0 = 0.1;
+    let r2 = r0 * r0;
+    let N = 0.0;
+    let tau: [number, number, number] = [0, 0, 0];
+    const phiM: [number, number, number] = [1.0, 0.5, 0.25]; // constant per-frame
+    const M = 1.0;
+    const photonCount = 10000;
+    let prevEstimate = Infinity;
+    // After many frames the estimate should stabilise (not blow up).
+    for (let k = 1; k <= 200; k++) {
+      const result = sppmUpdateStep(tau, r2, N, M, phiM, SPPM_ALPHA);
+      tau = result.tau;
+      r2 = result.radius2;
+      N = result.N;
+      const Ne = k * photonCount;
+      const estimate = tau[0] / (Ne * Math.PI * r2);
+      if (k > 50) {
+        // After warm-up the estimate must not diverge.
+        expect(estimate).toBeLessThan(prevEstimate * 2.0);
+      }
+      prevEstimate = estimate;
+    }
+    // Final estimate must be finite and positive.
+    expect(prevEstimate).toBeGreaterThan(0);
+    expect(Number.isFinite(prevEstimate)).toBe(true);
+  });
+
+  it('M=0 stability: stats are unchanged when no photons hit the pixel', () => {
+    const r2 = 0.01;
+    const N = 42.0;
+    const tau: [number, number, number] = [3.0, 2.0, 1.0];
+    // M=0 → ratio=1 → r2, tau, N all unchanged (except tau gets scaled by 1.0).
+    const result = sppmUpdateStep(tau, r2, N, 0.0, [0, 0, 0], SPPM_ALPHA);
+    expect(result.radius2).toBeCloseTo(r2, 15);
+    expect(result.N).toBeCloseTo(N, 15);
+    // tau' = (tau + 0) × 1 = tau
+    expect(result.tau[0]).toBeCloseTo(tau[0], 15);
+    expect(result.tau[1]).toBeCloseTo(tau[1], 15);
+    expect(result.tau[2]).toBeCloseTo(tau[2], 15);
+  });
+
+  it('first-frame initialization: radius2=0 → seeds from r0² (reset behavior)', () => {
+    // When the buffer is GPU-cleared (zero-initialised), radius2 == 0.
+    // The WGSL uses: let r2 = select(pxStats.radius2, r0*r0, isFirstFrame)
+    // which produces r0² when radius2 ≤ 0.  After one frame with M>0 the
+    // radius must be strictly < r0² (it shrunk).
+    const r0 = 0.1;
+    const r0sq = r0 * r0;
+    const M = 5.0;
+    // Simulate the first-frame logic: seed r2 from r0² (radius2=0 → isFirstFrame).
+    const result = sppmUpdateStep([0, 0, 0], r0sq, 0.0, M, [0.5, 0.5, 0.5], SPPM_ALPHA);
+    // After first frame radius must be ≤ r0² (shrunk by ratio < 1 for M>0).
+    expect(result.radius2).toBeLessThan(r0sq);
+    expect(result.radius2).toBeGreaterThan(0);
+    // N after first frame = 0 + α·M
+    expect(result.N).toBeCloseTo(SPPM_ALPHA * M, 10);
+  });
+});
+
+// ── 7. A4-progressive: WGSL structural assertions for binding(9) ─────────────
+
+describe('A4-progressive WGSL structural assertions (binding 9 + progressive fn)', () => {
+  it('SPPM_GROUP4_BINDINGS_WGSL declares @group(3) @binding(9) for sppmPixelStats', () => {
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('@group(3) @binding(9)');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('array<SppmPixelStats>');
+  });
+
+  it('SPPM_GROUP4_BINDINGS_WGSL declares the SppmPixelStats struct with tau/radius2/N fields', () => {
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('struct SppmPixelStats');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('tau     : vec3f');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('radius2 : f32');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('N       : f32');
+  });
+
+  it('SPPM_GROUP4_BINDINGS_WGSL contains sppmGatherProgressive (A4 entry point)', () => {
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
+  });
+
+  it('sppmGatherProgressive writes all three per-pixel stats fields back', () => {
+    // The update rule must persist tau', radius2', and N' after each frame.
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].tau');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].radius2');
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].N');
+  });
+
+  it('sppmGatherProgressive contains the Hachisuka ratio guard (M=0 stability)', () => {
+    // The WGSL must guard M=0 to avoid 0/0.
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toContain('select(Nprime / NplusM, 1.0, M < 0.5)');
+  });
+
+  it('SPPM_ALPHA_WGSL is interpolated into the bindings string', () => {
+    // The alpha constant must be baked into the composed WGSL.
+    expect(SPPM_GROUP4_BINDINGS_WGSL).toMatch(/SPPM_ALPHA_WGSL\s*=\s*[\d.]+f/);
   });
 });

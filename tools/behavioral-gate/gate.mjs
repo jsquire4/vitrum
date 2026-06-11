@@ -89,6 +89,10 @@ const EXPECTATION_TABLE = {
   "wh/skinned-mesh":      { expected: "ok" },
   "wh/hdri-env":          { expected: "ok" },
   "wh/rect-area-emitter": { expected: "ok" },
+  // item 4 (2026-06-10) — direct sun NEE default-on. Strong directional emitter,
+  // no rect-area emitter; asserts non-black + higher luminance than the no-sun default.
+  // Pin provenance: sun-NEE default-on, 2026-06-10 — RENDER-CHANGING for directional-lit scenes, A/B in R8-C.
+  "wh/directional-sun":   { expected: "ok" },
 };
 
 // ── Matrix ────────────────────────────────────────────────────────────────────
@@ -135,6 +139,14 @@ const WH_CONFIGS = [
   { label: "wh/skinned-mesh",      eng: {},                                    scene: { skinned: true } },
   { label: "wh/hdri-env",          eng: {},                                    scene: { hdri: true } },
   { label: "wh/rect-area-emitter", eng: {},                                    scene: {} },
+  // item 4 (2026-06-10) — direct sun NEE: strong directional emitter, no rect-area
+  // light. Opaque Cornell box surfaces should be lit via lo_sunNEE. LUM_THRESHOLD
+  // gates BLACK detection (>0.005); a strong directional at intensity 3.0 reliably
+  // exceeds that after 8 frames even on lavapipe.
+  { label: "wh/directional-sun",   eng: {
+      primaryLightDir:       [0.3, -0.8, 0.5],
+      primaryLightIntensity: 3.0,
+    },                                                                          scene: { directionalOnly: true } },
 ];
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
@@ -193,12 +205,14 @@ function buildCornellScene(opts = {}) {
     });
   }
 
-  const emitters = opts.emitters ?? [{
+  // directionalOnly: no rect-area emitter, so the only light is the primary
+  // directional set on the engine (tests that lo_sunNEE lights opaque surfaces).
+  const emitters = opts.directionalOnly ? [] : (opts.emitters ?? [{
     kind: "rect-area", id: "ceiling-light",
     position: [0, 0.95, 0],
     uAxis: [0, 0, 0.2], vAxis: [0.2, 0, 0],
     color: [1,1,1], intensity: 12.0,
-  }];
+  }]);
 
   let environment = { kind: "none" };
   if (opts.hdri) {

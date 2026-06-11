@@ -266,34 +266,77 @@ describe('pt-webgl2 filteredGlossyFactor upload — UNTESTED promise (item 25)',
   });
 });
 
-describe('pt-webgl2 texCoord — unkept-promise documentation (item 25)', () => {
-  // TextureRef.texCoord (core/frame.ts) is accepted by the API but pt-webgl2 has
-  // no UV-set selector in its packer or GLSL. This test documents the absence of
-  // texCoord handling so a future implementation is forced to update this test.
+describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', () => {
+  // TextureRef.texCoord is now CONSUMED by pt-webgl2. The packer packs a
+  // uv-set bitmask at texel 86.a (former pad lane): bit k set = map k samples
+  // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
+  // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
 
-  it('pt-webgl2 MATERIAL_PIXELS packer layout has no texCoord lane (single UV, uv0 only)', () => {
-    // The packer stores 93 pixels per material (MATERIAL_PIXELS = 93). The layout
-    // has no channel reserved for a per-map texCoord selector — confirmed by reading
-    // materialsTexture.ts (no texCoord field packed anywhere in the 93-px layout).
-    // This assertion pins the total pixel count; if texCoord were added, the stride
-    // would grow and this test would need updating.
+  it('pt-webgl2 MATERIAL_PIXELS stride is unchanged (93) — bitmask reuses the pad lane', () => {
+    // The bitmask lives at texel 86.a (was pad=0); no stride increase needed.
     expect(MATERIAL_PIXELS).toBe(93);
   });
 
-  it('GLSL get_surface_record has no texCoord branch (reads only ATTR_UV)', () => {
-    // The GLSL explicitly reads a single UV via textureSampleBarycoord(..., ATTR_UV, ...).
-    // If texCoord were wired, this would read 'ATTR_UV1' or branch on a texCoord selector.
-    // This structural check documents the current uv0-only behaviour.
-    const sr = get_surface_record_function;
-    expect(sr).toContain('ATTR_UV');
-    // No UV1 selector or texCoord branch:
-    expect(sr).not.toContain('ATTR_UV1');
-    expect(sr).not.toContain('texCoord');
+  it('packer writes non-zero bitmask when any map has texCoord:1', () => {
+    const handle = {};
+    const layerOf = new Map<unknown, number>([[handle, 0]]);
+    // baseColorMap at texCoord:1 → bit 0 set = 1.
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      baseColorMap: { handle, texCoord: 1 },
+    };
+    const d = packMaterialsTexture([m], layerOf).data as Float32Array;
+    // texel 86.a = float offset 86*4+3 = 347
+    expect(d[86 * 4 + 3]).toBe(1); // bit 0 only
   });
 
-  // Promise status: TextureRef.texCoord is an UNKEPT promise on pt-webgl2.
-  // The field is accepted by the @vitrum/core contract (frame.ts:43) but is
-  // silently ignored. A multi-UV implementation would need to add an ATTR_UV1
-  // attribute stream, a per-map texCoord selector lane in the material layout,
-  // and a branch in get_surface_record_function.glsl.js.
+  it('packer writes 0 bitmask when all maps have texCoord:0 or absent', () => {
+    const handle = {};
+    const layerOf = new Map<unknown, number>([[handle, 0]]);
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      baseColorMap: { handle, texCoord: 0 }, // explicit uv0
+    };
+    const d = packMaterialsTexture([m], layerOf).data as Float32Array;
+    expect(d[86 * 4 + 3]).toBe(0); // no bit set
+  });
+
+  it('bitmask correctly encodes multiple maps selecting uv1', () => {
+    const handle1 = {}; const handle2 = {};
+    const layerOf = new Map<unknown, number>([[handle1, 0], [handle2, 1]]);
+    // roughnessMap (bit 2) + emissiveMap (bit 4) both at texCoord:1
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      roughnessMap: { handle: handle1, texCoord: 1 },
+      emissiveMap: { handle: handle2, texCoord: 1 },
+    };
+    const d = packMaterialsTexture([m], layerOf).data as Float32Array;
+    const mask = d[86 * 4 + 3]!;
+    expect(mask & (1 << 2)).not.toBe(0); // roughnessMap bit
+    expect(mask & (1 << 4)).not.toBe(0); // emissiveMap bit
+    expect(mask & (1 << 0)).toBe(0);     // baseColorMap not set
+  });
+
+  it('GLSL get_surface_record fetches ATTR_UV1 and contains MAP_UV selector', () => {
+    const sr = get_surface_record_function;
+    // uv1 is fetched from ATTR_UV1
+    expect(sr).toContain('ATTR_UV1');
+    // MAP_UV macro is defined and used for map sampling
+    expect(sr).toContain('MAP_UV');
+    // uv0 is still fetched (ATTR_UV used for baseline)
+    expect(sr).toContain('ATTR_UV');
+  });
+
+  it('GLSL MAP_UV macro selects uv1 for baseColorMap (bit 0)', () => {
+    // The macro is defined as: MAP_UV(bit) selects uv1 when that bit is set.
+    // For bit 0 (baseColorMap) the albedo sampling uses MAP_UV(0u).
+    const sr = get_surface_record_function;
+    expect(sr).toContain('MAP_UV( 0u )');
+  });
+
+  it('material_struct carries uvTexCoordMask field decoded from s21.a', () => {
+    const ms = material_struct;
+    expect(ms).toContain('uvTexCoordMask');
+    expect(ms).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
+  });
 });

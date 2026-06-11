@@ -2115,27 +2115,24 @@ export class HybridEngine implements Engine {
    * `getProgressiveSeedTexture()`). This is linear-light HDR radiance in scene
    * units, suitable for tone-mapping, EXR export, or luminance checks.
    *
-   * `colorSpace:'output'` rejects with a clear error: the walkaround backend
-   * writes its final display output directly to the host's swap-chain texture
-   * (a `GPUTextureView` supplied by the host each frame via
-   * `FrameInput.swapChainView`). There is no engine-owned display-referred
-   * buffer to read back. To capture the tonemapped image, the host can render
-   * one frame to a `GPUTexture` it owns and read that back independently.
+   * `colorSpace:'output'` runs the SAME composite pass (tonemap + OETF +
+   * exposure) into an engine-owned offscreen `rgba8unorm` texture and reads it
+   * back as display-encoded, post-OETF values in [0, 1].  Unlike 'linear', this
+   * path produces the display-referred image a viewer would see on screen.  The
+   * composite UBO settings (tonemap operator, exposure, output color space) from
+   * the most recent rendered frame are reused verbatim — there is no need to call
+   * `renderFrame` again.
    *
-   * Returns `null` before the first frame (resolvedTexture not yet allocated).
-   * Pipeline stall: submits copyTextureToBuffer + mapAsync; use for
+   * Returns `null` before the first frame (no pipeline or resolvedTexture not yet
+   * allocated).  Pipeline stall: submits copyTextureToBuffer + mapAsync; use for
    * debugging/export, not per-frame readback.
    */
   async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
     const colorSpace = opts?.colorSpace ?? 'linear';
     if (colorSpace === 'output') {
-      throw new Error(
-        '[vitrum/walkaround-hybrid] captureFrame({ colorSpace: \'output\' }) is not supported: ' +
-        'the walkaround backend writes its display output directly to the host\'s swap-chain ' +
-        'texture (FrameInput.swapChainView) — there is no engine-owned tonemapped buffer to ' +
-        'read back. Use colorSpace: \'linear\' (default) to capture the pre-tonemap HDR output, ' +
-        'or capture the swap-chain texture on the host side.',
-      );
+      const rgba = await this._pipeline?.captureOutputFrame() ?? null;
+      if (rgba == null) return null;
+      return { width: this._internalWidth, height: this._internalHeight, rgba };
     }
     const seedResult = this.getProgressiveSeedTexture();
     if (seedResult == null) return null;

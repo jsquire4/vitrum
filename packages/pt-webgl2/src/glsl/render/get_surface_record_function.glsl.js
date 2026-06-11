@@ -35,9 +35,14 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// uv coord for textures
+		// uv coord for textures (uv0 = ATTR_UV; uv1 = ATTR_UV1, falls back to uv0)
 		vec2 uv = textureSampleBarycoord( attributesArray, ATTR_UV, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
+		vec2 uv1 = textureSampleBarycoord( attributesArray, ATTR_UV1, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 		vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz );
+
+		// Inline helper: select the correct UV channel for map bit k.
+		// Returns uv1 when bit k is set in material.uvTexCoordMask, else uv.
+		#define MAP_UV(bit) ( ( ( material.uvTexCoordMask >> (bit) ) & 1u ) != 0u ? uv1 : uv )
 
 		// Sprint 4: P3 — Material LOD by depth.
 		// When pathDepth > materialLodDepth, skip all texture fetches and use
@@ -46,11 +51,11 @@ export const get_surface_record_function = /* glsl */`
 		// materialLodDepth == 0 disables LOD (textures at all depths).
 		bool useTextures = ( materialLodDepth == 0 ) || ( pathDepth <= materialLodDepth );
 
-		// albedo
+		// albedo (baseColorMap = bit 0)
 		vec4 albedo = vec4( material.color, material.opacity );
 		if ( useTextures && material.map != - 1 ) {
 
-			vec3 uvPrime = material.mapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.mapTransform * vec3( MAP_UV( 0u ), 1 );
 			albedo *= texture2D( textures, vec3( uvPrime.xy, material.map ) );
 
 		}
@@ -61,21 +66,21 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// alphaMap
+		// alphaMap (bit 6) — no transform slot; uses raw MAP_UV selection
 		if ( useTextures && material.alphaMap != - 1 ) {
 
-			albedo.a *= texture2D( textures, vec3( uv, material.alphaMap ) ).x;
+			albedo.a *= texture2D( textures, vec3( MAP_UV( 6u ), material.alphaMap ) ).x;
 
 		}
 
-		// D3 — aoMap (glTF occlusionTexture, R channel): modulate albedo by
+		// D3 — aoMap (glTF occlusionTexture, R channel, bit 16): modulate albedo by
 		// mix(1, ao, aoMapIntensity). CAVEAT (documented biased semantics, mirrors
 		// pt-webgpu sampleAoFactor): a path tracer integrates real occlusion, so a
 		// baked AO term double-darkens crevices — aoMapIntensity is the artist dial
 		// (1 matches the raster look; 0 disables).
 		if ( useTextures && material.aoMap != - 1 ) {
 
-			vec3 uvPrime = material.aoMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.aoMapTransform * vec3( MAP_UV( 16u ), 1 );
 			float ao = texture2D( textures, vec3( uvPrime.xy, material.aoMap ) ).r;
 			albedo.rgb *= clamp( mix( 1.0, ao, material.aoMapIntensity ), 0.0, 1.0 );
 
@@ -112,49 +117,49 @@ export const get_surface_record_function = /* glsl */`
 			surfaceHit.faceIndices.xyz
 		).xyz );
 
-		// roughness
+		// roughness (roughnessMap = bit 2)
 		float roughness = material.roughness;
 		if ( useTextures && material.roughnessMap != - 1 ) {
 
-			vec3 uvPrime = material.roughnessMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.roughnessMapTransform * vec3( MAP_UV( 2u ), 1 );
 			roughness *= texture2D( textures, vec3( uvPrime.xy, material.roughnessMap ) ).g;
 
 		}
 
-		// metalness
+		// metalness (metallicMap = bit 1)
 		float metalness = material.metalness;
 		if ( useTextures && material.metalnessMap != - 1 ) {
 
-			vec3 uvPrime = material.metalnessMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.metalnessMapTransform * vec3( MAP_UV( 1u ), 1 );
 			metalness *= texture2D( textures, vec3( uvPrime.xy, material.metalnessMap ) ).b;
 
 		}
 
-		// emission
+		// emission (emissiveMap = bit 4)
 		vec3 emission = material.emissiveIntensity * material.emissive;
 		if ( useTextures && material.emissiveMap != - 1 ) {
 
-			vec3 uvPrime = material.emissiveMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.emissiveMapTransform * vec3( MAP_UV( 4u ), 1 );
 			emission *= texture2D( textures, vec3( uvPrime.xy, material.emissiveMap ) ).xyz;
 
 		}
 
-		// D3 — lightMap: baked OUTGOING radiance (linear), added at camera-visible
+		// D3 — lightMap (bit 17): baked OUTGOING radiance (linear), added at camera-visible
 		// hits ONLY (pathDepth == 0; matches pt-webgpu's emissive-on-hit semantics).
 		// It never enters NEE/MIS (it is not in the lights texture), and adding it
 		// at indirect depths would double-count the live lights the bake encodes.
 		if ( useTextures && material.lightMap != - 1 && pathDepth == 0 ) {
 
-			vec3 uvPrime = material.lightMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.lightMapTransform * vec3( MAP_UV( 17u ), 1 );
 			emission += material.lightMapIntensity * texture2D( textures, vec3( uvPrime.xy, material.lightMap ) ).rgb;
 
 		}
 
-		// transmission
+		// transmission (transmissionMap = bit 3)
 		float transmission = material.transmission;
 		if ( useTextures && material.transmissionMap != - 1 ) {
 
-			vec3 uvPrime = material.transmissionMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.transmissionMapTransform * vec3( MAP_UV( 3u ), 1 );
 			transmission *= texture2D( textures, vec3( uvPrime.xy, material.transmissionMap ) ).r;
 
 		}
@@ -172,6 +177,7 @@ export const get_surface_record_function = /* glsl */`
 		vec3 baseNormal = normal;
 		// Sprint 4: P3 — when !useTextures, skip TBN tangent-space transform
 		// (avoids tangent attribute fetch) and use the smooth geometric normal directly.
+		// normalMap = bit 5
 		if ( useTextures && material.normalMap != - 1 ) {
 
 			vec4 tangentSample = textureSampleBarycoord(
@@ -189,7 +195,7 @@ export const get_surface_record_function = /* glsl */`
 				vec3 bitangent = normalize( cross( normal, tangent ) * tangentSample.w );
 				mat3 vTBN = mat3( tangent, bitangent, normal );
 
-				vec3 uvPrime = material.normalMapTransform * vec3( uv, 1 );
+				vec3 uvPrime = material.normalMapTransform * vec3( MAP_UV( 5u ), 1 );
 				vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.normalMap ) ).xyz * 2.0 - 1.0;
 				texNormal.xy *= material.normalScale;
 				normal = vTBN * texNormal;
@@ -198,7 +204,7 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// D3 — bumpMap: height-field normal perturbation (Blinn 1978), central
+		// D3 — bumpMap (bit 18): height-field normal perturbation (Blinn 1978), central
 		// differences in UV space (no screen derivatives on secondary rays; mirrors
 		// pt-webgpu applyBumpMap's fixed 1/512 step + n - scale·(dh/du·T + dh/dv·B)).
 		// Applied AFTER the normal map so the two compose.
@@ -213,7 +219,7 @@ export const get_surface_record_function = /* glsl */`
 
 			if ( length( tangentSample.xyz ) > 0.0 ) {
 
-				vec3 uvPrime = material.bumpMapTransform * vec3( uv, 1 );
+				vec3 uvPrime = material.bumpMapTransform * vec3( MAP_UV( 18u ), 1 );
 				float du = 1.0 / 512.0;
 				float hC = texture2D( textures, vec3( uvPrime.xy, material.bumpMap ) ).r;
 				float hU = texture2D( textures, vec3( uvPrime.xy + vec2( du, 0.0 ), material.bumpMap ) ).r;
@@ -235,25 +241,25 @@ export const get_surface_record_function = /* glsl */`
 
 		normal *= surfaceHit.side;
 
-		// clearcoat
+		// clearcoat (clearcoatMap = bit 7)
 		float clearcoat = material.clearcoat;
 		if ( useTextures && material.clearcoatMap != - 1 ) {
 
-			vec3 uvPrime = material.clearcoatMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.clearcoatMapTransform * vec3( MAP_UV( 7u ), 1 );
 			clearcoat *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatMap ) ).r;
 
 		}
 
-		// clearcoatRoughness
+		// clearcoatRoughness (clearcoatRoughnessMap = bit 8)
 		float clearcoatRoughness = material.clearcoatRoughness;
 		if ( useTextures && material.clearcoatRoughnessMap != - 1 ) {
 
-			vec3 uvPrime = material.clearcoatRoughnessMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.clearcoatRoughnessMapTransform * vec3( MAP_UV( 8u ), 1 );
 			clearcoatRoughness *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatRoughnessMap ) ).g;
 
 		}
 
-		// clearcoatNormal
+		// clearcoatNormal (clearcoatNormalMap = bit 9)
 		vec3 clearcoatNormal = baseNormal;
 		if ( useTextures && material.clearcoatNormalMap != - 1 ) {
 
@@ -272,7 +278,7 @@ export const get_surface_record_function = /* glsl */`
 				vec3 bitangent = normalize( cross( clearcoatNormal, tangent ) * tangentSample.w );
 				mat3 vTBN = mat3( tangent, bitangent, clearcoatNormal );
 
-				vec3 uvPrime = material.clearcoatNormalMapTransform * vec3( uv, 1 );
+				vec3 uvPrime = material.clearcoatNormalMapTransform * vec3( MAP_UV( 9u ), 1 );
 				vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.clearcoatNormalMap ) ).xyz * 2.0 - 1.0;
 				texNormal.xy *= material.clearcoatNormalScale;
 				clearcoatNormal = vTBN * texNormal;
@@ -283,38 +289,38 @@ export const get_surface_record_function = /* glsl */`
 
 		clearcoatNormal *= surfaceHit.side;
 
-		// sheenColor
+		// sheenColor (sheenColorMap = bit 10)
 		vec3 sheenColor = material.sheenColor;
 		if ( useTextures && material.sheenColorMap != - 1 ) {
 
-			vec3 uvPrime = material.sheenColorMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.sheenColorMapTransform * vec3( MAP_UV( 10u ), 1 );
 			sheenColor *= texture2D( textures, vec3( uvPrime.xy, material.sheenColorMap ) ).rgb;
 
 		}
 
-		// sheenRoughness
+		// sheenRoughness (sheenRoughnessMap = bit 11)
 		float sheenRoughness = material.sheenRoughness;
 		if ( useTextures && material.sheenRoughnessMap != - 1 ) {
 
-			vec3 uvPrime = material.sheenRoughnessMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.sheenRoughnessMapTransform * vec3( MAP_UV( 11u ), 1 );
 			sheenRoughness *= texture2D( textures, vec3( uvPrime.xy, material.sheenRoughnessMap ) ).a;
 
 		}
 
-		// iridescence
+		// iridescence (iridescenceMap = bit 12)
 		float iridescence = material.iridescence;
 		if ( useTextures && material.iridescenceMap != - 1 ) {
 
-			vec3 uvPrime = material.iridescenceMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.iridescenceMapTransform * vec3( MAP_UV( 12u ), 1 );
 			iridescence *= texture2D( textures, vec3( uvPrime.xy, material.iridescenceMap ) ).r;
 
 		}
 
-		// iridescence thickness
+		// iridescence thickness (iridescenceThicknessMap = bit 13)
 		float iridescenceThickness = material.iridescenceThicknessMaximum;
 		if ( useTextures && material.iridescenceThicknessMap != - 1 ) {
 
-			vec3 uvPrime = material.iridescenceThicknessMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.iridescenceThicknessMapTransform * vec3( MAP_UV( 13u ), 1 );
 			float iridescenceThicknessSampled = texture2D( textures, vec3( uvPrime.xy, material.iridescenceThicknessMap ) ).g;
 			iridescenceThickness = mix( material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum, iridescenceThicknessSampled );
 
@@ -322,20 +328,20 @@ export const get_surface_record_function = /* glsl */`
 
 		iridescence = iridescenceThickness == 0.0 ? 0.0 : iridescence;
 
-		// specular color
+		// specular color (specularColorMap = bit 14)
 		vec3 specularColor = material.specularColor;
 		if ( useTextures && material.specularColorMap != - 1 ) {
 
-			vec3 uvPrime = material.specularColorMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.specularColorMapTransform * vec3( MAP_UV( 14u ), 1 );
 			specularColor *= texture2D( textures, vec3( uvPrime.xy, material.specularColorMap ) ).rgb;
 
 		}
 
-		// specular intensity
+		// specular intensity (specularIntensityMap = bit 15)
 		float specularIntensity = material.specularIntensity;
 		if ( useTextures && material.specularIntensityMap != - 1 ) {
 
-			vec3 uvPrime = material.specularIntensityMapTransform * vec3( uv, 1 );
+			vec3 uvPrime = material.specularIntensityMapTransform * vec3( MAP_UV( 15u ), 1 );
 			specularIntensity *= texture2D( textures, vec3( uvPrime.xy, material.specularIntensityMap ) ).a;
 
 		}

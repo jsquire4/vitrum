@@ -97,6 +97,11 @@ export const material_struct = /* glsl */ `
 		float bumpScale;
 		float envMapIntensity;
 
+		// UV-set selector bitmask (texel 86.a). Bit k set = map k samples uv1
+		// (ATTR_UV1) instead of uv0 (ATTR_UV). Bit assignments: see materialStride.js.
+		// Stored as a float; decoded in readMaterialInfo via uint(round(...)).
+		uint uvTexCoordMask;
+
 		mat3 mapTransform;
 		mat3 metalnessMapTransform;
 		mat3 roughnessMapTransform;
@@ -255,6 +260,8 @@ export const material_struct = /* glsl */ `
 		m.aoMapIntensity = s21.r;
 		m.lightMapIntensity = s21.g;
 		m.bumpScale = s21.b;
+		// UV-set bitmask (was pad). Bit k set = map k samples uv1 (ATTR_UV1).
+		m.uvTexCoordMask = uint( round( s21.a ) );
 
 		uint firstTextureTransformIdx = i + 55u;
 

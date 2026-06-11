@@ -68,6 +68,18 @@ export const SPPM_CELL_COUNTERS_BYTES = SPPM_MAX_CELLS * 4;
 export const SPPM_STATS_BYTES = 32;
 
 /**
+ * Bytes per per-pixel SPPM statistics record:
+ *   tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad (f32×3) = 8 × f32 = 32 bytes.
+ *
+ * A4-progressive: each pixel accumulates τ, R², and N across frames so the
+ * Hachisuka progressive update rule can run without re-visiting previous frames.
+ * The buffer is sized W×H×32 bytes and reset whenever the PT accumulator resets
+ * (camera move, setScene, reset()) — the same static-eye-point assumption that
+ * makes progressive accumulation valid also gates the SPPM stats.
+ */
+export const SPPM_PIXEL_STATS_BYTES_PER_PIXEL = 32; // 8 × f32
+
+/**
  * Safety ceiling for the photon-cells buffer.  ~512 MiB at default params;
  * the warn-once pattern mirrors the BDPT eye-stack ceiling.
  */
@@ -119,41 +131,46 @@ export function sppmInitialRadius(
 }
 
 /**
- * SPPM group-3 WGSL bindings (bindings 6/7/8) — composed into the megakernel
+ * SPPM group-3 WGSL bindings (bindings 6/7/8/9) — composed into the megakernel
  * AND the photon-emission pass.  Group 3 already carries the light-tree node
  * buffer (binding 0), mesh UVs (1), material-texture descriptors (2),
  * materialTextures array (3), materialTexSampler (4), and materialLinearTextures
- * (5) on the full tier.  SPPM appends three more bindings here to avoid
+ * (5) on the full tier.  SPPM appends four more bindings here to avoid
  * requiring maxBindGroups ≥ 5 (group 4 would need that, which lavapipe rejects).
  *
  * Binding layout (@group(3)):
- *   binding(6)  sppmPhotonCells   — PhotonRecord[CELLS × CAPACITY], read_write
- *   binding(7)  sppmCellCounters  — atomic<u32>[CELLS], read_write
- *   binding(8)  sppmStats         — SppmStats (uniform, 32 bytes)
+ *   binding(6)  sppmPhotonCells     — PhotonRecord[CELLS × CAPACITY], read_write
+ *   binding(7)  sppmCellCounters    — atomic<u32>[CELLS], read_write
+ *   binding(8)  sppmStats           — SppmStats (uniform, 32 bytes)
+ *   binding(9)  sppmPixelStats      — SppmPixelStats[W×H], read_write
+ *               Per-pixel progressive statistics: tau.rgb, radius2, N, _pad×3.
+ *               Binding(9) is only declared in the megakernel (not the photon
+ *               pass); a 64-byte placeholder satisfies the layout when SPPM is off.
  *
  * Both the megakernel and the photon pass declare `read_write` storage for
  * (6) and (7) so a SINGLE GPUBindGroup can serve both pipelines.
  */
 export const SPPM_GROUP4_BINDINGS_WGSL = /* wgsl */ `
-// ── SPPM group-3 extension (bindings 6/7/8): photon hash-grid ────────────────
+// ── SPPM group-3 extension (bindings 6/7/8/9): photon hash-grid + per-pixel stats
 // Stochastic Progressive Photon Mapping (Hachisuka & Jensen 2009).
 // Full-tier only; lit binding exists when causticStrategy == 'photon-map';
-// 16-byte placeholders satisfy the layout when SPPM is off (causticMode != 2u
+// 64-byte placeholders satisfy the layout when SPPM is off (causticMode != 2u
 // guards the gather so the placeholders are never actually accessed).
 
 const SPPM_MAX_CELLS_WGSL = ${SPPM_MAX_CELLS}u;
 const SPPM_CELL_CAPACITY_WGSL = ${SPPM_CELL_CAPACITY}u;
+const SPPM_ALPHA_WGSL = ${SPPM_ALPHA}f; // α = 2/3 (Hachisuka & Jensen 2009, Eq.4)
 
 // SppmStats (32 bytes): currentRadius, r0, frameAccumulated, photonCount, sceneExtent, _pad×3
 struct SppmStats {
-  currentRadius : f32,
-  r0            : f32,
+  currentRadius    : f32,
+  r0               : f32,
   frameAccumulated : u32,
-  photonCount   : u32,
-  sceneExtent   : f32,
-  _pad0         : f32,
-  _pad1         : f32,
-  _pad2         : f32,
+  photonCount      : u32,
+  sceneExtent      : f32,
+  _pad0            : f32,
+  _pad1            : f32,
+  _pad2            : f32,
 }
 
 // PhotonRecord (48 bytes = 3 × vec4f):
@@ -166,9 +183,24 @@ struct PhotonRecord {
   incidentDir : vec4f,
 }
 
+// SppmPixelStats (32 bytes = 8 × f32) — per-pixel progressive SPPM state.
+//   A4-progressive: Hachisuka & Jensen 2009, §4 (Knaus-Zwicker formulation).
+//   Holds the accumulated tau (brdf-weighted flux sum), current gather radius²,
+//   and accumulated photon count N so the update rule can proceed from any frame.
+//   Reset (zeroed) whenever the PT accumulator resets (camera move/setScene/reset).
+struct SppmPixelStats {
+  tau     : vec3f,   // accumulated brdf-weighted flux (τ in Hachisuka §4)
+  radius2 : f32,     // current per-pixel gather radius² (R² shrinks each frame)
+  N       : f32,     // accumulated photon count (floating-point, cf. Knaus-Zwicker)
+  _pad0   : f32,
+  _pad1   : f32,
+  _pad2   : f32,
+}
+
 @group(3) @binding(6) var<storage, read_write> sppmPhotonCells    : array<PhotonRecord>;
 @group(3) @binding(7) var<storage, read_write> sppmCellCounters   : array<atomic<u32>>;
 @group(3) @binding(8) var<uniform>             sppmStats          : SppmStats;
+@group(3) @binding(9) var<storage, read_write> sppmPixelStats     : array<SppmPixelStats>;
 
 // Spatial hash: map a world-space position to a cell index.
 // Prime-multiplied coordinate hash (Ihrke et al. 2007, § 4).
@@ -201,11 +233,149 @@ fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32) {
   sppmPhotonCells[base].incidentDir = vec4f(dir, 0.0);
 }
 
-// Gather photons from the hash grid for a shade point (read path, megakernel).
-// Queries the 3×3×3 neighbourhood of cells around pos to handle straddling.
-// Returns the radiance estimate = sum(BRDF(wi) × flux_i × kernel(dist)) / (pi × r²).
-// The kernel is a simple disk test (1 if dist < r, 0 otherwise — the Hachisuka
-// standard kernel, consistent with the π r² denominator).
+// ── A4-progressive: true Hachisuka SPPM per-pixel gather + update ────────────
+//
+// The Hachisuka & Jensen 2009 §4 / Knaus-Zwicker progressive update rule:
+//
+//   GIVEN:  per-pixel stats from the last frame: (τ, R², N)
+//           this frame's hash-grid photons within sqrt(R²) of pos → M photons,
+//           BRDF-weighted flux sum Φ_M = Σ_j f(ω_j)·Φ_j (accumulated below)
+//
+//   UPDATE (each frame, at each eye-path hit point):
+//     N' = N + α·M                      (α = 2/3; new accumulated photon count)
+//     ratio = N' / (N + M)              (radius shrink factor; guard M=0 → ratio=1)
+//     R'² = R² · ratio                  (shrink the gather disk)
+//     τ' = (τ + Φ_M) · ratio            (scale accumulated flux same way)
+//     store (τ', R'², N') back to sppmPixelStats[pixelIndex]
+//
+//   ESTIMATE (displayed as caustic radiance this frame):
+//     L_caustic = τ' / (N_e · π · R'²)
+//     where N_e = frameAccumulated · photonCount  (total emitted photons)
+//
+//   CONVERGENCE:
+//     N ~ n^α asymptotically (see test: sppmRecurrenceMatchesClosedForm).
+//     R² ~ N·r₀² / photonCount shrinks to zero ⟹ L_caustic converges to
+//     the true caustic radiance (Hachisuka 2009, Theorem 1).
+//
+//   ACCUMULATOR INTERACTION:
+//     The PT accumulator computes a running mean μ_k = (1/k)·Σᵢ Lᵢ over
+//     independent per-frame samples. SPPM contributes L_caustic(k) as its
+//     per-frame sample. As k→∞, L_caustic(k) → L_true, so μ_k → L_true too
+//     (a Cesàro mean of a converging sequence converges to the same limit).
+//     No double-averaging pathology: we contribute the CURRENT (not per-frame
+//     delta) estimate each frame; the running mean is the correct display value
+//     ONLY in the early frames — from frame k onward the fresh L_caustic(k)
+//     dominates the mean.  This is standard; see Hachisuka 2009, §5 / PBRT §16.
+//
+//   INITIAL STATE (first frame after reset):
+//     N = 0, radius2 = r₀² (from sppmStats.r0), τ = 0.
+//     The branch N=0 is handled cleanly: ratio=1, R'²=r₀², τ'=Φ_M·1.
+//
+// Item 21 — spectral × photon-map:
+//   Photons store RGB flux.  In spectral mode resolve each photon's RGB flux
+//   at the eye path's hero wavelength via spectralEmissionAtHero (same as
+//   all other RGB emission sources).  Non-spectral path: use flux.rgb directly
+//   — byte-identical to the pre-progressive streaming-window behaviour.
+fn sppmGatherProgressive(
+  pixelIndex : u32,
+  pos        : vec3f,
+  normal     : vec3f,
+  wo         : vec3f,
+  baseColor  : vec3f,
+  roughness  : f32,
+  metallic   : f32,
+  throughput : vec3f,
+  heroLambda : f32,
+) -> vec3f {
+  let nPhotons = sppmStats.photonCount;
+  let r0 = sppmStats.r0;
+  if (r0 <= 1e-9 || nPhotons == 0u) { return vec3f(0.0); }
+
+  // Load per-pixel progressive state.  On the very first frame after a reset
+  // all fields are zero (the buffer is GPU-cleared); initialise radius2 from
+  // r₀ in that case.
+  var pxStats = sppmPixelStats[pixelIndex];
+  let isFirstFrame = (pxStats.radius2 <= 0.0);
+  let r2 = select(pxStats.radius2, r0 * r0, isFirstFrame);
+  let r  = sqrt(r2);
+  var tau = pxStats.tau;
+  var N   = pxStats.N;
+
+  // ── Collect this frame's photons within the current gather disk ───────────
+  // 3×3×3 neighbourhood to handle cell-boundary straddling (same as the
+  // streaming-window gather).  Accumulate Φ_M = Σ f(ωᵢ)·Φᵢ (brdf-weighted).
+  var phiM = vec3f(0.0);
+  var M    = 0.0; // float to avoid a cast in the update below
+
+  for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
+    for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+      for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+        let probe   = pos + vec3f(f32(dx), f32(dy), f32(dz)) * r;
+        let cellIdx = sppmCellIndex(probe, r);
+        let stored  = min(atomicLoad(&sppmCellCounters[cellIdx]), SPPM_CELL_CAPACITY_WGSL);
+        let base    = cellIdx * SPPM_CELL_CAPACITY_WGSL;
+        for (var si = 0u; si < stored; si = si + 1u) {
+          let ph    = sppmPhotonCells[base + si];
+          let diff  = ph.position.xyz - pos;
+          let dist2 = dot(diff, diff);
+          if (dist2 > r2) { continue; }
+          let nDotL = max(dot(normal, -ph.incidentDir.xyz), 0.0);
+          if (nDotL <= 1e-6) { continue; }
+          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz);
+          let fluxRgb = ph.flux.rgb;
+          // Item 21 — spectral mode flux resolution (mirrors NEE half).
+          let fluxOut = select(fluxRgb, spectralEmissionAtHero(fluxRgb, heroLambda), params.spectralEnabled != 0u);
+          // Accumulate BRDF-weighted photon flux (no π r² denominator here —
+          // it is applied once in the final estimate, not per-photon, which
+          // keeps τ in physically-consistent units: [W·sr/m²·sr] = [W/m²]).
+          phiM = phiM + throughput * brdf * fluxOut * nDotL;
+          M    = M + 1.0;
+        }
+      }
+    }
+  }
+
+  // ── Hachisuka §4 progressive update ──────────────────────────────────────
+  //
+  //   N'    = N + α·M
+  //   ratio = N' / (N + M)        (= 1 when M = 0, guarded below)
+  //   R'²   = R² · ratio
+  //   τ'    = (τ + Φ_M) · ratio
+  //
+  //   The ratio is the radius-shrink factor.  Physically: after absorbing M
+  //   new photons the area budget shrinks so that total photon density N'/A'
+  //   equals (N + M)/A (the estimator's target).  Multiplying τ by the same
+  //   ratio re-weights previously accumulated flux to the new (smaller) disk
+  //   area, keeping units consistent across frames.
+  let Nprime  = N + SPPM_ALPHA_WGSL * M;
+  let NplusM  = N + M;
+  // Guard M=0 ⟹ ratio=1 (no photons this frame → no update, no shrink).
+  let ratio   = select(Nprime / NplusM, 1.0, M < 0.5);
+  let r2prime = r2 * ratio;
+  let tauPrime = (tau + phiM) * ratio;
+
+  // Write updated per-pixel stats back.
+  sppmPixelStats[pixelIndex].tau     = tauPrime;
+  sppmPixelStats[pixelIndex].radius2 = r2prime;
+  sppmPixelStats[pixelIndex].N       = Nprime;
+
+  // ── Estimate: τ' / (N_e · π · R'²) ──────────────────────────────────────
+  //
+  //   N_e = frameAccumulated · photonCount   (total photons emitted so far)
+  //   L_caustic = τ' / (N_e · π · R'²)
+  //
+  //   frameAccumulated starts at 0 on the host; it is incremented to 1 before
+  //   the first renderFrame call that commits this frame's photons, so N_e ≥
+  //   photonCount from frame 1 onward (guard below prevents div/0 on frame 0).
+  let Ne = f32(sppmStats.frameAccumulated) * f32(nPhotons);
+  if (Ne <= 0.0 || r2prime <= 1e-24) { return vec3f(0.0); }
+  return tauPrime / (Ne * PI * r2prime);
+}
+
+// Legacy streaming-window gather — kept for reference; no longer called by the
+// megakernel (A4-progressive replaced it).  The photon pass still uses
+// sppmInsertPhoton / sppmCellIndex / the hash grid (unchanged).  The gather
+// function below is superseded by sppmGatherProgressive above.
 //
 // Item 21 — spectral × photon-map regime fix:
 // Photons store RGB flux; the eye path carries a hero-λ throughput. In spectral

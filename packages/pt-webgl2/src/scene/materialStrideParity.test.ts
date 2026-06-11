@@ -55,4 +55,29 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(packed.data[base1 + 85 * 4 + 3]).toBe(1.0); // default envMapIntensity
     expect(packed.data[base1 + 86 * 4 + 0]).toBe(0.25);
   });
+
+  it('packer writes the uv-set bitmask at texel 86.a (former pad lane)', () => {
+    // Zero maps have texCoord:1 → bitmask = 0.
+    const noUv1Mat: MaterialSpec[] = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    ];
+    const noUv1 = packMaterialsTexture(noUv1Mat);
+    expect(noUv1.data[86 * 4 + 3]).toBe(0); // was pad=0, now bitmask=0 (same value, now meaningful)
+
+    // baseColorMap at texCoord:1 → bit 0 set = 1.
+    const handle = {};
+    const layerOf = new Map<unknown, number>([[handle, 0]]);
+    const uv1Mat: MaterialSpec[] = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, baseColorMap: { handle, texCoord: 1 } },
+    ];
+    const withUv1 = packMaterialsTexture(uv1Mat, layerOf);
+    expect(withUv1.data[86 * 4 + 3]).toBe(1); // bit 0
+  });
+
+  it('GLSL material_struct decodes uv-set bitmask at s21.a into uvTexCoordMask', () => {
+    // Verify the decoder reads the bitmask from the former pad lane.
+    const shader = composedShader();
+    expect(shader).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
+    expect(shader).toContain('uvTexCoordMask');
+  });
 });

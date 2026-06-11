@@ -1,9 +1,10 @@
-// attributesTextureArray.ts — the 4-layer vertex-attribute sampler2DArray payload
+// attributesTextureArray.ts — the 5-layer vertex-attribute sampler2DArray payload
 // (plan/three-removal/03-scene-bvh-packers.md §7).
 //
 // Port of the fork's `AttributesTextureArray.js` (verified layer order
 // `AttributesTextureArray.js:5-33`): a `sampler2DArray`, RGBA32F, NEAREST, with
-//   layer 0 = normal, layer 1 = tangent, layer 2 = uv, layer 3 = color.
+//   layer 0 = normal, layer 1 = tangent, layer 2 = uv0, layer 3 = color,
+//   layer 4 = uv1 (second UV channel — TextureRef.texCoord 1).
 // The fork GLSL reads `texelFetch1D(attributesArray, layer, index)`
 // (`texture_sample_functions.glsl.js:5-21`) — one near-square `dim×dim` slab per
 // layer holding `vertexCount` texels row-major, vec3 attributes promoted to RGBA
@@ -24,8 +25,12 @@
 //                         for graceful normal-map degradation; a real UV stream
 //                         (a shared-bvh enhancement) would feed the texture-derived
 //                         tangent automatically through the same accumulation.
-//   • layer 2 (uv)      ← merged UVs in `.xy` when present; (0,0,0,0) otherwise.
+//   • layer 2 (uv)      ← merged UVs (uv0) in `.xy` when present; (0,0,0,0) otherwise.
 //   • layer 3 (color)   ← per-vertex colors when present; (1,1,1,1) otherwise.
+//   • layer 4 (uv1)     ← per-vertex uv1 passed from the scene primitives (via the
+//                         caller-built mergedUv1 array, stride 2). Falls back to
+//                         uv0 (merged.uvs) per vertex when the source primitive
+//                         carried no uv1 — so the layer is always valid.
 //
 // The merged result is the PREFERRED source (it is the same world-space stream the
 // BVH textures index, so vertex indices line up 1:1). The plan's §7 fallback to
@@ -38,21 +43,27 @@ import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { squareDim } from './bvhTextureAdapter.js';
 import type { LayeredTexelGrid } from './sceneTextures.js';
 
-/** Layer assignment in the 4-layer attribute array (fork-verified order). */
+/** Layer assignment in the 5-layer attribute array (fork-verified order + uv1 extension). */
 export const ATTR_LAYER_NORMAL = 0;
 export const ATTR_LAYER_TANGENT = 1;
 export const ATTR_LAYER_UV = 2;
 export const ATTR_LAYER_COLOR = 3;
-export const ATTR_LAYER_COUNT = 4;
+export const ATTR_LAYER_UV1 = 4;
+export const ATTR_LAYER_COUNT = 5;
 
 /**
  * A `WorldSpaceMergeResult` that additionally carries an optional per-vertex
- * `colors` array (not produced by `mergeWorldSpaceFromCore` today). `uvs` is now a
- * required member of the base result (stride 2); `colors` is read at the position
- * stride if a future enhancement threads it through.
+ * `colors` array and an optional `uv1` array (stride 2, same vertex order as
+ * `merged.uvs`). When `uv1` is absent, layer 4 (ATTR_UV1) falls back to `uvs`
+ * (uv0) per vertex. The caller is responsible for building `uv1` from the source
+ * primitives aligned with the merged vertex order (see `buildMergedUv1` in
+ * `uploadSceneTextures.ts`).
  */
 interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
   readonly colors?: Float32Array;
+  /** Per-vertex uv1, stride 2 (same vertex order as `merged.uvs`). Optional;
+   *  when absent layer 4 (ATTR_UV1) copies uv0 per vertex. */
+  readonly uv1?: Float32Array;
 }
 
 /** A flat readonly accessor returning component `c` (0..3) of vertex `v` from a
@@ -70,15 +81,18 @@ function vComp(
 }
 
 /**
- * Pack the merged world-space stream into the 4-layer RGBA32F attribute array
- * (normal / tangent / uv / color). Each layer is a `dim×dim` slab, `dim =
- * ceil(sqrt(vertexCount))`; the returned `data` is `dim*dim*4*4` floats (4 layers
+ * Pack the merged world-space stream into the 5-layer RGBA32F attribute array
+ * (normal / tangent / uv0 / color / uv1). Each layer is a `dim×dim` slab, `dim =
+ * ceil(sqrt(vertexCount))`; the returned `data` is `dim*dim*4*5` floats (5 layers
  * × dim×dim texels × RGBA).
  *
  * Tangents are derived from positions + uvs by the standard accumulate-per-triangle
  * method (Lengyel) and orthonormalized against the per-vertex normal (Gram-Schmidt);
  * when the UV gradient is degenerate (e.g. the merge ships no UVs) the tangent falls
  * back to an arbitrary orthonormal basis built from the normal alone.
+ *
+ * Layer 4 (uv1): filled from `merged.uv1` when present; falls back to `merged.uvs`
+ * (uv0) per vertex when absent, so the layer is always valid.
  */
 export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexelGrid {
   const stride = merged.positionStrideFloats;
@@ -87,6 +101,7 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const positions = merged.positions;
   const normals = merged.normals;
   const uvs = merged.uvs;
+  const uv1 = merged.uv1; // optional — stride 2, same vertex order as uvs
   const colors = merged.colors;
 
   // BVH-reordered triangle indices are stride-3 (`indices` / `bvhIndexStride`),
@@ -104,9 +119,10 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const tangentBase = ATTR_LAYER_TANGENT * floatsPerLayer;
   const uvBase = ATTR_LAYER_UV * floatsPerLayer;
   const colorBase = ATTR_LAYER_COLOR * floatsPerLayer;
+  const uv1Base = ATTR_LAYER_UV1 * floatsPerLayer;
 
-  // ── layer 0: normal (vec3 → RGBA, .a = 0); layer 2: uv (uv0 in .xy);
-  //    layer 3: color (default white) ───────────────────────────────────────
+  // ── layer 0: normal (vec3 → RGBA, .a = 0); layer 2: uv0 (uv0 in .xy);
+  //    layer 3: color (default white); layer 4: uv1 (uv1 in .xy, fallback uv0) ─
   for (let v = 0; v < vertexCount; v += 1) {
     const o = v * 4;
     data[normalBase + o] = vComp(normals, v, 0, stride, 0);
@@ -123,6 +139,18 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     data[colorBase + o + 1] = vComp(colors, v, 1, stride, 1);
     data[colorBase + o + 2] = vComp(colors, v, 2, stride, 1);
     data[colorBase + o + 3] = colors === undefined ? 1 : vComp(colors, v, 3, stride, 1);
+
+    // layer 4: uv1 — use the caller-supplied uv1 stream; fall back to uv0 per vertex
+    // when absent so the layer is always fully populated and the GLSL select is safe.
+    if (uv1 !== undefined) {
+      data[uv1Base + o] = vComp(uv1, v, 0, uvStride, 0);
+      data[uv1Base + o + 1] = vComp(uv1, v, 1, uvStride, 0);
+    } else {
+      data[uv1Base + o] = vComp(uvs, v, 0, uvStride, 0);
+      data[uv1Base + o + 1] = vComp(uvs, v, 1, uvStride, 0);
+    }
+    data[uv1Base + o + 2] = 0;
+    data[uv1Base + o + 3] = 0;
   }
 
   // ── layer 1: tangent — derive per-vertex tangents ─────────────────────────
