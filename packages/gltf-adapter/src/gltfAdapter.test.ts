@@ -667,15 +667,31 @@ describe('non-triangle primitive mode', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Test 8 — Draco rejection warning
+// Test 8 — Draco without a decode hook (GLTF-02: per-primitive resolution;
+// deeper hook/fallback coverage lives in gltfCompression.test.ts)
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('Draco rejection', () => {
-  it('emits a warning for KHR_draco_mesh_compression in extensionsUsed', async () => {
+describe('Draco without a decode hook', () => {
+  it('warns per compressed primitive and uses the uncompressed fallback accessors', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     (gltf as GltfJson & { extensionsUsed: string[] }).extensionsUsed = ['KHR_draco_mesh_compression'];
-    const { warnings } = await gltfToScene(gltf, { buffers });
+    // The primitive carries the extension; its accessors still have
+    // bufferViews → spec fallback geometry.
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_draco_mesh_compression: { bufferView: 0, attributes: { POSITION: 0 } },
+    };
+    const { scene, warnings } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.includes('KHR_draco_mesh_compression'))).toBe(true);
+    // Fallback accessors keep the primitive alive.
+    expect(scene.primitives).toHaveLength(1);
+  });
+
+  it('emits no compression warning when extensionsUsed declares Draco but no primitive carries it', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    (gltf as GltfJson & { extensionsUsed: string[] }).extensionsUsed = ['KHR_draco_mesh_compression'];
+    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    expect(warnings.some(w => w.includes('KHR_draco_mesh_compression'))).toBe(false);
+    expect(scene.primitives).toHaveLength(1);
   });
 });
 

@@ -227,24 +227,13 @@ Plan:
 
 ### SHADOW-01 - shadow flags
 
-Current state:
-
-- Core has `castShadow` and reserved `receiveShadow`.
-- pt-webgl2 consumes `castShadow`.
-- Backend-wide `receiveShadow` and emitter shadow flags still need audit.
-
-Plan:
-
-1. Read each backend's shadow-ray predicates and emitter packing.
-2. Decide per backend:
-   - implement caster disable,
-   - implement receiver disable,
-   - implement emitter shadow flags,
-   - or mark unsupported with capability rows/warnings.
-3. Add shadow ray tests:
-   - disabled caster,
-   - disabled receiver,
-   - emitter shadow flag.
+DONE 2026-06-11 — see the gap ledger's SHADOW-01 closure for the full
+per-backend honor matrix. Summary: primitive castShadow native on
+pt-webgl2/pt-webgpu, approximate (DI shadow rays only) on walkaround; emitter
+castShadow approximate on both PT backends (default NEE paths), unsupported +
+warned on walkaround; receiveShadow stays @reserved/unsupported everywhere with
+structured `*.reserved-receive-shadow` warnings. New
+`BackendSupportDetails.shadows` rows pinned by engineContract.test.ts.
 
 ### WEBGL2-02 - pt-webgl2 procedural sky
 

@@ -13,7 +13,11 @@
 //   s2 = (u-vector.xyz, power)
 //   s3 = (v-vector.xyz, area)
 //   s4 = (radius, decay, distance, coneCos)        — spot/point only
-//   s5 = (penumbraCos, reserved, 0, 0)              — spot/point only (s5.g was IES, now padding)
+//   s5 = (penumbraCos, castShadowDisabled, 0, 0)    — s5.r spot only; s5.g ALL kinds
+//        (SHADOW-01: s5.g — the former IES padding slot — carries 1.0 when the
+//        emitter sets castShadow:false, 0.0 default; byte-identical for default
+//        scenes. Consumed by readLightInfo → LightRecord.castShadowDisabled →
+//        directLightContribution's analytic-light shadow-test skip.)
 //
 // Light types (must match the GLSL `#define`s):
 //   RECT_AREA = 0, CIRC_AREA = 1, SPOT = 2, DIR = 3, POINT = 4
@@ -296,6 +300,11 @@ export function packLightsTexture(
         void _never;
       }
     }
+
+    // SHADOW-01 — s5.g (channel 21, the former IES padding slot) carries the
+    // emitter castShadowDisabled flag for EVERY light kind. Default (castShadow
+    // true/undefined) writes 0.0 — byte-identical to the pre-SHADOW-01 grid.
+    data[base + 21] = l.castShadow === false ? 1 : 0;
   }
 
   return { data, dim, kind: 'rgba32f', lightCount: lights.length };

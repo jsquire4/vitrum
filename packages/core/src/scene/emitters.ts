@@ -16,11 +16,23 @@ export interface EmitterBase {
   readonly id: SceneNodeId;
   readonly color: Vec3;
   readonly intensity: number;
-  /** Whether this emitter's shadow rays are cast. Default true.
-   *  @reserved Accepted by the contract; `@vitrum/pt-webgl2` has the shadow gate
-   *  wired (materialsTexture.ts packs a `castShadow` slot) but hardcodes `true`
-   *  (the host value is not yet read). Not consumed by `@vitrum/pt-webgpu` or
-   *  `@vitrum/walkaround-hybrid`. road-to-100 shadow tier. */
+  /** Whether this emitter's NEE shadow rays are cast. Default true. With
+   *  `castShadow: false` the emitter's direct lighting skips its occlusion
+   *  test — light passes through blockers (no glass tint either).
+   *  Per-backend status (SHADOW-01, 2026-06-11 — see
+   *  `BackendSupportDetails.shadows.emitterCastShadow`):
+   *    - `@vitrum/pt-webgl2` — approximate: honored for every analytic NEE
+   *      light (rect/disc/spot/point/directional via the lights-texture s5.g
+   *      lane); the mesh-area triangle-light NEE strategy and the forward /
+   *      BDPT paths do not consume it.
+   *    - `@vitrum/pt-webgpu` — approximate: honored by the default kernel NEE
+   *      loops (both tiers) + the BSDF-MIS area-light connections for all 6
+   *      emitter kinds; off-default integrators (BDPT, ReSTIR-PT, MNEE/SPPM
+   *      caustics) and in-medium directional NEE still shadow-test. Lite-tier
+   *      directional NEE (UBO mirror) carries no flag.
+   *    - `@vitrum/walkaround-hybrid` — unsupported (structured
+   *      `walkaround-hybrid.unsupported-emitter-cast-shadow` warning when a
+   *      scene sets it false). */
   readonly castShadow?: boolean;
 }
 

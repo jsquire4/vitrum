@@ -513,6 +513,15 @@ export function packBVHIndexWFromCore(
  * IOR from `mat.ior ?? 1.5` (glass) / `1.0` (opaque). Missing slot →
  * (0.85, 0, opaque-1.0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so
  * the core and structural paths produce identical per-triangle output.
+ *
+ * SHADOW-01 (2026-06-11) — bit 0 of the formerly-reserved low byte carries the
+ * source PRIMITIVE's castShadow flag (1 ⟺ castShadow:false — "does NOT cast
+ * shadows"). The flag rides the material slot because both walkaround BVH paths
+ * give castShadow:false primitives distinct slots (the TLAS path's
+ * `materialResolver` is per-primitive; the merged path opts into
+ * `splitMaterialsByCastShadow`). Default (true/undefined) packs 0 —
+ * byte-identical to the pre-SHADOW-01 lane. Consumed by the shared-bvh
+ * cast-shadow-masked any-hit traversal in the ReSTIR DI shadow predicates.
  */
 export function packBVHRoughMetalFromCore(
   triMaterialId: Uint32Array,
@@ -525,13 +534,16 @@ export function packBVHRoughMetalFromCore(
     let rough = ROUGH_DEFAULT;
     let metal = 0;
     let ior = IOR_RANGE_MIN;
+    let castShadowDisabled = 0;
     if (mat) {
       const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission, mat.ior);
       rough = rm.rough;
       metal = rm.metal;
       ior = rm.ior;
+      castShadowDisabled =
+        (mat as MaterialSpec & { castShadow?: boolean }).castShadow === false ? 1 : 0;
     }
-    rmBuf[t] = packRoughMetalIorBytes(rough, metal, ior);
+    rmBuf[t] = (packRoughMetalIorBytes(rough, metal, ior) | castShadowDisabled) >>> 0;
   }
   return rmBuf;
 }

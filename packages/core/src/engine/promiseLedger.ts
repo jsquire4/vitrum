@@ -595,6 +595,71 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   extensions: 'unsupported',
 });
 
+// ── SHADOW-01 — per-backend shadow-flag support rows (2026-06-11) ─────────────
+//
+// Graded by code-read of the actual shadow-ray predicates:
+//   pt-webgl2  — glsl/composeTraceGlsl.ts (`!material.castShadow && state.isShadowRay`
+//                continuation gate; materialsTexture.ts s14 castShadow lane, fed from
+//                the primitive flag via shared-bvh `splitMaterialsByCastShadow`) +
+//                lightsTexture.ts s5.g castShadowDisabled lane consumed in
+//                direct_light_contribution_function.glsl.js.
+//   pt-webgpu  — materialPacking.ts vec4 #25 .w castShadowDisabled lane consumed by
+//                intersectionCore.wgsl.ts `triShadowCastDisabled` in every any-hit
+//                (occlusion) traversal (both tiers); emitterPacking.ts per-light
+//                castShadowDisabled lanes consumed by the kernel/kernelLite NEE loops
+//                + connect.wgsl BSDF-MIS area connections.
+//   walkaround — packingHelpers.ts bvh_material bit 0 (reserved byte) consumed by the
+//                shared-bvh cast-shadow-masked any-hit variants in the ReSTIR DI
+//                shadow predicates (ris.wgsl candidate visibility + shadingTerms.wgsl
+//                shading/analytic/sun visibility).
+
+type ShadowSupportMatrix = Readonly<
+  Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>
+>;
+
+/** walkaround-hybrid — primitive castShadow is honored by the ReSTIR **DI** shadow
+ *  predicates only (RIS candidate visibility, DI shading visibility, analytic
+ *  point/spot NEE, direct-sun NEE — ris.wgsl + shadingTerms.wgsl). The GI-side
+ *  occlusion tests (ReSTIR-GI reservoir visibility, DDGI probe rays, RC probe
+ *  casts, GRIS reuse) still treat castShadow:false geometry as an occluder →
+ *  'approximate'. Emitter castShadow is not represented in the DDGI/ReSTIR light
+ *  paths → 'unsupported' (structured warning when set). receiveShadow: see
+ *  BackendSupportDetails.shadows JSDoc — non-physical for GI, warned. */
+const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
+  primitiveCastShadow: 'approximate',
+  emitterCastShadow: 'unsupported',
+  receiveShadow: 'unsupported',
+});
+
+/** pt-webgl2 — primitive castShadow rides the fork integrator's shadow-ray
+ *  continuation gate (castShadow:false surfaces are transparent to shadow
+ *  rays) → 'native'. Emitter castShadow is honored for every analytic NEE
+ *  light (rect/disc/spot/point/directional via the s5.g lane); the mesh-area
+ *  triangle-light NEE strategy and the forward/BDPT paths do not consume it →
+ *  'approximate'. */
+const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
+  primitiveCastShadow: 'native',
+  emitterCastShadow: 'approximate',
+  receiveShadow: 'unsupported',
+});
+
+/** pt-webgpu — primitive castShadow is enforced in `traceMeshBvh`'s any-hit
+ *  (occlusion) mode, which underlies EVERY traceAny call site on both tiers
+ *  (NEE shadow rays, BSDF-MIS connections, ReSTIR-PT reconnection visibility,
+ *  MNEE/caustic legs) → 'native'. Note: contract-level `AnalyticPrimitive` has
+ *  no castShadow field, so analytic shapes always occlude. Emitter castShadow
+ *  is honored by the default kernel/kernelLite NEE loops + the connect.wgsl
+ *  BSDF-MIS area-light connections for all 6 emitter kinds; the off-default
+ *  integrators (BDPT light subpath, ReSTIR-PT producer/reuse, MNEE/SPPM caustic
+ *  legs) and the in-medium directional NEE still shadow-test → 'approximate'.
+ *  (Lite-tier directional NEE reads the UBO lightDir mirror, which carries no
+ *  flag — lite directional emitters always shadow-test.) */
+const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
+  primitiveCastShadow: 'native',
+  emitterCastShadow: 'approximate',
+  receiveShadow: 'unsupported',
+});
+
 // ── Shared mutation/method constants (D1.4) ──────────────────────────────────
 //
 // Extracted to eliminate copy-paste drift between the three backend records.
@@ -733,6 +798,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       materials: WALKAROUND_MATERIALS,
+      shadows: WALKAROUND_SHADOWS,
       mutations: {
         transform: 'native',
         positions: 'native',
@@ -825,6 +891,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       analyticShapes: NO_ANALYTIC_SHAPES,
       materials: PT_WEBGL2_MATERIALS,
+      shadows: PT_WEBGL2_SHADOWS,
       // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
       // (a full scene-texture/BVH repack, not a targeted in-place edit).
       // The incrementalPatchSupport flags above reflect the OUTCOME (patches
@@ -890,6 +957,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
       materials: PT_WEBGPU_MATERIALS,
+      shadows: PT_WEBGPU_SHADOWS,
       mutations: PT_WEBGPU_MUTATIONS,
     },
     methodPromises: {

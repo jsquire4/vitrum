@@ -397,12 +397,15 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // Wave 4 — ENV_SAMPLE_SENTINEL: shadow ray to infinity along the stored dir.
     if (lid == ENV_SAMPLE_SENTINEL) {
       let envDir = envDirFromXi(r.xi);
-      let occluded = traceSceneAny(
+      // SHADOW-01 — DI shadow rays honor primitive castShadow:false via the
+      // bvh_material bit-0 mask (traceSceneAnyCastMask).
+      let occluded = traceSceneAnyCastMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon, true);
+        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon, true,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH);
       if (occluded) {
         r.w_sum = 0.0;
         r.W     = 0.0;
@@ -432,12 +435,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       let wi  = toL / dist;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let occluded = traceSceneAny(
+      // SHADOW-01 — castShadow:false geometry is skipped via the bvh_material mask.
+      let occluded = traceSceneAnyCastMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+        shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH);
       if (occluded) {
         r.w_sum = 0.0;
         r.W     = 0.0;

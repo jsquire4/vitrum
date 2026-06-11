@@ -11,7 +11,11 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
-import { BVH_INTERSECT_WGSL, TLAS_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
+import {
+  BVH_CAST_SHADOW_MASK_WGSL,
+  BVH_INTERSECT_WGSL,
+  TLAS_TRAVERSAL_WGSL,
+} from '@vitrum/shared-bvh';
 
 export const SCENE_TRAVERSAL_WGSL = /* wgsl */ `// ============================================================
 // BVH structs + intersection helpers — canonical from @vitrum/shared-bvh
@@ -104,6 +108,60 @@ fn traceSceneAny(
     );
   }
   return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);
+}
+
+${BVH_CAST_SHADOW_MASK_WGSL}
+
+// SHADOW-01 — castShadow-aware occlusion wrapper for the ReSTIR **DI** shadow
+// predicates (ris.wgsl candidate visibility + shadingTerms.wgsl shading /
+// analytic / sun visibility). Identical dispatch to traceSceneAny, but the
+// leaf loops skip triangles whose bvh_material word has bit 0 set
+// (castShadow:false — packBVHRoughMetalFromCore). Callers pass the
+// module-scope bvh_material texture + BVH_MATERIAL_TEX_WIDTH so this module
+// stays binding-free. GI-side occlusion (risGi / temporalGi / spatialGi /
+// grisReuse / DDGI / RC) intentionally keeps the unmasked traceSceneAny —
+// the ledger grades walkaround primitiveCastShadow 'approximate' for exactly
+// this split.
+fn traceSceneAnyCastMask(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  origin: vec3f,
+  dir: vec3f,
+  tMax: f32,
+  triEps: f32,
+  skipGlass: bool,
+  castMask: texture_2d<u32>,
+  castMaskWidth: u32,
+) -> bool {
+  if (bvhMode == 1u && tlasNodeCount > 0u) {
+    return traceTlasAnyCastMask(
+      tlasNodes,
+      tlasInstanceIndices,
+      tlasBlasRoots,
+      tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld,
+      tlasNodeCount,
+      bvh_index,
+      bvh_position,
+      bvh,
+      origin,
+      dir,
+      tMax,
+      triEps,
+      skipGlass,
+      castMask,
+      castMaskWidth,
+    );
+  }
+  return bvhIntersectAnyAtRootCastMask(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u, castMask, castMaskWidth);
 }
 
 // ─── WS1 (2026-05-29) — smooth shading normal via barycentric per-vertex blend ─

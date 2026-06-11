@@ -112,12 +112,16 @@ export interface GltfBufferView {
   byteLength: number;
   byteStride?: number;
   target?: number;
+  /** Per-bufferView extensions (EXT_meshopt_compression lives here). */
+  extensions?: Record<string, unknown>;
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfBuffer {
   uri?: string;
   byteLength: number;
+  /** Per-buffer extensions (EXT_meshopt_compression `fallback: true` stubs). */
+  extensions?: Record<string, unknown>;
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */

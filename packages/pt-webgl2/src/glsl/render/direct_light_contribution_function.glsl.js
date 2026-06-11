@@ -35,11 +35,15 @@ export const direct_light_contribution_function = /*glsl*/`
 			Ray lightRay;
 			lightRay.origin = rayOrigin;
 			lightRay.direction = lightRec.direction;
-			vec3 attenuatedColor;
+			// SHADOW-01 — emitter castShadow:false skips the occlusion/attenuation
+			// test entirely (light passes through blockers, no glass tint).
+			// attenuatedColor stays 1.0 in that case; attenuateHit overwrites it on
+			// the default path, so flag-less scenes are behaviorally identical.
+			vec3 attenuatedColor = vec3( 1.0 );
 			if (
 				lightRec.pdf > 0.0 &&
 				isDirectionValid( lightRec.direction, surf.normal, surf.faceNormal ) &&
-				! attenuateHit( state, lightRay, lightRec.dist, attenuatedColor )
+				( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist, attenuatedColor ) )
 			) {
 
 				// get the material pdf

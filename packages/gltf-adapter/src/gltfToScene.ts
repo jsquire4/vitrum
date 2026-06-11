@@ -25,9 +25,14 @@
 //   - KHR_lights_punctual → SceneEmitter[] (point, spot, directional;
 //     world-transform applied to position/direction).
 //
-// Out of scope: cameras, KHR_draco_mesh_compression, EXT_meshopt_compression,
-//   morph TANGENT deltas, KHR_materials_volume.thicknessTexture (no core
-//   field).
+//   - KHR_draco_mesh_compression / EXT_meshopt_compression → resolved via
+//     HOST-SUPPLIED decoder hooks (opts.dracoDecode / opts.meshoptDecode; the
+//     package bundles no decoder). Without a hook the spec fallback is used
+//     when present (Draco fallback accessors / meshopt fallback buffer);
+//     extensionsRequired without a hook or fallback throws. See compression.ts.
+//
+// Out of scope: cameras, morph TANGENT deltas,
+//   KHR_materials_volume.thicknessTexture (no core field).
 //
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
@@ -53,6 +58,8 @@ import { buildTextureHandleMap } from './textures.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
 import { animationNodeId, convertAnimations } from './animations.js';
+import { resolveCompression } from './compression.js';
+import type { DracoDecodeFn, MeshoptDecodeFn } from './compression.js';
 import {
   GLTF_MODE_TRIANGLE_FAN,
   GLTF_MODE_TRIANGLE_STRIP,
@@ -99,6 +106,41 @@ export interface GltfToSceneOptions {
    * Index of the glTF scene to import (0-based). Defaults to gltf.scene or 0.
    */
   readonly sceneIndex?: number;
+
+  /**
+   * Host-supplied Draco decode hook for `KHR_draco_mesh_compression`.
+   *
+   * The adapter bundles NO decoder; wire one from `draco3d` /
+   * `DracoDecoderModule` (see README "Compressed geometry"). Receives the
+   * compressed blob plus the extension's semantic → Draco-attribute-unique-id
+   * map; must return decoded typed arrays whose counts/types match the
+   * primitive's declared accessors (which per spec describe the decoded
+   * data — the adapter then applies its standard accessor conversion,
+   * including `normalized` handling). May be sync or async.
+   *
+   * Without this hook: primitives with uncompressed fallback accessors import
+   * from the fallback (warn); otherwise the primitive is skipped (warn), or
+   * an Error is thrown when the extension is in `extensionsRequired`.
+   */
+  readonly dracoDecode?: DracoDecodeFn;
+
+  /**
+   * Host-supplied meshopt decode hook for `EXT_meshopt_compression`.
+   *
+   * Mirrors `MeshoptDecoder.decodeGltfBuffer` from `meshoptimizer` (see README
+   * "Compressed geometry"): receives the compressed bytes plus the extension's
+   * `count` / `byteStride` / `mode` / `filter` and must return exactly
+   * `count × byteStride` decoded bytes. Decoding happens at bufferView
+   * resolution, so geometry, animation and image consumers all transparently
+   * see decompressed data. May be sync or async.
+   *
+   * Without this hook: bufferViews whose underlying buffer is a real (non
+   * `fallback: true`) uncompressed fallback are read directly (warn);
+   * otherwise dependent accessors fail and their primitives are skipped
+   * (warn), or an Error is thrown when the extension is in
+   * `extensionsRequired`.
+   */
+  readonly meshoptDecode?: MeshoptDecodeFn;
 }
 
 export interface GltfToSceneResult {
@@ -221,19 +263,19 @@ export async function gltfToScene(
   }
 
   const extUsed = gltf.extensionsUsed ?? [];
-  if (extUsed.includes('KHR_draco_mesh_compression')) {
-    warnings.push(
-      '[vitrum/gltf-adapter] KHR_draco_mesh_compression is present but NOT supported. ' +
-        'Affected primitives will be skipped. Decode the mesh with a Draco decoder before ' +
-        'passing to the adapter, or export without Draco compression.',
-    );
-  }
-  if (extUsed.includes('EXT_meshopt_compression')) {
-    warnings.push(
-      '[vitrum/gltf-adapter] EXT_meshopt_compression is present but NOT supported. ' +
-        'Affected primitives will be skipped. Decode with a MeshOpt decoder before passing.',
-    );
-  }
+
+  // ── 3.5. Resolve compressed geometry (GLTF-02) ─────────────────────────────
+  // KHR_draco_mesh_compression + EXT_meshopt_compression via the host-supplied
+  // opts.dracoDecode / opts.meshoptDecode hooks. Runs BEFORE texture/accessor
+  // reads so every downstream consumer sees decompressed bufferViews. Returns
+  // a clone when compression is present (the caller's GltfJson is never
+  // mutated); throws when a hook-less required extension has no spec fallback.
+  gltf = await resolveCompression(
+    gltf,
+    buffers,
+    { dracoDecode: opts.dracoDecode, meshoptDecode: opts.meshoptDecode },
+    warnings,
+  );
 
   // ── 4. Resolve textures ────────────────────────────────────────────────────
   const handleMap = await buildTextureHandleMap(
@@ -310,12 +352,14 @@ export async function gltfToScene(
         continue;
       }
 
-      // Check for unsupported compression extensions.
+      // Compression left UNRESOLVED by resolveCompression (no hook + no spec
+      // fallback, or the decode hook failed) — skip honestly.
       const primExtKeys = Object.keys(prim.extensions ?? {});
-      if (primExtKeys.includes('KHR_draco_mesh_compression') || primExtKeys.includes('EXT_meshopt_compression')) {
+      if (primExtKeys.includes('KHR_draco_mesh_compression')) {
         warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive uses compressed geometry ` +
-            `(${primExtKeys.join(', ')}) which is not supported. Primitive SKIPPED.`,
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
+            'KHR_draco_mesh_compression geometry (no opts.dracoDecode hook / decode failed, ' +
+            'and no uncompressed fallback). Primitive SKIPPED.',
         );
         continue;
       }

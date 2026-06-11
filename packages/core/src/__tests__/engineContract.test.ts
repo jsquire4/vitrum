@@ -143,6 +143,33 @@ describe('backend promise ledger', () => {
     expect(gpu.metallicMap).toBe('approximate');
   });
 
+  // SHADOW-01 — shadow-flag support rows are exhaustive + pinned per backend.
+  it('keeps the shadow support matrix exhaustive and pinned for every backend (SHADOW-01)', () => {
+    const SHADOW_KEYS = ['primitiveCastShadow', 'emitterCastShadow', 'receiveShadow'];
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      const keys = Object.keys(rec.supportDetails.shadows).sort();
+      expect(keys, `shadows matrix keys for ${id}`).toEqual([...SHADOW_KEYS].sort());
+      // receiveShadow is non-physical for GI — unsupported EVERYWHERE; backends
+      // emit a structured *.reserved-receive-shadow warning when set false.
+      expect(rec.supportDetails.shadows.receiveShadow, `receiveShadow for ${id}`).toBe('unsupported');
+    }
+    const wa = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.shadows;
+    const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.shadows;
+    const gpu = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows;
+    // walkaround: primitive flag honored by the DI shadow predicates only
+    // (GI/DDGI/RC occlusion ignores it); emitter flag not represented.
+    expect(wa.primitiveCastShadow).toBe('approximate');
+    expect(wa.emitterCastShadow).toBe('unsupported');
+    // pt-webgl2: material-lane shadow-ray gate (native); emitter flag honored
+    // for analytic NEE lights only (mesh-area + forward/BDPT do not consume it).
+    expect(gl2.primitiveCastShadow).toBe('native');
+    expect(gl2.emitterCastShadow).toBe('approximate');
+    // pt-webgpu: every any-hit occlusion traversal skips the flag (native);
+    // emitter flag honored by default-kernel NEE + BSDF-MIS connections only.
+    expect(gpu.primitiveCastShadow).toBe('native');
+    expect(gpu.emitterCastShadow).toBe('approximate');
+  });
+
   it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {
     for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
       expect(rec.methodPromises.onError).toBe(true);

@@ -244,3 +244,73 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(packed.warnings.some((w) => w.includes('HDRI environment'))).toBe(true);
   });
 });
+
+// ── SHADOW-01 (2026-06-11) — emitter castShadowDisabled lanes ────────────────
+//
+// Lane map (emitterPacking.ts layout docs):
+//   directional — angularDiameter lane SIGN-ENCODED: packed = -1 - ad when
+//                 castShadow:false (raw ad >= 0 when true/undefined).
+//   point       — vec4 2 .z (float index 10).
+//   spot        — vec4 3 .z (float index 14).
+//   rect/disc   — vec4 0 .w (float index 3).
+//   mesh-area   — radiance vec4 .w (float index 15 of each 16-float record).
+describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
+  it('packs castShadow:false into every light kind lane; defaults pack 0 / non-negative', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [
+        { kind: 'directional', id: 'd0', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1, angularDiameter: 0.25, castShadow: false },
+        { kind: 'directional', id: 'd1', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1, angularDiameter: 0.25 },
+        { kind: 'point', id: 'p0', position: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
+        { kind: 'point', id: 'p1', position: [0, 1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'spot', id: 's0', position: [0, 1, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
+        { kind: 'spot', id: 's1', position: [0, 1, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1 },
+        { kind: 'rect-area', id: 'r0', position: [0, 1, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
+        { kind: 'rect-area', id: 'r1', position: [0, 1, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'disc-area', id: 'c0', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
+        { kind: 'mesh-area', id: 'm0', meshId: 'tri', color: [1, 1, 1], intensity: 1, castShadow: false },
+      ],
+    };
+    const packed = buildPackedScene(scene);
+
+    // directional — sign-encoded angularDiameter (stride 8 floats / light).
+    expect(packed.directionalLightsData[3]).toBeCloseTo(-1.25, 6);  // -1 - 0.25
+    expect(packed.directionalLightsData[8 + 3]).toBeCloseTo(0.25, 6);
+
+    // point — stride 12, lane 10.
+    expect(packed.pointLightsData[10]).toBe(1);
+    expect(packed.pointLightsData[12 + 10]).toBe(0);
+
+    // spot — stride 16, lane 14.
+    expect(packed.spotLightsData[14]).toBe(1);
+    expect(packed.spotLightsData[16 + 14]).toBe(0);
+
+    // rect — stride 16, lane 3; disc is appended after rects in the same stream.
+    expect(packed.rectAreaLightsData[3]).toBe(1);
+    expect(packed.rectAreaLightsData[16 + 3]).toBe(0);
+    expect(packed.rectAreaLightsData[2 * 16 + 3]).toBe(1);  // the disc record
+
+    // mesh-area — radiance .w of each 16-float triangle record.
+    expect(packed.meshAreaLightCount).toBeGreaterThan(0);
+    expect(packed.meshAreaLightsData[15]).toBe(1);
+  });
+
+  it('DEFAULT-PATH INVARIANT: flag-less emitters pack byte-identically (all lanes 0 / raw ad)', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [
+        { kind: 'directional', id: 'd', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'point', id: 'p', position: [0, 1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'spot', id: 's', position: [0, 1, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1 },
+        { kind: 'rect-area', id: 'r', position: [0, 1, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'mesh-area', id: 'm', meshId: 'tri', color: [1, 1, 1], intensity: 1 },
+      ],
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.directionalLightsData[3]).toBe(0);   // no angularDiameter → 0, non-negative
+    expect(packed.pointLightsData[10]).toBe(0);
+    expect(packed.spotLightsData[14]).toBe(0);
+    expect(packed.rectAreaLightsData[3]).toBe(0);
+    expect(packed.meshAreaLightsData[15]).toBe(0);
+  });
+});

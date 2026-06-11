@@ -265,3 +265,35 @@ describe('composeTraceGlsl — CIRC_AREA_LIGHT_TYPE is handled in both sample + 
     expect(src).toContain('light.type == CIRC_AREA_LIGHT_TYPE');
   });
 });
+
+// ── SHADOW-01 (2026-06-11) — emitter castShadowDisabled in s5.g (channel 21) ──
+describe('SHADOW-01 — castShadowDisabled lane (s5.g, channel 21)', () => {
+  it('packs 1.0 for castShadow:false on every analytic light kind; 0.0 default', () => {
+    const lights = [
+      { kind: 'directional', id: 'd', direction: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
+      { kind: 'point', id: 'p', position: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
+      { kind: 'spot', id: 's', position: [0, 1, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
+      { kind: 'rect-area', id: 'r', position: [0, 1, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
+      { kind: 'disc-area', id: 'c', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
+      { kind: 'point', id: 'p2', position: [0, 2, 0], color: [1, 1, 1], intensity: 1 },
+      { kind: 'spot', id: 's2', position: [0, 2, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1, castShadow: true },
+    ] as Parameters<typeof packLightsTexture>[0];
+    const packed = packLightsTexture(lights);
+    const s5g = (i: number): number => packed.data[i * LIGHT_PIXELS * 4 + 21]!;
+    expect(s5g(0)).toBe(1); // directional
+    expect(s5g(1)).toBe(1); // point
+    expect(s5g(2)).toBe(1); // spot
+    expect(s5g(3)).toBe(1); // rect-area
+    expect(s5g(4)).toBe(1); // disc-area
+    expect(s5g(5)).toBe(0); // default
+    expect(s5g(6)).toBe(0); // explicit true
+  });
+
+  it('GLSL decoder reads s5.g into Light.castShadowDisabled and directLightContribution gates on it', async () => {
+    const { composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
+    const { DEFAULT_TRACE_FEATURES } = await import('../featureTypes.js');
+    const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    expect(src).toContain('l.castShadowDisabled = s5.g;');
+    expect(src).toContain('lightRec.castShadowDisabled > 0.5 || ! attenuateHit(');
+  });
+});

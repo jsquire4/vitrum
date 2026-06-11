@@ -187,8 +187,14 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // indentation corrected (2-space → 4-space; WGSL text change, zero semantic impact).
     // Re-pinned 2026-06-11: PTWG-03/04 SPPM photon p_select normalization,
     // packed N-directional RGB photon emission, and once-per-pixel stats gate.
-    expect(digest).toBe('998430cb375c003247dbf1dabe53cbdfea254573a21d465782e0428e208e1ef0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(313716);
+    // Re-pinned 2026-06-11 (SHADOW-01): primitive castShadow any-hit gate
+    // (intersectionCore triShadowCastDisabled — material vec4 #25 .w lane) +
+    // emitter castShadowDisabled gates in the kernel NEE loops (directional
+    // sign-encoded angularDiameter; point/spot/rect/mesh lanes) + connect.wgsl
+    // BSDF-MIS parity gates. Default (flag-less) scenes are behaviorally
+    // identical: every gate reads a lane that packs 0.0 by default.
+    expect(digest).toBe('105dd7b5e4be50bb6af0720d64058bb689a90ae11dca5a6ad20689814b33116b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(316123);
   });
 });
 

@@ -34,6 +34,10 @@ export const light_sampling_functions = /* glsl */`
 		int type;
 		// P(chosen light | NEE chose the discrete lights branch). Uniform sampling uses 1/count.
 		float discretePdf;
+		// SHADOW-01 — 1.0 when the source emitter set castShadow:false (skip the
+		// NEE shadow test for this light); 0.0 default. Mesh-area triangle lights
+		// always carry 0.0 (flag not represented in the uMeshLights slot).
+		float castShadowDisabled;
 
 	};
 
@@ -73,6 +77,7 @@ export const light_sampling_functions = /* glsl */`
 				lightRec.direction = rayDirection;
 				lightRec.type = light.type;
 				lightRec.discretePdf = 1.0;
+				lightRec.castShadowDisabled = light.castShadowDisabled;
 
 			}
 
@@ -121,6 +126,7 @@ export const light_sampling_functions = /* glsl */`
 		float denom = max( abs( light.area * dot( direction, lightNormal ) ), EPSILON );
 		lightRec.pdf = max( lightDistSq / denom, EPSILON );
 		lightRec.discretePdf = 1.0;
+		lightRec.castShadowDisabled = light.castShadowDisabled;
 
 		return lightRec;
 
@@ -160,6 +166,7 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.emission = light.color * light.intensity * distanceAttenuation * spotAttenuation;
 		lightRec.pdf = 1.0;
 		lightRec.discretePdf = 1.0;
+		lightRec.castShadowDisabled = light.castShadowDisabled;
 
 		return lightRec;
 
@@ -201,6 +208,9 @@ export const light_sampling_functions = /* glsl */`
 		rec.pdf = 0.0;
 		rec.discretePdf = 1.0;
 		rec.type = TRI_AREA_LIGHT_TYPE;
+		// SHADOW-01 — mesh-area emitter castShadow is NOT represented in the
+		// uMeshLights slot (documented 'approximate' on the ledger row): always 0.
+		rec.castShadowDisabled = 0.0;
 		if ( meshLightCount == 0u || totalEmissiveArea <= 0.0 ) return rec;
 
 		// Area-proportional triangle selection by cumulative area (uPick in [0,area]).
@@ -323,6 +333,7 @@ export const light_sampling_functions = /* glsl */`
 			rec.emission = light.color * light.intensity * distanceFalloff;
 			rec.type = light.type;
 			rec.discretePdf = 1.0;
+			rec.castShadowDisabled = light.castShadowDisabled;
 			result = rec;
 
 		} else if ( light.type == DIR_LIGHT_TYPE ) {
@@ -336,6 +347,7 @@ export const light_sampling_functions = /* glsl */`
 			rec.emission = light.color * light.intensity;
 			rec.type = light.type;
 			rec.discretePdf = 1.0;
+			rec.castShadowDisabled = light.castShadowDisabled;
 
 			result = rec;
 

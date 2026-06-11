@@ -252,6 +252,22 @@ fn intersectHChannelLocal(ray: Ray, lengthX: f32, railWidth: f32, blockHeight: f
   return bestT;
 }
 
+// SHADOW-01 — primitive castShadow. Material vec4 #25 .w (the former pad lane)
+// carries 1.0 when the SOURCE PRIMITIVE set castShadow:false (0.0 default —
+// see scene/materialPacking.ts vec4 #25). Any-hit (occlusion) traversals skip
+// such triangles so NEE shadow rays / visibility connections pass through;
+// closest-hit (camera / radiance) traversals never call this, keeping the
+// geometry camera-visible. Both tiers compose the material module that
+// declares \`materials\` / \`triMaterialIds\` / MATERIAL_VEC4_STRIDE before this
+// module, so the symbols resolve in every composition.
+fn triShadowCastDisabled(triIdx: u32) -> bool {
+  if (triIdx >= arrayLength(&triMaterialIds)) { return false; }
+  let matId = triMaterialIds[triIdx];
+  let vecIndex = matId * MATERIAL_VEC4_STRIDE + 25u;
+  if (vecIndex >= arrayLength(&materials)) { return false; }
+  return materials[vecIndex].w > 0.5;
+}
+
 // Mesh BVH traversal — closest: shrinking ray interval (hit.dist) for slab tests
 // and full SceneHit on triangles; false uses fixed tMaxBound and returns
 // true on first triangle hit in (tMin, tMaxBound).
@@ -321,6 +337,11 @@ fn traceMeshBvh(
         // (G-P0.3 capture found this via the face-on Cornell back wall).
         if (hitT > tMin && hitT < select(tMaxBound, (*hit).dist, closest)) {
           if (!closest) {
+            // SHADOW-01 — any-hit mode is exclusively occlusion (shadow /
+            // visibility) queries: skip castShadow:false geometry.
+            if (triShadowCastDisabled(t)) {
+              continue;
+            }
             return true;
           }
           var shadeNormal = vec3f(0.0, 1.0, 0.0);

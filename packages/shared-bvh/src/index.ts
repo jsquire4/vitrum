@@ -47,6 +47,7 @@ export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
 export * from './wgsl/tlasTraversal.wgsl.js';
 export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
+export * from './wgsl/bvhCastShadowMask.wgsl.js';
 export {
   fingerprintBuffer,
   fingerprintBuffers,

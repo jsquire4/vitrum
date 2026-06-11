@@ -60,6 +60,18 @@ export interface BackendSupportDetails {
    *  omitted fields are not yet audited in this detail table, while present
    *  fields are a machine-checkable promise. */
   readonly materials: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
+  /** Shadow-flag fidelity rows (SHADOW-01, 2026-06-11):
+   *   - `primitiveCastShadow` — `MeshPrimitive.castShadow` (+ instanced/skinned
+   *     variants): castShadow:false geometry is skipped by NEE/occlusion
+   *     shadow rays while staying camera/radiance-visible.
+   *   - `emitterCastShadow` — `EmitterBase.castShadow`: castShadow:false
+   *     emitters skip their NEE shadow test (light passes through occluders).
+   *   - `receiveShadow` — `MeshPrimitive.receiveShadow`: a "receiver ignores
+   *     occlusion" toggle is non-physical in a GI path tracer; all shipping
+   *     backends keep it `unsupported` and warn when a scene sets it. */
+  readonly shadows: Readonly<
+    Partial<Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>>
+  >;
   readonly mutations: BackendMutationSupportDetails;
 }
 

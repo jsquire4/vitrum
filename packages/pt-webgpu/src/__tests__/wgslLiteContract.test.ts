@@ -70,8 +70,14 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // kernelLite.wgsl.ts uses the shared helper. SEMANTICALLY EQUIVALENT; same Shirley-Chiu mapping.
     // Re-pinned 2026-06-10: D9.13 — rotateYNeg/rotateYPos moved to connectCore.wgsl.ts;
     // connectLite.wgsl.ts liteRotateY* replaced with canonical names. SEMANTICALLY EQUIVALENT.
-    expect(digest).toBe('8501bfb94f1d74535d7644439aee32df08aebe83fe0bcb5aeffbda6d8029900b');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(133012);
+    // Re-pinned 2026-06-11 (SHADOW-01): primitive castShadow any-hit gate in the
+    // shared intersectionCore (traceMeshBvh !closest skip via triShadowCastDisabled)
+    // + emitter castShadowDisabled gates in the lite NEE loops (point extra.z /
+    // spot spExtra.z / rect texel-0 .w). Lite directional NEE reads the UBO
+    // lightDir mirror (no flag — documented 'approximate' on the ledger row).
+    // Default (flag-less) scenes are behaviorally identical (all lanes pack 0.0).
+    expect(digest).toBe('198128533a7595f6747ad1c384d2df36de2461d44e89c1ce29781704b210d99f');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(134532);
   });
 });
 

@@ -11,3 +11,15 @@ export type { GltfToSceneOptions, GltfToSceneResult } from './gltfToScene.js';
 export { animationNodeId } from './animations.js';
 export type { GltfJson } from './gltfTypes.js';
 export type { DecodeImageFn, RawImageHandle } from './textures.js';
+// Compressed-geometry decoder hook contract (GLTF-02): the host injects
+// KHR_draco_mesh_compression / EXT_meshopt_compression decoders; the package
+// itself bundles none. See README "Compressed geometry".
+export type {
+  GltfDecodeHooks,
+  DracoDecodeFn,
+  DracoDecodeResult,
+  DracoTypedArray,
+  MeshoptDecodeFn,
+  MeshoptMode,
+  MeshoptFilter,
+} from './compression.js';

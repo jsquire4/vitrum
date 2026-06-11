@@ -325,6 +325,24 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         details: { fields: unsupportedMaterialFields },
       });
     }
+    // SHADOW-01 — receiveShadow is @reserved on all shipping backends (a
+    // "receiver ignores occlusion" toggle is non-physical for a GI path
+    // tracer). Structured signal when a scene sets it to false.
+    const receiveShadowIds = scene.primitives
+      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
+      .map((p) => p.id);
+    if (receiveShadowIds.length > 0) {
+      this.#warn({
+        code: 'pt-webgl2.reserved-receive-shadow',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgl2] setScene: receiveShadow:false is reserved and not ` +
+          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
+        details: { primitiveIds: receiveShadowIds },
+      });
+    }
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.

@@ -23,7 +23,8 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   22 σ_a.rgb (Beer-Lambert absorption coefficient), hasSigmaA flag  ← WS4
  *   23 clearcoat, clearcoatRoughness, sheen, sheenRoughness              ← H52
  *   24 sheenColor.rgb, iridescence                                       ← H52
- *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax, 0 (pad)  ← H52
+ *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+ *      castShadowDisabled (1.0 ⇔ source primitive set castShadow:false; 0.0 default)  ← H52 / SHADOW-01
  *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm), hasSpectralReflectance flag  ← A3
  *
  * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
@@ -71,7 +72,20 @@ function sampleSpectralCurve(curve: MaterialSpec['spectralAttenuation'], lambdaN
   return a + (b - a) * (f - i0);
 }
 
-export function materialToPackedVec4s(material: MaterialSpec): number[] {
+/** Optional per-primitive packing context for {@link materialToPackedVec4s}.
+ *  pt-webgpu material slots are PER-PRIMITIVE (no dedup), so primitive-level
+ *  flags ride the material payload. */
+export interface MaterialPackContext {
+  /** SHADOW-01 — the source primitive's `castShadow` flag. `false` packs 1.0
+   *  into vec4 #25 .w (castShadowDisabled); `true`/undefined packs 0.0, which
+   *  is byte-identical to the pre-SHADOW-01 pad. */
+  readonly castShadow?: boolean | undefined;
+}
+
+export function materialToPackedVec4s(
+  material: MaterialSpec,
+  context: MaterialPackContext = {},
+): number[] {
   const finite = (v: number, fallback = 0): number => (Number.isFinite(v) ? v : fallback);
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, finite(v)));
   const base = material.baseColor;
@@ -234,12 +248,14 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
     iridescence,
   );
 
-  // vec4 #25: iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax, pad
+  // vec4 #25: iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  //           castShadowDisabled (SHADOW-01 — formerly a zero pad; default scenes
+  //           pack 0.0 here, byte-identical to the pre-SHADOW-01 layout).
   const iridescenceIor = Math.max(finite(material.iridescenceIor ?? 1.3, 1.3), 1.0);
   const iridescenceRange = material.iridescenceThicknessRange ?? [100, 400];
   const iridescenceMin = Math.max(finite(iridescenceRange[0] ?? 100, 100), 0);
   const iridescenceMax = Math.max(finite(iridescenceRange[1] ?? 400, 400), 0);
-  packed.push(iridescenceIor, iridescenceMin, iridescenceMax, 0);
+  packed.push(iridescenceIor, iridescenceMin, iridescenceMax, context.castShadow === false ? 1 : 0);
 
   // A3 — vec4 #26: Jakob & Hanika 2019 RGB→spectrum upsampling coefficients for
   // the material's baseColor (linear sRGB → 3-coefficient sigmoid polynomial),

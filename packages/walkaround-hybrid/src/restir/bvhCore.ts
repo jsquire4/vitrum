@@ -90,7 +90,15 @@ function materialResolver(scene: Scene): {
   for (const p of scene.primitives) {
     if (p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh') {
       if (!byKey.has(String(p.id))) byKey.set(String(p.id), coreMaterials.length);
-      coreMaterials.push(p.material);
+      // SHADOW-01 — slots are per-primitive here, so the primitive's castShadow
+      // flag rides the material entry (consumed by packBVHRoughMetalFromCore's
+      // bit-0 lane). Default (true/undefined) keeps the original object —
+      // byte-identical pack for flag-less scenes.
+      coreMaterials.push(
+        p.castShadow === false
+          ? ({ ...p.material, castShadow: false } as MaterialSpec)
+          : p.material,
+      );
     }
   }
   return {
@@ -412,7 +420,14 @@ function buildReSTIRSceneBVHFromCoreMerged(
   scene: Scene,
   options: CoreBvhBuildOptions = {},
 ): SceneBVHBuffers {
-  const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
+  // SHADOW-01 — split material slots by the primitive castShadow flag so
+  // packBVHRoughMetalFromCore can pack the bit-0 castShadowDisabled lane even
+  // when two primitives share a structurally-equal material. All-default scenes
+  // produce the same slot grouping + identical packed bytes.
+  const merged = mergeWorldSpaceFromCore(scene, {
+    positionStride: 4,
+    splitMaterialsByCastShadow: true,
+  });
   const triCount = merged.indices.length / 3;
   const vertCount = merged.positions.length / 4;
   // H15 — pass merged.uvs (stride-2, same vertex order as merged.positions) so

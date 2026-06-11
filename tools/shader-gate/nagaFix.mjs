@@ -178,6 +178,13 @@ function removeBvhFunctionsIfNoBindings(wgsl) {
     "traceSceneFirstHit",
     "traceSceneAny",
     "bvhTraceTintedVisibility",
+    // SHADOW-01 (2026-06-11) — cast-shadow-masked clones (shared-bvh
+    // bvhCastShadowMask.wgsl.ts). Same dead-code situation: composed via
+    // sceneTraversal into shaders that may lack the BVH bindings.
+    "bvhIntersectAnyAtRootCastMask",
+    "bvhIntersectFirstHitAtRootCastMask",
+    "traceTlasAnyCastMask",
+    "traceSceneAnyCastMask",
   ];
   for (const funcName of toRemove) {
     const before = result;

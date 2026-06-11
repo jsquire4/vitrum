@@ -252,7 +252,11 @@ fn bsdfAreaLightConnectionContribution(
     var rectPdf = 0.0;
     if (intersectRectAreaLightRay(li, offsetOrigin, wi, &rectDist, &rectPdf)) {
       let shadowRay = Ray(offsetOrigin, wi);
-      if (!traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3)) && rectDist < bestDist) {
+      // SHADOW-01 — rectAreaLights[li*4].w carries the emitter castShadowDisabled
+      // flag; skip the visibility test for that light (matches the NEE half so
+      // both MIS strategies see the same lighting).
+      let rectShadowDisabled = rectAreaLights[li * 4u].w > 0.5;
+      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3))) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = rectAreaLights[li * 4u + 3u].rgb;
@@ -264,7 +268,9 @@ fn bsdfAreaLightConnectionContribution(
     var meshPdf = 0.0;
     if (intersectMeshAreaLightRay(mi, offsetOrigin, wi, &meshDist, &meshPdf)) {
       let shadowRay = Ray(offsetOrigin, wi);
-      if (!traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3)) && meshDist < bestDist) {
+      // SHADOW-01 — meshAreaLights[mi*4+3].w carries castShadowDisabled (NEE parity).
+      let meshShadowDisabled = meshAreaLights[mi * 4u + 3u].w > 0.5;
+      if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3))) && meshDist < bestDist) {
         bestDist = meshDist;
         bestLightPdf = meshPdf;
         bestEmission = meshAreaLights[mi * 4u + 3u].rgb;

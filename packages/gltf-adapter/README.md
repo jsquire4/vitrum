@@ -3,8 +3,9 @@
 glTF 2.0 → `@vitrum/core` Scene adapter.
 
 **Zero runtime dependencies.** Hand-rolled GLB container parsing and accessor
-unpacking (no Draco, no meshopt). Browser + Node compatible; image decoding is
-pluggable.
+unpacking. Browser + Node compatible; image decoding is pluggable, and Draco /
+meshopt compressed geometry is supported via host-supplied decoder hooks (the
+package bundles no decoder — see [Compressed geometry](#compressed-geometry)).
 
 ---
 
@@ -47,6 +48,8 @@ engine.setScene(scene);
 | `opts.buffers` | `Map<number, ArrayBuffer> \| Record<number, ArrayBuffer>` | Pre-loaded external buffers for `.gltf` files (keyed by buffer index). **The adapter does NOT fetch URIs.** |
 | `opts.decodeImage` | `(bytes: Uint8Array, mimeType: string) => Promise<unknown>` | Optional image decode callback (see Texture handles below) |
 | `opts.sceneIndex` | `number` | Which glTF scene to import (default: `gltf.scene ?? 0`) |
+| `opts.dracoDecode` | `DracoDecodeFn` | Host-supplied `KHR_draco_mesh_compression` decoder hook (see Compressed geometry) |
+| `opts.meshoptDecode` | `MeshoptDecodeFn` | Host-supplied `EXT_meshopt_compression` decoder hook (see Compressed geometry) |
 
 Returns `{ scene, animations, animationTargets, warnings }`:
 
@@ -77,8 +80,8 @@ Returns `{ scene, animations, animationTargets, warnings }`:
 | Primitive mode TRIANGLES (4) | Supported |
 | Primitive modes TRIANGLE_STRIP (5) / TRIANGLE_FAN (6) | Supported → triangulated to an indexed triangle list (glTF §3.7.2.1 winding; degenerates dropped; indexed + non-indexed) |
 | Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Warn + skip (core has no point/line primitive) |
-| KHR_draco_mesh_compression | Warn + skip |
-| EXT_meshopt_compression | Warn + skip |
+| KHR_draco_mesh_compression | Supported via `opts.dracoDecode` hook. Without a hook: uncompressed fallback accessors when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
+| EXT_meshopt_compression | Supported via `opts.meshoptDecode` hook (bufferView-level — geometry, animation and image consumers all see decompressed data). Without a hook: spec fallback buffer when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | Morph targets (POSITION + NORMAL deltas, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). TANGENT deltas warn + skip |
 | Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`) |
 | Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels) | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback |
@@ -164,10 +167,129 @@ frame and pushes the results:
 ### Out of scope (documented)
 
 - **Cameras**: ignored. Emitting a warning.
-- **Draco / MeshOpt compression**: warns + primitive skipped. Decode externally first.
+- **Bundled Draco / MeshOpt decoders**: the package stays dependency-free; compressed
+  geometry requires the host to inject `opts.dracoDecode` / `opts.meshoptDecode`
+  (see Compressed geometry). Without a hook the spec fallbacks apply, else warn + skip
+  (or throw when the extension is in `extensionsRequired`).
 - **Morph TANGENT deltas**: warn + skipped (core `SkinnedMeshPrimitive` has no morph-tangent field).
 - **`KHR_materials_volume.thicknessTexture`**: warn + ignored (core `MaterialSpec` has no thickness map field).
 - **URI-based buffers / images**: the adapter does not fetch. Pre-load and supply via `opts.buffers` or `opts.decodeImage`.
+
+---
+
+## Compressed geometry
+
+The adapter resolves `KHR_draco_mesh_compression` and `EXT_meshopt_compression`
+through **host-supplied decoder hooks** — the package itself bundles no decoder,
+keeping it dependency-free. `gltfToScene` is async, so hooks may return their
+result synchronously or as a Promise (both are awaited).
+
+### Hook contract
+
+```ts
+// KHR_draco_mesh_compression — per-primitive. Receives the compressed blob and
+// the extension's semantic → Draco-attribute-unique-id map. Returned arrays
+// must match the primitive's DECLARED accessors (which per spec describe the
+// decoded data): length = accessor.count × components, and either the
+// accessor's exact componentType (the adapter then applies `normalized`
+// itself) or an already-dequantized Float32Array.
+type DracoDecodeFn = (
+  compressed: Uint8Array,
+  attributeIds: Readonly<Record<string, number>>, // e.g. { POSITION: 0, NORMAL: 1 }
+) => DracoDecodeResult | Promise<DracoDecodeResult>;
+
+interface DracoDecodeResult {
+  attributes: Record<string, Int8Array | Uint8Array | Int16Array | Uint16Array | Uint32Array | Float32Array>;
+  indices?: Uint8Array | Uint16Array | Uint32Array; // length = index accessor count
+}
+
+// EXT_meshopt_compression — per-bufferView (so accessors, animations and
+// images all transparently see decompressed data). Mirrors meshoptimizer's
+// MeshoptDecoder.decodeGltfBuffer; must return exactly count × byteStride bytes.
+type MeshoptDecodeFn = (
+  compressed: Uint8Array,
+  count: number,
+  byteStride: number,
+  mode: 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES',
+  filter: 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL',
+) => Uint8Array | Promise<Uint8Array>;
+```
+
+### Failure modes (honest by design)
+
+| Situation | Behavior |
+|---|---|
+| Extension present, hook supplied | Decoded; geometry identical to an uncompressed export |
+| No hook, spec fallback exists (Draco fallback accessors / meshopt non-stub fallback buffer) | Fallback used + warning |
+| No hook, no fallback, extension in `extensionsUsed` only | Warning + affected primitives skipped |
+| No hook, no fallback, extension in `extensionsRequired` | **Throws** a clear Error |
+| Hook throws / returns wrong-sized data | Warning + primitive skipped (throws when the extension is required) |
+
+### Wiring `draco3d`
+
+```ts
+import DracoDecoderModule from 'draco3d/draco_decoder_nodejs.js'; // or the web build
+
+const draco = await DracoDecoderModule();
+
+const dracoDecode: DracoDecodeFn = (compressed, attributeIds) => {
+  const decoder = new draco.Decoder();
+  const buf = new draco.DecoderBuffer();
+  buf.Init(compressed, compressed.byteLength);
+  const mesh = new draco.Mesh();
+  try {
+    if (!decoder.DecodeBufferToMesh(buf, mesh).ok()) throw new Error('Draco decode failed');
+
+    const attributes: Record<string, Float32Array> = {};
+    for (const [semantic, uniqueId] of Object.entries(attributeIds)) {
+      const attr = decoder.GetAttributeByUniqueId(mesh, uniqueId);
+      const n = mesh.num_points() * attr.num_components();
+      const out = new draco.DracoFloat32Array();
+      decoder.GetAttributeFloatForAllPoints(mesh, attr, out);
+      const arr = new Float32Array(n); // dequantized floats are always accepted
+      for (let i = 0; i < n; i++) arr[i] = out.GetValue(i);
+      draco.destroy(out);
+      attributes[semantic] = arr;
+    }
+
+    const indices = new Uint32Array(mesh.num_faces() * 3);
+    const face = new draco.DracoInt32Array();
+    for (let f = 0; f < mesh.num_faces(); f++) {
+      decoder.GetFaceFromMesh(mesh, f, face);
+      indices[f * 3] = face.GetValue(0);
+      indices[f * 3 + 1] = face.GetValue(1);
+      indices[f * 3 + 2] = face.GetValue(2);
+    }
+    draco.destroy(face);
+    return { attributes, indices };
+  } finally {
+    draco.destroy(mesh);
+    draco.destroy(buf);
+    draco.destroy(decoder);
+  }
+};
+
+const { scene } = await gltfToScene(glb, { dracoDecode });
+```
+
+(`@gltf-transform`-style setups expose the same `draco3d` decoder module —
+pass it through the identical adapter.)
+
+### Wiring `meshoptimizer`
+
+```ts
+import { MeshoptDecoder } from 'meshoptimizer';
+
+await MeshoptDecoder.ready;
+
+const meshoptDecode: MeshoptDecodeFn = (compressed, count, byteStride, mode, filter) => {
+  const target = new Uint8Array(count * byteStride);
+  MeshoptDecoder.decodeGltfBuffer(target, count, byteStride, compressed, mode, filter);
+  return target;
+};
+
+const { scene } = await gltfToScene(glb, { meshoptDecode });
+```
 
 ---
 

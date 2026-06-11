@@ -195,7 +195,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           }
           let wi = toPoint / dist;
           let pointShadowRay = Ray(hitPos + normal * 1e-3, wi);
-          if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+          // SHADOW-01 — extra.z carries the emitter castShadowDisabled flag.
+          if (extra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
@@ -230,7 +231,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let coneCos = dot(-wi, spotDir);
           if (coneCos >= cosOuter) {
             let spotShadowRay = Ray(hitPos + normal * 1e-3, wi);
-            if (!traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+            // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
+            if (spExtra.z > 0.5 || !traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
               let nDotL = max(0.0, dot(normal, wi));
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
@@ -285,7 +287,9 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+              // SHADOW-01 — rect record texel 0 .w carries castShadowDisabled.
+              let rectShadowDisabledL = textureLoad(liteLightTex, vec2i(i32(rb2), 0), 0).w > 0.5;
+              if (rectShadowDisabledL || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
                 directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6);
               }

@@ -25,11 +25,24 @@ export interface MeshPrimitive {
   readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
   /** Whether this mesh casts shadows on other geometry. Default true.
-   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
-   *  (road-to-100 shadow tier). */
+   *  Per-backend status (SHADOW-01, 2026-06-11 — see
+   *  `BackendSupportDetails.shadows.primitiveCastShadow`):
+   *    - `@vitrum/pt-webgl2` — native (material castShadow lane + the
+   *      integrator's shadow-ray continuation gate).
+   *    - `@vitrum/pt-webgpu` — native (any-hit/occlusion traversals skip
+   *      castShadow:false triangles on both tiers; closest-hit radiance rays
+   *      still hit them).
+   *    - `@vitrum/walkaround-hybrid` — approximate: honored by the ReSTIR DI
+   *      shadow predicates (RIS candidate + shading visibility, analytic
+   *      point/spot NEE, direct-sun NEE); GI-side occlusion (ReSTIR-GI, DDGI
+   *      probe rays, RC) still treats the geometry as an occluder. */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
+   *  @reserved Accepted; consumed by NO backend ('unsupported' in
+   *  `BackendSupportDetails.shadows.receiveShadow` on all three) — a
+   *  "receiver ignores occlusion" toggle is non-physical for a GI path
+   *  tracer. Backends emit a structured `*.reserved-receive-shadow` warning
+   *  when a scene sets `receiveShadow: false`. */
   readonly receiveShadow?: boolean;
 }
 
@@ -51,8 +64,8 @@ export interface InstancedMeshPrimitive {
   readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
   /** Whether these mesh instances cast shadows on other geometry. Default true.
-   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
-   *  (road-to-100 shadow tier). */
+   *  Same per-backend status as {@link MeshPrimitive.castShadow} (pt-webgl2 /
+   *  pt-webgpu native; walkaround-hybrid approximate — DI shadow rays only). */
   readonly castShadow?: boolean;
 }
 
@@ -178,11 +191,12 @@ export interface SkinnedMeshPrimitive {
   readonly material: MaterialSpec;
   readonly transform?: Mat4;
   /** Whether this mesh casts shadows on other geometry. Default true.
-   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
-   *  (road-to-100 shadow tier). */
+   *  Same per-backend status as {@link MeshPrimitive.castShadow} (pt-webgl2 /
+   *  pt-webgpu native; walkaround-hybrid approximate — DI shadow rays only). */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
+   *  @reserved Same status as {@link MeshPrimitive.receiveShadow} — consumed by
+   *  NO backend; warned when set to false. */
   readonly receiveShadow?: boolean;
 }
 

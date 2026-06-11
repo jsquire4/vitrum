@@ -271,3 +271,25 @@ describe('material stride consistency (TS vs WGSL lockstep)', () => {
     expect(wgslStride * 4).toBe(MATERIAL_FLOAT_STRIDE);
   });
 });
+
+// ── SHADOW-01 (2026-06-11) — primitive castShadow lane (vec4 #25 .w) ─────────
+describe('SHADOW-01 primitive castShadow material lane', () => {
+  const IRID_OFFSET = 25 * 4; // 100
+
+  it('castShadow:false packs 1.0 into vec4 #25 .w; default packs 0.0 (byte-identical pad)', () => {
+    const mat = { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 } as never;
+    expect(materialToPackedVec4s(mat)[IRID_OFFSET + 3]).toBe(0);
+    expect(materialToPackedVec4s(mat, {})[IRID_OFFSET + 3]).toBe(0);
+    expect(materialToPackedVec4s(mat, { castShadow: true })[IRID_OFFSET + 3]).toBe(0);
+    expect(materialToPackedVec4s(mat, { castShadow: undefined })[IRID_OFFSET + 3]).toBe(0);
+    expect(materialToPackedVec4s(mat, { castShadow: false })[IRID_OFFSET + 3]).toBe(1);
+  });
+
+  it('DEFAULT-PATH INVARIANT: context-less packing equals empty-context packing byte-for-byte', () => {
+    const mat = {
+      baseColor: [0.3, 0.6, 0.9], roughness: 0.2, metallic: 0.8,
+      iridescence: 1, iridescenceIor: 2.0, iridescenceThicknessRange: [50, 600],
+    } as never;
+    expect(materialToPackedVec4s(mat)).toEqual(materialToPackedVec4s(mat, { castShadow: true }));
+  });
+});

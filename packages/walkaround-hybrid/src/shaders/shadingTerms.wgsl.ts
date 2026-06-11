@@ -53,7 +53,7 @@
  *
  *   Functions declared by required modules (common, surfaceTextures,
  *   ddgiGridUbo, sampleCascadeC0, stainedGlassShade, environmentSample):
- *     traceSceneAny, traceSceneFirstHit, loadReservoirDI_rw,
+ *     traceSceneAny, traceSceneAnyCastMask (SHADOW-01), traceSceneFirstHit, loadReservoirDI_rw,
  *     loadReservoirGI_rw, sampleEmitterPoint, emitterGeometry,
  *     evalGGX, evalGGXSpecularOnly, decodeSurfaceTextureId,
  *     surfaceTextureMod, decodeMaterialColor, decodeIsMetal,
@@ -190,12 +190,14 @@ fn lo_analyticNEE(
     }
 
     // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
-    let occ = traceSceneAny(
+    // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+    let occ = traceSceneAnyCastMask(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
       &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH);
     if (occ) { continue; }
 
     // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
@@ -275,12 +277,14 @@ fn lo_direct(
   // (light passes through glass; per-channel tinted-visibility handles tint).
   // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
   // shading normal can dip below the surface near silhouettes → self-hit).
-  let occ = traceSceneAny(
+  // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+  let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
   if (occ) { return vec3f(0.0); }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
@@ -375,12 +379,14 @@ fn lo_sunNEE(
   // lo_sg_caustic handles the tinted-glass path separately when the stained-glass
   // flag is set. This conservative transparency matches the analytic-NEE convention
   // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
-  let occ = traceSceneAny(
+  // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+  let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true);
+    pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
   if (occ) { return vec3f(0.0); }
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.

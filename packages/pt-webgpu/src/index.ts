@@ -685,6 +685,11 @@ class PTEngineWebGPU implements Engine {
                 'h-channel-came': 'unsupported',
               },
               materials: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
+              // SHADOW-01 — same rows as the full tier: primitive castShadow is
+              // enforced in the SHARED traceMeshBvh any-hit path; the lite NEE
+              // loops gate point/spot/rect emitter flags (directional rides the
+              // UBO mirror and carries no flag — already 'approximate').
+              shadows: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows,
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'unsupported',
@@ -1142,6 +1147,25 @@ class PTEngineWebGPU implements Engine {
           `[vitrum/pt-webgpu] setScene: material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
         details: { fields: unsupportedMaterialFields },
+      });
+    }
+    // SHADOW-01 — `receiveShadow` is @reserved on all shipping backends (a
+    // "receiver ignores occlusion" toggle is non-physical for a GI path
+    // tracer). Surface a structured signal when a scene sets it to false so
+    // hosts aren't left guessing why nothing changed.
+    const receiveShadowIds = scene.primitives
+      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
+      .map((p) => p.id);
+    if (receiveShadowIds.length > 0) {
+      this.#warn({
+        code: 'pt-webgpu.reserved-receive-shadow',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgpu] setScene: receiveShadow:false is reserved and not ` +
+          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
+        details: { primitiveIds: receiveShadowIds },
       });
     }
     const packed = buildPackedScene(scene, {

@@ -544,10 +544,15 @@ ${transmissiveBlock}
           let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
           let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
           var sampleDir = safe_normalize(dDirAD.xyz);
+          // SHADOW-01 — emitter castShadow:false is sign-encoded into the
+          // angularDiameter lane (packed = -1 - ad; see emitterPacking.ts).
+          // Default lights pack ad >= 0 → decode is the identity.
+          let angDiamRaw = dDirAD.w;
+          let dirShadowDisabled = angDiamRaw < 0.0;
           // D3 soft-sun cone sampling — reuses the same cone logic as the
           // original single-directional path (angularDiameter > 0 ⟹ sample a
           // uniformly-random direction within the solid-angle cone).
-          let angDiam = dDirAD.w;
+          let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
           if (angDiam > 0.0) {
             let cosHalfAngle = cos(angDiam * 0.5);
             let xi1 = rand_f32(&rng);
@@ -561,7 +566,7 @@ ${transmissiveBlock}
             sampleDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * sampleDir);
           }
           let shadowRay = Ray(hitPos + normal * 1e-3, sampleDir);
-          if (!traceAny(shadowRay, 1e-4, INFINITY)) {
+          if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, sampleDir));
             // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
             // zero-default → identical to evaluateBrdf when all scalars are 0.
@@ -596,7 +601,8 @@ ${transmissiveBlock}
           }
           let wi = toPoint / dist;
           let pointShadowRay = Ray(hitPos + normal * 1e-3, wi);
-          if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+          // SHADOW-01 — ptExtra.z carries the emitter castShadowDisabled flag.
+          if (ptExtra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -639,7 +645,8 @@ ${transmissiveBlock}
           let coneCos = dot(-wi, spotDir);
           if (coneCos >= cosOuter) {
             let spotShadowRay = Ray(hitPos + normal * 1e-3, wi);
-            if (!traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+            // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
+            if (spExtra.z > 0.5 || !traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
               let nDotL = max(0.0, dot(normal, wi));
               // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
@@ -719,7 +726,8 @@ ${transmissiveBlock}
               // BRDF side is unweighted — that would bias tree-vs-uniform.)
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+              // SHADOW-01 — rectAreaLights[rb].w carries castShadowDisabled.
+              if (rectAreaLights[rb].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 // A3 — spectralise the rect/disc-area radiance at the hero λ.
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
                 directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
@@ -767,7 +775,8 @@ ${transmissiveBlock}
               // selection pdf (tree-vs-uniform means match), variance differs.
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+              // SHADOW-01 — meshAreaLights[mb+3].w carries castShadowDisabled.
+              if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 // A3 — spectralise the mesh-area radiance at the hero λ.
                 let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
                 directLi = throughput * brdf * nDotL * mrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;

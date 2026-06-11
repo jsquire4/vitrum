@@ -363,10 +363,53 @@ Evidence:
   backend-wide.
 - Emitter `castShadow` is not uniformly represented.
 
-Closure:
-- Implement `castShadow`, `receiveShadow`, and emitter shadow flags where the
-  renderer supports shadows, or explicitly mark unsupported per backend.
-- Add shadow ray tests for disabled caster, disabled receiver, and emitter flags.
+Closure (CLOSED 2026-06-11 — implemented + honestly downgraded; rows in
+`BackendSupportDetails.shadows` / promiseLedger.ts, pinned by
+engineContract.test.ts):
+- **Primitive castShadow** —
+  - pt-webgl2 `native` (material castShadow lane via shared-bvh
+    `splitMaterialsByCastShadow` + the integrator's shadow-ray gate).
+  - pt-webgpu `native`: material vec4 #25 .w castShadowDisabled lane
+    (materialPacking.ts), skipped by `triShadowCastDisabled` in EVERY any-hit
+    (occlusion) traversal on BOTH tiers (intersectionCore.wgsl.ts traceMeshBvh
+    `!closest` path — NEE shadow rays, BSDF-MIS connections, ReSTIR-PT
+    reconnection, MNEE legs); closest-hit camera/radiance rays unaffected.
+    Contract `AnalyticPrimitive` has no castShadow field → analytic shapes
+    always occlude.
+  - walkaround-hybrid `approximate`: honored ONLY by the ReSTIR **DI** shadow
+    predicates (ris.wgsl candidate + shading visibility, shadingTerms.wgsl
+    analytic point/spot NEE + direct-sun NEE) via bvh_material bit 0
+    (packBVHRoughMetalFromCore) + the shared-bvh cast-shadow-masked traversal
+    (bvhCastShadowMask.wgsl.ts → traceSceneAnyCastMask). GI-side occlusion
+    (ReSTIR-GI reservoir visibility, GRIS reuse, DDGI probe rays, RC probe
+    casts) still treats castShadow:false geometry as an occluder.
+- **Emitter castShadow** —
+  - pt-webgl2 `approximate`: lights-texture s5.g lane consumed by
+    directLightContribution for all analytic NEE lights
+    (rect/disc/spot/point/directional); the mesh-area triangle-light NEE
+    strategy + forward/BDPT paths do not consume it.
+  - pt-webgpu `approximate`: per-light lanes (directional sign-encoded
+    angularDiameter; point/spot extra .z; rect/disc center .w; mesh-area
+    radiance .w) consumed by the default kernel/kernelLite NEE loops + the
+    connect.wgsl BSDF-MIS area connections; off-default integrators (BDPT
+    light subpath, ReSTIR-PT, MNEE/SPPM caustic legs) and in-medium
+    directional NEE still shadow-test; lite directional rides the flag-less
+    UBO mirror.
+  - walkaround-hybrid `unsupported`: structured
+    `walkaround-hybrid.unsupported-emitter-cast-shadow` warning when a scene
+    sets it false.
+- **receiveShadow** — `unsupported` on ALL THREE backends (a "receiver ignores
+  occlusion" toggle is non-physical for a GI path tracer; kept @reserved).
+  Structured `*.reserved-receive-shadow` warnings fire on pt-webgpu, pt-webgl2,
+  and walkaround-hybrid when a scene sets `receiveShadow: false`.
+- Tests: packer-lane byte tests (pt-webgpu scenePack.materials/emitters,
+  pt-webgl2 lightsTexture, walkaround roughMetalPacking bit 0), shared-bvh
+  masked-traversal derivation pins (bvhCastShadowMask.test.ts), WGSL SHA
+  re-pins (intended; default lanes pack 0.0 → flag-less scenes behaviorally
+  identical), ledger exhaustiveness pin in engineContract.test.ts.
+- Remaining optional future work: walkaround GI-side masking + emitter flag,
+  pt-webgpu off-default-integrator coverage, mesh-area emitter flag on
+  pt-webgl2 — promote rows with renderer A/B evidence when implemented.
 
 ### WEBGL2-02 - pt-webgl2 procedural sky is unsupported
 

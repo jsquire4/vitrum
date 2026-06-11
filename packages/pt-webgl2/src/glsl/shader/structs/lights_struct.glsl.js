@@ -35,9 +35,11 @@ export const lights_struct = /* glsl */`
 		float distance;
 		float coneCos;
 		float penumbraCos;
-		// iesProfile slot (s5.g) is reserved padding in the 6-texel layout; IES
-		// profiles are not supported by the @vitrum/core contract and were never
-		// uploaded. The slot stays zero (unwritten) so the byte layout is stable.
+		// SHADOW-01 — s5.g (the former IES padding slot) carries 1.0 when the
+		// emitter set castShadow:false (0.0 default). Packed for EVERY light kind
+		// by lightsTexture.ts; consumed by directLightContribution to skip the
+		// NEE shadow test for that light.
+		float castShadowDisabled;
 
 	};
 
@@ -62,17 +64,21 @@ export const lights_struct = /* glsl */`
 		l.v = s3.rgb;
 		l.area = s3.a;
 
+		// SHADOW-01 — s5.g carries castShadowDisabled for EVERY light kind, so s5
+		// is fetched unconditionally (one extra texel fetch; the grid always has
+		// 6 texels per light).
+		vec4 s5 = texelFetch1D( tex, i + 5u );
+		l.castShadowDisabled = s5.g;
+
 		if ( l.type == SPOT_LIGHT_TYPE || l.type == POINT_LIGHT_TYPE ) {
 
 			vec4 s4 = texelFetch1D( tex, i + 4u );
-			vec4 s5 = texelFetch1D( tex, i + 5u );
 			l.radius = s4.r;
 			l.decay = s4.g;
 			l.distance = s4.b;
 			l.coneCos = s4.a;
 
 			l.penumbraCos = s5.r;
-			// s5.g is reserved padding (iesProfile slot, always -1 — IES not supported).
 
 		} else {
 

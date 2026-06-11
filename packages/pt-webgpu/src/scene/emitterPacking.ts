@@ -15,6 +15,11 @@ import {
  *   vec4 1: irradiance.rgb, mean_irradiance
  *   angularDiameter = 0 ⟹ perfect delta directional (historical exact path, byte-identical).
  *   mean_irradiance = (r+g+b)/3 — cached for the kernel gate (lightDir.w analog).
+ *   SHADOW-01: emitter castShadow:false is SIGN-ENCODED into the angularDiameter
+ *   lane (both vec4s are otherwise full): packed = -1 - angularDiameter when the
+ *   flag is false; the kernel decodes shadowDisabled = (raw < 0) and
+ *   angularDiameter = -1 - raw. castShadow:true packs the raw value (≥ 0),
+ *   byte-identical to the pre-SHADOW-01 layout.
  *
  * Directional[0] is ALSO mirrored into the frame-UBO lightDir/cameraPos.w lanes for
  * backward compatibility with the single-directional path read by in-medium NEE.
@@ -27,8 +32,9 @@ export const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
  * Point light layout (3 vec4 = 12 floats, H51-D):
  *   vec4 0: position.xyz, 0
  *   vec4 1: radiance.rgb, 0
- *   vec4 2: distance, decay, 0, 0
+ *   vec4 2: distance, decay, castShadowDisabled, 0
  *   distance = 0 ⟹ no cutoff (infinite range); decay = 0 ⟹ no falloff.
+ *   castShadowDisabled (SHADOW-01) = 1.0 ⟺ emitter castShadow:false; 0.0 default.
  */
 export const POINT_LIGHT_FLOAT_STRIDE = 12;
 
@@ -37,8 +43,9 @@ export const POINT_LIGHT_FLOAT_STRIDE = 12;
  *   vec4 0: position.xyz, 0
  *   vec4 1: direction.xyz, cos(outerAngle)
  *   vec4 2: radiance.rgb, cos(innerAngle)   — innerAngle = outerAngle·(1−penumbra)
- *   vec4 3: distance, decay, 0, 0
+ *   vec4 3: distance, decay, castShadowDisabled, 0
  *   distance = 0 ⟹ no cutoff; decay = 0 ⟹ no falloff.
+ *   castShadowDisabled (SHADOW-01) = 1.0 ⟺ emitter castShadow:false; 0.0 default.
  */
 export const SPOT_LIGHT_FLOAT_STRIDE = 16;
 export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
@@ -46,7 +53,7 @@ export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 
 /**
  * Rect/disc area light record layout (4 vec4 = 16 floats):
- *   vec4 0: center.xyz, 0
+ *   vec4 0: center.xyz, castShadowDisabled (SHADOW-01: 1.0 ⟺ castShadow:false; 0.0 default)
  *   vec4 1: uAxis.xyz, 0          — for rect: half-extent along u; for disc: tangent × radius
  *   vec4 2: vAxis.xyz, 0          — for rect: half-extent along v; for disc: bitangent × radius
  *   vec4 3: radiance.rgb, shape   — shape = 0.0 (rect) | 1.0 (disc, analytic concentric-map)
@@ -68,6 +75,9 @@ type PackedMeshAreaTriangle = {
   readonly triB: Vec3;
   readonly triC: Vec3;
   readonly radiance: Vec3;
+  /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
+   *  Packed as 1.0 into the radiance vec4's .w lane (0.0 default). */
+  readonly castShadowDisabled: boolean;
 };
 
 /**
@@ -202,8 +212,8 @@ function packDiscAsRect(
   const r = e.radius;
   const rad = emitterRadiance(e);
   return [
-    // vec4 0: center
-    e.position[0], e.position[1], e.position[2], 0,
+    // vec4 0: center (.w = SHADOW-01 castShadowDisabled, 0.0 default)
+    e.position[0], e.position[1], e.position[2], e.castShadow === false ? 1 : 0,
     // vec4 1: uAxis = tangent × radius
     tcx * r, tcy * r, tcz * r, 0,
     // vec4 2: vAxis = bitangent × radius
@@ -293,6 +303,8 @@ function packMeshAreaTriangles(
     return [];
   }
   const radiance = emitterRadiance(emitter);
+  // SHADOW-01 — carry the emitter's castShadow flag onto every packed triangle.
+  const castShadowDisabled = emitter.castShadow === false;
   const packed: PackedMeshAreaTriangle[] = [];
   let invalidTriangleCount = 0;
   let degenerateTriangleCount = 0;
@@ -322,7 +334,7 @@ function packMeshAreaTriangles(
         degenerateTriangleCount += 1;
         continue;
       }
-      packed.push({ triA: a, triB: b, triC: c, radiance });
+      packed.push({ triA: a, triB: b, triC: c, radiance, castShadowDisabled });
     }
   }
   if (invalidTriangleCount > 0) {
@@ -426,7 +438,13 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     const ndy = len < 1e-8 ? 1 : -y / len;
     const ndz = len < 1e-8 ? 0 : -z / len;
     const ad = e.angularDiameter;
-    const angularDiameter = ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+    let angularDiameter = ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+    // SHADOW-01 — castShadow:false is sign-encoded into the angularDiameter
+    // lane (see the layout doc above): packed = -1 - ad. Default (true) keeps
+    // the raw non-negative value, byte-identical to the pre-SHADOW-01 pack.
+    if (e.castShadow === false) {
+      angularDiameter = -1 - angularDiameter;
+    }
     const scale = e.intensity;
     const irrR = e.color[0] * scale;
     const irrG = e.color[1] * scale;
@@ -458,7 +476,8 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     // H51-D: distance (0 = no cutoff) + decay (0 = no falloff)
     const ptDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
     const ptDecay = typeof e.decay === 'number' ? e.decay : 2;
-    pointLights.push(ptDist, ptDecay, 0, 0);
+    // SHADOW-01 — lane .z carries castShadowDisabled (0.0 default).
+    pointLights.push(ptDist, ptDecay, e.castShadow === false ? 1 : 0, 0);
     pointLightCount += 1;
   }
   const pointLightsData = packedFloatData(
@@ -494,7 +513,8 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     // H51-D: distance (0 = no cutoff) + decay (0 = no falloff, 2 = physical)
     const spDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
     const spDecay = typeof e.decay === 'number' ? e.decay : 2;
-    spotLights.push(spDist, spDecay, 0, 0);
+    // SHADOW-01 — lane .z carries castShadowDisabled (0.0 default).
+    spotLights.push(spDist, spDecay, e.castShadow === false ? 1 : 0, 0);
     spotLightCount += 1;
   }
   const spotLightsData = packedFloatData(
@@ -510,7 +530,8 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   for (const e of scene.emitters) {
     if (e.kind !== 'rect-area') continue;
     rectAreaLights.push(
-      e.position[0], e.position[1], e.position[2], 0,
+      // SHADOW-01 — center .w carries castShadowDisabled (0.0 default).
+      e.position[0], e.position[1], e.position[2], e.castShadow === false ? 1 : 0,
       e.uAxis[0], e.uAxis[1], e.uAxis[2], 0,
       e.vAxis[0], e.vAxis[1], e.vAxis[2], 0,
       e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity,
@@ -572,7 +593,8 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     pushVec4(meshAreaLights, tri.triA);
     pushVec4(meshAreaLights, tri.triB);
     pushVec4(meshAreaLights, tri.triC);
-    pushVec4(meshAreaLights, tri.radiance);
+    // SHADOW-01 — radiance vec4 .w carries castShadowDisabled (0.0 default).
+    pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
   }
   const meshAreaLightCount = cappedTriangles.length;
   const meshAreaLightsData = packedFloatData(

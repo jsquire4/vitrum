@@ -368,10 +368,14 @@ export interface BuildPackedSceneOptions {
  * prevents the desync described in H10.
  */
 export function packFoldedMaterialEntry(
-  primitive: { id: string; material: MaterialSpec },
+  primitive: { id: string; material: MaterialSpec; castShadow?: boolean },
   scene: Scene,
   cameraVisibleEmitters: boolean,
 ): number[] {
+  // SHADOW-01 — material slots are per-primitive, so the primitive's castShadow
+  // flag rides the material payload (vec4 #25 .w). Analytic primitives carry no
+  // castShadow field in the contract → undefined → packs the 0.0 default.
+  const packContext = { castShadow: primitive.castShadow };
   if (cameraVisibleEmitters) {
     for (const emitter of scene.emitters) {
       if (emitter.kind !== 'mesh-area') continue;
@@ -386,10 +390,10 @@ export function packFoldedMaterialEntry(
         ] as [number, number, number],
         emissiveIntensity: 1,
       };
-      return materialToPackedVec4s(foldedMat);
+      return materialToPackedVec4s(foldedMat, packContext);
     }
   }
-  return materialToPackedVec4s(primitive.material);
+  return materialToPackedVec4s(primitive.material, packContext);
 }
 
 /**
@@ -448,7 +452,7 @@ export function buildPackedScene(
   // (H10). This ensures the fold logic is identical across the full pack and the
   // incremental fast-path patches in SceneMutationRouter.
   const cameraVisible = options.cameraVisibleEmitters === true;
-  const packMaterial = (primitive: { id: string; material: MaterialSpec }): number[] =>
+  const packMaterial = (primitive: { id: string; material: MaterialSpec; castShadow?: boolean }): number[] =>
     packFoldedMaterialEntry(primitive, scene, cameraVisible);
 
   const materials: number[] = [];

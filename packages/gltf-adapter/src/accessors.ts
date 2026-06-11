@@ -21,8 +21,20 @@ const TYPE_COMPONENT_COUNT: Record<string, number> = {
   MAT4: 16,
 };
 
-/** Byte size of each component type. */
-function componentByteSize(ct: GltfComponentType): number {
+/**
+ * Number of scalar components for an accessor `type` string.
+ * Exported for compression.ts (Draco decoded-attribute validation).
+ */
+export function typeComponentCount(type: string): number {
+  const n = TYPE_COMPONENT_COUNT[type];
+  if (n === undefined) {
+    throw new Error(`[vitrum/gltf-adapter] Unknown accessor type "${type}"`);
+  }
+  return n;
+}
+
+/** Byte size of each component type. Exported for compression.ts. */
+export function componentByteSize(ct: GltfComponentType): number {
   switch (ct) {
     case GltfComponentType.BYTE:
     case GltfComponentType.UNSIGNED_BYTE:

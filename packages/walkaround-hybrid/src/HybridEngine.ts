@@ -841,6 +841,42 @@ export class HybridEngine implements Engine {
       }
     }
 
+    // SHADOW-01 — structured signals for the shadow flags this backend does NOT
+    // honor (ledger: emitterCastShadow 'unsupported'; receiveShadow 'unsupported'
+    // on every backend — non-physical for GI). Primitive castShadow IS honored
+    // (DI shadow rays; 'approximate' — GI-side occlusion ignores it) → no warning.
+    const emitterCastShadowIds = scene.emitters
+      .filter((e) => e.castShadow === false)
+      .map((e) => e.id);
+    if (emitterCastShadowIds.length > 0) {
+      this._warn({
+        code: 'walkaround-hybrid.unsupported-emitter-cast-shadow',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/walkaround-hybrid] setScene: emitter castShadow:false is not ` +
+          `consumed by this backend (DDGI/ReSTIR light paths always shadow-test); ` +
+          `emitters: ${emitterCastShadowIds.join(', ')}.`,
+        details: { emitterIds: emitterCastShadowIds },
+      });
+    }
+    const receiveShadowIds = scene.primitives
+      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
+      .map((p) => p.id);
+    if (receiveShadowIds.length > 0) {
+      this._warn({
+        code: 'walkaround-hybrid.reserved-receive-shadow',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/walkaround-hybrid] setScene: receiveShadow:false is reserved and not ` +
+          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
+        details: { primitiveIds: receiveShadowIds },
+      });
+    }
+
     this._lastScene = scene;
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
 
