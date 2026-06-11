@@ -104,6 +104,21 @@ function slerpQuat(out: Float32Array, v: Float32Array, o0: number, o1: number, t
   out[3] = s0 * aw + s1 * bw;
 }
 
+function normalizeSampledQuat(value: Float32Array): void {
+  const len = Math.hypot(value[0] ?? 0, value[1] ?? 0, value[2] ?? 0, value[3] ?? 1);
+  if (len > 1e-8 && Number.isFinite(len)) {
+    value[0] = (value[0] ?? 0) / len;
+    value[1] = (value[1] ?? 0) / len;
+    value[2] = (value[2] ?? 0) / len;
+    value[3] = (value[3] ?? 1) / len;
+  } else {
+    value[0] = 0;
+    value[1] = 0;
+    value[2] = 0;
+    value[3] = 1;
+  }
+}
+
 /**
  * Evaluate a clip at `time` (seconds, clamped to the clip range). Returns one
  * `SampledChannel` per channel with the interpolated value. Rotation channels
@@ -145,6 +160,7 @@ export function sampleAnimationClip(clip: AnimationClip, time: number): SampledC
         value[k] = a + (b - a) * t;
       }
     }
+    if (ch.target.path === 'rotation') normalizeSampledQuat(value);
     out.push({ node: ch.target.node, path: ch.target.path, value });
   }
   return out;

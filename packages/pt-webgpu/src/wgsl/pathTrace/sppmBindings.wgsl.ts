@@ -326,15 +326,19 @@ fn sppmGatherProgressive(
  * traceClosest, uniformSphere, etc.) are in scope.
  *
  * The pass emits `sppmStats.photonCount` photons per frame.  Each photon is
- * seeded from the active analytic lights (point + spot; directional is handled
- * as a parallel-rays emitter with origin on a far plane, like the old photon-map
- * code) and traced through the scene via specular/transmissive bounces until it
- * hits a diffuse surface, then deposited into the SPPM hash grid via
- * `sppmInsertPhoton`.
+ * seeded from the active directional / point / spot lights and traced through
+ * the scene via specular/transmissive bounces until it hits a diffuse surface,
+ * then deposited into the SPPM hash grid via `sppmInsertPhoton`.
  *
  * Photon flux is   Φ_photon = Φ_total / N_photons
  * so the estimator   L ≈ Σ(f × Φ_i × kernel / (π r²))
  * converges to the correct radiance as N × r → ∞ (SPPM §3).
+ *
+ * PTWG-03 note: implementation flux is normalized by 1 / p_select for every
+ * photon source in the same flat order used by full-tier NEE: directional,
+ * point, spot, rect/disc, mesh-area, environment. Rect/disc and mesh sources
+ * use the same packed records and area conventions as NEE; environment sources
+ * use the same importance/PDF helpers from connect.wgsl.ts.
  *
  * The pass is dispatched as dispatchWorkgroups(ceil(photonCount / 64), 1, 1)
  * with @workgroup_size(64, 1, 1).  Each invocation traces one photon.
@@ -343,6 +347,23 @@ fn sppmGatherProgressive(
  * (ACM SIGGRAPH Asia 2009 §3 photon pass).
  */
 export const SPPM_PHOTON_PASS_WGSL = /* wgsl */ `
+fn sppmConcentricDiscSample(xi: vec2f) -> vec2f {
+  let a = xi.x;
+  let b = xi.y;
+  if (abs(a) < 1e-8 && abs(b) < 1e-8) {
+    return vec2f(0.0);
+  }
+  var r: f32;
+  var phi: f32;
+  if (abs(a) >= abs(b)) {
+    r = a;
+    phi = (PI / 4.0) * (b / max(abs(a), 1e-8));
+  } else {
+    r = b;
+    phi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-8));
+  }
+  return vec2f(r * cos(phi), r * sin(phi));
+}
 
 // SPPM photon-emission pass.  workgroup_size(64,1,1); each lane = one photon.
 @compute @workgroup_size(64, 1, 1)
@@ -356,16 +377,21 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   var rng = pcgInit(photonIdx, params.frameSeed, params.frameIndex ^ 0xdeadbeefu);
 
   // ── Select a light source ──────────────────────────────────────────────────
-  var availableLightCount = 0u;
-  if (params.lightDir.w > 1e-6)       { availableLightCount = availableLightCount + 1u; }
+  var availableLightCount = params.directionalLightCount;
   availableLightCount = availableLightCount + params.pointLightCount;
   availableLightCount = availableLightCount + params.spotLightCount;
+  availableLightCount = availableLightCount + params.rectAreaLightCount;
+  availableLightCount = availableLightCount + params.meshAreaLightCount;
+  if (hasEnvironmentMap() || params.environmentSun.w > 1e-6) {
+    availableLightCount = availableLightCount + 1u;
+  }
   if (availableLightCount == 0u) { return; }
 
   let pick = u32(min(
     floor(rand_f32(&rng) * f32(availableLightCount)),
     f32(availableLightCount - 1u),
   ));
+  let lightSelectInvPdf = f32(availableLightCount);
 
   var photonOrigin = vec3f(0.0);
   var photonDir    = vec3f(0.0, 1.0, 0.0);
@@ -373,22 +399,26 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   var seeded       = false;
   var current      = 0u;
 
-  // Directional light (parallel rays from a far plane, like the old approximation).
-  if (params.lightDir.w > 1e-6) {
+  // Directional lights (parallel rays from a far plane).
+  for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u) {
     if (current == pick) {
+      let dBase = dirIdx * 2u;
+      let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
+      let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
       let extent = sppmStats.sceneExtent;
       // Random point on a disk of radius sceneExtent centred on the camera.
       let r2d  = sqrt(rand_f32(&rng)) * extent;
       let phi2 = 2.0 * PI * rand_f32(&rng);
-      let ldir = safe_normalize(params.lightDir.xyz);
+      let towardLightDir = safe_normalize(dDirAD.xyz);
       var lt: vec3f; var lb: vec3f;
-      buildOnb(ldir, &lt, &lb);
+      buildOnb(towardLightDir, &lt, &lb);
       let diskPos = r2d * cos(phi2) * lt + r2d * sin(phi2) * lb;
-      photonOrigin = params.cameraPos.xyz + diskPos - ldir * extent * 2.0;
-      photonDir    = ldir;
+      photonOrigin = params.cameraPos.xyz + diskPos + towardLightDir * extent * 2.0;
+      photonDir    = -towardLightDir;
       // Flux: irradiance × disk area / photonCount (importance-sampled).
       let diskArea = PI * extent * extent;
-      photonFlux   = vec3f(params.lightDir.w) * diskArea / f32(max(sppmStats.photonCount, 1u));
+      photonFlux   = dIrrMean.rgb * diskArea * lightSelectInvPdf /
+                     f32(max(sppmStats.photonCount, 1u));
       seeded = true;
     }
     current = current + 1u;
@@ -401,7 +431,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       photonOrigin = pointLights[pointBase].xyz;
       photonDir    = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));
       // Flux = radiance × 4π (total power from isotropic point emitter) / N.
-      photonFlux   = pointLights[pointBase + 1u].rgb * (4.0 * PI) /
+      photonFlux   = pointLights[pointBase + 1u].rgb * (4.0 * PI) * lightSelectInvPdf /
                      f32(max(sppmStats.photonCount, 1u));
       seeded = true;
     }
@@ -417,6 +447,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       let sradW    = spotLights[spotBase + 2u];
       let spotAxis = safe_normalize(saxisVec.xyz);
       let cosMin   = saxisVec.w;  // cosOuter
+      let cosInner = sradW.w;
       // Sample within the outer cone.
       let cosTheta = mix(cosMin, 1.0, rand_f32(&rng));
       let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
@@ -427,11 +458,116 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       photonDir    = safe_normalize(
         sinTheta * cos(phi3) * st + sinTheta * sin(phi3) * sb2 + cosTheta * spotAxis);
       // Cone solid angle = 2π(1 − cosMin); Φ = radiance × solidAngle / N.
+      let softness = smoothstep(cosMin, max(cosInner, cosMin + 1e-6), cosTheta);
       let solidAngle = 2.0 * PI * (1.0 - cosMin);
-      photonFlux   = sradW.rgb * solidAngle / f32(max(sppmStats.photonCount, 1u));
+      photonFlux   = sradW.rgb * solidAngle * softness * lightSelectInvPdf /
+                     f32(max(sppmStats.photonCount, 1u));
       seeded = true;
     }
     current = current + 1u;
+  }
+
+  // Rect/disc area lights.  Same 4-vec4 record and area conventions as NEE:
+  // rshape.w ~= 0 => rect area 4*|u x v|; rshape.w ~= 1 => disc area PI*r^2.
+  for (var rectIdx = 0u; rectIdx < params.rectAreaLightCount; rectIdx = rectIdx + 1u) {
+    if (current == pick) {
+      let rectBase = rectIdx * 4u;
+      let rpos = rectAreaLights[rectBase].xyz;
+      let ru = rectAreaLights[rectBase + 1u].xyz;
+      let rv = rectAreaLights[rectBase + 2u].xyz;
+      let rshape = rectAreaLights[rectBase + 3u];
+      let rr = rshape.rgb;
+      let normalRaw = cross(ru, rv);
+      let normalLen = length(normalRaw);
+      if (normalLen > 1e-8) {
+        let lightNormal = normalRaw / normalLen;
+        let isDisc = abs(rshape.w - 1.0) < 0.5;
+        let xi1 = rand_f32(&rng);
+        let xi2 = rand_f32(&rng);
+        var emitPos: vec3f;
+        var area: f32;
+        if (isDisc) {
+          let disc = sppmConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
+          emitPos = rpos + ru * disc.x + rv * disc.y;
+          area = max(PI * dot(ru, ru), 1e-6);
+        } else {
+          emitPos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
+          area = max(4.0 * length(cross(ru, rv)), 1e-6);
+        }
+        let hemi = cosineHemisphereSample(&rng, lightNormal);
+        photonOrigin = emitPos;
+        photonDir    = hemi.wi;
+        photonFlux   = rr * area * PI * lightSelectInvPdf /
+                       f32(max(sppmStats.photonCount, 1u));
+        seeded = true;
+      }
+    }
+    current = current + 1u;
+  }
+
+  // Mesh-area lights.  Same triangle stream and area convention as NEE.
+  for (var meshIdx = 0u; meshIdx < params.meshAreaLightCount; meshIdx = meshIdx + 1u) {
+    if (current == pick) {
+      let meshBase = meshIdx * 4u;
+      let a = meshAreaLights[meshBase].xyz;
+      let b = meshAreaLights[meshBase + 1u].xyz;
+      let c = meshAreaLights[meshBase + 2u].xyz;
+      let mr = meshAreaLights[meshBase + 3u].rgb;
+      let e1 = b - a;
+      let e2 = c - a;
+      let normalRaw = cross(e1, e2);
+      let normalLen = length(normalRaw);
+      if (normalLen > 1e-8) {
+        let lightNormal = normalRaw / normalLen;
+        let r1 = rand_f32(&rng);
+        let r2 = rand_f32(&rng);
+        let su = sqrt(r1);
+        let uu = 1.0 - su;
+        let vv = r2 * su;
+        let ww = 1.0 - uu - vv;
+        let emitPos = a * uu + b * vv + c * ww;
+        let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
+        let hemi = cosineHemisphereSample(&rng, lightNormal);
+        photonOrigin = emitPos;
+        photonDir    = hemi.wi;
+        photonFlux   = mr * area * PI * lightSelectInvPdf /
+                       f32(max(sppmStats.photonCount, 1u));
+        seeded = true;
+      }
+    }
+    current = current + 1u;
+  }
+
+  // Environment source.  Direction/PDF comes from the same helpers as full-tier
+  // NEE; photons are launched from a scene-covering disk perpendicular to wi.
+  if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && current == pick) {
+    var envDir = vec3f(0.0, 1.0, 0.0);
+    var envColor = vec3f(0.0);
+    var envPdf = 0.0;
+    let envSample = sampleEnvironmentImportance(&rng);
+    if (envSample.pdf > 0.0) {
+      envDir = envSample.wi;
+      envColor = envSample.value;
+      envPdf = envSample.pdf;
+    } else {
+      envDir = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));
+      envColor = sampleEnvironmentColor(envDir);
+      envPdf = max(environmentPdf(envDir), 1e-8);
+    }
+    if (envPdf > 1e-8) {
+      let extent = sppmStats.sceneExtent;
+      let r2d = sqrt(rand_f32(&rng)) * extent;
+      let phi = 2.0 * PI * rand_f32(&rng);
+      var et: vec3f; var eb: vec3f;
+      buildOnb(envDir, &et, &eb);
+      let diskPos = r2d * cos(phi) * et + r2d * sin(phi) * eb;
+      photonOrigin = params.cameraPos.xyz + diskPos + envDir * extent * 2.0;
+      photonDir    = -envDir;
+      let diskArea = PI * extent * extent;
+      photonFlux   = envColor * diskArea * lightSelectInvPdf /
+                     (f32(max(sppmStats.photonCount, 1u)) * envPdf);
+      seeded = true;
+    }
   }
 
   if (!seeded) { return; }

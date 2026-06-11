@@ -741,7 +741,10 @@ describe('skin → SkinnedMeshPrimitive', () => {
    *
    * @param jointsComponentType 5121 = UNSIGNED_BYTE, 5123 = UNSIGNED_SHORT
    */
-  function makeSkinnedGltf(jointsComponentType: 5121 | 5123): {
+  function makeSkinnedGltf(
+    jointsComponentType: 5121 | 5123,
+    meshTranslation: [number, number, number] = [0, 0, 0],
+  ): {
     gltf: GltfJson;
     buffers: Map<number, ArrayBuffer>;
   } {
@@ -782,7 +785,7 @@ describe('skin → SkinnedMeshPrimitive', () => {
       scenes: [{ nodes: [0] }],
       scene: 0,
       nodes: [
-        { mesh: 0, skin: 0, children: [1, 2] },           // skinned mesh node
+        { mesh: 0, skin: 0, children: [1, 2], translation: meshTranslation }, // skinned mesh node
         { translation: [0, 0, 0] },                         // joint 0
         { translation: [1, 0, 0] },                         // joint 1
       ],
@@ -886,6 +889,36 @@ describe('skin → SkinnedMeshPrimitive', () => {
     // joint 1 is at [1,0,0] → bones[16..31] column 3 translation x = 1
     expect(prim.bones[16 + 12]).toBeCloseTo(1); // translation x
     expect(prim.bones[16 + 13]).toBeCloseTo(0); // translation y
+  });
+
+  it('preserves the skinned node bindMatrix and bindMatrixInverse', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121, [5, 0, 0]);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(prim.bindMatrix).toBeInstanceOf(Float32Array);
+    expect(prim.bindMatrixInverse).toBeInstanceOf(Float32Array);
+    expect(prim.bindMatrix![12]).toBeCloseTo(5);
+    expect(prim.bindMatrix![13]).toBeCloseTo(0);
+    expect(prim.bindMatrix![14]).toBeCloseTo(0);
+    expect(prim.bindMatrixInverse![12]).toBeCloseTo(-5);
+    expect(prim.bindMatrixInverse![13]).toBeCloseTo(0);
+    expect(prim.bindMatrixInverse![14]).toBeCloseTo(0);
+  });
+
+  it('inverts non-identity skinned node scale in bindMatrixInverse', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121, [6, 9, 12]);
+    gltf.nodes![0]!.scale = [2, 3, 4];
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(prim.bindMatrix![0]).toBeCloseTo(2);
+    expect(prim.bindMatrix![5]).toBeCloseTo(3);
+    expect(prim.bindMatrix![10]).toBeCloseTo(4);
+    expect(prim.bindMatrixInverse![0]).toBeCloseTo(0.5);
+    expect(prim.bindMatrixInverse![5]).toBeCloseTo(1 / 3);
+    expect(prim.bindMatrixInverse![10]).toBeCloseTo(0.25);
+    expect(prim.bindMatrixInverse![12]).toBeCloseTo(-3);
+    expect(prim.bindMatrixInverse![13]).toBeCloseTo(-3);
+    expect(prim.bindMatrixInverse![14]).toBeCloseTo(-3);
   });
 
   it('skinIndices is Uint32Array', async () => {

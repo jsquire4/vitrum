@@ -18,13 +18,8 @@
 // it does NOT emit `uvs` OR vertex `colors`. So:
 //   • layer 0 (normal)  ← merged.normals          (the merged world-space normal).
 //   • layer 1 (tangent) ← DERIVED here from positions + uvs (standard per-triangle
-//                         accumulate → orthonormalize-against-normal). With no
-//                         per-vertex UVs in the merge, the UV gradient is
-//                         degenerate, so the derivation falls back to an arbitrary
-//                         orthonormal basis tangent (Frisvad-style) — sufficient
-//                         for graceful normal-map degradation; a real UV stream
-//                         (a shared-bvh enhancement) would feed the texture-derived
-//                         tangent automatically through the same accumulation.
+//                         accumulate → orthonormalize-against-normal) when no
+//                         authored tangent stream is supplied by the caller.
 //   • layer 2 (uv)      ← merged UVs (uv0) in `.xy` when present; (0,0,0,0) otherwise.
 //   • layer 3 (color)   ← per-vertex colors when present; (1,1,1,1) otherwise.
 //   • layer 4 (uv1)     ← per-vertex uv1 passed from the scene primitives (via the
@@ -61,6 +56,8 @@ export const ATTR_LAYER_COUNT = 5;
  */
 interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
   readonly colors?: Float32Array;
+  /** Per-vertex tangent stream, xyzw stride 4, same vertex order as merged.positions. */
+  readonly tangents?: Float32Array;
   /** Per-vertex uv1, stride 2 (same vertex order as `merged.uvs`). Optional;
    *  when absent layer 4 (ATTR_UV1) copies uv0 per vertex. */
   readonly uv1?: Float32Array;
@@ -86,10 +83,11 @@ function vComp(
  * ceil(sqrt(vertexCount))`; the returned `data` is `dim*dim*4*5` floats (5 layers
  * × dim×dim texels × RGBA).
  *
- * Tangents are derived from positions + uvs by the standard accumulate-per-triangle
- * method (Lengyel) and orthonormalized against the per-vertex normal (Gram-Schmidt);
- * when the UV gradient is degenerate (e.g. the merge ships no UVs) the tangent falls
- * back to an arbitrary orthonormal basis built from the normal alone.
+ * Tangents use authored per-vertex xyzw data when `merged.tangents` is present.
+ * Missing/malformed tangents are derived from positions + uvs by the standard
+ * accumulate-per-triangle method (Lengyel) and orthonormalized against the
+ * per-vertex normal (Gram-Schmidt); when the UV gradient is degenerate the tangent
+ * falls back to an arbitrary orthonormal basis built from the normal alone.
  *
  * Layer 4 (uv1): filled from `merged.uv1` when present; falls back to `merged.uvs`
  * (uv0) per vertex when absent, so the layer is always valid.
@@ -103,6 +101,7 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const uvs = merged.uvs;
   const uv1 = merged.uv1; // optional — stride 2, same vertex order as uvs
   const colors = merged.colors;
+  const authoredTangents = merged.tangents;
 
   // BVH-reordered triangle indices are stride-3 (`indices` / `bvhIndexStride`),
   // referencing the merged (un-reordered) vertices — exactly the vertices the
@@ -158,6 +157,7 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   // vertex orthonormalize against the normal. Degenerate UVs (no merge UVs) leave
   // the accumulator ~zero, and we fall back to an orthonormal basis tangent.
   const tanAccum = new Float32Array(vertexCount * 3);
+  const bitanAccum = new Float32Array(vertexCount * 3);
   const hasUvs = uvs !== undefined;
   if (hasUvs && triCount > 0) {
     for (let t = 0; t < triCount; t += 1) {
@@ -188,11 +188,17 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
       const tx = (dw2 * e1x - dw1 * e2x) * r;
       const ty = (dw2 * e1y - dw1 * e2y) * r;
       const tz = (dw2 * e1z - dw1 * e2z) * r;
+      const bx = (du1 * e2x - du2 * e1x) * r;
+      const by = (du1 * e2y - du2 * e1y) * r;
+      const bz = (du1 * e2z - du2 * e1z) * r;
 
       for (const vi of [i0, i1, i2]) {
         tanAccum[vi * 3] = (tanAccum[vi * 3] ?? 0) + tx;
         tanAccum[vi * 3 + 1] = (tanAccum[vi * 3 + 1] ?? 0) + ty;
         tanAccum[vi * 3 + 2] = (tanAccum[vi * 3 + 2] ?? 0) + tz;
+        bitanAccum[vi * 3] = (bitanAccum[vi * 3] ?? 0) + bx;
+        bitanAccum[vi * 3 + 1] = (bitanAccum[vi * 3 + 1] ?? 0) + by;
+        bitanAccum[vi * 3 + 2] = (bitanAccum[vi * 3 + 2] ?? 0) + bz;
       }
     }
   }
@@ -202,9 +208,23 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     const ny = vComp(normals, v, 1, stride, 1);
     const nz = vComp(normals, v, 2, stride, 0);
 
-    let tx = tanAccum[v * 3] ?? 0;
-    let ty = tanAccum[v * 3 + 1] ?? 0;
-    let tz = tanAccum[v * 3 + 2] ?? 0;
+    let tx = vComp(authoredTangents, v, 0, 4, 0);
+    let ty = vComp(authoredTangents, v, 1, 4, 0);
+    let tz = vComp(authoredTangents, v, 2, 4, 0);
+    let handedness = vComp(authoredTangents, v, 3, 4, 1) < 0 ? -1 : 1;
+    if (Math.sqrt(tx * tx + ty * ty + tz * tz) < 1e-8) {
+      tx = tanAccum[v * 3] ?? 0;
+      ty = tanAccum[v * 3 + 1] ?? 0;
+      tz = tanAccum[v * 3 + 2] ?? 0;
+      const bx = bitanAccum[v * 3] ?? 0;
+      const by = bitanAccum[v * 3 + 1] ?? 0;
+      const bz = bitanAccum[v * 3 + 2] ?? 0;
+      const cx = ny * tz - nz * ty;
+      const cy = nz * tx - nx * tz;
+      const cz = nx * ty - ny * tx;
+      const bitangentDot = cx * bx + cy * by + cz * bz;
+      handedness = bitangentDot < 0 ? -1 : 1;
+    }
 
     // Gram-Schmidt: t' = normalize(t - n·(n·t))
     const ndt = nx * tx + ny * ty + nz * tz;
@@ -229,7 +249,7 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     data[tangentBase + o] = tx / len;
     data[tangentBase + o + 1] = ty / len;
     data[tangentBase + o + 2] = tz / len;
-    data[tangentBase + o + 3] = 0;
+    data[tangentBase + o + 3] = handedness;
   }
 
   return { data, dim, layers: ATTR_LAYER_COUNT };

@@ -19,7 +19,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   6  thinFilmEnabled, thinFilmLayerCount, incidentIor, angleDependent
  *   7..12  thin-film layers (8 × {ior, thicknessNm, k}) = 24 floats
  *   13..20 spectral attenuation samples (32 floats)
- *   21 spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount
+ *   21 spectralAvgMu, dispersionAbbeNumber, spectralMaxMu, spectralSampleCount
  *   22 σ_a.rgb (Beer-Lambert absorption coefficient), hasSigmaA flag  ← WS4
  *   23 clearcoat, clearcoatRoughness, sheen, sheenRoughness              ← H52
  *   24 sheenColor.rgb, iridescence                                       ← H52
@@ -112,7 +112,6 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
   const spectralCurve = material.spectralAttenuation;
   let spectralSampleCount = 0;
   let spectralAvgMu = 0;
-  let spectralMinMu = Number.POSITIVE_INFINITY;
   let spectralMaxMu = Number.NEGATIVE_INFINITY;
   const spectralSamples = new Array<number>(SPECTRAL_SAMPLE_COUNT).fill(0);
   if (spectralCurve != null && spectralCurve.values.length > 0) {
@@ -124,18 +123,14 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
       const v = Math.max(sampleSpectralCurve(spectralCurve, lambda), 0);
       spectralSamples[i] = v;
       sum += v;
-      spectralMinMu = Math.min(spectralMinMu, v);
       spectralMaxMu = Math.max(spectralMaxMu, v);
     }
     spectralAvgMu = sum / SPECTRAL_SAMPLE_COUNT;
-    if (!Number.isFinite(spectralMinMu)) spectralMinMu = 0;
     if (!Number.isFinite(spectralMaxMu)) spectralMaxMu = 0;
   } else {
-    spectralMinMu = 0;
     spectralMaxMu = 0;
   }
   const dispersionAbbe = Math.max(finite(material.dispersionAbbeNumber ?? 0), 0);
-  const m19Y = dispersionAbbe > 0 ? dispersionAbbe : spectralMinMu;
   const packed = [
     base[0],
     base[1],
@@ -179,7 +174,7 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
     }
   }
   packed.push(...spectralSamples);
-  packed.push(spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount);
+  packed.push(spectralAvgMu, dispersionAbbe, spectralMaxMu, spectralSampleCount);
 
   // WS4 — volumetric absorption coefficient σ_a (vec4 #22).
   // attenuationColor is the transmittance reached after travelling

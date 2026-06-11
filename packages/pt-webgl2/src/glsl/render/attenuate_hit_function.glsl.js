@@ -186,7 +186,8 @@ export const attenuate_hit_function = /* glsl */`
 
 						vec3 faceN = surfaceHit.faceNormal * surfaceHit.side;
 						vec3 tangent = normalize( tangentSample.xyz );
-						vec3 bitangent = normalize( cross( faceN, tangent ) * tangentSample.w );
+						float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
+						vec3 bitangent = normalize( cross( faceN, tangent ) * tangentHandedness );
 						vec3 nuvPrime = material.normalMapTransform * vec3( uv, 1 );
 						vec3 texNormal = texture2D( textures, vec3( nuvPrime.xy, material.normalMap ) ).xyz * 2.0 - 1.0;
 						texNormal.xy *= material.normalScale;

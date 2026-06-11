@@ -102,6 +102,16 @@ function makeStubDevice() {
   return { device, writeBuffer, createBuffer };
 }
 
+function makeLiteStubDevice() {
+  const out = makeStubDevice();
+  (out.device as unknown as { limits: Record<string, number> }).limits = {
+    maxStorageBuffersPerShaderStage: 8,
+    maxStorageTexturesPerShaderStage: 4,
+    maxTextureDimension2D: 8192,
+  };
+  return out;
+}
+
 interface SpyLike {
   readonly mock: {
     readonly calls: readonly unknown[][];
@@ -264,6 +274,31 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
   });
 
+  it('lite tier throws instead of accepting transform-only mesh patches', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeLiteStubDevice();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({ device });
+      engine.setScene(makeScene());
+      const buffersBefore = createBuffer.mock.calls.length;
+
+      expect(() =>
+        engine.updatePrimitive?.('mesh-b', {
+          transform: asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            2, 0, 0, 1,
+          ])),
+        }),
+      ).toThrow(/unsupported on the lite tier/);
+      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('updates TLAS buffers in-place for instanced transform patches', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
@@ -292,6 +327,33 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+  });
+
+  it('lite tier throws instead of accepting instanced topology patches', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeLiteStubDevice();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({ device });
+      engine.setScene(makeInstancedScene());
+      const buffersBefore = createBuffer.mock.calls.length;
+
+      expect(() =>
+        engine.updatePrimitive?.('instanced-a', {
+          instances: [
+            asMat4(new Float32Array([
+              1, 0, 0, 0,
+              0, 1, 0, 0,
+              0, 0, 1, 0,
+              1, 0, 0, 1,
+            ])),
+          ],
+        }),
+      ).toThrow(/unsupported on the lite tier/);
+      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('reallocates ONLY the 5 TLAS buffers when instanced count shrinks (BLAS untouched)', async () => {

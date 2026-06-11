@@ -2235,6 +2235,7 @@ export class HybridEngine implements Engine {
       publishPipeline:        (p)   => { self._pipeline = p; },
       rollbackBvh:            ()    => { self._bvhBuffers = null; },
       setState:               (s)   => { self._state = s; },
+      reportError:            (e)   => { self._emitError(e); },
       teardownPipeline:       ()    => { self._teardownPipeline(); },
       disposeDdgi:            ()    => { self._ddgi.dispose(); },
 

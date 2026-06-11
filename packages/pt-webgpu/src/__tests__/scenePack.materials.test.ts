@@ -62,6 +62,48 @@ describe('buildPackedScene material payload packing', () => {
   });
 });
 
+// ── PTWG-05 — spectral attenuation and Cauchy dispersion use separate lanes ──
+describe('PTWG-05 spectral attenuation / dispersion packing', () => {
+  const SPECTRAL_SUMMARY_OFFSET = 21 * 4; // vec4 #21: avgMu, dispersionAbbe, maxMu, sampleCount
+
+  it('does not populate dispersionAbbe from spectral attenuation min-mu', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.7, 0.7, 0.7],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([0.25, 0.5, 0.75]),
+      },
+    });
+
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 0]).toBeGreaterThan(0);
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 1]).toBe(0);
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 2]).toBeGreaterThan(0);
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 3]).toBe(32);
+  });
+
+  it('packs authored dispersionAbbe independently of spectral attenuation', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.7, 0.7, 0.7],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      dispersionAbbeNumber: 42,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([0.25, 0.5, 0.75]),
+      },
+    });
+
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 1]).toBe(42);
+    expect(packed[SPECTRAL_SUMMARY_OFFSET + 3]).toBe(32);
+  });
+});
+
 // ── H52 — Disney extension lobe packing (clearcoat / sheen / iridescence) ────
 // Vec4 layout: #23 = clearcoat/sheen scalars, #24 = sheenColor.rgb + iridescence,
 //              #25 = iridescenceIor + thicknessMin + thicknessMax + pad.

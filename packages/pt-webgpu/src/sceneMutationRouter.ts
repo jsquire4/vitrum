@@ -82,6 +82,8 @@ export interface MutationHost {
   cameraVisibleEmitters(): boolean;
   /** Refresh lite-tier sampled light/environment textures from the live scene buffers. */
   syncLiteTextures?(sceneBuffers: UploadedSceneBuffers): void;
+  /** True when the engine selected the single-group lite shader tier. */
+  isLiteTier?(): boolean;
   /** Full scene repack (engine-internal: destroys buffers + re-inits BDPT). */
   repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void;
   /** Public setScene entry — the fall-through for every fast-path miss. */
@@ -234,6 +236,23 @@ export class SceneMutationRouter {
     // positions/normals, no bone keys) so they correctly classify the update
     // as a geometry-refit rather than an unrecognised bones-only patch.
     const fastPathPatch = resolvedPatch;
+
+    const liteUnsupportedTransformPatch =
+      host.isLiteTier?.() === true &&
+      currentPrimitive != null &&
+      canFastPathTransformPatch(currentPrimitive, fastPathPatch);
+    const liteUnsupportedInstancedTopologyPatch =
+      host.isLiteTier?.() === true &&
+      currentPrimitive != null &&
+      canFastPathInstancedTopologyPatch(currentPrimitive, fastPathPatch);
+    if (liteUnsupportedTransformPatch || liteUnsupportedInstancedTopologyPatch) {
+      throw new Error(
+        '[vitrum/pt-webgpu] updatePrimitive: transform-only and instanced topology ' +
+          'patches are unsupported on the lite tier because the lite shader does not ' +
+          'traverse TLAS instance transforms. Use the full tier, or rebuild/bake the ' +
+          'scene geometry before calling setScene().',
+      );
+    }
 
     // The incremental fast paths, in FIRST-ELIGIBLE-WINS order (geometry →
     // topology-resize → analytic-transform → instanced-topology → transform →

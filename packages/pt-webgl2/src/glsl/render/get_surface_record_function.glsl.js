@@ -193,7 +193,8 @@ export const get_surface_record_function = /* glsl */`
 			if ( length( tangentSample.xyz ) > 0.0 ) {
 
 				vec3 tangent = normalize( tangentSample.xyz );
-				vec3 bitangent = normalize( cross( normal, tangent ) * tangentSample.w );
+				float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
+				vec3 bitangent = normalize( cross( normal, tangent ) * tangentHandedness );
 				mat3 vTBN = mat3( tangent, bitangent, normal );
 
 				vec3 uvPrime = material.normalMapTransform * vec3( MAP_UV( 5u ), 1 );
@@ -228,7 +229,8 @@ export const get_surface_record_function = /* glsl */`
 				float dhdu = ( hU - hC ) / du;
 				float dhdv = ( hV - hC ) / du;
 				vec3 tangent = normalize( tangentSample.xyz );
-				vec3 bitangent = normalize( cross( normal, tangent ) * tangentSample.w );
+				float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
+				vec3 bitangent = normalize( cross( normal, tangent ) * tangentHandedness );
 				vec3 perturbed = normal - material.bumpScale * ( dhdu * tangent + dhdv * bitangent );
 				if ( length( perturbed ) > 1e-6 ) {
 
@@ -276,7 +278,8 @@ export const get_surface_record_function = /* glsl */`
 			if ( length( tangentSample.xyz ) > 0.0 ) {
 
 				vec3 tangent = normalize( tangentSample.xyz );
-				vec3 bitangent = normalize( cross( clearcoatNormal, tangent ) * tangentSample.w );
+				float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
+				vec3 bitangent = normalize( cross( clearcoatNormal, tangent ) * tangentHandedness );
 				mat3 vTBN = mat3( tangent, bitangent, clearcoatNormal );
 
 				vec3 uvPrime = material.clearcoatNormalMapTransform * vec3( MAP_UV( 9u ), 1 );

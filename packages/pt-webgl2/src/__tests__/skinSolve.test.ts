@@ -21,6 +21,7 @@ import { solveSkin } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import type { PTEngineWebGL2Options } from '../index.js';
 import { createMockGl } from './mockGl.js';
+import { solveSkinPrimitives } from '../scene/solveSkinPrimitives.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -218,6 +219,27 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
     expect(packed[2 * stride + 1]!).toBeCloseTo(1); // v2 Y
 
     e.dispose();
+  });
+
+  it('drops rest-pose tangents after CPU skinning so attributes derive posed tangents', () => {
+    const prim = {
+      ...twoBoneSkinnedPrim('sk-tangent'),
+      tangents: new Float32Array([
+        1, 0, 0, 1,
+        1, 0, 0, 1,
+        1, 0, 0, 1,
+      ]),
+    };
+    const scene: Scene = {
+      primitives: [prim],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const posed = solveSkinPrimitives(scene).primitives[0];
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(posed?.kind).toBe('skinned-mesh');
+    expect('tangents' in (posed ?? {})).toBe(false);
   });
 
   it('updatePrimitive with new bones re-solves skinning', async () => {

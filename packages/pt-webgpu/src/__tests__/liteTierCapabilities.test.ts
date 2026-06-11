@@ -1,7 +1,7 @@
 /**
- * H12 — lite-tier capabilities truth: the lite kernel only binds directional
- * lighting and procedural-sky; analytic shapes, BDPT, disc-area, and mesh-area
- * emitters are absent from the lite bind layout.
+ * H12 — lite-tier capabilities truth: the lite kernel uses a reduced binding
+ * layout; analytic shapes, instanced TLAS transforms, BDPT, disc-area, and
+ * mesh-area emitters are absent from the lite shader path.
  *
  * B12 (2026-06-10) — point/spot/rect-area emitters and HDRI environments are now
  * supported on the lite tier via texture packing (liteLightTex, liteEnvTex,
@@ -11,7 +11,7 @@
  * the actual lite binding budget (not the full-tier ledger).
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import { asMat4, type Scene } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
@@ -93,6 +93,28 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(envs?.has('none')).toBe(true);
     expect(envs?.has('procedural-sky')).toBe(true);
     expect(envs?.has('hdri')).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: reports transform/topology mutation gaps and primitive limits', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
+    expect(engine.capabilities.incrementalPatchSupport).toEqual({
+      transform: false,
+      positions: true,
+      material: true,
+      emitter: true,
+      topology: false,
+    });
+    const primitiveKinds = engine.capabilities.supportedPrimitiveKinds!;
+    expect(primitiveKinds.has('mesh')).toBe(true);
+    expect(primitiveKinds.has('skinned-mesh')).toBe(true);
+    expect(primitiveKinds.has('instanced-mesh')).toBe(false);
+    const sd = engine.capabilities.supportDetails!;
+    expect(sd.primitives['instanced-mesh']).toBe('unsupported');
+    expect(sd.mutations.transform).toBe('unsupported');
+    expect(sd.mutations.topology).toBe('unsupported');
     engine.dispose();
     warn.mockRestore();
   });
@@ -199,6 +221,66 @@ describe('H12: lite-tier capabilities truth', () => {
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('analytic') && c.includes('Lite tier'))).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: setScene warns when scene contains instanced meshes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'im',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          instances: [asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1])],
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) => c.includes('instanced-mesh') && c.includes('Lite tier'))).toBe(true);
+    expect(calls.some((c) => c.includes('TLAS') && c.includes('lite shader'))).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: setScene warns when mesh transforms need TLAS traversal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) => c.includes('non-identity transforms') && c.includes('Lite tier'))).toBe(true);
+    expect(calls.some((c) => c.includes('bake transforms') && c.includes('vertex data'))).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });

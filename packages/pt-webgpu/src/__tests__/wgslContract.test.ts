@@ -185,8 +185,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // SPPM_GROUP3_BINDINGS_WGSL (bindings are at @group(3), not group 4).
     // Re-pinned 2026-06-10: D9.17 — bdptLightSubpath.wgsl.ts for-loop body
     // indentation corrected (2-space → 4-space; WGSL text change, zero semantic impact).
-    expect(digest).toBe('ac847bc6dd325f1ef005168515d218db539be9f94cb71e5024ade3c69a7d1370');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(313180);
+    // Re-pinned 2026-06-11: PTWG-03/04 SPPM photon p_select normalization,
+    // packed N-directional RGB photon emission, and once-per-pixel stats gate.
+    expect(digest).toBe('998430cb375c003247dbf1dabe53cbdfea254573a21d465782e0428e208e1ef0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(313716);
   });
 });
 

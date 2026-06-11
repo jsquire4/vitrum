@@ -61,9 +61,13 @@ export function solveSkinPrimitives(scene: Scene): Scene {
     const { positions, normals } = solveSkin(prim);
     anyResolved = true;
     // Return a new object that shares every field except positions/normals, which
-    // are now the solved (posed) geometry.  The rest-pose arrays on the original
-    // prim are still referenced by the host — we do NOT mutate them.
-    return { ...prim, positions, normals };
+    // are now the solved (posed) geometry.  Rest-pose tangents are deliberately
+    // dropped: until tangent skinning is explicit, the attribute packer should
+    // derive tangents from the solved surface instead of consuming stale rest
+    // directions. The rest-pose arrays on the original prim are still referenced
+    // by the host — we do NOT mutate them.
+    const { tangents: _restTangents, ...posed } = prim;
+    return { ...posed, positions, normals };
   });
 
   if (!anyResolved) return scene;

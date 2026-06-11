@@ -8,7 +8,7 @@
 //   4. packMaterialsTexture(merged.materials)       → 85px/material RGBA32F sampler2D
 //   5. packLightsTexture(scene.emitters)            → 6px/light RGBA32F sampler2D
 //   6. buildEquirectInfo(scene.environment)         → equirect map + marginal/conditional CDFs
-//   7. packAttributesArray(merged)                  → 4-layer RGBA32F sampler2DArray
+//   7. packAttributesArray(merged)                  → 5-layer RGBA32F sampler2DArray
 //   8. assemble the bundle with a destroy() that deletes every owned texture.
 //
 // NOTE: `packMaterialsTexture` / `packLightsTexture` / `buildEquirectInfo` are
@@ -17,7 +17,7 @@
 // will exist at integration. Their return shapes are the `sceneTextures.ts`
 // contracts (`MaterialsTextureData` / `LightsTextureData` / `EnvTextureData`).
 
-import type { EngineCapabilities, Scene } from '@vitrum/core';
+import type { EngineCapabilities, Scene, ScenePrimitive } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
 import { mergeWorldSpaceFromCore, mergeUv1FromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
@@ -120,8 +120,9 @@ export function buildSceneTextures(
   // primitive carries no uv1 (see packAttributesArray).
   // D10.7: uses mergeUv1FromCore from @vitrum/shared-bvh, colocated with worldSpaceMerge.ts.
   const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const attrData = packAttributesArray(
-    mergedUv1 != null ? { ...merged, uv1: mergedUv1 } : merged,
+    { ...merged, ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}), ...(mergedTangents != null ? { tangents: mergedTangents } : {}) },
   );
   const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes');
 
@@ -170,6 +171,103 @@ export function buildSceneTextures(
   return { textures, merged, warnings, supported };
 }
 
+type MeshLikePrimitive = Extract<
+  ScenePrimitive,
+  { positions: Float32Array; tangents?: Float32Array }
+>;
+
+const IDENTITY_MAT4 = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+function isMeshLikePrimitive(p: ScenePrimitive): p is MeshLikePrimitive {
+  return p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh';
+}
+
+function determinant4(m: ArrayLike<number>): number {
+  const n11 = m[0] ?? 0, n12 = m[4] ?? 0, n13 = m[8] ?? 0, n14 = m[12] ?? 0;
+  const n21 = m[1] ?? 0, n22 = m[5] ?? 0, n23 = m[9] ?? 0, n24 = m[13] ?? 0;
+  const n31 = m[2] ?? 0, n32 = m[6] ?? 0, n33 = m[10] ?? 0, n34 = m[14] ?? 0;
+  const n41 = m[3] ?? 0, n42 = m[7] ?? 0, n43 = m[11] ?? 0, n44 = m[15] ?? 0;
+  return (
+    n41 * (
+      +n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 +
+      n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34
+    ) +
+    n42 * (
+      +n11 * n23 * n34 - n11 * n24 * n33 + n14 * n21 * n33 -
+      n13 * n21 * n34 + n13 * n24 * n31 - n14 * n23 * n31
+    ) +
+    n43 * (
+      +n11 * n24 * n32 - n11 * n22 * n34 - n14 * n21 * n32 +
+      n12 * n21 * n34 + n14 * n22 * n31 - n12 * n24 * n31
+    ) +
+    n44 * (
+      -n13 * n22 * n31 - n11 * n23 * n32 + n11 * n22 * n33 +
+      n13 * n21 * n32 - n12 * n21 * n33 + n12 * n23 * n31
+    )
+  );
+}
+
+function transformDirection(m: ArrayLike<number>, x: number, y: number, z: number): [number, number, number] {
+  return [
+    (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[8] ?? 0) * z,
+    (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[9] ?? 0) * z,
+    (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[10] ?? 0) * z,
+  ];
+}
+
+function mergeTangentsFromCore(
+  scene: Scene,
+  ranges: WorldSpaceMergeResult['meshVertexRanges'],
+  totalVertexCount: number,
+): Float32Array | undefined {
+  const meshLike = scene.primitives.filter(isMeshLikePrimitive);
+  if (!meshLike.some((p) => p.tangents != null && p.tangents.length > 0)) return undefined;
+
+  const out = new Float32Array(totalVertexCount * 4);
+  let rangeIdx = 0;
+  for (const prim of meshLike) {
+    const localVertexCount = Math.floor(prim.positions.length / 3);
+    if (localVertexCount < 3) continue;
+    const localIndexCount = prim.indices?.length ?? localVertexCount;
+    if (Math.floor(localIndexCount / 3) === 0) continue;
+
+    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
+    for (let inst = 0; inst < instanceCount; inst += 1) {
+      const range = ranges[rangeIdx];
+      if (range == null) break;
+      rangeIdx += 1;
+
+      const src = prim.tangents;
+      if (src == null || src.length === 0) continue;
+
+      const transform = prim.kind === 'instanced-mesh'
+        ? (prim.instances[inst] ?? IDENTITY_MAT4)
+        : (prim.transform ?? IDENTITY_MAT4);
+      const handednessScale = determinant4(transform) < 0 ? -1 : 1;
+      for (let v = 0; v < range.vertexCount; v += 1) {
+        const local = Math.min(v, localVertexCount - 1);
+        const sx = src[local * 4] ?? 0;
+        const sy = src[local * 4 + 1] ?? 0;
+        const sz = src[local * 4 + 2] ?? 0;
+        const sw = (src[local * 4 + 3] ?? 1) < 0 ? -1 : 1;
+        const [tx, ty, tz] = transformDirection(transform, sx, sy, sz);
+        const o = (range.vertexStart + v) * 4;
+        out[o] = tx;
+        out[o + 1] = ty;
+        out[o + 2] = tz;
+        out[o + 3] = sw * handednessScale;
+      }
+    }
+  }
+
+  return out;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // GL upload helpers — RGBA32F sampler2D / sampler2DArray, NEAREST + ClampToEdge.
 // D10.14: delegate to allocGlTexture (gl/texAlloc.ts) — the shared helper that
@@ -211,7 +309,7 @@ function uploadRgba32fRect(
 }
 
 /** RGBA32F TEXTURE_2D_ARRAY (dim×dim × `layers`), NEAREST/ClampToEdge — the
- *  4-layer vertex-attribute array (normal/tangent/uv/color). */
+ *  5-layer vertex-attribute array (normal/tangent/uv0/color/uv1). */
 function uploadRgba32fArray(
   gl: WebGL2RenderingContext,
   data: Float32Array,

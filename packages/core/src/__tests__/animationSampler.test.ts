@@ -75,4 +75,34 @@ describe('sampleAnimationClip (P3)', () => {
     expect(Array.from(sampleAnimationClip(c, 0)[0]!.value)).toEqual([1, 2, 3]);
     expect(Array.from(sampleAnimationClip(c, 1)[0]!.value)).toEqual([4, 5, 6]);
   });
+
+  it('CUBICSPLINE rotation outputs are normalized after Hermite interpolation', () => {
+    const values = new Float32Array([
+      0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, // kf0: in, value, out
+      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, // kf1
+    ]);
+    const c = clip([{
+      target: { node: 'n', path: 'rotation' },
+      sampler: { times: new Float32Array([0, 1]), values, interpolation: 'CUBICSPLINE' },
+    }]);
+    const v = sampleAnimationClip(c, 0.5)[0]!.value;
+    expect(Math.hypot(v[0]!, v[1]!, v[2]!, v[3]!)).toBeCloseTo(1, 5);
+    expect(v[2]).toBeCloseTo(Math.SQRT1_2, 5);
+    expect(v[3]).toBeCloseTo(Math.SQRT1_2, 5);
+  });
+
+  it('STEP and clamped rotation knot values are normalized', () => {
+    const c = clip([{
+      target: { node: 'n', path: 'rotation' },
+      sampler: {
+        times: new Float32Array([0, 1]),
+        values: new Float32Array([0, 0, 0, 2, 0, 0, 0, 3]),
+        interpolation: 'STEP',
+      },
+    }]);
+    const step = sampleAnimationClip(c, 0.5)[0]!.value;
+    const clamped = sampleAnimationClip(c, 99)[0]!.value;
+    expect(Array.from(step)).toEqual([0, 0, 0, 1]);
+    expect(Array.from(clamped)).toEqual([0, 0, 0, 1]);
+  });
 });

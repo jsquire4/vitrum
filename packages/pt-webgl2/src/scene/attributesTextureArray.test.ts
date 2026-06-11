@@ -88,7 +88,7 @@ describe('packAttributesArray — 5-layer normal/tangent/uv0/color/uv1 array', (
       const ndt = nx * tx + ny * ty + nz * tz;
       expect(Math.abs(ndt)).toBeLessThan(1e-4); // orthogonal to the normal
 
-      expect(grid.data[to + 3]).toBe(0); // .a = 0
+      expect(grid.data[to + 3]).toBe(1); // handedness defaults to +1
     }
   });
 
@@ -113,6 +113,64 @@ describe('packAttributesArray — 5-layer normal/tangent/uv0/color/uv1 array', (
       expect(grid.data[uv1Base + o + 1]).toBe(grid.data[uv0Base + o + 1]);
       expect(grid.data[uv1Base + o + 2]).toBe(0);
       expect(grid.data[uv1Base + o + 3]).toBe(0);
+    }
+  });
+});
+
+describe('packAttributesArray — tangent handedness', () => {
+  it('uses authored tangents when supplied by the caller', () => {
+    const merged2 = mergeWorldSpaceFromCore(quadScene(), { positionStride: 4 });
+    const tangents = new Float32Array(merged2.vertexCount * 4);
+    for (let v = 0; v < merged2.vertexCount; v += 1) {
+      tangents[v * 4] = 0;
+      tangents[v * 4 + 1] = 1;
+      tangents[v * 4 + 2] = 0;
+      tangents[v * 4 + 3] = -1;
+    }
+
+    const gridWithTangents = packAttributesArray({ ...merged2, tangents });
+    const fpl = gridWithTangents.dim * gridWithTangents.dim * 4;
+    const tangentBase = ATTR_LAYER_TANGENT * fpl;
+    for (let v = 0; v < merged2.vertexCount; v += 1) {
+      const o = tangentBase + v * 4;
+      expect(gridWithTangents.data[o]).toBeCloseTo(0, 6);
+      expect(gridWithTangents.data[o + 1]).toBeCloseTo(1, 6);
+      expect(gridWithTangents.data[o + 2]).toBeCloseTo(0, 6);
+      expect(gridWithTangents.data[o + 3]).toBe(-1);
+    }
+  });
+
+  it('derives negative handedness for mirrored UVs', () => {
+    const prim: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'mirrored',
+      positions: new Float32Array([
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      uvs: new Float32Array([
+        0, 0,
+        0, 1,
+        1, 0,
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: GREY,
+    };
+    const mergedMirrored = mergeWorldSpaceFromCore(
+      { primitives: [prim], emitters: [], environment: { kind: 'none' } },
+      { positionStride: 4 },
+    );
+    const gridMirrored = packAttributesArray(mergedMirrored);
+    const fpl = gridMirrored.dim * gridMirrored.dim * 4;
+    const tangentBase = ATTR_LAYER_TANGENT * fpl;
+    for (let v = 0; v < mergedMirrored.vertexCount; v += 1) {
+      expect(gridMirrored.data[tangentBase + v * 4 + 3]).toBe(-1);
     }
   });
 });

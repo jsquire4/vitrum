@@ -171,7 +171,8 @@ ${kernel}
  *
  * The `sppmEmitPhotons` entry point + its helpers live in
  * `SPPM_GROUP3_BINDINGS_WGSL` + `SPPM_PHOTON_PASS_WGSL`.  BSDF helpers
- * (uniformSphere, buildOnb) come from the standard module stack.
+ * (uniformSphere, buildOnb) and environment helpers come from the standard
+ * module stack.
  *
  * Full-tier only; never composed on lite.
  */
@@ -185,6 +186,7 @@ ${HERO_WAVELENGTH_WGSL}
 ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
+${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${SPPM_PHOTON_PASS_WGSL}
 `;

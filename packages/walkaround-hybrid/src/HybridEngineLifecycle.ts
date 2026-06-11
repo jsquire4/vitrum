@@ -51,7 +51,7 @@ import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
-import type { Scene } from '@vitrum/core';
+import type { EngineError, Scene } from '@vitrum/core';
 
 /**
  * Opaque back-reference into the engine. The coordinator only touches
@@ -137,6 +137,8 @@ export interface PipelineInitHost {
   /** Clear `_bvhBuffers` back to null (post-init-race rollback). */
   rollbackBvh(): void;
   setState(state: 'initializing' | 'ready' | 'error' | 'disposed'): void;
+  /** Route async lifecycle failures through the engine's programmatic error channel. */
+  reportError(error: EngineError): void;
   /** Engine's synchronous teardown — releases pipeline + BVH + traversal
    *  scene currently held on the engine. Called from the deferred
    *  teardown path inside the coordinator's finally block. */
@@ -535,6 +537,14 @@ export class PipelineInitCoordinator {
     } catch (err) {
       if (!this._disposed) {
         host.setState('error');
+        host.reportError({
+          kind: 'render',
+          message:
+            '[HybridEngine] async pipeline init failed; engine state set to error. ' +
+            errorMessage(err),
+          fatal: true,
+          raw: err,
+        });
       }
       console.error(
         '[HybridEngine] init failed — engine state set to error. Call dispose() and recreate the engine to retry.',
@@ -577,6 +587,11 @@ export class PipelineInitCoordinator {
       }
     }
   }
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 
 /**

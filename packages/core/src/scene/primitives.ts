@@ -17,8 +17,8 @@ export interface MeshPrimitive {
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1); uv pairs
   /** Tangents, xyzw per vertex (w = bitangent sign).
-   *  @reserved Accepted; no backend currently samples tangents for rendering
-   *  (used only as a topology-change sentinel in updatePrimitive). road-to-100 texture tier. */
+   *  Consumed by pt-webgl2 for normal/bump/clearcoat-normal maps when supplied;
+   *  other backends may derive tangents from UV gradients. */
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) (components = length / vertexCount)
   readonly indices?: Uint32Array | Uint16Array;
@@ -43,7 +43,8 @@ export interface InstancedMeshPrimitive {
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1)
   /** Tangents, xyzw per vertex (w = bitangent sign).
-   *  @reserved Accepted; not yet consumed by any backend for rendering. road-to-100. */
+   *  Consumed by pt-webgl2 for normal/bump/clearcoat-normal maps when supplied;
+   *  other backends may derive tangents from UV gradients. */
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;
@@ -127,7 +128,8 @@ export interface SkinnedMeshPrimitive {
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;         // 2nd UV channel (TextureRef.texCoord 1)
   /** Tangents, xyzw per vertex (w = bitangent sign).
-   *  @reserved Accepted; not yet consumed by any backend for rendering. road-to-100. */
+   *  Rest-pose tangent data. Backends that CPU-solve skinning should skin these
+   *  explicitly or derive posed tangents from the solved surface. */
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;      // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;

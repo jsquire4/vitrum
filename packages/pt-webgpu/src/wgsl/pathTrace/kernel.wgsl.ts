@@ -414,6 +414,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // A4-progressive: per-pixel flat index for sppmPixelStats read/write.
   let pixelIndex = gid.y * params.width + gid.x;
+  // PTWG-04: sppmPixelStats has one record per pixel, so the progressive update
+  // may run at most once per frame. We update at the first diffuse-ish gather
+  // surface along the eye path; later bounces keep tracing but do not shrink the
+  // same pixel's radius/N again.
+  var sppmGatherUpdated = false;
 
   var radiance = vec3f(0.0);
   var throughput = vec3f(1.0);
@@ -875,19 +880,24 @@ ${transmissiveBlock}
       // the per-pixel (τ, R², N) stats buffer for the Hachisuka update rule.
       // Item 21: heroLambda lets the gather spectralise each photon's RGB flux.
       // Non-spectral path (spectralEnabled=0): heroLambda is unused → byte-identical.
-      radiance = radiance + photonMapContribution(
-        &rng,
-        pixelIndex,
-        hitPos,
-        normal,
-        wo,
-        baseColor,
-        roughness,
-        metallic,
-        transmission,
-        throughputAtVertex,
-        heroLambda,
-      );
+      let sppmReceiverEligible = transmission <= 0.3 &&
+        !(metallic > 0.9 && roughness < 0.15);
+      if (!sppmGatherUpdated && sppmReceiverEligible) {
+        radiance = radiance + photonMapContribution(
+          &rng,
+          pixelIndex,
+          hitPos,
+          normal,
+          wo,
+          baseColor,
+          roughness,
+          metallic,
+          transmission,
+          throughputAtVertex,
+          heroLambda,
+        );
+        sppmGatherUpdated = true;
+      }
     }
 
     let bs = sampleNextBounceDirection(

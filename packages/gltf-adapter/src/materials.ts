@@ -3,11 +3,9 @@
 // ORM texture note:
 //   glTF stores roughness+metallic in a SINGLE texture:
 //     G channel = roughnessTexture, B channel = metallicTexture
-//   Per pt-webgpu materialTextures.ts convention, the combined texture is
-//   supplied as `roughnessMap` (which the backend treats as the ORM slot).
-//   `metallicMap` is NOT set when the same handle is used for both channels —
-//   it would trigger the "distinct handles" warning in collectMaterialTextures.
-//   When a material supplies ONLY metallicRoughnessTexture, it maps to roughnessMap.
+//   The same texture ref is supplied as both `roughnessMap` and `metallicMap`.
+//   Backends sample G for roughness and B for metallic; atlas packers dedupe by
+//   handle so this does not duplicate texture storage.
 //
 // doubleSided → alphaMode 'blend' is incorrect; doubleSided controls backface culling,
 // not blending.  It has no MaterialSpec field, so we attach it to extensions.
@@ -239,9 +237,9 @@ export function convertMaterial(
   // ── Metallic / roughness ───────────────────────────────────────────────────
   const metallic = pbr.metallicFactor ?? 1.0;
   const roughness = pbr.roughnessFactor ?? 1.0;
-  // glTF combined ORM texture → roughnessMap (B=metallic, G=roughness per spec).
+  // glTF combined metallic-roughness texture: G=roughness, B=metallic.
   const roughnessMap = resolveTextureRef(pbr.metallicRoughnessTexture, handleMap);
-  // metallicMap is intentionally omitted when it shares the same handle (see module note).
+  const metallicMap = roughnessMap;
 
   // ── Normal map ────────────────────────────────────────────────────────────
   const normalMap = resolveTextureRef(gltfMat.normalTexture, handleMap);
@@ -308,6 +306,7 @@ export function convertMaterial(
     ...(baseColorMap ? { baseColorMap } : {}),
     ...(normalMap ? { normalMap } : {}),
     ...(normalScale !== 1 ? { normalScale } : {}),
+    ...(metallicMap ? { metallicMap } : {}),
     ...(roughnessMap ? { roughnessMap } : {}),
     ...(aoMap ? { aoMap } : {}),
     ...(aoMapIntensity !== 1 ? { aoMapIntensity } : {}),

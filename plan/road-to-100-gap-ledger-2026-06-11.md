@@ -15,6 +15,11 @@ same mistake as the implementation.
 
 - Source code is the source of truth. Documentation only counts after the code
   path and tests match it.
+- Operational note: GitNexus is broken in this desktop/UNC environment
+  (`detect-changes` and symbol impact can fail with LadybugDB Binder errors).
+  Do not block gap-closure work on GitNexus. Use direct source reading,
+  `rg`/call-chain review, targeted typecheck/tests, CPU oracles, and
+  reference-render A/B checks as the practical impact-analysis path.
 - Each confirmed bug needs a regression test or oracle, plus typecheck/test pass.
 - Each renderer math change needs either a CPU oracle or a before/after reference
   render where numerical drift is visually justified.
@@ -30,26 +35,52 @@ library fully professional.
 
 ### Implementation wave status - 2026-06-11
 
-Patched and source-reviewed in this wave, with package typecheck passing:
+Patched and source-reviewed in this wave, with focused typecheck/tests passing:
 
 - W-HYB-01 NRC slot claims clear before NRC GI-RIS dispatch.
 - W-HYB-02 non-SVGF atrous paths bind per-iteration UBO ranges.
+- W-HYB-03 async walkaround pipeline init failures now route a fatal
+  `EngineError` through `HybridEngine.onError` instead of console-only handling.
+- CORE-01 animation rotation samples normalize LINEAR, STEP, clamped-knot, and
+  CUBICSPLINE outputs.
+- GLTF-01 skinned glTF nodes preserve `bindMatrix` and `bindMatrixInverse`,
+  including non-translation transforms.
+- WEBGL2-01 pt-webgl2 consumes authored tangent XYZW, derives nonzero fallback
+  handedness, guards legacy zero handedness in GLSL, and avoids reusing
+  rest-pose tangents after CPU skinning.
+- WEBGL2-04 glTF metallicRoughnessTexture maps to both roughness and metallic
+  material-map refs while relying on backend atlas dedupe for storage.
 - PTWG-01 pt-webgpu fatal `error` state blocks further engine operations.
 - PTWG-02 pt-webgpu emissive-to-zero material mutation repacks old OR new
   implicit mesh emitters.
+- PTWG-03 SPPM photon emission normalizes by source-selection probability and
+  now covers directional/point/spot/rect/disc/mesh-area/environment sources from
+  the same packed data and environment helpers used by NEE.
+- PTWG-04 SPPM per-pixel progressive stats are gated to one update per pixel per
+  frame at the first eligible diffuse-ish gather surface.
+- PTWG-05 spectral attenuation no longer populates the Cauchy-dispersion Abbe
+  lane; authored dispersion remains packed independently.
+- PTWG-06 pt-webgpu lite capabilities are now tier-specific: lite no longer
+  advertises native instanced-mesh support or transform/topology incremental
+  mutation support, `setScene()` warns for instanced/non-identity-transform
+  inputs, and lite transform/instanced-topology patches throw before mutating
+  TLAS-only buffers.
 - PTWG-07 pt-webgpu lite sampled light/environment textures refresh after
   emitter/environment mutations.
 
 Not fully closed yet:
 
-- Focused Vitest execution is blocked in this desktop thread by Windows Node
-  loading WSL-installed Rollup/Vitest optional native packages. Typecheck passed
-  for `@vitrum/walkaround-hybrid` and `@vitrum/pt-webgpu`.
-- GitNexus `detect-changes` and several impact queries fail with a LadybugDB
-  Binder exception (`Cannot find property id for n.`) from the Windows/UNC
-  path. The code-intelligence gate is therefore not clean.
-- CORE-01, GLTF-01, WEBGL2-01, and WEBGL2-04 were intentionally not edited in
-  this wave because their required GitNexus impact checks did not succeed.
+- GPU/reference-render A/B is still pending for the render-changing paths:
+  WebGL2 tangent-space normal/bump maps and pt-webgpu SPPM photon-map scenes.
+- A future lite-tier implementation could bake transformed/instanced scenes into
+  a lite-consumed world-space BVH, but the current professional contract is now
+  honest: those paths are not advertised as supported on lite.
+- GitNexus remains unavailable in this desktop/UNC path; impact review for this
+  wave used direct source reads, call-chain inspection, package typechecks, and
+  focused Vitest runs under Linux Node instead.
+- Full workspace `npm test` was not run from the desktop shell because Windows
+  npm/Vitest optional native packages do not match the WSL-installed
+  `node_modules`. Focused tests were run with Linux Node.
 
 ### W-HYB-01 - NRC slot claims are never cleared
 
@@ -214,9 +245,13 @@ Evidence:
   consume.
 
 Closure:
-- Make lite capabilities tier-specific, or implement lite TLAS traversal, or
-  rebuild/upload a lite-consumed merged BVH on transform/instance patches.
-- Add lite render/pick oracles with multiple transformed instances.
+- Closed in the 2026-06-11 implementation wave by making lite capabilities
+  tier-specific, adding lite `setScene()` diagnostics for instanced meshes and
+  non-identity transforms, and rejecting transform/topology fast paths before
+  they update TLAS-only buffers.
+- Optional future upgrade: implement lite TLAS traversal or rebuild/upload a
+  lite-consumed merged world-space BVH on transform/instance patches, then add
+  lite render/pick oracles with multiple transformed instances.
 
 ### PTWG-07 - pt-webgpu lite emitter/environment mutations leave texture path stale
 
@@ -551,7 +586,8 @@ Do not carry these as open gaps unless the code regresses again.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial
-  lite rendering has those paths; the open gap is mutation/topology consistency.
+  lite rendering has those paths; emitter/environment mutation texture sync is
+  closed, and transform/topology support is now truthfully downgraded on lite.
 
 ## Recommended execution order
 
