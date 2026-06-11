@@ -1,5 +1,97 @@
 # Road to 100 handoff - 2026-06-11
 
+> **UPDATE (2026-06-11, afternoon — Claude waves 3+4).** Two more waves landed
+> AFTER the sections below were written. Read this block first; the original
+> sections remain accurate for everything they cover but their "remaining gaps"
+> list is now partially stale.
+>
+> ## Landed and pushed (both passed the T1 GPU smoke + oracles on push)
+>
+> **`59179bab` — Wave 3: CAP-01 + GLTF-03/04/05/06**
+> - CAP-01 CLOSED: full MaterialSpec×backend support matrix in
+>   `packages/core/src/engine/promiseLedger.ts` (63 fields × 3 backends,
+>   compile-time exhaustive in BOTH directions via `MATERIAL_SPEC_FIELDS`),
+>   matrix-driven `*.unsupported-material-fields` structured warnings on
+>   pt-webgl2/pt-webgpu, allowlist⇔ledger equivalence pin on walkaround.
+>   Every non-native row carries a file:line evidence comment.
+> - GLTF-05 CLOSED: TRIANGLE_STRIP/FAN triangulation (`triangulation.ts`).
+> - GLTF-04 CLOSED: morph target import (POSITION/NORMAL deltas, sparse,
+>   weights, unskinned→identity-skeleton promotion). TANGENT deltas warn-skip:
+>   core has no `morphTargetTangents` field (recorded core-change candidate).
+> - GLTF-03 CLOSED: animations → core `AnimationClip[]` + `animationTargets`
+>   node→primitive map + `animationNodeId()` export.
+> - GLTF-06 fixture sweep CLOSED: 17-row KHR texture-extension sweep;
+>   `KHR_materials_volume.thicknessTexture` silent drop → warning (core
+>   `thicknessMap` recorded as a second core-change candidate).
+>
+> **`b97dc9eb` — Wave 4: SHADOW-01 + GLTF-02 + P3 oracle suite**
+> - SHADOW-01 CLOSED (with honest downgrades): `shadows` sub-map in
+>   `BackendSupportDetails` + ledger rows. pt-webgpu primitive castShadow
+>   native both tiers (any-hit skip in `intersectionCore.wgsl.ts:263,342`);
+>   pt-webgl2 emitter castShadow now reads the host value (`lightsTexture.ts:307`,
+>   was hardcoded true); walkaround primitive castShadow on DI shadow rays via
+>   `bvh_material` bit 0 + new `shared-bvh/src/wgsl/bvhCastShadowMask.wgsl.ts`
+>   (anchored derivation, throw-on-stale-anchor). Downgrades all ledgered:
+>   walkaround GI/DDGI = approximate, walkaround emitter = unsupported+warn,
+>   off-default integrators (BDPT/ReSTIR-PT/caustics/in-medium) = approximate,
+>   receiveShadow = unsupported everywhere + `*.reserved-receive-shadow` warn.
+>   Default path proven byte-identical (zero-pad lanes; run-ptwebgl2-h1
+>   reproduced the 0.26931 anchor exactly). NOTE: `~/projects/wsl-gpu` shim
+>   updated + committed there (`6133d40`) — CastMask names added to the naga
+>   dead-function list.
+> - GLTF-02 CLOSED: dependency-free Draco/meshopt via host decoder hooks
+>   (`compression.ts`: `dracoDecode`/`meshoptDecode`, spec fallbacks,
+>   extensionsRequired enforcement, decoded data routed through standard
+>   accessor normalization; gltf-adapter now 115 tests). Real-decoder wiring
+>   examples in the README.
+> - P3 ORACLES BUILT (no renderer math changed) — `oracle.*.test.ts` in
+>   pt-webgpu/walkaround `__tests__`, deterministic, each step cites WGSL
+>   file:line; confirmed biases pinned as characterization tests with
+>   `it.skip` correct-value siblings designed to flip when fixed:
+>   - **PTWG-BDPT-01 CONFIRMED (severe):** s=1 connection law
+>     `C_shader = C_correct · cosEye·cosLight / Area` — cos double-count
+>     (`bdptConnection.wgsl.ts:108` + `:323/:335`) AND missing emitter-area
+>     pdf in β_L0 (`bdptLightSubpath.wgsl.ts:153,269`). ~5× deficit on test
+>     geometry.
+>   - **HYB-GI-02 CONFIRMED (catastrophic):** env DI crushed ≈1/M (measured
+>     1/65.6 with 64 light candidates) by disjoint-support 1/M weighting
+>     (`ris.wgsl.ts:420`). Mixed scenes compose both biases as modeled.
+>   - **HYB-GI-01 CONFIRMED (−30%):** sampled-p̂ w_sum vs centroid-p̂ W vs
+>     fresh-xi shade; fix-shaped variant (finalize+shade at selected r.xi)
+>     measures 1.0006 — that is the fix shape.
+>   - **HYB-DDGI-01 CONFIRMED:** one sky-miss ray (1e20) → moment overflow →
+>     Chebyshev 1.0 light leak; persists in f64, so the fix is miss-skip /
+>     finite-clamp semantics in `probeUpdateBlend.wgsl.ts:233`, not wider
+>     storage.
+>   - **PTWG-LITE-01 CONFIRMED:** lite rect NEE power-heuristic discards the
+>     BSDF half deterministically — 12% deficit rough diffuse, 94% glossy.
+>   - **SPPM flux REFUTED (fix verified):** energy conserved within 3%.
+>
+> ## What the NEXT agent should do (in order)
+>
+> 1. **Renderer math fix wave, gated by the oracles** (flip the skipped
+>    siblings, keep characterization pins as regression history):
+>    HYB-GI-01/02 (fix shape proven: selected-xi finalize/shade + a
+>    support-aware MIS partition for the env strategy), PTWG-BDPT-01
+>    (single-cosine G + β_L0 area pdf), HYB-DDGI-01 (skip/clamp miss depths),
+>    PTWG-LITE-01 (drop the unmatched power heuristic or add the BSDF→rect
+>    connection). EVERY one is render-changing: capture wsl-gpu reference
+>    A/Bs before/after; expect the env-DI fix to visibly brighten HDRI scenes
+>    (old baselines carry the bias).
+> 2. WEBGL2-02/03 (procedural sky via shared Preetham bake; denoiser
+>    capability rows) — untouched.
+> 3. WEBGL2-04 remainder (alphaMap transform slot, layered normal maps,
+>    anisotropy on webgl2 — now ledgered unsupported; implement or leave).
+> 4. PTWG-08 extension-lobe MIS parity (needs its own audit + furnace tests).
+> 5. Core-change candidates from Wave 3: `morphTargetTangents`,
+>    `thicknessMap` — small contract additions, then adapter wiring.
+> 6. V28-B GPU recapture queue still pending for all render-changing landings.
+>
+> Workspace state at this handoff: working tree clean, `main` == `origin/main`
+> (`b97dc9eb` + this doc commit), full vitest 3733 passed / 16 skipped,
+> naga 51/51, glsl 6/6, behavioral 29/29, typecheck clean. GitNexus remains
+> broken — do not use it.
+
 This is a handoff note for the next agent continuing the road-to-100 gap closure
 work. Source code is the source of truth. Do not rely on GitNexus in this repo:
 it is currently broken in the desktop/UNC environment. Use direct source reads,
