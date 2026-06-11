@@ -2,23 +2,25 @@
 //
 // All fixtures are built in-code (no network, no binary fixture files).
 // Tests cover:
-//   1. Minimal triangle (positions, flat-normal generation, default material)
-//   2. Textured quad GLB built byte-by-byte
-//   3. Transmissive/IOR/volume material field mapping
-//   4. Node hierarchy with nested TRS transforms → correct world positions
-//   5. Multi-primitive mesh → multiple ScenePrimitives
-//   6. Sparse accessor handling
-//   7. Non-triangle mode warning + skip
-//   8. KHR_draco rejection warning
-//   9. Unknown extension warning
+//   1.  Minimal triangle (positions, flat-normal generation, default material)
+//   2.  Textured quad GLB built byte-by-byte
+//   3.  Transmissive/IOR/volume material field mapping
+//   4.  Node hierarchy with nested TRS transforms → correct world positions
+//   5.  Multi-primitive mesh → multiple ScenePrimitives
+//   6.  Sparse accessor handling
+//   7.  Non-triangle mode warning + skip
+//   8.  KHR_draco rejection warning
+//   9.  Unknown extension warning
 //   10. Missing buffer warning
 //   11. alphaMode + alphaCutoff mapping
 //   12. KHR_materials_sheen / clearcoat / iridescence / anisotropy / specular mapping
+//   13. Skins → SkinnedMeshPrimitive (JOINTS_0 u8 + u16, WEIGHTS_0 float, inverseBindMatrices)
+//   14. KHR_lights_punctual → SceneEmitter[] (point, spot, directional; world-transform applied)
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
 import type { GltfJson } from './gltfTypes.js';
-import type { MeshPrimitive } from '@vitrum/core';
+import type { MeshPrimitive, SkinnedMeshPrimitive, PointEmitter, SpotEmitter, DirectionalEmitter } from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -37,6 +39,14 @@ function u16Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 2);
   const view = new DataView(buf);
   values.forEach((v, i) => view.setUint16(i * 2, v, true));
+  return buf;
+}
+
+/** Encode a Uint8Array as a glTF buffer. */
+function u8Buffer(values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(values.length);
+  const view = new DataView(buf);
+  values.forEach((v, i) => view.setUint8(i, v));
   return buf;
 }
 
@@ -619,18 +629,11 @@ describe('out-of-scope feature warnings', () => {
     expect(warnings.some(w => w.includes('animation'))).toBe(true);
   });
 
-  it('warns about skins', async () => {
+  it('warns about skins (rest-pose + animation-not-supported)', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.skins = [{ joints: [0] }];
     const { warnings } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.toLowerCase().includes('skin'))).toBe(true);
-  });
-
-  it('warns about KHR_lights_punctual', async () => {
-    const { gltf, buffers } = makeMinimalTriangleGltf();
-    (gltf as GltfJson & { extensionsUsed: string[] }).extensionsUsed = ['KHR_lights_punctual'];
-    const { warnings } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('KHR_lights_punctual'))).toBe(true);
   });
 });
 
@@ -715,5 +718,335 @@ describe('texture info mapping', () => {
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     // aoMapIntensity should be 0.75 even when the texture image can't be resolved
     expect(mat.aoMapIntensity).toBeCloseTo(0.75);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Test 13 — Skins → SkinnedMeshPrimitive
+//
+// Fixture: 2-joint skin on a 1-triangle mesh (3 vertices, 4 influences/vertex).
+// Two sub-tests:
+//   A. JOINTS_0 as UNSIGNED_BYTE (5121) — common for ≤ 255 joints
+//   B. JOINTS_0 as UNSIGNED_SHORT (5123) — required when joint count > 255
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('skin → SkinnedMeshPrimitive', () => {
+  /**
+   * Build a minimal skinned glTF in-memory.
+   * - 1 mesh, 1 primitive (3-vertex triangle)
+   * - 2-joint skin; joint nodes at world positions (0,0,0) and (1,0,0)
+   * - inverseBindMatrices: 2 × 16 floats (identity for both joints)
+   * - JOINTS_0: 3 vertices × 4 u8 indices = [0,1,0,0, 0,1,0,0, 0,1,0,0]
+   * - WEIGHTS_0: 3 vertices × 4 floats = [0.5,0.5,0,0, …]
+   *
+   * @param jointsComponentType 5121 = UNSIGNED_BYTE, 5123 = UNSIGNED_SHORT
+   */
+  function makeSkinnedGltf(jointsComponentType: 5121 | 5123): {
+    gltf: GltfJson;
+    buffers: Map<number, ArrayBuffer>;
+  } {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+
+    // inverseBindMatrices: 2 identity 4×4 matrices
+    const ibm = new Array(32).fill(0);
+    // joint 0 identity
+    ibm[0] = 1; ibm[5] = 1; ibm[10] = 1; ibm[15] = 1;
+    // joint 1 identity
+    ibm[16] = 1; ibm[21] = 1; ibm[26] = 1; ibm[31] = 1;
+    const ibmBuf = f32Buffer(ibm);
+
+    // WEIGHTS_0: 3 verts × 4 weights [0.5, 0.5, 0, 0] each
+    const weightsBuf = f32Buffer([
+      0.5, 0.5, 0, 0,
+      0.5, 0.5, 0, 0,
+      0.5, 0.5, 0, 0,
+    ]);
+
+    // JOINTS_0: 3 verts × 4 indices [0, 1, 0, 0] each
+    // encoded as u8 or u16
+    const jointValues = [0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0];
+    const jointsBuf = jointsComponentType === 5121
+      ? u8Buffer(jointValues)
+      : u16Buffer(jointValues);
+
+    const totalBuf = concatBuffers(posBuf, ibmBuf, weightsBuf, jointsBuf);
+
+    // Buffer view offsets
+    const posOff = 0;
+    const ibmOff = posBuf.byteLength;
+    const wgtsOff = ibmOff + ibmBuf.byteLength;
+    const jntsOff = wgtsOff + weightsBuf.byteLength;
+
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [
+        { mesh: 0, skin: 0, children: [1, 2] },           // skinned mesh node
+        { translation: [0, 0, 0] },                         // joint 0
+        { translation: [1, 0, 0] },                         // joint 1
+      ],
+      meshes: [{
+        primitives: [{
+          attributes: {
+            POSITION: 0,
+            JOINTS_0: 3,
+            WEIGHTS_0: 2,
+          },
+        }],
+      }],
+      skins: [{
+        joints: [1, 2],
+        inverseBindMatrices: 1,
+      }],
+      accessors: [
+        // 0: POSITION VEC3 float
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        // 1: inverseBindMatrices MAT4 float (2 joints)
+        { bufferView: 1, componentType: 5126, count: 2, type: 'MAT4' },
+        // 2: WEIGHTS_0 VEC4 float
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+        // 3: JOINTS_0 VEC4 u8 or u16
+        {
+          bufferView: 3,
+          componentType: jointsComponentType,
+          count: 3,
+          type: 'VEC4',
+        },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: posOff, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: ibmOff, byteLength: ibmBuf.byteLength },
+        { buffer: 0, byteOffset: wgtsOff, byteLength: weightsBuf.byteLength },
+        { buffer: 0, byteOffset: jntsOff, byteLength: jointsBuf.byteLength },
+      ],
+      buffers: [{ byteLength: totalBuf.byteLength }],
+    };
+
+    return { gltf, buffers: new Map([[0, totalBuf]]) };
+  }
+
+  it('emits kind:skinned-mesh when node has a skin (JOINTS_0 u8)', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    expect(scene.primitives).toHaveLength(1);
+    const prim = scene.primitives[0]!;
+    expect(prim.kind).toBe('skinned-mesh');
+  });
+
+  it('skinIndices decoded correctly from UNSIGNED_BYTE JOINTS_0', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    // Each vertex: [0, 1, 0, 0]
+    expect(Array.from(prim.skinIndices.slice(0, 4))).toEqual([0, 1, 0, 0]);
+    expect(Array.from(prim.skinIndices.slice(4, 8))).toEqual([0, 1, 0, 0]);
+    expect(Array.from(prim.skinIndices.slice(8, 12))).toEqual([0, 1, 0, 0]);
+  });
+
+  it('skinIndices decoded correctly from UNSIGNED_SHORT JOINTS_0', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5123);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(prim.kind).toBe('skinned-mesh');
+    expect(Array.from(prim.skinIndices.slice(0, 4))).toEqual([0, 1, 0, 0]);
+  });
+
+  it('skinWeights decoded correctly', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(prim.skinWeights[0]).toBeCloseTo(0.5);
+    expect(prim.skinWeights[1]).toBeCloseTo(0.5);
+    expect(prim.skinWeights[2]).toBeCloseTo(0);
+    expect(prim.skinWeights[3]).toBeCloseTo(0);
+  });
+
+  it('boneInverses are the identity matrices for both joints', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    // boneInverses: 2 × 16 column-major f32. Identity has 1s at [0,5,10,15].
+    expect(prim.boneInverses[0]).toBeCloseTo(1); // joint 0 [0,0]
+    expect(prim.boneInverses[5]).toBeCloseTo(1); // joint 0 [1,1]
+    expect(prim.boneInverses[10]).toBeCloseTo(1); // joint 0 [2,2]
+    expect(prim.boneInverses[15]).toBeCloseTo(1); // joint 0 [3,3]
+    expect(prim.boneInverses[16]).toBeCloseTo(1); // joint 1 [0,0]
+    expect(prim.boneInverses[31]).toBeCloseTo(1); // joint 1 [3,3]
+  });
+
+  it('bones contains world transforms of joint nodes', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    // joint 0 is at [0,0,0] → identity → bones[0..15] column 3 = [0,0,0,1]
+    expect(prim.bones[12]).toBeCloseTo(0); // translation x
+    expect(prim.bones[13]).toBeCloseTo(0); // translation y
+    expect(prim.bones[14]).toBeCloseTo(0); // translation z
+    // joint 1 is at [1,0,0] → bones[16..31] column 3 translation x = 1
+    expect(prim.bones[16 + 12]).toBeCloseTo(1); // translation x
+    expect(prim.bones[16 + 13]).toBeCloseTo(0); // translation y
+  });
+
+  it('skinIndices is Uint32Array', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(prim.skinIndices).toBeInstanceOf(Uint32Array);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Test 14 — KHR_lights_punctual → SceneEmitter[]
+//
+// Fixture: one point light, one spot light (with rotated parent node), one
+// directional light. Asserts full field mapping including world-transformed
+// position and direction.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('KHR_lights_punctual → SceneEmitter[]', () => {
+  /**
+   * Build a minimal glTF with KHR_lights_punctual containing:
+   *   light 0 — point, intensity 100 cd, range 10, color [1,0.8,0.6]
+   *   light 1 — spot, intensity 200 cd, innerConeAngle 0.2, outerConeAngle 0.5
+   *             attached to a node translated to [2, 3, 4] and rotated 90° around Y
+   *   light 2 — directional, intensity 50 lx, color [0.9, 0.9, 1]
+   */
+  function makeLightsGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+
+    // Rotation 90° around Y: quaternion = [0, sin(π/4), 0, cos(π/4)]
+    const s = Math.sin(Math.PI / 4);
+    const c = Math.cos(Math.PI / 4);
+
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0, 1, 2, 3] }],
+      scene: 0,
+      nodes: [
+        // node 0: mesh (just so there's geometry)
+        { mesh: 0 },
+        // node 1: point light at [5, 0, 0]
+        {
+          translation: [5, 0, 0],
+          extensions: { KHR_lights_punctual: { light: 0 } },
+        },
+        // node 2: spot light at [2, 3, 4], rotated 90° around Y
+        //   local -Z after 90° Y rotation = [-1, 0, 0] in world space
+        {
+          translation: [2, 3, 4],
+          rotation: [0, s, 0, c],
+          extensions: { KHR_lights_punctual: { light: 1 } },
+        },
+        // node 3: directional light (no translation; direction from rotation)
+        {
+          extensions: { KHR_lights_punctual: { light: 2 } },
+        },
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
+      buffers: [{ byteLength: posBuf.byteLength }],
+      extensionsUsed: ['KHR_lights_punctual'],
+      extensions: {
+        KHR_lights_punctual: {
+          lights: [
+            // light 0: point
+            {
+              type: 'point',
+              color: [1, 0.8, 0.6],
+              intensity: 100,
+              range: 10,
+            },
+            // light 1: spot
+            {
+              type: 'spot',
+              intensity: 200,
+              spot: { innerConeAngle: 0.2, outerConeAngle: 0.5 },
+            },
+            // light 2: directional
+            {
+              type: 'directional',
+              color: [0.9, 0.9, 1],
+              intensity: 50,
+            },
+          ],
+        },
+      },
+    };
+    return { gltf, buffers: new Map([[0, posBuf]]) };
+  }
+
+  it('produces three emitters', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { scene } = await gltfToScene(gltf, { buffers });
+    expect(scene.emitters).toHaveLength(3);
+  });
+
+  it('point emitter: kind, position, color, intensity, distance, decay', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const point = scene.emitters.find(e => e.kind === 'point') as PointEmitter;
+    expect(point).toBeDefined();
+    expect(point.position[0]).toBeCloseTo(5);
+    expect(point.position[1]).toBeCloseTo(0);
+    expect(point.position[2]).toBeCloseTo(0);
+    expect(point.color).toEqual([1, 0.8, 0.6]);
+    expect(point.intensity).toBeCloseTo(100);
+    expect(point.distance).toBeCloseTo(10);
+    expect(point.decay).toBe(2);
+  });
+
+  it('spot emitter: kind, position, angle, penumbra, intensity', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const spot = scene.emitters.find(e => e.kind === 'spot') as SpotEmitter;
+    expect(spot).toBeDefined();
+    expect(spot.position[0]).toBeCloseTo(2);
+    expect(spot.position[1]).toBeCloseTo(3);
+    expect(spot.position[2]).toBeCloseTo(4);
+    // angle = outerConeAngle
+    expect(spot.angle).toBeCloseTo(0.5);
+    // penumbra = 1 - inner/outer = 1 - 0.2/0.5 = 0.6
+    expect(spot.penumbra).toBeCloseTo(0.6, 4);
+    expect(spot.intensity).toBeCloseTo(200);
+    expect(spot.decay).toBe(2);
+  });
+
+  it('spot emitter: direction is world-space forward after 90° Y rotation', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const spot = scene.emitters.find(e => e.kind === 'spot') as SpotEmitter;
+    // Node rotated 90° around Y: local -Z maps to [-1, 0, 0] in world space
+    expect(spot.direction[0]).toBeCloseTo(-1, 4);
+    expect(spot.direction[1]).toBeCloseTo(0, 4);
+    expect(spot.direction[2]).toBeCloseTo(0, 4);
+  });
+
+  it('directional emitter: kind, color, intensity, direction', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const dir = scene.emitters.find(e => e.kind === 'directional') as DirectionalEmitter;
+    expect(dir).toBeDefined();
+    expect(dir.color[0]).toBeCloseTo(0.9);
+    expect(dir.color[1]).toBeCloseTo(0.9);
+    expect(dir.color[2]).toBeCloseTo(1);
+    expect(dir.intensity).toBeCloseTo(50);
+    // No rotation on node 3 → direction should point along +Z (default -Z local → +Z world,
+    // then negated for "AT the light" convention → [0, 0, -1]).
+    // Actually: local -Z = world -Z for identity node → dirX/Y/Z = (0,0,-1) → after negation = (0,0,1)
+    // Wait: world Z column = [0,0,1] for identity. lzx = -(0)=0, lzy=-(0)=0, lzz=-(1)=-1.
+    // direction = [-lzx, -lzy, -lzz] = [0, 0, 1].
+    expect(dir.direction[2]).toBeCloseTo(1, 4);
+  });
+
+  it('does not warn about KHR_lights_punctual being unsupported', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    const { warnings } = await gltfToScene(gltf, { buffers });
+    // The old "KHR_lights_punctual is present but NOT imported" warning must be gone.
+    const unsupportedWarn = warnings.find(
+      w => w.includes('KHR_lights_punctual') && w.includes('NOT imported'),
+    );
+    expect(unsupportedWarn).toBeUndefined();
   });
 });

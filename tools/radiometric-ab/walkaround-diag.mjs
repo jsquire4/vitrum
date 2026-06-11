@@ -96,7 +96,7 @@ async function run(label,engineOpts,sceneOpts) {
   return pixels;
 }
 
-function regionLum(pixels,texW,x0,y0,x1,y1) {
+function _regionLum(pixels,texW,x0,y0,x1,y1) {
   let sum=0,count=0;
   for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const i=(y*texW+x)*4;sum+=0.2126*(pixels[i]/255)+0.7152*(pixels[i+1]/255)+0.0722*(pixels[i+2]/255);count++;}
   return count>0?sum/count:0;

@@ -17,7 +17,10 @@ export interface EmitterBase {
   readonly color: Vec3;
   readonly intensity: number;
   /** Whether this emitter's shadow rays are cast. Default true.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
+   *  @reserved Accepted by the contract; `@vitrum/pt-webgl2` has the shadow gate
+   *  wired (materialsTexture.ts packs a `castShadow` slot) but hardcodes `true`
+   *  (the host value is not yet read). Not consumed by `@vitrum/pt-webgpu` or
+   *  `@vitrum/walkaround-hybrid`. road-to-100 shadow tier. */
   readonly castShadow?: boolean;
 }
 
@@ -25,7 +28,12 @@ export interface DirectionalEmitter extends EmitterBase {
   readonly kind: 'directional';
   readonly direction: Vec3;               // unit vector pointing AT the light
   /** Optional: angular subtense for soft shadows. 0 = perfectly directional.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 soft-shadow tier). */
+   *  Per-backend status:
+   *    - `@vitrum/pt-webgpu` — native: packed into the directional-light vec4 and
+   *      consumed by the kernel for cone-sampled soft directional shadows
+   *      (emitterPacking.ts `packDirectionalLights`, kernel.wgsl.ts).
+   *    - `@vitrum/pt-webgl2` — not consumed (hardwired to 0).
+   *    - `@vitrum/walkaround-hybrid` — not consumed. */
   readonly angularDiameter?: number;
 }
 

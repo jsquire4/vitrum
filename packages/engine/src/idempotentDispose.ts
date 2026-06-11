@@ -56,6 +56,7 @@ type OptionalMethodName =
   | 'updateLighting'
   | 'onFrame'
   | 'onProgress'
+  | 'onError'
   | 'createInverseSession'
   | 'getRestirPtResultBuffer';
 
@@ -90,6 +91,12 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   { method: 'updateLighting', disposedBehavior: 'noop' },
   { method: 'onFrame', disposedBehavior: 'empty-unsub' },
   { method: 'onProgress', disposedBehavior: 'empty-unsub' },
+  // H61 class — GPU/runtime error subscription. Returns an unsubscribe fn →
+  // 'empty-unsub' disposed behaviour (same as onFrame/onProgress). Without this
+  // row the createEngine facade silently hid onError, so vanilla.ts's
+  // `engine.onError ? ...` check was always false and device-loss recovery was
+  // silently dead. All three shipping backends implement onError.
+  { method: 'onError', disposedBehavior: 'empty-unsub' },
   // WS5 — inverse-rendering (differentiable RT) sessions. After dispose the
   // proxy refuses to open a NEW session (the engine is torn down); an
   // already-open session the host holds keeps working until the host disposes
@@ -211,6 +218,19 @@ export function wrapWithIdempotentDispose(
   const sceneEngine = engine;
   if (typeof sceneEngine.getScene === 'function') {
     proxy.getScene = () => (disposed ? null : sceneEngine.getScene!());
+  }
+
+  // captureFrame — async GPU→CPU pixel readback. Forwarded here (not via the
+  // OPTIONAL_METHOD_PROXIES table, which only models synchronous disposed-behaviours)
+  // because the return type is `Promise<CapturedFrame | null>`. Disposed →
+  // `Promise.resolve(null)` (no GPU resources remain; matches vanilla.ts's
+  // missing-method fallback semantics and the contract's "returns null before the
+  // first frame" guarantee). Without this forwarding `engine.captureFrame` is
+  // always undefined through the facade, so vanilla.ts:593 returns
+  // `Promise.resolve(null)` on every call — readback is dead.
+  if (typeof engine.captureFrame === 'function') {
+    proxy.captureFrame = (opts) =>
+      disposed ? Promise.resolve(null) : engine.captureFrame!(opts);
   }
 
   // Progressive walkaround→PT seed source/sink (P8). These value-returning /

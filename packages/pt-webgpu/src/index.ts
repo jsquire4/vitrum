@@ -1970,8 +1970,8 @@ export const createPTEngine_WebGPU: EngineFactory<
     );
   } else {
     console.warn(
-      '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional + procedural sky only. ' +
-        'Analytic shapes, TLAS, HDRI, area lights, and caustics are disabled. ' +
+      '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
+        'Disabled on lite: analytic shapes, TLAS, disc-area/mesh-area emitters, caustics, BDPT, multi-directional lights, and motion/variance aux buffers. ' +
         'On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= 28 and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.',
     );
   }

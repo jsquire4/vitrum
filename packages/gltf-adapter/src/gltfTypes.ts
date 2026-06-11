@@ -137,6 +137,33 @@ export interface GltfSkin {
   name?: string;
 }
 
+// ── KHR_lights_punctual types ───────────────────────────────────────────────
+// Reference: KHR_lights_punctual extension specification
+// https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md
+
+export interface KhrLightsPunctualLight {
+  type: 'point' | 'spot' | 'directional';
+  name?: string;
+  /** Linear RGB color of the light; default [1, 1, 1]. */
+  color?: [number, number, number];
+  /**
+   * Photometric intensity of the light.
+   * - point / spot: candela (cd = lm/sr)
+   * - directional: lux (lx = lm/m²)
+   */
+  intensity?: number;
+  /** Maximum range of the light (point / spot only). 0 = infinite. */
+  range?: number;
+  spot?: {
+    innerConeAngle?: number; // radians; default 0
+    outerConeAngle?: number; // radians; default π/4
+  };
+}
+
+export interface KhrLightsPunctualRoot {
+  lights: KhrLightsPunctualLight[];
+}
+
 // ── Material types ──────────────────────────────────────────────────────────
 
 export interface GltfMaterial {

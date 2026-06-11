@@ -682,7 +682,7 @@ const glossyResult = await runGlossy();
 const results = { a8: a8Result, sun: sunResult, glass: glassResult, glossy: glossyResult };
 
 console.log("\n=== SUMMARY ===");
-for (const [key, r] of Object.entries(results)) {
+for (const r of Object.values(results)) {
   console.log(`  ${r.id.padEnd(8)} ${r.verdict ?? r.error ?? "?"}${r.delta ? `  globalDelta=${r.delta.overall?.toFixed(4)}` : ""}`);
 }
 

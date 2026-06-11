@@ -72,8 +72,8 @@ Returns `{ scene: Scene, warnings: string[] }`.
 | KHR_draco_mesh_compression | Warn + skip |
 | EXT_meshopt_compression | Warn + skip |
 | Morph targets | Warn + ignored (v2) |
-| Skins | Static rest-pose import with warning (v2) |
-| Animations | Warn + ignored (v2) |
+| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose |
+| Animations | Warn + ignored; rest-pose skeleton is the import pose |
 | Cameras | Warn + ignored |
 
 ### Materials
@@ -117,13 +117,24 @@ Returns `{ scene: Scene, warnings: string[] }`.
 | `KHR_materials_anisotropy.anisotropyRotation` | `anisotropyRotation` |
 | `KHR_materials_anisotropy.anisotropyTexture` | `anisotropyMap` |
 
-### Out of scope v1 (documented)
+### Emitters
 
-- **KHR_lights_punctual**: warns + ignored. Map lights to `SceneEmitter` manually.
-- **Skins**: geometry imported as static rest pose; full `SkinnedMeshPrimitive` remapping is v2.
-- **Animations**: ignored.
-- **Morph targets**: ignored.
-- **Cameras**: ignored.
+| glTF feature | Core `SceneEmitter` type |
+|---|---|
+| `KHR_lights_punctual` point light | `PointEmitter` (`intensity` = candela, `decay = 2`) |
+| `KHR_lights_punctual` spot light | `SpotEmitter` (`angle` = `outerConeAngle`, `penumbra` derived from inner/outer ratio) |
+| `KHR_lights_punctual` directional | `DirectionalEmitter` (`intensity` = lux) |
+
+**Intensity units:** glTF punctual uses candela (cd) for point/spot and lux (lx) for directional.
+These photometric values are passed directly as `EmitterBase.intensity`. Vitrum backends treat
+`intensity` as a dimensionless linear multiplier (`color × intensity`). For SI-calibrated scenes
+divide by a reference level before passing to the engine (e.g., 100 000 lx for a sunny exterior sky).
+
+### Out of scope (documented)
+
+- **Animations**: rest-pose skeleton is the import pose. Emitting a warning.
+- **Morph targets**: ignored. Emitting a warning.
+- **Cameras**: ignored. Emitting a warning.
 - **Draco / MeshOpt compression**: warns + primitive skipped. Decode externally first.
 - **URI-based buffers / images**: the adapter does not fetch. Pre-load and supply via `opts.buffers` or `opts.decodeImage`.
 

@@ -48,11 +48,7 @@ import {
   rmseROI,
   relativeError,
   W, H,
-  acquirePtDevice,
-  patchDeviceForPt,
-  makePtCamera,
 } from "./helpers.mjs";
-import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
 
 console.log("=== A/B #1: SPPM vs manifold-NEE caustic reference ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);

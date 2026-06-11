@@ -441,7 +441,7 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
     engine.setScene(scene);
 
     for (let frame = 0; frame < totalFrames; frame++) {
-      const seed = ((frame * 6364136223846793005 + 1442695040888963407) >>> 0);
+      const seed = Number(BigInt.asUintN(32, BigInt(frame) * 6364136223846793005n + 1442695040888963407n));
       engine.renderFrame({
         viewMatrix: view,
         projMatrix: proj,
@@ -503,7 +503,7 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
         const seedOffset = run * 97;
         for (let frame = 0; frame < framesPerRun; frame++) {
           const globalFrame = run * framesPerRun + frame;
-          const seed = ((globalFrame * 6364136223846793005 + 1442695040888963407) >>> 0);
+          const seed = Number(BigInt.asUintN(32, BigInt(globalFrame) * 6364136223846793005n + 1442695040888963407n));
           engine.renderFrame({
             viewMatrix: view,
             projMatrix: proj,
