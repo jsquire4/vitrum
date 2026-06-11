@@ -34,6 +34,37 @@ export interface BackendMethodPromises {
    * Float32, top-left origin).  All three shipping backends implement this.
    */
   readonly captureFrame: boolean;
+  /**
+   * Whether the backend implements `Engine.createInverseSession()` — the
+   * differentiable ray-tracing inverse session opener. pt-webgpu only;
+   * walkaround-hybrid and pt-webgl2 omit this method.
+   */
+  readonly createInverseSession: boolean;
+  /**
+   * Whether the backend implements `Engine.getRestirPtResultBuffer()` —
+   * the experimental ReSTIR-PT resolve-pass output buffer accessor. pt-webgpu
+   * only (and only when the `pt-webgpu-restir-pt-reuse` experimental feature
+   * flag is set); other backends omit this method.
+   */
+  readonly getRestirPtResultBuffer: boolean;
+  /**
+   * Whether the backend implements `Engine.getProgressiveSeedTexture()` —
+   * the progressive walkaround→PT seed SOURCE (post-denoise HDR output exposed
+   * for cross-engine seeding). walkaround-hybrid only; PT backends omit it.
+   */
+  readonly getProgressiveSeedTexture: boolean;
+  /**
+   * Whether the backend implements `Engine.seedAccumulator()` — the
+   * progressive walkaround→PT seed SINK (injects a decaying prior into the
+   * accumulator). pt-webgpu only; walkaround-hybrid and pt-webgl2 omit it.
+   */
+  readonly seedAccumulator: boolean;
+  /**
+   * Whether the backend implements `exportGIState()` / `importGIState()` —
+   * the GI-state persistence surface (DDGI probe-atlas + ReSTIR-GI reservoir
+   * export/import). walkaround-hybrid only; PT backends omit this surface.
+   */
+  readonly giStatePersistence: boolean;
 }
 
 export interface FrameInputPromises {
@@ -253,7 +284,9 @@ const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
 
 /** Method-promise fields that are true (or false) identically across all three
  *  shipping backends.  Spread into each record; backend-specific fields
- *  (setSize, updateLighting, debug) are added after the spread. */
+ *  (setSize, updateLighting, debug, createInverseSession, getRestirPtResultBuffer,
+ *  getProgressiveSeedTexture, seedAccumulator, giStatePersistence) are added
+ *  after the spread. */
 const COMMON_METHOD_PROMISES: Pick<
   BackendMethodPromises,
   | 'updatePrimitive'
@@ -379,6 +412,19 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       setSize: true,
       updateLighting: true,
       debug: true,
+      // walkaround-hybrid does NOT implement createInverseSession (differentiable RT
+      // is pt-webgpu only in the current slice).
+      createInverseSession: false,
+      // getRestirPtResultBuffer is pt-webgpu only (ReSTIR-PT reuse experimental feature).
+      getRestirPtResultBuffer: false,
+      // walkaround-hybrid exposes the post-denoise resolvedTexture as a seed SOURCE for
+      // the progressive walkaround→PT handoff (see getProgressiveSeedTexture).
+      getProgressiveSeedTexture: true,
+      // seedAccumulator is the SINK side of the handoff — pt-webgpu only. Walkaround
+      // resamples every frame (no persistent accumulator to seed).
+      seedAccumulator: false,
+      // DDGI probe-atlas + ReSTIR-GI reservoir export/import — walkaround-hybrid only.
+      giStatePersistence: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: false,
@@ -441,6 +487,13 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       setSize: false,
       updateLighting: false,
       debug: false,
+      // pt-webgl2 does not implement any of the following optional methods:
+      // inverse rendering, ReSTIR-PT buffer, progressive seed, or GI persistence.
+      createInverseSession: false,
+      getRestirPtResultBuffer: false,
+      getProgressiveSeedTexture: false,
+      seedAccumulator: false,
+      giStatePersistence: false,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,
@@ -493,6 +546,26 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       setSize: false,
       updateLighting: false,
       debug: true,
+      // pt-webgpu implements the full inverse-rendering surface (differentiable RT
+      // with finite-difference / path-replay gradient; see createInverseSession).
+      createInverseSession: true,
+      // getRestirPtResultBuffer is gated on the 'pt-webgpu-restir-pt-reuse'
+      // experimental feature. The method IS wired on the engine class (returns
+      // null when the feature is off); the ledger records it as implemented
+      // because the method EXISTS on every pt-webgpu instance, not just those
+      // with ReSTIR-PT enabled.
+      getRestirPtResultBuffer: true,
+      // pt-webgpu does not expose a seed SOURCE (the resolvedTexture/progressive-seed
+      // source path is walkaround-hybrid only).
+      getProgressiveSeedTexture: false,
+      // pt-webgpu implements seedAccumulator — the SINK side of the
+      // progressive walkaround→PT handoff (decaying-prior injection into the
+      // Welford running-mean accumulator).
+      seedAccumulator: true,
+      // GI-state persistence is walkaround-hybrid only (DDGI/ReSTIR-GI).
+      // pt-webgpu's accumulator is a different convergence structure (Welford
+      // running mean, no probe atlas) and has no export/import surface.
+      giStatePersistence: false,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,

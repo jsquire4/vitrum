@@ -38,6 +38,7 @@ import {
   constructWalkaround,
   constructPathTracerWebGPU,
   type CreateEngineOptions,
+  type CreateEngineErrorEvent,
   type SharedDeviceCtx,
 } from './createEngine.js';
 import { computeSceneAABB } from './sceneAABB.js';
@@ -250,6 +251,16 @@ export async function createProgressiveEngine(
 
     const shared: SharedDeviceCtx = { adapter, device, ownsDeviceLifecycle: false };
 
+    // I1.5 — adapt the progressive onError (error: unknown) to the sub-build
+    // CreateEngineOptions.onError (error: unknown, event: CreateEngineErrorEvent)
+    // signature by discarding the event parameter.  Both sub-builds receive
+    // the wrapper so construction-phase errors (canvas-configure, adapter/device
+    // failures) surface through the host's single callback rather than being
+    // silently swallowed.
+    const subBuildOnError = opts.onError != null
+      ? (err: unknown, _ev: CreateEngineErrorEvent): void => opts.onError!(err)
+      : undefined;
+
     // The two sub-builds reuse createEngine's OWN scene-handling / options-merging
     // (the scale-derived hybrid defaults, the TLAS extension merge, the pt-webgpu
     // tier resolution) by routing through the shared-device seam — no replication.
@@ -263,6 +274,7 @@ export async function createProgressiveEngine(
       // invoked it once above (off the shared device). Forwarding it here would
       // fire the host callback a second time (off the adapter), breaking the
       // "invoked once" contract.
+      ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
     };
     realtime = await constructWalkaround(
       realtimeBuildOpts,
@@ -277,6 +289,7 @@ export async function createProgressiveEngine(
       scene: vitrumScene,
       ...(opts.convergedOptions != null ? { advanced: opts.convergedOptions } : {}),
       ...(opts.debug != null ? { debug: opts.debug } : {}),
+      ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
     };
     converged = await constructPathTracerWebGPU(
       convergedBuildOpts,

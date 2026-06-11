@@ -13,20 +13,17 @@
 // facade must reproduce. Divergent disposed-behaviours (no-op vs empty-unsub vs
 // throw) are encoded as DATA — do not unify them.
 
-import type { Engine } from '@vitrum/core';
+import type { Engine, GIStatePersistable as GIStatePersistableCore } from '@vitrum/core';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
 
-/**
- * Optional GI-state persistence surface — implemented by the walkaround-hybrid
- * backend only (DDGI probe-atlas export/import; see `HybridEngine.exportGIState`).
- * Forwarded through the facade so `createEngine()` users can reach the shipped
- * feature without dropping to the concrete HybridEngine. Backends with no GI
- * state simply don't provide these (the facade return type marks them optional).
- */
-export interface GIStatePersistable {
-  exportGIState(): Promise<GIStateSnapshot | null>;
-  importGIState(snapshot: GIStateSnapshot): boolean;
-}
+// Concrete alias: bind the generic core interface to the walkaround-hybrid
+// snapshot type. All engine-package consumers that import `GIStatePersistable`
+// from this module (vanilla.ts, createEngine.ts, giStateProxy.test.ts) get the
+// concrete form `{ exportGIState(): Promise<GIStateSnapshot|null>; importGIState(...) }`
+// — unchanged from before this move. The generic form is available from
+// @vitrum/core as `GIStatePersistableCore<TSnapshot>` for hosts that only need
+// the protocol contract without the concrete snapshot type.
+export type GIStatePersistable = GIStatePersistableCore<GIStateSnapshot>;
 
 /**
  * Disposed-behaviour kinds for an optional Engine method, captured as data.
@@ -97,7 +94,8 @@ interface CapabilityGates {
 
 // The table reproduces EXACTLY the per-method disposed-behaviour of the prior
 // hand-coded proxy. Each row is behaviour-preserving — see the kind docs above.
-const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
+// Exported for the compile-time conformance gate in optionalMethodConformance.test.ts.
+export const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   { method: 'updatePrimitive', disposedBehavior: 'noop', eligible: (c) => c.primitivePatchAdvertised },
   { method: 'updateEmitter', disposedBehavior: 'noop', eligible: (c) => c.emitterPatchAdvertised },
   // Whole-primitive add/remove is gated on the dedicated capability (was

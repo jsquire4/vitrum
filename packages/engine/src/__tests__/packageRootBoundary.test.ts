@@ -41,13 +41,21 @@ describe('@vitrum/engine package root boundary', () => {
   });
 
   it('lazy-loads pt-webgl2 without retaining engine-level THREE bridge paths', () => {
-    const createEngine = readEngineSource('createEngine.ts');
+    // C1 refactor: the dynamic import now lives in backends/ptWebgl2.ts (the
+    // module-graph isolation is preserved — the lazy seam is still lazy).
+    const ptWebgl2Backend = readEngineSource('backends/ptWebgl2.ts');
 
-    expect(createEngine).toMatch(/import\(['"]@vitrum\/pt-webgl2['"]\)/);
-    expect(createEngine).not.toMatch(/@vitrum\/pt-webgl(?!2)/);
+    expect(ptWebgl2Backend).toMatch(/import\(['"]@vitrum\/pt-webgl2['"]\)/);
+    expect(ptWebgl2Backend).not.toMatch(/@vitrum\/pt-webgl(?!2)/);
+    expect(ptWebgl2Backend).not.toMatch(/@vitrum\/three-bindings/);
+    expect(ptWebgl2Backend).not.toMatch(/threeSceneBridge|ThreeSceneLike|sceneFromThreeSceneLike|isThreeScene/);
+    expect(ptWebgl2Backend).not.toMatch(/typeof import\(['"]three['"]\)/);
+    expect(ptWebgl2Backend).not.toMatch(/import\(['"]three['"]\)/);
+
+    // createEngine.ts itself must NOT have a static @vitrum/pt-webgl2 import
+    // (that would break the module-graph isolation).
+    const createEngine = readEngineSource('createEngine.ts');
+    expect(createEngine).not.toMatch(/^import.*@vitrum\/pt-webgl2/m);
     expect(createEngine).not.toMatch(/@vitrum\/three-bindings/);
-    expect(createEngine).not.toMatch(/threeSceneBridge|ThreeSceneLike|sceneFromThreeSceneLike|isThreeScene/);
-    expect(createEngine).not.toMatch(/typeof import\(['"]three['"]\)/);
-    expect(createEngine).not.toMatch(/import\(['"]three['"]\)/);
   });
 });

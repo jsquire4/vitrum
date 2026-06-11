@@ -41,6 +41,8 @@ export {
   // THREE.PerspectiveCamera / THREE.OrthographicCamera satisfies it structurally.
   // Exported so hosts can type their own camera adapters without redefining inline.
   type CameraLike,
+  // D1.5 — named QualityOption type for the per-frame quality value-or-getter union.
+  type QualityOption,
 } from './lifecycle/vanilla.js';
 
 // Raw WebGPU device negotiation — the lifecycle-layer peer of attachVitrum for

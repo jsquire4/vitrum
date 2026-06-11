@@ -18,6 +18,7 @@ import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
+import type { EngineWithBackendId } from '../createEngineInternals.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // A2 — WebGPU swap-chain detection + per-frame view acquisition.
@@ -167,6 +168,21 @@ export interface CameraLike {
   readonly position: { readonly x: number; readonly y: number; readonly z: number };
 }
 
+/**
+ * Per-frame quality option for {@link AttachVitrumOptions.quality}.
+ *
+ * Pass a value for static quality, or a `() => value | undefined` getter for
+ * live propagation: the RAF tick invokes it every frame, so React refs /
+ * mutable state can swap quality without engine recreation.  React's
+ * `<VitrumCanvas>` uses the getter form internally so its `quality` prop
+ * propagates without remount.
+ *
+ * D1.5 — named type replaces the inline anonymous union on the options field.
+ */
+export type QualityOption =
+  | NonNullable<FrameInput['quality']>
+  | (() => NonNullable<FrameInput['quality']> | undefined);
+
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /** Engine-level GPU/runtime error callback. Receives errors from the
    *  underlying engine's `onError` subscription (device-lost, GPU validation
@@ -226,9 +242,7 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *  React refs / mutable state can swap quality without engine recreation).
    *  React's `<VitrumCanvas>` uses the getter form internally so its
    *  `quality` prop propagates without remount. */
-  readonly quality?:
-    | NonNullable<FrameInput['quality']>
-    | (() => NonNullable<FrameInput['quality']> | undefined);
+  readonly quality?: QualityOption;
   /** Frame-level callback. Convenience over engine.onFrame() — fires after
    *  every successful renderFrame() with the engine's FrameStats. */
   readonly onFrame?: (stats: FrameStats) => void;
@@ -262,6 +276,33 @@ export const AUTO_RECREATE_MAX_ATTEMPTS = 2;
 /** @internal — window duration (ms) within which retry attempts are counted. */
 export const AUTO_RECREATE_WINDOW_MS = 30_000;
 
+/**
+ * Canonical builder: forwards the lifecycle-level `AttachVitrumOptions` into
+ * `createEngine`.  The spread was duplicated verbatim at initial construction
+ * (line ~275) and in the auto-recreate path (line ~465); centralising it here
+ * makes the forwarding semantics explicit and impossible to diverge.
+ *
+ * D1.5 — onError/onEngineError unification: `onError` (construction-phase)
+ * flows through normally.  `onEngineError` (runtime GPU errors) is a separate
+ * channel and is NOT forwarded to createEngine — it is wired on the returned
+ * engine via engine.onError() after construction.  Both public fields are kept
+ * accepted for back-compat; this function handles only the construction-phase
+ * channel.
+ *
+ * @internal — exported for unit-test access.
+ */
+export function buildEngineFromOpts(opts: AttachVitrumOptions): Promise<EngineWithBackendId> {
+  return createEngine({
+    canvas: opts.canvas,
+    scene: opts.scene,
+    ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
+    ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
+    ...(opts.debug != null ? { debug: opts.debug } : {}),
+    ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
+    ...(opts.onError != null ? { onError: opts.onError } : {}),
+  });
+}
+
 export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVitrumHandle> {
   const reportError = (error: unknown, event: CreateEngineErrorEvent): void => {
     try {
@@ -272,15 +313,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // ── Initial engine construction ─────────────────────────────────────────
   // `engine` is mutable so the auto-recreate path can swap it in place while
   // the stable handle facade (returned to the host) continues to work.
-  let engine = await createEngine({
-    canvas: opts.canvas,
-    scene: opts.scene,
-    ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
-    ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
-    ...(opts.debug != null ? { debug: opts.debug } : {}),
-    ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
-    ...(opts.onError != null ? { onError: opts.onError } : {}),
-  });
+  let engine = await buildEngineFromOpts(opts);
 
   // ── Resize state ─────────────────────────────────────────────────────────
   //
@@ -403,20 +436,28 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
   // ── Auto-recreate state machine ──────────────────────────────────────────
   // Retry budget: at most AUTO_RECREATE_MAX_ATTEMPTS within AUTO_RECREATE_WINDOW_MS.
-  const recreateTimes: number[] = [];
-  let recreating = false;
+  //
+  // State is grouped into a named object so its ownership and mutation surface
+  // are explicit.  The functions close over the outer `engine`, `stopped`,
+  // `rafHandle`, `disposed`, `unsubFrame/Progress/Error`, `subscribeToEngine`,
+  // and `tick` bindings — those remain outer-scope because they are shared with
+  // the RAF loop and dispose path.
+  const autoRecreateMachine = {
+    times: [] as number[],
+    recreating: false,
+  };
 
   const handleFatalEngineError = (err: EngineError): void => {
     if (!opts.autoRecreateOnDeviceLoss) return;
     if (!isLossKind(err.kind)) return;
-    if (disposed || recreating) return;
+    if (disposed || autoRecreateMachine.recreating) return;
 
     const now = Date.now();
     // Prune attempts outside the window.
-    while (recreateTimes.length > 0 && now - recreateTimes[0]! > AUTO_RECREATE_WINDOW_MS) {
-      recreateTimes.shift();
+    while (autoRecreateMachine.times.length > 0 && now - autoRecreateMachine.times[0]! > AUTO_RECREATE_WINDOW_MS) {
+      autoRecreateMachine.times.shift();
     }
-    if (recreateTimes.length >= AUTO_RECREATE_MAX_ATTEMPTS) {
+    if (autoRecreateMachine.times.length >= AUTO_RECREATE_MAX_ATTEMPTS) {
       // Cap exceeded — final error already delivered above; stay stopped.
       console.error(
         `[attachVitrum] auto-recreate cap (${AUTO_RECREATE_MAX_ATTEMPTS} attempts / ` +
@@ -425,8 +466,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       return;
     }
 
-    recreating = true;
-    recreateTimes.push(now);
+    autoRecreateMachine.recreating = true;
+    autoRecreateMachine.times.push(now);
 
     // Fire-and-forget; errors inside recreate are surface-logged.
     void performAutoRecreate();
@@ -462,18 +503,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
     // 4. Recreate.
     try {
-      engine = await createEngine({
-        canvas: opts.canvas,
-        scene: opts.scene,
-        ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
-        ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
-        ...(opts.debug != null ? { debug: opts.debug } : {}),
-        ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
-        ...(opts.onError != null ? { onError: opts.onError } : {}),
-      });
+      engine = await buildEngineFromOpts(opts);
     } catch (createErr) {
       console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
-      recreating = false;
+      autoRecreateMachine.recreating = false;
       return;
     }
 
@@ -493,7 +526,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
 
     // 7. Resume the RAF loop (unless the handle was disposed while we were recreating).
-    recreating = false;
+    autoRecreateMachine.recreating = false;
     if (!disposed) {
       stopped = false;
       rafHandle = requestAnimationFrame(tick);

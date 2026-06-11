@@ -35,6 +35,7 @@ export * from './debug.js';
 export * from './telemetry.js';
 export * from './factory.js';
 export * from './promiseLedger.js';
+export * from './giState.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // captureFrame — pixel readback contract
@@ -216,16 +217,10 @@ export interface Engine {
    * `EngineOptions`. Backends that consume this method validate and warn on
    * unrecognised keys at runtime rather than at the type layer.
    *
-   * **HybridEngine (`@vitrum/walkaround-hybrid`) known keys** (all optional;
-   * omitted fields are left unchanged — passing `{}` is a safe no-op):
-   *  - `primaryLightDir` (`[number, number, number]`) — Primary directional
-   *    light direction in world space (normalised). Triggers a DDGI probe-cache
-   *    invalidation and temporal-accumulator reset.
-   *  - `primaryLightIntensity` (`number`) — Linear intensity scalar for the
-   *    primary directional light. Also drives the DDGI sun-intensity multiplier.
-   *  - `skyTint` (`[number, number, number]`) — Diffuse sky-dome RGB tint.
-   *  - `skyIrradiance` (`number`) — Sky-dome irradiance scalar paired with
-   *    `skyTint`.
+   * Each backend documents its accepted lighting keys in its own options
+   * type (e.g. the `updateLighting` section of the backend's public API
+   * documentation). Keys that are unrecognised by the active backend are
+   * logged and ignored; passing `{}` is always a safe no-op.
    *
    * Backends that honour `updateEnvironment` for env scrubs (PT-style) may
    * omit this method entirely. Hosts MUST `typeof`-check before calling.
