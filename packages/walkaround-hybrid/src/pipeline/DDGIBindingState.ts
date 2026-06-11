@@ -207,9 +207,9 @@ export class DDGIBindingState implements PipelineSubsystem {
     const ppg = frameResources.ppg;
     const rcCascade0Buffer = this._rcCascade0 ?? rcPh.cascade0;
     const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
-    const ppgSTreeBuffer = ppg.sTreeBuf ?? ppgPh;
-    const ppgDTreeBuffer = ppg.dTreeBuf ?? ppgPh;
-    const ppgDTreeOffsetsBuffer = ppg.dTreeOffsetsBuf ?? ppgPh;
+    const ppgSTreeBuffer = ('sTreeBuf' in ppg) ? ppg.sTreeBuf : ppgPh;
+    const ppgDTreeBuffer = ('dTreeBuf' in ppg) ? ppg.dTreeBuf : ppgPh;
+    const ppgDTreeOffsetsBuffer = ('dTreeOffsetsBuf' in ppg) ? ppg.dTreeOffsetsBuf : ppgPh;
     const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
     const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
     const build = (): GPUBindGroup => buildHybridLayersBindGroup(device, bglCache, {

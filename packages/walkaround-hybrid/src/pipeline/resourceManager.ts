@@ -281,36 +281,30 @@ export interface SVGFFrameResources {
  * Path-guiding (PPG) GPU resources — Müller 2017 Practical Path Guiding
  * (W9, opt-in via `HybridEngineOptions.ppgEnabled`).
  *
- * When PPG is not enabled, every field is `undefined` and the PPG passes are
- * never registered (see `PPGCoordinator.enabled`). When enabled,
- * these buffers are uploaded each rebuild cycle and bound into the PPG update
- * pass plus the gi-ris guided-sampling path:
- *
- *   - sTreeBuf       — serialised spatial kd-tree (Float32Array)
- *   - dTreeBuf       — concatenated per-cell directional quadtrees
- *   - dTreeOffsetsBuf — sTree-cell → dTreeBuf base-offset table
- *   - fluxAtomicsBuf — atomic u32 flux accumulator (one slot per dTree node)
- *   - updateUboBuffer — update kernel UBO (sampleCount, fluxBudget)
+ * All fields are required: instances are only created by
+ * {@link allocatePPGResources}, which allocates and returns all six buffers
+ * together. Exported so `PPGCoordinator` and bind-group builders can reference
+ * it directly (D3.12 factory pattern).
  *
  * The update pass trains directly from `restirGI.reservoirGiCurrentBuffer`.
  * See `ppg/serialise.ts` for the tree buffer layout.
  */
-interface PPGFrameResources {
-  /** Set only when `ppgEnabled` was true at engine init. */
-  sTreeBuf?: GPUBuffer;
-  dTreeBuf?: GPUBuffer;
-  dTreeOffsetsBuf?: GPUBuffer;
+export interface PPGFrameResources {
+  /** Serialised spatial kd-tree (Float32Array). */
+  sTreeBuf: GPUBuffer;
+  dTreeBuf: GPUBuffer;
+  dTreeOffsetsBuf: GPUBuffer;
   /** Atomic u32 accumulator — one slot per dTree node (matches dTreeBuf layout). */
-  fluxAtomicsBuf?: GPUBuffer;
+  fluxAtomicsBuf: GPUBuffer;
   /**
    * A2 — per-spatial-cell training-sample counter (one atomic u32 per sTree
    * leaf cell, indexed by `dTreeIndex`). The update kernel increments this once
    * per accepted training record; the coordinator reads it back each window and
    * feeds `splitOverflowLeaves(sTree, counts)` so high-traffic cells subdivide.
    */
-  cellSampleCountsBuf?: GPUBuffer;
+  cellSampleCountsBuf: GPUBuffer;
   /** Update kernel UBO. */
-  updateUboBuffer?: GPUBuffer;
+  updateUboBuffer: GPUBuffer;
 }
 
 /**
@@ -343,7 +337,8 @@ export interface FrameResources {
   ddgi: DDGIFrameResources;
   gtao: GTAOFrameResources;
   svgf: SVGFFrameResources;
-  ppg: PPGFrameResources;
+  /** Populated by {@link allocatePPGResources} when PPG is enabled; empty record otherwise. */
+  ppg: PPGFrameResources | Record<never, never>;
   neural: NeuralFrameResources;
 }
 
@@ -487,12 +482,94 @@ export function createFrameResources(
   // -20260517.md §W1-R2 for the canonical mapping table.
 
   // PPG resources are allocated lazily by `allocatePPGResources` when
-  // `HybridEngineOptions.ppgEnabled === true`. Default leaves every slot
-  // undefined so the pipeline can treat PPG as truly opt-in.
-  const ppg: PPGFrameResources = {};
+  // `HybridEngineOptions.ppgEnabled === true`. Default is an empty record so
+  // the pipeline can treat PPG as truly opt-in; the ppg field is
+  // `PPGFrameResources | Record<never, never>` in FrameResources.
+  const ppg: FrameResources['ppg'] = {} as Record<never, never>;
   const neural = createNeuralFrameResources();
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
+}
+
+/** Minimal interface for GPU resources that own a `destroy()` handle. */
+type DestroyableResource = { destroy(): void };
+
+/**
+ * Assemble the ordered destroy queue for a `FrameResources` bundle (D3.11).
+ *
+ * The sequence matches the legacy 35-call inline order verbatim so any
+ * GPU-call-trace test or telemetry recording continues to observe the same
+ * sequence of `.destroy()` calls. `destroyFrameResources` iterates this
+ * array — the ordering is load-bearing, do not reorder.
+ */
+function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
+  const ppg = r.ppg as Partial<PPGFrameResources>;
+  const queue: DestroyableResource[] = [
+    // restirDI
+    r.restirDI.reservoirCurrentBuffer,
+    r.restirDI.reservoirPreviousBuffer,
+    r.restirDI.reservoirSpatialBuffer,
+    // common (first wave — matches legacy order)
+    r.common.hdrColorTexture,
+    r.common.gNormalDepthTexture,
+    r.common.denoisedPingTexture,
+    r.common.denoisedPongTexture,
+    r.common.accumTextureA,
+    r.common.accumTextureB,
+    r.common.placeholderTexture,
+    r.common.uboBuffer,
+    // ddgi
+    r.ddgi.ddgiPlaceholderRgba16f,
+    r.ddgi.ddgiPlaceholderVisRgba16f,
+    r.ddgi.ddgiUboBuffer,
+    // common (second wave — variance + motion + tier + resolved)
+    r.common.varianceBuffer,
+    r.common.varianceBufferAux,
+    r.common.atrousVarianceEstimateTexture,
+    r.common.motionVectorTexture,
+    r.common.tierTexture,
+    r.common.resolvedTexture,
+    // gtao
+    r.gtao.aoHalfTexture,
+    r.gtao.aoFullTexture,
+    r.gtao.gtaoUboBuffer,
+    // restirGI
+    r.restirGI.reservoirGiCurrentBuffer,
+    r.restirGI.reservoirGiPreviousBuffer,
+    r.restirGI.reservoirGiSpatialBuffer,
+    // common (Sprint-18 indirect / combined / hdrTotal / indirect ping-pong / albedo)
+    r.common.hdrIndirectTexture,
+    r.common.combinedDenoisedTexture,
+    r.common.hdrTotalTexture,
+    r.common.indirectDenoisedPingTexture,
+    r.common.indirectDenoisedPongTexture,
+    r.common.indirectAccumPingTexture,
+    r.common.indirectAccumPongTexture,
+    r.common.albedoTexture,
+    // svgf
+    r.svgf.svgfObjIdPlaceholderTexture,
+    r.svgf.svgfPrevObjIdPlaceholderTexture,
+    r.svgf.svgfCurrentObjectIdTexture,
+    r.svgf.svgfPreviousObjectIdTexture,
+    r.svgf.svgfPrevNormalDepthTexture,
+    r.svgf.svgfHistoryLengthTextureA,
+    r.svgf.svgfHistoryLengthTextureB,
+    r.svgf.svgfMomentsTextureA,
+    r.svgf.svgfMomentsTextureB,
+    r.svgf.svgfPrevRadianceTextureA,
+    r.svgf.svgfPrevRadianceTextureB,
+    r.svgf.svgfVarianceTexture,
+    r.svgf.svgfVarianceMomentsIntermedTexture,
+  ];
+  // ppg — only present when allocatePPGResources was called (opt-in).
+  if (ppg.sTreeBuf)            queue.push(ppg.sTreeBuf);
+  if (ppg.dTreeBuf)            queue.push(ppg.dTreeBuf);
+  if (ppg.dTreeOffsetsBuf)     queue.push(ppg.dTreeOffsetsBuf);
+  if (ppg.fluxAtomicsBuf)      queue.push(ppg.fluxAtomicsBuf);
+  if (ppg.cellSampleCountsBuf) queue.push(ppg.cellSampleCountsBuf);
+  if (ppg.updateUboBuffer)     queue.push(ppg.updateUboBuffer);
+  // neural — empty placeholder; nothing to destroy until W10.
+  return queue;
 }
 
 /**
@@ -501,80 +578,10 @@ export function createFrameResources(
  *
  * Destruction order mirrors the legacy flat-struct destroy order verbatim so
  * any GPU-call-trace test or telemetry recording continues to observe the
- * same sequence of `.destroy()` calls.
+ * same sequence of `.destroy()` calls (see `buildDestroyQueue`).
  */
 export function destroyFrameResources(r: FrameResources): void {
-  // restirDI
-  r.restirDI.reservoirCurrentBuffer.destroy();
-  r.restirDI.reservoirPreviousBuffer.destroy();
-  r.restirDI.reservoirSpatialBuffer.destroy();
-
-  // common (first wave — matches legacy order)
-  r.common.hdrColorTexture.destroy();
-  r.common.gNormalDepthTexture.destroy();
-  r.common.denoisedPingTexture.destroy();
-  r.common.denoisedPongTexture.destroy();
-  r.common.accumTextureA.destroy();
-  r.common.accumTextureB.destroy();
-  r.common.placeholderTexture.destroy();
-  r.common.uboBuffer.destroy();
-
-  // ddgi
-  r.ddgi.ddgiPlaceholderRgba16f.destroy();
-  r.ddgi.ddgiPlaceholderVisRgba16f.destroy();
-  r.ddgi.ddgiUboBuffer.destroy();
-
-  // common (second wave — variance + motion + tier + resolved)
-  r.common.varianceBuffer.destroy();
-  r.common.varianceBufferAux.destroy();
-  r.common.atrousVarianceEstimateTexture.destroy();
-  r.common.motionVectorTexture.destroy();
-  r.common.tierTexture.destroy();
-  r.common.resolvedTexture.destroy();
-
-  // gtao
-  r.gtao.aoHalfTexture.destroy();
-  r.gtao.aoFullTexture.destroy();
-  r.gtao.gtaoUboBuffer.destroy();
-
-  // restirGI
-  r.restirGI.reservoirGiCurrentBuffer.destroy();
-  r.restirGI.reservoirGiPreviousBuffer.destroy();
-  r.restirGI.reservoirGiSpatialBuffer.destroy();
-
-  // common (Sprint-18 indirect / combined / hdrTotal / indirect ping-pong / albedo)
-  r.common.hdrIndirectTexture.destroy();
-  r.common.combinedDenoisedTexture.destroy();
-  r.common.hdrTotalTexture.destroy();
-  r.common.indirectDenoisedPingTexture.destroy();
-  r.common.indirectDenoisedPongTexture.destroy();
-  r.common.indirectAccumPingTexture.destroy();
-  r.common.indirectAccumPongTexture.destroy();
-  r.common.albedoTexture.destroy();
-
-  // svgf
-  r.svgf.svgfObjIdPlaceholderTexture.destroy();
-  r.svgf.svgfPrevObjIdPlaceholderTexture.destroy();
-  r.svgf.svgfCurrentObjectIdTexture.destroy();
-  r.svgf.svgfPreviousObjectIdTexture.destroy();
-  r.svgf.svgfPrevNormalDepthTexture.destroy();
-  r.svgf.svgfHistoryLengthTextureA.destroy();
-  r.svgf.svgfHistoryLengthTextureB.destroy();
-  r.svgf.svgfMomentsTextureA.destroy();
-  r.svgf.svgfMomentsTextureB.destroy();
-  r.svgf.svgfPrevRadianceTextureA.destroy();
-  r.svgf.svgfPrevRadianceTextureB.destroy();
-  r.svgf.svgfVarianceTexture.destroy();
-  r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
-
-  // ppg — destroy all allocated buffers (each is optional; null-safe).
-  r.ppg.sTreeBuf?.destroy();
-  r.ppg.dTreeBuf?.destroy();
-  r.ppg.dTreeOffsetsBuf?.destroy();
-  r.ppg.fluxAtomicsBuf?.destroy();
-  r.ppg.cellSampleCountsBuf?.destroy();
-  r.ppg.updateUboBuffer?.destroy();
-  // neural — empty placeholder; nothing to destroy until W10.
+  for (const res of buildDestroyQueue(r)) res.destroy();
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -582,9 +589,10 @@ export function destroyFrameResources(r: FrameResources): void {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Allocate the PPG (Müller 2017 path-guiding) GPU buffers and attach them to
- * an existing FrameResources struct. Called once at engine init, AFTER
- * `createFrameResources`, only when `ppgEnabled` is true.
+ * Allocate the PPG (Müller 2017 path-guiding) GPU buffers and return them as
+ * a fully-populated `PPGFrameResources`. Called once at engine init, AFTER
+ * `createFrameResources`, only when `ppgEnabled` is true (D3.12 factory
+ * pattern — the caller assigns the result to `frameResources.ppg`).
  *
  * Buffer-size policy:
  *   - sTreeBuf:        sized for `maxSpatialCells` × STREE_NODE_F32 + header.
@@ -594,15 +602,12 @@ export function destroyFrameResources(r: FrameResources): void {
  *   - fluxAtomicsBuf:  u32 × maxSpatialCells × maxDTreeNodesPerCell.
  *   - updateUboBuffer: 16 bytes (4 × u32 — see PPGUpdateUBO in WGSL).
  *
- * The host can resize via {@link allocatePPGResources} on a new
- * FrameResources struct; the old buffers are NOT destroyed here (the caller
- * owns their lifecycle).
+ * The old buffers are NOT destroyed here (the caller owns their lifecycle).
  */
 export function allocatePPGResources(
   device: GPUDevice,
-  res: FrameResources,
-  width: number,
-  height: number,
+  _width: number,
+  _height: number,
   opts?: {
     /**
      * Hard cap on sTree leaf count. Default 1 024 — large enough for
@@ -618,7 +623,7 @@ export function allocatePPGResources(
      */
     maxDTreeNodesPerCell?: number;
   },
-): void {
+): PPGFrameResources {
   const maxSpatialCells = opts?.maxSpatialCells ?? 1_024;
   const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? 341;
 
@@ -633,35 +638,37 @@ export function allocatePPGResources(
     maxSpatialCells * (DTREE_HEADER_F32 + maxDTreeNodesPerCell * DTREE_NODE_F32);
   const fluxAtomicsCount = maxSpatialCells * maxDTreeNodesPerCell;
 
-  res.ppg.sTreeBuf = device.createBuffer({
-    label: 'ppg-sTreeBuf',
-    size: Math.max(16, sTreeBufF32 * 4),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.dTreeBuf = device.createBuffer({
-    label: 'ppg-dTreeBuf',
-    size: Math.max(16, dTreeBufF32 * 4),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.dTreeOffsetsBuf = device.createBuffer({
-    label: 'ppg-dTreeOffsets',
-    size: Math.max(16, maxSpatialCells * 4),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  res.ppg.fluxAtomicsBuf = device.createBuffer({
-    label: 'ppg-fluxAtomics',
-    size: Math.max(16, fluxAtomicsCount * 4),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  // A2 — per-spatial-cell sample counter: one atomic u32 per spatial cell.
-  res.ppg.cellSampleCountsBuf = device.createBuffer({
-    label: 'ppg-cellSampleCounts',
-    size: Math.max(16, maxSpatialCells * 4),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  res.ppg.updateUboBuffer = device.createBuffer({
-    label: 'ppg-update-ubo',
-    size: 16, // 4 × u32 — see PPGUpdateUBO in ppgUpdate.wgsl.ts.
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  return {
+    sTreeBuf: device.createBuffer({
+      label: 'ppg-sTreeBuf',
+      size: Math.max(16, sTreeBufF32 * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    }),
+    dTreeBuf: device.createBuffer({
+      label: 'ppg-dTreeBuf',
+      size: Math.max(16, dTreeBufF32 * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    }),
+    dTreeOffsetsBuf: device.createBuffer({
+      label: 'ppg-dTreeOffsets',
+      size: Math.max(16, maxSpatialCells * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    }),
+    fluxAtomicsBuf: device.createBuffer({
+      label: 'ppg-fluxAtomics',
+      size: Math.max(16, fluxAtomicsCount * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    }),
+    // A2 — per-spatial-cell sample counter: one atomic u32 per spatial cell.
+    cellSampleCountsBuf: device.createBuffer({
+      label: 'ppg-cellSampleCounts',
+      size: Math.max(16, maxSpatialCells * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    }),
+    updateUboBuffer: device.createBuffer({
+      label: 'ppg-update-ubo',
+      size: 16, // 4 × u32 — see PPGUpdateUBO in ppgUpdate.wgsl.ts.
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    }),
+  };
 }

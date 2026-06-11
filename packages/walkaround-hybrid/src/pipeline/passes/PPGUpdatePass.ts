@@ -59,9 +59,7 @@ export class PPGUpdatePass implements Pass {
     // Contract invariant: PPG resources are allocated whenever this pass is
     // registered. If a host bypasses the initialization branch, fail loudly
     // instead of silently skipping training.
-    if (!ppg.sTreeBuf || !ppg.dTreeBuf || !ppg.dTreeOffsetsBuf ||
-        !ppg.fluxAtomicsBuf || !ppg.cellSampleCountsBuf || !ppg.updateUboBuffer ||
-        !resources.restirGI.reservoirGiCurrentBuffer) {
+    if (!('sTreeBuf' in ppg) || !resources.restirGI.reservoirGiCurrentBuffer) {
       throw new Error(
         '[PPG] update dispatch invariant violated: PPG resources are not allocated. ' +
         'This indicates ppgEnabled=true was claimed but allocatePPGResources was never called.',

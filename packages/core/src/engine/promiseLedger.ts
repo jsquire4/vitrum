@@ -215,6 +215,71 @@ const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticSh
   'h-channel-came': 'fallback-generated-mesh',
 });
 
+// ── Shared mutation/method constants (D1.4) ──────────────────────────────────
+//
+// Extracted to eliminate copy-paste drift between the three backend records.
+// Deep-equal to the prior inline literals (byte-identical ledger output).
+
+/** pt-webgl2 mutations — all fallback-rebuild (no fast path; full scene-texture/
+ *  BVH repack on every mutation kind).  resize and lighting are unsupported. */
+const ALL_MUTATIONS_FALLBACK_REBUILD: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
+  transform: 'fallback-rebuild',
+  positions: 'fallback-rebuild',
+  material: 'fallback-rebuild',
+  emitter: 'fallback-rebuild',
+  topology: 'fallback-rebuild',
+  addPrimitive: 'fallback-rebuild',
+  removePrimitive: 'fallback-rebuild',
+  environment: 'fallback-rebuild',
+  resize: 'unsupported',
+  lighting: 'unsupported',
+});
+
+/** pt-webgpu mutations — native fast paths for all per-primitive mutation kinds;
+ *  add/remove are fallback-rebuild (insert/evict forces a full BLAS/TLAS repack).
+ *  resize and lighting are unsupported. */
+const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
+  transform: 'native',
+  positions: 'native',
+  material: 'native',
+  emitter: 'native',
+  topology: 'native',
+  addPrimitive: 'fallback-rebuild',
+  removePrimitive: 'fallback-rebuild',
+  environment: 'native',
+  resize: 'unsupported',
+  lighting: 'unsupported',
+});
+
+/** Method-promise fields that are true (or false) identically across all three
+ *  shipping backends.  Spread into each record; backend-specific fields
+ *  (setSize, updateLighting, debug) are added after the spread. */
+const COMMON_METHOD_PROMISES: Pick<
+  BackendMethodPromises,
+  | 'updatePrimitive'
+  | 'updateEmitter'
+  | 'updateEnvironment'
+  | 'addPrimitive'
+  | 'removePrimitive'
+  | 'onFrame'
+  | 'onProgress'
+  | 'getScene'
+  | 'onError'
+  | 'captureFrame'
+> = Object.freeze({
+  updatePrimitive: true,
+  updateEmitter: true,
+  updateEnvironment: true,
+  addPrimitive: true,
+  removePrimitive: true,
+  onFrame: true,
+  onProgress: true,
+  getScene: true,
+  onError: true,
+  captureFrame: true,
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Machine-checkable backend contract truth table.
  *
@@ -297,28 +362,23 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
     },
     methodPromises: {
-      updatePrimitive: true,
-      updateEmitter: true,
-      // Env-only runtime update IS implemented (HybridEngine.updateEnvironment):
-      // maps the SceneEnvironment onto the diffuse sky-dome scalars
-      // (skyTint/skyIrradiance — this backend has no IBL baker), invalidates the
-      // DDGI probe cache + resets the temporal accumulator, with NO BVH rebuild.
-      // HDRI is intensity-only (no equirect sampling); see the method's JSDoc.
-      updateEnvironment: true,
-      // Implemented — see supportsAddRemovePrimitive above (full setScene-rebuild).
-      addPrimitive: true,
-      removePrimitive: true,
+      ...COMMON_METHOD_PROMISES,
+      // updateEnvironment note: env-only runtime update IS implemented
+      // (HybridEngine.updateEnvironment): maps SceneEnvironment onto diffuse
+      // sky-dome scalars (skyTint/skyIrradiance), invalidates the DDGI probe
+      // cache + resets the temporal accumulator, NO BVH rebuild. HDRI is
+      // intensity-only (no equirect sampling); see the method's JSDoc. ✓ via spread.
+      //
+      // addPrimitive/removePrimitive note: implemented via full setScene-rebuild;
+      // see supportsAddRemovePrimitive above. ✓ via spread.
+      //
+      // GPU error surface: device.uncapturederror (throttled) + device.lost. ✓ via spread.
+      //
+      // GPU→CPU pixel readback: resolvedTexture for 'linear'; 'output' rejects
+      // (swap-chain write, no engine-owned display buffer to read back). ✓ via spread.
       setSize: true,
       updateLighting: true,
-      onFrame: true,
-      onProgress: true,
       debug: true,
-      getScene: true,
-      // GPU error surface: device.uncapturederror (throttled) + device.lost.
-      onError: true,
-      // GPU→CPU pixel readback: resolvedTexture for 'linear'; 'output' rejects
-      // (swap-chain write, no engine-owned display buffer to read back).
-      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: false,
@@ -366,41 +426,21 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'unsupported',
       },
       analyticShapes: NO_ANALYTIC_SHAPES,
-      mutations: {
-        // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
-        // (a full scene-texture/BVH repack, not a targeted in-place edit).
-        // The incrementalPatchSupport flags above reflect the OUTCOME (patches
-        // are absorbed without error), but the support GRADE is fallback-rebuild
-        // because no fast-path exists in the current slice.
-        transform: 'fallback-rebuild',
-        positions: 'fallback-rebuild',
-        material: 'fallback-rebuild',
-        emitter: 'fallback-rebuild',
-        topology: 'fallback-rebuild',
-        addPrimitive: 'fallback-rebuild',
-        removePrimitive: 'fallback-rebuild',
-        environment: 'fallback-rebuild',
-        resize: 'unsupported',
-        lighting: 'unsupported',
-      },
+      // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
+      // (a full scene-texture/BVH repack, not a targeted in-place edit).
+      // The incrementalPatchSupport flags above reflect the OUTCOME (patches
+      // are absorbed without error), but the support GRADE is fallback-rebuild
+      // because no fast-path exists in the current slice.
+      mutations: ALL_MUTATIONS_FALLBACK_REBUILD,
     },
     methodPromises: {
-      updatePrimitive: true,
-      updateEmitter: true,
-      updateEnvironment: true,
-      addPrimitive: true,
-      removePrimitive: true,
+      ...COMMON_METHOD_PROMISES,
+      // Context-lost surface: webglcontextlost canvas event. ✓ via spread.
+      // GPU→CPU pixel readback: accum FBO (RGBA32F, rows flipped to top-left)
+      // for 'linear'; present FBO for 'output'. ✓ via spread.
       setSize: false,
       updateLighting: false,
-      onFrame: true,
-      onProgress: true,
       debug: false,
-      getScene: true,
-      // Context-lost surface: webglcontextlost canvas event.
-      onError: true,
-      // GPU→CPU pixel readback: accum FBO (RGBA32F, rows flipped to top-left)
-      // for 'linear'; present FBO for 'output'.
-      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,
@@ -443,36 +483,16 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'approximate',
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
-      mutations: {
-        transform: 'native',
-        positions: 'native',
-        material: 'native',
-        emitter: 'native',
-        topology: 'native',
-        addPrimitive: 'fallback-rebuild',
-        removePrimitive: 'fallback-rebuild',
-        environment: 'native',
-        resize: 'unsupported',
-        lighting: 'unsupported',
-      },
+      mutations: PT_WEBGPU_MUTATIONS,
     },
     methodPromises: {
-      updatePrimitive: true,
-      updateEmitter: true,
-      updateEnvironment: true,
-      addPrimitive: true,
-      removePrimitive: true,
+      ...COMMON_METHOD_PROMISES,
+      // GPU error surface: device.uncapturederror (throttled) + device.lost. ✓ via spread.
+      // GPU→CPU pixel readback: accumTexture (rgba16float decoded to f32) for
+      // 'linear'; presentTexture (rgba16float) for 'output'. ✓ via spread.
       setSize: false,
       updateLighting: false,
-      onFrame: true,
-      onProgress: true,
       debug: true,
-      getScene: true,
-      // GPU error surface: device.uncapturederror (throttled) + device.lost.
-      onError: true,
-      // GPU→CPU pixel readback: accumTexture (rgba16float decoded to f32) for
-      // 'linear'; presentTexture (rgba16float) for 'output'.
-      captureFrame: true,
     },
     frameInputPromises: {
       honorsViewportPerFrame: true,

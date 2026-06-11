@@ -32,60 +32,73 @@
 import { DENOISER_PASS_LABELS } from './denoisers/index.js';
 import { composePassLabels } from './passes/passOrder.js';
 
-export type PassLabel =
-  | 'sample-budget'
+/**
+ * Universe of all possible pass labels — every label that any dispatch
+ * configuration could emit. Declared as a `const` array so
+ * `typeof PASS_LABELS[number]` derives the exact union type, eliminating the
+ * hand-maintained parallel union definition (D3.10).
+ *
+ * NOTE: This is the UNIVERSE (46 entries), not the worst-case ACTIVE count.
+ * `MAX_PASS_COUNT` is maintained separately and represents the maximum number
+ * of passes that can be simultaneously active in a single frame configuration.
+ */
+export const PASS_LABELS = [
+  'sample-budget',
   // ReGIR (Boksansky 2021) grid-build — opt-in; dispatched before RIS when live.
-  | 'regir-build'
-  | 'ris'
-  | 'temporal'
-  | 'spatial-1'
-  | 'spatial-2'
-  | 'gi-ris'
-  | 'gi-temporal'
-  | 'gi-spatial-1'
-  | 'gi-spatial-2'
-  | 'shade'
-  | 'motion-vectors'
-  | 'gtao'
-  | 'gtao-upsample'
+  'regir-build',
+  'ris',
+  'temporal',
+  'spatial-1',
+  'spatial-2',
+  'gi-ris',
+  'gi-temporal',
+  'gi-spatial-1',
+  'gi-spatial-2',
+  'shade',
+  'motion-vectors',
+  'gtao',
+  'gtao-upsample',
   // Checkerboard pre-denoiser gap-fill (only when checkerboard ON + real denoiser)
-  | 'cb-prefill'
-  | 'welford-temporal'
-  | 'atrous-variance-variance'
-  | 'atrous-variance-atrous-0'
-  | 'atrous-variance-atrous-1'
-  | 'atrous-variance-atrous-2'
-  | 'atrous-0'
-  | 'atrous-1'
-  | 'atrous-2'
+  'cb-prefill',
+  'welford-temporal',
+  'atrous-variance-variance',
+  'atrous-variance-atrous-0',
+  'atrous-variance-atrous-1',
+  'atrous-variance-atrous-2',
+  'atrous-0',
+  'atrous-1',
+  'atrous-2',
   // T2.H1 — svgf-real pass labels (5 passes: reproj → moments → 7x7 → 5 × atrous)
-  | 'svgf-real-reproj'
-  | 'svgf-real-moments'
-  | 'svgf-real-7x7'
-  | 'svgf-real-atrous-0'
-  | 'svgf-real-atrous-1'
-  | 'svgf-real-atrous-2'
-  | 'svgf-real-atrous-3'
-  | 'svgf-real-atrous-4'
+  'svgf-real-reproj',
+  'svgf-real-moments',
+  'svgf-real-7x7',
+  'svgf-real-atrous-0',
+  'svgf-real-atrous-1',
+  'svgf-real-atrous-2',
+  'svgf-real-atrous-3',
+  'svgf-real-atrous-4',
   // BMFR — single per-block feature-regression compute pass (Koskela 2019)
-  | 'bmfr'
+  'bmfr',
   // Neural U-Net denoiser — input-pack + output-unpack compute passes (the
   // InferenceGraph itself is self-managing and does not emit timestamp slots).
-  | 'neural-pack'
-  | 'neural-unpack'
-  | 'indirect-temporal-accum'
-  | 'atrous-indirect-0'
-  | 'atrous-indirect-1'
-  | 'atrous-indirect-2'
-  | 'atrous-indirect-3'
-  | 'indirect-combine'
-  | 'ddgi-border-irr'
-  | 'ddgi-border-vis'
+  'neural-pack',
+  'neural-unpack',
+  'indirect-temporal-accum',
+  'atrous-indirect-0',
+  'atrous-indirect-1',
+  'atrous-indirect-2',
+  'atrous-indirect-3',
+  'indirect-combine',
+  'ddgi-border-irr',
+  'ddgi-border-vis',
   // T2.H3 — PPG paper-faithful (Müller 2017) opt-in update pass
-  | 'ppg-update'
-  | 'temporalAccum'
-  | 'resolve'
-  | 'composite';
+  'ppg-update',
+  'temporalAccum',
+  'resolve',
+  'composite',
+] as const;
+
+export type PassLabel = typeof PASS_LABELS[number];
 
 /**
  * Worst-case slot count across all supported configurations (svgf-real + PPG +

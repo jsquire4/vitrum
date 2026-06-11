@@ -20,6 +20,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { GTAO_UBO } from './uboLayouts.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class GTAOPass implements Pass {
   readonly id = 'gtao' as const;
@@ -41,7 +42,7 @@ export class GTAOPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, inputs, width, height, gtaoDownscale, resourceCache } = ctx;
+    const { device, bglCache, resources, inputs, width, height, gtaoDownscale, resourceCache } = ctx;
     // AO compute downscale: 2 = half-res (`gtaoMode:'on'`), 4 = quarter-res
     // (`gtaoMode:'quarter'`). Clamp ≥ 1 so a bad value can't divide by zero.
     const ds = Math.max(1, Math.floor(gtaoDownscale));
@@ -97,11 +98,9 @@ export class GTAOPass implements Pass {
       resources.gtao.gtaoUboBuffer,
       resources.common.albedoTexture,
     ], buildGtaoBg) ?? buildGtaoBg();
-    const pass = encoder.beginComputePass(computeDesc('gtao'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgGtaoX, wgGtaoY, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gtao', {
+      dispatchOverride: { wgX: wgGtaoX, wgY: wgGtaoY },
+    });
   }
 
   dispose(): void {}

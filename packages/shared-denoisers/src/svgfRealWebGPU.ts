@@ -44,9 +44,9 @@ import {
 } from './atrousVarianceBindings.js';
 import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
-import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 import {
   uploadRgbAsRgba16f,
+  uploadRgbAsRgba32fPacked,
   uploadInterleavedRgAsRg32f,
   uploadR32f,
   uploadR32Uint,
@@ -240,21 +240,9 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   }
   if (opts.gbufferNormalsRgb != null) {
     // Upload packed normals to both curr and prev normal textures.
-    const bpr = alignedTextureCopyBytesPerRow(w, 16);
-    const stride = bpr / 4;
-    const normBuf = new Float32Array(stride * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const si = (y * w + x) * 3;
-        const o  = y * stride + x * 4;
-        normBuf[o]   = opts.gbufferNormalsRgb[si]     ?? 0.5;
-        normBuf[o+1] = opts.gbufferNormalsRgb[si + 1] ?? 0.5;
-        normBuf[o+2] = opts.gbufferNormalsRgb[si + 2] ?? 1.0;
-        normBuf[o+3] = 0;
-      }
-    }
-    device.queue.writeTexture({ texture: currNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
-    device.queue.writeTexture({ texture: prevNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
+    // Per-channel fallback: R→0.5, G→0.5, B→1.0 (packed octahedral +Z); alpha=0.
+    uploadRgbAsRgba32fPacked(device, currNormTex, opts.gbufferNormalsRgb, w, h, [0.5, 0.5, 1.0, 0.0]);
+    uploadRgbAsRgba32fPacked(device, prevNormTex, opts.gbufferNormalsRgb, w, h, [0.5, 0.5, 1.0, 0.0]);
   } else {
     fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
     fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);

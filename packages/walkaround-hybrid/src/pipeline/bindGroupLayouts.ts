@@ -24,43 +24,26 @@
 
 import { bglEntriesFor } from './bindGroupDescriptors.js';
 
-export interface BGLCache {
-  frame?: GPUBindGroupLayout;
-  scene?: GPUBindGroupLayout;
-  ubo?: GPUBindGroupLayout;
-  atrous?: GPUBindGroupLayout;
-  composite?: GPUBindGroupLayout;
-  accum?: GPUBindGroupLayout;
-  hybridLayers?: GPUBindGroupLayout;
-  /** Sprint 9 — sample-budget pass bind group layout. */
-  sampleBudget?: GPUBindGroupLayout;
-  /** Sprint 9 — resolve pass bind group layout. */
-  resolve?: GPUBindGroupLayout;
-  /** Motion-vector generation pass bind group layout. */
-  motionVectors?: GPUBindGroupLayout;
-  /** Sprint 15 — GTAO half-res compute pass bind group layout. */
-  gtao?: GPUBindGroupLayout;
-  /** Sprint 15 — GTAO bilateral upsample pass bind group layout. */
-  gtaoUpsample?: GPUBindGroupLayout;
-  /** Sprint 17 — GI temporal-reuse pass bind group layout. */
-  temporalGi?: GPUBindGroupLayout;
-  /** Sprint 17 — GI spatial-reuse pass bind group layout. */
-  spatialGi?: GPUBindGroupLayout;
-  /** Sprint 18 — indirect-blur + combine pass bind group layout. */
-  indirectCombine?: GPUBindGroupLayout;
-  /** Sprint 18 follow-up — indirect-channel pre-atrous temporal accumulator. */
-  indirectTemporalAccum?: GPUBindGroupLayout;
-  /** Light-tree DI light-selection BGL (RIS-only group 3). */
-  lightTree?: GPUBindGroupLayout;
-  /** ReGIR grid-build pass BGL (own group 0: combined buffer rw + emitters + ubo). */
-  regirBuild?: GPUBindGroupLayout;
-  /** NRC (Müller 2021) gi-ris @group(4) BGL — present ONLY when nrcEnabled is
-   *  compile-time on (MLP weights/biases + hash tables + level descs + record
-   *  gather + encoding-config UBO). */
-  nrc?: GPUBindGroupLayout;
-  /** Checkerboard pre-denoiser gap-fill pass BGL. */
-  cbPrefill?: GPUBindGroupLayout;
-}
+/**
+ * Universe of all bind-group layout cache keys (D3.16). Adding a new pass BGL
+ * = one string here + one `getBGL*` getter below. No other edits required.
+ */
+export const BGL_KEYS = [
+  'frame', 'scene', 'ubo', 'atrous', 'composite', 'accum',
+  'hybridLayers', 'sampleBudget', 'resolve', 'motionVectors',
+  'gtao', 'gtaoUpsample', 'temporalGi', 'spatialGi',
+  'indirectCombine', 'indirectTemporalAccum',
+  'lightTree', 'regirBuild', 'nrc', 'cbPrefill',
+] as const;
+
+export type BGLKey = typeof BGL_KEYS[number];
+
+/**
+ * Memoization cache for all bind-group layouts. `Partial<Record<…>>` is
+ * structurally identical to the prior 20-field optional interface (same keys,
+ * same `GPUBindGroupLayout | undefined` values) — no callers need to change.
+ */
+export type BGLCache = Partial<Record<BGLKey, GPUBindGroupLayout>>;
 
 // frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14/15)
 // are declared in bindGroupDescriptors.ts with per-binding rationale notes.

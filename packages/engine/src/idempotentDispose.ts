@@ -31,20 +31,26 @@ export interface GIStatePersistable {
 /**
  * Disposed-behaviour kinds for an optional Engine method, captured as data.
  *
- *   • 'noop'        — when disposed, swallow the call and return undefined.
- *                     (updatePrimitive/updateEmitter/addPrimitive/removePrimitive/
- *                      updateEnvironment/setSize/updateLighting)
- *   • 'null'        — when disposed, return null (for methods whose contract
- *                     return type is `T | null` — distinct from noop whose
- *                     return is `undefined`).
- *                     (getRestirPtResultBuffer)
- *   • 'empty-unsub' — the method returns an unsubscribe fn; when disposed, return
- *                     a no-op unsubscribe `() => {}` without forwarding.
- *                     (onFrame/onProgress)
- *   • 'throw'       — when disposed, throw (the engine is torn down; refuse).
- *                     (createInverseSession)
+ *   • 'noop'         — when disposed, swallow the call and return undefined.
+ *                      (updatePrimitive/updateEmitter/addPrimitive/removePrimitive/
+ *                       updateEnvironment/setSize/updateLighting/seedAccumulator)
+ *   • 'null'         — when disposed, return null synchronously (for methods
+ *                      whose contract return type is `T | null` — distinct from
+ *                      noop whose return is `undefined`).
+ *                      (getRestirPtResultBuffer/getScene/getProgressiveSeedTexture)
+ *   • 'promise-null' — when disposed, return `Promise.resolve(null)` (for async
+ *                      methods whose contract return type is `Promise<T | null>`).
+ *                      (captureFrame/exportGIState)
+ *   • 'value-false'  — when disposed, return `false` synchronously (for methods
+ *                      whose contract return type is `boolean`).
+ *                      (importGIState)
+ *   • 'empty-unsub'  — the method returns an unsubscribe fn; when disposed, return
+ *                      a no-op unsubscribe `() => {}` without forwarding.
+ *                      (onFrame/onProgress/onError)
+ *   • 'throw'        — when disposed, throw (the engine is torn down; refuse).
+ *                      (createInverseSession)
  */
-type DisposedBehavior = 'noop' | 'null' | 'empty-unsub' | 'throw';
+type DisposedBehavior = 'noop' | 'null' | 'promise-null' | 'value-false' | 'empty-unsub' | 'throw';
 
 type OptionalMethodName =
   | 'updatePrimitive'
@@ -58,7 +64,18 @@ type OptionalMethodName =
   | 'onProgress'
   | 'onError'
   | 'createInverseSession'
-  | 'getRestirPtResultBuffer';
+  | 'getRestirPtResultBuffer'
+  // Scene read-back — optional on Engine; all three shipping backends implement it.
+  | 'getScene'
+  // Async GPU→CPU pixel readback — optional on Engine; all three shipping backends.
+  | 'captureFrame'
+  // Progressive walkaround→PT seed source/sink (P8).
+  | 'getProgressiveSeedTexture'
+  | 'seedAccumulator'
+  // GI-state persistence — walkaround-hybrid only (not on Engine interface;
+  // carried via GIStatePersistable and cast at the forwarding site).
+  | 'exportGIState'
+  | 'importGIState';
 
 interface OptionalMethodProxy {
   readonly method: OptionalMethodName;
@@ -74,6 +91,8 @@ interface CapabilityGates {
   readonly primitivePatchAdvertised: boolean;
   readonly emitterPatchAdvertised: boolean;
   readonly addRemoveAdvertised: boolean;
+  readonly seedSourceAdvertised: boolean;
+  readonly accumulatorSeedAdvertised: boolean;
 }
 
 // The table reproduces EXACTLY the per-method disposed-behaviour of the prior
@@ -113,6 +132,43 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   // (the contract type is `unknown | null`, so null is the correct sentinel,
   // not undefined; use 'null' behavior not 'noop').
   { method: 'getRestirPtResultBuffer', disposedBehavior: 'null' },
+
+  // Scene read-back — optional on Engine; all three shipping backends implement
+  // it. Disposed → null: the contract says no method except state/capabilities
+  // is valid after dispose; the facade gives a uniform null regardless of whether
+  // the backend nulls its own scene reference on teardown.
+  { method: 'getScene', disposedBehavior: 'null' },
+
+  // Async GPU→CPU pixel readback — optional on Engine; all three shipping
+  // backends implement it. Disposed → Promise.resolve(null): no GPU resources
+  // remain; matches vanilla.ts's missing-method fallback semantics and the
+  // contract's "returns null before the first frame" guarantee.
+  { method: 'captureFrame', disposedBehavior: 'promise-null' },
+
+  // Progressive walkaround→PT seed source (P8). Gated on the dedicated
+  // capability. Disposed → null (no seed to expose; the engine is torn down).
+  {
+    method: 'getProgressiveSeedTexture',
+    disposedBehavior: 'null',
+    eligible: (c) => c.seedSourceAdvertised,
+  },
+
+  // Progressive walkaround→PT seed sink (P8). Gated on the dedicated capability.
+  // Disposed → noop (matches the other mutating-method disposed semantics).
+  {
+    method: 'seedAccumulator',
+    disposedBehavior: 'noop',
+    eligible: (c) => c.accumulatorSeedAdvertised,
+  },
+
+  // GI-state export (walkaround-hybrid only). Disposed → Promise.resolve(null):
+  // the atlases are torn down; no state to export. The engine is cast to
+  // Engine & Partial<GIStatePersistable> at the forwarding site.
+  { method: 'exportGIState', disposedBehavior: 'promise-null' },
+
+  // GI-state import (walkaround-hybrid only). Disposed → false: the atlases are
+  // torn down; the import is a no-op and returns the "not applied" sentinel.
+  { method: 'importGIState', disposedBehavior: 'value-false' },
 ];
 
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
@@ -149,10 +205,14 @@ export function wrapWithIdempotentDispose(
     : patchSupport.emitter;
   // Whole-primitive add/remove is gated on the dedicated capability.
   const addRemoveAdvertised = engine.capabilities.supportsAddRemovePrimitive === true;
+  const seedSourceAdvertised = engine.capabilities.supportsProgressiveSeedSource === true;
+  const accumulatorSeedAdvertised = engine.capabilities.supportsAccumulatorSeed === true;
   const caps: CapabilityGates = {
     primitivePatchAdvertised,
     emitterPatchAdvertised,
     addRemoveAdvertised,
+    seedSourceAdvertised,
+    accumulatorSeedAdvertised,
   };
 
   const proxy: Engine = {
@@ -187,93 +247,33 @@ export function wrapWithIdempotentDispose(
 
   // Data-driven optional-method forwarding. Each row reproduces the exact
   // disposed-behaviour of the prior hand-coded proxy (see OPTIONAL_METHOD_PROXIES).
+  // GI-state methods (exportGIState/importGIState) are not on the Engine interface;
+  // both giEngine and proxyWithGI are cast to Engine & Partial<GIStatePersistable>
+  // so the table loop can reach them without type errors.
+  type EngineWithGI = Engine & Partial<GIStatePersistable>;
+  const giEngine = engine as EngineWithGI;
+  const proxyWithGI = proxy as EngineWithGI;
   for (const spec of OPTIONAL_METHOD_PROXIES) {
-    const impl = engine[spec.method];
+    const impl = (giEngine as Record<OptionalMethodName, unknown>)[spec.method];
     if (impl == null) continue;
     if (spec.eligible && !spec.eligible(caps)) continue;
-    (proxy as Record<OptionalMethodName, unknown>)[spec.method] =
-      makeForward(engine, spec, () => disposed);
-  }
-
-  // GI-state persistence (walkaround-hybrid only) — forwarded when the backend
-  // implements it, with dispose-safe fallbacks that match the methods' own no-op
-  // semantics (export → null, import → false when atlases aren't available).
-  const giEngine = engine as Engine & Partial<GIStatePersistable>;
-  if (typeof giEngine.exportGIState === 'function') {
-    (proxy as Partial<GIStatePersistable>).exportGIState = () =>
-      disposed ? Promise.resolve(null) : giEngine.exportGIState!();
-  }
-  if (typeof giEngine.importGIState === 'function') {
-    (proxy as Partial<GIStatePersistable>).importGIState = (snapshot) =>
-      disposed ? false : giEngine.importGIState!(snapshot);
-  }
-
-  // Scene read-back (`getScene`). A value-returning read forwarded here (not via
-  // the OPTIONAL_METHOD_PROXIES table, which only models noop/empty-unsub/throw)
-  // so a host can reach the backend's retained canonical `Scene` through the
-  // wrapped engine instead of shadowing scene state. Disposed → null: the
-  // contract says no method except state/capabilities is valid after dispose, so
-  // the facade gives a uniform null regardless of whether the backend nulls its
-  // own scene reference on teardown (pt-webgpu) or keeps it (pt-webgl2/hybrid).
-  const sceneEngine = engine;
-  if (typeof sceneEngine.getScene === 'function') {
-    proxy.getScene = () => (disposed ? null : sceneEngine.getScene!());
-  }
-
-  // captureFrame — async GPU→CPU pixel readback. Forwarded here (not via the
-  // OPTIONAL_METHOD_PROXIES table, which only models synchronous disposed-behaviours)
-  // because the return type is `Promise<CapturedFrame | null>`. Disposed →
-  // `Promise.resolve(null)` (no GPU resources remain; matches vanilla.ts's
-  // missing-method fallback semantics and the contract's "returns null before the
-  // first frame" guarantee). Without this forwarding `engine.captureFrame` is
-  // always undefined through the facade, so vanilla.ts:593 returns
-  // `Promise.resolve(null)` on every call — readback is dead.
-  if (typeof engine.captureFrame === 'function') {
-    proxy.captureFrame = (opts) =>
-      disposed ? Promise.resolve(null) : engine.captureFrame!(opts);
-  }
-
-  // Progressive walkaround→PT seed source/sink (P8). These value-returning /
-  // bespoke-disposed-semantics methods are forwarded here (not via the
-  // OPTIONAL_METHOD_PROXIES table, which only models noop/empty-unsub/throw) so
-  // a host driving the handoff over `createEngine`-wrapped engines — most
-  // importantly `createProgressiveEngine`, which builds its coordinator over
-  // these wrapped engines — can actually reach them. WITHOUT this forwarding the
-  // ProgressiveHandoffCoordinator's `realtime.getProgressiveSeedTexture?.()` /
-  // `converged.seedAccumulator?.()` resolve to undefined and the seed silently
-  // no-ops (the two arms become byte-identical). Each is gated on its capability
-  // so a backend that doesn't advertise it stays unforwarded.
-  const seedEngine = engine;
-  if (
-    engine.capabilities.supportsProgressiveSeedSource === true &&
-    typeof seedEngine.getProgressiveSeedTexture === 'function'
-  ) {
-    proxy.getProgressiveSeedTexture = () =>
-      // Disposed → null (the engine is torn down; there is no seed to expose).
-      disposed ? null : seedEngine.getProgressiveSeedTexture!();
-  }
-  if (
-    engine.capabilities.supportsAccumulatorSeed === true &&
-    typeof seedEngine.seedAccumulator === 'function'
-  ) {
-    proxy.seedAccumulator = (seed, opts) => {
-      // Disposed → no-op (matches the other mutating-method disposed semantics).
-      if (disposed) return;
-      seedEngine.seedAccumulator!(seed, opts);
-    };
+    (proxyWithGI as Record<OptionalMethodName, unknown>)[spec.method] =
+      makeForward(giEngine, spec, () => disposed);
   }
 
   return proxy;
 }
 
 /** Build a forwarding wrapper for one optional method that reproduces the
- *  given disposed-behaviour. Variadic args are passed through verbatim. */
+ *  given disposed-behaviour. Variadic args are passed through verbatim.
+ *  The engine parameter is `Engine & Partial<GIStatePersistable>` so the
+ *  table-loop can forward GI-state methods (not on the Engine interface). */
 function makeForward(
-  engine: Engine,
+  engine: Engine & Partial<GIStatePersistable>,
   spec: OptionalMethodProxy,
   isDisposed: () => boolean,
 ): (...args: unknown[]) => unknown {
-  const impl = engine[spec.method] as (...args: unknown[]) => unknown;
+  const impl = (engine as Record<OptionalMethodName, unknown>)[spec.method] as (...args: unknown[]) => unknown;
   switch (spec.disposedBehavior) {
     case 'noop':
       return (...args: unknown[]) => {
@@ -283,6 +283,16 @@ function makeForward(
     case 'null':
       return (...args: unknown[]) => {
         if (isDisposed()) return null;
+        return impl.apply(engine, args);
+      };
+    case 'promise-null':
+      return (...args: unknown[]) => {
+        if (isDisposed()) return Promise.resolve(null);
+        return impl.apply(engine, args);
+      };
+    case 'value-false':
+      return (...args: unknown[]) => {
+        if (isDisposed()) return false;
         return impl.apply(engine, args);
       };
     case 'empty-unsub':

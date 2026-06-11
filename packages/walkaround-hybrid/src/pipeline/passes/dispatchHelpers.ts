@@ -42,11 +42,22 @@ export function dispatchSingleBindGroup(
     readonly wg16?: boolean;
     readonly half?: boolean;
     readonly extraGroups?: ReadonlyArray<{ readonly slot: number; readonly group: GPUBindGroup }>;
+    /**
+     * Override the workgroup counts directly, bypassing the standard
+     * `wgX/wgY` / `wg16` / `half` logic. Used by passes that compute their
+     * own per-frame workgroup dimensions (e.g. GTAOPass, which divides by the
+     * runtime downscale factor).
+     */
+    readonly dispatchOverride?: { readonly wgX: number; readonly wgY: number };
   } = {},
 ): void {
   const { encoder, computeDesc, wgX, wgY, wgX16, wgY16, halfWgX, halfWgY } = ctx;
-  const dx = opts.half ? halfWgX : opts.wg16 ? wgX16 : wgX;
-  const dy = opts.half ? halfWgY : opts.wg16 ? wgY16 : wgY;
+  const dx = opts.dispatchOverride
+    ? opts.dispatchOverride.wgX
+    : opts.half ? halfWgX : opts.wg16 ? wgX16 : wgX;
+  const dy = opts.dispatchOverride
+    ? opts.dispatchOverride.wgY
+    : opts.half ? halfWgY : opts.wg16 ? wgY16 : wgY;
   const pass = encoder.beginComputePass(computeDesc(label));
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bg);

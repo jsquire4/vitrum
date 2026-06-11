@@ -10,9 +10,21 @@ import {
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { uploadRgbAsRgba32f, readRgba32fToRgb } from './webGpuTextureUpload.js';
+import { defineUbo } from '@vitrum/shared-samplers';
 
 /** Default luminance edge-stop σ for `runHdrLuminanceBilateralWebGPU` (matches Cornell `vitrumWgslSigma`). */
 export const HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE = 0.06 as const;
+
+// ── BilateralParams UBO (defineUbo pattern, D12.4) ───────────────────────────
+// Mirrors `BilateralParams` in `wgsl/hdrLuminanceBilateral.wgsl.ts`:
+//   struct BilateralParams { sigmaLuminance: f32, _pad1: f32, _pad2: f32, _pad3: f32 };
+// Layout: 4 × f32 = 16 bytes (WebGPU minimum uniform-binding size).
+// Only `sigmaLuminance` at offset 0 is consumed; pads are zero-filled by pack.
+const HDR_BILATERAL_UBO = defineUbo([
+  { name: 'sigmaLuminance', type: 'f32' },
+] as const);
+
+const HDR_BILATERAL_UBO_SIZE_BYTES = HDR_BILATERAL_UBO.sizeBytes;
 
 export interface HdrLuminanceBilateralWebGPUOptions {
   readonly rgb: Float32Array;
@@ -80,16 +92,16 @@ export async function runHdrLuminanceBilateralWebGPU(
   // Upload tight RGB as rgba32float (alpha=1) via the shared helper.
   uploadRgbAsRgba32f(device, texIn, rgb, w, h);
 
-  // BilateralParams UBO: 4 × f32 = 16 bytes.
-  const HDR_BILATERAL_UBO_SIZE_BYTES = 16;
+  // BilateralParams UBO — packed via defineUbo (byte-identical to the prior
+  // hand-rolled Float32Array(4) layout: sigmaLuminance at offset 0, pads zero).
+  const uboScratch = new ArrayBuffer(HDR_BILATERAL_UBO_SIZE_BYTES);
+  HDR_BILATERAL_UBO.pack(new DataView(uboScratch), 0, { sigmaLuminance: sigma });
   const ubo = device.createBuffer({
     label: 'hdr-bilateral-ubo',
     size: HDR_BILATERAL_UBO_SIZE_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  const uboData = new Float32Array(4);
-  uboData[0] = sigma;
-  device.queue.writeBuffer(ubo, 0, uboData.buffer);
+  device.queue.writeBuffer(ubo, 0, uboScratch);
 
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),

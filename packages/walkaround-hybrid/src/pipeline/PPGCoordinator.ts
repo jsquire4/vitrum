@@ -22,7 +22,7 @@ import { refineDTree } from '../ppg/dTree.js';
 import { serialiseSTree, deserialiseSTree, type SerialisedSTree } from '../ppg/serialise.js';
 import { PPG_MIS_ALPHA, PPG_FLUX_DECAY } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
-import { allocatePPGResources, type FrameResources } from './resourceManager.js';
+import { allocatePPGResources, type FrameResources, type PPGFrameResources } from './resourceManager.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
 /**
@@ -38,6 +38,15 @@ import type { PipelineSubsystem } from './PipelineSubsystem.js';
  */
 function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: number } }): AABB {
   return deriveSceneAABBFromBvhPositions(bvh);
+}
+
+/**
+ * Type guard — returns `true` when `ppg` is a fully-allocated
+ * `PPGFrameResources` (i.e. `allocatePPGResources` was called). Distinguishes
+ * the PPG-enabled state from the empty-record default.
+ */
+function isPPGAllocated(ppg: FrameResources['ppg']): ppg is PPGFrameResources {
+  return 'sTreeBuf' in ppg;
 }
 
 /**
@@ -129,9 +138,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     // splits begin.
     this._sceneAABB = derivePPGSceneAABB(bvhBuffers);
     this._sTree = buildSTree(this._sceneAABB);
-    allocatePPGResources(
+    frameResources.ppg = allocatePPGResources(
       this._device,
-      frameResources,
       width,
       height,
       maxSpatialCells !== undefined ? { maxSpatialCells } : undefined,
@@ -158,9 +166,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     // Forward the same maxSpatialCells cap used at initialize() time so a
     // tree that has grown past the default 1024-cell cap doesn't overflow
     // the re-allocated buffer on resize.
-    allocatePPGResources(
+    frameResources.ppg = allocatePPGResources(
       this._device,
-      frameResources,
       width,
       height,
       this._maxSpatialCells !== undefined ? { maxSpatialCells: this._maxSpatialCells } : undefined,
@@ -189,10 +196,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     intervalFrames: number = PPGCoordinator._DEFAULT_READBACK_INTERVAL_FRAMES,
   ): void {
     if (!this._enabled || this._sTree == null) return;
-    const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
-    const offsetsBuf = frameResources.ppg.dTreeOffsetsBuf;
-    const cellCountsBuf = frameResources.ppg.cellSampleCountsBuf;
-    if (!fluxAtomicsBuf || !offsetsBuf || !cellCountsBuf) return;
+    if (!isPPGAllocated(frameResources.ppg)) return;
+    const { fluxAtomicsBuf, dTreeOffsetsBuf: offsetsBuf, cellSampleCountsBuf: cellCountsBuf } = frameResources.ppg;
     if (this._fluxReadbackInFlight) return;
     if (this._lastFluxReadbackFrame >= 0
       && frameCount - this._lastFluxReadbackFrame < intervalFrames) {
@@ -410,8 +415,8 @@ export class PPGCoordinator implements PipelineSubsystem {
    */
   private _uploadTree(frameResources: FrameResources): void {
     if (!this._enabled || !this._sTree) return;
+    if (!isPPGAllocated(frameResources.ppg)) return;
     const ppg = frameResources.ppg;
-    if (!ppg.sTreeBuf || !ppg.dTreeBuf || !ppg.dTreeOffsetsBuf) return;
     // Item A — overflow guard. `serialiseSTree` with NO clamp sums every CPU
     // dTree's full node count; a host that allocated with
     // `maxDTreeNodesPerCell < 341` (while `refineDTree` still grows dTrees up to
@@ -439,10 +444,8 @@ export class PPGCoordinator implements PipelineSubsystem {
    * tree, matching the historical path.
    */
   private _deriveMaxDTreeNodesPerCell(frameResources: FrameResources): number | undefined {
-    const ppg = frameResources.ppg;
-    const fluxAtomicsBuf = ppg.fluxAtomicsBuf;
-    const offsetsBuf = ppg.dTreeOffsetsBuf;
-    if (!fluxAtomicsBuf || !offsetsBuf) return undefined;
+    if (!isPPGAllocated(frameResources.ppg)) return undefined;
+    const { fluxAtomicsBuf, dTreeOffsetsBuf: offsetsBuf } = frameResources.ppg;
     const maxSpatialCells = Math.max(1, Math.floor(offsetsBuf.size / 4));
     return Math.max(1, Math.floor((fluxAtomicsBuf.size / 4) / maxSpatialCells));
   }
@@ -460,12 +463,10 @@ export class PPGCoordinator implements PipelineSubsystem {
     height: number,
   ): void {
     if (!this._enabled) return;
-    const buf = frameResources.ppg.updateUboBuffer;
-    if (!buf) return;
-    const fluxAtomics = frameResources.ppg.fluxAtomicsBuf;
-    const fluxBudget = fluxAtomics ? Math.floor(fluxAtomics.size / 4) : 0;
-    const cellCounts = frameResources.ppg.cellSampleCountsBuf;
-    const sampleCountBudget = cellCounts ? Math.floor(cellCounts.size / 4) : 0;
+    if (!isPPGAllocated(frameResources.ppg)) return;
+    const { updateUboBuffer: buf, fluxAtomicsBuf: fluxAtomics, cellSampleCountsBuf: cellCounts } = frameResources.ppg;
+    const fluxBudget = Math.floor(fluxAtomics.size / 4);
+    const sampleCountBudget = Math.floor(cellCounts.size / 4);
     const halfW = Math.max(1, Math.floor(width / 2));
     const halfH = Math.max(1, Math.floor(height / 2));
     const data = new ArrayBuffer(16);
@@ -500,9 +501,8 @@ export class PPGCoordinator implements PipelineSubsystem {
   ): void {
     const sTree = this._sTree;
     if (!sTree) return;
-    const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
-    const cellCountsBuf = frameResources.ppg.cellSampleCountsBuf;
-    if (!fluxAtomicsBuf || !cellCountsBuf) return;
+    if (!isPPGAllocated(frameResources.ppg)) return;
+    const { fluxAtomicsBuf, cellSampleCountsBuf: cellCountsBuf } = frameResources.ppg;
 
     const activeCells = Math.min(sTree.dTrees.length, maxSpatialCells);
     // RUNAWAY FIX — Müller §5 per-window decay of the persistent flux

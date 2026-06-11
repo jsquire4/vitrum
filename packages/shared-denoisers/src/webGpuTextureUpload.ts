@@ -80,6 +80,44 @@ export function uploadRgbAsRgba16f(
   });
 }
 
+/**
+ * Tight RGB (length w*h*3) → rgba32float texture with configurable per-channel
+ * fallback values and alpha fill.
+ *
+ * Unlike `uploadRgbAsRgba32f` (which hard-codes fallback=0 and alpha=1), this
+ * variant lets the caller supply a `fallbackRgba` tuple that is used:
+ *   • per R/G/B channel when the source array has no value at that index
+ *     (the `?? fallback[ch]` guard, matching the SVGF normal-texture upload
+ *     convention where the packed-normal rest pose is (0.5, 0.5, 1.0, 0.0))
+ *   • as the constant alpha written to every texel (`.w` is always `fallbackRgba[3]`
+ *     regardless of source length)
+ *
+ * Default rest pose: `[0.5, 0.5, 1.0, 0.0]` (packed octahedral +Z normal,
+ * alpha=0 — the SVGF gbuffer normal texture convention).
+ */
+export function uploadRgbAsRgba32fPacked(
+  device: GPUDevice,
+  texture: GPUTexture,
+  rgb: Float32Array,
+  width: number,
+  height: number,
+  fallbackRgba: readonly [number, number, number, number] = [0.5, 0.5, 1.0, 0.0],
+): void {
+  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const si = (y * width + x) * 3;
+        const o  = row + x * 4;
+        buf[o]     = rgb[si]     ?? fallbackRgba[0];
+        buf[o + 1] = rgb[si + 1] ?? fallbackRgba[1];
+        buf[o + 2] = rgb[si + 2] ?? fallbackRgba[2];
+        buf[o + 3] = fallbackRgba[3];
+      }
+    }
+  });
+}
+
 /** Tight RGB (length w*h*3) → rgba32float texture; alpha forced to 1. */
 export function uploadRgbAsRgba32f(
   device: GPUDevice,

@@ -80,6 +80,15 @@ import {
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
 import { buildPpgUpdateWgsl } from '../ppg/ppgUpdate.wgsl.js';
 
+/**
+ * Keys in `CompiledPipelines` whose value type is `GPUComputePipeline` (not
+ * `GPURenderPipeline`, not optional). Derived from the interface rather than
+ * hand-maintained so it stays in sync automatically (D3.15).
+ */
+type ComputePipelineKey = {
+  [K in keyof Required<CompiledPipelines>]: Required<CompiledPipelines>[K] extends GPUComputePipeline ? K : never;
+}[keyof Required<CompiledPipelines>];
+
 interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
   /** T2.H3 — PPG update kernel (training on L_i, Müller §3.3). */
@@ -297,54 +306,61 @@ export async function compilePipelines(
     bindGroupLayouts: [getIndirectTemporalAccumBindGroupLayout(device, bglCache)],
   });
 
-  // Compile compute pipelines in parallel.
-  const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
-    await Promise.all([
-      device.createComputePipelineAsync({ label: 'ris',      layout: risLayout,     compute: { module: risSM,      entryPoint: 'risMain'      } }),
-      device.createComputePipelineAsync({ label: 'temporal', layout: computeLayout, compute: { module: temporalSM, entryPoint: 'temporalMain' } }),
-      device.createComputePipelineAsync({ label: 'spatial',  layout: computeLayout, compute: { module: spatialSM,  entryPoint: 'spatialMain'  } }),
-      device.createComputePipelineAsync({ label: 'shade',    layout: shadeLayout,   compute: { module: shadeSM,    entryPoint: 'shadeMain'    } }),
-    ]);
-  const motionVectorsPipeline = await device.createComputePipelineAsync({
-    label: 'motion-vectors',
-    layout: motionVectorsLayout,
-    compute: { module: motionVectorsSM, entryPoint: 'motionVectorsMain' },
-  });
-
-  const atrousPipeline = await device.createComputePipelineAsync({
-    label: 'atrous', layout: atrousLayout,
-    compute: { module: atrousSM, entryPoint: 'atrousMain' },
-  });
-
-  // Sprint 9 — adaptive sampling pipelines + checkerboard pre-denoiser fill.
-  const [sampleBudgetPipeline, resolvePipeline, cbPrefillPipeline] = await Promise.all([
-    device.createComputePipelineAsync({
-      label: 'sample-budget', layout: sampleBudgetLayout,
-      compute: { module: sampleBudgetSM, entryPoint: 'sampleBudgetKernel' },
-    }),
-    device.createComputePipelineAsync({
-      label: 'resolve', layout: resolveLayout,
-      compute: { module: resolveSM, entryPoint: 'resolveKernel' },
-    }),
-    device.createComputePipelineAsync({
-      label: 'cb-prefill', layout: cbPrefillLayout,
-      compute: { module: cbPrefillSM, entryPoint: 'cbPrefillKernel' },
-    }),
-  ]);
-
-  // Sprint 15 — GTAO pipelines.
+  // Sprint 15 — GTAO shader modules (needed by PIPELINE_SPECS table below).
   const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, WGSL_MODULES) });
   const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES) });
-  const [gtaoPipeline, gtaoUpsamplePipeline] = await Promise.all([
-    device.createComputePipelineAsync({
-      label: 'gtao', layout: gtaoLayout,
-      compute: { module: gtaoSM, entryPoint: 'gtaoMain' },
+
+  // Sprint 18 — indirect-combine + indirect-temporal-accum modules.
+  const indirectCombineSM = device.createShaderModule({
+    label: 'indirectCombine',
+    code: composeWgsl(INDIRECT_COMBINE_MODULE, WGSL_MODULES),
+  });
+  const indirectTemporalAccumSM = device.createShaderModule({
+    label: 'indirectTemporalAccum',
+    code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, WGSL_MODULES),
+  });
+  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES) });
+
+  /**
+   * Always-on compute pipelines (D3.15 extensibility table). Adding an
+   * always-on pipeline = one row here + the corresponding field in
+   * `CompiledPipelines`. Conditional / opt-in pipelines (risGi/temporalGi/
+   * spatialGi/ppgUpdate/regirBuild) and the composite render pipeline stay
+   * below because they require non-trivial per-pipeline conditional logic.
+   */
+  const PIPELINE_SPECS: ReadonlyArray<{
+    readonly key: ComputePipelineKey;
+    readonly module: GPUShaderModule;
+    readonly layout: GPUPipelineLayout;
+    readonly entryPoint: string;
+  }> = [
+    { key: 'risPipeline',                  module: risSM,                layout: risLayout,                  entryPoint: 'risMain'                  },
+    { key: 'temporalPipeline',             module: temporalSM,           layout: computeLayout,              entryPoint: 'temporalMain'             },
+    { key: 'spatialPipeline',              module: spatialSM,            layout: computeLayout,              entryPoint: 'spatialMain'              },
+    { key: 'shadePipeline',                module: shadeSM,              layout: shadeLayout,                entryPoint: 'shadeMain'                },
+    { key: 'motionVectorsPipeline',        module: motionVectorsSM,      layout: motionVectorsLayout,        entryPoint: 'motionVectorsMain'        },
+    { key: 'atrousPipeline',               module: atrousSM,             layout: atrousLayout,               entryPoint: 'atrousMain'               },
+    { key: 'sampleBudgetPipeline',         module: sampleBudgetSM,       layout: sampleBudgetLayout,         entryPoint: 'sampleBudgetKernel'       },
+    { key: 'resolvePipeline',              module: resolveSM,            layout: resolveLayout,              entryPoint: 'resolveKernel'            },
+    { key: 'cbPrefillPipeline',            module: cbPrefillSM,          layout: cbPrefillLayout,            entryPoint: 'cbPrefillKernel'          },
+    { key: 'gtaoPipeline',                 module: gtaoSM,               layout: gtaoLayout,                 entryPoint: 'gtaoMain'                 },
+    { key: 'gtaoUpsamplePipeline',         module: gtaoUpsampleSM,       layout: gtaoUpsampleLayout,         entryPoint: 'gtaoUpsampleMain'         },
+    { key: 'indirectCombinePipeline',      module: indirectCombineSM,    layout: indirectCombineLayout,      entryPoint: 'indirectCombineMain'      },
+    { key: 'indirectTemporalAccumPipeline',module: indirectTemporalAccumSM, layout: indirectTemporalAccumLayout, entryPoint: 'indirectTemporalAccumMain' },
+    { key: 'accumPipeline',                module: accumSM,              layout: accumLayout,                entryPoint: 'temporalAccumMain'        },
+  ] as const;
+
+  // Compile all always-on compute pipelines in parallel via the spec table.
+  const pipelineDraft: Partial<CompiledPipelines> = {};
+  await Promise.all(
+    PIPELINE_SPECS.map(async ({ key, module, layout, entryPoint }) => {
+      pipelineDraft[key] = await device.createComputePipelineAsync({
+        label: key.replace(/Pipeline$/, ''),
+        layout,
+        compute: { module, entryPoint },
+      });
     }),
-    device.createComputePipelineAsync({
-      label: 'gtao-upsample', layout: gtaoUpsampleLayout,
-      compute: { module: gtaoUpsampleSM, entryPoint: 'gtaoUpsampleMain' },
-    }),
-  ]);
+  );
 
   // Sprint 16 — ReSTIR-GI RIS pipeline. Reuses the existing shadeLayout
   // (frame + scene + ubo + hybrid-layers) so it can re-cast the primary ray
@@ -371,7 +387,7 @@ export async function compilePipelines(
         ],
       })
     : shadeLayout;
-  const risGiPipeline = await device.createComputePipelineAsync({
+  pipelineDraft['risGiPipeline'] = await device.createComputePipelineAsync({
     label: 'risGi', layout: risGiLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
@@ -388,7 +404,7 @@ export async function compilePipelines(
     label: 'spatialGi',
     code: composeWgsl(grisOn ? SPATIAL_GI_GRIS_MODULE : SPATIAL_GI_MODULE, WGSL_MODULES),
   });
-  const [temporalGiPipeline, spatialGiPipeline] = await Promise.all([
+  [pipelineDraft['temporalGiPipeline'], pipelineDraft['spatialGiPipeline']] = await Promise.all([
     device.createComputePipelineAsync({
       label: 'temporalGi', layout: temporalGiLayout,
       compute: { module: temporalGiSM, entryPoint: 'temporalGiMain' },
@@ -399,36 +415,8 @@ export async function compilePipelines(
     }),
   ]);
 
-  // Sprint 18 — indirect-combine pipeline.
-  const indirectCombineSM = device.createShaderModule({
-    label: 'indirectCombine',
-    code: composeWgsl(INDIRECT_COMBINE_MODULE, WGSL_MODULES),
-  });
-  const indirectCombinePipeline = await device.createComputePipelineAsync({
-    label: 'indirectCombine',
-    layout: indirectCombineLayout,
-    compute: { module: indirectCombineSM, entryPoint: 'indirectCombineMain' },
-  });
-
-  // Sprint 18 follow-up — indirect pre-atrous temporal accumulator.
-  const indirectTemporalAccumSM = device.createShaderModule({
-    label: 'indirectTemporalAccum',
-    code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, WGSL_MODULES),
-  });
-  const indirectTemporalAccumPipeline = await device.createComputePipelineAsync({
-    label: 'indirectTemporalAccum',
-    layout: indirectTemporalAccumLayout,
-    compute: { module: indirectTemporalAccumSM, entryPoint: 'indirectTemporalAccumMain' },
-  });
-
-  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES) });
-  const accumPipeline = await device.createComputePipelineAsync({
-    label: 'temporalAccum', layout: accumLayout,
-    compute: { module: accumSM, entryPoint: 'temporalAccumMain' },
-  });
-
-  // Composite render pipeline.
-  const compositePipeline = await device.createRenderPipelineAsync({
+  // Composite render pipeline (not in PIPELINE_SPECS — GPURenderPipeline, not compute).
+  pipelineDraft['compositePipeline'] = await device.createRenderPipelineAsync({
     label: 'composite',
     layout: compositeLayout,
     vertex:   { module: compVertSM, entryPoint: 'vertMain' },
@@ -445,7 +433,6 @@ export async function compilePipelines(
   // kernel is the only standalone PPG training pass.
   // H29: the WGSL MAX_DTREE_NODES_PER_CELL is built from the live allocation
   // value (opts.ppgMaxDTreeNodesPerCell) so the shader and host stride agree.
-  let ppgUpdatePipeline: GPUComputePipeline | undefined;
   if (opts?.ppgEnabled) {
     const ppgMaxDTreeNodesPerCell = opts?.ppgMaxDTreeNodesPerCell ?? 341;
     const ppgUpdateModule = {
@@ -460,7 +447,7 @@ export async function compilePipelines(
       console.error('[ReSTIR] PPG shader compile errors in \'ppg-update\':', errs.map(e => `line ${e.lineNum}: ${e.message}`));
       throw new Error(`[ReSTIR] PPG shader compile error in 'ppg-update': ${errs[0]!.message}`);
     }
-    ppgUpdatePipeline = await device.createComputePipelineAsync({
+    pipelineDraft['ppgUpdatePipeline'] = await device.createComputePipelineAsync({
       label: 'ppg-update', layout: 'auto',
       compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
     });
@@ -473,7 +460,6 @@ export async function compilePipelines(
   // Its own single bind group (combined light-tree + grid buffer read_write,
   // emitters, ubo). Compiled only when requested so non-ReGIR engines pay no
   // boot cost and the buffer stays read-only on every other layout.
-  let regirBuildPipeline: GPUComputePipeline | undefined;
   if (opts?.regirEnabled) {
     const regirBuildSM = device.createShaderModule({
       label: 'regir-build',
@@ -489,7 +475,7 @@ export async function compilePipelines(
     const regirBuildLayout = device.createPipelineLayout({
       bindGroupLayouts: [getRegirBuildBindGroupLayout(device, bglCache)],
     });
-    regirBuildPipeline = await device.createComputePipelineAsync({
+    pipelineDraft['regirBuildPipeline'] = await device.createComputePipelineAsync({
       label: 'regir-build', layout: regirBuildLayout,
       compute: { module: regirBuildSM, entryPoint: 'regirBuildMain' },
     });
@@ -502,28 +488,6 @@ export async function compilePipelines(
     console.log('[ReSTIR] All pipelines compiled successfully');
   }
 
-  return {
-    risPipeline,
-    temporalPipeline,
-    spatialPipeline,
-    shadePipeline,
-    motionVectorsPipeline,
-    atrousPipeline,
-    accumPipeline,
-    compositePipeline,
-    sampleBudgetPipeline,
-    resolvePipeline,
-    cbPrefillPipeline,
-    gtaoPipeline,
-    gtaoUpsamplePipeline,
-    risGiPipeline,
-    temporalGiPipeline,
-    spatialGiPipeline,
-    indirectCombinePipeline,
-    indirectTemporalAccumPipeline,
-    // T2.H3 — PPG update pipeline (Müller 2017): only present when ppgEnabled.
-    ...(ppgUpdatePipeline !== undefined ? { ppgUpdatePipeline } : {}),
-    // ReGIR grid-build (Boksansky 2021): only present when regirEnabled.
-    ...(regirBuildPipeline !== undefined ? { regirBuildPipeline } : {}),
-  };
+  // All pipelines accumulated into pipelineDraft — assert completeness.
+  return pipelineDraft as CompiledPipelines;
 }

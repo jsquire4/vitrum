@@ -8,12 +8,15 @@
  * shared {@link PassRegistry}. Frame-level dispatch becomes a simple
  * `for (const pass of registry.activePasses(opts)) pass.dispatch(ctx)`.
  *
- * Adding a pass:
+ * Adding a pass requires exactly three edits:
  *   1. Add a `*Pass.ts` file under this directory implementing {@link Pass}.
+ *      Declare `passLabels` (the timestamp-query slot labels the pass emits).
  *   2. Add a `register(new YourPass(...))` line in
  *      {@link WalkaroundGPUPipeline.initialize} after the compile step.
- *   3. Declare its `passLabels` so `buildPassLayout` accounts for its
- *      timestamp-query slots automatically.
+ *   3. Add an entry to {@link NON_DENOISER_PASS_ORDER} in `passOrder.ts` at the
+ *      correct topological position. This wires the new labels into the
+ *      timestamp-query layout ({@link buildPassLayout}) automatically — no edits
+ *      to `timestampQueries.ts` are required for non-denoiser passes.
  *
  * No edits to `renderFrame`, `pipelineCompiler`, `bindGroupBuilders`,
  * `bindGroupLayouts`, or `timestampQueries` are required.

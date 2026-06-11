@@ -19,7 +19,7 @@
 
 import type { EngineCapabilities, Scene } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
-import { mergeWorldSpaceFromCore, type WorldSpaceMergeResult, type MergedMeshVertexRange } from '@vitrum/shared-bvh';
+import { mergeWorldSpaceFromCore, mergeUv1FromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
@@ -115,7 +115,8 @@ export function buildSceneTextures(
   // Build a merged uv1 array from the scene primitives using the same vertex-range
   // ordering that mergeWorldSpaceFromCore used. Falls back to uv0 per vertex when a
   // primitive carries no uv1 (see packAttributesArray).
-  const mergedUv1 = buildMergedUv1(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  // D10.7: uses mergeUv1FromCore from @vitrum/shared-bvh, colocated with worldSpaceMerge.ts.
+  const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const attrData = packAttributesArray(
     mergedUv1 != null ? { ...merged, uv1: mergedUv1 } : merged,
   );
@@ -164,80 +165,6 @@ export function buildSceneTextures(
   };
 
   return { textures, merged, warnings, supported };
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// UV1 merge helper — builds a per-vertex uv1 array in merged vertex order.
-// ──────────────────────────────────────────────────────────────────────────
-
-/**
- * Build a merged uv1 array (stride 2, same vertex order as `merged.uvs`) from
- * the source scene primitives.  The `meshVertexRanges` from `mergeWorldSpaceFromCore`
- * provide the mapping: ranges[i].vertexStart/vertexCount tell us which slice of the
- * merged vertex array corresponds to the i-th source primitive instance.
- *
- * When a primitive carries no `uv1`, that slice is left zero (the caller's
- * `packAttributesArray` will substitute uv0 per vertex for any vertex whose uv1 is
- * zero only when the whole `uv1` array is undefined; here we return undefined when
- * NO primitive in the scene carries uv1 — packAttributesArray then falls back to
- * uv0 for every vertex).
- *
- * For instanced-mesh primitives mergeWorldSpaceFromCore pushes one range per
- * instance; all instances share the same source uv1 array (instance transforms do
- * not affect UV channels).
- */
-function buildMergedUv1(
-  scene: Scene,
-  ranges: readonly MergedMeshVertexRange[],
-  totalVertexCount: number,
-): Float32Array | undefined {
-  // Collect mesh-like primitives in the same filter order mergeWorldSpaceFromCore uses.
-  // We don't import isMeshLike, but the practical set is mesh/instanced-mesh/skinned-mesh.
-  const meshLike = scene.primitives.filter(
-    (p): p is Extract<typeof p, { positions: Float32Array; uv1?: Float32Array }> =>
-      p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh',
-  );
-
-  // Check whether any primitive carries uv1; skip allocation if none do.
-  const anyUv1 = meshLike.some((p) => p.uv1 != null && p.uv1.length > 0);
-  if (!anyUv1) return undefined;
-
-  const out = new Float32Array(totalVertexCount * 2);
-
-  // Walk ranges in order — each range corresponds to one primitive instance.
-  // We match ranges to primitives by id (the merge pushes one range per primitive
-  // instance, all sharing the primitive's name).  Use a range-index cursor that
-  // advances through meshLike in iteration order so we handle instanced-mesh
-  // (multiple ranges per primitive) correctly.
-  let rangeIdx = 0;
-  for (const prim of meshLike) {
-    const localVertexCount = Math.floor(prim.positions.length / 3);
-    if (localVertexCount < 3) continue;
-
-    // Determine the instance count: instanced-mesh has N instances → N ranges;
-    // other kinds have 1 transform → 1 range.
-    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
-
-    for (let inst = 0; inst < instanceCount; inst += 1) {
-      const range: MergedMeshVertexRange | undefined = ranges[rangeIdx];
-      if (range == null) break;
-      rangeIdx += 1;
-
-      // If this primitive has no uv1, the out slice stays zero (fallback handled
-      // by packAttributesArray — here we return the array non-undefined because
-      // anyUv1 is true, so other prims fill their slices).
-      const src = prim.uv1;
-      if (src == null) continue;
-
-      const { vertexStart, vertexCount } = range;
-      for (let v = 0; v < vertexCount; v += 1) {
-        out[(vertexStart + v) * 2] = src[v * 2] ?? 0;
-        out[(vertexStart + v) * 2 + 1] = src[v * 2 + 1] ?? 0;
-      }
-    }
-  }
-
-  return out;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

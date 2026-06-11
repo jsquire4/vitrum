@@ -591,3 +591,70 @@ export function mergeWorldSpaceFromCore(
     triangleCount,
   };
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// UV1 merge helper — colocated with mergeWorldSpaceFromCore because it depends on
+// the same range-assignment logic (MergedMeshVertexRange ordering).
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build a merged UV1 array (stride 2, same vertex order as `merged.uvs`) from the
+ * source scene primitives.  The `meshVertexRanges` from `mergeWorldSpaceFromCore`
+ * provide the mapping: ranges[i].vertexStart/vertexCount tell us which slice of
+ * the merged vertex array corresponds to the i-th source primitive instance.
+ *
+ * Returns `undefined` when NO primitive in the scene carries uv1 — the caller's
+ * attribute packer then falls back to uv0 for every vertex.
+ *
+ * For instanced-mesh primitives, `mergeWorldSpaceFromCore` pushes one range per
+ * instance; all instances share the same source uv1 array (instance transforms do
+ * not affect UV channels).
+ *
+ * D10.7 — colocated with worldSpaceMerge.ts: the range ordering contract is defined
+ * here, and any change to the range-push logic in `mergeWorldSpaceFromCore` must
+ * also update this function to stay in sync.
+ *
+ * @param scene   The same `Scene` passed to `mergeWorldSpaceFromCore`.
+ * @param ranges  `WorldSpaceMergeResult.meshVertexRanges` from `mergeWorldSpaceFromCore`.
+ * @param totalVertexCount `WorldSpaceMergeResult.vertexCount`.
+ */
+export function mergeUv1FromCore(
+  scene: Scene,
+  ranges: readonly MergedMeshVertexRange[],
+  totalVertexCount: number,
+): Float32Array | undefined {
+  const meshLike = scene.primitives.filter(
+    (p): p is Extract<typeof p, { positions: Float32Array; uv1?: Float32Array }> =>
+      p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh',
+  );
+
+  const anyUv1 = meshLike.some((p) => p.uv1 != null && p.uv1.length > 0);
+  if (!anyUv1) return undefined;
+
+  const out = new Float32Array(totalVertexCount * 2);
+
+  let rangeIdx = 0;
+  for (const prim of meshLike) {
+    const localVertexCount = Math.floor(prim.positions.length / 3);
+    if (localVertexCount < 3) continue;
+
+    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
+
+    for (let inst = 0; inst < instanceCount; inst += 1) {
+      const range: MergedMeshVertexRange | undefined = ranges[rangeIdx];
+      if (range == null) break;
+      rangeIdx += 1;
+
+      const src = prim.uv1;
+      if (src == null) continue;
+
+      const { vertexStart, vertexCount } = range;
+      for (let v = 0; v < vertexCount; v += 1) {
+        out[(vertexStart + v) * 2] = src[v * 2] ?? 0;
+        out[(vertexStart + v) * 2 + 1] = src[v * 2 + 1] ?? 0;
+      }
+    }
+  }
+
+  return out;
+}

@@ -17,6 +17,7 @@ export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export {
   mergeWorldSpaceFromCore,
+  mergeUv1FromCore,
   materialSig,
   DEFAULT_MERGE_FILTER,
   HandleIdRegistry,

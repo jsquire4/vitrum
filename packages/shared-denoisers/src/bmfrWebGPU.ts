@@ -40,26 +40,16 @@ import {
 
 const BMFR_ENTRY = 'bmfrMain';
 
-interface BmfrPipelineBundle {
-  readonly pipeline: GPUComputePipeline;
-}
-
-const getBmfrBundle = makePerDevicePipelineCache<BmfrPipelineBundle>(
+const bmfrPipeline = makePerDevicePipelineCache<GPUComputePipeline>(
   (device) => {
     const module = device.createShaderModule({ label: 'bmfr', code: BMFR_WGSL });
-    return {
-      pipeline: device.createComputePipeline({
-        label: 'bmfr',
-        layout: 'auto',
-        compute: { module, entryPoint: BMFR_ENTRY },
-      }),
-    };
+    return device.createComputePipeline({
+      label: 'bmfr',
+      layout: 'auto',
+      compute: { module, entryPoint: BMFR_ENTRY },
+    });
   },
 );
-
-function bmfrPipeline(device: GPUDevice): GPUComputePipeline {
-  return getBmfrBundle(device).pipeline;
-}
 
 export interface BmfrWebGPUOptions {
   /** Current-frame noisy HDR radiance (row-major RGB, length W*H*3). */
