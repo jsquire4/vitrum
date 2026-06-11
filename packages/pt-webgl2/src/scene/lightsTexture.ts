@@ -21,6 +21,35 @@
 import type { SceneEmitter, Vec3 } from '@vitrum/core';
 import type { LightsTextureData } from './sceneTextures.js';
 
+// ── D10.10: dev-only slot-cursor guard ────────────────────────────────────────
+// assertSlotCursor(k, expected, kind) throws at runtime (dev / test builds only)
+// when the write cursor k does not match the expected channel count after packing
+// a light of the given kind. This catches packing bugs (off-by-one, missed fields,
+// wrong stride) that would otherwise silently produce wrong GPU data.
+//
+// Gated to non-production builds (import.meta.env.DEV || process.env.NODE_ENV !== 'production').
+// Always active in the test harness (NODE_ENV=test, not production).
+const _DEV_ASSERT = /* @__PURE__ */ (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const env = (globalThis as any).__vitest_environment__;
+    if (env != null) return true;
+  } catch { /* noop */ }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (globalThis as any)?.process?.env?.['NODE_ENV'] !== 'production';
+  } catch { return true; }
+})();
+
+function assertSlotCursor(k: number, expected: number, kind: string): void {
+  if (_DEV_ASSERT && k !== expected) {
+    throw new Error(
+      `[pt-webgl2 lightsTexture] packing bug for '${kind}': expected slot cursor ${expected}, got ${k}. ` +
+      'Check the RGBA32F layout vs §5 (6 texels × 4 channels = 24 channels per light).',
+    );
+  }
+}
+
 /** Texels per light in the packed RGBA32F grid (24 floats). Matches the GLSL
  *  decoder's `index * 6u` stride (`lights_struct.glsl.js`). */
 export const LIGHT_PIXELS = 6;
@@ -133,6 +162,8 @@ export function packLightsTexture(
         data[base + k++] = v[1];
         data[base + k++] = v[2];
         data[base + k++] = lengthOf(cross(u, v));
+        // rect-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
+        assertSlotCursor(k, 16, 'rect-area');
         break;
       }
       case 'disc-area': {
@@ -164,6 +195,8 @@ export function packLightsTexture(
         data[base + k++] = v[1];
         data[base + k++] = v[2];
         data[base + k++] = lengthOf(cross(u, v)) * areaScale;
+        // disc-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
+        assertSlotCursor(k, 16, 'disc-area');
         break;
       }
       case 'spot': {
@@ -202,6 +235,8 @@ export function packLightsTexture(
         // s5.g was the IES profile slot — IES is removed; padding zero keeps layout stable.
         data[base + k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
         k += 1; // s5.g reserved padding (IES removed)
+        // spot packs s0..s4 fully + s5.r + s5.g (pad) = 22 channels; s5.b/s5.a stay zero.
+        assertSlotCursor(k, 22, 'spot');
         break;
       }
       case 'point': {
@@ -227,6 +262,8 @@ export function packLightsTexture(
         data[base + k++] = l.decay ?? 2;
         data[base + k++] = l.distance ?? 0;
         // s4.a coneCos + s5 stay 0 — point lights are isotropic.
+        // point packs: s0(4) + s1(4) + s2(4) + s3(skip4) + s4.r(skip1) + s4.g/s4.b(2) = 19 channels.
+        assertSlotCursor(k, 19, 'point');
         break;
       }
       case 'directional': {
@@ -250,6 +287,8 @@ export function packLightsTexture(
         data[base + k++] = dir[1];
         data[base + k++] = dir[2];
         data[base + k++] = lum * l.intensity;
+        // directional packs s0(4) + s1(4) + s2(4) = 12 channels; s3..s5 stay zero (no area/cone).
+        assertSlotCursor(k, 12, 'directional');
         break;
       }
       default: {

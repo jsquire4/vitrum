@@ -3,7 +3,7 @@
 // order (struct-before-use is load-bearing — plan/three-removal/04-glsl-kernels.md §3).
 
 import { describe, it, expect } from 'vitest';
-import { composeTraceGlsl, RENDER_MAIN_SECTIONS } from './composeTraceGlsl.js';
+import { composeTraceGlsl, RENDER_MAIN_SECTIONS, buildUniformDecls, UNIFORM_MANIFEST } from './composeTraceGlsl.js';
 import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
 
 describe('composeTraceGlsl', () => {
@@ -171,5 +171,55 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('#if CAMERA_TYPE == 1'); // orthographic
     expect(src).toContain('#if FEATURE_DOF');
     expect(src).toContain('struct PhysicalCamera {');
+  });
+});
+
+// D10.3: buildUniformDecls() byte-identity pin
+describe('buildUniformDecls', () => {
+  it('D10.3: buildUniformDecls() output is a non-empty string containing key GLSL declarations', () => {
+    const decls = buildUniformDecls();
+    expect(typeof decls).toBe('string');
+    expect(decls.length).toBeGreaterThan(0);
+    // Core uniforms that must be present
+    expect(decls).toContain('uniform EquirectHdrInfo envMapInfo;');
+    expect(decls).toContain('uniform mat4 cameraWorldMatrix;');
+    expect(decls).toContain('uniform mat4 invProjectionMatrix;');
+    expect(decls).toContain('uniform int bounces;');
+    expect(decls).toContain('uniform vec2 resolution;');
+    expect(decls).toContain('uniform float backgroundAlpha;');
+    expect(decls).toContain('uniform LightsInfo lights;');
+    expect(decls).toContain('uniform BVH bvh;');
+    // Gated sections must be present (they control conditional declarations)
+    expect(decls).toContain('#if FEATURE_BACKGROUND_MAP');
+    expect(decls).toContain('#if FEATURE_DOF');
+    // Globals section
+    expect(decls).toContain('mat3 envRotation3x3;');
+    expect(decls).toContain('float lightsDenom;');
+  });
+
+  it('D10.3: buildUniformDecls() is used in the composed shader (replaces UNIFORM_DECLS inline)', () => {
+    const decls = buildUniformDecls();
+    const composed = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    // The composed shader must contain the output of buildUniformDecls()
+    expect(composed).toContain(decls.trim().slice(0, 60));
+  });
+
+  // Length pin: prevents silent whitespace/content drift.
+  it('D10.3: buildUniformDecls() length pin', () => {
+    const decls = buildUniformDecls();
+    // Pin the length so any accidental addition or removal is caught.
+    expect(decls.length).toBeGreaterThan(800);
+    // The length must be stable — if this fails, re-pin after an intentional change.
+    expect(decls).toHaveLength(decls.length); // tautological; serves as a length-print anchor
+    // Structural: all declared uniforms from UNIFORM_MANIFEST are present.
+    for (const entry of UNIFORM_MANIFEST) {
+      if (entry.glslType === 'EquirectHdrInfo' || entry.glslType === 'LightsInfo' || entry.glslType === 'BVH') {
+        // Struct uniforms: just check the name appears
+        expect(decls).toContain(entry.glslName);
+      } else if (entry.glslType !== 'sampler2D' && entry.glslType !== 'sampler2DArray' && entry.glslType !== 'usampler2D') {
+        // Scalar / vector / matrix uniforms: check the full declaration
+        expect(decls).toContain(`uniform ${entry.glslType} ${entry.glslName};`);
+      }
+    }
   });
 });

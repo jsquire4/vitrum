@@ -36,6 +36,73 @@ import {
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
 import { PresentPass } from './PresentPass.js';
 
+// ── D10.2: SCENE_TEXTURE_BINDINGS table ──────────────────────────────────────
+// Typed table that drives #bindSceneTextures. Each entry describes:
+//   name      — GLSL uniform name (as passed to GlProgram.bindTexture)
+//   kind      — 'tex2d' | 'tex2dArray' (determines gl.TEXTURE_2D vs gl.TEXTURE_2D_ARRAY)
+//   source    — accessor returning the WebGLTexture to bind, or null for a dummy
+//
+// TABLE ORDER IS LOAD-BEARING: GlProgram assigns sampler units in the order
+// uniforms are bound at link time. The mock-GL tests pin sampler-unit assignment
+// by this order; reordering entries breaks those tests without a golden re-pin.
+//
+// Non-texture uniforms (lights.count, uMeshLightCount, uTotalEmissiveArea,
+// envMapInfo.totalSum) are uploaded separately after the loop — they are scalar
+// setters, not texture binds.
+//
+// A5 override: uBdptLightPathTex is included in the table (bound with a dummy
+// here so the sampler unit is registered), then overridden AFTER the loop with
+// the real light-path texture when BDPT is active. See #bindSceneTextures for
+// the override comment.
+
+type SceneTexKind = 'tex2d' | 'tex2dArray';
+
+interface SceneTextureBinding {
+  readonly name: string;
+  readonly kind: SceneTexKind;
+  /**
+   * Accessor that returns the WebGLTexture for this slot given the scene bundle
+   * and the lazily-allocated dummy textures (d2d = 2D dummy, d2a = 2DArray dummy).
+   * Return null to fall through to the appropriate dummy for this kind.
+   */
+  readonly source: (scene: UploadedSceneTextures, d2d: WebGLTexture, d2a: WebGLTexture) => WebGLTexture;
+}
+
+const SCENE_TEXTURE_BINDINGS: readonly SceneTextureBinding[] = [
+  // BVH struct samplers (bvh_struct_definitions.glsl: BVH { usampler2D index; sampler2D position; ... })
+  { name: 'bvh.index',                  kind: 'tex2d',      source: (s) => s.bvhIndex },
+  { name: 'bvh.position',               kind: 'tex2d',      source: (s) => s.bvhPosition },
+  { name: 'bvh.bvhBounds',              kind: 'tex2d',      source: (s) => s.bvhBounds },
+  { name: 'bvh.bvhContents',            kind: 'tex2d',      source: (s) => s.bvhContents },
+  // Per-triangle / per-material tables
+  { name: 'materialIndexAttribute',     kind: 'tex2d',      source: (s) => s.materialIndex },
+  { name: 'materials',                  kind: 'tex2d',      source: (s) => s.materials },
+  // Vertex attribute array (normal / tangent / uv / color layers)
+  { name: 'attributesArray',            kind: 'tex2dArray', source: (s) => s.attributesArray },
+  // Analytic lights (LightsInfo { sampler2D tex; uint count; })
+  { name: 'lights.tex',                 kind: 'tex2d',      source: (s) => s.lights },
+  // B4 — mesh-area triangle lights (dummy when scene has none → inert branch)
+  { name: 'uMeshLights',               kind: 'tex2d',      source: (s, d2d) => s.meshLights ?? d2d },
+  // Optional samplers the fork GLSL declares — must be bound to a valid texture of
+  // the matching type to avoid unit-0 collision (GL_INVALID_OPERATION → black).
+  // bindTexture no-ops for inactive samplers so the dummy binds are always safe.
+  { name: 'textures',                   kind: 'tex2dArray', source: (s, _d2d, d2a) => s.textures2DArray ?? d2a },
+  // iesProfiles removed — IES profiles not in @vitrum/core contract (item 20).
+  { name: 'backgroundMap',              kind: 'tex2d',      source: (_s, d2d) => d2d },
+  { name: 'sobolTexture',               kind: 'tex2d',      source: (_s, d2d) => d2d },
+  { name: 'stratifiedTexture',          kind: 'tex2d',      source: (_s, d2d) => d2d },
+  { name: 'stratifiedOffsetTexture',    kind: 'tex2d',      source: (_s, d2d) => d2d },
+  // A5 BDPT light-path texture (dummy here; overridden after the loop when bdpt is active).
+  // NOTE: unit-0 collision warning — this MUST appear in the table so the sampler
+  // unit is registered at link time.  The after-loop override replaces the dummy with
+  // the real light-path texture when FEATURE_BDPT is compiled in and bdpt is active.
+  { name: 'uBdptLightPathTex',          kind: 'tex2d',      source: (_s, d2d) => d2d },
+  // EquirectHdrInfo importance-sampling samplers
+  { name: 'envMapInfo.map',             kind: 'tex2d',      source: (s, d2d) => s.envMap ?? d2d },
+  { name: 'envMapInfo.marginalWeights', kind: 'tex2d',      source: (s, d2d) => s.envMarginal ?? d2d },
+  { name: 'envMapInfo.conditionalWeights', kind: 'tex2d',   source: (s, d2d) => s.envConditional ?? d2d },
+] as const;
+
 // H2 — spectral CMF upload tables (constant; precomputed Float32 copies so the
 // per-frame upload allocates nothing). The spectral path importance-samples the
 // hero wavelength against these CIE 1931 tables/CDFs and reconstructs RGB via the
@@ -485,65 +552,44 @@ export class GlResources {
     bdptLightPath: WebGLTexture | null = null,
   ): void {
     const gl = this.#gl;
-    // BVH struct samplers (BVH { usampler2D index; sampler2D position; sampler2D bvhBounds;
-    // usampler2D bvhContents; } — bvh_struct_definitions.glsl).
-    prog.bindTexture('bvh.index', scene.bvhIndex);
-    prog.bindTexture('bvh.position', scene.bvhPosition);
-    prog.bindTexture('bvh.bvhBounds', scene.bvhBounds);
-    prog.bindTexture('bvh.bvhContents', scene.bvhContents);
-    prog.bindTexture('materialIndexAttribute', scene.materialIndex);
-    prog.bindTexture('materials', scene.materials);
-    prog.bindTexture('attributesArray', scene.attributesArray, gl.TEXTURE_2D_ARRAY);
-    prog.bindTexture('lights.tex', scene.lights); // LightsInfo { sampler2D tex; uint count; }
-    // H1 FIX (2026-06-09): upload the `lights.count` uint — without it the field
-    // defaults to 0u and the ENTIRE analytic-light system is inert (the NEE gate
-    // `rand(5) < count/lightsDenom`, the forward light-hit loop `i < lights.count`,
-    // and the BDPT light-subpath all see zero lights). Only `mesh-area` emitters
-    // lit anything, via the emissive fold. This restores point/spot/rect-area/
-    // circ-area/directional NEE. The packed lights texture was already uploaded;
-    // only its count uniform was missing.
-    prog.setUint('lights.count', scene.lightCount);
-    // B4 — mesh-area triangle lights (NEE). Bind the tri-light texture (dummy when
-    // the scene has none, so the sampler stays valid) + the count + Σ-area scalars
-    // the GLSL mesh-NEE branch and forward-hit MIS read. count==0 → both inert.
-    prog.bindTexture('uMeshLights', scene.meshLights ?? this.#dummyTex2D());
-    prog.setUint('uMeshLightCount', scene.meshLightCount);
-    prog.setFloat('uTotalEmissiveArea', scene.totalEmissiveArea);
-    // Every OPTIONAL sampler the fork GLSL declares must reference a valid texture of
-    // the matching type — an unbound sampler defaults to unit 0 and collides with a
-    // different-typed sampler there (GL_INVALID_OPERATION → black). bindTexture no-ops
-    // for inactive samplers, so binding a dummy where there's no scene data is safe.
+    // Dummies are created BEFORE any prog.bindTexture call — deliberately.
+    // The factory does a raw gl.bindTexture on whatever texture unit is active;
+    // the pre-refactor code evaluated `this.#dummyTex2D()` inline as a bind
+    // argument, so on the FIRST frame the dummy creation clobbered the
+    // still-active `lights.tex` unit with the 1×1 black dummy — sample 1 of
+    // every accumulation rendered with a black lights texture (a permanent
+    // ~1/spp under-bias of the direct-light term in the accumulated mean).
+    // Found 2026-06-11 via the run-ptwebgl2-h1 GPU A/B when this table landed
+    // (lit meanLum 0.26176 → 0.26931 at 24 spp = the corrected first sample).
     const d2d = this.#dummyTex2D();
     const d2a = this.#dummyTex2DArray();
-    // iesProfiles binding removed — IES profiles are not in the @vitrum/core contract
-    // and the uniform was removed from the GLSL (item 20).
-    prog.bindTexture('textures', scene.textures2DArray ?? d2a, gl.TEXTURE_2D_ARRAY);
-    prog.bindTexture('backgroundMap', d2d);
-    prog.bindTexture('sobolTexture', d2d);
-    prog.bindTexture('stratifiedTexture', d2d);
-    prog.bindTexture('stratifiedOffsetTexture', d2d);
-    // H5 FIX (2026-06-09): when FEATURE_BDPT is compiled in (`bdpt: true`), the GLSL
-    // declares `uniform sampler2D uBdptLightPathTex` but it was MISSING from this
-    // dummy list — so it stayed unbound, defaulted to unit 0, and collided with the
-    // usampler there → GL_INVALID_OPERATION → black frame (exactly the failure mode
-    // this block's comment warns about). Bind a dummy (no-op when bdpt is off, since
-    // bindTexture skips inactive samplers). NOTE: BDPT is not yet host-driven (the
-    // light-subpath passes are never issued — see index.ts), so with this bound the
-    // frame renders unidirectionally rather than crashing; full BDPT orchestration is
-    // tracked as a feature in items_to_fix §H5.
-    // A5 (2026-06-10): BDPT is now host-driven — when a light-path texture was built
-    // this frame we bind it here so the connection sweep reads real light vertices.
-    // bdptLightPath is null when bdpt is off (or the per-frame build short-circuited,
-    // e.g. no lights), so the dummy keeps the sampler valid and the connection sweep
-    // sees only BDPT_KIND_INVALID vertices → adds nothing (unidirectional fallback).
-    prog.bindTexture('uBdptLightPathTex', bdptLightPath ?? d2d);
-    // EquirectHdrInfo { sampler2D marginalWeights; sampler2D conditionalWeights; sampler2D map; float totalSum; }
-    prog.bindTexture('envMapInfo.map', scene.envMap ?? d2d);
-    prog.bindTexture('envMapInfo.marginalWeights', scene.envMarginal ?? d2d);
-    prog.bindTexture('envMapInfo.conditionalWeights', scene.envConditional ?? d2d);
-    // The env-sampling GLSL early-outs on `envMapInfo.totalSum == 0.0`; bind the
-    // scalar so a present environment is actually sampled (0 when absent → correct
-    // no-env early-out). Without this the env textures upload but never light.
+
+    // D10.2: table-driven texture binding. Loop order matches the original hand-written
+    // call order — GlProgram assigns sampler units in bind order at link time, so the
+    // mock-GL tests' sampler-unit pin relies on this sequence being preserved.
+    for (const binding of SCENE_TEXTURE_BINDINGS) {
+      const tex = binding.source(scene, d2d, d2a);
+      const target = binding.kind === 'tex2dArray' ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D;
+      prog.bindTexture(binding.name, tex, target);
+    }
+
+    // A5 override (AFTER the table loop): replace the uBdptLightPathTex dummy with the
+    // real light-path texture when BDPT was active this frame. The table loop bound the
+    // dummy first so the sampler unit is registered; this second bind updates the active
+    // unit to point at the real texture. bdptLightPath === null → dummy stays (unidirectional
+    // fallback; the connection sweep sees only BDPT_KIND_INVALID vertices → adds nothing).
+    if (bdptLightPath != null) {
+      prog.bindTexture('uBdptLightPathTex', bdptLightPath);
+    }
+
+    // Non-texture scalar uniforms — uploaded after the texture loop.
+    // H1 FIX: lights.count must be set as uint (setUint) — without it the analytic-light
+    // system is inert (count defaults to 0u, NEE gate and forward light loop both see 0).
+    prog.setUint('lights.count', scene.lightCount);
+    // B4: mesh-area NEE scalars (count==0 → inert branch, byte-identical to no-mesh-light).
+    prog.setUint('uMeshLightCount', scene.meshLightCount);
+    prog.setFloat('uTotalEmissiveArea', scene.totalEmissiveArea);
+    // Env-map importance-sampling total sum (0 → correct no-env early-out in GLSL).
     prog.setFloat('envMapInfo.totalSum', scene.envTotalSum);
   }
 

@@ -32,6 +32,25 @@ const SAMPLED_MAP_KEYS = [
   'aoMap', 'lightMap', 'bumpMap',
 ] as const satisfies ReadonlyArray<keyof MaterialSpec>;
 
+// ── D10.12: TextureHandleHint ─────────────────────────────────────────────────
+// Optional hints that a TextureRef handle can expose to make readHandlePixels
+// unambiguous without relying on the stride heuristic (which can mis-classify
+// 3-channel RGB data, for example). A host that provides these hints avoids the
+// ambiguous-stride console.warn and gets deterministic decoding.
+//
+// Usage: attach a `__vitrum_hint__` property to the texture handle object, OR
+// pass a wrapper that implements this interface as the handle.
+//
+// channels: 1 | 2 | 3 | 4 — number of channels per pixel in `data`.
+//   If omitted, readHandlePixels falls back to the existing stride heuristic.
+// dataType: 'uint8' | 'uint16' | 'float32' — encoding of each channel value.
+//   If omitted, inferred from the ArrayLike type (Uint8Array→uint8 etc.).
+
+export interface TextureHandleHint {
+  readonly channels?: 1 | 2 | 3 | 4;
+  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+}
+
 interface RawPixels {
   readonly width: number;
   readonly height: number;
@@ -57,11 +76,19 @@ function halfToFloat(h: number): number {
   return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
 }
 
-/** Read RGBA float pixels from a TextureRef handle (raw payload or DataTexture-shaped). */
+/** Read RGBA float pixels from a TextureRef handle (raw payload or DataTexture-shaped).
+ *  D10.12: optional TextureHandleHint (`__vitrum_hint__` property on the handle, or the
+ *  handle itself implementing TextureHandleHint) provides explicit channels/dataType to
+ *  avoid the stride heuristic. A console.warn is emitted when the stride is ambiguous
+ *  (not 1 or 4) and no hint is present, so hosts know to supply a hint. */
 function readHandlePixels(handle: unknown): RawPixels | null {
   const h = handle as {
     width?: number; height?: number; data?: ArrayLike<number>;
     image?: { width?: number; height?: number; data?: ArrayLike<number> };
+    // D10.12: optional hint as a direct property on the handle
+    __vitrum_hint__?: TextureHandleHint;
+    channels?: number;
+    dataType?: string;
   } | null;
   if (h == null) return null;
   // raw {width,height,data} (on-ramp form) OR DataTexture {image:{...}}
@@ -70,11 +97,42 @@ function readHandlePixels(handle: unknown): RawPixels | null {
   const height = Number(h.height ?? h.image?.height ?? 0);
   if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return null;
 
-  const stride = Math.max(1, Math.round(src.length / (width * height))); // 4 RGBA / 3 RGB / 1 R
+  // D10.12: resolve hint from __vitrum_hint__ property, or direct channels/dataType on handle.
+  // Use type assertions at the object-literal level to satisfy exactOptionalPropertyTypes:
+  // only include a property in the literal when the source value is non-null.
+  const hint: TextureHandleHint | undefined = h.__vitrum_hint__ ?? (
+    (h.channels != null || h.dataType != null)
+      ? Object.assign(
+          {} as TextureHandleHint,
+          h.channels != null ? { channels: h.channels as TextureHandleHint['channels'] } : {},
+          h.dataType != null ? { dataType: h.dataType as TextureHandleHint['dataType'] } : {},
+        )
+      : undefined
+  );
+
+  // Determine stride: hint takes priority; fall back to heuristic.
+  const heuristicStride = Math.max(1, Math.round(src.length / (width * height)));
+  const stride: number = hint?.channels ?? heuristicStride;
+
+  // Warn on ambiguous stride (2 or 3 channels) without a hint — the heuristic
+  // cannot distinguish 2-channel (RG) from a 2x oversized RGBA, for example.
+  if (hint == null && stride !== 1 && stride !== 4) {
+    console.warn(
+      `[pt-webgl2] texture handle has ambiguous pixel stride ${stride} (${src.length} values / ${width}×${height} pixels). ` +
+      'Attach a __vitrum_hint__ = { channels: N } to the handle to resolve it deterministically.',
+    );
+  }
+
   const isHalf = src instanceof Uint16Array;
   const isFloat = src instanceof Float32Array;
-  const intMax = isHalf || isFloat ? 0 : 2 ** (8 * ((src as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1)) - 1;
-  const dec = (v: number): number => (isHalf ? halfToFloat(v) : isFloat ? v : intMax > 0 ? v / intMax : v);
+  // D10.12: respect explicit dataType hint for decoding.
+  const hintIsHalf = hint?.dataType === 'uint16';
+  const hintIsFloat = hint?.dataType === 'float32';
+  const useHalf = hint?.dataType != null ? hintIsHalf : isHalf;
+  const useFloat = hint?.dataType != null ? hintIsFloat : isFloat;
+  const bpe = (src as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const dec = (v: number): number => (useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v);
 
   const out = new Float32Array(width * height * 4);
   for (let p = 0; p < width * height; p += 1) {

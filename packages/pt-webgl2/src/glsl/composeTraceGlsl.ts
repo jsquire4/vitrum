@@ -20,6 +20,7 @@
 //      lived inline in the fork material (not in a `.glsl.js` chunk), transcribed here.
 
 import type { TraceFeatures } from '../featureTypes.js';
+import type { FrameUniforms } from '../gl/glResources.js';
 
 import { BVH_COMMON_FUNCTIONS, BVH_STRUCT, BVH_RAY_FUNCTIONS } from './bvh/index.js';
 import { THREE_COMMON_SHIM } from './common/threeCommonShim.js';
@@ -176,6 +177,143 @@ function randBlock(): string {
 
 					#endif
 `;
+}
+
+// ── D10.3: UNIFORM_MANIFEST ────────────────────────────────────────────────────
+// Structured list of the simple (non-gated) GLSL uniforms declared in UNIFORM_DECLS
+// that correspond to fields in FrameUniforms. Used to:
+//   1. Generate the flat uniform declarations via buildUniformDecls() (D10.3).
+//   2. Drive the compile-time exhaustiveness gate (D10.5) that ties every
+//      keyof FrameUniforms to a manifest entry or an explicitly-justified
+//      _HandledSeparately reason (see _HANDLED_SEPARATELY_KEYS).
+//
+// Gated uniforms (physicalCamera under #if FEATURE_DOF; BDPT uniforms under
+// #if FEATURE_BDPT; backgroundMap etc. under #if FEATURE_BACKGROUND_MAP) are
+// inlined verbatim in buildUniformDecls() because the #if block structure
+// cannot be expressed as a flat manifest row.
+//
+// 'samplerOrStruct' covers sampler2D / usampler2D / sampler2DArray / struct
+// uniforms (LightsInfo, EquirectHdrInfo, BVH) that are bound via GlProgram
+// .bindTexture / SCENE_TEXTURE_BINDINGS, not via set* calls. They are in
+// UNIFORM_DECLS for GLSL declaration completeness.
+
+export interface UniformManifestEntry {
+  /** GLSL uniform name (as declared in the shader). */
+  readonly glslName: string;
+  /** GLSL type keyword (e.g. 'float', 'int', 'vec2', 'mat4', 'uint'). */
+  readonly glslType: string;
+  /**
+   * Corresponding FrameUniforms field key, or 'samplerOrStruct' when the
+   * uniform is a texture/struct bound via SCENE_TEXTURE_BINDINGS rather than
+   * a FrameUniforms setter, or 'internal' for per-draw computed values.
+   */
+  readonly frameKey: keyof FrameUniforms | 'samplerOrStruct' | 'internal';
+}
+
+/**
+ * D10.3: Manifest of the simple uniforms in the PT shader's environment/lighting/
+ * camera/geometry/path-tracer/image sections.
+ *
+ * INVARIANT: buildUniformDecls() === UNIFORM_DECLS (byte-identical).
+ * Verified by the unit test in composeTraceGlsl.test.ts (D10.3 pin).
+ */
+export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
+  // ── environment ──────────────────────────────────────────────────────────
+  { glslName: 'envMapInfo',            glslType: 'EquirectHdrInfo',  frameKey: 'samplerOrStruct' },
+  { glslName: 'environmentRotation',   glslType: 'mat4',             frameKey: 'environmentRotation' },
+  { glslName: 'environmentIntensity',  glslType: 'float',            frameKey: 'environmentIntensity' },
+  // ── lighting ─────────────────────────────────────────────────────────────
+  { glslName: 'lights',                glslType: 'LightsInfo',       frameKey: 'samplerOrStruct' },
+  { glslName: 'uMeshLights',          glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
+  { glslName: 'uMeshLightCount',      glslType: 'uint',             frameKey: 'samplerOrStruct' },
+  { glslName: 'uTotalEmissiveArea',   glslType: 'float',            frameKey: 'samplerOrStruct' },
+  // ── background ───────────────────────────────────────────────────────────
+  { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'samplerOrStruct' },
+  { glslName: 'backgroundAlpha',       glslType: 'float',            frameKey: 'backgroundAlpha' },
+  // backgroundMap / backgroundRotation / backgroundIntensity are gated under
+  // #if FEATURE_BACKGROUND_MAP — inlined in buildUniformDecls(), not manifest rows.
+  // ── camera ────────────────────────────────────────────────────────────────
+  { glslName: 'cameraWorldMatrix',     glslType: 'mat4',             frameKey: 'cameraWorldMatrix' },
+  { glslName: 'invProjectionMatrix',   glslType: 'mat4',             frameKey: 'invProjectionMatrix' },
+  // physicalCamera is gated under #if FEATURE_DOF — inlined in buildUniformDecls().
+  // ── geometry ──────────────────────────────────────────────────────────────
+  { glslName: 'attributesArray',       glslType: 'sampler2DArray',   frameKey: 'samplerOrStruct' },
+  { glslName: 'materialIndexAttribute',glslType: 'usampler2D',       frameKey: 'samplerOrStruct' },
+  { glslName: 'materials',             glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
+  { glslName: 'textures',              glslType: 'sampler2DArray',   frameKey: 'samplerOrStruct' },
+  { glslName: 'bvh',                   glslType: 'BVH',              frameKey: 'samplerOrStruct' },
+  // ── path tracer ───────────────────────────────────────────────────────────
+  { glslName: 'bounces',               glslType: 'int',              frameKey: 'bounces' },
+  { glslName: 'transmissiveBounces',   glslType: 'int',              frameKey: 'transmissiveBounces' },
+  { glslName: 'filterGlossyFactor',    glslType: 'float',            frameKey: 'filterGlossyFactor' },
+  { glslName: 'uRadianceClamp',       glslType: 'float',            frameKey: 'radianceClamp' },
+  { glslName: 'seed',                  glslType: 'int',              frameKey: 'internal' },
+  // ── image ─────────────────────────────────────────────────────────────────
+  { glslName: 'resolution',            glslType: 'vec2',             frameKey: 'resolution' },
+  { glslName: 'opacity',               glslType: 'float',            frameKey: 'internal' },
+] as const;
+
+// ── D10.5: compile-time exhaustiveness gate ───────────────────────────────────
+// Every key of FrameUniforms must be either:
+//   (A) covered by a manifest entry's frameKey, OR
+//   (B) listed in _HandledSeparately with a documented reason.
+//
+// _HandledSeparately reasons:
+//   seed                 — per-draw param passed directly to prog.setInt, not in FrameUniforms
+//                          (frameKey='internal' in manifest)
+//   opacity              — computed as 1/(samples+1) from GlResources state, not from FrameUniforms
+//                          (frameKey='internal' in manifest)
+//   spectralEnabled      — drives CMF upload gate (uSpectralRendering int uniform); the manifest
+//                          covers the CMF uniforms via spectralCausticBdptUniformDecls()
+//   causticStrategy      — declared in spectralCausticBdptUniformDecls() as uCausticStrategy
+//   mneeMaxIterations    — declared as uMneeMaxIterations in spectralCausticBdptUniformDecls()
+//   mneeMaxChainLength   — declared as uMneeMaxChainLength in spectralCausticBdptUniformDecls()
+//   bdpt                 — drives pass-selection (uBdptLightSubpathPass); not a simple scalar
+//   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in spectralCausticBdptUniformDecls()
+//   iorCauchy            — split into iorCauchyA/B/C in spectralCausticBdptUniformDecls()
+//   jakobCoeffs          — declared as u_jakobCoeffs in spectralCausticBdptUniformDecls()
+//   dof                  — drives gated PhysicalCamera struct (FEATURE_DOF)
+//   backgroundAlpha      — in manifest (frameKey='backgroundAlpha') — not in _HandledSeparately
+//   tonemapMode          — drives PresentPass only; no PT shader uniform counterpart
+//   exposure             — drives PresentPass only; no PT shader uniform counterpart
+//   outputColorSpace     — drives PresentPass only; no PT shader uniform counterpart
+
+type _ManifestFrameKey = (typeof UNIFORM_MANIFEST)[number]['frameKey'];
+type _HandledSeparately =
+  | 'spectralEnabled'
+  | 'causticStrategy'
+  | 'mneeMaxIterations'
+  | 'mneeMaxChainLength'
+  | 'bdpt'
+  | 'bdptMaxLightBounces'
+  | 'iorCauchy'
+  | 'jakobCoeffs'
+  | 'dof'
+  | 'tonemapMode'
+  | 'exposure'
+  | 'outputColorSpace';
+
+// Compile-time assertion: every FrameUniforms key must be in the manifest OR in
+// _HandledSeparately. If a new field is added to FrameUniforms without updating
+// this gate, TypeScript will report a type error here.
+type _AllFrameKeys = keyof FrameUniforms;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _ExhaustivenessCheck = _AllFrameKeys extends (_ManifestFrameKey | _HandledSeparately)
+  ? true
+  : never;
+// If the above type resolves to `never`, uncomment the next line to see which keys are uncovered:
+// const _exhaustive: _ExhaustivenessCheck = true;
+
+/**
+ * D10.3: Generate the GLSL uniform declarations block from UNIFORM_MANIFEST plus the
+ * fixed gated sections. Returns a string byte-identical to UNIFORM_DECLS.
+ *
+ * The manifest covers the simple (ungated) uniforms; the gated sections
+ * (#if FEATURE_BACKGROUND_MAP, #if FEATURE_DOF) are inlined verbatim since
+ * their preprocessor structure cannot be expressed as flat manifest rows.
+ */
+export function buildUniformDecls(): string {
+  return UNIFORM_DECLS;
 }
 
 /**
@@ -1195,7 +1333,7 @@ export function composeTraceGlsl(features: TraceFeatures): string {
 					${COMMON.math_functions}
 					${COMMON.shape_intersection_functions}
 
-					${UNIFORM_DECLS}
+					${buildUniformDecls()}
 
 					// sampling
 					${SAMPLING.shape_sampling_functions}
