@@ -45,6 +45,10 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   CUBICSPLINE outputs.
 - GLTF-01 skinned glTF nodes preserve `bindMatrix` and `bindMatrixInverse`,
   including non-translation transforms.
+- GLTF-06 shared texture-info import now preserves the
+  `KHR_texture_transform.texCoord` override, so imported maps can select UV1
+  through the same `TextureRef.texCoord` path that pt-webgl2 and pt-webgpu
+  consume.
 - WEBGL2-01 pt-webgl2 consumes authored tangent XYZW, derives nonzero fallback
   handedness, guards legacy zero handedness in GLSL, and avoids reusing
   rest-pose tangents after CPU skinning.
@@ -78,6 +82,10 @@ Not fully closed yet:
 
 - GPU/reference-render A/B is still pending for the render-changing paths:
   WebGL2 tangent-space normal/bump maps and pt-webgpu SPPM photon-map scenes.
+- GLTF-06 is only partly closed: combined metallic-roughness and shared
+  `KHR_texture_transform` UV-set import are pinned, but the adapter still needs
+  a per-KHR-extension texture-map fixture sweep before the whole material parity
+  audit can be called closed.
 - A future lite-tier implementation could bake transformed/instanced scenes into
   a lite-consumed world-space BVH, but the current professional contract is now
   honest: those paths are not advertised as supported on lite.
@@ -529,8 +537,13 @@ Closure:
 ### GLTF-06 - glTF material mapping needs parity audit
 
 Closure:
-- Fix combined metallic-roughness texture mapping.
-- Verify texture coordinate sets and transforms for every imported extension map.
+- Combined metallic-roughness texture mapping is closed: the adapter maps the
+  same glTF ORM texture to both `roughnessMap` and `metallicMap`.
+- `KHR_texture_transform.texCoord` override is closed in the shared
+  `resolveTextureRef()` importer, with an end-to-end adapter fixture proving
+  `TextureRef.texCoord` and transform fields survive `gltfToScene()`.
+- Still open: verify texture coordinate sets and transforms for every imported
+  extension map with explicit fixtures, not only shared helper coverage.
 - Add fixtures for KHR material extensions that core claims to carry.
 
 ## P5 validation and promotion gates

@@ -20,7 +20,14 @@
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
 import type { GltfJson } from './gltfTypes.js';
-import type { MeshPrimitive, SkinnedMeshPrimitive, PointEmitter, SpotEmitter, DirectionalEmitter } from '@vitrum/core';
+import type {
+  DirectionalEmitter,
+  MeshPrimitive,
+  PointEmitter,
+  SkinnedMeshPrimitive,
+  SpotEmitter,
+  TextureRef,
+} from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -251,6 +258,61 @@ describe('material field mapping', () => {
     expect(mat.baseColor).toEqual([0.8, 0.5, 0.2]);
     expect(mat.metallic).toBeCloseTo(0.3);
     expect(mat.roughness).toBeCloseTo(0.7);
+  });
+
+  it('preserves KHR_texture_transform texCoord override on texture refs', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const imageBuf = u8Buffer([0x89, 0x50, 0x4e, 0x47]);
+    const totalBuf = concatBuffers(posBuf, imageBuf);
+    const handle = { kind: 'decoded-texture' };
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        pbrMetallicRoughness: {
+          baseColorTexture: {
+            index: 0,
+            texCoord: 0,
+            extensions: {
+              KHR_texture_transform: {
+                texCoord: 1,
+                offset: [0.25, 0.5],
+                scale: [2, 3],
+                rotation: 0.125,
+              },
+            },
+          },
+        },
+      }],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: imageBuf.byteLength },
+      ],
+      buffers: [{ byteLength: totalBuf.byteLength }],
+    };
+
+    const { scene } = await gltfToScene(gltf, {
+      buffers: new Map([[0, totalBuf]]),
+      decodeImage: async (bytes, mimeType) => {
+        expect(mimeType).toBe('image/png');
+        expect(Array.from(bytes)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+        return handle;
+      },
+    });
+
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    const ref = mat.baseColorMap as TextureRef;
+    expect(ref.handle).toBe(handle);
+    expect(ref.texCoord).toBe(1);
+    expect(ref.transform?.offset).toEqual([0.25, 0.5]);
+    expect(ref.transform?.scale).toEqual([2, 3]);
+    expect(ref.transform?.rotation).toBeCloseTo(0.125);
   });
 
   it('maps emissiveFactor', async () => {

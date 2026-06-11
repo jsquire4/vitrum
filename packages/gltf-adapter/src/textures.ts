@@ -143,7 +143,7 @@ export async function buildTextureHandleMap(
 
 /** Extract a UvTransform from a KHR_texture_transform extension block. */
 function uvTransformFromExt(
-  ext: { offset?: [number, number]; rotation?: number; scale?: [number, number] } | undefined,
+  ext: { offset?: [number, number]; rotation?: number; scale?: [number, number]; texCoord?: number } | undefined,
 ): UvTransform | undefined {
   if (!ext) return undefined;
   const hasOffset = ext.offset && (ext.offset[0] !== 0 || ext.offset[1] !== 0);
@@ -169,8 +169,10 @@ export function resolveTextureRef(
   const handle = handleMap.get(info.index);
   if (handle == null) return undefined;
 
-  const texCoord = info.texCoord ?? 0;
-  const khrTransform = (info.extensions?.['KHR_texture_transform'] as { offset?: [number, number]; rotation?: number; scale?: [number, number] } | undefined);
+  const khrTransform = (info.extensions?.['KHR_texture_transform'] as
+    | { offset?: [number, number]; rotation?: number; scale?: [number, number]; texCoord?: number }
+    | undefined);
+  const texCoord = khrTransform?.texCoord ?? info.texCoord ?? 0;
   const transform = uvTransformFromExt(khrTransform);
 
   const ref: TextureRef = {
