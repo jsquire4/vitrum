@@ -24,6 +24,7 @@
  */
 
 import {
+  ATROUS_UBO_BINDING_STRIDE_BYTES,
   buildAtrousBindGroup,
   type AtrousSigmas,
   type UboRef,
@@ -50,7 +51,7 @@ export class AtrousIndirectPass implements Pass {
 
   /** Shared à-trous pipeline (same handle the AtrousDenoiser uses). */
   private readonly _sharedAtrousPipeline: GPUComputePipeline;
-  /** Pass-private UBO ref — kept separate from AtrousDenoiser's UBO so
+  /** Pass-private UBO slab — kept separate from AtrousDenoiser's UBO so
    *  the two consumers never race on their per-iter sigma writes. */
   private readonly _uboRef: UboRef;
 
@@ -92,6 +93,10 @@ export class AtrousIndirectPass implements Pass {
           inputView, outputView,
           gNormalDepthView, gNormalDepthView, 1 << iter,
           sigmas,
+          {
+            byteOffset: iter * ATROUS_UBO_BINDING_STRIDE_BYTES,
+            minSizeBytes: ATROUS_INDIRECT_ITERATIONS * ATROUS_UBO_BINDING_STRIDE_BYTES,
+          },
         ),
       labelFor: (iter) => `atrous-indirect-${iter}` as PassLabel,
     });

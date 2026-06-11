@@ -80,6 +80,8 @@ export interface MutationHost {
   supportedAnalyticShapes(): ReadonlySet<string>;
   /** Whether camera-visible emitters (emissive fold) is enabled for this engine instance. */
   cameraVisibleEmitters(): boolean;
+  /** Refresh lite-tier sampled light/environment textures from the live scene buffers. */
+  syncLiteTextures?(sceneBuffers: UploadedSceneBuffers): void;
   /** Full scene repack (engine-internal: destroys buffers + re-inits BDPT). */
   repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void;
   /** Public setScene entry — the fall-through for every fast-path miss. */
@@ -492,7 +494,10 @@ export class SceneMutationRouter {
       if (
         (commit.reshapedWorldPositions || commit.changedEmissiveField) &&
         sceneBuffersForEmitters != null &&
-        hasMeshAreaEmitterForPrimitive(nextScene, id)
+        (
+          hasMeshAreaEmitterForPrimitive(currentScene, id) ||
+          hasMeshAreaEmitterForPrimitive(nextScene, id)
+        )
       ) {
         const emitterPacked = packEmitterArrays(nextScene);
         const emittersReallocated = uploadEmitterArrays(device, sceneBuffersForEmitters, emitterPacked, {
@@ -506,6 +511,7 @@ export class SceneMutationRouter {
         if (emittersReallocated || lightTreeReallocated) {
           host.invalidateBindGroups();
         }
+        host.syncLiteTextures?.(sceneBuffersForEmitters);
         for (const w of emitterPacked.warnings) {
           console.warn(`[vitrum/pt-webgpu] ${w}`);
         }
@@ -544,6 +550,7 @@ export class SceneMutationRouter {
       if (lightsReallocated || lightTreeReallocated) {
         host.invalidateBindGroups();
       }
+      host.syncLiteTextures?.(sceneBuffers);
       // H10 — emissive-fold desync fix: when cameraVisibleEmitters is on and the
       // patched emitter is a mesh-area emitter, re-write the material slot of the
       // backed primitive so the kernel's emissive-on-hit term stays in sync with
@@ -652,6 +659,7 @@ export class SceneMutationRouter {
         if (rebuildLightTreeForScene(device, sceneBuffers, nextScene, { envSummary: envSummaryForTree })) {
           host.invalidateBindGroups();
         }
+        host.syncLiteTextures?.(sceneBuffers);
         host.setSceneState(nextScene);
         for (const warning of packed.warnings) {
           console.warn(`[vitrum/pt-webgpu] ${warning}`);

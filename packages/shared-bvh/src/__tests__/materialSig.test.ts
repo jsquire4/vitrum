@@ -7,8 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { MaterialSpec } from '@vitrum/core';
-import { materialSig } from '../worldSpaceMerge.js';
+import type { MaterialSpec, Scene } from '@vitrum/core';
+import { materialSig, mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
 const BASE: MaterialSpec = {
   baseColor: [0.8, 0.8, 0.8],
@@ -70,5 +70,59 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     const implicit: MaterialSpec = { ...BASE };
     const explicit: MaterialSpec = { ...BASE, attenuationColor: [1, 1, 1] };
     expect(materialSig(implicit)).toBe(materialSig(explicit));
+  });
+});
+
+describe('mergeWorldSpaceFromCore material slots', () => {
+  const TRI_POS = new Float32Array([
+    0, 0, 0,
+    1, 0, 0,
+    0, 1, 0,
+  ]);
+  const TRI_NORM = new Float32Array([
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+  ]);
+
+  function sceneWithMixedCastShadow(): Scene {
+    return {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'caster',
+          positions: TRI_POS,
+          normals: TRI_NORM,
+          material: BASE,
+          castShadow: true,
+        },
+        {
+          kind: 'mesh',
+          id: 'non-caster',
+          positions: TRI_POS,
+          normals: TRI_NORM,
+          material: BASE,
+          castShadow: false,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+  }
+
+  it('keeps historical material dedup unless cast-shadow splitting is requested', () => {
+    const merged = mergeWorldSpaceFromCore(sceneWithMixedCastShadow());
+    expect(merged.materials.length).toBe(1);
+    expect(Array.from(merged.mergedTriMaterialId)).toEqual([0, 0]);
+  });
+
+  it('can split otherwise-identical materials by primitive castShadow', () => {
+    const merged = mergeWorldSpaceFromCore(sceneWithMixedCastShadow(), {
+      splitMaterialsByCastShadow: true,
+    });
+    expect(merged.materials.length).toBe(2);
+    expect(Array.from(merged.mergedTriMaterialId)).toEqual([0, 1]);
+    expect((merged.materials[0] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(true);
+    expect((merged.materials[1] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(false);
   });
 });

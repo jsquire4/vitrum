@@ -152,6 +152,15 @@ export interface WorldSpaceMergeOptions {
    * `buildSceneBVH`'s mesh filter ("any mesh with a position attribute").
    */
   readonly filter?: (primitive: ScenePrimitive) => boolean;
+
+  /**
+   * Include the primitive-level `castShadow` flag in material deduplication.
+   * Default false preserves the historical GI/merged-BVH behavior where shadow
+   * participation is not represented in material slots. Backends with a
+   * material-texture shadow bit can opt in so otherwise-identical materials
+   * remain distinct when one primitive disables shadow casting.
+   */
+  readonly splitMaterialsByCastShadow?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -428,13 +437,21 @@ export function mergeWorldSpaceFromCore(
   const materials: MaterialSpec[] = [];
   const sigToSlot = new Map<string, number>();
 
-  const resolveMaterialSlot = (mat: MaterialSpec): number => {
-    const sig = materialSig(mat);
+  const resolveMaterialSlot = (primitive: MeshLikePrimitive): number => {
+    const mat = primitive.material;
+    const castShadow = primitive.castShadow ?? true;
+    const sig = opts.splitMaterialsByCastShadow
+      ? `${materialSig(mat)}|castShadow=${castShadow ? 1 : 0}`
+      : materialSig(mat);
     const existing = sigToSlot.get(sig);
     if (existing !== undefined) return existing;
     const slot = materials.length;
     sigToSlot.set(sig, slot);
-    materials.push(mat);
+    materials.push(
+      opts.splitMaterialsByCastShadow
+        ? ({ ...mat, castShadow } as MaterialSpec)
+        : mat,
+    );
     return slot;
   };
 
@@ -444,7 +461,7 @@ export function mergeWorldSpaceFromCore(
   for (const primitive of scene.primitives) {
     if (!filter(primitive) || !isMeshLike(primitive)) continue;
 
-    const matSlot = resolveMaterialSlot(primitive.material);
+    const matSlot = resolveMaterialSlot(primitive);
 
     // For an instanced-mesh, world-merge every instance (one baked copy per
     // transform — the faithful world-space expansion). mesh / skinned-mesh have

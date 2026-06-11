@@ -25,8 +25,8 @@ export interface MeshPrimitive {
   readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
   /** Whether this mesh casts shadows on other geometry. Default true.
-   *  @reserved Accepted by the contract; pt-webgl2 hardcodes `true` (fork default) and
-   *  walkaround-hybrid does not gate on it. road-to-100 shadow tier. */
+   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
+   *  (road-to-100 shadow tier). */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
    *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */
@@ -49,6 +49,10 @@ export interface InstancedMeshPrimitive {
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
+  /** Whether these mesh instances cast shadows on other geometry. Default true.
+   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
+   *  (road-to-100 shadow tier). */
+  readonly castShadow?: boolean;
 }
 
 /** Closed-form ray-primitive intersection. Backend-supported shapes only;
@@ -172,8 +176,8 @@ export interface SkinnedMeshPrimitive {
   readonly material: MaterialSpec;
   readonly transform?: Mat4;
   /** Whether this mesh casts shadows on other geometry. Default true.
-   *  @reserved Accepted by the contract; pt-webgl2 hardcodes `true` (fork default) and
-   *  walkaround-hybrid does not gate on it. road-to-100 shadow tier. */
+   *  Consumed by pt-webgl2. walkaround-hybrid and pt-webgpu do not gate on it yet
+   *  (road-to-100 shadow tier). */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
    *  @reserved Accepted; not yet consumed by any backend (road-to-100 shadow tier). */

@@ -21,6 +21,7 @@ import {
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import { installGpuConstStubs } from './gpuStub.js';
 
 // ─── 2a: canFastPathMaterialPatch rejects TextureRef fields ───────────────────
 
@@ -148,6 +149,7 @@ describe('hasMeshAreaEmitterForPrimitive — Item 2b: implicit emissive-mesh emi
 function makeHostWithEmissiveScene(scene: Scene): {
   host: MutationHost;
   sceneRef: { current: Scene };
+  sceneBuffers: UploadedSceneBuffers;
   meshAreaLightsWriteCalls: Float32Array[];
 } {
   const packed = buildPackedScene(scene, {});
@@ -203,6 +205,11 @@ function makeHostWithEmissiveScene(scene: Scene): {
 
   const host: MutationHost = {
     device: {
+      createBuffer: vi.fn((desc: { label?: string; size?: number } | undefined) => ({
+        label: desc?.label ?? '',
+        size: desc?.size ?? 16,
+        destroy: vi.fn(),
+      })),
       queue: {
         writeBuffer: vi.fn((buf: unknown, _byteOffset: number, data: ArrayBuffer, srcOffset: number, length: number) => {
           if (buf === meshAreaLightsBuffer) {
@@ -225,7 +232,7 @@ function makeHostWithEmissiveScene(scene: Scene): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, meshAreaLightsWriteCalls };
+  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls };
 }
 
 describe('SceneMutationRouter — Item 2c: emissive-field material patch triggers emitter re-pack', () => {
@@ -257,6 +264,36 @@ describe('SceneMutationRouter — Item 2c: emissive-field material patch trigger
 
     // meshAreaLightsBuffer should have been written (emitter re-pack ran).
     expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
+  });
+
+  it('emissive-to-zero patch on implicit-emitter mesh removes stale mesh-area data', () => {
+    installGpuConstStubs();
+    const emissiveScene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'glow-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, emissive: [4, 4, 4] },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const { host, sceneBuffers } = makeHostWithEmissiveScene(emissiveScene);
+    expect(sceneBuffers.meshAreaLightCount).toBeGreaterThan(0);
+    expect(sceneBuffers.meshAreaLightsData.length).toBeGreaterThan(0);
+
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('glow-mesh', {
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, emissive: [0, 0, 0], emissiveIntensity: 1 },
+    } as never);
+
+    expect(sceneBuffers.meshAreaLightCount).toBe(0);
+    expect(sceneBuffers.meshAreaLightsData.length).toBe(0);
+    expect(host.invalidateBindGroups).toHaveBeenCalled();
   });
 
   it('non-emissive material patch (roughness only) does NOT trigger emitter re-pack for non-emissive mesh', () => {

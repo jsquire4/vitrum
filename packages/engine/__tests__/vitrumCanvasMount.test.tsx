@@ -26,18 +26,31 @@ import type { AttachVitrumHandle } from '../src/lifecycle/vanilla.js';
 
 let happyWindow: Window;
 const savedGlobals: Record<string, unknown> = {};
-const DOM_GLOBALS = ['window', 'document', 'requestAnimationFrame', 'cancelAnimationFrame', 'ResizeObserver'] as const;
+const DOM_GLOBALS = [
+  'window',
+  'document',
+  'navigator',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'ResizeObserver',
+] as const;
 
 beforeEach(() => {
   happyWindow = new Window({ url: 'http://localhost/' });
   savedGlobals.window = (globalThis as Record<string, unknown>).window;
   savedGlobals.document = (globalThis as Record<string, unknown>).document;
+  savedGlobals.navigator = (globalThis as Record<string, unknown>).navigator;
   savedGlobals.requestAnimationFrame = (globalThis as Record<string, unknown>).requestAnimationFrame;
   savedGlobals.cancelAnimationFrame = (globalThis as Record<string, unknown>).cancelAnimationFrame;
   savedGlobals.ResizeObserver = (globalThis as Record<string, unknown>).ResizeObserver;
 
   (globalThis as Record<string, unknown>).window = happyWindow;
   (globalThis as Record<string, unknown>).document = happyWindow.document;
+  Object.defineProperty(globalThis, 'navigator', {
+    value: happyWindow.navigator,
+    configurable: true,
+    writable: true,
+  });
   (globalThis as Record<string, unknown>).requestAnimationFrame = happyWindow.requestAnimationFrame.bind(happyWindow);
   (globalThis as Record<string, unknown>).cancelAnimationFrame = happyWindow.cancelAnimationFrame.bind(happyWindow);
   (globalThis as Record<string, unknown>).ResizeObserver = happyWindow.ResizeObserver;
@@ -45,7 +58,15 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const key of DOM_GLOBALS) {
-    (globalThis as Record<string, unknown>)[key] = savedGlobals[key];
+    if (key === 'navigator') {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: savedGlobals.navigator,
+        configurable: true,
+        writable: true,
+      });
+    } else {
+      (globalThis as Record<string, unknown>)[key] = savedGlobals[key];
+    }
   }
   happyWindow.close();
   vi.restoreAllMocks();

@@ -26,6 +26,10 @@ export { MATERIAL_PIXELS };
 /** Floats per material (93 px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
+type PackedMaterialSpec = MaterialSpec & {
+  readonly castShadow?: boolean;
+};
+
 /** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
 const TRANSLUCENT_BIT = 1 << 4;
 
@@ -198,7 +202,7 @@ function packLayerIds(m: MaterialSpec, layerOf: Map<unknown, number> | undefined
 function packScalarSlots(
   data: Float32Array,
   index: number,
-  m: MaterialSpec,
+  m: PackedMaterialSpec,
   ids: LayerIds,
 ): number {
   // ── Scalar field resolution (core → fork semantics) ──────────────────────
@@ -327,7 +331,7 @@ function packScalarSlots(
 
   // sample 14 — matte / castShadow / vertexColors|(flat<<1) / flags
   data[index++] = 0; // matte (core has no matte field)
-  data[index++] = 1; // castShadow (fork default true)
+  data[index++] = m.castShadow === false ? 0 : 1;
   data[index++] = 0; // vertexColors | (flatShading<<1) — core meshes carry neither here
   {
     let flags = Number(transparent);

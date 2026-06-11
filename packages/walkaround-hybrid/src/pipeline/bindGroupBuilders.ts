@@ -5,9 +5,9 @@
  * All functions are pure in the sense that they only read their arguments and
  * call device.createBindGroup(); no mutable state is kept here. The one
  * exception is buildAtrousBindGroup / buildAccumBindGroup, which lazily
- * create a small per-builder UBO via the `uboRef` out-param object — callers
- * pass a wrapper `{ buf: GPUBuffer | undefined }` that is initialised on the
- * first call and reused thereafter.
+ * create a per-builder UBO via the `uboRef` out-param object — callers pass a
+ * wrapper `{ buf: GPUBuffer | undefined }` that is initialised on the first
+ * call and reused thereafter.
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';
@@ -242,6 +242,14 @@ export function buildUboBindGroup(
 export interface UboRef { buf: GPUBuffer | undefined }
 
 /**
+ * Conservative alignment for per-iteration UBO ranges inside a single buffer.
+ * WebGPU uniform buffer binding offsets are commonly 256-byte aligned; using
+ * that stride lets an encoded à-trous chain bind one stable range per dispatch.
+ */
+export const ATROUS_UBO_BINDING_STRIDE_BYTES = 256;
+const atrousUboAllocationSizes = new WeakMap<UboRef, number>();
+
+/**
  * D4.3 — Branded variant of {@link UboRef} for UBO buffers that are
  * PASS-OWNED (constructed by a {@link Pass} sub-class, managed inside
  * the pass's own `initialize`/`dispose`).
@@ -286,12 +294,25 @@ export function buildAtrousBindGroup(
   gDepthView: GPUTextureView,
   stepWidth: number,
   sigmas: Readonly<AtrousSigmas>,
+  uboLayout: {
+    readonly byteOffset?: number;
+    readonly minSizeBytes?: number;
+  } = {},
 ): GPUBindGroup {
+  const byteOffset = uboLayout.byteOffset ?? 0;
+  const minSizeBytes = uboLayout.minSizeBytes ?? ATROUS_UBO.sizeBytes;
+  const requiredSizeBytes = Math.max(minSizeBytes, byteOffset + ATROUS_UBO.sizeBytes);
+  const knownSizeBytes = atrousUboAllocationSizes.get(uboRef) ?? 0;
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
-      size: ATROUS_UBO.sizeBytes,
+      size: requiredSizeBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    atrousUboAllocationSizes.set(uboRef, requiredSizeBytes);
+  } else if (knownSizeBytes === 0) {
+    atrousUboAllocationSizes.set(uboRef, requiredSizeBytes);
+  } else if (knownSizeBytes < requiredSizeBytes) {
+    throw new Error(`Atrous UBO buffer is too small for byte offset ${byteOffset}`);
   }
   // W2-C13 follow-up: same byte layout as the prior Float32Array([stepWidth,
   // sigmaN, sigmaZ, sigmaC]) — four f32 fields at offsets 0/4/8/12.
@@ -302,7 +323,7 @@ export function buildAtrousBindGroup(
     sigmaZ: sigmas.sigmaZ,
     sigmaC: sigmas.sigmaC,
   });
-  device.queue.writeBuffer(uboRef.buf, 0, uboData);
+  device.queue.writeBuffer(uboRef.buf, byteOffset, uboData);
 
   return device.createBindGroup({
     label: `atrous-bg-step${stepWidth}`,
@@ -312,7 +333,7 @@ export function buildAtrousBindGroup(
       { binding: 1, resource: outputView },
       { binding: 2, resource: gNormalView },
       { binding: 3, resource: gDepthView },
-      { binding: 4, resource: { buffer: uboRef.buf } },
+      { binding: 4, resource: { buffer: uboRef.buf, offset: byteOffset, size: ATROUS_UBO.sizeBytes } },
     ],
   });
 }
@@ -632,6 +653,7 @@ export function buildAtrousVarianceAtrousBindGroup(
   varianceEstimate: GPUTextureView,
   ubo: GPUBuffer,
   label = 'atrous-variance-atrous-bg',
+  uboByteOffset = 0,
 ): GPUBindGroup {
   return device.createBindGroup({
     label,
@@ -642,7 +664,7 @@ export function buildAtrousVarianceAtrousBindGroup(
       { binding: 2, resource: gNormalDepth },
       { binding: 3, resource: gNormalDepth },
       { binding: 4, resource: varianceEstimate },
-      { binding: 5, resource: { buffer: ubo } },
+      { binding: 5, resource: { buffer: ubo, offset: uboByteOffset } },
     ],
   });
 }

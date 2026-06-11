@@ -35,10 +35,17 @@ export class RISGIPass implements Pass {
   /** When NRC is compile-time on, returns the host-owned @group(4) NRC bind
    *  group to bind at slot 4. Undefined (default) ⇒ NRC OFF, no slot-4 bind. */
   private readonly _nrcBindGroup?: () => GPUBindGroup;
+  /** Clears NRC per-slot claims immediately before the NRC GI-RIS dispatch. */
+  private readonly _nrcClearSlotClaims?: (encoder: GPUCommandEncoder) => void;
 
-  constructor(pipeline: GPUComputePipeline, nrcBindGroup?: () => GPUBindGroup) {
+  constructor(
+    pipeline: GPUComputePipeline,
+    nrcBindGroup?: () => GPUBindGroup,
+    nrcClearSlotClaims?: (encoder: GPUCommandEncoder) => void,
+  ) {
     this._pipeline = pipeline;
     if (nrcBindGroup !== undefined) this._nrcBindGroup = nrcBindGroup;
+    if (nrcClearSlotClaims !== undefined) this._nrcClearSlotClaims = nrcClearSlotClaims;
   }
 
   gates(): boolean {
@@ -60,6 +67,7 @@ export class RISGIPass implements Pass {
     // NRC ON — bind frame/scene/ubo/hybrid + the NRC @group(4), half-res.
     // Byte-identical to the prior bespoke setBindGroup sequence: slots 0/1/2
     // (+ hybrid @3 via useHybridLayers) then the NRC group at @4.
+    this._nrcClearSlotClaims?.(ctx.encoder);
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: 'gi-ris',
       useHybridLayers: true,

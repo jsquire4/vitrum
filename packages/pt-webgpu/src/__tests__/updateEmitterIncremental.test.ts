@@ -40,20 +40,21 @@ function makeScene(): Scene {
 
 function makeStubDevice() {
   const writeBuffer = vi.fn();
+  const writeTexture = vi.fn();
   const createBuffer = vi.fn((_desc: unknown) => ({
     destroy: vi.fn(),
   }));
   const device = {
-    queue: { writeBuffer, writeTexture: vi.fn() },
+    queue: { writeBuffer, writeTexture },
     createBuffer,
     ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
-    limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
+    limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8, maxTextureDimension2D: 8192 },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
-  return { device, writeBuffer, createBuffer };
+  return { device, writeBuffer, writeTexture, createBuffer };
 }
 
 describe('pt-webgpu incremental emitter updates', () => {
@@ -90,5 +91,24 @@ describe('pt-webgpu incremental emitter updates', () => {
     // light-tree is also re-uploaded because the patched emitter's radiance
     // changes the leaf powers.  Total: directional(1) + point(1) + lightTree(1) = 3.
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 3);
+  });
+
+  it('refreshes lite sampled light/environment textures after updateEmitter', async () => {
+    installWebGpuConstStubs();
+    const { device, writeTexture } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device, traceTier: 'lite' });
+    engine.setScene(makeScene());
+
+    const writesBefore = writeTexture.mock.calls.length;
+    engine.updateEmitter?.('point-a', { intensity: 5 });
+
+    const labels = writeTexture.mock.calls
+      .slice(writesBefore)
+      .map((call) => ((call[0] as { texture?: { label?: string } }).texture?.label ?? ''));
+    expect(labels).toEqual([
+      'vitrum.pt-webgpu.lite.envTex',
+      'vitrum.pt-webgpu.lite.envCdfTex',
+      'vitrum.pt-webgpu.lite.lightTex',
+    ]);
   });
 });

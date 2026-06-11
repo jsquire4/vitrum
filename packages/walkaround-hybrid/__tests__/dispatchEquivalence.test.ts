@@ -36,6 +36,7 @@ import { SpatialGIReservoirPass } from '../src/pipeline/passes/SpatialGIReservoi
 import { RISGIPass } from '../src/pipeline/passes/RISGIPass.js';
 import { AtrousIndirectPass } from '../src/pipeline/passes/AtrousIndirectPass.js';
 import { AtrousDenoiser } from '../src/pipeline/denoisers/atrous.js';
+import { AtrousVarianceDenoiser } from '../src/pipeline/denoisers/atrousVariance.js';
 import type { DenoiserDispatchContext } from '../src/pipeline/denoisers/index.js';
 import { composePassLabels } from '../src/pipeline/passes/passOrder.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
@@ -67,15 +68,30 @@ interface PassRecord {
   dims: [number, number, number];
 }
 
+interface EncoderEvent {
+  kind: 'clear' | 'pass' | 'copy';
+  label?: string;
+  size?: number;
+}
+
+interface BufferWriteRecord {
+  buffer: unknown;
+  offset: number;
+  data: BufferSource;
+}
+
 function makeRecordingEncoder(): {
   encoder: GPUCommandEncoder;
   records: PassRecord[];
   copies: Array<{ kind: 'buffer'; size: number }>;
+  events: EncoderEvent[];
 } {
   const records: PassRecord[] = [];
   const copies: Array<{ kind: 'buffer'; size: number }> = [];
+  const events: EncoderEvent[] = [];
   const encoder = {
     beginComputePass: (desc: GPUComputePassDescriptor) => {
+      events.push({ kind: 'pass', label: String((desc as { label?: string }).label) });
       const rec: PassRecord = {
         label: String((desc as { label?: string }).label),
         pipeline: undefined,
@@ -90,12 +106,16 @@ function makeRecordingEncoder(): {
         end: () => {},
       } as unknown as GPUComputePassEncoder;
     },
+    clearBuffer: () => {
+      events.push({ kind: 'clear' });
+    },
     copyBufferToBuffer: (_s: unknown, _so: number, _d: unknown, _do: number, size: number) => {
       copies.push({ kind: 'buffer', size });
+      events.push({ kind: 'copy', size });
     },
     copyTextureToTexture: vi.fn(),
   } as unknown as GPUCommandEncoder;
-  return { encoder, records, copies };
+  return { encoder, records, copies, events };
 }
 
 // A tagged stub texture whose createView() returns a stable tagged view object,
@@ -111,21 +131,59 @@ function tex(tag: string): GPUTexture {
   } as unknown as GPUTexture;
 }
 function buf(tag: string, size = 256): GPUBuffer {
-  return { __tag: tag, size, createView: () => ({ __tag: `${tag}#view` }) } as unknown as GPUBuffer;
+  return { __tag: tag, size, destroy: vi.fn(), createView: () => ({ __tag: `${tag}#view` }) } as unknown as GPUBuffer;
 }
 
-const stubPipeline = (tag: string) => ({ __tag: tag } as unknown as GPUComputePipeline);
+const stubPipeline = (tag: string) => ({
+  __tag: tag,
+  getBindGroupLayout: () => ({ __tag: `${tag}#bgl` } as unknown as GPUBindGroupLayout),
+} as unknown as GPUComputePipeline);
 
 // A device whose createBindGroup returns a tagged stub (so each pass's bind
 // group is a single opaque object — we assert SLOT placement, not contents).
 function makeDevice(): GPUDevice {
-  let n = 0;
+  let bgN = 0;
+  let bufN = 0;
+  const writes: BufferWriteRecord[] = [];
   return {
-    createBindGroup: () => ({ __tag: `bg#${n++}` } as unknown as GPUBindGroup),
+    __writes: writes,
+    createBindGroup: (desc: GPUBindGroupDescriptor) => ({
+      __tag: `bg#${bgN++}`,
+      __desc: desc,
+    } as unknown as GPUBindGroup),
     createBindGroupLayout: () => ({} as unknown as GPUBindGroupLayout),
-    createBuffer: () => buf('created'),
-    queue: { writeBuffer: vi.fn() },
+    createBuffer: (desc: GPUBufferDescriptor) => buf(`created#${bufN++}`, desc.size),
+    queue: {
+      writeBuffer: vi.fn((buffer: unknown, offset: number, data: BufferSource) => {
+        writes.push({ buffer, offset, data });
+      }),
+    },
   } as unknown as GPUDevice;
+}
+
+function deviceWrites(device: GPUDevice): BufferWriteRecord[] {
+  return (device as unknown as { __writes: BufferWriteRecord[] }).__writes;
+}
+
+function bindGroupEntries(group: unknown): GPUBindGroupEntry[] {
+  return (group as { __desc: GPUBindGroupDescriptor }).__desc.entries as GPUBindGroupEntry[];
+}
+
+function bufferBinding(group: unknown, binding: number): GPUBufferBinding {
+  const entry = bindGroupEntries(group).find((e) => e.binding === binding);
+  return entry!.resource as GPUBufferBinding;
+}
+
+function firstF32(data: BufferSource): number {
+  const buffer = data instanceof ArrayBuffer ? data : data.buffer;
+  const byteOffset = data instanceof ArrayBuffer ? 0 : data.byteOffset;
+  return new Float32Array(buffer, byteOffset, 1)[0]!;
+}
+
+function firstU32(data: BufferSource): number {
+  const buffer = data instanceof ArrayBuffer ? data : data.buffer;
+  const byteOffset = data instanceof ArrayBuffer ? 0 : data.byteOffset;
+  return new Uint32Array(buffer, byteOffset, 1)[0]!;
 }
 
 // Minimal-but-complete PassDispatchContext. Each pass reads only a subset;
@@ -146,6 +204,9 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     gNormalDepthTexture: tex('gNormalDepth'),
     motionVectorTexture: tex('motionVec'),
     hdrColorTexture: tex('hdrColor'),
+    hdrTotalTexture: tex('hdrTotal'),
+    denoisedPingTexture: tex('denoisedPing'),
+    denoisedPongTexture: tex('denoisedPong'),
     uboBuffer: buf('ubo'),
     combinedDenoisedTexture: tex('combinedDenoisedTex'),
     albedoTexture: tex('albedo'),
@@ -157,6 +218,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     resolvedTexture: tex('resolved'),
     varianceBuffer: buf('variance'),
     varianceBufferAux: buf('varianceAux'),
+    atrousVarianceEstimateTexture: tex('atrousVarianceEstimate'),
     tierTexture: tex('tier'),
   };
   const resources = {
@@ -326,13 +388,21 @@ describe('Theme-E dispatch equivalence — RISGIPass NRC slot-4 (#3)', () => {
   });
 
   it('NRC ON: frame/scene/ubo/hybrid at 0..3 + NRC group at slot-4, half-res', () => {
-    const { encoder, records } = makeRecordingEncoder();
+    const { encoder, records, events } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
     const nrcBg = { __tag: 'nrcBG' } as unknown as GPUBindGroup;
-    new RISGIPass(stubPipeline('giRis'), () => nrcBg).dispatch(ctx);
+    const slotClaims = buf('nrcSlotClaims');
+    new RISGIPass(
+      stubPipeline('giRis'),
+      () => nrcBg,
+      (enc) => enc.clearBuffer(slotClaims),
+    ).dispatch(ctx);
+    encoder.copyBufferToBuffer(buf('nrcRecords'), 0, buf('nrcReadback'), 0, 64);
     expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3, 4]);
     expect((records[0]!.binds[4]!.group as { __tag: string }).__tag).toBe('nrcBG');
     expect(records[0]!.dims).toEqual([2, 2, 1]);
+    expect(events.map((e) => e.kind)).toEqual(['clear', 'pass', 'copy']);
+    expect(events[1]!.label).toBe('gi-ris');
   });
 });
 
@@ -359,6 +429,12 @@ describe('Theme-E dispatch equivalence — runAtrousChain (#2)', () => {
     } as unknown as DenoiserDispatchContext;
     const out = new AtrousDenoiser().dispatch(denoiserCtx);
     expect(records.map((r) => r.label)).toEqual(['atrous-0', 'atrous-1', 'atrous-2']);
+    const writes = deviceWrites(ctx.device);
+    expect(writes.map((w) => w.offset)).toEqual([0, 256, 512]);
+    expect(writes.map((w) => firstF32(w.data))).toEqual([1, 2, 4]);
+    const uboBindings = records.map((r) => bufferBinding(r.binds[0]!.group, 4));
+    expect(uboBindings.map((b) => b.offset ?? 0)).toEqual([0, 256, 512]);
+    expect(new Set(uboBindings.map((b) => b.buffer)).size).toBe(1);
     for (const r of records) {
       expect(r.binds.map((b) => b.slot)).toEqual([0]);
       expect(r.dims).toEqual([4, 4, 1]);
@@ -375,6 +451,12 @@ describe('Theme-E dispatch equivalence — runAtrousChain (#2)', () => {
     expect(records.map((r) => r.label)).toEqual([
       'atrous-indirect-0', 'atrous-indirect-1', 'atrous-indirect-2', 'atrous-indirect-3',
     ]);
+    const writes = deviceWrites(ctx.device);
+    expect(writes.map((w) => w.offset)).toEqual([0, 256, 512, 768]);
+    expect(writes.map((w) => firstF32(w.data))).toEqual([1, 2, 4, 8]);
+    const uboBindings = records.map((r) => bufferBinding(r.binds[0]!.group, 4));
+    expect(uboBindings.map((b) => b.offset ?? 0)).toEqual([0, 256, 512, 768]);
+    expect(new Set(uboBindings.map((b) => b.buffer)).size).toBe(1);
     // Every iter binds slot 0 only and dispatches 16×16-grid counts (4×4).
     for (const r of records) {
       expect(r.binds.map((b) => b.slot)).toEqual([0]);
@@ -385,6 +467,56 @@ describe('Theme-E dispatch equivalence — runAtrousChain (#2)', () => {
     // for the last (iter=3, odd) iteration → pong texture.
     expect((ctx.frameState.denoisedIndirect as unknown as { __tag: string }).__tag)
       .toBe('indDenoisedPong');
+  });
+
+  it('AtrousVarianceDenoiser: atrous iterations bind distinct UBO offsets', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = makeCtx(encoder);
+    const denoiser = new AtrousVarianceDenoiser();
+    const atrousUbo = buf('atrousVarianceUbo', 3 * 256);
+    Object.assign(denoiser as unknown as {
+      _welfordPipeline: GPUComputePipeline;
+      _variancePipeline: GPUComputePipeline;
+      _atrousPipeline: GPUComputePipeline;
+      _welfordUboRef: { buf: GPUBuffer };
+      _varianceUboRef: { buf: GPUBuffer };
+      _atrousUboRef: { buf: GPUBuffer };
+    }, {
+      _welfordPipeline: stubPipeline('welford'),
+      _variancePipeline: stubPipeline('variance'),
+      _atrousPipeline: stubPipeline('atrousVariance'),
+      _welfordUboRef: { buf: buf('welfordUbo') },
+      _varianceUboRef: { buf: buf('varianceUbo') },
+      _atrousUboRef: { buf: atrousUbo },
+    });
+
+    const out = denoiser.dispatch({
+      device: ctx.device,
+      encoder,
+      resources: ctx.resources,
+      gNormalDepthView: ctx.gNormalDepthView,
+      isMoving: false,
+      wgX16: 4,
+      wgY16: 4,
+      frameIndex: 3,
+      computeDesc: ctx.computeDesc,
+    } as unknown as DenoiserDispatchContext);
+
+    expect(records.map((r) => r.label)).toEqual([
+      'welford-temporal',
+      'atrous-variance-variance',
+      'atrous-variance-atrous-0',
+      'atrous-variance-atrous-1',
+      'atrous-variance-atrous-2',
+    ]);
+    const atrousWrites = deviceWrites(ctx.device).filter((w) => w.buffer === atrousUbo);
+    expect(atrousWrites.map((w) => w.offset)).toEqual([0, 256, 512]);
+    expect(atrousWrites.map((w) => firstU32(w.data))).toEqual([0, 1, 2]);
+    const atrousRecords = records.slice(2);
+    const uboBindings = atrousRecords.map((r) => bufferBinding(r.binds[0]!.group, 5));
+    expect(uboBindings.map((b) => b.offset ?? 0)).toEqual([0, 256, 512]);
+    expect(new Set(uboBindings.map((b) => b.buffer)).size).toBe(1);
+    expect((out as unknown as { __tag: string }).__tag).toBe('denoisedPing');
   });
 });
 

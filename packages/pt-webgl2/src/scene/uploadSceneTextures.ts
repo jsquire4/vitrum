@@ -73,7 +73,10 @@ export function buildSceneTextures(
 
   // (2) merged world-space tri stream + single-root BVH (stride 4 = the form the
   //     BVH texture adapter and attribute array both index).
-  const merged = mergeWorldSpaceFromCore(skinnedScene, { positionStride: 4 });
+  const merged = mergeWorldSpaceFromCore(skinnedScene, {
+    positionStride: 4,
+    splitMaterialsByCastShadow: true,
+  });
 
   // (3) BVH data textures (+ per-tri materialIndex)
   const bvhData = packBvhTextureData(merged);

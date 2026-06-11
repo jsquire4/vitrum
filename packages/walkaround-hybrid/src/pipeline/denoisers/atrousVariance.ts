@@ -52,6 +52,8 @@ import {
   type DenoiserState,
 } from './index.js';
 
+const ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES = 256;
+
 /**
  * Welford BG builder — pre-W1-R3 lived in `bindGroupBuilders.ts`. The
  * pipeline uses `layout: 'auto'` so the BGL source is the pipeline
@@ -203,7 +205,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
     });
     this._atrousUboRef.buf = device.createBuffer({
       label: 'atrous-variance-atrous-ubo',
-      size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+      size: ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS * ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES,
       usage: U,
     });
   }
@@ -294,20 +296,22 @@ export class AtrousVarianceDenoiser implements Denoiser {
       wgY: wgY16,
       computeDesc,
       // The shared eager UBO is re-packed + re-written each iteration BEFORE
-      // its dispatch is encoded — identical JS ordering to the prior loop, so
-      // each dispatch reads its own iteration's uniform value.
+      // its dispatch is encoded into that iteration's aligned byte range.
       bindGroupFor: (iter, inputView, outputView) => {
+        const atrousUboByteOffset = iter * ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES;
         packAtrousVarianceAtrousUniforms(
           { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
           atrousUboBytes,
           0,
         );
-        device.queue.writeBuffer(this._atrousUboRef.buf!, 0, atrousUboBytes);
+        device.queue.writeBuffer(this._atrousUboRef.buf!, atrousUboByteOffset, atrousUboBytes);
         return buildAtrousVarianceAtrousBindGroup(
           device, sa,
           inputView, outputView,
           gNormalDepthView, varView,
           this._atrousUboRef.buf!,
+          `atrous-variance-atrous-bg-${iter}`,
+          atrousUboByteOffset,
         );
       },
       labelFor: (iter) => `atrous-variance-atrous-${iter}` as PassLabel,

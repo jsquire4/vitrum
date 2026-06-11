@@ -156,6 +156,8 @@ interface RegisterPassesDeps {
   bvhBuffers: SceneBVHBuffers;
   /** @group(4) NRC bind-group getter, or `undefined` when NRC is off. */
   nrcBindGroup: (() => GPUBindGroup) | undefined;
+  /** Per-frame NRC slot-claim clear encoder, or `undefined` when NRC is off. */
+  nrcClearSlotClaims: ((encoder: GPUCommandEncoder) => void) | undefined;
   getActiveDenoiser: () => Denoiser;
   getAtrousPipeline: () => GPUComputePipeline;
   isDenoiserPassEnabled: () => boolean;
@@ -197,6 +199,7 @@ function registerPasses(
   registry.register(new RISGIPass(
     compiled.risGiPipeline,
     deps.nrcBindGroup,
+    deps.nrcClearSlotClaims,
   ));
   registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, deps.restirPtReuseStructural));
   registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, deps.giSpatialPasses, deps.restirPtReuseStructural));
@@ -1221,6 +1224,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       bglCache: this._bglCache,
       bvhBuffers,
       nrcBindGroup: this._nrc !== null ? () => this._nrc!.bindGroup() : undefined,
+      nrcClearSlotClaims: this._nrc !== null ? (encoder) => this._nrc!.clearSlotClaims(encoder) : undefined,
       getActiveDenoiser: () => this._activeDenoiser!,
       getAtrousPipeline: () => this._atrousPipeline,
       isDenoiserPassEnabled: () => this._denoiserPassEnabled,

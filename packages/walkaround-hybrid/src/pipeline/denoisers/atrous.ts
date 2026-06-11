@@ -16,11 +16,16 @@
  *   to {@link dispatch} via `DenoiserDispatchContext.sharedAtrousPipeline`.
  *
  * - The per-iter `stepWidth` UBO is owned here; the shared
- *   `buildAtrousBindGroup` helper packs it into a 16-byte buffer behind
- *   a lazy {@link UboRef} so first-frame allocation is amortised.
+ *   `buildAtrousBindGroup` helper packs each encoded dispatch into a distinct
+ *   aligned range behind a lazy {@link UboRef} so first-frame allocation is
+ *   amortised without queued writes racing to the final iteration's value.
  */
 
-import { buildAtrousBindGroup, type UboRef } from '../bindGroupBuilders.js';
+import {
+  ATROUS_UBO_BINDING_STRIDE_BYTES,
+  buildAtrousBindGroup,
+  type UboRef,
+} from '../bindGroupBuilders.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -39,7 +44,7 @@ export class AtrousDenoiser implements Denoiser {
   readonly id = 'atrous' as const;
   readonly passLabels = DENOISER_PASS_LABELS['atrous'];
 
-  /** Lazy 16-byte UBO holding `(stepWidth, sigmaN, sigmaZ, sigmaC)`. */
+  /** Lazy UBO slab holding one aligned `(stepWidth, sigmaN, sigmaZ, sigmaC)` range per iteration. */
   private readonly _uboRef: UboRef = { buf: undefined };
 
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
@@ -88,6 +93,10 @@ export class AtrousDenoiser implements Denoiser {
           inputView, outputView,
           gNormalDepthView, gNormalDepthView, 1 << iter,
           sigmas,
+          {
+            byteOffset: iter * ATROUS_UBO_BINDING_STRIDE_BYTES,
+            minSizeBytes: ATROUS_ITERATIONS * ATROUS_UBO_BINDING_STRIDE_BYTES,
+          },
         ),
       labelFor: (iter) => `atrous-${iter}` as PassLabel,
     });

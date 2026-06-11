@@ -19,6 +19,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineError } from '@vitrum/core';
+import type { FrameInput, Scene } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 
 // ── Mock device builder ───────────────────────────────────────────────────────
@@ -214,5 +215,30 @@ describe('pt-webgpu EngineError surface — device.lost', () => {
 
     // The handler guards `if (state === 'disposed')` → no state change.
     expect(engine.state).toBe('disposed');
+  });
+
+  it('fatal device loss blocks render, mutation, seeding, inverse, capture, reset, and resume', async () => {
+    const ctrl = makeControlledDevice();
+    const engine = await createPTEngine_WebGPU({ device: ctrl.device });
+
+    ctrl.resolveLost({ reason: 'destroyed', message: 'lost' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(engine.state).toBe('error');
+    const fatal = /fatal error state/i;
+    const scene: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
+    const frame = {} as FrameInput;
+
+    expect(() => engine.setScene(scene)).toThrow(fatal);
+    expect(() => engine.renderFrame(frame)).toThrow(fatal);
+    expect(() => engine.updateEmitter?.('light', { intensity: 0 })).toThrow(fatal);
+    expect(() => engine.seedAccumulator?.({} as never, { weight: 1, width: 1, height: 1 })).toThrow(fatal);
+    expect(() => engine.createInverseSession?.({} as never)).toThrow(fatal);
+    await expect(engine.captureFrame?.()).rejects.toThrow(fatal);
+    expect(() => engine.reset()).toThrow(fatal);
+    expect(() => engine.resume()).toThrow(fatal);
+
+    engine.dispose();
   });
 });

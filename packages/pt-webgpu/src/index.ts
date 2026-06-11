@@ -431,6 +431,7 @@ class PTEngineWebGPU implements Engine {
       invalidateBindGroups: () => this.#gpu.invalidateBindGroups(),
       supportedAnalyticShapes: () => this.#supportedAnalyticShapes(),
       cameraVisibleEmitters: () => this.#cameraVisibleEmitters,
+      syncLiteTextures: (sceneBuffers) => this.#syncLiteTextures(sceneBuffers),
       repackScene: (scene, opts) => this.#repackScene(scene, opts),
       setScene: (scene) => this.setScene(scene),
       reset: () => this.reset(),
@@ -700,10 +701,18 @@ class PTEngineWebGPU implements Engine {
     },
   };
 
-  #assertLive(method: string): void {
-    if (this.#slot.get() === 'disposed') {
+  #assertUsable(method: string): void {
+    const state = this.#slot.get();
+    if (state === 'disposed') {
       throw new Error(`${method}: engine is disposed`);
     }
+    if (state === 'error') {
+      throw new Error(`${method}: engine is in a fatal error state`);
+    }
+  }
+
+  #assertLive(method: string): void {
+    this.#assertUsable(method);
     if (this.#scene == null) {
       throw new Error(`${method}: call setScene() before ${method}`);
     }
@@ -849,9 +858,7 @@ class PTEngineWebGPU implements Engine {
   }
 
   setScene(scene: Scene): void {
-    if (this.#slot.get() === 'disposed') {
-      throw new Error('setScene: engine is disposed');
-    }
+    this.#assertUsable('setScene');
     if (this.#traceTier === 'lite') {
       // Warn when the scene contains content the lite tier cannot handle.
       // B12 — point/spot/rect-area emitters and HDRI environments are now
@@ -953,29 +960,7 @@ class PTEngineWebGPU implements Engine {
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
-    // B12 — lite-tier: pack point/spot/rect light data + env into textures
-    // (group-0 bindings 12–14).  No-op on the full tier (uploadLiteTextures is
-    // a no-op when traceTier !== 'lite').
-    if (this.#traceTier === 'lite') {
-      const lightTex = packLiteLightTexture(
-        packed.pointLightsData,
-        packed.spotLightsData,
-        packed.rectAreaLightsData,
-      );
-      const envTex = packLiteEnvTexture(
-        packed.environmentMapTexels,
-        packed.environmentMapWidth,
-        packed.environmentMapHeight,
-        packed.hasEnvironmentMap,
-      );
-      const cdfTex = packLiteEnvCdfTexture(
-        packed.environmentMapCdf,
-        packed.environmentMapWidth,
-        packed.environmentMapHeight,
-        packed.hasEnvironmentMap,
-      );
-      this.#gpu.uploadLiteTextures(lightTex, envTex, cdfTex);
-    }
+    this.#syncLiteTextures(this.#sceneBuffers);
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
     if (this.#bdpt && this.#traceTier === 'full') {
@@ -1000,6 +985,28 @@ class PTEngineWebGPU implements Engine {
       console.warn(`[vitrum/pt-webgpu] ${warning}`);
     }
     this.reset();
+  }
+
+  #syncLiteTextures(sceneBuffers: UploadedSceneBuffers | null): void {
+    if (this.#traceTier !== 'lite' || sceneBuffers == null) return;
+    const lightTex = packLiteLightTexture(
+      sceneBuffers.pointLightsData,
+      sceneBuffers.spotLightsData,
+      sceneBuffers.rectAreaLightsData,
+    );
+    const envTex = packLiteEnvTexture(
+      sceneBuffers.environmentMapTexels,
+      sceneBuffers.environmentMapWidth,
+      sceneBuffers.environmentMapHeight,
+      sceneBuffers.hasEnvironmentMap,
+    );
+    const cdfTex = packLiteEnvCdfTexture(
+      sceneBuffers.environmentMapCdf,
+      sceneBuffers.environmentMapWidth,
+      sceneBuffers.environmentMapHeight,
+      sceneBuffers.hasEnvironmentMap,
+    );
+    this.#gpu.uploadLiteTextures(lightTex, envTex, cdfTex);
   }
 
   // ── Scene mutation (Task 4.3, Theme A) ───────────────────────────────────
@@ -1469,6 +1476,7 @@ class PTEngineWebGPU implements Engine {
    * for debugging/export, not per-frame readback.
    */
   async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
+    this.#assertUsable('captureFrame');
     const colorSpace = opts?.colorSpace ?? 'linear';
     const gpu = this.#gpu;
     const texture = colorSpace === 'output' ? gpu.presentTexture : gpu.accumTexture;
@@ -1496,11 +1504,15 @@ class PTEngineWebGPU implements Engine {
    * `'pt-webgpu-restir-pt-reuse'`.
    */
   getRestirPtResultBuffer(): GPUBuffer | null {
+    this.#assertUsable('getRestirPtResultBuffer');
     return this.#restirPtReuse ? this.#gpu.rptResultBuffer : null;
   }
 
   reset(): void {
     if (this.#slot.get() === 'disposed') return;
+    if (this.#slot.get() === 'error') {
+      throw new Error('reset: engine is in a fatal error state');
+    }
     this.#postDenoiser?.invalidate();
     this.#samplesAccumulated = 0;
     this.#gpu.clearAccumBuffer();
@@ -1649,6 +1661,7 @@ class PTEngineWebGPU implements Engine {
    * readback. The engine lazily creates and retains one AdjointPass instance.
    */
   async #computeAdjointGradient(req: AdjointGradientRequest): Promise<Float32Array> {
+    this.#assertLive('computeAdjointGradient');
     const sb = this.#sceneBuffers;
     const last = this.#lastFrameInput;
     if (sb == null || last == null || this.#scene == null) {
@@ -1728,6 +1741,7 @@ class PTEngineWebGPU implements Engine {
 
   /** WG-7 — supply host-owned light-path buffer (or null to use internal CPU fill). */
   bdptAdvanceFrame(lightPathBuffer: GPUBuffer | null): void {
+    this.#assertUsable('bdptAdvanceFrame');
     if (!this.#bdpt) return;
     this.#bdptExternalBuffer = lightPathBuffer;
     // H9: instead of nulling group 2 (which broke rendering because
@@ -1755,16 +1769,12 @@ class PTEngineWebGPU implements Engine {
   }
 
   pause(): void {
-    if (this.#slot.get() === 'disposed') {
-      throw new Error('pause: engine is disposed');
-    }
+    this.#assertUsable('pause');
     this.#slot.set('paused');
   }
 
   resume(): void {
-    if (this.#slot.get() === 'disposed') {
-      throw new Error('resume: engine is disposed');
-    }
+    this.#assertUsable('resume');
     this.#slot.set('ready');
   }
 

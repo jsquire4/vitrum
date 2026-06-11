@@ -110,6 +110,19 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 13, 3)]).toBe(1); // FrontSide (no transmission)
   });
 
+  it('packs primitive-derived castShadow in s14.g, defaulting to true', () => {
+    const caster: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 1.0, metallic: 0.0 };
+    const nonCaster = {
+      baseColor: [0.8, 0.8, 0.8],
+      roughness: 1.0,
+      metallic: 0.0,
+      castShadow: false,
+    } as MaterialSpec & { castShadow: false };
+    const d = packMaterialsTexture([caster, nonCaster]).data;
+    expect(d[texel(0, 14, 1)]).toBe(1);
+    expect(d[texel(1, 14, 1)]).toBe(0);
+  });
+
   // Contract-honesty: emissiveIntensity default must be 1.0, not 0.0.
   // pt-webgpu (materialTextures.ts) and walkaround-hybrid both default to 1.0;
   // a host that sets emissive:[r,g,b] without emissiveIntensity expects a visible

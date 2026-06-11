@@ -39,20 +39,21 @@ function makeSceneWithHdri(width: number, height: number, value: number): Scene 
 
 function makeStubDevice() {
   const writeBuffer = vi.fn();
+  const writeTexture = vi.fn();
   const createBuffer = vi.fn((_desc: unknown) => ({
     destroy: vi.fn(),
   }));
   const device = {
-    queue: { writeBuffer, writeTexture: vi.fn() },
+    queue: { writeBuffer, writeTexture },
     createBuffer,
     ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
-    limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
+    limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8, maxTextureDimension2D: 8192 },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),
   } as unknown as GPUDevice;
-  return { device, writeBuffer, createBuffer };
+  return { device, writeBuffer, writeTexture, createBuffer };
 }
 
 describe('pt-webgpu incremental environment updates', () => {
@@ -105,5 +106,32 @@ describe('pt-webgpu incremental environment updates', () => {
 
     expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
     expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 2);
+  });
+
+  it('refreshes lite sampled light/environment textures after same-shaped updateEnvironment', async () => {
+    installWebGpuConstStubs();
+    const { device, writeTexture } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device, traceTier: 'lite' });
+    engine.setScene(makeSceneWithHdri(2, 2, 0.25));
+
+    const writesBefore = writeTexture.mock.calls.length;
+    engine.updateEnvironment?.({
+      kind: 'hdri',
+      hdri: {
+        width: 2,
+        height: 2,
+        data: makeHdri(2, 2, 0.75),
+      },
+      intensity: 1,
+    });
+
+    const labels = writeTexture.mock.calls
+      .slice(writesBefore)
+      .map((call) => ((call[0] as { texture?: { label?: string } }).texture?.label ?? ''));
+    expect(labels).toEqual([
+      'vitrum.pt-webgpu.lite.envTex',
+      'vitrum.pt-webgpu.lite.envCdfTex',
+      'vitrum.pt-webgpu.lite.lightTex',
+    ]);
   });
 });
