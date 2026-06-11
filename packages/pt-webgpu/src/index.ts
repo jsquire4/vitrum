@@ -9,6 +9,7 @@ import type {
   EngineFactory,
   EngineOptions,
   EngineState,
+  EngineWarning,
   FrameInput,
   FrameOutput,
   FrameStats,
@@ -270,6 +271,19 @@ function makeStateSlot(initial: EngineState = 'initializing'): StateSlot {
   };
 }
 
+function emitPteWarning(
+  opts: Pick<PTEngineWebGPUOptions, 'onWarning'>,
+  warning: EngineWarning,
+  ...consoleArgs: readonly unknown[]
+): void {
+  console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+  try {
+    opts.onWarning?.(warning);
+  } catch {
+    // Host warning callbacks must not break engine construction.
+  }
+}
+
 class PTEngineWebGPU implements Engine {
   readonly #slot: StateSlot;
   readonly #device: GPUDevice;
@@ -306,6 +320,7 @@ class PTEngineWebGPU implements Engine {
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
   #onErrorSubs = new Set<(error: EngineError) => void>();
+  #onWarningSubs = new Set<(warning: EngineWarning) => void>();
   // ── GPU error surface (item 28, trust-remediation-plan-2026-06-10) ────────
   // Dedup-throttle: only report one error per distinct message per N frames to
   // avoid spamming the host when a shader validation error fires every frame.
@@ -354,6 +369,9 @@ class PTEngineWebGPU implements Engine {
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
     this.#device = opts.device;
+    if (opts.onWarning != null) {
+      this.#onWarningSubs.add(opts.onWarning);
+    }
     this.#spectralEnabled = opts.spectral === true;
     this.#lightTreeImportanceSampling = opts.lightTreeImportanceSampling !== false;
     this.#cameraVisibleEmitters = opts.cameraVisibleEmitters !== false;
@@ -376,10 +394,16 @@ class PTEngineWebGPU implements Engine {
         (k) => !knownCausticKeys.has(k),
       );
       if (unknownCausticKeys.length > 0) {
-        console.warn(
-          `[vitrum/pt-webgpu] Unknown causticOptions keys will be ignored: ${unknownCausticKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
+        this.#warn({
+          code: 'pt-webgpu.unknown-caustic-options',
+          backend: 'pt-webgpu',
+          phase: 'construction',
+          method: 'createPTEngine_WebGPU',
+          message:
+            `[vitrum/pt-webgpu] Unknown causticOptions keys will be ignored: ${unknownCausticKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
             'The recognised keys are: mneeMaxIterations, mneeMaxChainLength.',
-        );
+          details: { keys: unknownCausticKeys },
+        });
       }
     }
     this.#bdpt = opts.bdpt === true;
@@ -448,6 +472,7 @@ class PTEngineWebGPU implements Engine {
       cameraVisibleEmitters: () => this.#cameraVisibleEmitters,
       syncLiteTextures: (sceneBuffers) => this.#syncLiteTextures(sceneBuffers),
       isLiteTier: () => this.#traceTier === 'lite',
+      warn: (warning, ...args) => this.#warn(warning, ...args),
       repackScene: (scene, opts) => this.#repackScene(scene, opts),
       setScene: (scene) => this.setScene(scene),
       reset: () => this.reset(),
@@ -778,6 +803,21 @@ class PTEngineWebGPU implements Engine {
     }
   }
 
+  #emitWarning(warning: EngineWarning): void {
+    for (const cb of this.#onWarningSubs) {
+      try {
+        cb(warning);
+      } catch {
+        // Warning callbacks must not break rendering.
+      }
+    }
+  }
+
+  #warn(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void {
+    console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+    this.#emitWarning(warning);
+  }
+
   /**
    * Build the `kind:'rendered'` FrameOutput: primary radiance plus the four
    * conditionally-present aux textures (normalDepth / albedo / variance /
@@ -897,29 +937,47 @@ class PTEngineWebGPU implements Engine {
       // and mesh-area emitters (no NEE path in lite kernel).
       const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
       if (analyticPrimitives.length > 0) {
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
+        this.#warn({
+          code: 'pt-webgpu.lite-analytic-primitive',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
             'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
             'These will be silently ignored.',
-        );
+          details: { count: analyticPrimitives.length },
+        });
       }
       const instancedPrimitives = scene.primitives.filter((p) => p.kind === 'instanced-mesh');
       if (instancedPrimitives.length > 0) {
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene contains ${instancedPrimitives.length} instanced-mesh primitive(s) — ` +
+        this.#warn({
+          code: 'pt-webgpu.lite-instanced-mesh',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains ${instancedPrimitives.length} instanced-mesh primitive(s) — ` +
             'instancing requires TLAS instance traversal, which is absent from the lite shader. ' +
             'Use the full tier or bake instances into mesh geometry before setScene().',
-        );
+          details: { count: instancedPrimitives.length },
+        });
       }
       const transformedPrimitives = scene.primitives.filter((p) =>
         (p.kind === 'mesh' || p.kind === 'skinned-mesh') && !isIdentityMat4(p.transform),
       );
       if (transformedPrimitives.length > 0) {
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene contains ${transformedPrimitives.length} mesh/skinned-mesh primitive(s) with non-identity transforms — ` +
+        this.#warn({
+          code: 'pt-webgpu.lite-primitive-transform',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains ${transformedPrimitives.length} mesh/skinned-mesh primitive(s) with non-identity transforms — ` +
             'primitive transforms require TLAS traversal, which is absent from the lite shader. ' +
             'Use the full tier or bake transforms into vertex data before setScene().',
-        );
+          details: { count: transformedPrimitives.length },
+        });
       }
       // B12 — only disc-area and mesh-area are unsupported on lite; point/spot/rect-area
       // are now handled via texture-packed NEE (liteLightTex).
@@ -930,11 +988,17 @@ class PTEngineWebGPU implements Engine {
       );
       if (unsupportedEmitters.length > 0) {
         const kinds = [...new Set(unsupportedEmitters.map((e) => e.kind))].join(', ');
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
+        this.#warn({
+          code: 'pt-webgpu.lite-unsupported-emitters',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
             'disc-area and mesh-area emitters are not supported on the lite tier (no NEE path in lite kernel). ' +
             'These will be silently ignored.',
-        );
+          details: { kinds, count: unsupportedEmitters.length },
+        });
       }
       // B12 — HDRI environments are now supported via texture packing; no warn needed.
       // Item 19 — lite tier only packs the FIRST directional emitter into the
@@ -942,11 +1006,17 @@ class PTEngineWebGPU implements Engine {
       // Multiple directionals are silently truncated to 1; warn so the host is aware.
       const directionalEmitters = scene.emitters.filter((e) => e.kind === 'directional');
       if (directionalEmitters.length >= 2) {
-        console.warn(
-          `[vitrum/pt-webgpu] Lite tier: scene contains ${directionalEmitters.length} directional emitter(s) — ` +
+        this.#warn({
+          code: 'pt-webgpu.lite-multiple-directional-emitters',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains ${directionalEmitters.length} directional emitter(s) — ` +
             `lite tier renders only the first directional; the remaining ${directionalEmitters.length - 1} will be silently ignored. ` +
             'Use the full tier for multi-directional lighting.',
-        );
+          details: { count: directionalEmitters.length, ignored: directionalEmitters.length - 1 },
+        });
       }
     }
     this.#repackScene(scene, { warnOnEmpty: true });
@@ -1026,11 +1096,24 @@ class PTEngineWebGPU implements Engine {
     if (opts.warnOnEmpty) {
       const sceneSummary = summarizeScene(scene);
       if (sceneSummary.primitiveCount === 0) {
-        console.warn('[vitrum/pt-webgpu] Empty scene provided; rendering sky-only fallback.');
+        this.#warn({
+          code: 'pt-webgpu.empty-scene',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message: '[vitrum/pt-webgpu] Empty scene provided; rendering sky-only fallback.',
+        });
       }
     }
     for (const warning of packed.warnings) {
-      console.warn(`[vitrum/pt-webgpu] ${warning}`);
+      this.#warn({
+        code: 'pt-webgpu.scene-pack-warning',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        message: `[vitrum/pt-webgpu] ${warning}`,
+        details: { warning },
+      });
     }
     this.reset();
   }
@@ -1849,6 +1932,7 @@ class PTEngineWebGPU implements Engine {
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
     this.#onErrorSubs.clear();
+    this.#onWarningSubs.clear();
     this.#errorThrottleMap.clear();
     this.#slot.set('disposed');
   }
@@ -1871,6 +1955,13 @@ class PTEngineWebGPU implements Engine {
     this.#onErrorSubs.add(cb);
     return () => {
       this.#onErrorSubs.delete(cb);
+    };
+  }
+
+  onWarning(cb: (warning: EngineWarning) => void): () => void {
+    this.#onWarningSubs.add(cb);
+    return () => {
+      this.#onWarningSubs.delete(cb);
     };
   }
 }
@@ -1922,20 +2013,31 @@ export const createPTEngine_WebGPU: EngineFactory<
     );
   }
   if (maxBounces !== undefined && maxBounces > EXPERIMENTAL_MAX_BOUNCES) {
-    console.warn(
-      `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
-    );
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.max-bounces-clamped',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message: `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
+      details: { requested: maxBounces, clampedTo: EXPERIMENTAL_MAX_BOUNCES },
+    });
   }
   if (
     opts.denoiser != null &&
     opts.denoiser !== 'none' &&
     opts.denoiser !== 'oidn-final'
   ) {
-    console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.unsupported-denoiser',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
         "pt-webgpu is a converged progressive path tracer; 'svgf-real' is a real-time 1-spp filter and is unsupported here — " +
         "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
-    );
+      details: { requested: opts.denoiser },
+    });
   }
   // H51-C: warn once listing any extensions keys the host supplied that are
   // either (a) graduated legacy keys that no longer do anything, or (b) truly
@@ -1959,22 +2061,34 @@ export const createPTEngine_WebGPU: EngineFactory<
     for (const [prefix, migration] of Object.entries(GRADUATED_KEY_MIGRATION)) {
       const matchingKeys = allKeys.filter((k) => k.startsWith(prefix));
       if (matchingKeys.length > 0) {
-        console.warn(
-          `[vitrum/pt-webgpu] Extension key(s) ${matchingKeys.map((k) => JSON.stringify(k)).join(', ')} ` +
+        emitPteWarning(opts, {
+          code: 'pt-webgpu.graduated-extension-key',
+          backend: 'pt-webgpu',
+          phase: 'construction',
+          method: 'createPTEngine_WebGPU',
+          message:
+            `[vitrum/pt-webgpu] Extension key(s) ${matchingKeys.map((k) => JSON.stringify(k)).join(', ')} ` +
             `are no longer consumed — this key graduated to a first-class option. ` +
             `Replace with: ${migration}.`,
-        );
+          details: { keys: matchingKeys, migration },
+        });
       }
     }
     const unknownKeys = allKeys.filter(
       (k) => !Object.keys(GRADUATED_KEY_MIGRATION).some((prefix) => k.startsWith(prefix)),
     );
     if (unknownKeys.length > 0) {
-      console.warn(
-        `[vitrum/pt-webgpu] Unknown extensions keys will be ignored: ${unknownKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
+      emitPteWarning(opts, {
+        code: 'pt-webgpu.unknown-extension-key',
+        backend: 'pt-webgpu',
+        phase: 'construction',
+        method: 'createPTEngine_WebGPU',
+        message:
+          `[vitrum/pt-webgpu] Unknown extensions keys will be ignored: ${unknownKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
           "pt-webgpu's stable extensions (spectral, bdpt, oidn, restirPtReuse) are now first-class " +
           'named options. Check the PTEngineWebGPUOptions interface for the current option set.',
-      );
+        details: { keys: unknownKeys },
+      });
     }
   }
 
@@ -1987,11 +2101,17 @@ export const createPTEngine_WebGPU: EngineFactory<
       '[vitrum/pt-webgpu] Full trace tier: TLAS, analytic shapes, HDRI, area lights, motion/variance aux, caustics.',
     );
   } else {
-    console.warn(
-      '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.lite-tier',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
         'Disabled on lite: analytic shapes, TLAS, disc-area/mesh-area emitters, caustics, BDPT, multi-directional lights, and motion/variance aux buffers. ' +
         'On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= 28 and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.',
-    );
+      details: { traceTier },
+    });
   }
   const slot = makeStateSlot();
   const engine = new PTEngineWebGPU(opts, slot, traceTier);

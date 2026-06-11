@@ -13,7 +13,7 @@
 //
 // @internal — not part of the public @vitrum/engine API surface.
 
-import type { Engine, AdapterProfile, Scene } from '@vitrum/core';
+import type { Engine, AdapterProfile, EngineWarning, Scene } from '@vitrum/core';
 import type { HybridEngineOptions } from '@vitrum/walkaround-hybrid';
 import type { SceneAABB } from './sceneAABB.js';
 import { wrapWithIdempotentDispose } from './idempotentDispose.js';
@@ -92,6 +92,11 @@ export interface CreateEngineOptions {
    *  failures. Recoverable events are still handled internally; unrecoverable
    *  events are reported immediately before the original error is re-thrown. */
   readonly onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
+
+  /** Host-visible nonfatal warning report. Mirrors contract-affecting
+   *  `console.warn` output such as fallback, ignored advanced options, and
+   *  backend capability downgrades. */
+  readonly onWarning?: (warning: EngineWarning) => void;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -185,6 +190,7 @@ type OwnershipCriticalKey = (typeof OWNERSHIP_CRITICAL_KEYS)[number];
 export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
   advanced: T | undefined,
   backend: CreateEngineBackendId,
+  onWarning?: (warning: EngineWarning) => void,
 ): Omit<T, OwnershipCriticalKey> {
   if (advanced == null) return {} as Omit<T, OwnershipCriticalKey>;
   const stripped = { ...advanced } as Record<string, unknown>;
@@ -196,11 +202,21 @@ export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
     }
   }
   if (overridden.length > 0) {
-    console.warn(
+    const message =
       `[vitrum/createEngine] advanced.${overridden.join('/')} was supplied but ` +
       `createEngine owns the ${backend} device lifecycle — the supplied ` +
       `${overridden.join('/')} key(s) have been ignored to prevent a double-dispose. ` +
-      `To bring your own device, use the backend factory directly.`,
+      `To bring your own device, use the backend factory directly.`;
+    emitCreateEngineWarning(
+      onWarning,
+      {
+        code: 'createEngine.advanced-ownership-key-ignored',
+        backend: 'createEngine',
+        phase: 'construction',
+        method: 'createEngine',
+        message,
+        details: { backend, keys: overridden },
+      },
     );
   }
   return stripped as Omit<T, OwnershipCriticalKey>;
@@ -223,18 +239,29 @@ export function warnCrossBackendAdvanced(
   advanced: CreateEngineOptions['advanced'],
   preferredBackend: CreateEngineBackendId,
   resolvedBackend: CreateEngineBackendId,
+  onWarning?: (warning: EngineWarning) => void,
 ): void {
   if (advanced == null) return;
   const keys = Object.keys(advanced as Record<string, unknown>).filter(
     (k) => (advanced as Record<string, unknown>)[k] !== undefined,
   );
   if (keys.length === 0) return;
-  console.warn(
+  const message =
     `[vitrum/createEngine] advanced options (keys: ${keys.join(', ')}) were supplied ` +
     `but the preferred backend '${preferredBackend}' was unavailable — they are now ` +
     `being applied to the fallback backend '${resolvedBackend}'. Keys authored for ` +
     `'${preferredBackend}' may be silently ignored or misinterpreted by '${resolvedBackend}'. ` +
-    `Pass prefer:'${resolvedBackend}' explicitly to suppress this warning.`,
+    `Pass prefer:'${resolvedBackend}' explicitly to suppress this warning.`;
+  emitCreateEngineWarning(
+    onWarning,
+    {
+      code: 'createEngine.advanced-cross-backend',
+      backend: 'createEngine',
+      phase: 'fallback',
+      method: 'createEngine',
+      message,
+      details: { preferredBackend, resolvedBackend, keys },
+    },
   );
 }
 
@@ -247,6 +274,18 @@ export function reportCreateEngineError(
   try {
     opts.onError?.(error, event);
   } catch { /* host error callback must not propagate — ignore */ }
+}
+
+/** @internal */
+export function emitCreateEngineWarning(
+  onWarning: ((warning: EngineWarning) => void) | undefined,
+  warning: EngineWarning,
+  ...consoleArgs: readonly unknown[]
+): void {
+  console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+  try {
+    onWarning?.(warning);
+  } catch { /* host warning callback must not propagate — ignore */ }
 }
 
 /** Attach a `backendId` property to an engine returned by a constructor.

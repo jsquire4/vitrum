@@ -117,6 +117,32 @@ export interface EngineError {
   readonly raw?: unknown;
 }
 
+/**
+ * Structured non-fatal warning emitted through {@link Engine.onWarning}.
+ *
+ * Warnings cover contract-affecting degradations that were historically visible
+ * only through `console.warn`: ignored options, backend fallback, skipped scene
+ * features, approximation downgrades, and mutation fallbacks. They are not
+ * runtime failures and do not transition the engine to `'error'`; hosts use
+ * them for UI badges, telemetry, and integration tests.
+ */
+export interface EngineWarning {
+  /** Stable machine-readable identifier, e.g. `pt-webgpu.lite-tier`. */
+  readonly code: string;
+  /** Human-readable warning text. Mirrors the associated console warning. */
+  readonly message: string;
+  /** Backend or facade that produced the warning. */
+  readonly backend?: 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu' | 'createEngine' | string;
+  /** Coarse phase for filtering/telemetry. */
+  readonly phase?: 'construction' | 'fallback' | 'setScene' | 'mutation' | 'renderFrame' | 'lifecycle' | string;
+  /** Engine/facade method whose call produced the warning, when applicable. */
+  readonly method?: string;
+  /** Structured context for hosts/tests. Keep JSON-serialisable where possible. */
+  readonly details?: Readonly<Record<string, unknown>>;
+  /** Original platform error/object for fallback warnings, when applicable. */
+  readonly raw?: unknown;
+}
+
 /** Progress event surfaced via {@link Engine.onProgress}.  The discriminator
  *  is `kind`; consumers switch on it to interpret `current` / `target`. */
 export interface ProgressStats {

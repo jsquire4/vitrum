@@ -5,6 +5,7 @@
  *   - extensions: truly unknown keys emit the generic unknown-key warn.
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { EngineWarning } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 
 function makeDevice(): GPUDevice {
@@ -23,15 +24,22 @@ function makeDevice(): GPUDevice {
 describe('causticOptions unknown key warning', () => {
   it('warns when causticOptions contains an unrecognised key', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     await createPTEngine_WebGPU({
       device: makeDevice(),
       causticOptions: {
         mneeMaxIterations: 8,
         unknownCausticParam: 42,
       },
+      onWarning: (w) => structured.push(w),
     });
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('unknownCausticParam'))).toBe(true);
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.unknown-caustic-options' &&
+      Array.isArray(w.details?.keys) &&
+      w.details.keys.includes('unknownCausticParam'),
+    )).toBe(true);
     warn.mockRestore();
   });
 
@@ -104,12 +112,19 @@ describe('graduated legacy extension key warnings', () => {
 
   it('warns for truly unknown extension keys (not graduated)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     await createPTEngine_WebGPU({
       device: makeDevice(),
       extensions: { 'vitrum.ptWebgpu.futureFeature.enable': true },
+      onWarning: (w) => structured.push(w),
     });
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('vitrum.ptWebgpu.futureFeature.enable'))).toBe(true);
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.unknown-extension-key' &&
+      Array.isArray(w.details?.keys) &&
+      w.details.keys.includes('vitrum.ptWebgpu.futureFeature.enable'),
+    )).toBe(true);
     warn.mockRestore();
   });
 });

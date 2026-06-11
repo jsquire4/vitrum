@@ -43,7 +43,7 @@ export type GIStatePersistable = GIStatePersistableCore<GIStateSnapshot>;
  *                      (importGIState)
  *   • 'empty-unsub'  — the method returns an unsubscribe fn; when disposed, return
  *                      a no-op unsubscribe `() => {}` without forwarding.
- *                      (onFrame/onProgress/onError)
+ *                      (onFrame/onProgress/onError/onWarning)
  *   • 'throw'        — when disposed, throw (the engine is torn down; refuse).
  *                      (createInverseSession)
  */
@@ -60,6 +60,7 @@ type OptionalMethodName =
   | 'onFrame'
   | 'onProgress'
   | 'onError'
+  | 'onWarning'
   | 'createInverseSession'
   | 'getRestirPtResultBuffer'
   // Scene read-back — optional on Engine; all three shipping backends implement it.
@@ -114,6 +115,9 @@ export const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   // `engine.onError ? ...` check was always false and device-loss recovery was
   // silently dead. All three shipping backends implement onError.
   { method: 'onError', disposedBehavior: 'empty-unsub' },
+  // Structured non-fatal warning subscription. Same disposed behavior as the
+  // other subscription methods.
+  { method: 'onWarning', disposedBehavior: 'empty-unsub' },
   // WS5 — inverse-rendering (differentiable RT) sessions. After dispose the
   // proxy refuses to open a NEW session (the engine is torn down); an
   // already-open session the host holds keeps working until the host disposes

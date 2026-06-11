@@ -45,6 +45,7 @@ import type {
   EngineError,
   EngineFactory,
   EngineState,
+  EngineWarning,
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
@@ -243,6 +244,9 @@ export class HybridEngine implements Engine {
 
   /** GPU error subscribers (item 28). */
   private readonly _errorSubs: Array<(e: EngineError) => void> = [];
+
+  /** Structured non-fatal warning subscribers. */
+  private readonly _warningSubs: Array<(w: EngineWarning) => void> = [];
   /** Dedup-throttle: message → frame-index of last emission. */
   private _errorThrottleMap = new Map<string, number>();
   /** Frame counter for error throttle (incremented in renderFrame). */
@@ -493,6 +497,9 @@ export class HybridEngine implements Engine {
     // key fingerprint) gets its own field.
     const cfg = parseHybridEngineOptions(opts);
     this._cfg = cfg;
+    if (opts.onWarning != null) {
+      this._warningSubs.push(opts.onWarning);
+    }
 
     // B15 — capture which radiometric clamps the HOST set explicitly. These
     // bypass scene-scale scaling (an explicit override is absolute). None of
@@ -517,23 +524,36 @@ export class HybridEngine implements Engine {
     // 1-vs-many distinction is meaningful. Warn only when the value cannot be
     // honoured as authored (== 0 or negative is treated as direct-only).
     if (cfg.maxBounces < 1) {
-      console.warn(
-        `[HybridEngine] maxBounces=${cfg.maxBounces} is < 1 and is treated as ` +
+      this._warn({
+        code: 'walkaround-hybrid.max-bounces-clamped',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] maxBounces=${cfg.maxBounces} is < 1 and is treated as ` +
         `1 (direct-only DDGI probes). The walkaround engine is not a path tracer; ` +
         `maxBounces gates the DDGI diffuse multi-bounce feedback (1 = direct-only, ` +
         `>= 2 = infinite-bounce diffuse equilibrium), not a per-ray bounce count.`,
-      );
+        details: { requested: cfg.maxBounces, clampedTo: 1 },
+      });
     }
     // H46 — causticStrategy: walkaround always reports 'none' in capabilities.
     // Non-'none' strategies are not implemented for this backend.
     if ((opts as { causticStrategy?: string }).causticStrategy != null &&
         (opts as { causticStrategy?: string }).causticStrategy !== 'none') {
-      console.warn(
-        `[HybridEngine] causticStrategy='${(opts as { causticStrategy?: string }).causticStrategy}' ` +
+      const strategy = (opts as { causticStrategy?: string }).causticStrategy;
+      this._warn({
+        code: 'walkaround-hybrid.unsupported-caustic-strategy',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] causticStrategy='${strategy}' ` +
         `is not supported by the walkaround-hybrid engine. ` +
         `This engine always reports causticStrategy:'none' in capabilities. ` +
         `Use pt-webgpu or pt-webgl2 for manifold-nee/photon-map caustics.`,
-      );
+        details: { requested: strategy },
+      });
     }
 
     this._device                = opts.device;
@@ -786,7 +806,14 @@ export class HybridEngine implements Engine {
     // truth; `_renderScene` is the mesh-like ingestion view.
     const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
     for (const warning of warnings) {
-      console.warn(`[vitrum/walkaround-hybrid] ${warning}`);
+      this._warn({
+        code: 'walkaround-hybrid.scene-support-warning',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        message: `[vitrum/walkaround-hybrid] ${warning}`,
+        details: { warning },
+      });
     }
 
     // Warn once per distinct set of unconsumed material fields so hosts know
@@ -800,11 +827,17 @@ export class HybridEngine implements Engine {
       const key = unconsumed.join(',');
       if (!this._warnedMaterialFields.has(key)) {
         this._warnedMaterialFields.add(key);
-        console.warn(
-          `[vitrum/walkaround-hybrid] setScene: the following material fields are ` +
+        this._warn({
+          code: 'walkaround-hybrid.unconsumed-material-fields',
+          backend: 'walkaround-hybrid',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/walkaround-hybrid] setScene: the following material fields are ` +
           `supplied but not consumed by this backend: ${unconsumed.join(', ')}. ` +
           `See consumedMaterialFields.ts for the full allowlist.`,
-        );
+          details: { fields: unconsumed },
+        });
       }
     }
 
@@ -1337,7 +1370,7 @@ export class HybridEngine implements Engine {
     // so hosts can pass any key without a type error at the core-contract call
     // site. Warn (don't throw) on keys outside LightingOptions so silent drops
     // become visible; the field-by-field application below is unchanged.
-    assertKnownLightingKeys(opts);
+    assertKnownLightingKeys(opts, (warning, ...args) => this._warn(warning, ...args));
 
     let changed = false;
 
@@ -1522,7 +1555,14 @@ export class HybridEngine implements Engine {
     if (resolved.warnings.length > 0 && !this._proceduralSkyWarned) {
       this._proceduralSkyWarned = true;
       for (const warning of resolved.warnings) {
-        console.warn(`[HybridEngine] updateEnvironment: ${warning}`);
+        this._warn({
+          code: 'walkaround-hybrid.environment-approximation',
+          backend: 'walkaround-hybrid',
+          phase: 'mutation',
+          method: 'updateEnvironment',
+          message: `[HybridEngine] updateEnvironment: ${warning}`,
+          details: { warning },
+        });
       }
     }
     return {
@@ -1782,13 +1822,24 @@ export class HybridEngine implements Engine {
       (input.viewport.width !== this._width || input.viewport.height !== this._height)
     ) {
       this._viewportMismatchWarned = true;
-      console.warn(
-        `[HybridEngine] FrameInput.viewport (${input.viewport.width}×${input.viewport.height}) ` +
+      this._warn({
+        code: 'walkaround-hybrid.viewport-ignored',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        message:
+          `[HybridEngine] FrameInput.viewport (${input.viewport.width}×${input.viewport.height}) ` +
           `differs from the engine canvas size (${this._width}×${this._height}) and is IGNORED. ` +
           'HybridEngine sizes render targets at construction; call engine.setSize(width, height) ' +
           'on canvas resize (attachVitrum does this automatically). For per-frame internal-' +
           'resolution scaling use FrameInput.quality.resolutionFactor instead.',
-      );
+        details: {
+          viewportWidth: input.viewport.width,
+          viewportHeight: input.viewport.height,
+          engineWidth: this._width,
+          engineHeight: this._height,
+        },
+      });
     }
     // Rebuild-key check (D2.5 — moved out of the orchestrator dep bundle so
     // engine-state mutations don't live inside the FrameDeps closure). Must
@@ -2030,11 +2081,32 @@ export class HybridEngine implements Engine {
     };
   }
 
+  /** Subscribe to non-fatal contract warnings. Returns an unsubscribe function. */
+  onWarning(cb: (warning: EngineWarning) => void): () => void {
+    this._warningSubs.push(cb);
+    return () => {
+      const i = this._warningSubs.indexOf(cb);
+      if (i >= 0) this._warningSubs.splice(i, 1);
+    };
+  }
+
   /** Internal: emit an error to all subscribers. Catches subscriber throws. */
   private _emitError(error: EngineError): void {
     for (const cb of this._errorSubs) {
       try { cb(error); } catch { /* must not break rendering */ }
     }
+  }
+
+  /** Internal: emit a warning to all subscribers. Catches subscriber throws. */
+  private _emitWarning(warning: EngineWarning): void {
+    for (const cb of this._warningSubs) {
+      try { cb(warning); } catch { /* must not break rendering */ }
+    }
+  }
+
+  private _warn(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void {
+    console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+    this._emitWarning(warning);
   }
 
   // ── Dispose ────────────────────────────────────────────────────────────
@@ -2066,6 +2138,7 @@ export class HybridEngine implements Engine {
       this._onUncapturedError = null;
     }
     this._errorSubs.length = 0;
+    this._warningSubs.length = 0;
     this._errorThrottleMap.clear();
 
     // requestTeardown returns true when the coordinator has no chain in

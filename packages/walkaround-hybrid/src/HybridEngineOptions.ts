@@ -9,7 +9,7 @@
  * `HybridEngine` constructor — only the type shape itself moved.
  */
 
-import type { EngineOptions } from '@vitrum/core';
+import type { EngineOptions, EngineWarning } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { CascadeDim } from '@vitrum/walkaround-rc';
@@ -81,12 +81,27 @@ const LIGHTING_OPTION_KEY_SET: ReadonlySet<string> = new Set(LIGHTING_OPTION_KEY
  * Does NOT throw and does NOT mutate `opts`; the caller's field-by-field
  * application logic still runs unchanged for the keys it recognises.
  */
-export function assertKnownLightingKeys(opts: Readonly<Record<string, unknown>>): void {
+type LightingWarningSink = (warning: EngineWarning, ...consoleArgs: readonly unknown[]) => void;
+
+export function assertKnownLightingKeys(
+  opts: Readonly<Record<string, unknown>>,
+  warn?: LightingWarningSink,
+): void {
   for (const k of Object.keys(opts)) {
     if (!LIGHTING_OPTION_KEY_SET.has(k)) {
-      console.warn(
-        `[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "${k}"`,
-      );
+      const warning: EngineWarning = {
+        code: 'walkaround-hybrid.unknown-lighting-key',
+        backend: 'walkaround-hybrid',
+        phase: 'mutation',
+        method: 'updateLighting',
+        message: `[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "${k}"`,
+        details: { key: k },
+      };
+      if (warn != null) {
+        warn(warning);
+      } else {
+        console.warn(warning.message);
+      }
     }
   }
 }

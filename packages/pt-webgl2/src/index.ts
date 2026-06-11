@@ -7,6 +7,7 @@ import type {
   EngineError,
   EngineFactory,
   EngineState,
+  EngineWarning,
   FrameInput,
   FrameOutput,
   FrameRendered,
@@ -70,6 +71,19 @@ const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
 const DEFAULT_SPP_TARGET = 16;
 
+function emitWebgl2Warning(
+  opts: Pick<PTEngineWebGL2Options, 'onWarning'>,
+  warning: EngineWarning,
+  ...consoleArgs: readonly unknown[]
+): void {
+  console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+  try {
+    opts.onWarning?.(warning);
+  } catch {
+    // Host warning callbacks must not break engine construction.
+  }
+}
+
 export interface PTEngineWebGL2Surface {
   /** @internal The retained single-root merged BVH pack (for tests/inspection). */
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
@@ -128,10 +142,14 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #onFrameSubs = new Set<(s: FrameStats) => void>();
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
   #onErrorSubs = new Set<(e: EngineError) => void>();
+  #onWarningSubs = new Set<(w: EngineWarning) => void>();
 
   constructor(opts: PTEngineWebGL2Options, slot: StateSlot, traceTier: WebGl2TraceTier) {
     this.#slot = slot;
     this.#gl = opts.device;
+    if (opts.onWarning != null) {
+      this.#onWarningSubs.add(opts.onWarning);
+    }
     this.#maxBouncesLimit = Math.max(1, opts.maxBounces ?? DEFAULT_MAX_BOUNCES);
     this.#maxSamplesLimit = Math.max(1, opts.maxSamplesPerPixel ?? DEFAULT_MAX_SPP);
     this.#causticStrategy = opts.causticStrategy ?? 'none';
@@ -180,11 +198,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#onContextRestored = (): void => {
       // Do NOT attempt auto-restore (the GPU resource state is stale). Warn the
       // host to dispose + recreate as specified by the core Engine contract.
-      console.warn(
-        '[vitrum/pt-webgl2] WebGL context restored. ' +
+      this.#warn({
+        code: 'pt-webgl2.context-restored-recreate-required',
+        backend: 'pt-webgl2',
+        phase: 'lifecycle',
+        method: 'webglcontextrestored',
+        message:
+          '[vitrum/pt-webgl2] WebGL context restored. ' +
           'Call engine.dispose() and create a fresh engine with the recovered context — ' +
           'this engine cannot resume after a context loss.',
-      );
+      });
     };
     // `gl.canvas` is the HTMLCanvasElement or OffscreenCanvas the context was
     // created from. addEventListener is present on both; the cast to EventTarget
@@ -234,7 +257,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
     // buildSceneTextures now returns `supported`, so the filter runs a single time.
     const built = buildSceneTextures(this.#gl, scene, this.capabilities);
-    for (const w of built.warnings) console.warn(`[vitrum/pt-webgl2] ${w}`);
+    for (const w of built.warnings) {
+      this.#warn({
+        code: 'pt-webgl2.scene-upload-warning',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        message: `[vitrum/pt-webgl2] ${w}`,
+        details: { warning: w },
+      });
+    }
     this.#sceneTextures?.destroy();
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
@@ -445,6 +477,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
     this.#onErrorSubs.clear();
+    this.#onWarningSubs.clear();
     this.#slot.set('disposed');
   }
 
@@ -461,6 +494,26 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   onError(cb: (error: EngineError) => void): () => void {
     this.#onErrorSubs.add(cb);
     return () => this.#onErrorSubs.delete(cb);
+  }
+
+  onWarning(cb: (warning: EngineWarning) => void): () => void {
+    this.#onWarningSubs.add(cb);
+    return () => this.#onWarningSubs.delete(cb);
+  }
+
+  #emitWarning(warning: EngineWarning): void {
+    for (const cb of this.#onWarningSubs) {
+      try {
+        cb(warning);
+      } catch {
+        // Warning callbacks must not break rendering.
+      }
+    }
+  }
+
+  #warn(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void {
+    console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+    this.#emitWarning(warning);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -604,11 +657,17 @@ export const createPTEngine_WebGL2: EngineFactory<
   // warn so the host is not silently surprised. Mirrors the pt-webgpu warn pattern
   // (packages/pt-webgpu/src/index.ts — `opts.denoiser != null && !== 'none'`).
   if (opts.denoiser != null && opts.denoiser !== 'none') {
-    console.warn(
-      `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 has no denoiser pipeline. ` +
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.unsupported-denoiser',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 has no denoiser pipeline. ` +
         'There are no OIDN, SVGF, or any other post-process denoiser passes wired in this backend. ' +
         'Degrading to no-denoise (denoiserState will report "disabled").',
-    );
+      details: { requested: opts.denoiser },
+    });
   }
   // Item 22 — DOF × equirectangular regime guard (trust-remediation-plan §22).
   // Thin-lens DOF applied to equirectangular projection is physically undefined:
@@ -623,12 +682,18 @@ export const createPTEngine_WebGL2: EngineFactory<
   // shifted_origin) which is physically coherent — parallel projections plus an
   // aperture offset is the standard orthographic-camera DOF model.
   if (opts.cameraType === 'equirectangular' && opts.dof != null) {
-    console.warn(
-      '[vitrum/pt-webgl2] dof is ignored when cameraType is "equirectangular". ' +
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.equirectangular-dof-ignored',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        '[vitrum/pt-webgl2] dof is ignored when cameraType is "equirectangular". ' +
         'Thin-lens depth of field is physically undefined for full-sphere equirectangular ' +
         'projection (blur direction has no meaning per sphere region). ' +
         'The engine will render without DOF. Remove the dof option to suppress this warning.',
-    );
+      details: { cameraType: opts.cameraType },
+    });
   }
   const traceTier = resolveWebGl2TraceTier(gl, opts.traceTier);
   const slot = makeStateSlot();

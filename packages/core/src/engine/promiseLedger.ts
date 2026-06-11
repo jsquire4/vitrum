@@ -28,6 +28,9 @@ export interface BackendMethodPromises {
   /** Whether the backend implements `Engine.onError()` — the GPU/runtime
    *  error subscription.  All three shipping backends wire this. */
   readonly onError: boolean;
+  /** Whether the backend implements `Engine.onWarning()` — the structured
+   *  non-fatal warning subscription. All three shipping backends wire this. */
+  readonly onWarning: boolean;
   /**
    * Whether the backend implements `Engine.captureFrame()` — the GPU→CPU
    * pixel readback that returns a {@link CapturedFrame} (linear HDR RGBA
@@ -298,6 +301,7 @@ const COMMON_METHOD_PROMISES: Pick<
   | 'onProgress'
   | 'getScene'
   | 'onError'
+  | 'onWarning'
   | 'captureFrame'
 > = Object.freeze({
   updatePrimitive: true,
@@ -309,6 +313,7 @@ const COMMON_METHOD_PROMISES: Pick<
   onProgress: true,
   getScene: true,
   onError: true,
+  onWarning: true,
   captureFrame: true,
 });
 // ─────────────────────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ import type { InverseSession, InverseSessionOptions } from '../inverse.js';
 import type { EngineState } from './state.js';
 import type { EngineCapabilities } from './capabilities.js';
 import type { EngineDebugSurface } from './debug.js';
-import type { FrameStats, ProgressStats, EngineError } from './telemetry.js';
+import type { FrameStats, ProgressStats, EngineError, EngineWarning } from './telemetry.js';
 
 export * from './state.js';
 export * from './capabilities.js';
@@ -346,6 +346,24 @@ export interface Engine {
    * ```
    */
   onError?(cb: (error: EngineError) => void): () => void;
+
+  /**
+   * Subscribe to non-fatal, contract-affecting backend warnings. Returns an
+   * unsubscribe function; call it (or dispose the engine) to stop receiving
+   * warnings.
+   *
+   * This is the programmatic counterpart to existing `console.warn` messages
+   * for ignored options, backend fallback, skipped scene features, approximation
+   * downgrades, and mutation fallbacks. Console output remains for developers;
+   * hosts that need reliable observability should subscribe here or pass
+   * `EngineOptions.onWarning` at construction time.
+   *
+   * **Contract:** callbacks MUST NOT throw - the engine catches and ignores
+   * subscriber exceptions so warning delivery cannot break rendering.
+   *
+   * Optional: hosts MUST typeof-check before calling.
+   */
+  onWarning?(cb: (warning: EngineWarning) => void): () => void;
 
   /** Optional debug-introspection surface for dev overlays. When present,
    *  exposes engine-internal state (DDGI atlases, BVH nodes, GI signal

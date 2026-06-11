@@ -8,7 +8,7 @@
 // return values are behavior-identical to the pre-extraction inline methods
 // (addPrimitive / removePrimitive / updatePrimitive / updateEmitter /
 // updateEnvironment + the 6 first-eligible-wins fast paths).
-import type { Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
 import { asMat4, solveSkin } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
@@ -60,6 +60,18 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
   0, 0, 0, 1,
 ]));
 
+function warnHost(
+  host: MutationHost,
+  warning: EngineWarning,
+  ...consoleArgs: readonly unknown[]
+): void {
+  if (host.warn != null) {
+    host.warn(warning, ...consoleArgs);
+  } else {
+    console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+  }
+}
+
 /**
  * The engine-state + engine-operation seam the router needs. The engine
  * implements this against its own private fields; the router holds NO state of
@@ -84,6 +96,8 @@ export interface MutationHost {
   syncLiteTextures?(sceneBuffers: UploadedSceneBuffers): void;
   /** True when the engine selected the single-group lite shader tier. */
   isLiteTier?(): boolean;
+  /** Structured warning sink owned by the engine; mirrors console.warn. */
+  warn?(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void;
   /** Full scene repack (engine-internal: destroys buffers + re-inits BDPT). */
   repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void;
   /** Public setScene entry — the fall-through for every fast-path miss. */
@@ -215,9 +229,15 @@ export class SceneMutationRouter {
           normals: solved.normals,
         };
       } catch (err) {
-        console.warn(
-          `[vitrum/pt-webgpu] solveSkin failed for updatePrimitive("${id}"); falling back to setScene. ${String(err)}`,
-        );
+        warnHost(host, {
+          code: 'pt-webgpu.update-primitive-skin-fallback',
+          backend: 'pt-webgpu',
+          phase: 'mutation',
+          method: 'updatePrimitive',
+          message: `[vitrum/pt-webgpu] solveSkin failed for updatePrimitive("${id}"); falling back to setScene. ${String(err)}`,
+          details: { id },
+          raw: err,
+        });
         // Fall through to full setScene at the tail.
       }
     }
@@ -364,9 +384,14 @@ export class SceneMutationRouter {
         const maybeWorldToLocal = invertMat4(localToWorld);
         const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
         if (maybeWorldToLocal == null) {
-          console.warn(
-            `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
-          );
+          warnHost(host, {
+            code: 'pt-webgpu.noninvertible-analytic-transform',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updatePrimitive',
+            message: `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
+            details: { id: nextPrimitive.id },
+          });
         }
         const byteOffset = analyticIndex * 16 * Float32Array.BYTES_PER_ELEMENT;
         device.queue.writeBuffer(
@@ -532,12 +557,26 @@ export class SceneMutationRouter {
         }
         host.syncLiteTextures?.(sceneBuffersForEmitters);
         for (const w of emitterPacked.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${w}`);
+          warnHost(host, {
+            code: 'pt-webgpu.emitter-pack-warning',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updatePrimitive',
+            message: `[vitrum/pt-webgpu] ${w}`,
+            details: { warning: w },
+          });
         }
       }
       host.setSceneState(nextScene);
       for (const warning of commit.warnings) {
-        console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        warnHost(host, {
+          code: 'pt-webgpu.primitive-mutation-warning',
+          backend: 'pt-webgpu',
+          phase: 'mutation',
+          method: 'updatePrimitive',
+          message: `[vitrum/pt-webgpu] ${warning}`,
+          details: { warning },
+        });
       }
       host.reset();
       return;
@@ -612,7 +651,14 @@ export class SceneMutationRouter {
       }
       host.setSceneState(nextScene);
       for (const warning of packed.warnings) {
-        console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        warnHost(host, {
+          code: 'pt-webgpu.emitter-mutation-warning',
+          backend: 'pt-webgpu',
+          phase: 'mutation',
+          method: 'updateEmitter',
+          message: `[vitrum/pt-webgpu] ${warning}`,
+          details: { warning },
+        });
       }
       host.reset();
       return;
@@ -681,7 +727,14 @@ export class SceneMutationRouter {
         host.syncLiteTextures?.(sceneBuffers);
         host.setSceneState(nextScene);
         for (const warning of packed.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+          warnHost(host, {
+            code: 'pt-webgpu.environment-mutation-warning',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updateEnvironment',
+            message: `[vitrum/pt-webgpu] ${warning}`,
+            details: { warning },
+          });
         }
         host.reset();
         return;

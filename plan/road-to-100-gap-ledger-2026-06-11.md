@@ -67,6 +67,12 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   TLAS-only buffers.
 - PTWG-07 pt-webgpu lite sampled light/environment textures refresh after
   emitter/environment mutations.
+- ENGINE-01 structured nonfatal warning channel is now part of the core engine
+  contract (`EngineWarning`, `EngineOptions.onWarning`, `Engine.onWarning`) and
+  is wired through the createEngine facade plus the three shipping backends for
+  contract-affecting warnings: ignored/degraded options, backend fallback,
+  unsupported scene features, material-field drops, lite-tier downgrades, and
+  mutation fallback warnings.
 
 Not fully closed yet:
 
@@ -274,10 +280,16 @@ Evidence:
   packing warnings, empty skin warnings, and mutation fallbacks.
 
 Closure:
-- Add a structured warning/diagnostic channel, or broaden the engine event model
-  to include nonfatal capability degradations.
-- Keep console output for development, but make host integrations able to observe
-  every contract-affecting degradation.
+- Closed in the 2026-06-11 warning-channel wave by adding
+  `EngineWarning`, `EngineOptions.onWarning`, and optional `Engine.onWarning`.
+- createEngine now reports structured warnings for fallback, TLAS-backend
+  recommendations, ignored ownership keys, and cross-backend advanced-option
+  application.
+- pt-webgpu, pt-webgl2, and walkaround-hybrid now preserve existing
+  `console.warn` output while also emitting structured warnings for the
+  audited contract-affecting construction, scene, mutation, and viewport paths.
+- Internal debug/resource chatter remains console-only by design; it is not a
+  contract-affecting degradation.
 
 ### CAP-01 - Per-field material support is not explicit enough
 

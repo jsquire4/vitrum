@@ -39,7 +39,11 @@ export async function constructPathTracerWebGPU(
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
   const advancedWebGPURaw = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
-  const advancedWebGPU = stripOwnershipCriticalKeys(advancedWebGPURaw, 'pt-webgpu') as Partial<PTEngineWebGPUOptions>;
+  const advancedWebGPU = stripOwnershipCriticalKeys(
+    advancedWebGPURaw,
+    'pt-webgpu',
+    opts.onWarning,
+  ) as Partial<PTEngineWebGPUOptions>;
   const device = shared?.device ?? await adapter.requestDevice({
     requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
       restirPtReuse: advancedWebGPURaw?.restirPtReuse === true,
@@ -51,6 +55,7 @@ export async function constructPathTracerWebGPU(
     const merged: PTEngineWebGPUOptions = {
       device,
       ...advancedWebGPU,
+      ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
       // A shared device is built with the limit UNION (≥ the full pt-webgpu
       // per-stage buffer/texture floor), so force the full trace tier here —
       // the union exists precisely so both engines run at full fidelity, and the

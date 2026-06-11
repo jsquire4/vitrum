@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Engine, Scene } from '@vitrum/core';
+import type { Engine, EngineWarning, Scene } from '@vitrum/core';
 import type { SceneAABB } from '../sceneAABB.js';
 
 const hybridFactory = vi.hoisted(() => vi.fn());
@@ -210,15 +210,24 @@ describe('createEngine backend construction safety', () => {
 describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKeys)', () => {
   it('strips device from advanced bag and emits a console.warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     const fakeDevice = {} as GPUDevice;
     const advanced = { device: fakeDevice, maxBounces: 4 };
-    const stripped = stripOwnershipCriticalKeys(advanced as unknown as Record<string, unknown>, 'walkaround-hybrid');
+    const stripped = stripOwnershipCriticalKeys(
+      advanced as unknown as Record<string, unknown>,
+      'walkaround-hybrid',
+      (w) => structured.push(w),
+    );
     expect((stripped as Record<string, unknown>).device).toBeUndefined();
     // Non-ownership keys are preserved.
     expect((stripped as Record<string, unknown>).maxBounces).toBe(4);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0]?.[0]).toMatch(/device/);
     expect(warnSpy.mock.calls[0]?.[0]).toMatch(/walkaround-hybrid/);
+    expect(structured.some((w) =>
+      w.code === 'createEngine.advanced-ownership-key-ignored' &&
+      w.details?.backend === 'walkaround-hybrid',
+    )).toBe(true);
     warnSpy.mockRestore();
   });
 
@@ -307,16 +316,23 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
 describe('Bug4 fix — cross-backend advanced fallback warning (warnCrossBackendAdvanced)', () => {
   it('emits a console.warn when advanced is non-empty and backends differ', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     warnCrossBackendAdvanced(
       { maxBounces: 4 },
       'walkaround-hybrid',
       'pt-webgpu',
+      (w) => structured.push(w),
     );
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const msg = warnSpy.mock.calls[0]?.[0] as string;
     expect(msg).toMatch(/walkaround-hybrid/);
     expect(msg).toMatch(/pt-webgpu/);
     expect(msg).toMatch(/maxBounces/);
+    expect(structured.some((w) =>
+      w.code === 'createEngine.advanced-cross-backend' &&
+      w.details?.preferredBackend === 'walkaround-hybrid' &&
+      w.details?.resolvedBackend === 'pt-webgpu',
+    )).toBe(true);
     warnSpy.mockRestore();
   });
 

@@ -53,6 +53,7 @@ import type {
   BackendConstructor,
 } from './createEngineInternals.js';
 import {
+  emitCreateEngineWarning,
   warnCrossBackendAdvanced,
   reportCreateEngineError,
 } from './createEngineInternals.js';
@@ -112,7 +113,14 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
   // (the only merged-BVH backend), surface the recommendation + detail so the host
   // can switch to walkaround-hybrid or pt-webgpu for correct instancing behaviour.
   if (tlasAudit.recommendation === 'prefer-tlas-backend' && backend === 'pt-webgl2') {
-    console.warn(`[vitrum/createEngine] ${tlasAudit.detail}`);
+    emitCreateEngineWarning(opts.onWarning, {
+      code: 'createEngine.tlas-backend-recommended',
+      backend: 'createEngine',
+      phase: 'construction',
+      method: 'createEngine',
+      message: `[vitrum/createEngine] ${tlasAudit.detail}`,
+      details: { recommendation: tlasAudit.recommendation, resolvedBackend: backend },
+    });
   }
 
   if (backend === 'walkaround-hybrid') {
@@ -125,11 +133,21 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         recoverable: true,
       });
       const fallbackBackend = gpu.isWebGPU ? 'pt-webgpu' : 'pt-webgl2';
-      console.warn(
+      emitCreateEngineWarning(
+        opts.onWarning,
+        {
+          code: 'createEngine.walkaround-fallback',
+          backend: 'createEngine',
+          phase: 'fallback',
+          method: 'createEngine',
+          message: `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ${fallbackBackend}.`,
+          details: { preferredBackend: 'walkaround-hybrid', resolvedBackend: fallbackBackend },
+          raw: err,
+        },
         `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ${fallbackBackend}.`,
         err,
       );
-      warnCrossBackendAdvanced(opts.advanced, 'walkaround-hybrid', fallbackBackend);
+      warnCrossBackendAdvanced(opts.advanced, 'walkaround-hybrid', fallbackBackend, opts.onWarning);
       return await constructPathTracerFallback(opts, vitrumScene, aabb, tlasAudit.needsTlas, gpu.isWebGPU);
     }
   }
@@ -142,8 +160,21 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         backend: 'pt-webgpu',
         recoverable: true,
       });
-      console.warn('[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.', err);
-      warnCrossBackendAdvanced(opts.advanced, 'pt-webgpu', 'pt-webgl2');
+      emitCreateEngineWarning(
+        opts.onWarning,
+        {
+          code: 'createEngine.pt-webgpu-fallback',
+          backend: 'createEngine',
+          phase: 'fallback',
+          method: 'createEngine',
+          message: '[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.',
+          details: { preferredBackend: 'pt-webgpu', resolvedBackend: 'pt-webgl2' },
+          raw: err,
+        },
+        '[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.',
+        err,
+      );
+      warnCrossBackendAdvanced(opts.advanced, 'pt-webgpu', 'pt-webgl2', opts.onWarning);
       return await constructPathTracerWebGLFallback(opts, vitrumScene, aabb, tlasAudit.needsTlas);
     }
   }
@@ -170,7 +201,20 @@ async function constructPathTracerFallback(
         backend: 'pt-webgpu',
         recoverable: true,
       });
-      console.warn('[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl2.', err);
+      emitCreateEngineWarning(
+        opts.onWarning,
+        {
+          code: 'createEngine.pt-webgpu-secondary-fallback',
+          backend: 'createEngine',
+          phase: 'fallback',
+          method: 'createEngine',
+          message: '[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl2.',
+          details: { preferredBackend: 'pt-webgpu', resolvedBackend: 'pt-webgl2' },
+          raw: err,
+        },
+        '[vitrum/createEngine] pt-webgpu fallback unavailable; falling back to pt-webgl2.',
+        err,
+      );
     }
   }
   return await constructPathTracerWebGLFallback(opts, vitrumScene, aabb, needsTlas);

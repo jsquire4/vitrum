@@ -7,6 +7,7 @@
 // async.
 
 import type { Engine } from './index.js';
+import type { EngineWarning } from './telemetry.js';
 
 /** All engine-creation factories follow this shape. The `device` is opaque at
  *  the core level; each backend narrows `device` to its own concrete type.
@@ -78,6 +79,16 @@ export interface EngineOptions {
    *  `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
    */
   readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
+
+  /**
+   * Optional construction-time warning sink. Backends call this for warnings
+   * produced before an `Engine` instance is returned and for runtime warnings
+   * on engines that also expose `Engine.onWarning`.
+   *
+   * Existing `console.warn` output is preserved; this callback is for host
+   * telemetry and integration tests that need programmatic observability.
+   */
+  readonly onWarning?: (warning: EngineWarning) => void;
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

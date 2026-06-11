@@ -56,6 +56,7 @@ export async function constructPathTracer(
     const merged: PTEngineWebGL2Options = {
       device: gl,
       ...(advancedWebGL2 ?? {}),
+      ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
 
     // Lazy runtime import keeps the WebGL2 path-tracer stack out of the module

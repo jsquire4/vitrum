@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   CONSUMED_MATERIAL_FIELDS,
   collectUnconsumedMaterialFields,
@@ -189,7 +189,11 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
   });
 
   it('warns naming both baseColorMap and clearcoat when both are supplied', () => {
-    const engine = new HybridEngine(makeOpts());
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
     try {
       engine.setScene(unconsumedFieldsScene());
       const warnMessages = warnSpy.mock.calls.flat().map(String);
@@ -197,6 +201,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       expect(materialWarn).toBeDefined();
       expect(materialWarn).toContain('baseColorMap');
       expect(materialWarn).toContain('clearcoat');
+      expect(structured.some((w) =>
+        w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
+        Array.isArray(w.details?.fields) &&
+        w.details.fields.includes('baseColorMap') &&
+        w.details.fields.includes('clearcoat'),
+      )).toBe(true);
     } finally {
       engine.dispose();
     }
@@ -209,6 +219,24 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       engine.setScene(unconsumedFieldsScene()); // same field set — should NOT warn again
       const materialWarns = warnSpy.mock.calls.flat().map(String).filter((m) => m.includes('not consumed'));
       expect(materialWarns).toHaveLength(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits structured warnings for unknown updateLighting keys', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      engine.updateLighting({ typoIntensity: 2 } as never);
+      expect(warnSpy.mock.calls.flat().map(String).some((m) => m.includes('typoIntensity'))).toBe(true);
+      expect(structured.some((w) =>
+        w.code === 'walkaround-hybrid.unknown-lighting-key' &&
+        w.details?.key === 'typoIntensity',
+      )).toBe(true);
     } finally {
       engine.dispose();
     }

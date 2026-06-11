@@ -47,5 +47,6 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(typeof engine.debug === 'object').toBe(expected.methodPromises.debug);
     expect(typeof engine.getScene === 'function').toBe(expected.methodPromises.getScene);
     expect(typeof engine.onError === 'function').toBe(expected.methodPromises.onError);
+    expect(typeof engine.onWarning === 'function').toBe(expected.methodPromises.onWarning);
   });
 });

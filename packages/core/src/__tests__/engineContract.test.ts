@@ -91,6 +91,14 @@ describe('backend promise ledger', () => {
     }
   });
 
+  it('pins onWarning: true for all three shipping backends (ENGINE-01 warning surface)', () => {
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.methodPromises.onWarning).toBe(true);
+      expect(typeof rec.methodPromises.onWarning).toBe('boolean');
+      void id;
+    }
+  });
+
   it('pins captureFrame: true for all three shipping backends (item 31 — pixel readback)', () => {
     for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
       expect(rec.methodPromises.captureFrame).toBe(true);

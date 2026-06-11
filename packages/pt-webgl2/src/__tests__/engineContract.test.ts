@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
+import type { EngineWarning, FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import type { PTEngineWebGL2Options } from '../index.js';
 import { createMockGl } from './mockGl.js';
@@ -222,14 +222,23 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
   it("denoiser: 'oidn-final' emits exactly one console.warn naming the value", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     try {
-      await createPTEngine_WebGL2({ ...opts(), denoiser: 'oidn-final' });
+      await createPTEngine_WebGL2({
+        ...opts(),
+        denoiser: 'oidn-final',
+        onWarning: (w) => structured.push(w),
+      });
       const denoiserWarns = warn.mock.calls.filter((args) =>
         String(args[0]).includes('denoiser'),
       );
       expect(denoiserWarns).toHaveLength(1);
       expect(String(denoiserWarns[0]![0])).toContain('oidn-final');
       expect(String(denoiserWarns[0]![0])).toContain('pt-webgl2');
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.unsupported-denoiser' &&
+        w.details?.requested === 'oidn-final',
+      )).toBe(true);
     } finally {
       warn.mockRestore();
     }
@@ -259,6 +268,16 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     // Unsubscribe should not throw.
     expect(() => unsub()).not.toThrow();
     // After unsubscribe, further unsub calls are idempotent.
+    expect(() => unsub()).not.toThrow();
+    e.dispose();
+  });
+
+  it('exposes onWarning subscription (ENGINE-01 warning surface)', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    expect(typeof e.onWarning).toBe('function');
+    const warnings: EngineWarning[] = [];
+    const unsub = e.onWarning!((warning) => warnings.push(warning));
+    expect(typeof unsub).toBe('function');
     expect(() => unsub()).not.toThrow();
     e.dispose();
   });

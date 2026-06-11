@@ -11,7 +11,7 @@
  * the actual lite binding budget (not the full-tier ledger).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { asMat4, type Scene } from '@vitrum/core';
+import { asMat4, type EngineWarning, type Scene } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
@@ -227,7 +227,11 @@ describe('H12: lite-tier capabilities truth', () => {
 
   it('lite tier: setScene warns when scene contains instanced meshes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     const scene: Scene = {
       primitives: [
@@ -251,6 +255,7 @@ describe('H12: lite-tier capabilities truth', () => {
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('instanced-mesh') && c.includes('Lite tier'))).toBe(true);
     expect(calls.some((c) => c.includes('TLAS') && c.includes('lite shader'))).toBe(true);
+    expect(structured.some((w) => w.code === 'pt-webgpu.lite-instanced-mesh')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });

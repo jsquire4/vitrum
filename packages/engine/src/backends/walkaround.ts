@@ -123,7 +123,11 @@ export async function constructWalkaround(
   let engine: (Engine & Partial<GIStatePersistable>) | null = null;
   try {
     const advancedHybridRaw = opts.advanced as Partial<HybridEngineOptions> | undefined;
-    const advancedHybrid = stripOwnershipCriticalKeys(advancedHybridRaw, 'walkaround-hybrid') as Partial<HybridEngineOptions>;
+    const advancedHybrid = stripOwnershipCriticalKeys(
+      advancedHybridRaw,
+      'walkaround-hybrid',
+      opts.onWarning,
+    ) as Partial<HybridEngineOptions>;
     const merged: HybridEngineOptions = {
       device,
       width: Math.max(1, opts.canvas.width),
@@ -149,6 +153,7 @@ export async function constructWalkaround(
         needsTlas && !useLite,
       ),
       ...(shared != null ? { tier: 'full' as const } : {}),
+      ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
       // Theme-H — the audit tuning knobs moved to the nested `tuning` namespace
       // (`Partial<Tunables>`). Placed LAST (after the `advanced` spread) and
       // deep-merged so the host's `advanced.tuning` overrides PER-KEY on top of
