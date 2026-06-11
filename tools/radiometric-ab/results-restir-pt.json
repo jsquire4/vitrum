@@ -1,0 +1,33 @@
+{
+  "ab": "restir-pt-reuse-on-vs-off",
+  "date": "2026-06-11T02:51:54.518Z",
+  "resolution": {
+    "W": 80,
+    "H": 80
+  },
+  "roi": {
+    "x0": 20,
+    "y0": 25,
+    "x1": 60,
+    "y1": 55
+  },
+  "meanFrames": 60,
+  "varianceRuns": 8,
+  "varianceFramesPerRun": 8,
+  "base": {
+    "globalLum": 0.4868965011138933,
+    "roiLum": 0.4872278986080716,
+    "variance": 0.005899578612583778
+  },
+  "rpt": {
+    "globalLum": 0.47198128832244857,
+    "roiLum": 0.47153777675673686,
+    "variance": 0.001591065928648624
+  },
+  "globalRelErr": 0.030633230588682815,
+  "roiRelErr": 0.03220283956677927,
+  "varRatio": 0.26969145309037607,
+  "meanAgreement": true,
+  "varianceNotWorse": true,
+  "verdict": "PASS"
+}

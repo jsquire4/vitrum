@@ -85,17 +85,21 @@ describe('A1 — ReSTIR-PT composite megakernel (estimator split)', () => {
     expect(composite).toContain('radiance = radiance + rptComposite.rgb;');
   });
 
-  it('the composite GATES the BSDF→light/env area-MIS at E0 on !rptCompositeContributed (no double-count, but fall-through keeps it)', () => {
+  it('the composite runs the BSDF→light/env area-MIS at E0 for ALL pixels (analytic lights not in TLAS — no double-count)', () => {
     const composite = composePtWebgpuCompositeTraceWgsl(false);
     const dflt = composePtWebgpuTraceWgsl(false);
-    // The default megakernel runs the BSDF-area connection unconditionally on
-    // sampleAllowsAreaMis; the composite ADDITIONALLY gates it on
-    // !rptCompositeContributed — so a composited pixel drops it (the resolve indirect
-    // already covers first-bounce-hits-a-light) while a producer-dropped pixel keeps it.
+    // Both the default and composite megakernels run the BSDF-area connection on
+    // sampleAllowsAreaMis only — no additional gate in composite mode.
+    // Analytic lights (rect-area, disc, env, sky, directional) are NOT in the TLAS,
+    // so the producer's xs cannot be an analytic light, and rptComposite.rgb cannot
+    // double-count bsdfAreaLightConnectionContribution or
+    // bsdfEnvironmentConnectionContribution. Dropping these (the previous
+    // !rptCompositeContributed gate) caused a ~46% energy under-bias (2026-06-10 A/B).
     expect(dflt).toContain('if (sampleAllowsAreaMis) {');
     expect(dflt).not.toContain('!rptCompositeContributed');
-    expect(composite).toContain('if (sampleAllowsAreaMis && !rptCompositeContributed) {');
-    // The connection BODY is still present (for the fall-through path).
+    expect(composite).toContain('if (sampleAllowsAreaMis) {');
+    expect(composite).not.toContain('if (sampleAllowsAreaMis && !rptCompositeContributed) {');
+    // The connection BODY is present and runs for composited pixels.
     expect(composite).toContain('radiance = radiance + bsdfAreaLightConnectionContribution(');
   });
 

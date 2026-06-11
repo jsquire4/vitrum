@@ -240,11 +240,21 @@ export function composePathTraceKernelWgsl(opts: {
     : '';
   // A1 — the per-bounce BSDF→light/env MIS connection adds. OFF (default) emits
   // the VERBATIM original block (byte-identical pin). In composite mode the
-  // BSDF-sampled direct connections are DROPPED: they estimate the light reached by
-  // E0's BSDF sample, which the ReSTIR-PT reconnection bounce (resolve indirect)
-  // already covers — keeping them would double-count the first-bounce-hits-a-light
-  // term. NEE (deltas + area + env) stays (it is E0's own direct lighting, which the
-  // resolve indirect does NOT include).
+  // BSDF-sampled direct connections MUST BE KEPT for composited pixels: analytic
+  // lights (rect-area, disc, env/sky, directional) are NOT in the TLAS/BVH, so the
+  // producer's reconnection vertex xs can NEVER land on an analytic light. Therefore
+  // rptComposite.rgb can NEVER double-count bsdfAreaLightConnectionContribution or
+  // bsdfEnvironmentConnectionContribution at E0. Dropping them (the previous
+  // !rptCompositeContributed gate) caused a ~46% energy under-bias verified by the
+  // A/B harness (tools/radiometric-ab/ab-restir-pt.mjs, 2026-06-10).
+  //
+  // For mesh area lights where xs IS the emissive mesh: the resolve's Lo includes
+  // emissive(xs) AND bsdfAreaLightConnectionContribution at E0 also captures the
+  // mesh hit. This is a slight over-count for that uncommon case (xs on a mesh
+  // emitter), but it is far less biased than the 46% under-count the gate caused.
+  // NEE (deltas + area + env) stays regardless — it is E0's own direct lighting,
+  // which the resolve indirect does NOT include.
+  //
   // A1 composite preamble — read the resolve indirect for THIS pixel once. A pixel
   // the producer contributed to (rpt.a > 0.5) gets the E0-direct-only + composited-
   // indirect split; a producer-DROPPED pixel (specular/transmissive E0 → rpt.a == 0)
@@ -256,13 +266,11 @@ export function composePathTraceKernelWgsl(opts: {
     let rptCompositeContributed = rptComposite.a > 0.5;
 `
     : '';
-  // The BSDF→light/env area-MIS connection condition. In composite mode it is ALSO
-  // gated on !rptCompositeContributed: for a composited pixel the resolve indirect
-  // already covers first-bounce-hits-a-light (keeping it would double-count); a
-  // fall-through pixel runs the verbatim full connection. OFF = the verbatim original.
-  const sampleAllowsAreaMisCond = composite
-    ? 'sampleAllowsAreaMis && !rptCompositeContributed'
-    : 'sampleAllowsAreaMis';
+  // The BSDF→light/env area-MIS connection condition. Identical in both composite
+  // and default mode: the BSDF-side MIS connections at E0 must run for ALL pixels
+  // (composited or not) because analytic lights are never reconnection vertices,
+  // so there is no double-count risk. OFF = the verbatim original.
+  const sampleAllowsAreaMisCond = 'sampleAllowsAreaMis';
   const bsdfAreaConnect = /* wgsl */ `    if (${sampleAllowsAreaMisCond}) {
       // H52: bsdfAreaLightConnectionContribution / bsdfEnvironmentConnectionContribution use
       // the base evaluateBrdf/brdfDirectionalPdf (connect.wgsl.ts has no mat in scope).
@@ -297,13 +305,15 @@ export function composePathTraceKernelWgsl(opts: {
       );
     }
 `;
-  // A1 — composite early-out. After E0's emission + NEE direct (+ for fall-through
-  // pixels the BSDF-area connection), composite the ReSTIR-PT reconnection indirect
-  // (f_bsdf(E0)·cos·Lo·W, reconstructed by resolve) into the BEAUTY accumulator and
-  // TERMINATE — the megakernel supplied E0's emission + direct only; the resolve
-  // supplies the indirect. Exact + double-count-free (resolve indirect = first bounce
-  // off E0 onward, disjoint from E0's own emission + direct). Producer-dropped pixels
-  // skip this and continue the FULL path. OFF (default) emits NOTHING (byte-identical).
+  // A1 — composite early-out. After E0's emission + E0's full direct (NEE + BSDF-side
+  // MIS connections — BOTH halves are now included for composited pixels), composite the
+  // ReSTIR-PT reconnection indirect (f_bsdf(E0)·cos·Lo·W, reconstructed by resolve)
+  // into the BEAUTY accumulator and TERMINATE. The megakernel supplies E0's complete
+  // direct contribution; the resolve supplies the indirect (first bounce off E0 onward).
+  // Double-count-free: analytic lights (rect-area/disc/env/sky/directional) are NOT in
+  // the TLAS, so the producer cannot place xs on them and rptComposite.rgb never
+  // overlaps the BSDF-side MIS terms. Producer-dropped pixels skip this and continue
+  // the FULL path. OFF (default) emits NOTHING (byte-identical).
   const compositeEarlyOut = composite
     ? /* wgsl */ `    if (rptCompositeContributed) {
       radiance = radiance + rptComposite.rgb;

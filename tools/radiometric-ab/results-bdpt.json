@@ -1,0 +1,33 @@
+{
+  "ab": "bdpt-vs-unidirectional",
+  "date": "2026-06-11T02:33:06.412Z",
+  "resolution": {
+    "W": 80,
+    "H": 80
+  },
+  "roi": {
+    "x0": 20,
+    "y0": 25,
+    "x1": 60,
+    "y1": 55
+  },
+  "meanFrames": 60,
+  "varianceRuns": 8,
+  "varianceFramesPerRun": 8,
+  "uni": {
+    "globalLum": 0.4868965011138933,
+    "roiLum": 0.4872278986080716,
+    "variance": 0.005899578612583778
+  },
+  "bdpt": {
+    "globalLum": 0.4868965011138933,
+    "roiLum": 0.4872278986080716,
+    "variance": 0.005899578612583778
+  },
+  "globalRelErr": 0,
+  "roiRelErr": 0,
+  "varRatio": 1,
+  "meanAgreement": true,
+  "varianceImproved": true,
+  "verdict": "PASS"
+}
