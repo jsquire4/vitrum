@@ -21,7 +21,7 @@
 
 import * as React from 'react';
 import type { EngineError, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
-import type { AttachVitrumHandle, AttachVitrumOptions, CameraLike } from '../lifecycle/vanilla.js';
+import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
   CreateEngineErrorEvent,
@@ -129,7 +129,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         onFrame: (stats) => { onFrameRef.current?.(stats); },
         onProgress: (progress) => { onProgressRef.current?.(progress); },
         onError: (error, event) => { onErrorRef.current?.(error, event); },
-        onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch {} },
+        onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ } },
       })
         .then((h) => {
           if (cancelled) {

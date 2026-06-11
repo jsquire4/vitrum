@@ -242,7 +242,7 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
       ...translate4(4, 0, 0),  // bone 1 → same as before
     ]);
 
-    e.updatePrimitive?.('sk3', { bones: newBones } as never);
+    e.updatePrimitive?.('sk3', { bones: newBones });
 
     const after = e._debugGeoPack!.positions[0 * 4 + 0]!; // v0 solved X after re-pose
     expect(after).toBeCloseTo(10); // re-solved: bone 0 now translates +10

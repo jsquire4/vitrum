@@ -427,5 +427,5 @@ export interface Engine {
    * buffer (road-to-100 A1). Hosts MUST typeof-check before calling; backends
    * that do not implement ReSTIR-PT reuse omit this method entirely.
    */
-  getRestirPtResultBuffer?(): unknown | null;
+  getRestirPtResultBuffer?(): unknown;
 }

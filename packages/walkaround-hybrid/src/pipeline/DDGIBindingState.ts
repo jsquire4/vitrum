@@ -251,7 +251,7 @@ export class DDGIBindingState implements PipelineSubsystem {
 
     return Object.keys(section).length === 0
       ? {}
-      : { hybridBindingState: section as GpuMemoryResourceSection };
+      : { hybridBindingState: section };
   }
 
   /** Release held atlas references (the host owns those GPUTextures; we only

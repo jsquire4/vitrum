@@ -19,7 +19,7 @@ describe('probeUpdateBvhBuffers', () => {
       queue: { writeBuffer: vi.fn() },
     } as unknown as GPUDevice;
     const old = {
-      destroy: () => destroyed.push(old as unknown as GPUBuffer),
+      destroy: () => destroyed.push(old),
     } as unknown as GPUBuffer;
     const g = {
       bvhBuf: old,

@@ -39,7 +39,7 @@ function makeDevice() {
         size: GPUExtent3D,
       ): void {
         writes.push({
-          texture: destination.texture as GPUTexture & { readonly label: string },
+          texture: destination.texture,
           data,
           layout,
           size,

@@ -101,14 +101,14 @@ describe('patchScene helpers', () => {
   it('throws when a primitive patch tries to change the id', () => {
     const scene = makeScene();
     expect(() =>
-      patchPrimitiveInScene(scene, 'mesh-a', { id: 'mesh-b' } as never),
+      patchPrimitiveInScene(scene, 'mesh-a', { id: 'mesh-b' }),
     ).toThrow(/id cannot be changed/);
   });
 
   it('throws when an emitter patch tries to change the id', () => {
     const scene = makeScene();
     expect(() =>
-      patchEmitterInScene(scene, 'sun', { id: 'moon' } as never),
+      patchEmitterInScene(scene, 'sun', { id: 'moon' }),
     ).toThrow(/id cannot be changed/);
   });
 
@@ -132,7 +132,7 @@ describe('patchScene helpers', () => {
     expect(() =>
       patchPrimitiveInScene(scene, 'sphere-a', {
         params: new Float32Array([0, 0, 0]),
-      } as never),
+      }),
     ).toThrow(/expects 4/);
   });
 
@@ -160,7 +160,7 @@ describe('patchScene helpers', () => {
     const scene = makeScene();
     const next = patchPrimitiveInScene(scene, 'sphere-a', {
       params: new Float32Array([1, 2, 3, 4]),
-    } as never);
+    });
     const patched = next.primitives[1];
     if (patched == null || patched.kind !== 'analytic') {
       throw new Error('missing patched analytic primitive');
@@ -173,7 +173,7 @@ describe('patchScene helpers', () => {
     expect(() =>
       patchPrimitiveInScene(scene, 'mesh-a', {
         params: new Float32Array([0, 0, 0, 1]),
-      } as never),
+      }),
     ).toThrow(/cannot accept analytic "params"/);
   });
 
@@ -191,7 +191,7 @@ describe('patchScene helpers', () => {
           positions: new Float32Array([0, 0, 0]),
           normals: new Float32Array([0, 0, 1]),
         },
-      } as never),
+      }),
     ).toThrow(/cannot accept analytic "fallbackMesh"/);
   });
 });

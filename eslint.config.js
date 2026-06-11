@@ -147,6 +147,69 @@ export default tseslint.config(
     },
   },
 
+  // ── Deno gate scripts: @ts-nocheck is intentional (sloppy-imports mode) ─────
+  // These .mjs files are run by Deno with --sloppy-imports; @ts-nocheck is the
+  // documented workaround to prevent VS Code / typescript-eslint from trying to
+  // type-check the cross-runtime dynamic imports.
+  // Also apply the underscore-prefix unused-var convention consistently with .ts files.
+  {
+    files: ['tools/**/*.mjs', 'scripts/**/*.mjs'],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
+      'no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
+    },
+  },
+
+  // ── Test files: relax rules that false-positive in Vitest/Jest stubs ────────
+  // `unbound-method` fires on `expect(spy.method).toHaveBeenCalled()` patterns
+  // where Vitest matchers handle method extraction safely — it is not a real
+  // scoping hazard in that context.
+  // `require-await` fires on stub/mock implementations that satisfy an async
+  // interface but happen not to need await — suppressing inline would produce
+  // ~35 disable comments across test files.
+  // `no-unsafe-*` / `no-redundant-type-constituents` / `restrict-template-expressions`
+  // fire systematically on Vitest mock introspection (`.mock.calls[0][0]`),
+  // `Array(n)` patterns, and test-helper types that don't need production-grade
+  // type narrowing. Suppressing per-site would create ~100+ noise comments.
+  {
+    files: [
+      'packages/*/__tests__/**/*.{ts,tsx}',
+      'packages/*/src/__tests__/**/*.{ts,tsx}',
+      'packages/**/__tests__/**/*.{ts,tsx}',
+      'packages/**/*.test.{ts,tsx}',
+    ],
+    rules: {
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-redundant-type-constituents': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+    },
+  },
+
   // ── React + react-hooks for packages that ship JSX/TSX ───────────────────
   {
     files: ['packages/dev/**/*.{ts,tsx}', 'packages/engine/**/*.{ts,tsx}'],

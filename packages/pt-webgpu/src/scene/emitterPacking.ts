@@ -3,6 +3,7 @@ import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
 import {
+  discArea,
   meshTriangleArea,
   rectQuadArea,
   walkPositionalEmitters,
@@ -44,11 +45,21 @@ export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
 export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 
 /**
- * Disc emitters lower into mesh-area triangle records so the existing WGSL
- * triangle sampler is used instead of pretending a disc is a rectangle. The
- * regular fan radius is scaled so its total triangle area equals pi*r^2.
+ * Rect/disc area light record layout (4 vec4 = 16 floats):
+ *   vec4 0: center.xyz, 0
+ *   vec4 1: uAxis.xyz, 0          — for rect: half-extent along u; for disc: tangent × radius
+ *   vec4 2: vAxis.xyz, 0          — for rect: half-extent along v; for disc: bitangent × radius
+ *   vec4 3: radiance.rgb, shape   — shape = 0.0 (rect) | 1.0 (disc, analytic concentric-map)
+ *
+ * Rect sampling: uniform in [-1,1]² → p = center + uAxis*u + vAxis*v; area = 4·|u×v|
+ * Disc sampling: concentric-map (xi₁,xi₂)→(r,φ) → p = center + uAxis*(r·cos φ) + vAxis*(r·sin φ)
+ *   area = π·|uAxis|² (= π·r² when |uAxis|=|vAxis|=radius; enforced by packDiscAsRect).
+ *   pdf = dist² / (cosLight · π·r²)  — identical solid-angle formula as rect but with disc area.
+ * Forward-hit MIS (connect.wgsl): ray-plane + |rel_u|²+|rel_v|²≤1 circle test for disc;
+ *   uCoord/vCoord ∈ [-1,1] box test for rect.  |shape.w - 1.0| < 0.5 discriminates disc.
  */
-const DISC_AREA_TRIANGLE_SEGMENTS = 32;
+export const RECT_DISC_SHAPE_RECT = 0.0;
+export const RECT_DISC_SHAPE_DISC = 1.0;
 
 type Vec3 = [number, number, number];
 
@@ -125,10 +136,28 @@ function emitterRadiance(
   ];
 }
 
-function discAreaPackedAsTriangles(
+/**
+ * Pack a disc-area emitter as a rect-area record with a disc shape tag (1.0) in
+ * the emission.w lane. The uAxis/vAxis carry the radius-scaled orthonormal tangent
+ * basis so the WGSL sampler can recover radius = |uAxis| = |vAxis|.
+ *
+ * Record layout (4 × vec4f, 16 floats):
+ *   [0] center.xyz, 0
+ *   [1] (tangent × radius).xyz, 0        — uAxis
+ *   [2] (bitangent × radius).xyz, 0      — vAxis
+ *   [3] radiance.rgb, RECT_DISC_SHAPE_DISC
+ *
+ * The WGSL side reads shape = rectAreaLights[rb+3].w and branches:
+ *   shape ≈ 0 → rect sampling (uniform [-1,1]², area = 4|u×v|)
+ *   shape ≈ 1 → disc sampling (concentric-map, area = π|u|²)
+ *
+ * Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+ * RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
+ */
+function packDiscAsRect(
   e: DiscAreaEmitter,
   warnings: string[],
-): readonly PackedMeshAreaTriangle[] {
+): readonly number[] {
   if (!Number.isFinite(e.radius) || e.radius < 1e-8) {
     warnings.push(
       `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
@@ -145,17 +174,13 @@ function discAreaPackedAsTriangles(
     );
     return [];
   }
+  // Build orthonormal tangent basis (tangent, bitangent) for the disc plane.
   const ux = nx / nLen;
   const uy = ny / nLen;
   const uz = nz / nLen;
-  let ax = 0;
-  let ay = 1;
-  let az = 0;
-  if (Math.abs(uy) > 0.999) {
-    ax = 1;
-    ay = 0;
-    az = 0;
-  }
+  // Choose a helper vector not parallel to the normal.
+  let ax = 0, ay = 1, az = 0;
+  if (Math.abs(uy) > 0.999) { ax = 1; ay = 0; az = 0; }
   const tx = ay * uz - az * uy;
   const ty = az * ux - ax * uz;
   const tz = ax * uy - ay * ux;
@@ -169,32 +194,23 @@ function discAreaPackedAsTriangles(
   const tcx = tx / tLen;
   const tcy = ty / tLen;
   const tcz = tz / tLen;
+  // Bitangent = normal × tangent (right-hand rule, unit length because n and t are orthonormal).
   const bx = uy * tcz - uz * tcy;
   const by = uz * tcx - ux * tcz;
   const bz = ux * tcy - uy * tcx;
-  const center: Vec3 = [e.position[0], e.position[1], e.position[2]];
-  const polygonAreaFactor = 0.5
-    * DISC_AREA_TRIANGLE_SEGMENTS
-    * Math.sin((2 * Math.PI) / DISC_AREA_TRIANGLE_SEGMENTS);
-  const fanRadius = e.radius * Math.sqrt(Math.PI / polygonAreaFactor);
-  const radiance = emitterRadiance(e);
-  const triangles: PackedMeshAreaTriangle[] = [];
-  for (let i = 0; i < DISC_AREA_TRIANGLE_SEGMENTS; i += 1) {
-    const a0 = (2 * Math.PI * i) / DISC_AREA_TRIANGLE_SEGMENTS;
-    const a1 = (2 * Math.PI * (i + 1)) / DISC_AREA_TRIANGLE_SEGMENTS;
-    const p0: Vec3 = [
-      center[0] + (tcx * Math.cos(a0) + bx * Math.sin(a0)) * fanRadius,
-      center[1] + (tcy * Math.cos(a0) + by * Math.sin(a0)) * fanRadius,
-      center[2] + (tcz * Math.cos(a0) + bz * Math.sin(a0)) * fanRadius,
-    ];
-    const p1: Vec3 = [
-      center[0] + (tcx * Math.cos(a1) + bx * Math.sin(a1)) * fanRadius,
-      center[1] + (tcy * Math.cos(a1) + by * Math.sin(a1)) * fanRadius,
-      center[2] + (tcz * Math.cos(a1) + bz * Math.sin(a1)) * fanRadius,
-    ];
-    triangles.push({ triA: center, triB: p0, triC: p1, radiance });
-  }
-  return triangles;
+  // Scale both axes by radius — the WGSL recovers radius as |uAxis|.
+  const r = e.radius;
+  const rad = emitterRadiance(e);
+  return [
+    // vec4 0: center
+    e.position[0], e.position[1], e.position[2], 0,
+    // vec4 1: uAxis = tangent × radius
+    tcx * r, tcy * r, tcz * r, 0,
+    // vec4 2: vAxis = bitangent × radius
+    bx * r, by * r, bz * r, 0,
+    // vec4 3: radiance.rgb, shape = DISC (1.0)
+    rad[0], rad[1], rad[2], RECT_DISC_SHAPE_DISC,
+  ];
 }
 
 export function defaultDirectionalLight(scene: Scene): readonly [number, number, number] {
@@ -427,16 +443,26 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
 
   const rectAreaLights: number[] = [];
   let rectAreaLightCount = 0;
+  // Rect-area emitters: shape tag = 0.0 (RECT_DISC_SHAPE_RECT).
   for (const e of scene.emitters) {
     if (e.kind !== 'rect-area') continue;
-    pushVec4(rectAreaLights, [e.position[0], e.position[1], e.position[2]]);
-    pushVec4(rectAreaLights, [e.uAxis[0], e.uAxis[1], e.uAxis[2]]);
-    pushVec4(rectAreaLights, [e.vAxis[0], e.vAxis[1], e.vAxis[2]]);
-    pushVec4(rectAreaLights, [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ]);
+    rectAreaLights.push(
+      e.position[0], e.position[1], e.position[2], 0,
+      e.uAxis[0], e.uAxis[1], e.uAxis[2], 0,
+      e.vAxis[0], e.vAxis[1], e.vAxis[2], 0,
+      e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity,
+      RECT_DISC_SHAPE_RECT,
+    );
+    rectAreaLightCount += 1;
+  }
+  // Disc-area emitters: native analytic packing into the rect stream, shape tag = 1.0.
+  // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+  // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
+  for (const e of scene.emitters) {
+    if (e.kind !== 'disc-area') continue;
+    const discRecord = packDiscAsRect(e, warnings);
+    if (discRecord.length === 0) continue;
+    rectAreaLights.push(...discRecord);
     rectAreaLightCount += 1;
   }
   const rectAreaLightsData = packedFloatData(
@@ -447,13 +473,6 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   );
 
   const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
-  // Disc-area emitters lower into the mesh-area triangle section. Keeping this
-  // loop before mesh-area preserves the old flat walk's type block order:
-  // rect/disc area came before mesh area.
-  for (const emitter of scene.emitters) {
-    if (emitter.kind !== 'disc-area') continue;
-    meshAreaTriangles.push(...discAreaPackedAsTriangles(emitter, warnings));
-  }
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
     meshAreaTriangles.push(...packMeshAreaTriangles(emitter, scene, warnings));
@@ -469,9 +488,11 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   // Guard: explicit emitters take priority — if a `mesh-area` emitter already
   // references this primitive we skip it (no double-counting). Disc-area emitters
   // that were lowered above are also excluded.
+  // disc-area emitters are now packed natively into the rect stream (no longer
+  // lowered into mesh-area triangles), so only mesh-area emitters are excluded here.
   const explicitMeshAreaIds = new Set<string>(
     scene.emitters
-      .filter((e) => e.kind === 'mesh-area' || e.kind === 'disc-area')
+      .filter((e) => e.kind === 'mesh-area')
       .map((e) => (e as { meshId?: string }).meshId ?? '')
       .filter(Boolean),
   );
@@ -586,10 +607,10 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
  * they are treated as mesh-area emitters for the staleness check.
  */
 export function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string): boolean {
-  // Check explicit mesh-area / disc-area emitters first.
+  // disc-area emitters are now packed natively into the rect stream (no longer
+  // lowered into mesh-area triangles), so only mesh-area emitters are checked here.
   for (const e of scene.emitters) {
-    if (e.kind !== 'mesh-area' && e.kind !== 'disc-area') continue;
-    // Both kinds carry a `meshId` on the SceneEmitter type.
+    if (e.kind !== 'mesh-area') continue;
     const meshId = (e as { meshId?: string }).meshId;
     if (meshId === primitiveId) return true;
   }
@@ -663,8 +684,9 @@ export interface EnvSummaryForTree {
  *
  *   directional? · point[] · spot[] · rect-area[] · mesh-triangle-area[] · env?
  *
- * `disc-area` emitters are lowered by `packEmitterArrays` into the mesh-triangle
- * section as an equal-area fan, so every tree leaf still matches one GPU slot.
+ * `disc-area` emitters are packed natively by `packEmitterArrays` into the
+ * rect-area stream with a disc shape tag (shapeTag = 1.0), so every tree leaf
+ * still matches one GPU slot in the rect-area buffer.
  *
  * The `directional` / `env` slots are non-positional, so they are given the union
  * AABB of all positional lights (the "lit region"). Inside that AABB the descent's
@@ -800,27 +822,39 @@ export function buildLightTreeInputForScene(
         break;
       }
       case 'rect': {
-        // rect-area — quad area = 4·|u×v| (matches the WGSL area-light NEE
-        // term). AABB = the four corners p ± u ± v.
+        // rect-area / disc-area records (both packed in the rect stream).
+        // Disc records carry shape tag = 1.0 in shapeTag; rect records = 0.0.
+        // Area formula: disc → π·|u|² (= π·r²); rect → 4·|u×v|.
+        // AABB: disc → sphere-bounding-box with radius = |u| (conservative);
+        //        rect → four corners p ± u ± v.
         const p = e.position;
         const u = e.uAxis;
         const v = e.vAxis;
-        const area = rectQuadArea(u, v);
-        const cx = [Math.abs(u[0]) + Math.abs(v[0]), Math.abs(u[1]) + Math.abs(v[1]), Math.abs(u[2]) + Math.abs(v[2])] as const;
-        const min: Vec3 = [p[0] - cx[0], p[1] - cx[1], p[2] - cx[2]];
-        const max: Vec3 = [p[0] + cx[0], p[1] + cx[1], p[2] + cx[2]];
+        const isDisc = Math.abs((e.shapeTag ?? 0) - 1.0) < 0.5;
+        const area = isDisc ? discArea(u) : rectQuadArea(u, v);
+        let min: Vec3;
+        let max: Vec3;
+        if (isDisc) {
+          // Bounding box for a disc: center ± radius along each axis.
+          const r = Math.hypot(u[0], u[1], u[2]);
+          min = [p[0] - r, p[1] - r, p[2] - r];
+          max = [p[0] + r, p[1] + r, p[2] + r];
+        } else {
+          const cx = [Math.abs(u[0]) + Math.abs(v[0]), Math.abs(u[1]) + Math.abs(v[1]), Math.abs(u[2]) + Math.abs(v[2])] as const;
+          min = [p[0] - cx[0], p[1] - cx[1], p[2] - cx[2]];
+          max = [p[0] + cx[0], p[1] + cx[1], p[2] + cx[2]];
+        }
         extend(min); extend(max);
         powers.push(emitterPower(e.radiance, { kind: 'area', area }));
         centroids.push(p);
         aabbs.push({ min, max });
-        // B8 — rect-area light emits from one side along its geometric normal
-        // (u × v). Single-sided cosine lobe ⇒ thetaE = π/2 (hemisphere).
+        // B8 — single-sided cosine lobe along the emitter normal (u × v for
+        // rect; same formula works for disc since u and v are orthonormal).
         cones.push({ axis: norm3(cross3(u, v)), thetaO: 0, thetaE: HEMISPHERE });
         break;
       }
       case 'mesh': {
-        // mesh-area and lowered disc-area records — triangle area =
-        // 0.5·|(B−A)×(C−A)| (matches the WGSL term).
+        // mesh-area triangle records — triangle area = 0.5·|(B−A)×(C−A)|.
         const a = e.triA;
         const b = e.triB;
         const c = e.triC;

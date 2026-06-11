@@ -432,7 +432,7 @@ export function packMaterialsTexture(
     // texel 86.a: UV-set bitmask — bit k set means map k samples uv1 (ATTR_UV1)
     // instead of uv0 (ATTR_UV). Bit assignments are single-sourced in materialStride.js.
     let uvSetMask = 0;
-    for (const [key, bit] of Object.entries(UV_SET_BIT) as Array<[string, number]>) {
+    for (const [key, bit] of Object.entries(UV_SET_BIT)) {
       const ref = m[key as keyof MaterialSpec] as { texCoord?: number } | undefined;
       if ((ref?.texCoord ?? 0) === 1) uvSetMask |= bit;
     }

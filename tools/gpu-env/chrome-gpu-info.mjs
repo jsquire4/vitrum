@@ -2,8 +2,6 @@
  * Dumps Chromium's chrome://gpu WebGPU/Vulkan diagnostic so we can see which
  * backend Dawn actually selected and why hardware/lavapipe was rejected.
  */
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const { chromium } = await import('playwright');
 const args = [

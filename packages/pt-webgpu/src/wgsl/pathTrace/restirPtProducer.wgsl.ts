@@ -140,28 +140,39 @@ fn rptDirectAtVertex(
       }
     }
   }
-  // Rect-area lights (analytic): the dominant area-light NEE the suffix Lo needs.
-  // ENERGY-CRITICAL — without this branch the suffix radiance leaving xs carries
-  // NO contribution from a rect-/disc-area emitter (the engine's only Cornell-box
-  // light source), so Lo collapses to the weak escape-to-sky tail and the reuse
-  // estimate comes out ~5–8× too dim (the root-cause scale bug this fixes).
-  // FULL WEIGHT (no MIS): the suffix onward bounce is cosine-sampled and the
-  // rect-area light is NOT BVH geometry, so the producer has no BSDF-sampled
-  // emissive-on-hit / bsdfAreaLightConnection term to MIS-balance against (unlike
-  // the megakernel, which pairs NEE·powerHeuristic with bsdfAreaLightConnection-
-  // Contribution). With only the NEE side present, the unbiased estimator is the
-  // un-MIS-weighted area-measure connection: brdf·cosθ·Le / p_area. (Matches the
-  // megakernel rect-area NEE form at kernel.wgsl.ts:448-489, sans the misWeight
-  // factor its BSDF-side connection complements.)
+  // Rect/disc area lights: the dominant area-light NEE the suffix Lo needs.
+  // Shape discriminator in emission.w: ≈ 0 → rect, ≈ 1 → analytic disc.
+  // FULL WEIGHT (no MIS) — see inline comment in kernel.wgsl.ts rect loop for rationale.
+  // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+  // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
   for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
     let rb = ri * 4u;
     let rpos = rectAreaLights[rb].xyz;
     let ru = rectAreaLights[rb + 1u].xyz;
     let rv = rectAreaLights[rb + 2u].xyz;
-    let rr = rectAreaLights[rb + 3u].rgb;
-    let u = rand_f32(rng) * 2.0 - 1.0;
-    let vv = rand_f32(rng) * 2.0 - 1.0;
-    let lpos = rpos + ru * u + rv * vv;
+    let rshapeR = rectAreaLights[rb + 3u];
+    let rr = rshapeR.rgb;
+    let isDiscR = abs(rshapeR.w - 1.0) < 0.5;
+    let xi1r = rand_f32(rng);
+    let xi2r = rand_f32(rng);
+    var lpos: vec3f;
+    var area: f32;
+    if (isDiscR) {
+      let rrad = length(ru);
+      let a = xi1r * 2.0 - 1.0;
+      let b = xi2r * 2.0 - 1.0;
+      var cr: f32; var cphi: f32;
+      if (abs(a) >= abs(b)) {
+        cr = a; cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+      } else {
+        cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+      }
+      lpos = rpos + ru * (cr * cos(cphi)) + rv * (cr * sin(cphi));
+      area = max(PI * rrad * rrad, 1e-6);
+    } else {
+      lpos = rpos + ru * (xi1r * 2.0 - 1.0) + rv * (xi2r * 2.0 - 1.0);
+      area = max(4.0 * length(cross(ru, rv)), 1e-6);
+    }
     let toLight = lpos - pos;
     let dist2 = max(dot(toLight, toLight), 1e-6);
     let dist = sqrt(dist2);
@@ -171,7 +182,6 @@ fn rptDirectAtVertex(
       let lightNormal = safe_normalize(cross(ru, rv));
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight > 0.0) {
-        let area = max(4.0 * length(cross(ru, rv)), 1e-6);
         let lightPdf = dist2 / max(cosLight * area, 1e-6);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
         if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {

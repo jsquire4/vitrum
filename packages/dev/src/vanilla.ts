@@ -561,6 +561,7 @@ interface FrameMonitor {
 }
 
 function createFrameMonitor(engine: DebuggableEngine): FrameMonitor {
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- intentionally unbound; called below as originalRenderFrame.call(this, input)
   const originalRenderFrame = engine.renderFrame;
   let lastFrame: FrameOutput | null = null;
   let installed = false;
@@ -683,7 +684,7 @@ class NumberRing {
   #filled = 0;
 
   constructor(size: number) {
-    this.#values = new Array(Math.max(1, size)).fill(0);
+    this.#values = new Array<number>(Math.max(1, size)).fill(0);
   }
 
   push(value: number): void {

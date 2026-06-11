@@ -95,7 +95,7 @@ function makeFullEngine() {
     onProgress: (cb: Parameters<NonNullable<Engine['onProgress']>>[0]) => { spies.onProgress(cb); return backendUnsub; },
     createInverseSession: (o: Parameters<NonNullable<Engine['createInverseSession']>>[0]) => { spies.createInverseSession(o); return session as unknown as ReturnType<NonNullable<Engine['createInverseSession']>>; },
     debug,
-  } as unknown as Engine;
+  };
   return { engine, spies, backendUnsub, session, debug };
 }
 
@@ -104,12 +104,12 @@ describe('idempotentDispose proxy table — pre-dispose forwarding', () => {
     const { engine, spies } = makeFullEngine();
     const p = wrapWithIdempotentDispose(engine, () => {});
     p.updatePrimitive!('a', { transform: undefined } as never);
-    p.updateEmitter!('b', {} as never);
+    p.updateEmitter!('b', {});
     p.addPrimitive!({ id: 'x' } as never);
-    p.removePrimitive!('y' as never);
+    p.removePrimitive!('y');
     p.updateEnvironment!({ kind: 'none' } as never);
     p.setSize!(7, 9);
-    p.updateLighting!({} as never);
+    p.updateLighting!({});
     expect(spies.updatePrimitive).toHaveBeenCalledWith('a', { transform: undefined });
     expect(spies.updateEmitter).toHaveBeenCalledWith('b', {});
     expect(spies.addPrimitive).toHaveBeenCalledWith({ id: 'x' });
@@ -151,13 +151,13 @@ describe('idempotentDispose proxy table — post-dispose behaviour (golden)', ()
     const { engine, spies } = makeFullEngine();
     const p = wrapWithIdempotentDispose(engine, () => {});
     p.dispose();
-    expect(p.updatePrimitive!('a', {} as never)).toBeUndefined();
-    expect(p.updateEmitter!('b', {} as never)).toBeUndefined();
+    expect(p.updatePrimitive!('a', {})).toBeUndefined();
+    expect(p.updateEmitter!('b', {})).toBeUndefined();
     expect(p.addPrimitive!({ id: 'x' } as never)).toBeUndefined();
-    expect(p.removePrimitive!('y' as never)).toBeUndefined();
+    expect(p.removePrimitive!('y')).toBeUndefined();
     expect(p.updateEnvironment!({ kind: 'none' } as never)).toBeUndefined();
     expect(p.setSize!(1, 2)).toBeUndefined();
-    expect(p.updateLighting!({} as never)).toBeUndefined();
+    expect(p.updateLighting!({})).toBeUndefined();
     for (const k of ['updatePrimitive', 'updateEmitter', 'addPrimitive', 'removePrimitive', 'updateEnvironment', 'setSize', 'updateLighting'] as const) {
       expect(spies[k]).not.toHaveBeenCalled();
     }
@@ -203,7 +203,7 @@ describe('idempotentDispose proxy table — getRestirPtResultBuffer disposed ret
       ...makeFullEngine().engine,
       capabilities: allOnCapabilities(),
       getRestirPtResultBuffer: vi.fn(() => fakeBuffer),
-    } as unknown as Engine;
+    };
     const p = wrapWithIdempotentDispose(engine, () => {});
     expect(p.getRestirPtResultBuffer!()).toBe(fakeBuffer);
   });
@@ -214,7 +214,7 @@ describe('idempotentDispose proxy table — getRestirPtResultBuffer disposed ret
       ...makeFullEngine().engine,
       capabilities: allOnCapabilities(),
       getRestirPtResultBuffer,
-    } as unknown as Engine;
+    };
     const p = wrapWithIdempotentDispose(engine, () => {});
     p.dispose();
     const result = p.getRestirPtResultBuffer!();

@@ -64,7 +64,7 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
     tlasInstanceWorldToLocal: new Float32Array(0),
     tlasInstanceLocalToWorld: new Float32Array(0),
   } as unknown as UploadedSceneBuffers;
-  return { ...base, ...partial } as unknown as UploadedSceneBuffers;
+  return { ...base, ...partial };
 }
 
 describe('bdptLightSubpathOracle', () => {

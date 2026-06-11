@@ -47,7 +47,7 @@ function assertPrimitivePatch(
     throw new Error(`updatePrimitive: primitive "${primitive.id}" id cannot be changed`);
   }
 
-  const nextKind = (patch.kind ?? primitive.kind) as ScenePrimitive['kind'];
+  const nextKind = (patch.kind ?? primitive.kind);
   if (nextKind === 'analytic') {
     const shape = ('shape' in patch && patch.shape != null)
       ? patch.shape

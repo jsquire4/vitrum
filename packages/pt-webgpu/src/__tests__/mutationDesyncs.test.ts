@@ -391,7 +391,7 @@ describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history clea
     }
 
     clearReservoirBuffers({
-      device: device as never,
+      device: device,
       rptReservoirCur,
       rptReservoirPrev,
       rptReservoirSpatial,
@@ -528,7 +528,7 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     const router = new SceneMutationRouter(host);
 
     // Patch the directional emitter to set a non-zero angular diameter.
-    router.updateEmitter('sun', { angularDiameter: 0.009271 } as never);
+    router.updateEmitter('sun', { angularDiameter: 0.009271 });
 
     // After updateEmitter, the directionalAngularDiameter on sceneBuffers should
     // have been updated via applyEmitterCountMutation.

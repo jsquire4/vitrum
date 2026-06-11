@@ -161,7 +161,7 @@ export class HashGridTableTrainer {
     const cfg = this._cfg;
     // (1) upload dense positions + active count.
     d.queue.writeBuffer(this._posBuf, 0, batchPos.subarray(0, numActive * 3) as unknown as BufferSource);
-    d.queue.writeBuffer(this._encBwdParamsUbo, 12, new Uint32Array([numActive >>> 0]) as unknown as BufferSource); // numActive at byte 12
+    d.queue.writeBuffer(this._encBwdParamsUbo, 12, new Uint32Array([numActive >>> 0])); // numActive at byte 12
 
     // (2) clear scatter target, dispatch encode-backward.
     const encClear = d.createCommandEncoder();

@@ -74,8 +74,15 @@ fn bdptEmitterPower(flatIdx: u32) -> f32 {
       let rb = ri * 4u;
       let ru = rectAreaLights[rb + 1u].xyz;
       let rv = rectAreaLights[rb + 2u].xyz;
-      let rr = rectAreaLights[rb + 3u].rgb;
-      let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+      let rshapeB = rectAreaLights[rb + 3u];
+      let rr = rshapeB.rgb;
+      // Disc area = π·|u|²; rect area = 4·|u×v|.
+      let isDiscB = abs(rshapeB.w - 1.0) < 0.5;
+      let area = select(
+        max(4.0 * length(cross(ru, rv)), 1e-6),
+        max(PI * dot(ru, ru), 1e-6),
+        isDiscB,
+      );
       return area * bdptLightLuminance(rr);
     }
     cur = cur + 1u;
@@ -238,10 +245,26 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let rpos = rectAreaLights[rb].xyz;
       let ru = rectAreaLights[rb + 1u].xyz;
       let rv = rectAreaLights[rb + 2u].xyz;
-      let rr = rectAreaLights[rb + 3u].rgb;
-      let u = rand_f32(rng) * 2.0 - 1.0;
-      let v = rand_f32(rng) * 2.0 - 1.0;
-      let emitPos = rpos + ru * u + rv * v;
+      let rshapeS = rectAreaLights[rb + 3u];
+      let rr = rshapeS.rgb;
+      let isDiscS = abs(rshapeS.w - 1.0) < 0.5;
+      let xi1s = rand_f32(rng);
+      let xi2s = rand_f32(rng);
+      var emitPos: vec3f;
+      if (isDiscS) {
+        let rrad = length(ru);
+        let a = xi1s * 2.0 - 1.0;
+        let b = xi2s * 2.0 - 1.0;
+        var cr: f32; var cphi: f32;
+        if (abs(a) >= abs(b)) {
+          cr = a; cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+        } else {
+          cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+        }
+        emitPos = rpos + ru * (cr * cos(cphi)) + rv * (cr * sin(cphi));
+      } else {
+        emitPos = rpos + ru * (xi1s * 2.0 - 1.0) + rv * (xi2s * 2.0 - 1.0);
+      }
       let emitNormal = safe_normalize(cross(ru, rv));
       bdptFinishBounce0(col, emitPos, emitNormal, rr, discretePdf, rng);
       return;

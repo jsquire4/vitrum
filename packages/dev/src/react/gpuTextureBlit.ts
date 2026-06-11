@@ -176,7 +176,7 @@ export function startGpuTextureBlit(
       const key = `${e.name}:${e.message}`;
       if (!seenFailures.has(key) && seenFailures.size < SEEN_FAILURES_MAX) {
         seenFailures.add(key);
-        // eslint-disable-next-line no-console
+         
         console.warn(`[dev/${label}] readback failed:`, err);
       }
     } finally {

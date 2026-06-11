@@ -37,14 +37,12 @@ jobs:
       - name: Test
         run: npm test
 
-      # Lint currently has 324 errors / 81 warnings across the workspace
-      # (verified 2026-06-10 local run, eslint v9 flat-config exits 0 even
-      # when violations are present). `continue-on-error: true` keeps CI
-      # green while the backlog is worked down. Remove continue-on-error (or
-      # add --max-warnings 0) once the violation count reaches zero.
+      # Lint: 0 errors, 79 warnings (all no-unused-vars in test files / inert
+      # source constants — verified 2026-06-10). --max-warnings 79 is a ratchet:
+      # any new error or warning will fail CI. Tighten this number as warnings
+      # are cleared; target is --max-warnings 0.
       - name: Lint
-        run: npm run lint
-        continue-on-error: true
+        run: npm run lint -- --max-warnings 79
 
       # GPU-dependent steps (validate:gpu, shader-compile-ci, test:gpu,
       # benchmark:gap-closure, benchmark:rc-acceptance-mechanical) are

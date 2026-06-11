@@ -55,7 +55,7 @@ if (gapMechanical && scenarioFilter.length === 0) {
       s.backend === 'pt-webgpu' || PT_WEBGPU_GAP_SCENARIOS.includes(s.scenarioId);
     if (!isPtWebgpuRow) continue;
     const baselinePath = resolve(baselineDir, `${s.scenarioId}.png`);
-    // eslint-disable-next-line no-await-in-loop
+     
     if (await fileExists(baselinePath)) withBaseline.push(s);
   }
   activeScenarios = withBaseline;
@@ -385,7 +385,7 @@ const concurrency = Math.max(
 const entries = [];
 if (concurrency <= 1) {
   for (const scenario of activeScenarios) {
-    // eslint-disable-next-line no-await-in-loop
+     
     entries.push(await evaluateScenario(scenario));
   }
 } else if (concurrency >= activeScenarios.length) {

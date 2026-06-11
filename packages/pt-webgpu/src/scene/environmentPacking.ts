@@ -450,7 +450,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     // Detect whether the caller provided RGBA (stride 4) or RGB (stride 3) data.
     // A w·h·4-length buffer passes the >= w·h·3 gate but must be decoded at
     // stride 4 or every pixel after the first will read from the wrong offset.
-    const isRgba = data!.length >= pixelCount * 4;
+    const isRgba = data.length >= pixelCount * 4;
     const stride = isRgba ? 4 : 3;
     // Warn once on ambiguous / unexpected RGBA input so the host is aware of the
     // implicit stride detection (there is no authoritative flag in the scene API).
@@ -465,9 +465,9 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     const cdf = new Float32Array(pixelCount + 1);
     let totalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const r = Number(data![i * stride] ?? 0);
-      const g = Number(data![i * stride + 1] ?? 0);
-      const b = Number(data![i * stride + 2] ?? 0);
+      const r = Number(data[i * stride] ?? 0);
+      const g = Number(data[i * stride + 1] ?? 0);
+      const b = Number(data[i * stride + 2] ?? 0);
       texels[i * 4] = r;
       texels[i * 4 + 1] = g;
       texels[i * 4 + 2] = b;

@@ -38,7 +38,7 @@ function sceneWithAnalyticLight(): Scene {
       },
     ],
     environment: { kind: 'none' },
-  } as Scene;
+  };
 }
 function frame(): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
@@ -71,14 +71,14 @@ function orderedGl(log: { op: string; v?: unknown }[]): WebGLRenderingContext {
       }
       return (t as unknown as Record<string, unknown>)[prop as string];
     },
-  }) as unknown as WebGLRenderingContext;
+  });
 }
 
 describe('A5 BDPT host driver', () => {
   it('issues the light-subpath passes (subpath flag=1 for each of 3 columns, then eye flag=0)', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
-    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true });
     engine.setScene(sceneWithAnalyticLight());
     engine.renderFrame(frame());
 
@@ -101,7 +101,7 @@ describe('A5 BDPT host driver', () => {
   it('does NOT issue any light-subpath pass when bdpt:false (unidirectional invariant)', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
-    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: false } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: false });
     engine.setScene(sceneWithAnalyticLight());
     engine.renderFrame(frame());
 
@@ -113,9 +113,9 @@ describe('A5 BDPT host driver', () => {
   it('skips the subpath build when there are no lights (nothing to connect to)', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
-    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true });
     // No emitters and no emissive mesh → lightCount 0 → no subpath passes, eye pass still runs.
-    engine.setScene({ primitives: [mesh('floor', 0)], emitters: [], environment: { kind: 'none' } } as Scene);
+    engine.setScene({ primitives: [mesh('floor', 0)], emitters: [], environment: { kind: 'none' } });
     engine.renderFrame(frame());
     expect(log.filter((e) => e.op === 'uBdptVertexCol' && e.v !== undefined)).toHaveLength(0);
     // The eye pass still sets the subpath flag to 0.

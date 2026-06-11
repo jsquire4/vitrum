@@ -79,7 +79,7 @@ export function collectUnconsumedMaterialFields(
     if (!mat) continue;
     for (const key of Object.keys(mat)) {
       if (CONSUMED_MATERIAL_FIELDS.has(key)) continue;
-      const val = (mat as Record<string, unknown>)[key];
+      const val = (mat)[key];
       if (val !== undefined && val !== null) {
         supplied.add(key);
       }

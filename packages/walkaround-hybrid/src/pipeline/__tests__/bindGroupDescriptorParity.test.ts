@@ -70,7 +70,7 @@ function makeStubDevice() {
   const bindGroups: CapturedBindGroup[] = [];
   const device = {
     createBindGroupLayout(desc: GPUBindGroupLayoutDescriptor): GPUBindGroupLayout {
-      const entries = [...(desc.entries as Iterable<GPUBindGroupLayoutEntry>)];
+      const entries = [...(desc.entries)];
       layouts.push({
         label: desc.label ?? '',
         bindings: entries.map((e) => e.binding),
@@ -79,7 +79,7 @@ function makeStubDevice() {
       return { __bgl: desc.label } as unknown as GPUBindGroupLayout;
     },
     createBindGroup(desc: GPUBindGroupDescriptor): GPUBindGroup {
-      const entries = [...(desc.entries as Iterable<GPUBindGroupEntry>)];
+      const entries = [...(desc.entries)];
       bindGroups.push({
         label: desc.label ?? '',
         bindings: entries.map((e) => e.binding),
@@ -175,13 +175,13 @@ describe('bind-group descriptor parity (T9-stepB)', () => {
 
       // Layout side — real cached-BGL factory.
       const { device: ldev, layouts } = makeStubDevice();
-      LAYOUT_FACTORIES[id](ldev, {} as BGLCache);
+      LAYOUT_FACTORIES[id](ldev, {});
       expect(layouts).toHaveLength(1);
       const layoutBindings = layouts[0]!.bindings;
 
       // Builder side — real named builder.
       const { device: bdev, bindGroups } = makeStubDevice();
-      BUILDER_DRIVERS[id](bdev, {} as BGLCache);
+      BUILDER_DRIVERS[id](bdev, {});
       expect(bindGroups).toHaveLength(1);
       const builderBindings = bindGroups[0]!.bindings;
 

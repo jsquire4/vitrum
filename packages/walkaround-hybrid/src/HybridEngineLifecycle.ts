@@ -580,10 +580,10 @@ export class PipelineInitCoordinator {
       // race / error / dispose, whichever weren't transferred get freed
       // here so we don't leak ~1 GB of GPU resources per loser.
       if (pipeline) {
-        try { pipeline.dispose(); } catch {}
+        try { pipeline.dispose(); } catch { /* best-effort cleanup of losing init branch — ignore */ }
       }
       if (bvh) {
-        try { disposeSceneBVH(bvh); } catch {}
+        try { disposeSceneBVH(bvh); } catch { /* best-effort cleanup of losing init branch — ignore */ }
       }
       // If requestTeardown() raced and left _pendingTeardown set,
       // finalise the teardown now. The newest writer (us, if we
@@ -599,7 +599,7 @@ export class PipelineInitCoordinator {
         // host.disposeDdgi() was deferred by requestTeardown() since
         // init was in-flight; it's safe to call now because no chain
         // is using it any more.
-        try { host.disposeDdgi(); } catch {}
+        try { host.disposeDdgi(); } catch { /* best-effort cleanup — ignore */ }
         host.setState('disposed');
       }
       // Always clear _initRunning at the end of OUR chain — but only if

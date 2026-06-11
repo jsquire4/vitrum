@@ -346,10 +346,10 @@ function applySolveSkinToScene(scene: Scene): Scene {
       // Return a structural override: only positions + normals change; all other
       // fields (uvs, indices, skinIndices, skinWeights, bones, …) are preserved
       // so downstream packs (emitters, BVH) see the full primitive data.
-      return { ...p, positions: solved.positions, normals: solved.normals } as SkinnedMeshPrimitive;
+      return { ...p, positions: solved.positions, normals: solved.normals };
     } catch (err) {
       console.warn(
-        `[vitrum/pt-webgpu] solveSkin failed for primitive "${p.id}"; using rest pose. ${err}`,
+        `[vitrum/pt-webgpu] solveSkin failed for primitive "${p.id}"; using rest pose. ${String(err)}`,
       );
       return p;
     }
@@ -875,7 +875,7 @@ interface MutableSceneBufferFields {
 
 /** Single typed view onto the mutable subset of an UploadedSceneBuffers. */
 function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBufferFields {
-  return sb as unknown as MutableSceneBufferFields;
+  return sb;
 }
 
 /**
@@ -898,7 +898,7 @@ interface MutableTlasBufferHandles {
 }
 
 function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBufferHandles {
-  return sb as unknown as MutableTlasBufferHandles;
+  return sb;
 }
 
 /**
@@ -919,7 +919,7 @@ interface MutableEmitterBufferHandles {
 }
 
 function asMutableSceneBufferEmitterHandles(sb: UploadedSceneBuffers): MutableEmitterBufferHandles {
-  return sb as unknown as MutableEmitterBufferHandles;
+  return sb;
 }
 
 /**
@@ -945,7 +945,7 @@ interface MutableBlasBufferHandles {
 }
 
 function asMutableSceneBufferBlasHandles(sb: UploadedSceneBuffers): MutableBlasBufferHandles {
-  return sb as unknown as MutableBlasBufferHandles;
+  return sb;
 }
 
 /** Rewrite emitter counts + directional aggregate after an in-place light upload. */

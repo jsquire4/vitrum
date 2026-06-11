@@ -357,7 +357,7 @@ export async function compilePipelines(
   const risGiSM = device.createShaderModule({
     label: 'risGi',
     code: nrcOn
-      ? composeWgsl(buildRisGiNrcModule(opts!.nrcConfig!), WGSL_MODULES)
+      ? composeWgsl(buildRisGiNrcModule(opts.nrcConfig!), WGSL_MODULES)
       : composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
   });
   const risGiLayout = nrcOn

@@ -302,7 +302,8 @@ async function _loadORT(): Promise<_OrtModule> {
     // it. The direct-import + ts-expect-error idiom is CSP-clean and the
     // documented TypeScript pattern for optional peer deps.)
     // @ts-expect-error optional peer dependency — see peerDependenciesMeta in package.json
-    const mod = await import('onnxruntime-web');
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- dynamic import of optional peer; typed as _OrtModule at call site
+    const mod = await import('onnxruntime-web') as unknown as _OrtModule;
     return mod;
   } catch (cause) {
     throw new Error(
@@ -329,7 +330,7 @@ function _sessionCacheKey(opts: OIDNDenoiseOptions): string {
 export function releaseOIDNCacheEntry(
   opts: Pick<OIDNDenoiseOptions, 'modelUrl' | 'executionProviders'>,
 ): void {
-  const key = _sessionCacheKey(opts as OIDNDenoiseOptions);
+  const key = _sessionCacheKey(opts);
   const session = _sessionCache.get(key);
   if (session !== undefined) {
     _releaseSession(session);

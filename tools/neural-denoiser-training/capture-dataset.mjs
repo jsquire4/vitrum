@@ -558,8 +558,11 @@ function encodePNG(rgb, w, h) {
   const raw = Buffer.alloc((stride + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (stride + 1)] = 0;
-    rgb.copy ? rgb.copy(raw, y * (stride + 1) + 1, y * stride, y * stride + stride)
-             : raw.set(rgb.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+    if (rgb.copy) {
+      rgb.copy(raw, y * (stride + 1) + 1, y * stride, y * stride + stride);
+    } else {
+      raw.set(rgb.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+    }
   }
   const idat = deflateSync(raw);
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);

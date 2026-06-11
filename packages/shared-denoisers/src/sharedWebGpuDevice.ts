@@ -62,7 +62,7 @@ async function acquireSharedDevice(capturedGen: number): Promise<GPUDevice> {
     throw new Error(SUPERSEDED_MSG);
   }
 
-  device.lost.then(() => {
+  void device.lost.then(() => {
     if (cachedDevice === device) {
       cachedDevice = null;
     }

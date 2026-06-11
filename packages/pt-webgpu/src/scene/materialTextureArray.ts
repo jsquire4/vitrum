@@ -43,15 +43,15 @@ function payloadOf(source: unknown): ImagePayload | null {
   if (source == null || typeof source !== 'object') return null;
   // THREE.Texture-like: unwrap `.image`; otherwise treat the source as the image.
   const img = ('image' in source && (source as { image?: unknown }).image != null
-    ? (source as { image: unknown }).image
+    ? (source).image
     : source) as Record<string, unknown>;
   if (img == null || typeof img !== 'object') return null;
   const width = typeof img.width === 'number' ? img.width : 0;
   const height = typeof img.height === 'number' ? img.height : 0;
   if (width <= 0 || height <= 0) return null;
   // DataTexture-style { data, width, height } → writeTexture.
-  if (ArrayBuffer.isView(img.data as ArrayBufferView)) {
-    return { width, height, data: img.data as ArrayBufferView };
+  if (ArrayBuffer.isView(img.data)) {
+    return { width, height, data: img.data };
   }
   // ImageBitmap / HTMLCanvasElement / HTMLImageElement / OffscreenCanvas /
   // VideoFrame — all valid copyExternalImageToTexture sources. We can't

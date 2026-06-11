@@ -12,7 +12,7 @@ function dataTexHandle(data: Float32Array, w: number, h: number): unknown {
 }
 
 function matWithBaseColorMap(handle: unknown): MaterialSpec {
-  return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } } as MaterialSpec;
+  return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } };
 }
 
 describe('packTextureAtlas', () => {

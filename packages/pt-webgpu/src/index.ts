@@ -440,6 +440,7 @@ class PTEngineWebGPU implements Engine {
       if (this.#slot.get() === 'disposed') return;
       const gpuEvent = event as { error?: { message?: string } };
       const rawError = gpuEvent.error;
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- fallback stringification of GPUUncapturedErrorEvent; acceptable for diagnostic messages
       const message = rawError?.message ?? String(event);
       // Detect kind from the error constructor name (spec mandates GPUValidationError
       // and GPUInternalError as the only two concrete subtypes).
@@ -1192,8 +1193,8 @@ class PTEngineWebGPU implements Engine {
       const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
       photonPass.setPipeline(gpu.sppmPhotonPipeline);
       photonPass.setBindGroup(0, bindGroup);
-      photonPass.setBindGroup(1, gpu.pathTraceBindGroup1!);
-      photonPass.setBindGroup(2, gpu.pathTraceBindGroup2!);
+      photonPass.setBindGroup(1, gpu.pathTraceBindGroup1);
+      photonPass.setBindGroup(2, gpu.pathTraceBindGroup2);
       if (gpu.pathTraceBindGroup3 != null) {
         photonPass.setBindGroup(3, gpu.pathTraceBindGroup3);
       }
@@ -1248,10 +1249,10 @@ class PTEngineWebGPU implements Engine {
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
     if (useComposite) {
       pass.setPipeline(gpu.rptCompositePipeline!);
-      pass.setBindGroup(0, gpu.rptProducerGroup0!);
-      pass.setBindGroup(1, gpu.pathTraceBindGroup1!);
-      pass.setBindGroup(2, gpu.pathTraceBindGroup2!);
-      pass.setBindGroup(3, gpu.pathTraceBindGroup3!);
+      pass.setBindGroup(0, gpu.rptProducerGroup0);
+      pass.setBindGroup(1, gpu.pathTraceBindGroup1);
+      pass.setBindGroup(2, gpu.pathTraceBindGroup2);
+      pass.setBindGroup(3, gpu.pathTraceBindGroup3);
     } else {
       pass.setPipeline(gpu.computePipeline);
       pass.setBindGroup(0, bindGroup);
@@ -1494,7 +1495,7 @@ class PTEngineWebGPU implements Engine {
     this.#postDenoiser?.invalidate();
     // Write the decaying prior. `weight` (virtual samples) is deliberately NOT
     // added to `#samplesAccumulated` — see the method doc.
-    this.#gpu.seedAccumBuffer(seedTex as unknown as GPUTexture, opts.weight, width, height);
+    this.#gpu.seedAccumBuffer(seedTex, opts.weight, width, height);
   }
 
   /**
@@ -1883,6 +1884,7 @@ export const createPTEngine_WebGPU: EngineFactory<
   Engine & PTEngineWebGPUSurface
 > = async (
   opts: PTEngineWebGPUOptions,
+// eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed in this code path
 ): Promise<Engine & PTEngineWebGPUSurface> => {
   if (opts.device == null || typeof (opts.device).createCommandEncoder !== 'function') {
     throw new TypeError(

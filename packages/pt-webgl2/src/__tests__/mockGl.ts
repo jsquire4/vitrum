@@ -75,7 +75,7 @@ export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions
   };
 
   const nameOf = (loc: unknown): string | null =>
-    loc != null && typeof loc === 'object' && '__u' in loc ? String((loc as { __u: unknown }).__u) : null;
+    loc != null && typeof loc === 'object' && '__u' in loc ? String((loc).__u) : null;
   const rec = (loc: unknown, value: unknown): void => {
     if (record == null) return;
     const n = nameOf(loc);

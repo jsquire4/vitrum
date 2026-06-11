@@ -45,11 +45,11 @@ function encCfg(aabbMin: [number, number, number], aabbMax: [number, number, num
 // linear out). Mirrors fusedMlpHarness.cpuGrads' forward sweep.
 function cpuForward(w: Float32Array, b: Float32Array, x: Float32Array, plan: ReturnType<typeof nrcQueryLayerPlan>, W: number, outW: number): number[] {
   const wl = plan.wlayers;
-  let a: number[] = new Array(W).fill(0);
+  let a: number[] = new Array<number>(W).fill(0);
   for (let i = 0; i < W; i++) a[i] = (i < x.length) ? x[i]! : 0;
   for (let l = 0; l < wl; l++) {
     const iN = plan.inW[l]!, oN = plan.outW[l]!, isOut = l === wl - 1;
-    const na = new Array(W).fill(0);
+    const na: number[] = new Array<number>(W).fill(0);
     for (let o = 0; o < oN; o++) {
       let acc = b[plan.bOff[l]! + o]!;
       for (let i = 0; i < iN; i++) acc += w[plan.wOff[l]! + o * iN + i]! * a[i]!;

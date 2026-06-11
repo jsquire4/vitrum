@@ -151,7 +151,7 @@ export function packLayerUniform(
       u32[4] = layer.params.kH ?? 3;
       u32[5] = layer.params.kW ?? 3;
       u32[6] = layer.params.stride ?? 1;
-      u32[7] = layer.params.padding ?? defaultConv2dPadding(u32[4]!, u32[5]!);
+      u32[7] = layer.params.padding ?? defaultConv2dPadding(u32[4], u32[5]);
       break;
 
     case 'transposedConv2d':

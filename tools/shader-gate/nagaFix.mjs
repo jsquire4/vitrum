@@ -338,7 +338,7 @@ function specializeReservoirFunctions(wgsl) {
     const paramEscaped = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     for (const bindingName of uniqueBindings) {
       const specialName = `${funcName}_${bindingName}`;
-      let newSig = fnSig
+      const newSig = fnSig
         .replace(
           new RegExp(
             `${paramEscaped}\\s*:\\s*ptr<storage,\\s*array<[^>]+>,\\s*(?:read_write|read)\\s*>\\s*,?\\s*`,

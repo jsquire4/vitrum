@@ -91,7 +91,7 @@ function probeCoeffs(p: V3): V3[] {
     for (let k = 0; k < 9; k++) { const cc = c[k]!; const yk = Y[k]!; cc[0] += L[0] * yk; cc[1] += L[1] * yk; cc[2] += L[2] * yk; }
   }
   const s = (4 * Math.PI) / RAYS;
-  return c.map((cc, k) => scale(cc as V3, shA(k) * s));
+  return c.map((cc, k) => scale(cc, shA(k) * s));
 }
 function evalProbe(coeff: V3[], n: V3): V3 {
   const Y = shBasis(n); const e: V3 = [0, 0, 0];
@@ -226,7 +226,7 @@ describe('DDGI full multi-probe receiver — locate the cardinal bias', () => {
         const gt = lum(gtIrradiance(worldPos, n));
         row[name] = (((est - gt) / gt) * 100).toFixed(1);
       }
-      // eslint-disable-next-line no-console
+       
       console.log(`[${label}] err%:`, row);
     }
   });

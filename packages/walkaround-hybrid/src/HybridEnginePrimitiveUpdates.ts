@@ -1106,7 +1106,7 @@ export function materialPatch(
     cpuData: fullEmissive.buffer.slice(
       fullEmissive.byteOffset,
       fullEmissive.byteOffset + fullEmissive.byteLength,
-    ) as ArrayBuffer,
+    ),
     byteLength: fullEmissive.byteLength,
     count: bvh.bvhBeerColors.count,
   };
@@ -1161,7 +1161,7 @@ export function materialPatch(
       data: fullEmissive.buffer.slice(
         fullEmissive.byteOffset,
         fullEmissive.byteOffset + fullEmissive.byteLength,
-      ) as ArrayBuffer,
+      ),
       triCount: bvh.bvhBeerColors.count,
     },
     // B1 — re-upload the whole roughness+metalness texture wholesale (same

@@ -195,7 +195,7 @@ export class SceneMutationRouter {
       // Build the "next" state of the skinned-mesh to solve against.
       const nextPrim = {
         ...currentPrimitive,
-        ...(patch as Partial<typeof currentPrimitive>),
+        ...(patch),
       };
       try {
         const solved = solveSkin(nextPrim);
@@ -208,10 +208,10 @@ export class SceneMutationRouter {
           ...restPatch,
           positions: solved.positions,
           normals: solved.normals,
-        } as Partial<ScenePrimitive>;
+        };
       } catch (err) {
         console.warn(
-          `[vitrum/pt-webgpu] solveSkin failed for updatePrimitive("${id}"); falling back to setScene. ${err}`,
+          `[vitrum/pt-webgpu] solveSkin failed for updatePrimitive("${id}"); falling back to setScene. ${String(err)}`,
         );
         // Fall through to full setScene at the tail.
       }
@@ -224,7 +224,7 @@ export class SceneMutationRouter {
     //       solveSkin calls start from the correct bone pose.
     // For non-bones patches, resolvedPatch === patch, so this is a no-op.
     const mergedPatch: Partial<ScenePrimitive> = hasBonesPatch
-      ? { ...patch, ...(resolvedPatch as Partial<ScenePrimitive>) }
+      ? { ...patch, ...(resolvedPatch) }
       : patch;
     const nextScene = patchPrimitiveInScene(currentScene, id, mergedPatch);
     // The fast-path eligibility checks use only the geometry portion (solved

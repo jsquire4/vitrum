@@ -484,7 +484,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
     }
   }
   // unreachable — validateParam already rejected unknown fields
-  return new Array(length).fill(0);
+  return new Array<number>(length).fill(0);
 }
 
 function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
@@ -501,8 +501,8 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
 
 function emitterPatch(field: string, value: number[]): Partial<SceneEmitter> {
   switch (field) {
-    case 'color': return { color: value as unknown as Vec3 } as Partial<SceneEmitter>;
-    case 'intensity': return { intensity: value[0]! } as Partial<SceneEmitter>;
+    case 'color': return { color: value as unknown as Vec3 };
+    case 'intensity': return { intensity: value[0]! };
     default: throw new Error(`inverse: unsupported emitter field "${field}".`);
   }
 }

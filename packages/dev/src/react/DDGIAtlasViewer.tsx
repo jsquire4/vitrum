@@ -87,7 +87,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
       <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">
         <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DDGI Atlas Viewer</div>
         <div style={WARN_STYLE}>
-          Requires <code>engine.debug.atlasTexture()</code> — backend hasn't
+          Requires <code>engine.debug.atlasTexture()</code> — backend hasn&apos;t
           wired the debug surface.
         </div>
       </div>

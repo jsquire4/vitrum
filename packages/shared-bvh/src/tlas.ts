@@ -225,16 +225,16 @@ function pickSplit(records: ReadonlyArray<InstanceRecord>, cb: CentroidBounds, n
 
     // Prefix / suffix sweep for SAH cost.
     const leftBin = emptyBin();
-    const leftSA: number[] = new Array(numBins);
-    const leftCount: number[] = new Array(numBins);
+    const leftSA: number[] = new Array<number>(numBins);
+    const leftCount: number[] = new Array<number>(numBins);
     for (let b = 0; b < numBins; b++) {
       unionBinInto(leftBin, bins[b]!);
       leftSA[b] = aabbSurfaceArea(leftBin.min, leftBin.max);
       leftCount[b] = leftBin.count;
     }
     const rightBin = emptyBin();
-    const rightSA: number[] = new Array(numBins);
-    const rightCount: number[] = new Array(numBins);
+    const rightSA: number[] = new Array<number>(numBins);
+    const rightCount: number[] = new Array<number>(numBins);
     for (let b = numBins - 1; b >= 0; b--) {
       unionBinInto(rightBin, bins[b]!);
       rightSA[b] = aabbSurfaceArea(rightBin.min, rightBin.max);

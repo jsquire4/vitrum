@@ -124,7 +124,7 @@ function makeMergedGeometry(
     boundingBox,
     computeBoundingBox() {},
     dispose() {},
-  } as unknown as SceneBVHBuffers['mergedGeometry'];
+  };
 }
 
 /**

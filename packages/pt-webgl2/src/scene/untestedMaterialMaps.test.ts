@@ -54,7 +54,7 @@ function matWithMap(field: keyof MaterialSpec, handle: object): MaterialSpec {
     roughness: 0.5,
     metallic: 0,
     [field]: { handle },
-  } as MaterialSpec;
+  };
 }
 
 // Pack the material with the given layerOf map and return the data array.
@@ -211,7 +211,7 @@ describe('pt-webgl2 filteredGlossyFactor upload — UNTESTED promise (item 25)',
     const { createMockGl } = await import('../__tests__/mockGl.js');
     const record = new Map<string, unknown>();
     const gl = createMockGl(record);
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
     const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
     const uvs = new Float32Array(8);
@@ -241,7 +241,7 @@ describe('pt-webgl2 filteredGlossyFactor upload — UNTESTED promise (item 25)',
     const { createMockGl } = await import('../__tests__/mockGl.js');
     const record = new Map<string, unknown>();
     const gl = createMockGl(record);
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
     const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
     const uvs = new Float32Array(8);

@@ -173,7 +173,7 @@ describe('pt-webgl2 tonemap present-pass defaults', () => {
     // FrameQualitySettings.exposure default is 1.0 (frame.ts §49-50).
     // The engine uses `input.quality?.exposure ?? 1.0`.
     // Simulate unset quality: the nullish-coalescing default is 1.0.
-    const unsetExposure: number | undefined = (undefined as unknown as number | undefined);
+    const unsetExposure: number | undefined = (undefined);
     const defaultExposure = unsetExposure ?? 1.0;
     expect(defaultExposure).toBe(1.0);
   });
@@ -231,11 +231,11 @@ describe('Contract-default tension: pt-webgl2 present-pass changes the default o
     // to the defaults is visible here.
     expect(TONEMAP_MODE_INDEX['aces']).toBe(0); // default tonemap mode
     // Default exposure: simulate unset quality?.exposure → nullish → 1.0.
-    const unsetExp: number | undefined = (undefined as unknown as number | undefined);
+    const unsetExp: number | undefined = (undefined);
     const defaultExposure = unsetExp ?? 1.0;
     expect(defaultExposure).toBe(1.0);
     // Default outputColorSpace: simulate unset → undefined → not 'linear' → 0 (srgb).
-    const unsetCs: 'srgb' | 'linear' | undefined = (undefined as unknown as 'srgb' | 'linear' | undefined);
+    const unsetCs: 'srgb' | 'linear' | undefined = (undefined);
     const defaultCs = unsetCs === 'linear' ? 1 : 0;
     expect(defaultCs).toBe(0);
   });

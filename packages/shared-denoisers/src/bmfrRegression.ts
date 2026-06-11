@@ -204,13 +204,13 @@ export function bmfrFitBlock(
   lambda: number = BMFR_QR_REGULARISATION,
 ): Float32Array {
   const f = BMFR_FEATURE_COUNT;
-  const rows: Float32Array[] = new Array(pixelCount);
+  const rows: Float32Array[] = new Array<Float32Array>(pixelCount);
   for (let p = 0; p < pixelCount; p++) {
     rows[p] = features.subarray(p * f, p * f + f);
   }
   const out = new Float32Array(pixelCount * 3);
   for (let ch = 0; ch < 3; ch++) {
-    const vals: number[] = new Array(pixelCount);
+    const vals: number[] = new Array<number>(pixelCount);
     for (let p = 0; p < pixelCount; p++) vals[p] = colors[p * 3 + ch]!;
     const alpha = bmfrSolveChannel(rows, vals, lambda);
     for (let p = 0; p < pixelCount; p++) {

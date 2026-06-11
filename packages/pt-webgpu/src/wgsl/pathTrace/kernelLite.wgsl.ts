@@ -242,18 +242,41 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         }
         current = current + 1u;
       }
-      // B12 — rect-area lights (area; stride 4 texels: rpos, ru, rv, rr).
+      // B12 — rect/disc-area lights (area; stride 4 texels: rpos, ru, rv, rshape).
+      // Shape discriminator in rshape.w: ≈ 0 → rect, ≈ 1 → analytic disc.
+      // Disc sampling uses the concentric-disc map (Shirley & Chiu 1997); area = π·|u|².
       // MIS: power heuristic between area-sample pdf and BRDF pdf.
+      // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+      // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
       for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
         if (current == picked) {
           let rb2 = liteRcBase + ri * 4u;
           let rpos = textureLoad(liteLightTex, vec2i(i32(rb2),      0), 0).xyz;
           let ru   = textureLoad(liteLightTex, vec2i(i32(rb2 + 1u), 0), 0).xyz;
           let rv   = textureLoad(liteLightTex, vec2i(i32(rb2 + 2u), 0), 0).xyz;
-          let rr   = textureLoad(liteLightTex, vec2i(i32(rb2 + 3u), 0), 0).rgb;
-          let u = rand_f32(&rng) * 2.0 - 1.0;
-          let v = rand_f32(&rng) * 2.0 - 1.0;
-          let lpos = rpos + ru * u + rv * v;
+          let rshapeL = textureLoad(liteLightTex, vec2i(i32(rb2 + 3u), 0), 0);
+          let rr   = rshapeL.rgb;
+          let isDiscL = abs(rshapeL.w - 1.0) < 0.5;
+          let xi1l = rand_f32(&rng);
+          let xi2l = rand_f32(&rng);
+          var lpos: vec3f;
+          var area: f32;
+          if (isDiscL) {
+            let rradL = length(ru);
+            let a = xi1l * 2.0 - 1.0;
+            let b = xi2l * 2.0 - 1.0;
+            var cr: f32; var cphi: f32;
+            if (abs(a) >= abs(b)) {
+              cr = a; cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+            } else {
+              cr = b; cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+            }
+            lpos = rpos + ru * (cr * cos(cphi)) + rv * (cr * sin(cphi));
+            area = max(PI * rradL * rradL, 1e-6);
+          } else {
+            lpos = rpos + ru * (xi1l * 2.0 - 1.0) + rv * (xi2l * 2.0 - 1.0);
+            area = max(4.0 * length(cross(ru, rv)), 1e-6);
+          }
           let toLight = lpos - hitPos;
           let dist2 = max(dot(toLight, toLight), 1e-6);
           let dist = sqrt(dist2);
@@ -264,7 +287,6 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
-              let area = max(4.0 * length(cross(ru, rv)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
               let misWeight = powerHeuristic(lightPdf, brdfPdf);

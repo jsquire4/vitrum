@@ -60,7 +60,7 @@ function baseInputs(): PipelineFrameInputs {
     // nrcEnabled deliberately omitted in the OFF case → must default to 0.
     nrc: {},
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
-  } as PipelineFrameInputs;
+  };
 }
 
 const NRC_GATE_U32_INDEX = 91; // offset 364 / 4

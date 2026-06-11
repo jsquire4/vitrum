@@ -146,7 +146,7 @@ function makeEngineOpts(): HybridEngineOptions {
     primaryLightIntensity: 1,
     skyTint: [1, 1, 1],
     skyIrradiance: 1,
-  } as HybridEngineOptions;
+  };
 }
 
 describe('HybridEngine.onProgress — subscription wiring', () => {

@@ -56,7 +56,7 @@ function cpuGrads(
   for (let S = 0; S < B; S++) {
     // forward; a[nl][n], z[nl][n] padded to W
     const a: number[][] = [], z: number[][] = [];
-    for (let nl = 0; nl < node; nl++) { a.push(new Array(W).fill(0)); z.push(new Array(W).fill(0)); }
+    for (let nl = 0; nl < node; nl++) { a.push(new Array<number>(W).fill(0)); z.push(new Array<number>(W).fill(0)); }
     const inputA = a[0]!;
     for (let i = 0; i < W; i++) inputA[i] = (i < rawInW) ? x[S * rawInW + i]! : 0;
     for (let l = 0; l < wl; l++) {
@@ -72,7 +72,7 @@ function cpuGrads(
     }
     // backward
     const delta: number[][] = [];
-    for (let nl = 0; nl < node; nl++) delta.push(new Array(W).fill(0));
+    for (let nl = 0; nl < node; nl++) delta.push(new Array<number>(W).fill(0));
     const outA = a[node - 1]!, outDelta = delta[node - 1]!;
     for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
     for (let l = wl - 1; l >= 0; l--) {
@@ -111,7 +111,7 @@ function cpuInputGrads(
   const dXall = new Float32Array(B * rawInW);
   for (let S = 0; S < B; S++) {
     const a: number[][] = [], z: number[][] = [];
-    for (let nl = 0; nl < node; nl++) { a.push(new Array(W).fill(0)); z.push(new Array(W).fill(0)); }
+    for (let nl = 0; nl < node; nl++) { a.push(new Array<number>(W).fill(0)); z.push(new Array<number>(W).fill(0)); }
     const inputA = a[0]!;
     for (let i = 0; i < W; i++) inputA[i] = (i < rawInW) ? x[S * rawInW + i]! : 0;
     for (let l = 0; l < wl; l++) {
@@ -126,7 +126,7 @@ function cpuInputGrads(
       }
     }
     const delta: number[][] = [];
-    for (let nl = 0; nl < node; nl++) delta.push(new Array(W).fill(0));
+    for (let nl = 0; nl < node; nl++) delta.push(new Array<number>(W).fill(0));
     const outA = a[node - 1]!, outDelta = delta[node - 1]!;
     for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
     for (let l = wl - 1; l >= 1; l--) {

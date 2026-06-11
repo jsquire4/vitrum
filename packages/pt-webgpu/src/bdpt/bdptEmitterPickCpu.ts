@@ -7,6 +7,7 @@ import { luminance as luminance709 } from '@vitrum/shared-samplers';
 
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import {
+  discArea,
   meshTriangleArea,
   rectQuadArea,
   walkPositionalEmitters,
@@ -69,7 +70,11 @@ function positionalEmitterPower(e: PositionalEmitter): number {
     case 'spot':
       return bdptLightLuminance(e.radiance);
     case 'rect': {
-      const area = Math.max(rectQuadArea(e.uAxis, e.vAxis), 1e-6);
+      // Disc records carry shapeTag ≈ 1.0; use π·|u|² for disc, 4·|u×v| for rect.
+      const isDisc = Math.abs((e.shapeTag ?? 0) - 1.0) < 0.5;
+      const area = isDisc
+        ? Math.max(discArea(e.uAxis), 1e-6)
+        : Math.max(rectQuadArea(e.uAxis, e.vAxis), 1e-6);
       return area * bdptLightLuminance(e.radiance);
     }
     case 'mesh': {
@@ -84,7 +89,7 @@ export function bdptEmitterPower(sb: UploadedSceneBuffers, flatIdx: number): num
   const irr = sb.directionalIrradiance;
   if (irr[0] + irr[1] + irr[2] > 1e-6) {
     if (cur === flatIdx) {
-      return bdptLightLuminance([irr[0]!, irr[1]!, irr[2]!]);
+      return bdptLightLuminance([irr[0], irr[1], irr[2]]);
     }
     cur += 1;
   }
@@ -153,9 +158,9 @@ export function sampleBdptBounce0Cpu(
     const t = normalize3(cross3(tx, n));
     const b = cross3(n, t);
     const wi = normalize3([
-      t[0]! * x + b[0]! * y + n[0]! * z,
-      t[1]! * x + b[1]! * y + n[1]! * z,
-      t[2]! * x + b[2]! * y + n[2]! * z,
+      t[0] * x + b[0] * y + n[0] * z,
+      t[1] * x + b[1] * y + n[1] * z,
+      t[2] * x + b[2] * y + n[2] * z,
     ]);
     const cosEmit = Math.max(dot3(n, wi), 0);
     const pdfHemi = cosEmit / PI;
@@ -204,7 +209,7 @@ export function sampleBdptBounce0Cpu(
       return finish(
         [-lightDir[0] * 50, -lightDir[1] * 50, -lightDir[2] * 50],
         lightDir,
-        [irr[0]!, irr[1]!, irr[2]!],
+        [irr[0], irr[1], irr[2]],
         discretePdf,
       );
     }
@@ -339,9 +344,9 @@ function cross3(
   b: readonly [number, number, number],
 ): [number, number, number] {
   return [
-    a[1]! * b[2]! - a[2]! * b[1]!,
-    a[2]! * b[0]! - a[0]! * b[2]!,
-    a[0]! * b[1]! - a[1]! * b[0]!,
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
   ];
 }
 

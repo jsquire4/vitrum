@@ -25,7 +25,7 @@ import { describe, it, expect } from 'vitest';
 // ---------------------------------------------------------------------------
 function radicalInverseBase2(iIn: number): number {
   // hammersleyUniform uses van der Corput base-2 for the 2nd coord.
-  let i = iIn >>> 0;
+  const i = iIn >>> 0;
   let bits = i;
   bits = ((bits << 16) | (bits >>> 16)) >>> 0;
   bits = (((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >>> 1)) >>> 0;
@@ -195,7 +195,7 @@ function toF16(x: number): number {
   const f = new Float32Array(1); f[0] = x;
   const i = new Int32Array(f.buffer)[0]!;
   const sign = (i >> 16) & 0x8000;
-  let exp = ((i >> 23) & 0xff) - 127 + 15;
+  const exp = ((i >> 23) & 0xff) - 127 + 15;
   let mant = i & 0x7fffff;
   if (exp <= 0) {
     if (exp < -10) return sign === 0 ? 0 : -0;
@@ -219,7 +219,7 @@ function quantizeCoeffs(coeff: V3[]): V3[] {
 describe('DDGI L2-SH irradiance estimator — CPU self-validating harness', () => {
   it('prints per-normal signed error for uniform sky', () => {
     const t = errorTable(uniformSky);
-    // eslint-disable-next-line no-console
+     
     console.log('UNIFORM SKY error %:', Object.fromEntries(
       Object.entries(t).map(([k, v]) => [k, (v * 100).toFixed(2)])));
     // uniform sky: E(n) = PI for all n; should be ~exact everywhere.
@@ -228,14 +228,14 @@ describe('DDGI L2-SH irradiance estimator — CPU self-validating harness', () =
 
   it('prints per-normal signed error for cosine-up lobe', () => {
     const t = errorTable(cosLobeUp);
-    // eslint-disable-next-line no-console
+     
     console.log('COSINE-UP error %:', Object.fromEntries(
       Object.entries(t).map(([k, v]) => [k, (v * 100).toFixed(2)])));
   });
 
   it('prints per-normal signed error for from-below field (-y worst case)', () => {
     const t = errorTable(fromBelow);
-    // eslint-disable-next-line no-console
+     
     console.log('FROM-BELOW error %:', Object.fromEntries(
       Object.entries(t).map(([k, v]) => [k, (v * 100).toFixed(2)])));
   });
@@ -252,9 +252,9 @@ describe('DDGI L2-SH irradiance estimator — CPU self-validating harness', () =
       tF64[name] = (((eF64 - gt) / gt) * 100).toFixed(2);
       tF16[name] = (((eF16 - gt) / gt) * 100).toFixed(2);
     }
-    // eslint-disable-next-line no-console
+     
     console.log('ENCLOSED ROOM f64 error %:', tF64);
-    // eslint-disable-next-line no-console
+     
     console.log('ENCLOSED ROOM f16 error %:', tF16);
   });
 });

@@ -7,7 +7,8 @@
 //
 // Reference: glTF 2.0 spec §3.6.2 (Accessors)
 
-import type { GltfJson, GltfAccessor, GltfComponentType } from './gltfTypes.js';
+import type { GltfJson, GltfAccessor } from './gltfTypes.js';
+import { GltfComponentType } from './gltfTypes.js';
 
 /** Number of scalar elements per accessor type. */
 const TYPE_COMPONENT_COUNT: Record<string, number> = {
@@ -23,17 +24,17 @@ const TYPE_COMPONENT_COUNT: Record<string, number> = {
 /** Byte size of each component type. */
 function componentByteSize(ct: GltfComponentType): number {
   switch (ct) {
-    case 5120 /* BYTE */:
-    case 5121 /* UNSIGNED_BYTE */:
+    case GltfComponentType.BYTE:
+    case GltfComponentType.UNSIGNED_BYTE:
       return 1;
-    case 5122 /* SHORT */:
-    case 5123 /* UNSIGNED_SHORT */:
+    case GltfComponentType.SHORT:
+    case GltfComponentType.UNSIGNED_SHORT:
       return 2;
-    case 5125 /* UNSIGNED_INT */:
-    case 5126 /* FLOAT */:
+    case GltfComponentType.UNSIGNED_INT:
+    case GltfComponentType.FLOAT:
       return 4;
     default:
-      throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${ct as number}`);
+      throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${String(ct)}`);
   }
 }
 
@@ -48,28 +49,28 @@ function readScalar(
   normalized: boolean,
 ): number {
   switch (ct) {
-    case 5120 /* BYTE */: {
+    case GltfComponentType.BYTE: {
       const v = view.getInt8(byteOffset);
       return normalized ? Math.max(v / 127, -1) : v;
     }
-    case 5121 /* UNSIGNED_BYTE */: {
+    case GltfComponentType.UNSIGNED_BYTE: {
       const v = view.getUint8(byteOffset);
       return normalized ? v / 255 : v;
     }
-    case 5122 /* SHORT */: {
+    case GltfComponentType.SHORT: {
       const v = view.getInt16(byteOffset, true);
       return normalized ? Math.max(v / 32767, -1) : v;
     }
-    case 5123 /* UNSIGNED_SHORT */: {
+    case GltfComponentType.UNSIGNED_SHORT: {
       const v = view.getUint16(byteOffset, true);
       return normalized ? v / 65535 : v;
     }
-    case 5125 /* UNSIGNED_INT */:
+    case GltfComponentType.UNSIGNED_INT:
       return view.getUint32(byteOffset, true);
-    case 5126 /* FLOAT */:
+    case GltfComponentType.FLOAT:
       return view.getFloat32(byteOffset, true);
     default:
-      throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${ct as number}`);
+      throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${String(ct)}`);
   }
 }
 
@@ -209,7 +210,11 @@ export function unpackAccessorUint32(
   }
 
   const ct = accessor.componentType;
-  if (ct !== 5121 && ct !== 5123 && ct !== 5125) {
+  if (
+    ct !== GltfComponentType.UNSIGNED_BYTE &&
+    ct !== GltfComponentType.UNSIGNED_SHORT &&
+    ct !== GltfComponentType.UNSIGNED_INT
+  ) {
     throw new Error(
       `[vitrum/gltf-adapter] Index accessor componentType ${ct} is not an unsigned integer type`,
     );

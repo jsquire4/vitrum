@@ -25,7 +25,7 @@
     "clean": "npm run clean --workspaces --if-present",
     "benchmark:gap-closure": "npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner",
     "benchmark:gap-closure-mechanical": "npm run benchmark:gap-closure-mechanical --workspace @vitrum/benchmark-runner",
-    "verify:mechanical": "npm run typecheck && npm test && npm run benchmark:rc-acceptance-mechanical",
+    "verify:mechanical": "npm run typecheck && npm test && npm run lint && npm run benchmark:rc-acceptance-mechanical",
     "benchmark:rc-acceptance-mechanical": "npm run benchmark:rc-acceptance-mechanical --workspace @vitrum/benchmark-runner",
     "capture:diff": "node ./tools/reference-renders/diff-baselines.mjs",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present",

@@ -480,7 +480,7 @@ function rgbToJakobHanikaCoefficients(
   const initial: [number, number, number] = [0, 0, 0];
 
   const [a, bb, c] = gaussNewtonFit(targetLab, initial);
-  return expandToRawNm(a, bb, c) as [number, number, number];
+  return expandToRawNm(a, bb, c);
 }
 
 /**

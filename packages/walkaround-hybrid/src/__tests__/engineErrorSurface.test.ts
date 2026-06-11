@@ -72,7 +72,7 @@ function makeBaseOpts(device: GPUDevice): HybridEngineOptions {
     primaryLightIntensity: 1,
     skyTint: [1, 1, 1],
     skyIrradiance: 1,
-  } as HybridEngineOptions;
+  };
 }
 
 function getUncapturedErrorListener(addCalls: ControlledDevice['addCalls']): EventCb {

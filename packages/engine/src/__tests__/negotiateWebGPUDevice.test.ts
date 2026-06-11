@@ -205,7 +205,7 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     await negotiateWebGPUDevice({
       adapter: fa.adapter,
       target: 'pt-webgpu',
-      requiredFeatures: ['timestamp-query' as GPUFeatureName],
+      requiredFeatures: ['timestamp-query'],
       label: 'vitrum-test',
     });
     const desc = fa.lastDescriptor();

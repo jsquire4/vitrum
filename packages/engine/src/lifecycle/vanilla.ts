@@ -75,8 +75,8 @@ export function resolveQualityOption(
 ): NonNullable<FrameInput['quality']> | undefined {
   if (q == null) return undefined;
   return typeof q === 'function'
-    ? (q as () => NonNullable<FrameInput['quality']> | undefined)()
-    : (q as NonNullable<FrameInput['quality']>);
+    ? (q)()
+    : (q);
 }
 
 /** Per WebGPU spec, `getCurrentTexture()` MUST be called inside the rAF
@@ -266,7 +266,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   const reportError = (error: unknown, event: CreateEngineErrorEvent): void => {
     try {
       opts.onError?.(error, event);
-    } catch {}
+    } catch { /* host error callback must not propagate — ignore */ }
   };
 
   // ── Initial engine construction ─────────────────────────────────────────
@@ -362,9 +362,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   if (pauseOnHidden && typeof document !== 'undefined') {
     visibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
-        try { engine.pause(); } catch {}
+        try { engine.pause(); } catch { /* best-effort pause — ignore */ }
       } else {
-        try { engine.resume(); } catch {}
+        try { engine.resume(); } catch { /* best-effort resume — ignore */ }
       }
     };
     document.addEventListener('visibilitychange', visibilityHandler);
@@ -394,7 +394,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     unsubEngineError = engine.onError
       ? engine.onError((err) => {
           // Always deliver to the host first, before any internal handling.
-          try { opts.onEngineError?.(err); } catch {}
+          try { opts.onEngineError?.(err); } catch { /* host error callback must not propagate — ignore */ }
           if (err.fatal) handleFatalEngineError(err);
         })
       : undefined;
@@ -458,7 +458,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     unsubFrame = undefined;
     unsubProgress = undefined;
     unsubEngineError = undefined;
-    try { engine.dispose(); } catch {}
+    try { engine.dispose(); } catch { /* best-effort cleanup before recreate — ignore */ }
 
     // 4. Recreate.
     try {
@@ -584,11 +584,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       if (visibilityHandler && typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', visibilityHandler);
       }
-      try { resizeObserver?.disconnect(); } catch {}
-      try { unsubFrame?.(); } catch {}
-      try { unsubProgress?.(); } catch {}
-      try { unsubEngineError?.(); } catch {}
-      try { engine.dispose(); } catch {}
+      try { resizeObserver?.disconnect(); } catch { /* best-effort cleanup — ignore */ }
+      try { unsubFrame?.(); } catch { /* best-effort cleanup — ignore */ }
+      try { unsubProgress?.(); } catch { /* best-effort cleanup — ignore */ }
+      try { unsubEngineError?.(); } catch { /* best-effort cleanup — ignore */ }
+      try { engine.dispose(); } catch { /* best-effort cleanup — ignore */ }
     },
     captureFrame: (captureOpts?: CaptureFrameOptions) => {
       if (typeof engine.captureFrame !== 'function') return Promise.resolve(null);

@@ -34,7 +34,7 @@ function baseScene(): Scene {
         position: [0, 1, 0],
         intensity: 1,
         color: [1, 1, 1],
-      } as SceneEmitter,
+      },
     ],
     environment: { kind: 'none' },
   };
@@ -152,7 +152,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
   it('updateEmitter: with no sceneBuffers falls through to setScene', () => {
     const { host, calls } = makeHost({ sceneBuffers: null });
     const router = new SceneMutationRouter(host);
-    const patch: Partial<SceneEmitter> = { intensity: 2 } as Partial<SceneEmitter>;
+    const patch: Partial<SceneEmitter> = { intensity: 2 };
     router.updateEmitter('e', patch);
     expect(calls.assertLive).toHaveBeenCalledWith('updateEmitter');
     expect(calls.setScene).toHaveBeenCalledTimes(1);

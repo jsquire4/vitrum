@@ -267,12 +267,12 @@ export function oneBlobEncodeScalar(u: number, cfg: OneBlobConfig): Float32Array
  * 3-D direction is one-blob-encoded as two scalars.
  */
 export function octEncodeDir(d: readonly [number, number, number]): [number, number] {
-  const ax = Math.abs(d[0]!), ay = Math.abs(d[1]!), az = Math.abs(d[2]!);
+  const ax = Math.abs(d[0]), ay = Math.abs(d[1]), az = Math.abs(d[2]);
   const s = ax + ay + az;
   const inv = s > 1e-20 ? 1 / s : 0;
-  let px = d[0]! * inv;
-  let py = d[1]! * inv;
-  if (d[2]! < 0) {
+  let px = d[0] * inv;
+  let py = d[1] * inv;
+  if (d[2] < 0) {
     const ox = (1 - Math.abs(py)) * (px >= 0 ? 1 : -1);
     const oy = (1 - Math.abs(px)) * (py >= 0 ? 1 : -1);
     px = ox; py = oy;

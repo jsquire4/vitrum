@@ -22,6 +22,7 @@
 export interface DDGILight {
   /** Runtime kind tag. Only 'sun', 'fixture', and 'teaLight' are handled;
    *  any other kind is silently skipped in _uploadLights. */
+  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents -- intentional: literal union widens to string for extensibility while preserving IDE autocomplete for the known kinds
   readonly kind: 'sun' | 'fixture' | 'teaLight' | string;
 
   /** Optional source-emitter id, preserved when a DDGILight is mapped

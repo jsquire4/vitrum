@@ -81,7 +81,7 @@ export function extractPbrScalars(
 ): PbrScalars {
   const d = { ...PBR_DEFAULTS, ...defaults };
   const stdMat = mat as StandardMaterialScalars;
-  const physMat = mat as PhysicalMaterialScalars;
+  const physMat = mat;
   const color = stdMat.color;
   const emissive = stdMat.emissive;
   return {

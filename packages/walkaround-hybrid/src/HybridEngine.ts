@@ -324,7 +324,7 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
     opts.denoiser !== 'oidn-final'
   ) {
     throw new TypeError(
-      `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
+      `[HybridEngine] unsupported denoiser '${String(opts.denoiser)}'. ` +
       `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'. ` +
       `If you need 'none' from @vitrum/core, pick a backend that implements that mode.`,
     );
@@ -1146,6 +1146,7 @@ export class HybridEngine implements Engine {
       if (this._state === 'disposed') return;
       const gpuEvent = event as { error?: { message?: string } };
       const rawError = gpuEvent.error;
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- fallback stringification of GPUUncapturedErrorEvent; acceptable for diagnostic messages
       const message = rawError?.message ?? String(event);
       const kind: EngineError['kind'] = rawError != null &&
         rawError.constructor?.name === 'GPUInternalError'
@@ -1847,7 +1848,7 @@ export class HybridEngine implements Engine {
     // so hosts can pass any key without a type error at the core-contract call
     // site. Warn (don't throw) on keys outside LightingOptions so silent drops
     // become visible; the field-by-field application below is unchanged.
-    assertKnownLightingKeys(opts as Readonly<Record<string, unknown>>);
+    assertKnownLightingKeys(opts);
 
     let changed = false;
 
@@ -2343,6 +2344,7 @@ export class HybridEngine implements Engine {
   }
 
   private _buildFrameDeps(): HybridEngineFrameDeps {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- `self` required for the `get state()` getter inside the returned object literal where `this` would refer to the object, not the class instance
     const self = this;
     return {
       subsystems: {
@@ -2709,6 +2711,7 @@ export class HybridEngine implements Engine {
    *  never sees raw field references, only the small documented surface in
    *  `HybridEngineLifecycle.ts`. */
   private _buildInitHost(): PipelineInitHost {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- `self` required for the `get width()` / `get height()` etc. getters inside the returned object literal where `this` would refer to the object, not the class instance
     const self = this;
     return {
       ...this._initStaticConfig(),
@@ -2792,6 +2795,7 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<
   Engine & HybridEngineGISurface
 > = async (
   opts: HybridEngineOptions,
+// eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed in this code path
 ): Promise<Engine & HybridEngineGISurface> => {
   // Duck-type GPUDevice validation — `instanceof GPUDevice` is not reliable
   // across realms; checking for a known required method is more robust.
@@ -2801,6 +2805,7 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<
   ) {
     throw new TypeError(
       '[createWalkaroundEngine_Hybrid] opts.device must be a live GPUDevice. ' +
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic; [object Object] output is acceptable in a TypeError message
       'Received: ' + String(opts.device),
     );
   }

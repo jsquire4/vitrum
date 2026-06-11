@@ -97,7 +97,7 @@ async function main(): Promise<void> {
     device.destroy();
     return;
   }
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+   
   const gpuCtx = ctx!;
   canvas.width  = Math.max(1, canvas.clientWidth);
   canvas.height = Math.max(1, canvas.clientHeight);

@@ -205,7 +205,7 @@ export async function allocateGraph(
     // remap `tensors` so downstream layers reading `layer.output` see the
     // relu-written buffer. This is host-only; no WGSL changes are required.
     if (layer.kind === 'relu' && layer.inputs[0] === layer.output) {
-      const inName  = layer.inputs[0]!;
+      const inName  = layer.inputs[0];
       const outKey  = `${layer.name}_out`;
       const srcTb   = tensors.get(inName);
       if (srcTb) {

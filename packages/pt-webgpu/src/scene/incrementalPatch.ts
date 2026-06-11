@@ -181,7 +181,7 @@ export function canFastPathTopologyResizePatch(
   const curVertexCount = Math.floor(primitive.positions.length / 3);
   const nextPositions =
     'positions' in patch && patch.positions != null
-      ? (patch.positions as Float32Array)
+      ? (patch.positions)
       : primitive.positions;
   const nextVertexCount = Math.floor(nextPositions.length / 3);
 

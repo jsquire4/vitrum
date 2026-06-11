@@ -188,7 +188,7 @@ function makeInput(over: Partial<FrameInput> = {}): FrameInput {
     projMatrix: PROJ,
     viewport: { width: 800, height: 600, devicePixelRatio: 1 },
     ...over,
-  } as FrameInput;
+  };
 }
 
 const MATRIX: ReadonlyArray<{

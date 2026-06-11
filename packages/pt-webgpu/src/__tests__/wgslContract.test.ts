@@ -153,8 +153,15 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // pixelIndex computed in main and threaded through photonMapContribution).
     // RENDER-CHANGING for causticStrategy:'photon-map'; off-path byte-identical for
     // other strategies.
-    expect(digest).toBe('6fdf32eac91dead53aec606cd1741fc90bdc4d75e541c8e99439bd68da2fc385');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(311413);
+    // Re-pinned 2026-06-10: native analytic disc emitters — disc-area records now
+    // packed into the rect stream with shape tag 1.0 (concentric-disc map sampling,
+    // pdf = 1/(π·r²)); connect.wgsl.ts intersectRectAreaLightRay reads the tag and
+    // uses circle containment + π·|u|² area for the MIS pdf; kernel.wgsl.ts,
+    // restirPtProducer.wgsl.ts, kernelLite.wgsl.ts, and bdptLightSubpath.wgsl.ts
+    // all updated. The 32-triangle fan path is deleted. RENDER-CHANGING for
+    // disc-lit scenes, A/B in R9-B.
+    expect(digest).toBe('5d86101050dbfaf2cde5394c734560bf8929aaae2fb0b952701a4cd2d238ae73');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(314407);
   });
 });
 

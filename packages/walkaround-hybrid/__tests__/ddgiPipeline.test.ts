@@ -349,7 +349,7 @@ function octDecode(u: number, v: number): [number, number, number] {
   const fx = u * 2 - 1;
   const fy = v * 2 - 1;
   const fz = 1 - Math.abs(fx) - Math.abs(fy);
-  let x = fx, y = fy, z = fz;
+  let x = fx, y = fy; const z = fz;
   if (fz < 0) {
     x = (1 - Math.abs(fy)) * Math.sign(fx === 0 ? 1 : fx);
     y = (1 - Math.abs(fx)) * Math.sign(fy === 0 ? 1 : fy);

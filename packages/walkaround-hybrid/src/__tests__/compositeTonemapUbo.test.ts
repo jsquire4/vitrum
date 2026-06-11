@@ -44,7 +44,7 @@ describe('COMPOSITE_UBO — layout and packing', () => {
   });
 
   it('pack → unpack is a round-trip identity for each tonemap mode', () => {
-    const modes = Object.values(TONEMAP_MODE_INDEX) as number[];
+    const modes = Object.values(TONEMAP_MODE_INDEX);
     for (const mode of modes) {
       const buf = new ArrayBuffer(COMPOSITE_UBO.sizeBytes);
       const view = new DataView(buf);

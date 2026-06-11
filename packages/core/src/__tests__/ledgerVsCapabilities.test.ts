@@ -66,7 +66,7 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     // mutation kind to 'fallback-rebuild'. The ledger must reflect this.
     const { mutations } = ledger.supportDetails;
     const acceptableGrades = new Set(['fallback-rebuild', 'unsupported']);
-    for (const [key, grade] of Object.entries(mutations)) {
+    for (const [key, grade] of Object.entries(mutations) as [string, string][]) {
       expect(
         acceptableGrades.has(grade),
         `mutations.${key} should be fallback-rebuild or unsupported, got '${grade}'`,
@@ -153,10 +153,12 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgpu"] structural self-consistency', () =
     expect(e['mesh-area']).toBe('native');
   });
 
-  it('disc-area emitter is "approximate" (32-triangle area-compensated fan, B11)', () => {
-    // pt-webgpu lowers disc-area to a 32-triangle fan (emitterPacking.ts:128-197,
-    // discAreaPackedAsTriangles). Geometrically approximate. pt-webgl2 is native.
-    expect(ledger.supportDetails.emitters['disc-area']).toBe('approximate');
+  it('disc-area emitter is "native" (analytic concentric-disc packing, 2026-06-10)', () => {
+    // pt-webgpu now packs disc-area emitters natively into the rect stream with a shape
+    // tag in emission.w (0=rect, 1=disc). Sampling uses the Shirley-Chiu concentric-disc
+    // map; MIS-half uses circle containment + π·r² area. The 32-triangle fan is removed.
+    // Promoted approximate → native 2026-06-10. A/B radiometric validation in R9-B.
+    expect(ledger.supportDetails.emitters['disc-area']).toBe('native');
   });
 
   it('accumulates is true (converged PT)', () => {

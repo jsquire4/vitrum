@@ -38,7 +38,7 @@ class FakeEngine implements Engine {
       kind: 'rendered',
       samplesAccumulated: 1,
       isConverged: false,
-      primaryRadiance: asBackendTexture<'test', {}>({}),
+      primaryRadiance: asBackendTexture<'test', object>({}),
     };
   }
   reset(): void {}

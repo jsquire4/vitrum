@@ -60,8 +60,12 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // has no aniso texture bindings — always isotropic). shadePrologue.wgsl.ts
     // gates lightMap to bounce==0 (litePrologue unchanged). RENDER-CHANGING for
     // full-tier aniso materials; A/B pending V28-B.
-    expect(digest).toBe('f1b0699e3cfdd99370cd928d12b16b8facfe811279c04f7fc49f263c0d071e68');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(130829);
+    // Re-pinned 2026-06-10: native analytic disc emitters in kernelLite.wgsl.ts —
+    // rect/disc loop reads shape tag from liteLightTex texel .w, applies concentric-disc
+    // map for disc records (same design as full-tier kernel.wgsl.ts). 32-triangle fan
+    // removed. RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
+    expect(digest).toBe('d307f62a3ad63267ed16c45c11fdb5b6433e312764003ac46e0492cefc2225f7');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(131837);
   });
 });
 

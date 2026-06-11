@@ -34,11 +34,11 @@ function fakeMerged(overrides: Partial<WorldSpaceMergeResult> = {}): WorldSpaceM
     vertexCount: 4,
     triangleCount: 2,
     ...overrides,
-  } as WorldSpaceMergeResult;
+  };
 }
 
 function sceneWith(emitters: Scene['emitters']): Scene {
-  return { primitives: [], emitters, environment: { kind: 'none' } } as Scene;
+  return { primitives: [], emitters, environment: { kind: 'none' } };
 }
 
 describe('packMeshAreaLights (B4)', () => {

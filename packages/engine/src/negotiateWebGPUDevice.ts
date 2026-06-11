@@ -167,7 +167,7 @@ export async function negotiateWebGPUDevice(
   });
 
   const format =
-    navigator.gpu.getPreferredCanvasFormat?.() ?? ('bgra8unorm' as GPUTextureFormat);
+    navigator.gpu.getPreferredCanvasFormat?.() ?? ('bgra8unorm');
 
   return { adapter, device, format, profile };
 }

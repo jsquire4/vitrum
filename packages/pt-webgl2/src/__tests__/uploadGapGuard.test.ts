@@ -33,10 +33,10 @@ function sceneWithPointLight(): Scene {
     primitives: [tri('tri')],
     emitters: [{ kind: 'point', id: 'p', position: [1, 2, 3], color: [1, 1, 1], intensity: 2 }],
     environment: { kind: 'none' },
-  } as Scene;
+  };
 }
 function sceneNoEmitters(): Scene {
-  return { primitives: [tri('tri')], emitters: [], environment: { kind: 'none' } } as Scene;
+  return { primitives: [tri('tri')], emitters: [], environment: { kind: 'none' } };
 }
 function sceneWithMeshAreaLight(): Scene {
   // A separate emissive panel mesh referenced by a mesh-area emitter (B4 NEE).
@@ -53,7 +53,7 @@ function sceneWithMeshAreaLight(): Scene {
     primitives: [tri('tri'), panel],
     emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 5 }],
     environment: { kind: 'none' },
-  } as Scene;
+  };
 }
 function frame(spp: number): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
@@ -75,7 +75,7 @@ async function renderAndRecord(
 ): Promise<Map<string, unknown>> {
   const record = new Map<string, unknown>();
   const gl = createMockGl(record);
-  const engine = await createPTEngine_WebGL2({ device: gl, ...engineOpts } as never);
+  const engine = await createPTEngine_WebGL2({ device: gl, ...engineOpts });
   engine.setScene(scene);
   engine.renderFrame(frame(4));
   return record;
@@ -180,7 +180,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     const gl = createMockGl(new Map());
     const rec = new Map<string, unknown>();
     const gl2 = createMockGl(rec);
-    const engine = await createPTEngine_WebGL2({ device: gl2 } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl2 });
     engine.setScene(sceneNoEmitters());
     const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
     const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -198,7 +198,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
   it('tonemap present-pass: quality.exposure=2.5 → uExposure=2.5', async () => {
     const rec = new Map<string, unknown>();
     const gl = createMockGl(rec);
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     engine.setScene(sceneNoEmitters());
     const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
     const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -215,7 +215,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
   it("tonemap present-pass: quality.outputColorSpace='linear' → uOutputColorSpace=1", async () => {
     const rec = new Map<string, unknown>();
     const gl = createMockGl(rec);
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     engine.setScene(sceneNoEmitters());
     const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
     const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);

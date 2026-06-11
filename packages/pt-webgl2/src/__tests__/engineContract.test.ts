@@ -19,7 +19,7 @@ function triScene(): Scene {
     indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
     material: GREY,
   };
-  return { primitives: [prim], emitters: [], environment: { kind: 'none' } } as Scene;
+  return { primitives: [prim], emitters: [], environment: { kind: 'none' } };
 }
 
 function tri(id: string, x: number): MeshPrimitive {

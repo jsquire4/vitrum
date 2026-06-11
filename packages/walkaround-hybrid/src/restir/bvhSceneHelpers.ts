@@ -481,7 +481,7 @@ export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
 
     // Column-major 4×4 world transform (or identity when absent).
     const m: ArrayLike<number> = transform != null
-      ? (transform as unknown as ArrayLike<number>)
+      ? (transform)
       : IDENTITY_MAT4;
 
     const triCount = indices != null

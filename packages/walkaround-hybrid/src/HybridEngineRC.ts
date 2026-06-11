@@ -402,9 +402,9 @@ export class RCSubsystem implements PipelineSubsystem {
     // Retain CPU mirrors for the merged-mode moving-instance refit fast path.
     // `.array` is the typed view backing each StorageBufferAttribute; we copy
     // so a later in-place refit never aliases the attribute the BVH still owns.
-    this._mergedNodesCpu = new Float32Array(bvh.bvhNodes.array as Float32Array);
-    this._mergedIndicesStride3 = new Uint32Array(bvh.indices.array as Uint32Array);
-    this._mergedPositionsStride4 = new Float32Array(bvh.positions.array as Float32Array);
+    this._mergedNodesCpu = new Float32Array(bvh.bvhNodes.array);
+    this._mergedIndicesStride3 = new Uint32Array(bvh.indices.array);
+    this._mergedPositionsStride4 = new Float32Array(bvh.positions.array);
 
     const { min, max } = bvh.bounds;
     this._probeOriginWorld = [min.x, min.y, min.z];
@@ -670,7 +670,7 @@ export class RCSubsystem implements PipelineSubsystem {
     // (`refitBvhBounds` reads `indices[t*3+k]`), so the CPU mirror at `setScene` stays
     // stride-3. The index buffer is never re-uploaded on a transform refit, so padding
     // once here is sufficient.
-    const idxStride4 = padTriangleIndicesToVec4(bvh.indices.array as Uint32Array);
+    const idxStride4 = padTriangleIndicesToVec4(bvh.indices.array);
     return {
       bvhNodesBuf:      this._uploadAttribute(bvh.bvhNodes,      'rc-bvh-nodes'),
       bvhIndicesBuf:    this._uploadTypedArray(idxStride4,        'rc-bvh-indices'),
@@ -696,7 +696,7 @@ export class RCSubsystem implements PipelineSubsystem {
   }
 
   private _uploadAttribute(attr: StorageAttributeLike, label: string): GPUBuffer {
-    const arr = attr.array as Float32Array | Uint32Array;
+    const arr = attr.array;
     const buf = this._device.createBuffer({
       label,
       size:  arr.byteLength,

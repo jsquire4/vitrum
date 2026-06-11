@@ -72,6 +72,10 @@ const EXPECTATION_TABLE = {
   "pt/skinned-mesh":      { expected: "ok" },
   "pt/analytic-sphere":   { expected: "ok" },
   "pt/point-light":       { expected: "ok" },
+  // 2026-06-10: native analytic disc emitters — shape tag 1.0, concentric-disc
+  // sampling (Shirley-Chiu), π·r² area in MIS pdf. Asserts non-black overall
+  // luminance; the disc ceiling light must illuminate the Cornell box.
+  "pt/disc-light":        { expected: "ok" },
   "pt/spot-light":        { expected: "ok" },
   "pt/directional-2":     { expected: "ok" },
   "pt/hdri-env":          { expected: "ok" },
@@ -117,6 +121,13 @@ const PT_CONFIGS = [
   { label: "pt/analytic-sphere",  eng: {},                                    scene: { analytic: true } },
   { label: "pt/point-light",      eng: {},                                    scene: {
     emitters: [{ kind: "point", id: "pt-light", position: [0, 0.8, 0], color: [1,1,1], intensity: 4.0 }],
+  }},
+  // 2026-06-10: native analytic disc emitter — packed into rect stream with shape
+  // tag 1.0 (Shirley-Chiu concentric-disc map, π·r² area, circle containment MIS).
+  // The disc is on the ceiling facing down; the Cornell box surfaces should be lit.
+  { label: "pt/disc-light",       eng: {},                                    scene: {
+    emitters: [{ kind: "disc-area", id: "disc-light", position: [0, 0.95, 0],
+      normal: [0, -1, 0], radius: 0.3, color: [1,1,1], intensity: 12.0 }],
   }},
   { label: "pt/spot-light",       eng: {},                                    scene: {
     emitters: [{ kind: "spot", id: "sp-light", position: [0, 0.8, 0], direction: [0,-1,0],
@@ -598,6 +609,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
     let frameOutput = null;
     for (let frame = 0; frame < SPP; frame++) {
+      // eslint-disable-next-line no-loss-of-precision -- LCG constants intentionally exceed f64 mantissa; >>> 0 truncates to uint32 anyway
       const seed = ((frame * 6364136223846793005 + 1442695040888963407) >>> 0);
       frameOutput = engine.renderFrame({
         viewMatrix: ptView,
@@ -618,7 +630,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
     errorMsg = e.message;
   } finally {
     unpatch();
-    try { engine?.dispose(); } catch {}
+    try { engine?.dispose(); } catch { /* best-effort cleanup — ignore */ }
   }
 
   const oomErr = await device.popErrorScope();
@@ -709,8 +721,8 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
   } catch (e) {
     errorMsg = e.message;
   } finally {
-    try { swapTex?.destroy(); } catch {}
-    try { engine?.dispose();  } catch {}
+    try { swapTex?.destroy(); } catch { /* best-effort cleanup — ignore */ }
+    try { engine?.dispose();  } catch { /* best-effort cleanup — ignore */ }
   }
 
   const oomErr = await device.popErrorScope();

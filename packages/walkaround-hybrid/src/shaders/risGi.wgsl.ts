@@ -62,6 +62,11 @@ export const RIS_GI_WGSL = /* wgsl */ `
 // normal stored as the visible-point reservoir normal (r.nv) + hemisphere
 // frame; the geometric normal is kept for the bounce-ray origin offset.
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// B1-ior-per-tri (2026-06-10) — per-triangle roughness+metalness+IOR texture.
+// Declared here so the glass-walk Snell solve can decode per-tri IOR via decodeIor().
+// Layout: bits[31:24]=rough×255, bits[23:16]=metal×255, bits[15:8]=ior_quantized.
+// IOR decode: 1.0 + (byte / 255) * 2.0; range [1.0, 3.0]; default glass → 1.502.
+@group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 // Sprint 9 — adaptive sampling tier (r32uint, full-res). 1 = low variance,
@@ -172,20 +177,25 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let isGlass = matColor.a > 0.3;
 
   // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
-  // IOR availability: the bvh_material texture stores only roughness + metalness
-  // (decodeRoughMetal). bvhIndex.w packs RGB+trans+texType — no per-tri IOR.
-  // Fixed IOR_GLASS = 1.5 (crown glass standard) is the correct v1 design;
-  // a per-tri IOR lane requires a new pack slot and a host-side packer update —
-  // deferred to a follow-up (plan note: "B1-ior-per-tri").
-  const IOR_GLASS: f32 = 1.5;
+  // B1-ior-per-tri (2026-06-10): decode per-tri IOR from the bvh_material texture
+  // (bits[15:8], quantized [1.0, 3.0]). Default 1.5 packs to byte 64, decodes
+  // to 1.502 (error < 0.003 — within glass dispersion spread).
   // Maximum number of consecutive glass interfaces the walk passes through
   // (straight-through approximation after the first refraction). Bounded at 2
   // so the per-pixel cost stays O(1) BVH traversals.
   const GLASS_WALK_MAX_EXTRA: u32 = 2u;
 
   if (isGlass) {
+    // Decode the per-triangle IOR from the bvh_material texture.
+    let glassPrimaryRmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+                                    hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
+    let glassPrimaryPacked = textureLoad(bvh_material, vec2i(glassPrimaryRmCoord), 0).r;
+    let glassPrimaryRm = decodeRoughMetal(glassPrimaryPacked);
+    let glassPrimaryRough = glassPrimaryRm.x;
+    let IOR_GLASS: f32 = decodeIor(glassPrimaryPacked);
+
     // Refract the primary ray direction at the glass interface (Snell's law).
-    // Incident medium is air (eta_i=1), transmitted medium is glass (eta_t=1.5).
+    // Incident medium is air (eta_i=1), transmitted medium is glass (IOR_GLASS).
     // Convention: 'normal' is the smooth SHADING normal pointing AWAY from the
     // glass surface toward the incident medium (the camera side). If the ray is
     // entering the glass from outside, dot(primaryRay.direction, normal) < 0 so
@@ -193,7 +203,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let d = primaryRay.direction;
     let cosI = -dot(d, normal);   // cosine of incidence angle (positive = entering)
     let etaRatio = select(IOR_GLASS, 1.0 / IOR_GLASS, cosI > 0.0);
-    // If cosI < 0 the ray is leaving glass → etaRatio = IOR/1 = 1.5 (flip normal).
+    // If cosI < 0 the ray is leaving glass → etaRatio = IOR_GLASS/1 (flip normal).
     let nFlipped = select(-normal, normal, cosI > 0.0);
     let cosI_pos = abs(cosI);
     let sin2T = etaRatio * etaRatio * (1.0 - cosI_pos * cosI_pos);
@@ -205,6 +215,49 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     }
     let cosT = sqrt(max(0.0, 1.0 - sin2T));
     var refractDir = safe_normalize(etaRatio * d + (etaRatio * cosI_pos - cosT) * nFlipped);
+
+    // B1-ior-per-tri stretch: rough-glass GI direction perturbation (2026-06-10).
+    // For rough glass (roughness > ROUGH_GLASS_THRESHOLD), perturb the exact Snell
+    // refracted direction by a GGX-distributed micro-facet offset so frosted glass
+    // receives blurred GI instead of mirror-sharp refraction. One sample; uses the
+    // per-tri roughness decoded above (glassPrimaryRough). Smooth glass (rough below
+    // threshold) keeps the exact Snell direction → byte-identical for default glass
+    // (glassPrimaryRough = 0.05 < 0.1 threshold).
+    //
+    // Implementation: build an orthonormal frame around refractDir, draw a
+    // GGX-distributed tangent perturbation (Heitz 2018 VNDF simplified for a
+    // single-sample isotropic deflection), re-normalize. The perturbation is in
+    // the transmitted half-space; if it flips below the surface we clamp back to
+    // the geometric hemisphere (same guard as sampleCosineHemisphere).
+    const ROUGH_GLASS_THRESHOLD: f32 = 0.1;
+    if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD) {
+      // Build tangent frame around refractDir.
+      let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0),
+                      abs(refractDir.y) > 0.9);
+      let t1 = safe_normalize(cross(refractDir, up));
+      let t2 = cross(refractDir, t1);
+
+      // GGX-distributed microfacet perturbation: draw a 2D GGX sample in the
+      // tangent plane and add it to refractDir, then re-normalize.
+      // p(r) ∝ r · α² / (r² · (α²-1) + 1)²  — simplified isotropic GGX disk.
+      let alpha = glassPrimaryRough * glassPrimaryRough; // α = roughness² (GGX convention)
+      let xi1 = rand_f32(&rng);
+      let xi2 = rand_f32(&rng);
+      // Importance-sample GGX slope magnitude: r = α√(xi1/(1−xi1)).
+      let r2 = alpha * alpha * xi1 / max(1e-6, 1.0 - xi1);
+      let r = sqrt(r2);
+      let phi = 2.0 * 3.14159265 * xi2;
+      let dx = r * cos(phi);
+      let dy = r * sin(phi);
+      let perturbedDir = safe_normalize(refractDir + dx * t1 + dy * t2);
+      // Ensure perturbation stays on the transmitted side of the surface.
+      // nFlipped points into the glass from the entry side; the transmitted ray
+      // must have dot(perturbedDir, -nFlipped) > 0 (go through the surface).
+      if (dot(perturbedDir, -nFlipped) > 1e-4) {
+        refractDir = perturbedDir;
+      }
+      // else: perturbation flipped → keep exact Snell direction (rare at low-α).
+    }
 
     // Walk through the glass pane to find the first non-glass diffuse surface.
     // Origin: offset along the GEOMETRIC normal (same bias as bounce rays) in the
@@ -537,7 +590,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *    - `ReservoirGI` / `emptyReservoirGI` / `updateReservoirGI` /
  *      `storeReservoirGI_rw`                 → reservoirGi
  *    - `pcgInit` / `luminance` / `sampleCosineHemisphere` → sharedPrimitives
- *    - `decodeMaterialColor` / `decodeIsMetal` → materialDecode
+ *    - `decodeMaterialColor` / `decodeIsMetal` / `decodeRoughMetal` / `decodeIor`
+ *      / `BVH_MATERIAL_TEX_WIDTH`              → materialDecode
  *    - `invertMat4_common` / `generatePrimaryRay_common` → cameraRays
  *    - `ddgiSample`                          → ddgiSample
  *  Drops emitterSampling / ggxBrdf / jacobianShift / welfordTail (unused).

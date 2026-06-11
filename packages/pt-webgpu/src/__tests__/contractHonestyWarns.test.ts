@@ -28,7 +28,7 @@ describe('causticOptions unknown key warning', () => {
       causticOptions: {
         mneeMaxIterations: 8,
         unknownCausticParam: 42,
-      } as Parameters<typeof createPTEngine_WebGPU>[0]['causticOptions'] & Record<string, unknown>,
+      },
     });
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('unknownCausticParam'))).toBe(true);

@@ -116,7 +116,7 @@ function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec
   const u2 = halton3(sampleIdx);
   const r = Math.sqrt(u1);
   const phi = 2 * PI * u2;
-  let t1 = r * Math.cos(phi);
+  const t1 = r * Math.cos(phi);
   let t2 = r * Math.sin(phi);
   const s = 0.5 * (1 + Vh[2]);
   t2 = (1 - s) * Math.sqrt(Math.max(0, 1 - t1*t1)) + s * t2;

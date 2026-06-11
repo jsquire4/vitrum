@@ -35,7 +35,7 @@ function tri(id: string): MeshPrimitive {
 }
 
 function smallScene(): Scene {
-  return { primitives: [tri('a')], emitters: [], environment: { kind: 'none' } } as Scene;
+  return { primitives: [tri('a')], emitters: [], environment: { kind: 'none' } };
 }
 
 function frame(): FrameInput {
@@ -60,7 +60,7 @@ describe('pt-webgl2 robustness — context-loss handling', () => {
   it('webglcontextlost: engine registers preventDefault listener; renderFrame becomes safe no-op', async () => {
     const gl = createMockGl();
     const canvas = (gl as unknown as { canvas: { dispatchEvent(t: string, e: Event): void } }).canvas;
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     engine.setScene(smallScene());
 
     // Confirm it renders normally before loss.
@@ -83,7 +83,7 @@ describe('pt-webgl2 robustness — context-loss handling', () => {
     try {
       const gl = createMockGl();
       const canvas = (gl as unknown as { canvas: { dispatchEvent(t: string, e: Event): void } }).canvas;
-      const engine = await createPTEngine_WebGL2({ device: gl } as never);
+      const engine = await createPTEngine_WebGL2({ device: gl });
 
       const lostEvent = Object.assign(new Event('webglcontextlost'), { preventDefault: vi.fn() });
       canvas.dispatchEvent('webglcontextlost', lostEvent);
@@ -102,7 +102,7 @@ describe('pt-webgl2 robustness — context-loss handling', () => {
     try {
       const gl = createMockGl();
       const canvas = (gl as unknown as { canvas: { dispatchEvent(t: string, e: Event): void } }).canvas;
-      const engine = await createPTEngine_WebGL2({ device: gl } as never);
+      const engine = await createPTEngine_WebGL2({ device: gl });
 
       // Fire loss first (registers state), then restore.
       const lostEvent = Object.assign(new Event('webglcontextlost'), { preventDefault: vi.fn() });
@@ -123,7 +123,7 @@ describe('pt-webgl2 robustness — context-loss handling', () => {
     try {
       const gl = createMockGl();
       const canvas = (gl as unknown as { canvas: { dispatchEvent(t: string, e: Event): void } }).canvas;
-      const engine = await createPTEngine_WebGL2({ device: gl } as never);
+      const engine = await createPTEngine_WebGL2({ device: gl });
 
       engine.dispose();
       warn.mockClear();
@@ -159,20 +159,20 @@ describe('pt-webgl2 robustness — texture size validation', () => {
     // A triangle scene with 2 tris → BVH bounds dim = ceil(sqrt(nodeCount*2)) ≈ 2.
     // Setting maxTexSize=1 forces a failure even for the smallest possible scene.
     const gl = createMockGl({ maxTexSize: 1 });
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     expect(() => engine.setScene(smallScene())).toThrow(/MAX_TEXTURE_SIZE|max.*²|supports.*²/i);
   });
 
   it('setScene with normal scene (dim << MAX_TEXTURE_SIZE) succeeds without throwing', async () => {
     const gl = createMockGl(); // default 16384 limit — well above any test scene
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     expect(() => engine.setScene(smallScene())).not.toThrow();
     expect(engine.state).toBe('ready');
   });
 
   it('error message names the offending resource, required size, and device limit', async () => {
     const gl = createMockGl({ maxTexSize: 1 });
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     let msg = '';
     try {
       engine.setScene(smallScene());
@@ -194,7 +194,7 @@ describe('pt-webgl2 robustness — texture size validation', () => {
       baseColor: [1, 0, 0],
       roughness: 1,
       metallic: 0,
-      baseColorMap: { handle: h } as never,
+      baseColorMap: { handle: h },
     });
     const prim = (id: string, mat: MaterialSpec): MeshPrimitive => ({
       kind: 'mesh',
@@ -213,10 +213,10 @@ describe('pt-webgl2 robustness — texture size validation', () => {
       ],
       emitters: [],
       environment: { kind: 'none' },
-    } as Scene;
+    };
 
     const gl = createMockGl({ maxArrayLayers: 1 });
-    const engine = await createPTEngine_WebGL2({ device: gl } as never);
+    const engine = await createPTEngine_WebGL2({ device: gl });
     let msg = '';
     try {
       engine.setScene(scene);

@@ -115,7 +115,7 @@ function f32ToF16Bits(src: Float32Array): Uint16Array {
     dv.setFloat32(0, src[k]!, true);
     const x = dv.getUint32(0, true);
     const sign = (x >>> 16) & 0x8000;
-    let exp = ((x >>> 23) & 0xff) - 127 + 15;
+    const exp = ((x >>> 23) & 0xff) - 127 + 15;
     let mant = x & 0x7fffff;
     if (exp <= 0) { out[k] = sign; continue; }            // flush tiny to ±0
     if (exp >= 0x1f) { out[k] = sign | 0x7c00; continue; } // inf/overflow

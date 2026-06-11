@@ -39,7 +39,7 @@ function multiNodeScene(): Scene {
     ],
     emitters: [],
     environment: { kind: 'none' },
-  } as Scene;
+  };
 }
 
 // ── ray/triangle/AABB math (independent of the engine GLSL) ──────────────────

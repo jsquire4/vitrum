@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 import { extractGpuLimits, probeWebGPU, resetGpuDetectionCache } from '../gpuDetection.js';
 
 describe('extractGpuLimits — portable GPUSupportedLimits reader', () => {
@@ -26,7 +26,7 @@ describe('extractGpuLimits — portable GPUSupportedLimits reader', () => {
       get: () => 1_000_000,
       enumerable: false,
     });
-    const limits = Object.create(proto);
+    const limits: object = Object.create(proto) as object;
     // Sanity: the enumeration-only extractor would have produced {} here.
     expect(Object.keys(limits)).toHaveLength(0);
 
@@ -105,7 +105,7 @@ describe('Bug6 fix — probeWebGPU carries error reason on adapter exception', (
     Object.defineProperty(globalThis, 'navigator', {
       value: {
         gpu: {
-          requestAdapter: async () => { throw 'adapter exploded'; },
+          requestAdapter: async () => { throw new Error('adapter exploded'); },
         },
       },
       configurable: true,

@@ -44,7 +44,7 @@ function quadScene(): Scene {
     indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
     material: GREY,
   };
-  return { primitives: [prim], emitters: [], environment: { kind: 'none' } } as Scene;
+  return { primitives: [prim], emitters: [], environment: { kind: 'none' } };
 }
 
 describe('packAttributesArray — 5-layer normal/tangent/uv0/color/uv1 array', () => {

@@ -97,9 +97,9 @@ export async function gltfToScene(
   // Seed from opts.buffers.
   if (opts.buffers) {
     if (opts.buffers instanceof Map) {
-      for (const [k, v] of opts.buffers) buffers.set(k, v);
+      for (const [k, v] of opts.buffers as Map<number, ArrayBuffer>) buffers.set(k, v);
     } else {
-      for (const [k, v] of Object.entries(opts.buffers)) {
+      for (const [k, v] of Object.entries(opts.buffers as Record<string, ArrayBuffer>)) {
         buffers.set(Number(k), v);
       }
     }
@@ -143,7 +143,7 @@ export async function gltfToScene(
         'Animations are NOT supported in v1. Geometry will be imported at rest pose.',
     );
   }
-  if (gltf.cameras && (gltf.cameras as unknown[]).length > 0) {
+  if (gltf.cameras && (gltf.cameras).length > 0) {
     warnings.push(
       '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
         '@vitrum/core Scene contract; pass camera data via FrameInput instead).',

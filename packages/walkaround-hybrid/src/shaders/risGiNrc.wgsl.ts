@@ -135,6 +135,7 @@ import { nrcQueryWgsl, type NrcQueryWgslOptions } from '../neural/nrc/wgsl/nrcQu
 
 /** Config the NRC gi-ris module bakes its sizes from. Must agree with the host
  *  `NrcSubsystem` config (same hash-grid L/F, one-blob bins, MLP W/OUT/hidden). */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- intentional branded alias; named type aids type errors and host visibility
 export interface RisGiNrcConfig extends NrcQueryWgslOptions {}
 
 // The NRC gi-ris compute body. Identical to RIS_GI_WGSL EXCEPT:

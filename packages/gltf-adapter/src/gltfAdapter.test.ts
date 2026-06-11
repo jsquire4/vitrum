@@ -63,7 +63,7 @@ function concatBuffers(...bufs: ArrayBuffer[]): ArrayBuffer {
 // Triangle: 3 vertices at (0,0,0), (1,0,0), (0,1,0)
 const TRIANGLE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
 // 3 flat normals: cross((1,0,0)-(0,0,0), (0,1,0)-(0,0,0)) = (0,0,1)
-const TRIANGLE_FLAT_NORMAL = [0, 0, 1];
+const _TRIANGLE_FLAT_NORMAL = [0, 0, 1];
 
 function makeMinimalTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
@@ -94,7 +94,7 @@ function makeMinimalTriangleGltf(): { gltf: GltfJson; buffers: Map<number, Array
 describe('minimal triangle', () => {
   it('produces one MeshPrimitive with correct positions', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene } = await gltfToScene(gltf, { buffers });
 
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
@@ -198,7 +198,7 @@ describe('GLB container', () => {
       buffers: [{ byteLength: posData.byteLength }],
     };
     const glb = buildGlb(gltfJson, posData);
-    const { scene, warnings } = await gltfToScene(glb);
+    const { scene } = await gltfToScene(glb);
 
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
@@ -424,7 +424,7 @@ describe('node hierarchy with nested TRS', () => {
       bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
       buffers: [{ byteLength: posBuf.byteLength }],
     };
-    const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
+    const { scene } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
 

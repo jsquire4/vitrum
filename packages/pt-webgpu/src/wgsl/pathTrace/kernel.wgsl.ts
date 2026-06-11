@@ -642,16 +642,51 @@ ${transmissiveBlock}
         }
         current = current + 1u;
       }
+      // Rect/disc area light loop — both record kinds share the same 4-vec4 stride.
+      // Shape discriminator: rectAreaLights[rb+3].w ≈ 0 → rect, ≈ 1 → analytic disc.
+      // Rect  sampling: uniform in [-1,1]²; area = 4·|u×v|.
+      // Disc  sampling: concentric-disc map; area = π·|u|² (|u| = radius).
+      // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+      // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
       for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
         if (current == picked) {
           let rb = ri * 4u;
           let rpos = rectAreaLights[rb].xyz;
           let ru = rectAreaLights[rb + 1u].xyz;
           let rv = rectAreaLights[rb + 2u].xyz;
-          let rr = rectAreaLights[rb + 3u].rgb;
-          let u = rand_f32(&rng) * 2.0 - 1.0;
-          let v = rand_f32(&rng) * 2.0 - 1.0;
-          let lpos = rpos + ru * u + rv * v;
+          let rshape = rectAreaLights[rb + 3u];
+          let rr = rshape.rgb;
+          let isDisc = abs(rshape.w - 1.0) < 0.5;
+          // Sample a point on the emitter surface.
+          let xi1 = rand_f32(&rng);
+          let xi2 = rand_f32(&rng);
+          var lpos: vec3f;
+          var area: f32;
+          if (isDisc) {
+            // Concentric-disc mapping (Shirley & Chiu 1997): maps the unit square
+            // uniformly to the unit disc; scale by radius (= |ru|). Uniform area
+            // measure over the disc → pdf = 1/(π·r²) in area measure.
+            let r = length(ru);
+            let a = xi1 * 2.0 - 1.0;
+            let b = xi2 * 2.0 - 1.0;
+            var cr: f32; var cphi: f32;
+            if (abs(a) >= abs(b)) {
+              cr = a;
+              cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+            } else {
+              cr = b;
+              cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+            }
+            let disc_u = cr * cos(cphi);
+            let disc_v = cr * sin(cphi);
+            lpos = rpos + ru * disc_u + rv * disc_v;
+            area = max(PI * r * r, 1e-6);
+          } else {
+            let u = xi1 * 2.0 - 1.0;
+            let v = xi2 * 2.0 - 1.0;
+            lpos = rpos + ru * u + rv * v;
+            area = max(4.0 * length(cross(ru, rv)), 1e-6);
+          }
           let toLight = lpos - hitPos;
           let dist2 = max(dot(toLight, toLight), 1e-6);
           let dist = sqrt(dist2);
@@ -665,7 +700,6 @@ ${transmissiveBlock}
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
-              let area = max(4.0 * length(cross(ru, rv)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
@@ -683,7 +717,7 @@ ${transmissiveBlock}
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-                // A3 — spectralise the rect-area radiance at the hero λ.
+                // A3 — spectralise the rect/disc-area radiance at the hero λ.
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
                 directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
               }

@@ -154,7 +154,7 @@ export function computeProgressiveLimitUnion(
   };
   const union: Record<string, number> = {};
   for (const set of [hybridFull, ptWebgpuFull]) {
-    for (const [key, val] of Object.entries(set) as [string, number][]) {
+    for (const [key, val] of Object.entries(set)) {
       union[key] = Math.max(union[key] ?? 0, val);
     }
   }
@@ -199,7 +199,7 @@ export async function createProgressiveEngine(
     restirPtReuse: opts.convergedOptions?.restirPtReuse === true,
   });
   const unmet: string[] = [];
-  for (const [key, wanted] of Object.entries(union) as [string, number][]) {
+  for (const [key, wanted] of Object.entries(union)) {
     const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];
     if (typeof cap !== 'number' || cap < wanted) {
       unmet.push(`${key}: need ≥${wanted}, adapter has ${cap ?? 'undefined'}`);
@@ -344,17 +344,17 @@ export async function createProgressiveEngine(
         disposed = true;
         // Sub-engine disposes are no-ops on the device (shared-device path); the
         // facade destroys it once below, after both are torn down.
-        try { builtRealtime.dispose(); } catch {}
-        try { builtConverged.dispose(); } catch {}
-        try { device.destroy(); } catch {}
+        try { builtRealtime.dispose(); } catch { /* best-effort sub-engine cleanup — ignore */ }
+        try { builtConverged.dispose(); } catch { /* best-effort sub-engine cleanup — ignore */ }
+        try { device.destroy(); } catch { /* best-effort device destroy — ignore */ }
       },
     };
   } catch (err) {
     // Build failed after acquiring the device (or after one sub-engine built):
     // tear down whatever exists, then the device, so we never leak it.
-    try { realtime?.dispose(); } catch {}
-    try { converged?.dispose(); } catch {}
-    try { device.destroy(); } catch {}
+    try { realtime?.dispose(); } catch { /* best-effort cleanup — ignore */ }
+    try { converged?.dispose(); } catch { /* best-effort cleanup — ignore */ }
+    try { device.destroy(); } catch { /* best-effort device destroy — ignore */ }
     throw err;
   }
 }

@@ -114,7 +114,7 @@ describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      roughnessMap: roughTex as unknown as import('@vitrum/core').TextureRef,
+      roughnessMap: roughTex,
     }]);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('roughnessMap'))).toBe(false);
     warn.mockRestore();
@@ -126,7 +126,7 @@ describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      metallicMap: metallicTex as unknown as import('@vitrum/core').TextureRef,
+      metallicMap: metallicTex,
     }]);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('roughnessMap'))).toBe(false);
     warn.mockRestore();

@@ -270,7 +270,7 @@ export function dBrdf_dRoughness(
   //   d(spec_c)/droughness = [(dD·G + D·dG)/(4·nDotV·nDotL)] · f_c.
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
-  return [dSpecScale * f[0]!, dSpecScale * f[1]!, dSpecScale * f[2]!];
+  return [dSpecScale * f[0], dSpecScale * f[1], dSpecScale * f[2]];
 }
 
 /**

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
 import { luminance } from '@vitrum/shared-samplers';
-import { meshTriangleArea } from '../bdpt/flatEmitterWalk.js';
 import { buildLightTreeInputForScene } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
@@ -139,7 +138,9 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(secondInstanceFirstTri.c, [11, 1, 0]);
   });
 
-  it('lowers disc-area emitters into equal-area mesh triangle records', () => {
+  it('packs disc-area emitters natively into the rect stream (shape tag = 1.0, π·r² area)', () => {
+    // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+    // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
     const radius = 2;
     const radiance: [number, number, number] = [3, 1.5, 0.75];
     const scene: Scene = {
@@ -155,23 +156,38 @@ describe('buildPackedScene emitter + environment packing', () => {
       }],
     };
     const packed = buildPackedScene(scene);
-    expect(packed.rectAreaLightCount).toBe(0);
-    expect(packed.meshAreaLightCount).toBe(32);
-    let area = 0;
-    for (let i = 0; i < packed.meshAreaLightCount; i += 1) {
-      const tri = triAt(packed.meshAreaLightsData, i);
-      expectVec3Close(tri.r, radiance);
-      area += meshTriangleArea(tri.a, tri.b, tri.c);
-    }
-    expect(area).toBeCloseTo(Math.PI * radius * radius, 5);
+    // Disc is now packed into the rect stream, NOT the mesh stream.
+    expect(packed.rectAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightCount).toBe(0);
 
+    // Verify record layout: stride = 16 floats (4 vec4f).
+    expect(packed.rectAreaLightsData.length).toBe(16);
+    const d = packed.rectAreaLightsData;
+    // vec4 0: center
+    expect(d[0]).toBeCloseTo(0, 5);
+    expect(d[1]).toBeCloseTo(2, 5);
+    expect(d[2]).toBeCloseTo(0, 5);
+    // vec4 1: uAxis = tangent × radius; |uAxis| must equal radius
+    const uLen = Math.hypot(d[4]!, d[5]!, d[6]!);
+    expect(uLen).toBeCloseTo(radius, 5);
+    // vec4 2: vAxis = bitangent × radius; |vAxis| must equal radius
+    const vLen = Math.hypot(d[8]!, d[9]!, d[10]!);
+    expect(vLen).toBeCloseTo(radius, 5);
+    // u and v must be orthogonal (packed in disc plane)
+    const uvDot = d[4]! * d[8]! + d[5]! * d[9]! + d[6]! * d[10]!;
+    expect(uvDot).toBeCloseTo(0, 5);
+    // vec4 3: radiance.rgb matches color × intensity
+    expect(d[12]).toBeCloseTo(radiance[0], 5);
+    expect(d[13]).toBeCloseTo(radiance[1], 5);
+    expect(d[14]).toBeCloseTo(radiance[2], 5);
+    // shape tag = 1.0 (disc)
+    expect(d[15]).toBeCloseTo(1.0, 5);
+
+    // Light tree: one leaf, power = luminance × π·r²
     const tree = buildLightTreeInputForScene(scene);
-    expect(tree.powers.length).toBe(32);
-    const totalPower = tree.powers.reduce((sum, p) => sum + p, 0);
-    expect(totalPower).toBeCloseTo(
-      luminance(radiance[0], radiance[1], radiance[2]) * Math.PI * radius * radius,
-      4,
-    );
+    expect(tree.powers.length).toBe(1);
+    const expectedPower = luminance(radiance[0], radiance[1], radiance[2]) * Math.PI * radius * radius;
+    expect(tree.powers[0]).toBeCloseTo(expectedPower, 4);
   });
 
   it('cameraVisibleEmitters re-attaches mesh-area emitter radiance onto the primitive material (color·intensity)', () => {
@@ -222,7 +238,7 @@ describe('buildPackedScene emitter + environment packing', () => {
   });
 
   it('warns and falls back when HDRI payload is opaque', () => {
-    const scene: Scene = { ...baseScene(), environment: { kind: 'hdri', hdri: { mock: true } as never } };
+    const scene: Scene = { ...baseScene(), environment: { kind: 'hdri', hdri: { mock: true } } };
     const packed = buildPackedScene(scene);
     expect(packed.hasEnvironmentMap).toBe(false);
     expect(packed.warnings.some((w) => w.includes('HDRI environment'))).toBe(true);

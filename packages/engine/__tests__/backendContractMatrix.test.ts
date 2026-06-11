@@ -32,7 +32,7 @@ function makeFakeEngine(capabilities: EngineCapabilities): Engine {
       kind: 'rendered',
       samplesAccumulated: 1,
       isConverged: false,
-      primaryRadiance: asBackendTexture<'test', {}>({}),
+      primaryRadiance: asBackendTexture<'test', object>({}),
     })),
     reset: vi.fn(),
     pause: vi.fn(),

@@ -97,7 +97,7 @@ export function packMeshAreaLights(scene: Scene, merged: WorldSpaceMergeResult):
   const tris: { v0: Vec3; v1: Vec3; v2: Vec3; rad: Vec3; area: number }[] = [];
   let totalEmissiveArea = 0;
   for (const range of merged.meshVertexRanges) {
-    const rad = radianceByMesh.get(range.name as SceneNodeId);
+    const rad = radianceByMesh.get(range.name);
     if (rad == null) continue;
     for (let t = 0; t < range.triCount; t += 1) {
       const tri = range.triStart + t;

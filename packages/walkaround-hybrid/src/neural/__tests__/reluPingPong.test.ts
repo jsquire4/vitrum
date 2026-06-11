@@ -121,7 +121,7 @@ describe('H28 — relu ping-pong (no aliased read+read_write bindings)', () => {
       const b0 = bg.entries.find(e => e.binding === 0);
       const b3 = bg.entries.find(e => e.binding === 3);
       if (b0 && b3 && b0.buffer === b3.buffer) {
-        violations.push(`Bind group "${bg.label}": binding 0 === binding 3 (buf id=${(b0.buffer as StubBuffer).id}, label="${b0.buffer.label}")`);
+        violations.push(`Bind group "${bg.label}": binding 0 === binding 3 (buf id=${(b0.buffer).id}, label="${b0.buffer.label}")`);
       }
     }
 

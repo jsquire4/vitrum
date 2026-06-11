@@ -181,25 +181,15 @@ const WALKAROUND_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
 });
 
 /**
- * pt-webgpu emitter support: disc-area is geometrically approximate — the packer
- * (`emitterPacking.ts:128-197`, `discAreaPackedAsTriangles`) lowers each disc emitter
- * to a 32-triangle fan whose radius is scaled so total area = π·r² (area-compensated
- * fan, NOT a concentric-disc analytic sample). pt-webgl2 and walkaround-hybrid pack
- * disc-area natively (CIRC_AREA_LIGHT / area-preserving tessellation respectively),
- * so they keep the `'native'` grade in ALL_EMITTERS_NATIVE / WALKAROUND_EMITTERS.
+ * pt-webgpu emitter support: all emitter kinds are now native.
+ * disc-area was previously approximate (32-triangle fan); it is now packed natively
+ * into the rect-area stream with a shape discriminator (RECT_DISC_SHAPE_DISC = 1.0
+ * in emission.w) and sampled via the concentric-disc map (Shirley & Chiu 1997),
+ * exactly matching pt-webgl2's CIRC_AREA_LIGHT handling.
+ * Promoted approximate → native, 2026-06-10 (emitterPacking.ts `packDiscAsRect`).
+ * A/B radiometric validation in R9-B.
  */
-const PT_WEBGPU_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
-  directional: 'native',
-  'rect-area': 'native',
-  // B11 — 32-triangle area-compensated fan (emitterPacking.ts:128-197).
-  // Geometrically approximate: sampling is uniform over fan triangles, not over the
-  // analytic disc; the fan radius is scaled (√(π/polygonAreaFactor)) to preserve
-  // total area = π·r². Grade: 'approximate'. pt-webgl2 is native (CIRC_AREA_LIGHT=1).
-  'disc-area': 'approximate',
-  point: 'native',
-  spot: 'native',
-  'mesh-area': 'native',
-});
+const PT_WEBGPU_EMITTERS: BackendSupportDetails['emitters'] = ALL_EMITTERS_NATIVE;
 
 const NO_ANALYTIC_SHAPES: BackendSupportDetails['analyticShapes'] = Object.freeze({
   sphere: 'unsupported',

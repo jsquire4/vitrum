@@ -178,7 +178,7 @@ describe('HybridEngineFrameTelemetry.getDenoiserState — interface type-level c
       progressSubs: [],
       verbose: false,
       debugTimings: [],
-      debugSurface: {} as EngineDebugSurface,
+      debugSurface: {},
       dbg: null,
       getDenoiserState: () => null,
     };

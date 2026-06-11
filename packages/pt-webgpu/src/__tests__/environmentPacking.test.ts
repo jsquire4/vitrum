@@ -16,7 +16,7 @@ function makeHdriScene(data: ArrayLike<number>, width: number, height: number): 
     environment: {
       kind: 'hdri',
       hdri: { width, height, data } as unknown as Scene['environment'] & object,
-    } as Scene['environment'],
+    },
   };
 }
 
@@ -91,7 +91,7 @@ describe('environmentPacking — all-black HDRI message', () => {
       environment: {
         kind: 'hdri',
         hdri: {} as unknown as Scene['environment'] & object,
-      } as Scene['environment'],
+      },
     };
     const p = environmentParams(scene);
     expect(p.hasHdri).toBe(false);

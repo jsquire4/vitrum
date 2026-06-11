@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
-import type { Engine, EngineError, FrameInput, FrameOutput } from '@vitrum/core';
+import type { EngineError, FrameInput, FrameOutput } from '@vitrum/core';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
 import { AUTO_RECREATE_MAX_ATTEMPTS, AUTO_RECREATE_WINDOW_MS } from '../src/lifecycle/vanilla.js';
 
@@ -67,7 +67,7 @@ function makeMockEngine(options?: {
     _onErrorCbs: onErrorCbs,
     _fireError(e: EngineError): void {
       for (const cb of [...onErrorCbs]) {
-        try { cb(e); } catch {}
+        try { cb(e); } catch { /* subscriber errors must not stop other subscribers — ignore */ }
       }
     },
   };

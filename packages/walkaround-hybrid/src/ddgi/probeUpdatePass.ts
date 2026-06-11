@@ -751,7 +751,7 @@ export class ProbeUpdatePass {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
     }
-    device.queue.writeBuffer(gpu.emitterTrisBuf, 0, data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
+    device.queue.writeBuffer(gpu.emitterTrisBuf, 0, data.buffer, data.byteOffset, data.byteLength);
     gpu.emitterTrisCount = count;
   }
 

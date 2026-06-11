@@ -17,7 +17,7 @@
 //     backends must NOT apply sRGB-decode to these.
 //   The README's support matrix documents this ownership boundary.
 
-import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
+import type { GltfJson } from './gltfTypes.js';
 import type { TextureRef, UvTransform } from '@vitrum/core';
 
 export type DecodeImageFn = (

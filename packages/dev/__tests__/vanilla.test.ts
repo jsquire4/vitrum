@@ -13,7 +13,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   asBackendTexture,
-  type Engine,
   type EngineCapabilities,
   type EngineState,
   type Scene,

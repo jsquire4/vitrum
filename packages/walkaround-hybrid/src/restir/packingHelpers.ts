@@ -159,6 +159,7 @@ export function packBVHIndexWTri(
 
 // ──────────────────────────────────────────────────────────────────────────
 // B1 — per-triangle roughness + metalness lane.
+// B1-ior-per-tri — per-triangle IOR lane (2026-06-10).
 //
 // The bvhIndex.w payload (RGBA8 baseColor | trans4 | isMetal1 | texId3) is full;
 // authored roughness/metalness never reached the BRDF (shade hardcoded
@@ -167,30 +168,65 @@ export function packBVHIndexWTri(
 // glossy/metal GI target are physically driven.
 //
 // Layout: one u32 per triangle (parallel to bvh_beer / bvh_emissive, same texel
-// addressing). bits[31:24] = roughness×255, bits[23:16] = metalness×255. The
-// low 16 bits are reserved (zero) for a future anisotropy/clearcoat lane.
+// addressing):
+//   bits[31:24] = roughness × 255
+//   bits[23:16] = metalness × 255
+//   bits[15:8]  = IOR quantized: (ior − 1) / 2 * 255, range [1.0, 3.0]
+//                 covering water (1.33) → glass (1.5) → diamond (2.42) → TiO₂ (≈2.9).
+//                 Decode: ior = 1 + (byte / 255) * 2.  Quantization step = 2/255 ≈ 0.0078.
+//                 IOR_GLASS = 1.5 encodes to byte 63.75 → rounds to 64 → decodes to
+//                 1 + 64/255 * 2 ≈ 1.502 (error < 0.003 — within glass dispersion spread).
+//   bits[7:0]   = reserved (zero).
 //
 // DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
 // ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
 // before B1 — so a default-roughness diffuse scene (metal 0) is numerically
 // unchanged. Glass (transmission > 0.5) packs 0.05 to match the prior glass
 // hardcode. Metalness 0 default.
+//
+// IOR DEFAULT INVARIANT (B1-ior-per-tri): glass materials with no authored ior
+// default to IOR_DEFAULT_GLASS = 1.5, which encodes to byte 64 and decodes
+// back to 1.502 — preserving the previous hard-wired IOR_GLASS=1.5 behaviour
+// to within 0.003. Opaque/non-glass materials pack IOR_DEFAULT_OPAQUE = 1.0
+// (byte 0) — decodes to exactly 1.0 (air/vacuum); the WGSL consumers skip the
+// IOR lane for non-glass surfaces so this value has no visual impact.
 const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
+/** Default IOR for glass (crown glass). Packs to byte 64, decodes to 1.502. */
+export const IOR_DEFAULT_GLASS = 1.5;
+/** IOR range minimum (air/vacuum). Byte 0. */
+export const IOR_RANGE_MIN = 1.0;
+/** IOR range maximum (slightly above diamond 2.42, up to TiO₂ ≈ 2.9). */
+export const IOR_RANGE_MAX = 3.0;
 
-function packRoughMetalByte(roughness: number, metalness: number): number {
-  const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
-  const m8 = Math.min(255, Math.max(0, Math.round(metalness * 255))) & 0xFF;
-  return ((r8 << 24) | (m8 << 16)) >>> 0;
+/** Quantize an IOR value to a u8 byte using the [IOR_RANGE_MIN, IOR_RANGE_MAX] linear mapping.
+ *  Maps ior → clamp((ior − 1) / 2 * 255, 0, 255). */
+export function quantizeIor(ior: number): number {
+  return Math.min(255, Math.max(0, Math.round((ior - IOR_RANGE_MIN) / (IOR_RANGE_MAX - IOR_RANGE_MIN) * 255))) & 0xFF;
 }
 
-/** Resolve a triangle's (roughness, metalness) for packing, applying the B1
- *  diffuse-default invariant (no authored roughness → 0.85; glass → 0.05). */
+/** Dequantize a u8 IOR byte back to a float. Inverse of {@link quantizeIor}. */
+export function dequantizeIor(byte: number): number {
+  return IOR_RANGE_MIN + (byte / 255) * (IOR_RANGE_MAX - IOR_RANGE_MIN);
+}
+
+function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
+  const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
+  const m8 = Math.min(255, Math.max(0, Math.round(metalness * 255))) & 0xFF;
+  const i8 = quantizeIor(ior);
+  return ((r8 << 24) | (m8 << 16) | (i8 << 8)) >>> 0;
+}
+
+/** Resolve a triangle's (roughness, metalness, ior) for packing, applying the
+ *  B1 diffuse-default invariant (no authored roughness → 0.85; glass → 0.05)
+ *  and the B1-ior-per-tri IOR default invariant (no authored ior on glass → 1.5;
+ *  opaque → 1.0 — not consumed for opaque surfaces). */
 function resolveRoughMetal(
   roughness: number | undefined,
   metalness: number | undefined,
   transmission: number | undefined,
-): { rough: number; metal: number } {
+  ior?: number,
+): { rough: number; metal: number; ior: number } {
   const isGlass = (transmission ?? 0) > 0.5;
   let rough: number;
   if (roughness === undefined || !Number.isFinite(roughness)) {
@@ -199,10 +235,14 @@ function resolveRoughMetal(
     rough = Math.min(1, Math.max(0, roughness));
   }
   const metal = Math.min(1, Math.max(0, metalness ?? 0));
-  return { rough, metal };
+  // IOR: glass defaults to 1.5, opaque defaults to 1.0 (irrelevant — not consumed).
+  const resolvedIor = (ior !== undefined && Number.isFinite(ior) && ior > 0)
+    ? Math.min(IOR_RANGE_MAX, Math.max(IOR_RANGE_MIN, ior))
+    : (isGlass ? IOR_DEFAULT_GLASS : IOR_RANGE_MIN);
+  return { rough, metal, ior: resolvedIor };
 }
 
-/** Pack one triangle's roughness+metalness into a parallel u32 buffer. */
+/** Pack one triangle's roughness+metalness+IOR into a parallel u32 buffer. */
 export function packBVHRoughMetalTri(
   rmBuf: Uint32Array,
   triMaterialId: Uint32Array,
@@ -212,9 +252,9 @@ export function packBVHRoughMetalTri(
   const matId = triMaterialId[tri]!;
   const mat = materials[matId];
   const rm = mat
-    ? resolveRoughMetal(mat.roughness, mat.metalness, mat.transmission)
-    : { rough: ROUGH_DEFAULT, metal: 0 };
-  rmBuf[tri] = packRoughMetalByte(rm.rough, rm.metal);
+    ? resolveRoughMetal(mat.roughness, mat.metalness, mat.transmission, mat.ior)
+    : { rough: ROUGH_DEFAULT, metal: 0, ior: IOR_RANGE_MIN };
+  rmBuf[tri] = packRoughMetalIorBytes(rm.rough, rm.metal, rm.ior);
 }
 
 /** Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer. */
@@ -277,10 +317,11 @@ export function packBVHIndexW(
 }
 
 /**
- * Pack per-triangle roughness+metalness into a parallel u32 buffer
- * (bits[31:24]=rough×255, bits[23:16]=metal×255). Read by the ReSTIR/shade
- * WGSL via decodeRoughMetal(triIndex). See packBVHRoughMetalTri for the B1
- * diffuse-default invariant.
+ * Pack per-triangle roughness+metalness+IOR into a parallel u32 buffer
+ * (bits[31:24]=rough×255, bits[23:16]=metal×255, bits[15:8]=ior_quantized).
+ * Read by the ReSTIR/shade WGSL via decodeRoughMetal+decodeIor(triIndex).
+ * See packBVHRoughMetalTri for the B1 diffuse-default invariant and the
+ * B1-ior-per-tri IOR default invariant (glass → 1.5; opaque → 1.0).
  */
 export function packBVHRoughMetal(
   triMaterialId: Uint32Array,
@@ -436,12 +477,13 @@ export function packBVHIndexWFromCore(
 
 /**
  * Core-material counterpart to {@link packBVHRoughMetal}: pack per-triangle
- * roughness+metalness (bits[31:24]=rough×255, bits[23:16]=metal×255) from a
- * `MaterialSpec[]`. Applies the SAME B1 diffuse-default invariant as the
- * structural packer: no authored `roughness` → 0.85 (0.05 for glass,
- * transmission > 0.5); metalness from `mat.metallic ?? 0`. Missing slot →
- * (0.85, 0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so the core
- * and structural paths produce identical per-triangle output.
+ * roughness+metalness+IOR (bits[31:24]=rough×255, bits[23:16]=metal×255,
+ * bits[15:8]=ior_quantized) from a `MaterialSpec[]`. Applies the SAME B1
+ * diffuse-default invariant as the structural packer: no authored `roughness` →
+ * 0.85 (0.05 for glass, transmission > 0.5); metalness from `mat.metallic ?? 0`.
+ * IOR from `mat.ior ?? 1.5` (glass) / `1.0` (opaque). Missing slot →
+ * (0.85, 0, opaque-1.0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so
+ * the core and structural paths produce identical per-triangle output.
  */
 export function packBVHRoughMetalFromCore(
   triMaterialId: Uint32Array,
@@ -453,12 +495,14 @@ export function packBVHRoughMetalFromCore(
     const mat = materials[triMaterialId[t]!];
     let rough = ROUGH_DEFAULT;
     let metal = 0;
+    let ior = IOR_RANGE_MIN;
     if (mat) {
-      const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission);
+      const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission, mat.ior);
       rough = rm.rough;
       metal = rm.metal;
+      ior = rm.ior;
     }
-    rmBuf[t] = packRoughMetalByte(rough, metal);
+    rmBuf[t] = packRoughMetalIorBytes(rough, metal, ior);
   }
   return rmBuf;
 }

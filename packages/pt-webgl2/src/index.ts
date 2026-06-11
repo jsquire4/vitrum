@@ -95,6 +95,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #backgroundAlpha: number;
   readonly #cameraType: 0 | 1 | 2;
   readonly #dof: PTEngineWebGL2Options['dof'];
+  // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
   readonly #regime: AccumRegime;
@@ -173,7 +174,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       console.warn(msg);
       // Route through onError so the host can react programmatically (item 28).
       for (const cb of this.#onErrorSubs) {
-        try { cb({ kind: 'context-lost', message: msg, fatal: true, raw: e }); } catch {}
+        try { cb({ kind: 'context-lost', message: msg, fatal: true, raw: e }); } catch { /* subscriber errors must not stop context-loss notification — ignore */ }
       }
     };
     this.#onContextRestored = (): void => {
@@ -397,6 +398,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    * Synchronous (WebGL readPixels is always synchronous — no async stall). Wraps
    * in a resolved Promise to match the cross-backend contract.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- WebGL readPixels is synchronous; async wraps the result to match the cross-backend contract
   async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
     const colorSpace = opts?.colorSpace ?? 'linear';
     const rgba = this.#gpu.readPixelsRgba32f(colorSpace === 'output' ? 'output' : 'linear');
@@ -565,6 +567,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 export const createPTEngine_WebGL2: EngineFactory<
   PTEngineWebGL2Options,
   Engine & PTEngineWebGL2Surface
+  // eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed for WebGL2
 > = async (opts: PTEngineWebGL2Options): Promise<Engine & PTEngineWebGL2Surface> => {
   const gl = opts.device;
   if (gl == null || typeof gl.createFramebuffer !== 'function') {

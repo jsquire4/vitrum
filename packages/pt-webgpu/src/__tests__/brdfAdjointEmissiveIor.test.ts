@@ -70,9 +70,9 @@ describe('emissive adjoint — dContribution_dEmissive == finite difference', ()
 
   it('is exactly throughput·intensity (closed form, value-independent)', () => {
     const g = dContribution_dEmissive([0.6, 0.3, 0.9], 2);
-    expect(g[0]!).toBeCloseTo(1.2, 12);
-    expect(g[1]!).toBeCloseTo(0.6, 12);
-    expect(g[2]!).toBeCloseTo(1.8, 12);
+    expect(g[0]).toBeCloseTo(1.2, 12);
+    expect(g[1]).toBeCloseTo(0.6, 12);
+    expect(g[2]).toBeCloseTo(1.8, 12);
   });
 
   it('emissive does NOT enter evaluateBrdf (sanity: BRDF is emissive-independent)', () => {
@@ -82,7 +82,7 @@ describe('emissive adjoint — dContribution_dEmissive == finite difference', ()
     // evaluateBrdf has no emissive parameter — there is nothing to perturb; the
     // value is whatever the BRDF computes (assert it's finite + nonzero).
     expect(a.every((x) => Number.isFinite(x))).toBe(true);
-    expect(a[0]! + a[1]! + a[2]!).toBeGreaterThan(0);
+    expect(a[0] + a[1] + a[2]).toBeGreaterThan(0);
   });
 });
 

@@ -12,7 +12,6 @@
 import * as React from 'react';
 import * as ReactDOM from 'react-dom/client';
 // VitrumCanvas is the named export from the /react subpath of @vitrum/engine.
-// eslint-disable-next-line import/no-unresolved
 import { VitrumCanvas } from '@vitrum/engine/react';
 import type { CameraLike } from '@vitrum/engine';
 import type { ProgressStats } from '@vitrum/core';

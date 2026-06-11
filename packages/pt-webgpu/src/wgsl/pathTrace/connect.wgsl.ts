@@ -163,15 +163,21 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   return result;
 }
 
-// Intersect the BSDF sample ray against rect area light index li.
-// Accepts a light index so BSDF->light MIS can check all lights.
+// Intersect the BSDF sample ray against rect/disc area light index li.
+// Reads the shape discriminator from emission.w: ≈ 0 → rect, ≈ 1 → analytic disc.
+// Rect:  uCoord/vCoord ∈ [-1,1] box test; area = 4·|u×v|.
+// Disc:  uCoord² + vCoord² ≤ 1 circle test; area = π·|u|² (|u| = radius).
 // Ref: Veach, E. PhD thesis, Stanford 1997, Ch. 9 -- power-heuristic MIS;
 //      sum-MIS over all lights is unbiased (D9 decision).
+// Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
+// RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
 fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
   let rb = li * 4u;
   let rectPos = rectAreaLights[rb].xyz;
   let uAxis = rectAreaLights[rb + 1u].xyz;
   let vAxis = rectAreaLights[rb + 2u].xyz;
+  let rshape = rectAreaLights[rb + 3u];
+  let isDisc = abs(rshape.w - 1.0) < 0.5;
   let lightNormal = safe_normalize(cross(uAxis, vAxis));
   let denom = dot(lightNormal, rayDir);
   if (abs(denom) < 1e-6) {
@@ -187,14 +193,25 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let vLen2 = max(dot(vAxis, vAxis), 1e-6);
   let uCoord = dot(rel, uAxis) / uLen2;
   let vCoord = dot(rel, vAxis) / vLen2;
-  if (abs(uCoord) > 1.0 || abs(vCoord) > 1.0) {
+  // Containment test: disc uses circle (u²+v²≤1), rect uses square (|u|,|v|≤1).
+  let inside = select(
+    abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
+    uCoord * uCoord + vCoord * vCoord <= 1.0,
+    isDisc,
+  );
+  if (!inside) {
     return false;
   }
   let cosLight = max(dot(lightNormal, -rayDir), 0.0);
   if (cosLight <= 0.0) {
     return false;
   }
-  let area = max(4.0 * length(cross(uAxis, vAxis)), 1e-6);
+  // Area formula: disc → π·r² (r = |uAxis|); rect → 4·|u×v|.
+  let area = select(
+    max(4.0 * length(cross(uAxis, vAxis)), 1e-6),
+    max(PI * dot(uAxis, uAxis), 1e-6),
+    isDisc,
+  );
   *distOut = t;
   *lightPdfOut = (t * t) / max(cosLight * area, 1e-6);
   return true;

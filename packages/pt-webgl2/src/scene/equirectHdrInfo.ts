@@ -104,6 +104,7 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
         'pt-webgl2 requires a raw {width, height, data} RGB float payload (or use the ' +
         'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
         'The environment will be ignored (EMPTY_ENV fallback). ' +
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic warning; [object Object] output is acceptable here
         `Received hdri handle: ${String(hdri)}, width=${width}, height=${height}, ` +
         `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`,
     );

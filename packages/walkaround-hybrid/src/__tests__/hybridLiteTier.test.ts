@@ -37,7 +37,7 @@ function baseOpts(overrides: Partial<HybridEngineOptions>): HybridEngineOptions 
     skyTint: [0.5, 0.7, 1.0],
     skyIrradiance: 0.3,
     ...overrides,
-  } as HybridEngineOptions;
+  };
 }
 
 // These tests pin the constructor-resolved preset/tier knobs. The resolved

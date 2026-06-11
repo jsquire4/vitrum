@@ -162,7 +162,7 @@ describe('createEngine backend construction safety', () => {
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ restirPtReuse: true } as unknown as CreateEngineOptions['advanced']),
+      makeOptions({ restirPtReuse: true }),
       scene,
     );
 
@@ -263,7 +263,7 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
     hybridFactory.mockResolvedValue(makeEngine());
 
     await constructWalkaround(
-      makeOptions({ device: impostor } as unknown as CreateEngineOptions['advanced']),
+      makeOptions({ device: impostor }),
       scene,
       aabb,
       false,
@@ -291,7 +291,7 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ device: impostor } as unknown as CreateEngineOptions['advanced']),
+      makeOptions({ device: impostor }),
       scene,
     );
 
@@ -308,7 +308,7 @@ describe('Bug4 fix — cross-backend advanced fallback warning (warnCrossBackend
   it('emits a console.warn when advanced is non-empty and backends differ', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     warnCrossBackendAdvanced(
-      { maxBounces: 4 } as CreateEngineOptions['advanced'],
+      { maxBounces: 4 },
       'walkaround-hybrid',
       'pt-webgpu',
     );

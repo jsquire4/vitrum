@@ -654,7 +654,9 @@ fn lo_indirect(
 // outgoing irradiance THROUGH the glass. Weight it by:
 //   1. Fresnel TRANSMISSION factor at the glass interface (1 - Fresnel reflection,
 //      scalar Schlick approximation at the camera-ray → glass incidence angle).
-//      F0 for glass: ((IOR-1)/(IOR+1))² = ((1.5-1)/(1.5+1))² ≈ 0.04.
+//      B1-ior-per-tri (2026-06-10): F0 is derived from the per-tri IOR (decodeIor)
+//      via the physical formula F0 = ((ior−1)/(ior+1))².
+//      Default IOR=1.5 → F0 = ((0.5/2.5)²) = 0.04 (preserves prior behaviour).
 //   2. Beer-Lambert tint: the bvh_beer texture carries the pre-computed
 //      attenuationColor^(thickness/attDist) for this glass triangle. Multiply
 //      as a per-channel scale (same source as lo_emit).
@@ -663,9 +665,8 @@ fn lo_indirect(
 // direct channel (not the demodulated indirect channel) because its albedo is
 // the glass transmittance (beerAlbedo), not the Lambertian baseColor of the receiver.
 //
-// Multi-interface and rough-glass: out of scope (plan/residue-closure-plan-2026-06-10.md
-// §B1 tail). A glass pixel with no valid reservoir (W=0 or M=0) returns vec3f(0).
-const GLASS_F0: f32 = 0.04;  // ((1.5-1)/(1.5+1))^2 for IOR_GLASS=1.5
+// Multi-interface: out of scope. A glass pixel with no valid reservoir (W=0 or M=0)
+// returns vec3f(0).
 fn lo_transmittedGI(
   gid:          vec2u,
   dims:         vec2u,
@@ -694,9 +695,19 @@ fn lo_transmittedGI(
   let wi = toS / distS;
   let cosTheta = max(0.0, dot(g.nv, wi));
 
+  // B1-ior-per-tri: decode per-tri IOR → compute physical Schlick F0.
+  //   F0 = ((ior−1)/(ior+1))²   (normal-incidence Fresnel reflectance)
+  //   Default IOR=1.5 → F0 = (0.5/2.5)² = 0.04 (matches prior GLASS_F0 constant).
+  let rmCoordG = vec2u(triIndex % BVH_MATERIAL_TEX_WIDTH, triIndex / BVH_MATERIAL_TEX_WIDTH);
+  let packedG = textureLoad(bvh_material, vec2i(rmCoordG), 0).r;
+  let glassIor = decodeIor(packedG);
+  let iorMinus1 = glassIor - 1.0;
+  let iorPlus1  = glassIor + 1.0;
+  let glassF0 = (iorMinus1 / iorPlus1) * (iorMinus1 / iorPlus1);
+
   // Fresnel transmission: scalar Schlick at camera-to-glass incidence.
   let cosI = max(0.0, dot(wo, normal));  // wo = -primaryRay.direction (camera facing)
-  let fresnelR = GLASS_F0 + (1.0 - GLASS_F0) * pow(max(0.0, 1.0 - cosI), 5.0);
+  let fresnelR = glassF0 + (1.0 - glassF0) * pow(max(0.0, 1.0 - cosI), 5.0);
   let fresnelT = max(0.0, 1.0 - fresnelR);
 
   // Beer-Lambert tint (same bvh_beer read as lo_emit).

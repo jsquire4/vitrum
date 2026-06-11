@@ -256,11 +256,7 @@ export function assembleMergedConnectionPath(args: {
  * import it from this module. `MergedVertex` is structurally identical to
  * `BDPTFullVertex` (same fields, same types), so no adaptation is needed.
  */
-export const buildStrategyPdfs = buildBDPTStrategyPDFs_full as (
-  vertices: ReadonlyArray<MergedVertex>,
-  selectedS: number,
-  pRef: number,
-) => Float64Array;
+export const buildStrategyPdfs = buildBDPTStrategyPDFs_full;
 
 /**
  * Power-heuristic (β=2) MIS weight over the strategy pdf vector.

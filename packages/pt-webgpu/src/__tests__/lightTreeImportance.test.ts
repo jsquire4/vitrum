@@ -276,7 +276,7 @@ describe('WS2 — power-weighted NEE estimator is unbiased + lower-variance', ()
       const idx = Math.min(1, Math.floor(rng() * 2));
       return { idx, pdf: 0.5 };
     });
-    expect(uniform.mean).toBeCloseTo(groundTruthSum, 0.6 as unknown as number);
+    expect(uniform.mean).toBeCloseTo(groundTruthSum, 0.6);
     expect(Math.abs(uniform.mean - groundTruthSum) / groundTruthSum).toBeLessThan(0.02);
   });
 

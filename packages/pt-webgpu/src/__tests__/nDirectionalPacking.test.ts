@@ -50,7 +50,7 @@ function directionalScene(count: number): Scene {
       intensity: 2 + i,
     });
   }
-  return { ...baseScene(), emitters: emitters as Scene['emitters'] };
+  return { ...baseScene(), emitters: emitters };
 }
 
 // ─── Item 1: N-directional stride constant ────────────────────────────────────

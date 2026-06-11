@@ -266,7 +266,7 @@ function reportCreateEngineError(
 ): void {
   try {
     opts.onError?.(error, event);
-  } catch {}
+  } catch { /* host error callback must not propagate — ignore */ }
 }
 
 /**
@@ -303,12 +303,12 @@ export function warnCrossBackendAdvanced(
 
 function destroyOwnedWebGpuDevice(shared: SharedDeviceCtx | undefined, device: GPUDevice): void {
   if (shared == null) {
-    try { device.destroy(); } catch {}
+    try { device.destroy(); } catch { /* best-effort destroy — ignore */ }
   }
 }
 
 function disposeOwnedWebGL2Context(gl: WebGL2RenderingContext): void {
-  try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {}
+  try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* best-effort context loss — ignore */ }
 }
 
 async function constructPathTracerFallback(
@@ -527,7 +527,7 @@ export async function constructWalkaround(
       destroyOwnedWebGpuDevice(shared, device);
     });
   } catch (err) {
-    try { engine?.dispose(); } catch {}
+    try { engine?.dispose(); } catch { /* best-effort cleanup before re-throw — ignore */ }
     destroyOwnedWebGpuDevice(shared, device);
     throw err;
   }
@@ -589,7 +589,7 @@ export async function constructPathTracerWebGPU(
       destroyOwnedWebGpuDevice(shared, device);
     });
   } catch (err) {
-    try { engine?.dispose(); } catch {}
+    try { engine?.dispose(); } catch { /* best-effort cleanup before re-throw — ignore */ }
     destroyOwnedWebGpuDevice(shared, device);
     throw err;
   }
@@ -621,7 +621,7 @@ async function constructPathTracer(
       disposeOwnedWebGL2Context(gl);
     });
   } catch (err) {
-    try { engine?.dispose(); } catch {}
+    try { engine?.dispose(); } catch { /* best-effort cleanup before re-throw — ignore */ }
     disposeOwnedWebGL2Context(gl);
     throw err;
   }

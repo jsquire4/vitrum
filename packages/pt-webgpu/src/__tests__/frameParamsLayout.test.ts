@@ -175,8 +175,11 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('spotLights[spotBase + 1u]');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('spotLights[spotBase + 2u]');
     // Item 15: rectAreaLights and meshAreaLights now use loop-indexed rb/mb (megakernel).
+    // 2026-06-10: disc-area native — rb+3u row is read as a full vec4 (rshape) so the
+    // radiance (.rgb) + shape tag (.w) are extracted in one load; the substring
+    // 'rectAreaLights[rb + 3u].rgb' no longer appears (it's 'rshape.rgb' instead).
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u].rgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u]');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb].xyz');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb + 3u].rgb');
     // No more reads of the dropped vec4f fields.

@@ -203,7 +203,7 @@ const shaders = [];
     INDIRECT_TEMPORAL_ACCUM_MODULE,
     COMPOSITE_VERT_MODULE,
     COMPOSITE_FRAG_MODULE,
-    PPG_UPDATE_MODULE,
+    PPG_UPDATE_MODULE: _PPG_UPDATE_MODULE,
     ATROUS_MODULE,
     TEMPORAL_ACCUM_MODULE,
     ATROUS_VARIANCE_MODULE,
@@ -347,7 +347,7 @@ const shaders = [];
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const {
-    ATROUS_WGSL,
+    ATROUS_WGSL: _ATROUS_WGSL,
     TEMPORAL_ACCUM_WGSL,
     ATROUS_VARIANCE_WGSL,
     SVGF_REPROJECTION_WGSL,

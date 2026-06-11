@@ -133,7 +133,7 @@ export function convertMaterial(
         sheenRoughnessTexture?: { index: number; texCoord?: number };
       }
     | undefined;
-  const sheen = sheenExt ? 1 : 0;
+  const _sheen = sheenExt ? 1 : 0; // unused — kept for documentation of the computed value
   const sheenColor: Vec3 | undefined = sheenExt?.sheenColorFactor;
   const sheenRoughness = sheenExt?.sheenRoughnessFactor ?? 0;
   const sheenColorMap = resolveTextureRef(sheenExt?.sheenColorTexture, handleMap);

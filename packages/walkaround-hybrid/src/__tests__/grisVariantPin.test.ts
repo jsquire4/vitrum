@@ -51,7 +51,7 @@ function baseOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     skyTint: [0.5, 0.7, 1.0],
     skyIrradiance: 0.3,
     ...overrides,
-  } as HybridEngineOptions;
+  };
 }
 
 // Test seam: read _cfg.restirPtReuse (the 0/1 numeric gate stored by

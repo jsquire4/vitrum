@@ -306,7 +306,7 @@ export class BvhBufferHost {
       };
     }
 
-    return { staticScene: section as GpuMemoryResourceSection };
+    return { staticScene: section };
   }
 
   updateEmitters(

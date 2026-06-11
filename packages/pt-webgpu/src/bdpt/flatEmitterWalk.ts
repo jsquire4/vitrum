@@ -68,6 +68,9 @@ export type PositionalEmitter =
       readonly uAxis: Vec3;
       readonly vAxis: Vec3;
       readonly radiance: Vec3;
+      /** Shape discriminator: 0.0 = rect (default), 1.0 = analytic disc.
+       *  Packed in emission.w of the rect-area record. */
+      readonly shapeTag: number;
     }
   | {
       readonly kind: 'mesh';
@@ -134,6 +137,8 @@ export function* walkPositionalEmitters(
       uAxis: v3(sb.rectAreaLightsData, o + 4),
       vAxis: v3(sb.rectAreaLightsData, o + 8),
       radiance: v3(sb.rectAreaLightsData, o + 12),
+      // Shape discriminator packed in emission.w: 0.0 = rect, 1.0 = disc.
+      shapeTag: sb.rectAreaLightsData[o + 15] ?? 0,
     };
   }
   for (let i = 0; i < sb.meshAreaLightCount; i += 1) {
@@ -149,7 +154,7 @@ export function* walkPositionalEmitters(
   }
 }
 
-/** Quad area = 4·|u×v| (matches the WGSL rect-area NEE term). */
+/** Quad area = 4·|u×v| (matches the WGSL rect-area NEE term for rect lights). */
 export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
   const cross: Vec3 = [
     uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1],
@@ -157,6 +162,15 @@ export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
     uAxis[0] * vAxis[1] - uAxis[1] * vAxis[0],
   ];
   return 4 * Math.hypot(cross[0], cross[1], cross[2]);
+}
+
+/**
+ * Disc area = π·|uAxis|² (matches the WGSL disc NEE term).
+ * uAxis carries tangent × radius so |uAxis| = radius.
+ */
+export function discArea(uAxis: Vec3): number {
+  const r = Math.hypot(uAxis[0], uAxis[1], uAxis[2]);
+  return Math.PI * r * r;
 }
 
 /** Triangle area = 0.5·|(B−A)×(C−A)| (matches the WGSL mesh-area NEE term). */

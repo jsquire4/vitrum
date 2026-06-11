@@ -167,8 +167,8 @@ export function wrapWithIdempotentDispose(
     dispose() {
       if (disposed) return;
       disposed = true;
-      try { engine.dispose(); } catch (err) { try { onDisposeError?.(err); } catch {} }
-      try { postDispose(); } catch (err) { try { onDisposeError?.(err); } catch {} }
+      try { engine.dispose(); } catch (err) { try { onDisposeError?.(err); } catch { /* callback must not propagate — ignore */ } }
+      try { postDispose(); } catch (err) { try { onDisposeError?.(err); } catch { /* callback must not propagate — ignore */ } }
     },
     // T3.G followup — pass the underlying engine.debug surface through
     // unchanged. Methods are bound to the engine instance, so calling
@@ -208,7 +208,7 @@ export function wrapWithIdempotentDispose(
   // contract says no method except state/capabilities is valid after dispose, so
   // the facade gives a uniform null regardless of whether the backend nulls its
   // own scene reference on teardown (pt-webgpu) or keeps it (pt-webgl2/hybrid).
-  const sceneEngine = engine as Engine;
+  const sceneEngine = engine;
   if (typeof sceneEngine.getScene === 'function') {
     proxy.getScene = () => (disposed ? null : sceneEngine.getScene!());
   }
@@ -223,7 +223,7 @@ export function wrapWithIdempotentDispose(
   // `converged.seedAccumulator?.()` resolve to undefined and the seed silently
   // no-ops (the two arms become byte-identical). Each is gated on its capability
   // so a backend that doesn't advertise it stays unforwarded.
-  const seedEngine = engine as Engine;
+  const seedEngine = engine;
   if (
     engine.capabilities.supportsProgressiveSeedSource === true &&
     typeof seedEngine.getProgressiveSeedTexture === 'function'

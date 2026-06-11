@@ -282,7 +282,7 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
 
     // Patch the bones to translate by (7, 0, 0).
     const newBones = translate4(7, 0, 0);
-    router.updatePrimitive('skinned', { bones: newBones } as never);
+    router.updatePrimitive('skinned', { bones: newBones });
 
     // At least one write to the positions buffer must have occurred
     // (the geometry fast path re-uploads positions after re-solving).
@@ -310,7 +310,7 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
 
     const router = new SceneMutationRouter(host);
     const newBones = translate4(3, 0, 0);
-    router.updatePrimitive('skinned', { bones: newBones } as never);
+    router.updatePrimitive('skinned', { bones: newBones });
 
     // The scene state should have the updated bones.
     const updatedPrim = sceneRef.current.primitives.find((p) => p.id === 'skinned');

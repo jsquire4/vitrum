@@ -24,7 +24,7 @@ installWebGPUPolyfills();
 function makeBuffer(destroyedList: GPUBuffer[]): GPUBuffer {
   const buf = {
     size: 16,
-    destroy: vi.fn(() => { destroyedList.push(buf as unknown as GPUBuffer); }),
+    destroy: vi.fn(() => { destroyedList.push(buf); }),
   } as unknown as GPUBuffer;
   return buf;
 }
@@ -33,7 +33,7 @@ function makeBuffer(destroyedList: GPUBuffer[]): GPUBuffer {
 function makeTexture(destroyedList: GPUTexture[]): GPUTexture {
   const tex = {
     width: 64, height: 64, depthOrArrayLayers: 1,
-    destroy: vi.fn(() => { destroyedList.push(tex as unknown as GPUTexture); }),
+    destroy: vi.fn(() => { destroyedList.push(tex); }),
   } as unknown as GPUTexture;
   return tex;
 }
@@ -55,7 +55,7 @@ function makeMockDevice(tracking: MockDeviceTracking): GPUDevice {
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
       const buf = {
         size: desc.size,
-        destroy: vi.fn(() => { tracking.destroyedBuffers.push(buf as unknown as GPUBuffer); }),
+        destroy: vi.fn(() => { tracking.destroyedBuffers.push(buf); }),
       } as unknown as GPUBuffer;
       tracking.createdBuffers.push(buf);
       return buf;
@@ -65,7 +65,7 @@ function makeMockDevice(tracking: MockDeviceTracking): GPUDevice {
         width: (desc.size as GPUExtent3DDict).width ?? 4,
         height: (desc.size as GPUExtent3DDict).height ?? 4,
         depthOrArrayLayers: 1,
-        destroy: vi.fn(() => { tracking.destroyedTextures.push(tex as unknown as GPUTexture); }),
+        destroy: vi.fn(() => { tracking.destroyedTextures.push(tex); }),
         // Wave 4: createView() is needed for the env-map placeholder created in init().
         createView: vi.fn(() => ({})),
       } as unknown as GPUTexture;
@@ -124,7 +124,7 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       adapterKind: 'hardware',
       adapterVendor: 'test',
       adapterArchitecture: 'test',
-    } as Awaited<ReturnType<typeof detectGpu>>);
+    });
   });
 
   afterEach(() => {
@@ -267,7 +267,7 @@ describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on W
       adapterKind: 'unknown',
       adapterVendor: '',
       adapterArchitecture: '',
-    } as Awaited<ReturnType<typeof detectGpu>>);
+    });
 
     // No backend device, no navigator.gpu — simulates a hard failure environment.
     const rendererNoGpu = {};
@@ -299,7 +299,7 @@ describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on W
       adapterKind: 'unknown',
       adapterVendor: '',
       adapterArchitecture: '',
-    } as Awaited<ReturnType<typeof detectGpu>>);
+    });
 
     const rendererNoGpu = {};
 

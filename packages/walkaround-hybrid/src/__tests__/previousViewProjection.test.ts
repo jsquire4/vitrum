@@ -126,7 +126,7 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
         adaptiveSamplingThresholdHigh: 0.1,
         triIntersectEpsilon: 1e-5,
         glassMixScale: 0.7,
-      } as unknown as HybridEngineFrameDeps['flags']['tunables'],
+      },
       rcWeight: 0,
     },
   };

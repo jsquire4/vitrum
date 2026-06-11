@@ -34,7 +34,7 @@
  *
  */
 
-import type { Mat4, MaterialSpec, Scene, ScenePrimitive, Vec3 } from '@vitrum/core';
+import type { Mat4, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
 
@@ -355,13 +355,14 @@ let _handleSeq = 0;
 function handleId(handle: unknown): string {
   if (handle == null) return '';
   if (typeof handle === 'object' || typeof handle === 'function') {
-    let id = _handleIds.get(handle as object);
+    let id = _handleIds.get(handle);
     if (id === undefined) {
       id = `h${_handleSeq++}`;
-      _handleIds.set(handle as object, id);
+      _handleIds.set(handle, id);
     }
     return id;
   }
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- at this point handle is a primitive (guarded: not object/function), String() is safe
   return String(handle);
 }
 

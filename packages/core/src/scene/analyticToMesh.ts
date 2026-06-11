@@ -1,6 +1,5 @@
 import { decodeAnalyticParams } from './analyticParams.js';
 import type { AnalyticPrimitive, MeshPrimitive } from './primitives.js';
-import type { Vec3 } from './math.js';
 
 export interface AnalyticPrimitiveToMeshOptions {
   /** Circumferential segments for curved shapes. Clamped to at least 3. */

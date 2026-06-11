@@ -1,5 +1,6 @@
 /**
  * B1 (road-to-100) — glossy/metal GI structural gate.
+ * B1-ior-per-tri (2026-06-10) — per-tri IOR lane structural gate.
  *
  * Pins the shader-level contract of the B1 change so a future refactor cannot
  * silently re-introduce the metal/glass early-outs or the hardcoded
@@ -14,6 +15,11 @@
  *   4. shade adds the glossy/metal SPECULAR-indirect term (evalGGXSpecularOnly
  *      against the ReSTIR-GI reservoir sample), routed to the un-demodulated
  *      direct channel.
+ *   5. B1-ior-per-tri: materialDecode exposes `decodeIor`; risGi glass walk
+ *      uses per-tri IOR instead of a fixed 1.5 constant; shade `lo_transmittedGI`
+ *      derives F0 from per-tri IOR ((ior-1)/(ior+1))² instead of the
+ *      hard-coded GLASS_F0=0.04; risGi rough-glass GI perturbation applied
+ *      when roughness > ROUGH_GLASS_THRESHOLD.
  */
 import { describe, it, expect } from 'vitest';
 import { RIS_WGSL } from '../ris.wgsl.js';
@@ -104,5 +110,42 @@ describe('B1 — glossy/metal specular indirect term', () => {
   it('specular indirect is gated off for default-diffuse surfaces (invariant)', () => {
     // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX → zero (default rough 0.85).
     expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX)');
+  });
+});
+
+describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
+  it('materialDecode provides decodeIor (bits[15:8] decode: 1.0 + byte/255*2.0)', () => {
+    expect(MATERIAL_DECODE_WGSL).toContain('fn decodeIor(packed: u32) -> f32');
+    expect(MATERIAL_DECODE_WGSL).toContain('(packed >> 8u) & 0xFFu');
+    expect(MATERIAL_DECODE_WGSL).toContain('1.0 + f32(byte) / 255.0 * 2.0');
+  });
+
+  it('risGi glass walk no longer uses a hardcoded IOR_GLASS=1.5 constant', () => {
+    // The fixed `const IOR_GLASS: f32 = 1.5;` must be gone (replaced by decodeIor()).
+    expect(RIS_GI_WGSL).not.toContain('const IOR_GLASS: f32 = 1.5;');
+    // Per-tri decode must be present.
+    expect(RIS_GI_WGSL).toContain('decodeIor(glassPrimaryPacked)');
+  });
+
+  it('risGi glass walk binds bvh_material (group 1, binding 14)', () => {
+    expect(RIS_GI_WGSL).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>;');
+  });
+
+  it('shade lo_transmittedGI no longer uses hardcoded GLASS_F0 = 0.04', () => {
+    // The hardcoded `const GLASS_F0: f32 = 0.04;` must be gone.
+    expect(SHADE_WGSL).not.toContain('const GLASS_F0: f32 = 0.04;');
+    expect(SHADE_WGSL).not.toContain('GLASS_F0 +');
+  });
+
+  it('shade lo_transmittedGI derives F0 from per-tri IOR via physical formula', () => {
+    // Physical Schlick F0 = ((ior-1)/(ior+1))².
+    expect(SHADE_WGSL).toContain('decodeIor(packedG)');
+    expect(SHADE_WGSL).toContain('iorMinus1 / iorPlus1');
+  });
+
+  it('risGi rough-glass GI perturbation is gated on ROUGH_GLASS_THRESHOLD', () => {
+    // Smooth glass (rough < threshold) keeps exact Snell direction — byte-identical.
+    expect(RIS_GI_WGSL).toContain('const ROUGH_GLASS_THRESHOLD: f32 = 0.1;');
+    expect(RIS_GI_WGSL).toContain('if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD)');
   });
 });
