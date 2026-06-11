@@ -293,3 +293,92 @@ describe('NRC spread WGSL codegen — shape pins (oracle equivalence)', () => {
     expect(wgsl).toContain('return aX > c * a0;');
   });
 });
+
+// ── A6: NRC structural fixes — 2026-06-10 ────────────────────────────────────
+//
+// Pins three A6 changes to risGiNrc.wgsl:
+//   1. xsRough: real per-tri roughness from bvh_material (not hardcoded 1.0)
+//   2. Training target: r.Lo post-loop (not DDGI distillation inside the loop)
+//   3. Structural: candidate tracking before loop, record after loop
+
+describe('A6: NRC structural fixes — xsRough + reservoir training target (2026-06-10)', () => {
+  it('A6 xsRough: NRC body declares bvh_material binding (group 1, binding 14)', () => {
+    // The NRC pass must bind the per-tri roughness texture at the same slot as
+    // ris.wgsl / restirCastPrimary.wgsl / shade.wgsl (binding 14) so the MLP
+    // input vector encodes the real authored roughness at the bounce vertex.
+    expect(RIS_GI_NRC_BODY).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>');
+  });
+
+  it('A6 xsRough: NRC body reads decodeRoughMetal from bvh_material (not hardcoded 1.0)', () => {
+    // The old xsRough = 1.0 must be gone; the real roughness must be decoded.
+    expect(RIS_GI_NRC_BODY).not.toContain('let xsRough = 1.0;');
+    expect(RIS_GI_NRC_BODY).toContain('decodeRoughMetal(');
+    expect(RIS_GI_NRC_BODY).toContain('bvh_material');
+  });
+
+  it('A6 training target: nrcWriteRecord is called POST-LOOP with r.Lo, not inside the loop with directLo', () => {
+    // The training record must use r.Lo (the ReSTIR-GI reservoir Lo) as the
+    // target, not a per-candidate DDGI estimate computed inside the RIS loop.
+    // Structural enforcement: nrcWriteRecord must appear after the RIS loop
+    // (after the closing `}` of `for ... i < M_GI`) and must reference r.Lo.
+    // Negative check: the old inside-loop record call with directLo is gone.
+    expect(RIS_GI_NRC_BODY).not.toContain('let directLo =');
+    expect(RIS_GI_NRC_BODY).not.toContain('nrcWriteRecord(pixelIdxGi % nrcCfg.recordCap, xs, ns, -wi,');
+    // Positive check: post-loop record write uses nrcTrackXs / r.Lo.
+    expect(RIS_GI_NRC_BODY).toContain('nrcTrackXs');
+    expect(RIS_GI_NRC_BODY).toContain('nrcTrackNs');
+    expect(RIS_GI_NRC_BODY).toContain('nrcFired');
+    expect(RIS_GI_NRC_BODY).toContain('r.Lo');
+  });
+
+  it('A6 training target: nrcWriteRecord is called with r.Lo as the last argument', () => {
+    // r.Lo is passed as the target argument (last positional arg) to nrcWriteRecord.
+    expect(RIS_GI_NRC_BODY).toContain('r.Lo,');
+  });
+
+  it('A6 candidate tracking: NRC tracking vars are declared before the RIS loop', () => {
+    // nrcFired / nrcTrackXs / nrcTrackNs / nrcTrackWi must appear before the
+    // `for (var i: u32 = 0u; i < M_GI` loop opening — structural placement check.
+    const loopIdx = RIS_GI_NRC_BODY.indexOf('for (var i: u32 = 0u; i < M_GI');
+    expect(loopIdx).toBeGreaterThan(0);
+    const nrcFiredIdx = RIS_GI_NRC_BODY.indexOf('var nrcFired:');
+    expect(nrcFiredIdx).toBeGreaterThan(0);
+    expect(nrcFiredIdx).toBeLessThan(loopIdx);
+  });
+
+  it('A6 tail-padding: no inside-loop sun shadow trace for NRC training (removed with directLo)', () => {
+    // The old implementation added a shadow ray per NRC candidate for the training
+    // target (directLo = sun+DDGI). After A6 this is removed — training uses r.Lo
+    // which comes from the existing post-loop visibility test.
+    // The only sunDirection reference should be outside the NRC termination block.
+    // We check that there is no sunContrib pattern (old inside-loop shadow).
+    expect(RIS_GI_NRC_BODY).not.toContain('var sunContrib');
+  });
+
+  it('A6 spreadC default 0.01: fires at bounce 1 for realistic camera pdf (selectivity arithmetic)', () => {
+    // Derived arithmetic (see file-level A6 docblock):
+    //   camPdf = 691200 (1280×720 @ 60° vFOV), d0=5, cos0=1 → a0 ≈ 3.6e-5
+    //   bounce1: d=2, pdf≈0.222, cosArrive=0.7 → aX1 ≈ 25.6 >> threshold 3.6e-7
+    // c=0.01 correctly fires at bounce 1.  This test enforces the arithmetic stays
+    // pinned and the oracle uses the correct camera-pdf scaling.
+    const cotFovY = Math.sqrt(3); // cot(30°) = cot(fovY/2) for 60° vFOV
+    const camPdf = (cotFovY * cotFovY * 1280 * 720) / 4;
+
+    const primarySeg: PathSegment = { dist: 5.0, pdf: camPdf, cosTheta: 1.0 };
+    const bounce1: PathSegment  = { dist: 2.0, pdf: (0.7 / Math.PI), cosTheta: 0.7 };
+    const segs = [primarySeg, bounce1];
+
+    const a0 = primarySpread(segs);
+    const acc = accumulatedSpread(segs);
+
+    // a0 is tiny (high camPdf → small camera footprint).
+    expect(a0).toBeLessThan(1e-4);
+    // aX at bounce 1 is >> c*a0 for c=0.01.
+    const threshold = 0.01 * a0;
+    expect(acc[1]!).toBeGreaterThan(threshold);
+    // Confirm the oracle fires at bounce 1.
+    const result = evaluateSpreadTermination(segs, 0.01);
+    expect(result.terminate).toBe(true);
+    expect(result.terminateAtSegment).toBe(1);
+  });
+});

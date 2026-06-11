@@ -382,9 +382,17 @@ export class NrcSubsystem implements PipelineSubsystem {
    * Read back the gathered records and run ONE train step (host-owns-cadence).
    * Async (maps the readback buffer); the engine awaits or fires-and-forgets per
    * its cadence policy. Re-entrancy guarded: a still-pending readback skips this
-   * frame's train (the next frame picks up fresh records). A record whose RGB
-   * target is all-zero is treated as empty (an unfilled slot) and skipped — the
-   * batch is zero-padded so the trainer's fixed-size dispatch is unaffected.
+   * frame's train (the next frame picks up fresh records). An unfilled slot
+   * (NRC spread never fired for that pixel) has all-zero ENCODED INPUT — the
+   * GPU initialises the record buffer to zero and nrcWriteRecord only runs when
+   * nrcFired is true. Empty slots are detected by checking whether the first
+   * encoded-input float is non-zero; this is safe because any genuine NRC record
+   * will have at least one non-zero hash-grid feature.
+   *
+   * A6 note: a FILLED slot whose target r.Lo is zero (occluded surface, r.W=0)
+   * is a VALID zero-radiance training sample — the NRC should predict black for
+   * occluded surfaces. The old all-zero-TARGET skip was replaced with the
+   * all-zero-ENCODED-INPUT skip so zero-radiance records are trained correctly.
    */
   async trainFromRecords(): Promise<void> {
     if (this._readPending) return;
@@ -404,10 +412,19 @@ export class NrcSubsystem implements PipelineSubsystem {
       this._batchPos.fill(0);
       for (let rIdx = 0; rIdx < cap; rIdx++) {
         const base = rIdx * stride;
+        // A6 empty-slot detection: check the first encoded-input float (index 0).
+        // An unfilled slot (NRC never fired) has all-zero input because the GPU
+        // record buffer is zero-initialized and nrcWriteRecord only runs when
+        // nrcFired is set. A genuine record has at least one non-zero hash-grid
+        // feature. Checking input[0] is sufficient — a slot aliased by two pixels
+        // (pixelIdx % recordCap) is claimed first-writer-wins atomically in the
+        // shader (nrcSlotClaims), so the first writer's fully-assembled record is
+        // the one we read back. Do NOT skip zero-target records — r.Lo==0 is a
+        // valid training signal (occluded surface; NRC should predict black).
+        if (raw[base] === 0) continue; // empty slot: encoded input never written
         const tx = raw[base + inW + 0]!;
         const ty = raw[base + inW + 1]!;
         const tz = raw[base + inW + 2]!;
-        if (tx === 0 && ty === 0 && tz === 0) continue; // empty slot
         for (let i = 0; i < inW; i++) this._batchX[filled * inW + i] = raw[base + i]!;
         this._batchY[filled * OUT_W + 0] = tx;
         this._batchY[filled * OUT_W + 1] = ty;
@@ -420,9 +437,12 @@ export class NrcSubsystem implements PipelineSubsystem {
       this._recordReadback.unmap();
       if (filled === 0) return; // nothing to learn this frame
       // The trainer dispatch is fixed-size (recordCap samples); the zero-padded
-      // tail contributes zero-target samples. Those degrade slowly toward the
-      // zero prediction, which is acceptable — most slots fill in a steady-state
-      // walkaround frame, and the host could later mask the tail by numSamples.
+      // tail (unfilled slots that were skipped in the loop above) contributes
+      // zero-input / zero-target samples which gradient toward zero prediction
+      // for zero inputs — benign since no real NRC query is ever called with an
+      // all-zero input (the hash-grid features are never zero for a valid world
+      // position inside the scene AABB). The numSamples masking enhancement is
+      // deferred as a later optimisation.
       this._trainer.setBatch(this._batchX, this._batchY);
       // MLP step — also finalizes dL/dX into trainer.gradInputF (the encode-
       // backward upstream signal). Then scatter dL/dfeature into the trainable

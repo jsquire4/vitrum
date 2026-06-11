@@ -720,14 +720,95 @@ fn probeUpdateRays(
         // lavapipe; wsl-gpu/captures/queue-2026-06-07/ddgi-white-bounce/
         // RESULTS.md) sides with this form: 23–34% residual (the octahedral
         // atlas border confound) vs 244–365% for white-bounce on coloured
-        // walls. Metals are still treated as diffuse reflectors here — DDGI
-        // probes carry a diffuse-only bounce model by construction.
+        // walls.
+        //
         // H46-A — maxBounces gate: when indirectFeedback is 0 (maxBounces == 1)
         // the probe carries direct-only light (one bounce: light -> bounce
         // surface -> probe), dropping the previous-frame atlas read that the
         // EMA otherwise converges into the infinite-bounce diffuse equilibrium.
         let indirectGated = select(vec3f(0.0), indirect, frameParams.indirectFeedback != 0u);
-        var radiance = (direct + indirectGated) * mat.baseColor * (1.0 / PI);
+
+        // B2 — Glossy-aware probe bounce: specular complement via reflected
+        // previous-frame field (2026-06-10, R8-B).
+        //
+        // DDGI probes are an irradiance cache — they cannot store a full 5D
+        // radiance field. The honest one-bounce specular complement uses the same
+        // previous-frame SH atlas evaluated at the REFLECTED probe-ray direction
+        // (r = dir - 2·(n·dir)·n) to approximate the outgoing specular radiance.
+        //
+        // This is the split-sum-flavoured approximation: the atlas stores
+        // irradiance E(n) = ∫L(ω)·max(0,n·ω)dω (cosine-weighted incoming
+        // hemisphere). Evaluating it at the reflected direction gives the
+        // irradiance that would illuminate a surface facing the reflection axis —
+        // an approximation of the specular lobe radiance integral. NOT GGX-
+        // filtered radiance (which would require a prefiltered radiance cube).
+        // The error shrinks as the material approaches a perfect mirror (α→0).
+        //
+        // Energy discipline: blend, not add. The Lambertian indirect and the
+        // specular indirect are alternative transport paths — adding them would
+        // double-count. We lerp the indirect contribution between Lambertian
+        // and specular by specularWeight; the direct term (analytic lights with
+        // Lambertian response) is kept as-is for simplicity. The direct term
+        // also uses a Lambertian formulation for analytic lights; the specular
+        // improvement applies to the important multi-bounce indirect term where
+        // the DDGI atlas is the only source of radiance.
+        //
+        //   specularWeight = metalness · (1 - roughness²)
+        //     = 1 for a perfect mirror metal (metalness=1, roughness=0)
+        //     = 0 for a dielectric OR a rough metal (roughness→1)
+        //     ranges continuously between these extremes.
+        //   roughness² is α² (GGX alpha-squared), so the specular weight
+        //   vanishes quadratically with roughness — consistent with how GGX
+        //   broadens from a mirror at α=0 to diffuse-equivalent at α=1.
+        //
+        // Gate: the reflected atlas lookup requires the previous-frame atlas to
+        // be populated (indirectFeedback != 0). When direct-only probes are
+        // requested (maxBounces == 1, indirectFeedback = 0) the specular
+        // complement is also disabled — both paths fall through to the
+        // Lambertian-direct-only formula, preserving byte-identity with the
+        // pre-B2 path when indirectFeedback = 0.
+        //
+        // MaterialEntry carries mat.roughness (slot 3) and mat.metalness (slot 7)
+        // from the canonical 64-byte struct — no new material threading required.
+        // (DDGI material packing in probeUpdateMaterials.ts already fills these
+        // fields via pbrToMaterialEntryInput → extractPbrScalars.)
+        //
+        // Cite: Karis (2013) "Real Shading in Unreal Engine 4" §4.4 (split-sum
+        // approximation); McGuire et al. (2017) "Real-Time Global Illumination
+        // using Precomputed Light Field Probes" (irradiance-cache specular via
+        // reflected direction lookup).
+        let specularWeight = mat.metalness * max(0.0, 1.0 - mat.roughness * mat.roughness);
+        var indirectRadiance: vec3f;
+        if (specularWeight > 1e-4 && frameParams.indirectFeedback != 0u) {
+          // Reflected probe-ray direction: mirror dir about the hit normal.
+          // dir points FROM the probe TO the hit surface — so -dir is the
+          // incoming direction at the surface. reflect(-dir, n) gives the
+          // outgoing specular direction, which is also the direction we use to
+          // query the SH atlas for the radiance arriving from that hemisphere.
+          let reflDir = safe_normalize(dir - 2.0 * dot(dir, smoothNormal) * smoothNormal);
+          let specularIrr = ddgiSampleSHProbe(
+            irradiancePrev, irradianceSamp,
+            gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
+            fix, fiy, reflDir,
+          );
+          // Specular indirect: atlas irradiance at reflected direction, tinted
+          // by metallic baseColor (Fresnel ≈ F0 = baseColor for conductors).
+          // Divide by PI for the same irradiance→radiance conversion the
+          // Lambertian indirect uses (atlas stores cosine-weighted mean E/PI;
+          // ddgiSampleSHProbe returns E — see comment above).
+          let specularIndirectLo = mat.baseColor * (specularIrr * (1.0 / PI));
+          // Lambertian indirect for the blend reference.
+          let lambertianIndirectLo = indirectGated * mat.baseColor * (1.0 / PI);
+          // Blend indirect contribution: lerp from Lambertian to specular.
+          indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, specularWeight);
+        } else {
+          // Rough/dielectric or no feedback: pure Lambertian indirect.
+          indirectRadiance = indirectGated * mat.baseColor * (1.0 / PI);
+        }
+        // Direct: Lambertian (analytic lights use nDotL-weighted eval, kept
+        // Lambertian since per-probe direct uses the coarse probe-light model).
+        let directRadiance = direct * mat.baseColor * (1.0 / PI);
+        var radiance = directRadiance + indirectRadiance;
 
         if ((mat.flags & 1u) != 0u) {
           // Glass: add transmitted environment contribution.

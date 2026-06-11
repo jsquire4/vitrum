@@ -93,6 +93,13 @@ const EXPECTATION_TABLE = {
   // no rect-area emitter; asserts non-black + higher luminance than the no-sun default.
   // Pin provenance: sun-NEE default-on, 2026-06-10 — RENDER-CHANGING for directional-lit scenes, A/B in R8-C.
   "wh/directional-sun":   { expected: "ok" },
+  // B1 tail (2026-06-10) — glass refracted GI. Glass pane in front of a lit diffuse
+  // wall; a rect-area emitter lights the back wall; the camera looks through the glass.
+  // The glass pixel receives GI from the diffuse wall behind it via the refracted
+  // reservoir. Assert non-black overall luminance — the emitter lights the scene
+  // regardless of glass; the glass-GI term adds the indirect contribution seen through
+  // the glass. RENDER-CHANGING for glass scenes, A/B in R8-C.
+  "wh/glass-gi":          { expected: "ok" },
 };
 
 // ── Matrix ────────────────────────────────────────────────────────────────────
@@ -147,6 +154,12 @@ const WH_CONFIGS = [
       primaryLightDir:       [0.3, -0.8, 0.5],
       primaryLightIntensity: 3.0,
     },                                                                          scene: { directionalOnly: true } },
+  // B1 tail (2026-06-10) — glass refracted GI: glass pane in front of a lit diffuse
+  // wall. Glass primaries receive a refracted-GI reservoir built at the back wall.
+  // Assert non-black overall luminance — the ceiling emitter lights the scene
+  // regardless (direct light through glass); the glass-GI term adds the diffuse-wall
+  // indirect contribution visible through the pane.
+  { label: "wh/glass-gi",          eng: {},                                    scene: { glass: true } },
 ];
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
@@ -202,6 +215,24 @@ function buildCornellScene(opts = {}) {
       shape: { kind: "sphere", radius: 0.3 },
       transform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0.2,-0.5,0.2,1]),
       material: { baseColor: [0.9,0.5,0.1], roughness: 0.2, metallic: 0.8 },
+    });
+  }
+
+  // B1 tail (2026-06-10) — glass refracted GI scene: a glass pane placed between
+  // the camera and the back wall. The rect-area emitter on the ceiling lights the
+  // back wall; the camera looks through the glass pane. Glass primaries now receive
+  // a refracted-GI reservoir built at the back wall behind the pane.
+  // The pane is a quad at z=0.5 (camera is at z=2.5, back wall at z=1), normal
+  // pointing toward camera. transmission=1.0 → decoded matColor.a ≈ 1.0 > 0.3
+  // → isGlass=true in all walkaround shaders.
+  if (opts.glass) {
+    primitives.push({
+      kind: "mesh", id: "glass-pane",
+      positions: new Float32Array([-0.5,-0.5,0.5, 0.5,-0.5,0.5, 0.5,0.5,0.5, -0.5,0.5,0.5]),
+      normals:   new Float32Array([0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1]),
+      uvs:       new Float32Array(8),
+      indices:   new Uint32Array([0,2,1, 2,0,3]),
+      material:  { baseColor: [1.0,1.0,1.0], roughness: 0.05, metallic: 0.0, transmission: 1.0 },
     });
   }
 

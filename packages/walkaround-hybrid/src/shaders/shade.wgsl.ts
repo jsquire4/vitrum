@@ -643,6 +643,78 @@ fn lo_indirect(
   return wRestirGi * Lo_indirect + wRc * Lo_rc;
 }
 
+// --- B1 tail: Glass TRANSMITTED GI (2026-06-10) — refracted-GI reservoir consumption --
+//
+// When the primary hit is glass, risGi now builds a reservoir at the FIRST DIFFUSE
+// surface reached by a 1-interface refraction walk (see risGi.wgsl.ts, B1 tail).
+// The reservoir stores (xv=postGlassPos, nv=postGlassNormal, xs, Lo, W) — the
+// same layout as the opaque-surface reservoir.
+//
+// Shade consumption: the stored Lo at the post-glass diffuse surface is the
+// outgoing irradiance THROUGH the glass. Weight it by:
+//   1. Fresnel TRANSMISSION factor at the glass interface (1 - Fresnel reflection,
+//      scalar Schlick approximation at the camera-ray → glass incidence angle).
+//      F0 for glass: ((IOR-1)/(IOR+1))² = ((1.5-1)/(1.5+1))² ≈ 0.04.
+//   2. Beer-Lambert tint: the bvh_beer texture carries the pre-computed
+//      attenuationColor^(thickness/attDist) for this glass triangle. Multiply
+//      as a per-channel scale (same source as lo_emit).
+//
+// The result is the indirect contribution BEHIND the glass surface — it joins the
+// direct channel (not the demodulated indirect channel) because its albedo is
+// the glass transmittance (beerAlbedo), not the Lambertian baseColor of the receiver.
+//
+// Multi-interface and rough-glass: out of scope (plan/residue-closure-plan-2026-06-10.md
+// §B1 tail). A glass pixel with no valid reservoir (W=0 or M=0) returns vec3f(0).
+const GLASS_F0: f32 = 0.04;  // ((1.5-1)/(1.5+1))^2 for IOR_GLASS=1.5
+fn lo_transmittedGI(
+  gid:          vec2u,
+  dims:         vec2u,
+  pos:          vec3f,
+  normal:       vec3f,
+  wo:           vec3f,
+  matColor:     vec4f,
+  isGlass:      bool,
+  triIndex:     u32,
+) -> vec3f {
+  if (!isGlass) { return vec3f(0.0); }
+  let halfDims = dims / 2u;
+  let hx = min(gid.x / 2u, halfDims.x - 1u);
+  let hy = min(gid.y / 2u, halfDims.y - 1u);
+  let giIdx = hy * halfDims.x + hx;
+  let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+  if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
+
+  // Direction from the camera-primary glass hit toward the post-glass reservoir
+  // vertex xv (= postGlassPos). Used only for the indirect weighting via the
+  // GI reservoir weight W; no BRDF needed (the diffuse wall's BRDF was folded
+  // by risGi during candidate selection).
+  let toS = g.xs - g.xv;
+  let distS = length(toS);
+  if (distS <= 1e-4) { return vec3f(0.0); }
+  let wi = toS / distS;
+  let cosTheta = max(0.0, dot(g.nv, wi));
+
+  // Fresnel transmission: scalar Schlick at camera-to-glass incidence.
+  let cosI = max(0.0, dot(wo, normal));  // wo = -primaryRay.direction (camera facing)
+  let fresnelR = GLASS_F0 + (1.0 - GLASS_F0) * pow(max(0.0, 1.0 - cosI), 5.0);
+  let fresnelT = max(0.0, 1.0 - fresnelR);
+
+  // Beer-Lambert tint (same bvh_beer read as lo_emit).
+  let beerCoord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
+  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
+  let beerAlbedo = vec3f(
+    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+  );
+
+  // GI contribution: Lo from the diffuse wall × Lambertian cosine response at
+  // the post-glass surface × W, then multiplied by the Fresnel transmission and
+  // the Beer tint to account for the glass interface attenuation.
+  let Lo_transmitted = g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo;
+  return Lo_transmitted;
+}
+
 // --- B1: Glossy/metal SPECULAR indirect (ReSTIR-GI sample × GGX specular lobe) -
 //
 // The ReSTIR-GI reservoir is a DIFFUSE-irradiance cache: its candidates are
@@ -831,18 +903,26 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let Lo_sunCaustic = lo_sg_caustic(pix, pos, normal, albedo, isGlass, isMetal);
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
   let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, isMetal);
+  // B1 tail (2026-06-10) — glass refracted GI: consumption of the post-glass
+  // diffuse reservoir built by risGi's 1-interface refraction walk. Returns vec3f(0)
+  // for non-glass surfaces (isGlass gate). Weighted by Fresnel transmittance +
+  // Beer-Lambert tint. Joins the DIRECT channel (see directRadiance below) —
+  // it is not albedo-demodulated because its tint is the glass transmittance,
+  // not the diffuse wall's baseColor (which was already folded into Lo by risGi).
+  let Lo_transmittedGI = lo_transmittedGI(pix, dims, pos, normal, wo, matColor, isGlass, primaryHit.indices.w);
   // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
   // reservoir sample. UN-demodulated (joins the direct channel below); fires only
   // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
   let Lo_indirectSpec = lo_indirectSpecular(pix, dims, pos, normal, wo, albedo, rough, metal, isGlass);
 
   // Active terms (current pipeline state):
-  //   Lo_emit         glass primary hit, deterministic per pixel
-  //   Lo_direct       ReSTIR DI, atrous-denoised single sample
-  //   Lo_sunNEE       direct sun NEE, deterministic per pixel (item 4, 2026-06-10, default-ON)
-  //   Lo_sunCaustic   sun shadow ray through glass, deterministic (stainedGlass flag only)
-  //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance (stainedGlass flag only)
-  //   Lo_indirect     ReSTIR-GI half-res reservoir read (Sprint 16), per-channel split (Sprint 18)
+  //   Lo_emit           glass primary hit, deterministic per pixel
+  //   Lo_direct         ReSTIR DI, atrous-denoised single sample
+  //   Lo_sunNEE         direct sun NEE, deterministic per pixel (item 4, 2026-06-10, default-ON)
+  //   Lo_sunCaustic     sun shadow ray through glass, deterministic (stainedGlass flag only)
+  //   Lo_skyAperture    5-tap sky probe through cutout, scalar luminance (stainedGlass flag only)
+  //   Lo_indirect       ReSTIR-GI half-res reservoir read (Sprint 16), per-channel split (Sprint 18)
+  //   Lo_transmittedGI  glass primary hit — refracted-GI reservoir × Fresnel-T × Beer tint (B1 tail, 2026-06-10)
   //
   // Sprint 15 — GTAO modulates ALL non-emissive lighting terms.
   // - Lo_emit is the light source itself; never darken it.
@@ -891,7 +971,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // GTAO is a diffuse-occlusion term; specular reflections are not darkened by
   // it. Zero for default-diffuse surfaces, so the diffuse-default invariant
   // holds byte-for-byte (the term is identically vec3f(0) there).
-  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
+  // Lo_transmittedGI joins the direct channel (un-demodulated; bypasses AO —
+  // the diffuse wall behind the glass is not in contact-shadow from the glass
+  // pane, and GI through glass is a transmission term, not an occlusion term).
+  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

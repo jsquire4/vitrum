@@ -507,14 +507,10 @@ export interface HybridEngineOptions extends EngineOptions {
    * Enable the GRIS (Generalized Resampled Importance Sampling) reconnection-
    * shift reuse in the ReSTIR-GI spatial + temporal passes.
    *
-   * The ReSTIR-GI reuse historically combined a neighbour pixel's reservoir
-   * by ASSUMING its reconnection sample is valid at this pixel, re-weighting it
-   * with a clamped cosine/distance Jacobian and NO reconnection-visibility
-   * test — a biased shortcut that disocclusion artifacts and over-/under-
-   * weighting leak through. When `true`, the reuse instead applies the
-   * UNBIASED GRIS *reconnection shift* (Lin, Kettunen, Bitterli, Pantaleoni,
-   * Jakob, Nowrouzezahrai — "Generalized Resampled Importance Sampling:
-   * Foundations of ReSTIR", SIGGRAPH 2022):
+   * When `true`, the reuse instead applies the UNBIASED GRIS *reconnection
+   * shift* (Lin, Kettunen, Bitterli, Pantaleoni, Jakob, Nowrouzezahrai —
+   * "Generalized Resampled Importance Sampling: Foundations of ReSTIR",
+   * SIGGRAPH 2022):
    *   - re-roots the neighbour's reconnection vertex onto THIS pixel's primary
    *     vertex via a fresh edge,
    *   - re-weights by the exact change-of-variables Jacobian
@@ -523,25 +519,108 @@ export interface HybridEngineOptions extends EngineOptions {
    *   - traces a reconnection-VISIBILITY ray (required for unbiasedness — the
    *     shift maps to zero contribution if the connecting edge is occluded,
    *     degenerate, backfacing, or the path prefixes are incompatible), and
-   *   - combines samples with the GRIS generalized-balance (pairwise) MIS so
+   *   - combines samples with the GRIS generalized-balance (full GBH) MIS so
    *     the fused reservoir is an unbiased RIS estimator of this pixel's GI
    *     integral.
    *
    * The reuse passes traverse the scene BVH for the visibility ray, so this
    * costs one extra shadow ray per accepted neighbour.
    *
-   * Default: `false` — OFF is the verbatim Sprint-17 clamped-Jacobian reuse.
-   * The gate is resolved at PIPELINE-COMPILE time (it is fixed at engine
-   * creation): when OFF the GI spatial + temporal passes are the single-group
-   * pre-GRIS pipeline; when ON they are built with a `@group(1)` scene BVH/TLAS
-   * group + the GRIS shader variant. This MUST be a compile-time structural
-   * decision — an opt-in feature must not change the default pipeline structure,
-   * and a previous runtime-UBO gate that bound an extra group on the default
-   * path regressed the default render to an all-black frame. Same opt-in pattern
-   * as `rcEnabled`, `ppgEnabled`, and `regir`.
+   * ─────────────────────────────────────────────────────────────────────────
+   * DEFAULT (false) — THE BIASED PATH AND ITS KNOWN BIAS SOURCES
+   * ─────────────────────────────────────────────────────────────────────────
    *
-   * @see plan / `HARDWARE-VALIDATION-NEEDS.md` V19 for the GPU A/B
-   *      converged-unbiasedness validation this still needs.
+   * The default (`restirPtReuse: false`, i.e. OFF) runs the pre-GRIS Sprint-17
+   * clamped-Jacobian reuse. This is the walkaround regime default: a realtime
+   * frame-budget constraint (the unbiased GRIS path adds one visibility ray per
+   * accepted spatial/temporal reuse candidate and the full-GBH MIS cross-
+   * evaluation over the whole neighbour set — linear in K_SPATIAL_GI = 5).
+   *
+   * The OFF path carries **four documented bias sources**. They are intentional
+   * and bounded for the walkaround regime, but discerning users (converged
+   * offline renders, A/B comparisons, V19 GPU validation) should enable
+   * `restirPtReuse: true`.
+   *
+   * **Bias source 1 — Jacobian clamp `[0.1, 10]`**
+   *   File: `shaders/jacobianShift.wgsl.ts`, function `jacobianReconnectionShift`,
+   *   line: `return clamp(J, 0.1, 10.0);`
+   *   The Jacobian of the reconnection shift (Lin 2022 Eq. 11 — cosine ratio ×
+   *   inverse-square distance ratio) can be arbitrarily large or small for
+   *   nearby/grazing neighbours. Clamping it to [0.1, 10] keeps the reservoir
+   *   weight bounded but systematically under-weights neighbours with J > 10
+   *   and over-weights those with J < 0.1. In practice: neighbours seen from
+   *   a very different distance (foreground/background boundary) are over- or
+   *   under-contributed relative to their actual solid-angle contribution.
+   *   Manifestation: subtle energy gain or loss at depth-discontinuity edges
+   *   (e.g. wall corners) under the indirect channel. The effect is
+   *   stationary — it does not grow with frame count.
+   *
+   * **Bias source 2 — No reconnection-visibility ray**
+   *   File: `shaders/spatialGi.wgsl.ts` (OFF variant, `SPATIAL_GI_WGSL`),
+   *   lines: `jacobianReconnectionShift(…)` → immediately folded with `w_q = pHatZ * rQ.W * Mq * J`.
+   *   File: `shaders/temporalGi.wgsl.ts` (OFF variant, `TEMPORAL_GI_WGSL`),
+   *   lines: `let J = jacobianReconnectionShift(…)` → `let w_prev = pHatZ_prev * rPrev.W * f32(prevM) * J`.
+   *   Bitterli 2020 / Lin 2022 require that a reused sample's shifted edge
+   *   (current pixel's visible point → neighbour's reconnection vertex) be
+   *   tested for occlusion; if occluded the sample contributes zero. Skipping
+   *   this test means occluded samples leak energy into the indirect channel.
+   *   Manifestation: indirect light bleeds through geometry at depth
+   *   discontinuities (walls, objects). The bleed is suppressed by the
+   *   geometric-consistency normal/depth test but is NOT eliminated for
+   *   neighbours that pass the consistency test yet are blocked in the
+   *   reconnection direction.
+   *
+   * **Bias source 3 — Pairwise MIS approximation (no full GBH)**
+   *   File: `shaders/spatialGi.wgsl.ts` (OFF variant), reuse weight:
+   *   `let w_q = pHatZ * rQ.W * f32(Mq) * J` (no MIS denominator).
+   *   File: `shaders/temporalGi.wgsl.ts` (OFF variant), reuse weight:
+   *   `let w_prev = pHatZ_prev * rPrev.W * f32(prevM) * J` (no MIS denominator).
+   *   The standard ReSTIR-GI combine (Ouyang 2021) uses the M-weighted p̂
+   *   directly as the reuse weight without the generalized-balance denominator.
+   *   For small M-count differences between pixels this is a good approximation,
+   *   but it is NOT the unbiased GBH estimator: the contribution weights do not
+   *   sum to 1 in the Lin 2022 sense, meaning the estimator is biased when the
+   *   M counts between the canonical and neighbour are substantially different.
+   *   Manifestation: slightly over-energised indirect on high-M regions (e.g.
+   *   static camera convergence) relative to low-M (camera motion onset).
+   *
+   * **Bias source 4 — Centroid p̂ in the canonical ReSTIR-DI target function**
+   *   File: `shaders/restirPHat.wgsl.ts`, function `restir_di_compute_phat_xi`,
+   *   line: `let centroid = (e.vA + e.vB + e.vC) / 3.0;`
+   *   The DI target distribution p̂ used during RIS selection AND GI-pass
+   *   visibility evaluation evaluates the emitter geometry term from the
+   *   triangle centroid, not from the actual sampled point `xi` stored in the
+   *   reservoir. For area lights with moderate subtended angle (compact rect-
+   *   area sources, small sphere lights) the centroid approximation is accurate;
+   *   for large-area emitters or when the receiver is close to the light the
+   *   centroid direction can differ meaningfully from `xi`'s direction, causing
+   *   the p̂ used in `W = w_sum / (M × p̂)` to be slightly wrong. The emitter
+   *   candidate loop in `ris.wgsl.ts` (lines around `let pHat = luminance(ls.Le
+   *   * brdf * G)`) samples the actual surface point, but the canonical p̂ helper
+   *   uses the centroid — this discrepancy is the recognised bias. NOTE: this
+   *   bias is shared between ON and OFF; `restirPtReuse: true` does NOT fix it.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * WHEN TO ENABLE `restirPtReuse: true`
+   * ─────────────────────────────────────────────────────────────────────────
+   * Enable when: (a) the scene is rendered in a converged / offline-ish mode
+   * (sustained camera still, progressive accumulation, A/B validation), (b) you
+   * observe energy bleed or soft light leak at depth discontinuities under the
+   * indirect channel and need the unbiased path to diagnose or fix it, or (c)
+   * you are running the V19 GPU unbiasedness validation.
+   *
+   * The gate is resolved at **PIPELINE-COMPILE time** (fixed at engine creation):
+   * when OFF the GI spatial + temporal passes are the single-group pre-GRIS
+   * pipeline; when ON they are built with a `@group(1)` scene BVH/TLAS group +
+   * the GRIS shader variant. This MUST be a compile-time structural decision —
+   * a previous runtime-UBO gate that bound an extra group on the default path
+   * regressed the default render to an all-black frame (f8df9a4). Same opt-in
+   * pattern as `rcEnabled`, `ppgEnabled`, and `regir`.
+   *
+   * @see `HARDWARE-VALIDATION-NEEDS.md` V19 for the GPU A/B converged-
+   *      unbiasedness validation this still needs.
+   * @see `plan/road-to-100.md` A8 for the architecture decision record.
+   * @default false
    */
   readonly restirPtReuse?: boolean;
 

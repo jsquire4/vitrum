@@ -42,9 +42,90 @@
  * that DDGI estimate with the MLP's predicted outgoing radiance (the cache
  * query). Below the spread threshold it keeps the DDGI estimate verbatim, so a
  * scene/region where spread never exceeds c·a₀ is bit-identical to the OFF pass.
- * A self-training record (encoded input + the DDGI radiance as the target) is
- * written for the host to feed `FusedMlpTrainer.trainStep` (Müller §5
- * self-training: the cache learns the radiance the path actually carried).
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * A6 — Training target: ReSTIR-GI reservoir Lo (not DDGI distillation)
+ * ════════════════════════════════════════════════════════════════════════════
+ * Previously, training wrote the DDGI irradiance (or sun+DDGI) as the target —
+ * this was DISTILLATION: the cache learned to approximate the same estimate it
+ * was replacing, with no fidelity upside.
+ *
+ * The correct target is the ReSTIR-GI reconnection radiance r.Lo — the Lo that
+ * the full RIS process SELECTED as the best estimate for the visible pixel. This
+ * Lo is computed post-loop (after the visibility test and W normalisation) and
+ * stored in the reservoir. Training on r.Lo means the NRC converges to the same
+ * quantity the ReSTIR-GI estimator produces — strictly more informative than
+ * DDGI distillation because: (1) it incorporates RIS importance weighting across
+ * M_GI candidates, (2) it includes the post-visibility correction (r.w_sum = 0
+ * for occluded paths), and (3) it naturally accounts for sky-miss paths (Lo_env).
+ *
+ * BIAS BOUND: r.Lo is itself the biased-default ReSTIR-GI estimate (clamped
+ * Jacobian [0.1,10], no reuse-visibility, centroid-p̂). The NRC converges to
+ * THAT estimate, which is stricter than the previous DDGI-distillation bound
+ * but still biased relative to the true path integral. See HARDWARE-VALIDATION-
+ * NEEDS V20.
+ *
+ * IMPLEMENTATION: The NRC spread heuristic fires on the FIRST RIS candidate that
+ * exceeds the threshold. The surface data at that candidate (xs, ns, wi, rough,
+ * albedo) is saved in per-pixel tracking vars. After the loop, ONE training
+ * record is written for the NRC-fired candidate using r.Lo (the final selected
+ * reservoir Lo) as the target. If the NRC never fired this pixel, no record is
+ * written. If a non-NRC candidate won the reservoir, r.Lo is a DDGI estimate for
+ * that candidate — still a better signal than the NRC-candidate's own DDGI
+ * (because it was importance-weighted selected). If the NRC candidate won, r.Lo
+ * is nrcQueryRadiance(…) — which is circular but self-consistent (the NRC
+ * gradient is computed against its own output, regularised by other-candidate
+ * records; this is standard self-distillation that converges over frames).
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * A6 — xsRough: real per-tri roughness from bvh_material (not hardcoded 1.0)
+ * ════════════════════════════════════════════════════════════════════════════
+ * The NRC now binds bvh_material at @group(1) @binding(14) (same as ris.wgsl /
+ * restirCastPrimary.wgsl). At the bounce vertex xs, decodeRoughMetal returns the
+ * authored roughness packed by BvhBufferHost. The QUERY and the RECORD use the
+ * same real xsRough, making the MLP input consistent with the surface being
+ * approximated. Default-diffuse scenes (rough=0.85) are numerically unchanged
+ * relative to the old xsRough=1.0; only authored glossy/metal bounce vertices
+ * (rare in a GI RIS pass whose candidates are cosine-hemisphere-sampled diffuse
+ * targets) change.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * A6 — spreadC derivation + selectivity arithmetic
+ * ════════════════════════════════════════════════════════════════════════════
+ * The default spreadC = 0.01 is Müller §5's published value. With the H26
+ * camera-pdf fix the a0 footprint is now physically correct — but this changes
+ * WHEN the heuristic fires:
+ *
+ *   For a 1280×720 frame at 60° vFOV:
+ *     cameraPixelPdf = cot²(30°) × 1280 × 720 / 4 = 3 × 921600 / 4 ≈ 691 200
+ *     a0term = sqrt(d0² / (camPdf × cos)) = sqrt(25 / (691200 × 1)) ≈ 0.006
+ *     a0 = 0.006² ≈ 3.6×10⁻⁵
+ *     threshold = c × a0 = 0.01 × 3.6×10⁻⁵ ≈ 3.6×10⁻⁷
+ *
+ *   Bounce-1 spread (dist=2, pdf=0.7/π≈0.222, cosArrive=0.7):
+ *     bounceSpread1 = sqrt(4 / (0.222 × 0.7)) = sqrt(25.7) ≈ 5.07
+ *     aX1 = 5.07² ≈ 25.7  >>  threshold 3.6×10⁻⁷  →  fires at bounce 1
+ *
+ * With the correct camera pdf, c=0.01 ALWAYS fires at bounce 1 for typical
+ * scene geometry. This is the CORRECT behaviour: Müller's heuristic is meant
+ * to terminate "once the path footprint significantly exceeds the camera pixel
+ * footprint." After a single GI bounce the path-footprint (∝ bounce-distance²/
+ * bounce-pdf) is many orders of magnitude larger than the camera pixel footprint
+ * (∝ 1/camPdf). Firing at bounce 1 is physically correct at high resolution.
+ *
+ * To fire at bounce 2-3 instead (less aggressive, lower bias):
+ *   Require aX1 ≤ c × a0, i.e. c ≥ aX1/a0 = 25.7 / 3.6×10⁻⁵ ≈ 714 000.
+ *   To fire at bounce 2: c ∈ [714 000, 4 000 000].  Choose c ≈ 1e6.
+ *   BUT: these values are scene-scale-dependent (bounce distances, pdfs vary).
+ *   For low-res scenes (320×240 @ 90° fovY): camPdf ≈ 19 200, a0 ≈ 0.0013,
+ *   aX1 ≈ 25.7, ratio ≈ 19 750 → c=1e6 would never fire in 3 bounces.
+ *
+ * DECISION (A6): c=0.01 is retained. It fires at bounce 1 for typical
+ * high-resolution scenes (physically correct, aggressive cache use) and is
+ * still a no-op for sky-miss pixels (no bounceHit → NRC block not reached).
+ * Users who want bounce-2 termination for a specific scene should set spreadC
+ * via HybridEngineOptions (it is exposed as a first-class option). The default
+ * is documented here; the new tests in spreadTermination.test.ts enforce it.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -78,6 +159,13 @@ export const RIS_GI_NRC_BODY = /* wgsl */ `
 // WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
 // normal. Byte-identical scene-group addition to risGi.wgsl (binding 11).
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// A6 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
+// into the real authored roughness at the bounce vertex xs, replacing the
+// old hardcoded xsRough=1.0. Same binding as ris.wgsl / restirCastPrimary.wgsl;
+// decodeRoughMetal comes from the materialDecode module (BVH_MATERIAL_TEX_WIDTH
+// constant + fn decodeRoughMetal). Default-diffuse invariant: no authored
+// roughness → packed as 0.85 (see packingHelpers.packBVHRoughMetal).
+@group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 @group(2) @binding(2) var gi_tier: texture_2d<u32>;
@@ -190,12 +278,25 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // H26 camera-pdf fix: previously this used pdf=1.0 (pinhole unit-resolution
   // fallback). The Müller-correct value is the camera's per-pixel solid-angle
   // pdf = cot²(fovY/2)·W·H/4, which grows with resolution and FOV narrowing.
-  // A tighter a0 (higher pdf → smaller spread term) means the bounce edges must
-  // grow MORE before termination fires — correctly modelling the narrower camera
-  // footprint at higher resolution or zoom.
+  // Higher camPdf → smaller a0term → smaller a0 → smaller threshold c·a0 →
+  // the heuristic fires SOONER (more aggressive cache use at high resolution).
+  // This is physically correct: a high-resolution camera has a narrow per-pixel
+  // footprint; after one GI bounce the path has spread far beyond it → terminate
+  // into the cache. See the A6 spreadC derivation in the file-level docblock.
   let cosThetaPrimary = max(1e-4, abs(dot(normal, primaryRay.direction)));
   let a0term = nrcSegmentSpreadTerm(hit.dist, nrcCfg.cameraPixelPdf, cosThetaPrimary);
   let a0 = a0term * a0term;
+
+  // A6 — NRC candidate tracking: save surface data for the FIRST candidate
+  // that triggers the spread heuristic. The training record is written once
+  // after the loop using r.Lo (the final ReSTIR-GI selected radiance) as the
+  // target — not the per-candidate DDGI estimate (which was DDGI distillation).
+  var nrcFired: bool = false;
+  var nrcTrackXs: vec3f = vec3f(0.0);
+  var nrcTrackNs: vec3f = vec3f(0.0, 1.0, 0.0);
+  var nrcTrackWi: vec3f = vec3f(0.0);
+  var nrcTrackRough: f32 = 1.0;
+  var nrcTrackAlbedo: vec3f = vec3f(0.0);
 
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
     var wi: vec3f;
@@ -255,41 +356,33 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
       if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC)) {
         let xsAlbedo = xsMat.rgb;
-        // xsRough = 1.0 (full diffuse) for the NRC self-training feature. B1
-        // added a per-tri roughness lane (bvh_material), so a real xs roughness
-        // is now AVAILABLE in principle — but NRC (opt-in/experimental) does not
-        // bind bvh_material on this pass, and the reconnection vertex xs is a
-        // diffuse-bounce target regardless; the constant keeps the training
-        // feature identical to the query, which is what matters for self-training
-        // consistency. Wiring real xsRough is a follow-up scoped to the NRC track.
-        let xsRough = 1.0;
+        // A6 — real per-tri roughness from bvh_material (was hardcoded 1.0).
+        // decodeRoughMetal returns vec2f(roughness, metalness); we only need
+        // roughness for the NRC encoding (xsRough). The diffuse-default invariant
+        // packs 0.85 for materials without authored roughness, so default-diffuse
+        // scenes are numerically close to the old xsRough=1.0.
+        let xsRmCoord = vec2u(
+          bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+          bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+        );
+        let xsRough = decodeRoughMetal(
+          textureLoad(bvh_material, vec2i(xsRmCoord), 0).r
+        ).x;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).
         Lo = nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo);
-        // H27 — improved self-training target (Müller §5):
-        // Replace bare DDGI irradiance (ddgiLo) with direct-sun + one-DDGI-bounce
-        // combined Lo. This gives the NRC a physically grounded training signal that
-        // includes direct sunlight at xs — not just diffuse irradiance from probes.
-        //   directLo = (sun_contrib + DDGI_irradiance) × albedo × (1/π)
-        // Shadow test: trace from xs toward sunDirection; skip if occluded.
-        let sunDir = normalize(ubo.sunDirection);
-        let sunNdotL = max(0.0, dot(ns, sunDir));
-        var sunContrib = vec3f(0.0);
-        if (sunNdotL > 1e-4) {
-          let shadowOrig = xs + ns * NORMAL_BIAS_GI;
-          let occluded = traceSceneAny(
-            ubo.bvhMode, ubo.tlasNodeCount,
-            &bvh_index, &bvh_position, &bvh,
-            &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-            &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-            shadowOrig, sunDir, 1e20, ubo.triIntersectEpsilon, true,
-          );
-          if (!occluded) {
-            sunContrib = vec3f(ubo.sunIntensity * sunNdotL);
-          }
+        // A6 — save the NRC candidate surface data for the post-loop record.
+        // We only save the FIRST fired candidate (the one most likely to be
+        // importance-selected into the reservoir). After the loop, we write
+        // ONE record with r.Lo as the training target (see below).
+        if (!nrcFired) {
+          nrcFired = true;
+          nrcTrackXs = xs;
+          nrcTrackNs = ns;
+          nrcTrackWi = wi;
+          nrcTrackRough = xsRough;
+          nrcTrackAlbedo = xsAlbedo;
         }
-        let directLo = (sunContrib + irrAtXs) * xsAlbedo * INV_PI;
-        nrcWriteRecord(pixelIdxGi % nrcCfg.recordCap, xs, ns, -wi, xsRough, xsAlbedo, directLo);
       } else {
         Lo = ddgiLo;
       }
@@ -343,6 +436,32 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       r.W = 0.0;
       r.w_sum = 0.0;
     }
+  }
+
+  // A6 — post-loop NRC training record (ReSTIR-GI Lo as target).
+  // Write ONE record if the spread heuristic fired on at least one candidate.
+  // r.Lo is the final selected reservoir radiance — the ReSTIR-GI reconnection
+  // estimate for this pixel. Training on r.Lo means the NRC converges to the
+  // same quantity the RIS estimator produces (vs the old DDGI distillation).
+  //
+  // BIAS BOUND (documented): r.Lo is itself the biased ReSTIR-GI estimate
+  // (clamped Jacobian, no reuse-visibility, centroid-p̂). The NRC converges to
+  // THAT, which is strictly more informative than DDGI-only distillation.
+  //
+  // TAIL-PADDING GUARD: records where r.Lo == 0 (occluded sample, W=0) are
+  // valid zero-radiance training data — the NRC should predict 0 for dark
+  // surfaces. The host skips only all-zero ENCODED-INPUT slots (indicating the
+  // slot was never written), not zero-radiance slots. Zero Lo trains the MLP
+  // toward 0 for occlusion, which is correct.
+  if (nrcFired) {
+    // Slot: deterministic per-pixel assignment (pixelIdxGi % recordCap) with
+    // first-writer-wins atomic claim in nrcWriteRecord (H27 torn-record fix).
+    nrcWriteRecord(
+      pixelIdxGi % nrcCfg.recordCap,
+      nrcTrackXs, nrcTrackNs, -nrcTrackWi,
+      nrcTrackRough, nrcTrackAlbedo,
+      r.Lo,
+    );
   }
 
   // GRIS Phase-0 reconnection-shift cache (Lin et al. 2022 §5) — written, read

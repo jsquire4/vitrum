@@ -110,6 +110,45 @@ The Radiance Cascades subsystem (`cascadePyramid`, `cascadeDispatch`, `cascadeBu
 2026-05-18 into [`@vitrum/walkaround-rc`](../walkaround-rc/). `walkaround-hybrid`
 re-exports the public surface for back-compat.
 
+## Bias & the unbiased GRIS variant
+
+The default ReSTIR-GI spatial and temporal reuse (`restirPtReuse: false`) is
+**intentionally biased** for the realtime frame budget. The unbiased GRIS
+reconnection-shift variant (Lin et al. 2022, SIGGRAPH) is available as opt-in
+via `HybridEngineOptions.restirPtReuse: true`.
+
+### Default (OFF) bias sources
+
+| # | Source | File:line | Manifestation |
+|---|--------|-----------|---------------|
+| B1 | **Jacobian clamp `[0.1, 10]`** | `shaders/jacobianShift.wgsl.ts` — `return clamp(J, 0.1, 10.0)` | Systematic over/under-weighting of neighbours with extreme solid-angle ratios (depth-discontinuity edges in the indirect channel). Stationary — does not grow with frame count. |
+| B2 | **No reconnection-visibility ray** | `shaders/spatialGi.wgsl.ts` (OFF, `SPATIAL_GI_WGSL`) and `shaders/temporalGi.wgsl.ts` (OFF, `TEMPORAL_GI_WGSL`) — reuse weight applied without occlusion test | Indirect light bleeds through geometry at depth discontinuities; occluded neighbours contribute energy they should not. Partially suppressed by the normal/depth consistency test but not eliminated. |
+| B3 | **No full GBH MIS** | `spatialGi.wgsl.ts` and `temporalGi.wgsl.ts` (OFF variants) — weight `w_q = pHatZ * rQ.W * Mq * J` with no MIS denominator | Contribution weights do not sum to 1 (Lin 2022 GBH sense); slightly over-energised indirect where M counts differ across pixels. |
+| B4 | **Centroid p̂** (shared ON and OFF) | `shaders/restirPHat.wgsl.ts` — `let centroid = (e.vA + e.vB + e.vC) / 3.0` | DI target distribution uses emitter centroid instead of sampled point xi; small error for compact lights, larger for wide-area sources at close range. Not fixed by enabling GRIS. |
+
+### Cost of enabling `restirPtReuse: true`
+
+The unbiased path adds per accepted spatial/temporal reuse candidate:
+- one BVH shadow ray (reconnection-visibility test), and
+- the full generalized-balance MIS cross-evaluation over all K_SPATIAL_GI = 5
+  gathered neighbours (O(K²) target evaluations in the spatial pass).
+
+The GI spatial + temporal passes are the **realtime frame-time bottleneck** for
+typical walkaround usage — enabling GRIS roughly doubles their cost on scenes
+where many neighbours pass the geometric-consistency test. This is the regime
+argument for keeping `false` as the default.
+
+### When to enable
+
+Enable `restirPtReuse: true` when: the scene is rendered in a converged or
+offline-ish mode (sustained still camera, progressive accumulation, A/B
+validation); you observe energy bleed or indirect light leak at geometry
+boundaries; or you are running the V19 GPU unbiasedness validation
+(`HARDWARE-VALIDATION-NEEDS.md`).
+
+The gate is COMPILE-TIME (fixed at engine creation — changes the GI pipeline
+layout and shader variant). Same pattern as `rcEnabled`, `ppgEnabled`, `regir`.
+
 ## Known Issues
 
 ### DDGI path: `three/webgpu` renderer internals coupling

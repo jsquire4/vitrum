@@ -59,8 +59,11 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     // B1 — Lo_indirectSpec (glossy/metal specular indirect) joins the
     // UN-demodulated, non-AO direct group alongside Lo_emit / Lo_emitterGlow
     // (specular reflections are not albedo-demodulated and not GTAO-darkened).
+    // B1 tail (2026-06-10) — Lo_transmittedGI (glass refracted-GI × Fresnel-T ×
+    // Beer tint) joins the UN-demodulated, non-AO direct group alongside
+    // Lo_indirectSpec; glass transmission is not GTAO-darkened.
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
+      /directRadiance\s*=\s*Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_indirectSpec\s*\+\s*Lo_transmittedGI\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao/,
     );
   });
 
