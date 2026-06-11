@@ -10,6 +10,8 @@
  * @see packages/pt-webgpu/src/wgsl/pathTrace/intersection.wgsl.ts
  */
 
+import { TLAS_TRAVERSAL_STACK_DEPTH } from './tlasTraversal.wgsl.js';
+
 export const TLAS_SCENE_HIT_TRAVERSAL_WGSL = /* wgsl */ `
 
 fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {
@@ -20,7 +22,7 @@ fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>
   (*hit).dist = tMax;
   (*hit).triIndex = 0u;
   (*hit).normal = vec3f(0.0, 1.0, 0.0);
-  var stack: array<u32, 64>;
+  var stack: array<u32, ${TLAS_TRAVERSAL_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u;
   stackPtr = stackPtr + 1u;
@@ -73,7 +75,7 @@ fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>
     } else {
       let leftChild = nodeIdx + 1u;
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u < 64u) {
+      if (stackPtr + 2u < ${TLAS_TRAVERSAL_STACK_DEPTH}u) {
         stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
       } else {
@@ -89,7 +91,7 @@ fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
     var meshHit: SceneHit;
     return traceMeshBvh(ray, tMin, tMax, false, &meshHit, 0u, false);
   }
-  var stack: array<u32, 64>;
+  var stack: array<u32, ${TLAS_TRAVERSAL_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u;
   stackPtr = stackPtr + 1u;
@@ -132,7 +134,7 @@ fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
     } else {
       let leftChild = nodeIdx + 1u;
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u < 64u) {
+      if (stackPtr + 2u < ${TLAS_TRAVERSAL_STACK_DEPTH}u) {
         stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
       } else {

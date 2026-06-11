@@ -108,6 +108,16 @@ describe('FrameParamsSlot ↔ WGSL struct derivational cross-check (H55-a)', () 
     expect(wgslFields.length).toBe(FRAME_PARAMS_WGSL_FIELDS.length);
   });
 
+  it('I4.3 — field-name ORDER: WGSL struct field order matches FRAME_PARAMS_WGSL_FIELDS exactly', () => {
+    // FRAME_PARAMS_WGSL_FIELDS (auto-generated alongside FrameParamsSlot) is the
+    // slot-table-authoritative expected order. This test asserts the WGSL struct
+    // fields appear in EXACTLY that order, so a hand-edit that reorders the struct
+    // without re-running the generator fails loudly here instead of silently
+    // corrupting GPU reads.
+    const wgslFieldStrings = wgslFields.map(({ name, type }) => `${name}: ${type}`);
+    expect(wgslFieldStrings).toEqual(Array.from(FRAME_PARAMS_WGSL_FIELDS));
+  });
+
   it('every FrameParamsSlot entry has a matching WGSL struct field', () => {
     for (const [name, slot] of Object.entries(FrameParamsSlot)) {
       const derivedSlot = derivedSlots.get(name);

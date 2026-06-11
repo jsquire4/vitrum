@@ -50,15 +50,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
-import { defineUbo } from '@vitrum/shared-samplers';
-
-/** `CbPrefillUniforms` (mirrors `cbPrefill.wgsl.ts`): 4×u32 = 16 bytes. */
-const CB_PREFILL_UBO = defineUbo([
-  { name: 'screenW',     type: 'u32' },
-  { name: 'screenH',     type: 'u32' },
-  { name: 'frameParity', type: 'u32' },
-  { name: '_pad',        type: 'u32' },
-] as const);
+import { CB_PREFILL_UBO } from './uboLayouts.js';
 
 /** Denoiser IDs that read `hdrColorTexture` directly and therefore require
  *  the pre-denoiser gap-fill when checkerboard rendering is active. */

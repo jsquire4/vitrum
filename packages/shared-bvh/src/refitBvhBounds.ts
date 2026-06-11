@@ -1,17 +1,24 @@
 import { isLeafSplit } from './buildArrayBvh.js';
+import { BVH_NODE_FLOATS } from './strides.js';
 
 /**
  * In-place BVH **refit**: recompute every node's AABB bounds without rebuilding
  * tree topology. Used by transform/position update paths that preserve leaf
  * membership and only need fresh min/max fields.
+ *
+ * @param indexStride  Words per triangle in `indices`. Default `3`
+ *   (`array<vec3u>` form, used by all current callers — RC, DDGI, walkaround).
+ *   Pass `4` when the source is stride-4 (pt-webgpu `packSceneFromCore` output)
+ *   to avoid a separate collapse step; the `.w` payload lane is ignored.
  */
 export function refitBvhBounds(
   bvhNodes: Float32Array,
   indices: Uint32Array,
   positions: Float32Array,
   positionStrideFloats: 3 | 4,
+  indexStride: 3 | 4 = 3,
 ): void {
-  const UINT32_PER_NODE = 8;
+  const UINT32_PER_NODE = BVH_NODE_FLOATS;
   const totalNodes = bvhNodes.length / UINT32_PER_NODE;
   if (totalNodes === 0) return;
   const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
@@ -57,9 +64,9 @@ export function refitBvhBounds(
       const triOffset = u32[base + 6]!;
       for (let t = 0; t < triCount; t += 1) {
         const triIdx = triOffset + t;
-        const i0 = indices[triIdx * 3 + 0]!;
-        const i1 = indices[triIdx * 3 + 1]!;
-        const i2 = indices[triIdx * 3 + 2]!;
+        const i0 = indices[triIdx * indexStride + 0]!;
+        const i1 = indices[triIdx * indexStride + 1]!;
+        const i2 = indices[triIdx * indexStride + 2]!;
 
         let off = i0 * positionStrideFloats;
         let x = positions[off + 0]!, y = positions[off + 1]!, z = positions[off + 2]!;

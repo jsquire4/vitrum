@@ -9,6 +9,13 @@
 export * from './wgsl/atrous.wgsl.js';
 export * from './wgsl/temporalAccum.wgsl.js';
 
+// Temporal accumulation pass UBO helper (D12.11 — defineUbo pattern).
+export {
+  TEMPORAL_ACCUM_UBO_SIZE_BYTES,
+  packTemporalAccumUniforms,
+} from './temporalAccumBindings.js';
+export type { TemporalAccumUniforms } from './temporalAccumBindings.js';
+
 // Canonical WelfordVariance — single source for cross-package variance state.
 export {
   WELFORD_VARIANCE_WGSL,

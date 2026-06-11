@@ -8,10 +8,51 @@
 // that state passed in (it does not duplicate or own engine state).
 import type { FrameInput } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { FrameParamsSlot } from './scene/frameParamsLayout.js';
+import { FrameParamsSlot, FRAME_PARAMS_BYTE_SIZE } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 import type { PtWebgpuTraceTier } from './traceTier.js';
+
+// D8.11 — Module-load-time allocation guard.
+//
+// The buffer is always allocated as 512 bytes (128 u32/f32 slots, indices 0..127).
+// FRAME_PARAMS_BYTE_SIZE is the WGSL-derived padded size of the struct
+// (auto-generated; currently 400 bytes = 100 slots).  If the generator
+// adds fields and the struct grows past 512 bytes, writes at slot ≥ 128 would
+// silently go out of bounds.  Fail loudly here at module load instead.
+//
+// The checked invariant: FRAME_PARAMS_BYTE_SIZE must not exceed the 512-byte
+// ArrayBuffer that `packFrameParams` allocates.
+export const FRAME_PARAMS_BUFFER_ALLOC_BYTES = 512;
+if (FRAME_PARAMS_BYTE_SIZE > FRAME_PARAMS_BUFFER_ALLOC_BYTES) {
+  throw new Error(
+    `frameParamsPacker: FRAME_PARAMS_BYTE_SIZE (${FRAME_PARAMS_BYTE_SIZE} B) exceeds the ` +
+    `allocated buffer size (${FRAME_PARAMS_BUFFER_ALLOC_BYTES} B). ` +
+    `Run tools/generate-wgsl-layouts.mjs and update the ArrayBuffer allocation.`,
+  );
+}
+// Also guard the highest *named* slot index used by the packer.  Each slot is 4
+// bytes; the 512-byte buffer accommodates slots 0..127.  If a generator update
+// moves the highest slot past 127 without bumping the allocation, a silent OOB
+// write would corrupt the GPU uniform.  We export this constant so tests can pin it.
+export const FRAME_PARAMS_MAX_SLOT = 127;
+const _highestSlot = Math.max(...(Object.values(FrameParamsSlot) as number[]));
+// For vec4f/mat4x4f fields the slot value is the first slot; add their size:
+//   invViewProj at slot 48, mat4x4f = 16 slots → last slot 63
+//   prevViewProj at slot 80, mat4x4f = 16 slots → last slot 95
+//   directionalLightCount at slot 96, u32 = 1 slot → last slot 96
+// The last slot actually WRITTEN is directionalLightCount = 96. The mat fields
+// span slots [48..95]; the highest written slot index is 96.
+// We let the generator-derived FRAME_PARAMS_BYTE_SIZE / 4 give us the effective
+// slot count (accounting for trailing struct padding):
+const _effectiveSlots = FRAME_PARAMS_BYTE_SIZE / 4; // e.g. 400/4 = 100
+if (_effectiveSlots > FRAME_PARAMS_MAX_SLOT + 1) {
+  throw new Error(
+    `frameParamsPacker: FRAME_PARAMS_BYTE_SIZE implies ${_effectiveSlots} slots but ` +
+    `the buffer only holds ${FRAME_PARAMS_MAX_SLOT + 1} (0..${FRAME_PARAMS_MAX_SLOT}). ` +
+    `Update FRAME_PARAMS_MAX_SLOT or bump the ArrayBuffer allocation.`,
+  );
+}
 
 /**
  * The subset of {@link import('./scene/uploadSceneBuffers.js').UploadedSceneBuffers}

@@ -9,6 +9,7 @@
 
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
+  collapseIndicesToStride3,
   mergeWorldSpaceFromCore,
   packSceneFromCore,
   rebuildPrimitiveBlas,
@@ -336,12 +337,7 @@ function buffersFromCoreScenePack(
   // same primitive-concat order, so indices align 1:1.
   const uv0Stride2 = stride4UvsToStride2Uv0(geo.uvs, vertCount);
   const positionsWithUV = packUVIntoPositionW(geo.positions, { array: uv0Stride2 }, vertCount);
-  const triIndices3 = new Uint32Array(triCount * 3);
-  for (let t = 0; t < triCount; t += 1) {
-    triIndices3[t * 3 + 0] = geo.indices[t * 4 + 0]!;
-    triIndices3[t * 3 + 1] = geo.indices[t * 4 + 1]!;
-    triIndices3[t * 3 + 2] = geo.indices[t * 4 + 2]!;
-  }
+  const triIndices3 = collapseIndicesToStride3(geo.indices);
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);

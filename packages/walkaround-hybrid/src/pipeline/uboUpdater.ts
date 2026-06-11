@@ -159,25 +159,21 @@ const REGIR_OFF: RegirUboState = {
   gridFloatOffset: 0,
 };
 
-export function updateUBO(
-  device: GPUDevice,
-  uboBuffer: GPUBuffer,
+/**
+ * Pure packing core — fills and returns the 416-byte WalkaroundUBO ArrayBuffer
+ * from structured inputs. No GPU types involved; safe to call in Node / Vitest.
+ *
+ * Extracted so the sentinel round-trip test (I3.3/D3.17) can verify every
+ * field's packer index against the WGSL offset comment without requiring a
+ * real GPUDevice. The existing `updateUBO` delegates here and calls
+ * `device.queue.writeBuffer` on the result — byte-identical behaviour.
+ */
+export function packWalkaroundUBO(
   inputs: PipelineFrameInputs,
-  /** Live PPG gate + α from the pipeline. Defaults to OFF so callers that
-   *  don't run PPG (and the existing tests) keep the pure-cosine gi-ris path
-   *  — ppgEnabled=0 and α=0 make the gi-ris RIS source pdf reduce exactly to
-   *  cosθ/π, preserving ppg-OFF bit-identity. */
   ppg: PpgUboState = { enabled: false, mixAlpha: 0 },
-  /** Live ReGIR grid state from the pipeline. Defaults to OFF so callers that
-   *  don't run ReGIR (and the existing tests) keep the light-tree DI path
-   *  bit-identically (regirEnabled=0). */
   regir: RegirUboState = REGIR_OFF,
-  /** Live checkerboard half-res-shading state from the pipeline. Defaults to OFF
-   *  so callers that don't run checkerboard (and the existing tests) keep the
-   *  full-shade path with frameParity=0/checkerboardOn=0 — both pad slots stay
-   *  zero, so the UBO is byte-identical to the pre-checkerboard layout. */
   checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
-): void {
+): ArrayBuffer {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
   const u32  = new Uint32Array(data);
@@ -275,5 +271,28 @@ export function updateUBO(
   // existing tests that never set it are byte-identical to before.
   u32[103] = (inputs.restirGI.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
 
+  return data;
+}
+
+export function updateUBO(
+  device: GPUDevice,
+  uboBuffer: GPUBuffer,
+  inputs: PipelineFrameInputs,
+  /** Live PPG gate + α from the pipeline. Defaults to OFF so callers that
+   *  don't run PPG (and the existing tests) keep the pure-cosine gi-ris path
+   *  — ppgEnabled=0 and α=0 make the gi-ris RIS source pdf reduce exactly to
+   *  cosθ/π, preserving ppg-OFF bit-identity. */
+  ppg: PpgUboState = { enabled: false, mixAlpha: 0 },
+  /** Live ReGIR grid state from the pipeline. Defaults to OFF so callers that
+   *  don't run ReGIR (and the existing tests) keep the light-tree DI path
+   *  bit-identically (regirEnabled=0). */
+  regir: RegirUboState = REGIR_OFF,
+  /** Live checkerboard half-res-shading state from the pipeline. Defaults to OFF
+   *  so callers that don't run checkerboard (and the existing tests) keep the
+   *  full-shade path with frameParity=0/checkerboardOn=0 — both pad slots stay
+   *  zero, so the UBO is byte-identical to the pre-checkerboard layout. */
+  checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
+): void {
+  const data = packWalkaroundUBO(inputs, ppg, regir, checkerboard);
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

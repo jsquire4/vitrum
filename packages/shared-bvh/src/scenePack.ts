@@ -7,6 +7,7 @@
 
 import { asMat4, type Mat4, type Scene, type ScenePrimitive, type Vec3 } from '@vitrum/core';
 import { buildArrayBvh, isLeafSplit } from './buildArrayBvh.js';
+import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
 import { buildTlas, refitTlas } from './tlas.js';
 
 const IDENTITY_MAT4 = asMat4([
@@ -219,9 +220,9 @@ function buildTlasFromInstances(instances: readonly PendingTlasInstance[]): {
       worldToLocal: instance.worldToLocal,
     })),
   );
-  const l2w = new Float32Array(instances.length * 16);
+  const l2w = new Float32Array(instances.length * MAT4_STRIDE_F32);
   for (let i = 0; i < instances.length; i += 1) {
-    l2w.set(instances[i]!.localToWorld, i * 16);
+    l2w.set(instances[i]!.localToWorld, i * MAT4_STRIDE_F32);
   }
   return {
     tlasNodes: tlas.nodes,
@@ -291,31 +292,31 @@ function packOneMeshLikePrimitive(
     return { slice: null, warnings };
   }
 
-  const localPositions = new Float32Array(vertexCount * 4);
-  const localNormals = new Float32Array(vertexCount * 4);
+  const localPositions = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
+  const localNormals = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
   // Per-vertex UVs, vec4f-strided: .xy = uv0 (base channel), .zw = uv1 (second
   // channel; TextureRef.texCoord 1). Absent channels stay 0. Expanded 1:1 with
   // the vertex loop below — the renderer interpolates these by barycentrics at
   // the hit to drive baseColor/normal/etc. texture sampling.
-  const localUvs = new Float32Array(vertexCount * 4);
+  const localUvs = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
   const baseUvs = primitive.uvs;
   const baseUv1 = primitive.uv1;
   for (let i = 0; i < vertexCount; i += 1) {
-    localPositions[i * 4] = basePositions[i * 3] ?? 0;
-    localPositions[i * 4 + 1] = basePositions[i * 3 + 1] ?? 0;
-    localPositions[i * 4 + 2] = basePositions[i * 3 + 2] ?? 0;
-    localPositions[i * 4 + 3] = 0;
-    localNormals[i * 4] = primitive.normals[i * 3] ?? 0;
-    localNormals[i * 4 + 1] = primitive.normals[i * 3 + 1] ?? 1;
-    localNormals[i * 4 + 2] = primitive.normals[i * 3 + 2] ?? 0;
-    localNormals[i * 4 + 3] = 0;
+    localPositions[i * VERTEX_STRIDE_F32] = basePositions[i * 3] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32 + 1] = basePositions[i * 3 + 1] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32 + 2] = basePositions[i * 3 + 2] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32 + 3] = 0;
+    localNormals[i * VERTEX_STRIDE_F32] = primitive.normals[i * 3] ?? 0;
+    localNormals[i * VERTEX_STRIDE_F32 + 1] = primitive.normals[i * 3 + 1] ?? 1;
+    localNormals[i * VERTEX_STRIDE_F32 + 2] = primitive.normals[i * 3 + 2] ?? 0;
+    localNormals[i * VERTEX_STRIDE_F32 + 3] = 0;
     if (baseUvs != null) {
-      localUvs[i * 4] = baseUvs[i * 2] ?? 0;
-      localUvs[i * 4 + 1] = baseUvs[i * 2 + 1] ?? 0;
+      localUvs[i * VERTEX_STRIDE_F32] = baseUvs[i * 2] ?? 0;
+      localUvs[i * VERTEX_STRIDE_F32 + 1] = baseUvs[i * 2 + 1] ?? 0;
     }
     if (baseUv1 != null) {
-      localUvs[i * 4 + 2] = baseUv1[i * 2] ?? 0;
-      localUvs[i * 4 + 3] = baseUv1[i * 2 + 1] ?? 0;
+      localUvs[i * VERTEX_STRIDE_F32 + 2] = baseUv1[i * 2] ?? 0;
+      localUvs[i * VERTEX_STRIDE_F32 + 3] = baseUv1[i * 2 + 1] ?? 0;
     }
   }
 
@@ -376,7 +377,7 @@ function packOneMeshLikePrimitive(
       bvhNodeWords,
       vertexCount,
       triCount,
-      bvhNodeCount: Math.floor(bvhNodeWords.length / 8),
+      bvhNodeCount: Math.floor(bvhNodeWords.length / BVH_NODE_FLOATS),
       localAabbMin: localAabb.min,
       localAabbMax: localAabb.max,
       warnings,
@@ -570,9 +571,9 @@ function spliceResizedPrimitiveBlasIntoPack(
   const deltaTri = slice.triCount - binding.triCount;
   const deltaNode = slice.bvhNodeCount - oldNodeCount;
 
-  const prevTotalVerts = Math.floor(prev.positions.length / 4);
+  const prevTotalVerts = Math.floor(prev.positions.length / VERTEX_STRIDE_F32);
   const prevTotalTris = prev.triangleCount;
-  const prevTotalNodes = Math.floor(prev.bvhNodes.length / 8);
+  const prevTotalNodes = Math.floor(prev.bvhNodes.length / BVH_NODE_FLOATS);
 
   // The changed primitive's verbatim node span in the OLD pack.
   const oldNodeStart = binding.blasRoot;
@@ -587,12 +588,12 @@ function spliceResizedPrimitiveBlasIntoPack(
   const newTotalTris = prevTotalTris + deltaTri;
   const newTotalNodes = prevTotalNodes + deltaNode;
 
-  const positions = new Float32Array(newTotalVerts * 4);
-  const normals = new Float32Array(newTotalVerts * 4);
-  const uvs = new Float32Array(newTotalVerts * 4);
+  const positions = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
+  const normals = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
+  const uvs = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
   const indices = new Uint32Array(newTotalTris * 4);
   const triMaterialIds = new Uint32Array(newTotalTris);
-  const newNodeView = new Uint32Array(newTotalNodes * 8);
+  const newNodeView = new Uint32Array(newTotalNodes * BVH_NODE_FLOATS);
   const prevNodeView = new Uint32Array(
     prev.bvhNodes.buffer,
     prev.bvhNodes.byteOffset,
@@ -601,18 +602,18 @@ function spliceResizedPrimitiveBlasIntoPack(
 
   // ── Positions / normals (vec4f-strided) ──────────────────────────────────
   // Prefix [0, oldVertStart) verbatim.
-  positions.set(prev.positions.subarray(0, oldVertStart * 4), 0);
-  normals.set(prev.normals.subarray(0, oldVertStart * 4), 0);
-  uvs.set(prev.uvs.subarray(0, oldVertStart * 4), 0);
+  positions.set(prev.positions.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
+  normals.set(prev.normals.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
+  uvs.set(prev.uvs.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
   // Changed primitive's new local slice at the SAME vertexStart.
-  positions.set(slice.localPositions, oldVertStart * 4);
-  normals.set(slice.localNormals, oldVertStart * 4);
-  uvs.set(slice.localUvs, oldVertStart * 4);
-  // Suffix (downstream primitives) shifted by deltaVert*4 floats.
+  positions.set(slice.localPositions, oldVertStart * VERTEX_STRIDE_F32);
+  normals.set(slice.localNormals, oldVertStart * VERTEX_STRIDE_F32);
+  uvs.set(slice.localUvs, oldVertStart * VERTEX_STRIDE_F32);
+  // Suffix (downstream primitives) shifted by deltaVert*VERTEX_STRIDE_F32 floats.
   if (oldVertEnd < prevTotalVerts) {
-    positions.set(prev.positions.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
-    normals.set(prev.normals.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
-    uvs.set(prev.uvs.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
+    positions.set(prev.positions.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
+    normals.set(prev.normals.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
+    uvs.set(prev.uvs.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
   }
 
   // ── Indices (vec4u-strided; .x.y.z global vertex refs, .w = 0) ────────────
@@ -635,22 +636,22 @@ function spliceResizedPrimitiveBlasIntoPack(
     copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
   }
 
-  // ── BVH nodes (8 words/node) ──────────────────────────────────────────────
+  // ── BVH nodes (BVH_NODE_FLOATS words/node) ───────────────────────────────
   // Prefix nodes [0, oldNodeStart) verbatim. Leaf word[6] is a GLOBAL tri offset
   // into a region BEFORE the changed primitive, so it is unaffected; interior
   // word[6] is relative and self-contained within the prefix subtrees.
-  newNodeView.set(prevNodeView.subarray(0, oldNodeStart * 8), 0);
+  newNodeView.set(prevNodeView.subarray(0, oldNodeStart * BVH_NODE_FLOATS), 0);
   // Changed primitive's new nodes at the SAME blasRoot, leaf offsets rebased to
   // its (unchanged) triStart.
   const newBlasRoot = oldNodeStart; // unchanged for the spliced primitive
-  for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
-    rebaseLeafTriOffset(newNodeView, newBlasRoot * 8 + n, slice.bvhNodeWords, n, binding.triStart);
+  for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
+    rebaseLeafTriOffset(newNodeView, newBlasRoot * BVH_NODE_FLOATS + n, slice.bvhNodeWords, n, binding.triStart);
   }
   // Downstream nodes shifted by deltaNode. Leaf global tri offsets shift by
   // deltaTri; interior relative child offsets are unchanged (the subtree shape
   // moves rigidly).
   for (let n = oldNodeEnd; n < prevTotalNodes; n += 1) {
-    rebaseLeafTriOffset(newNodeView, (n + deltaNode) * 8, prevNodeView, n * 8, deltaTri);
+    rebaseLeafTriOffset(newNodeView, (n + deltaNode) * BVH_NODE_FLOATS, prevNodeView, n * BVH_NODE_FLOATS, deltaTri);
   }
 
   const bvhNodes = new Float32Array(newNodeView.buffer);
@@ -717,7 +718,7 @@ function splicePrimitiveBlasIntoPack(
   const binding = prev.primitiveTlasBindings[bindingIndex]!;
   const nodeStart = binding.blasRoot;
   const nextBinding = prev.primitiveTlasBindings[bindingIndex + 1];
-  const nodeEnd = nextBinding != null ? nextBinding.blasRoot : Math.floor(prev.bvhNodes.length / 8);
+  const nodeEnd = nextBinding != null ? nextBinding.blasRoot : Math.floor(prev.bvhNodes.length / BVH_NODE_FLOATS);
   const oldNodeCount = nodeEnd - nodeStart;
 
   if (
@@ -745,7 +746,7 @@ function splicePrimitiveBlasIntoPack(
   const triMaterialIds = new Uint32Array(prev.triMaterialIds);
   const bvhNodes = new Float32Array(prev.bvhNodes);
 
-  const vertOff = binding.vertexStart * 4;
+  const vertOff = binding.vertexStart * VERTEX_STRIDE_F32;
   positions.set(slice.localPositions, vertOff);
   normals.set(slice.localNormals, vertOff);
   uvs.set(slice.localUvs, vertOff);
@@ -760,9 +761,9 @@ function splicePrimitiveBlasIntoPack(
     triMaterialIds[binding.triStart + t] = slice.triMaterialIds[t] ?? 0;
   }
 
-  const nodeWordStart = nodeStart * 8;
+  const nodeWordStart = nodeStart * BVH_NODE_FLOATS;
   const nodeView = new Uint32Array(bvhNodes.buffer);
-  for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
+  for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
     rebaseLeafTriOffset(nodeView, nodeWordStart + n, slice.bvhNodeWords, n, binding.triStart);
   }
 
@@ -876,9 +877,9 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
 
     const vertexCount = slice.vertexCount;
     const triCount = slice.triCount;
-    const vertexBase = Math.floor(positions.length / 4);
+    const vertexBase = Math.floor(positions.length / VERTEX_STRIDE_F32);
     const triBase = triMaterialIds.length;
-    const nodeBase = Math.floor(bvhNodeWords.length / 8);
+    const nodeBase = Math.floor(bvhNodeWords.length / BVH_NODE_FLOATS);
 
     for (let i = 0; i < slice.localPositions.length; i += 1) positions.push(slice.localPositions[i] ?? 0);
     for (let i = 0; i < slice.localNormals.length; i += 1) normals.push(slice.localNormals[i] ?? 0);
@@ -895,7 +896,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
       triMaterialIds.push(slice.triMaterialIds[i] ?? matId);
     }
 
-    for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
+    for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
       const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
       const isLeaf = isLeafSplit(splitOrCount);
       bvhNodeWords.push(
@@ -1042,24 +1043,24 @@ export function refitTlasTransforms(
     prevTlas.tlasNodes.length > 0 &&
     prevTlas.tlasInstanceIndices.length === refitAabbs.length &&
     prevTlas.tlasBlasRoots.length === refitAabbs.length &&
-    prevTlas.tlasInstanceWorldToLocal.length === refitAabbs.length * 16
+    prevTlas.tlasInstanceWorldToLocal.length === refitAabbs.length * MAT4_STRIDE_F32
   ) {
     const refitNodes = new Uint32Array(prevTlas.tlasNodes);
     refitTlas(
       {
         nodes: refitNodes,
-        nodeCount: Math.floor(refitNodes.length / 8),
+        nodeCount: Math.floor(refitNodes.length / BVH_NODE_FLOATS),
         instanceIndices: prevTlas.tlasInstanceIndices,
         blasRoots: prevTlas.tlasBlasRoots,
         instanceTransforms: prevTlas.tlasInstanceWorldToLocal,
       },
       refitAabbs,
     );
-    const l2w = new Float32Array(pendingTlasInstances.length * 16);
-    const w2l = new Float32Array(pendingTlasInstances.length * 16);
+    const l2w = new Float32Array(pendingTlasInstances.length * MAT4_STRIDE_F32);
+    const w2l = new Float32Array(pendingTlasInstances.length * MAT4_STRIDE_F32);
     for (let i = 0; i < pendingTlasInstances.length; i += 1) {
-      l2w.set(pendingTlasInstances[i]!.localToWorld, i * 16);
-      w2l.set(pendingTlasInstances[i]!.worldToLocal, i * 16);
+      l2w.set(pendingTlasInstances[i]!.localToWorld, i * MAT4_STRIDE_F32);
+      w2l.set(pendingTlasInstances[i]!.worldToLocal, i * MAT4_STRIDE_F32);
     }
     return {
       ok: true,

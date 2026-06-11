@@ -70,6 +70,21 @@ export const SAMPLE_COUNT_UBO = defineUbo([
 ] as const);
 
 /**
+ * `CbPrefillUniforms` (mirrors `src/shaders/cbPrefill.wgsl.ts`): 4×u32 = 16 B.
+ * screenW, screenH, frameParity, _pad. This pass runs only when
+ * checkerboard is ON; the `_pad` slot keeps the struct at the 16-byte WebGPU
+ * minimum. Note: differs from RESOLVE_UBO in field 4 — RESOLVE_UBO has
+ * `checkerboardOn` where this has `_pad` (the prefill pass always runs with
+ * checkerboard ON so a gate field is redundant).
+ */
+export const CB_PREFILL_UBO = defineUbo([
+  { name: 'screenW',     type: 'u32' },
+  { name: 'screenH',     type: 'u32' },
+  { name: 'frameParity', type: 'u32' },
+  { name: '_pad',        type: 'u32' },
+] as const);
+
+/**
  * `CompositeUniforms` (mirrors composite.wgsl.ts `CompositeUniforms` struct):
  * u32 tonemapMode + f32 exposure + u32 outputColorSpace + u32 _pad = 16 B.
  *

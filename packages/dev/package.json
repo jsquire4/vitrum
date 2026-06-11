@@ -21,7 +21,8 @@
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
-    "@vitrum/core": "file:../core"
+    "@vitrum/core": "file:../core",
+    "@vitrum/shared-bvh": "file:../shared-bvh"
   },
   "peerDependencies": {
     "react": ">=17",

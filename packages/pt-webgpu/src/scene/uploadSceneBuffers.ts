@@ -11,6 +11,7 @@ import {
   type SupportSets,
 } from '@vitrum/core';
 import {
+  BVH_NODE_FLOATS,
   packSceneFromCore,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
@@ -545,7 +546,7 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
     tlasBlasRoots: packed.tlasBlasRoots,
     tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
-    tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
+    tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     primitiveTlasBindings: packed.primitiveTlasBindings,
     warnings: packed.warnings,
   };
@@ -586,7 +587,7 @@ export function uploadScenePackGeometry(
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
   const mutable = asMutableSceneBuffers(sb);
   mutable.tlasNodeCount = pack.tlasNodeCount;
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
   mutable.triangleCount = pack.triangleCount;
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
@@ -625,7 +626,7 @@ export function uploadScenePackBlasOnly(
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
   const mutable = asMutableSceneBuffers(sb);
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
   mutable.triangleCount = pack.triangleCount;
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
@@ -788,7 +789,7 @@ export function uploadScenePackGeometryRealloc(
   tlas.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
 
   const mutable = asMutableSceneBuffers(sb);
-  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
   mutable.triangleCount = pack.triangleCount;
   mutable.tlasNodeCount = pack.tlasNodeCount;
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
@@ -1265,8 +1266,8 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
 
   const uploaded: UploadedSceneBuffers = {
     ...packed,
-    bvhNodeCount: Math.floor(packed.bvhNodes.length / 8),
-    tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
+    bvhNodeCount: Math.floor(packed.bvhNodes.length / BVH_NODE_FLOATS),
+    tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
     positionsBuffer,
     normalsBuffer,

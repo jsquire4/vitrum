@@ -44,10 +44,13 @@
  * instance is where, how many instances) is unchanged.
  */
 
+import { BVH_NODE_FLOATS } from './strides.js';
+
 const TLAS_LEAFNODE_FLAG = 0xffff0000;
 const TLAS_DEFAULT_MAX_LEAF_INSTANCES = 1;       // typically 1 instance/leaf
 const TLAS_DEFAULT_NUM_BINS = 16;
-const TLAS_NODE_STRIDE_U32 = 8;
+/** Alias for {@link BVH_NODE_FLOATS}: TLAS shares the same 32-byte node layout as BLAS. */
+const TLAS_NODE_STRIDE_U32 = BVH_NODE_FLOATS;
 
 export interface TlasInstance {
   /** Index into the caller's BLAS table; passed through verbatim. */

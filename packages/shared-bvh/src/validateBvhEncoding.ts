@@ -1,3 +1,5 @@
+import { BVH_NODE_FLOATS } from './strides.js';
+
 /**
  * Verify that a packed BVH uses the relative-right-child encoding consumed by
  * vitrum WGSL traversal kernels.
@@ -6,7 +8,7 @@ export function validateBvhEncoding(
   nodeBytes: Float32Array | Uint32Array,
   totalNodes: number,
 ): void {
-  const uint32PerNode = 8;
+  const uint32PerNode = BVH_NODE_FLOATS;
   const leafNodeFlag = 0xffff;
   const u32 =
     nodeBytes instanceof Uint32Array

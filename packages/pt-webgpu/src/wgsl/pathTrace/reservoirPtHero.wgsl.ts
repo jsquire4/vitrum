@@ -134,6 +134,29 @@ struct RestirPtParams {
 };
 `;
 
+/**
+ * I4.3/I4.4 — Structural pin descriptor for `RestirPtParams`.
+ *
+ * Each entry is { name, byteOffset, type } mirroring the WGSL struct field
+ * declarations above.  The host packer (`GpuResources.writeReservoirParams`)
+ * writes these slots in this order; this descriptor lets a test assert:
+ *   (a) the WGSL struct fields parse out in this order, and
+ *   (b) the total byte size equals RESTIR_PT_PARAMS_BYTES (= 32).
+ */
+export const RESTIR_PT_PARAMS_FIELDS = [
+  { name: 'width',  byteOffset:  0, type: 'u32' },
+  { name: 'height', byteOffset:  4, type: 'u32' },
+  { name: 'mClamp', byteOffset:  8, type: 'u32' },
+  { name: '_padA',  byteOffset: 12, type: 'u32' },
+  { name: 'wCap',   byteOffset: 16, type: 'f32' },
+  { name: '_padB',  byteOffset: 20, type: 'f32' },
+  { name: '_padC',  byteOffset: 24, type: 'f32' },
+  { name: '_padD',  byteOffset: 28, type: 'f32' },
+] as const;
+
+/** Byte size of the RestirPtParams UBO (8 × 4-byte fields). */
+export const RESTIR_PT_PARAMS_BYTES = 32;
+
 export const RESERVOIR_PT_HERO_WGSL = /* wgsl */ `// ============================================================
 // ReSTIR-PT / GRIS hero reservoir (ReservoirPTHero, 144 bytes = 36 × u32).
 // Full-res, arbitrary visible-vertex material. Mirrors the walkaround-hybrid

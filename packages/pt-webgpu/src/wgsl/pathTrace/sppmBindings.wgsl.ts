@@ -68,6 +68,26 @@ export const SPPM_CELL_COUNTERS_BYTES = SPPM_MAX_CELLS * 4;
 export const SPPM_STATS_BYTES = 32;
 
 /**
+ * I4.5 — Structural pin descriptor for the `SppmStats` WGSL struct.
+ *
+ * Each entry mirrors a field in the `struct SppmStats { … }` definition below.
+ * The host packer (`GpuResources.writeSppmStats`) writes these slots in this
+ * order; this descriptor lets a test assert:
+ *   (a) the WGSL struct fields parse out in this exact order, and
+ *   (b) the total size equals SPPM_STATS_BYTES (= 32).
+ */
+export const SPPM_STATS_FIELDS = [
+  { name: 'currentRadius',    byteOffset:  0, type: 'f32' },
+  { name: 'r0',               byteOffset:  4, type: 'f32' },
+  { name: 'frameAccumulated', byteOffset:  8, type: 'u32' },
+  { name: 'photonCount',      byteOffset: 12, type: 'u32' },
+  { name: 'sceneExtent',      byteOffset: 16, type: 'f32' },
+  { name: '_pad0',            byteOffset: 20, type: 'f32' },
+  { name: '_pad1',            byteOffset: 24, type: 'f32' },
+  { name: '_pad2',            byteOffset: 28, type: 'f32' },
+] as const;
+
+/**
  * Bytes per per-pixel SPPM statistics record:
  *   tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad (f32×3) = 8 × f32 = 32 bytes.
  *

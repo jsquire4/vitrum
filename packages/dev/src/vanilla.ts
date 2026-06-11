@@ -9,6 +9,7 @@ import type {
   Scene,
   ScenePrimitive,
 } from '@vitrum/core';
+import { BVH_NODE_FLOATS } from '@vitrum/shared-bvh';
 import type { DebuggableEngine, FrameStats } from './types.js';
 
 type OverlayId =
@@ -637,7 +638,7 @@ interface BvhStats {
 }
 
 function computeBvhStats(nodes: Float32Array): BvhStats {
-  const nodeCount = Math.floor(nodes.length / 8);
+  const nodeCount = Math.floor(nodes.length / BVH_NODE_FLOATS);
   if (nodeCount === 0) {
     return { nodeCount: 0, maxDepth: 0, avgDepth: 0, histogram: [] };
   }
@@ -646,7 +647,7 @@ function computeBvhStats(nodes: Float32Array): BvhStats {
   let sumDepth = 0;
   const histogram: number[] = [];
   for (let i = 0; i < nodeCount; i++) {
-    const depth = Math.max(0, Math.floor(nodes[i * 8 + 6] ?? 0));
+    const depth = Math.max(0, Math.floor(nodes[i * BVH_NODE_FLOATS + 6] ?? 0));
     maxDepth = Math.max(maxDepth, depth);
     sumDepth += depth;
     while (histogram.length <= depth) histogram.push(0);

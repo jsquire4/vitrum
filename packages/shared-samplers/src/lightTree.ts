@@ -70,8 +70,15 @@ export interface OrientationCone {
   readonly thetaE: number;
 }
 
-/** Full-sphere cone: emits in every direction ⇒ cone importance term ≡ 1. */
-const FULL_SPHERE_CONE: OrientationCone = { axis: [0, 0, 0], thetaO: Math.PI, thetaE: Math.PI };
+/**
+ * Full-sphere cone: emits in every direction ⇒ cone importance term ≡ 1.
+ *
+ * Use this as the default cone for unoriented emitters (point lights, env
+ * domes, any emitter with no preferred direction). Exported so consumers can
+ * reference the canonical constant rather than re-deriving
+ * `{ axis:[0,0,0], thetaO:Math.PI, thetaE:Math.PI }`.
+ */
+export const FULL_SPHERE_CONE: OrientationCone = { axis: [0, 0, 0], thetaO: Math.PI, thetaE: Math.PI };
 
 export interface LightTreeNode {
   /** Index into emitter list (-1 for internal nodes) */
@@ -357,6 +364,9 @@ export function buildLightTree(input: LightTreeBuildInput): {
   nodes: LightTreeNode[];
   /**
    * @internal
+   * @deprecated debug-only — Do NOT use for sampling. Values exceed 1.0
+   * because internal nodes are counted before children. Use leaf-only power
+   * traversal on `nodes` instead.
    *
    * **WARNING: Do NOT use for sampling — values exceed 1.0 because internal
    * nodes are counted before children. Use leaf-only power traversal on

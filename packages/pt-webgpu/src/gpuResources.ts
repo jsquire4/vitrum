@@ -540,7 +540,7 @@ export class GpuResources {
     const bindGroupLayouts: GPUBindGroupLayout[] = [this.bindGroupLayout];
 
     if (this.#traceTier === 'full') {
-      // Group 1 — 10 read-only storage buffers (analytics + env + area lights).
+      // Group 1 — 11 read-only storage buffers (analytics + env + area lights).
       this.bindGroupLayout1 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group1.full',
         entries: Array.from({ length: 11 }, (_unused, binding) => buf(binding, ro)),

@@ -170,6 +170,16 @@ fn mollerTrumboreCore(
 }
 `;
 
+/**
+ * BLAS traversal stack depth. Single TS source of truth — interpolated into
+ * the WGSL below because WGSL array sizes must be literal const-expressions,
+ * so the in-shader `BVH_INTERSECT_STACK_DEPTH` const cannot size the arrays
+ * itself. Depth 60 supports balanced BVHs up to 2^60 triangles — unreachable
+ * for any real scene; matches three-mesh-bvh upstream. (TLAS traversal uses
+ * 64 — see tlasTraversal.wgsl.ts for the documented divergence.)
+ */
+export const BVH_INTERSECT_STACK_DEPTH = 60;
+
 export const BVH_INTERSECT_WGSL = /* wgsl */ `
 ${SAFE_INV_DIR_WGSL}
 ${MOLLER_TRUMBORE_WGSL}
@@ -178,7 +188,7 @@ ${MOLLER_TRUMBORE_WGSL}
 // Stack depth 60 supports balanced BVHs up to 2^60 triangles — unreachable
 // for any real scene. The two pre-canonical copies used 60 (DDGI/RC) and 64
 // (ReSTIR); 60 is sufficient and matches three-mesh-bvh upstream.
-const BVH_INTERSECT_STACK_DEPTH: u32 = 60u;
+const BVH_INTERSECT_STACK_DEPTH: u32 = ${BVH_INTERSECT_STACK_DEPTH}u;
 const BVH_INTERSECT_INFINITY: f32 = 1e20;
 const BVH_LEAFNODE_FLAG: u32 = 0xFFFF0000u;
 
@@ -309,7 +319,7 @@ fn bvhIntersectFirstHitAtRoot(
   best.matColorPacked = 0u;
   best.uv     = vec2f(0.0);
 
-  var stack: array<u32, 60>;  // BVH_INTERSECT_STACK_DEPTH
+  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
   var pointer: i32 = 0;
   stack[0] = rootNode;
 
@@ -435,7 +445,7 @@ fn bvhIntersectAnyAtRoot(
   skipGlass: bool,
   rootNode: u32,
 ) -> bool {
-  var stack: array<u32, 60>;  // BVH_INTERSECT_STACK_DEPTH
+  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = rootNode; stackPtr = stackPtr + 1u;
 
@@ -483,7 +493,7 @@ fn bvhIntersectAnyAtRoot(
       let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
       // Stack-overflow guard: bail out with not-yet-occluded (false) rather
       // than silently dropping the far subtree.
-      if (stackPtr + 1u >= 60u) {  // BVH_INTERSECT_STACK_DEPTH
+      if (stackPtr + 1u >= ${BVH_INTERSECT_STACK_DEPTH}u) {
         return false;
       }
       stack[stackPtr] = farChild;  stackPtr = stackPtr + 1u;
@@ -514,7 +524,7 @@ fn bvhIntersectFirstHitV3(
   best.matColorPacked = 0u;
   best.uv     = vec2f(0.0);
 
-  var stack: array<u32, 60>;  // BVH_INTERSECT_STACK_DEPTH
+  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
   var pointer: i32 = 0;
   stack[0] = 0u;
 

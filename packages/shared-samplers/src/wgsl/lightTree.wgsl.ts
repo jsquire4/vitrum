@@ -33,6 +33,8 @@
  *   - Shirley, Smits, Wang, Zimmerman 1996 — power-weighted light-list partition.
  */
 
+import { LIGHT_TREE_FLOATS_PER_NODE } from '../lightTree.js';
+
 /** Module name for include-graph consumers (walkaround's `WgslModule`). */
 export const LIGHT_TREE_MODULE_NAME = 'lightTree';
 
@@ -143,7 +145,7 @@ fn sampleLightTree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function,
  * pipeline layout has room.
  */
 export function lightTreeBindingWgsl(group: number, binding: number): string {
-  return `\n// Flat f32 node array, ${'16'} floats per node (see packLightTreeForGPU).\n@group(${group}) @binding(${binding}) var<storage, read> lightTree: array<f32>;\n`;
+  return `\n// Flat f32 node array, ${LIGHT_TREE_FLOATS_PER_NODE} floats per node (see packLightTreeForGPU).\n@group(${group}) @binding(${binding}) var<storage, read> lightTree: array<f32>;\n`;
 }
 
 /**

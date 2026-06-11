@@ -12,6 +12,7 @@ import type { Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
 import { asMat4, solveSkin } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
+  BVH_NODE_FLOATS,
   fingerprintTlasBuffers,
   rebuildPrimitiveBlas,
   rebuildTlasReuseBlas,
@@ -425,7 +426,7 @@ export class SceneMutationRouter {
           tlasBlasRoots: tlas.tlasBlasRoots,
           tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
           tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
-          tlasNodeCount: Math.floor(tlas.tlasNodes.length / 8),
+          tlasNodeCount: Math.floor(tlas.tlasNodes.length / BVH_NODE_FLOATS),
           primitiveTlasBindings: sb.primitiveTlasBindings,
         });
         return { invalidateBindGroups: false, warnings: tlas.warnings, reshapedWorldPositions: true };

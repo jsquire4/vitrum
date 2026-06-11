@@ -9,6 +9,7 @@
 // + the host's camera matrices.
 
 import React, { type FC, useCallback, useEffect, useRef, useState } from 'react';
+import { BVH_NODE_FLOATS } from '@vitrum/shared-bvh';
 import type { DebuggableEngine } from '../types.js';
 import { useKeyToggle } from './hooks.js';
 
@@ -78,10 +79,10 @@ interface BvhStats {
 }
 
 function computeBvhStats(nodes: Float32Array): BvhStats {
-  // 8 floats per node: [minX, minY, minZ, maxX, maxY, maxZ, depth, pad].
+  // BVH_NODE_FLOATS per node: [minX, minY, minZ, maxX, maxY, maxZ, depth, pad].
   // Assumes bvhNodes() encodes per-node [minX,minY,minZ,maxX,maxY,maxZ,depth,pad]
   // — see EngineDebugSurface contract.
-  const nodeCount = Math.floor(nodes.length / 8);
+  const nodeCount = Math.floor(nodes.length / BVH_NODE_FLOATS);
   if (nodeCount === 0) {
     return { nodeCount: 0, maxDepth: 0, avgDepth: 0, histogram: [] };
   }
@@ -89,7 +90,7 @@ function computeBvhStats(nodes: Float32Array): BvhStats {
   let sumDepth = 0;
   const histogram: number[] = [];
   for (let i = 0; i < nodeCount; i++) {
-    const d = Math.floor(nodes[i * 8 + 6] ?? 0);
+    const d = Math.floor(nodes[i * BVH_NODE_FLOATS + 6] ?? 0);
     if (d > maxDepth) maxDepth = d;
     sumDepth += d;
     while (histogram.length <= d) histogram.push(0);

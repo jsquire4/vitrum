@@ -8,6 +8,19 @@
  * @see packages/pt-webgpu/src/wgsl/pathTrace/intersection.wgsl.ts
  */
 
+/**
+ * TLAS traversal stack depth. Single TS source of truth — interpolated into
+ * the WGSL below (WGSL array sizes must be literal const-expressions).
+ *
+ * INTENTIONALLY 64, not the BLAS traversal's 60 (bvhIntersect.wgsl.ts):
+ * TLAS interior nodes push BOTH children per iteration (guard is
+ * `stackPtr + 2u < depth`), so the TLAS stack carries a small surplus over
+ * the BLAS stack's push-one-child scheme. The divergence predates this
+ * constant and is load-bearing only in that direction (shrinking it to 60
+ * would be safe for any real scene but is a render-path change for no gain).
+ */
+export const TLAS_TRAVERSAL_STACK_DEPTH = 64;
+
 export const TLAS_TRAVERSAL_WGSL = /* wgsl */ `
 
 fn tlasTransformPointCols(c0: vec4f, c1: vec4f, c2: vec4f, c3: vec4f, p: vec3f) -> vec3f {
@@ -59,7 +72,7 @@ fn traceTlasFirstHit(
   best.matColorPacked = 0u;
   best.uv = vec2f(0.0);
 
-  var stack: array<u32, 64>;
+  var stack: array<u32, ${TLAS_TRAVERSAL_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u;
   stackPtr = stackPtr + 1u;
@@ -117,7 +130,7 @@ fn traceTlasFirstHit(
     } else {
       let leftChild = nodeIdx + 1u;
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u < 64u) {
+      if (stackPtr + 2u < ${TLAS_TRAVERSAL_STACK_DEPTH}u) {
         stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
       } else {
@@ -152,7 +165,7 @@ fn traceTlasAny(
   ray.origin = origin;
   ray.direction = dir;
 
-  var stack: array<u32, 64>;
+  var stack: array<u32, ${TLAS_TRAVERSAL_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u;
   stackPtr = stackPtr + 1u;
@@ -208,7 +221,7 @@ fn traceTlasAny(
     } else {
       let leftChild = nodeIdx + 1u;
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u < 64u) {
+      if (stackPtr + 2u < ${TLAS_TRAVERSAL_STACK_DEPTH}u) {
         stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
       } else {

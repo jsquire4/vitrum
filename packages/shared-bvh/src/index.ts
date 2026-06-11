@@ -1,4 +1,5 @@
 export * from './aabb.js';
+export { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
 export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
@@ -57,7 +58,8 @@ export {
  *       (`.w` packs packed-RGBA material color + texType).
  *
  * Callers that need stride 4 can expand a stride-3 source with
- * `expandIndicesToStride4`.
+ * `expandIndicesToStride4`. Callers that have stride-4 data and need stride-3
+ * can collapse with `collapseIndicesToStride3`.
  *
  * Upload-time assertion (recommended for all callers):
  * ```ts
@@ -90,6 +92,28 @@ export function expandIndicesToStride4(
     out[t * 4 + 1] = indices[t * 3 + 1] ?? 0;
     out[t * 4 + 2] = indices[t * 3 + 2] ?? 0;
     out[t * 4 + 3] = payloadFn != null ? payloadFn(t) : 0;
+  }
+  return out;
+}
+
+/**
+ * Collapse a stride-4 index buffer (`array<vec4u>` form: three u32 per triangle
+ * + one payload u32) into a stride-3 buffer (`array<vec3u>` form). The `.w`
+ * lane is discarded.
+ *
+ * This is the inverse of {@link expandIndicesToStride4}. Used by traversal
+ * paths that require stride-3 (RC, DDGI, `refitBvhBounds`) when geometry was
+ * originally packed as stride-4 by `packSceneFromCore`.
+ *
+ * @param indices  stride-4 index buffer (length must be a multiple of 4).
+ */
+export function collapseIndicesToStride3(indices: Uint32Array): Uint32Array {
+  const triCount = Math.floor(indices.length / 4);
+  const out = new Uint32Array(triCount * 3);
+  for (let t = 0; t < triCount; t += 1) {
+    out[t * 3] = indices[t * 4] ?? 0;
+    out[t * 3 + 1] = indices[t * 4 + 1] ?? 0;
+    out[t * 3 + 2] = indices[t * 4 + 2] ?? 0;
   }
   return out;
 }

@@ -23,6 +23,9 @@ export {
   buildLightTree,
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
+  /** Canonical full-sphere orientation cone constant (axis=[0,0,0], thetaO=π,
+   *  thetaE=π). Use for unoriented emitters; cone importance term ≡ 1. */
+  FULL_SPHERE_CONE,
   // CPU reference traversal — the byte-for-byte oracle the WGSL `sampleLightTree`
   // mirrors. Used by pt-webgpu's WS2 unbiasedness / variance-reduction tests and
   // any host that needs a light's selection pdf independently of the GPU draw.

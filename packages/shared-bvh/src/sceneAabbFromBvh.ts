@@ -26,12 +26,18 @@ export interface SceneAabb {
 /**
  * Scan a stride-4 (vec4f) BVH position buffer into a padded {@link SceneAabb}.
  *
- * @param bvh - object exposing the uploaded BVH positions as raw `cpuData`.
+ * Accepts the raw position data directly (`ArrayBuffer` or `Float32Array`) —
+ * the shared package's API is backend-neutral. The legacy
+ * `{ bvhPositions: { cpuData } }` shape (walkaround-hybrid's GPU-resource
+ * object) is still accepted for the existing call sites.
  */
 export function deriveSceneAABBFromBvhPositions(
-  bvh: { bvhPositions: { cpuData: ArrayBuffer } },
+  bvh: ArrayBuffer | Float32Array | { bvhPositions: { cpuData: ArrayBuffer } },
 ): SceneAabb {
-  const view = new Float32Array(bvh.bvhPositions.cpuData);
+  const view =
+    bvh instanceof Float32Array
+      ? bvh
+      : new Float32Array(bvh instanceof ArrayBuffer ? bvh : bvh.bvhPositions.cpuData);
   if (view.length < 4) {
     return { min: [-10, -10, -10], max: [10, 10, 10] };
   }

@@ -1,3 +1,4 @@
+import { BVH_NODE_FLOATS } from '@vitrum/shared-bvh';
 import type { ScenePackResult, WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 
 /**
@@ -70,7 +71,7 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
 
   const nodeF32 = pack.bvhNodes;
   const nodeU32 = new Uint32Array(nodeF32.buffer, nodeF32.byteOffset, nodeF32.length);
-  const nodeCount = nodeF32.length / 8;
+  const nodeCount = nodeF32.length / BVH_NODE_FLOATS;
   const positionStride = merged ? pack.positionStrideFloats : 4;
   const indexStride = merged ? pack.bvhIndexStride : 4;
   const vertexCount = merged ? pack.vertexCount : pack.positions.length / 4;
@@ -81,7 +82,7 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
   const boundsDim = squareDim(nodeCount * 2);
   const bounds = new Float32Array(boundsDim * boundsDim * 4);
   for (let i = 0; i < nodeCount; i += 1) {
-    const n = i * 8;
+    const n = i * BVH_NODE_FLOATS;
     const bMin = 2 * i * 4;
     const bMax = (2 * i + 1) * 4;
     bounds[bMin] = nodeF32[n]!; bounds[bMin + 1] = nodeF32[n + 1]!; bounds[bMin + 2] = nodeF32[n + 2]!;
@@ -94,7 +95,7 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
   const contentsDim = squareDim(nodeCount);
   const contents = new Uint32Array(contentsDim * contentsDim * 4);
   for (let i = 0; i < nodeCount; i += 1) {
-    const n = i * 8;
+    const n = i * BVH_NODE_FLOATS;
     contents[i * 4] = nodeU32[n + 7]!;
     contents[i * 4 + 1] = nodeU32[n + 6]!;
   }
