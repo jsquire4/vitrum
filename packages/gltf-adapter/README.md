@@ -48,7 +48,14 @@ engine.setScene(scene);
 | `opts.decodeImage` | `(bytes: Uint8Array, mimeType: string) => Promise<unknown>` | Optional image decode callback (see Texture handles below) |
 | `opts.sceneIndex` | `number` | Which glTF scene to import (default: `gltf.scene ?? 0`) |
 
-Returns `{ scene: Scene, warnings: string[] }`.
+Returns `{ scene, animations, animationTargets, warnings }`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scene` | `Scene` | The converted `@vitrum/core` scene (rest pose) |
+| `animations` | `AnimationClip[]` | glTF animations as core clips (empty when none). Evaluate with `sampleAnimationClip` from `@vitrum/core` |
+| `animationTargets` | `Record<string, string[]>` | Maps a channel node id (`gltf-node-<index>`) → the `ScenePrimitive.id`s created from that node's mesh |
+| `warnings` | `string[]` | Non-fatal conversion issues |
 
 ---
 
@@ -68,12 +75,13 @@ Returns `{ scene: Scene, warnings: string[] }`.
 | Multiple primitives per mesh | Supported → one `MeshPrimitive` per glTF primitive |
 | Node hierarchy / nested TRS + matrix | Supported → flattened world transforms |
 | Primitive mode TRIANGLES (4) | Supported |
-| Other modes (POINTS, LINES, …) | Warn + skip |
+| Primitive modes TRIANGLE_STRIP (5) / TRIANGLE_FAN (6) | Supported → triangulated to an indexed triangle list (glTF §3.7.2.1 winding; degenerates dropped; indexed + non-indexed) |
+| Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Warn + skip (core has no point/line primitive) |
 | KHR_draco_mesh_compression | Warn + skip |
 | EXT_meshopt_compression | Warn + skip |
-| Morph targets | Warn + ignored (v2) |
-| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose |
-| Animations | Warn + ignored; rest-pose skeleton is the import pose |
+| Morph targets (POSITION + NORMAL deltas, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). TANGENT deltas warn + skip |
+| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`) |
+| Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels) | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback |
 | Cameras | Warn + ignored |
 
 ### Materials
@@ -97,6 +105,7 @@ Returns `{ scene: Scene, warnings: string[] }`.
 | `KHR_materials_transmission.transmissionTexture` | `transmissionMap` |
 | `KHR_materials_ior.ior` | `ior` |
 | `KHR_materials_volume.thicknessFactor` | `thickness` |
+| `KHR_materials_volume.thicknessTexture` | — (warn + ignored; core has no thickness map field) |
 | `KHR_materials_volume.attenuationDistance` | `attenuationDistance` |
 | `KHR_materials_volume.attenuationColor` | `attenuationColor` |
 | `KHR_materials_specular.specularFactor` | `specularIntensity` |
@@ -130,12 +139,34 @@ These photometric values are passed directly as `EmitterBase.intensity`. Vitrum 
 `intensity` as a dimensionless linear multiplier (`color × intensity`). For SI-calibrated scenes
 divide by a reference level before passing to the engine (e.g., 100 000 lx for a sunny exterior sky).
 
+### Animations
+
+glTF animations are converted to core `AnimationClip`s on `result.animations`.
+Each channel's `target.node` is the stable id `gltf-node-<index>` (the glTF
+node index; also exported as `animationNodeId(index)`), **not** a
+`ScenePrimitive.id` — use `result.animationTargets` to resolve it to the
+primitives created from that node's mesh. The engine does not advance clips;
+the host evaluates `sampleAnimationClip(clip, time)` (`@vitrum/core`) each
+frame and pushes the results:
+
+- **translation / rotation / scale** — recompose the node transform and call
+  `engine.updatePrimitive(primId, { transform })` for each mapped primitive.
+  The adapter flattens the node hierarchy at import, so channels animating an
+  *ancestor* of a mesh node have no mapped primitives; hosts needing full
+  scene-graph animation must retain the `GltfJson` hierarchy and recompute
+  world transforms themselves.
+- **weights** — write the sampled vector into the skinned primitive's
+  `morphWeights`, re-run `solveSkin`, and push `positions`/`normals`.
+- **Skeletal (joint-node) channels** — the channel names the joint's glTF node;
+  after sampling the skeleton pose, rebuild `SkinnedMeshPrimitive.bones` and
+  re-run `solveSkin`. The adapter does not retarget skeletal clips.
+
 ### Out of scope (documented)
 
-- **Animations**: rest-pose skeleton is the import pose. Emitting a warning.
-- **Morph targets**: ignored. Emitting a warning.
 - **Cameras**: ignored. Emitting a warning.
 - **Draco / MeshOpt compression**: warns + primitive skipped. Decode externally first.
+- **Morph TANGENT deltas**: warn + skipped (core `SkinnedMeshPrimitive` has no morph-tangent field).
+- **`KHR_materials_volume.thicknessTexture`**: warn + ignored (core `MaterialSpec` has no thickness map field).
 - **URI-based buffers / images**: the adapter does not fetch. Pre-load and supply via `opts.buffers` or `opts.decodeImage`.
 
 ---
@@ -164,10 +195,10 @@ The adapter passes bytes as-is. **The backend is responsible for colorspace-corr
 ### ORM texture
 
 glTF stores roughness and metallic in a single combined texture
-(`metallicRoughnessTexture`). The adapter maps this to `roughnessMap` only
-(per `pt-webgpu/materialTextures.ts` convention: G=roughness, B=metallic).
-`metallicMap` is not set when the ORM handle is the same texture, which avoids
-the "distinct handles" warning in `collectMaterialTextures`.
+(`metallicRoughnessTexture`). The adapter maps the SAME `TextureRef` to both
+`roughnessMap` and `metallicMap` (WEBGL2-04 closure: pt-webgl2 reads metalness
+from `metallicMap`); backends sample G for roughness and B for metallic, and
+atlas packers dedupe by handle so storage is not duplicated.
 
 ---
 

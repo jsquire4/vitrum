@@ -21,6 +21,8 @@ import type {
 } from '@vitrum/core';
 import {
   asBackendTexture,
+  BACKEND_PROMISE_LEDGER,
+  MATERIAL_SPEC_FIELDS,
   patchEmitterInScene,
   patchPrimitiveInScene,
 } from '@vitrum/core';
@@ -80,6 +82,29 @@ function collectUnsupportedDisplacementFields(scene: Scene): string[] {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
     for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+      if (material[field] != null) fields.add(field);
+    }
+  }
+  return Array.from(fields).sort();
+}
+
+// CAP-01 — the remaining material fields this backend silently drops, derived
+// from the ledger's per-field support matrix so warning + capability rows can
+// never drift. Displacement keeps its own dedicated warning above; `extensions`
+// is the contract-sanctioned host-discretionary escape hatch (no warning).
+const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
+  (field) =>
+    BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials[field] === 'unsupported' &&
+    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
+    field !== 'extensions',
+);
+
+function collectUnsupportedMaterialFields(scene: Scene): string[] {
+  const fields = new Set<string>();
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
       if (material[field] != null) fields.add(field);
     }
   }
@@ -282,6 +307,22 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
           `[vitrum/pt-webgl2] setScene: displacement material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
         details: { fields: unsupportedDisplacementFields },
+      });
+    }
+    // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
+    // driven; currently the KHR_materials_anisotropy trio). Once per setScene,
+    // mirroring the displacement warning above.
+    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene);
+    if (unsupportedMaterialFields.length > 0) {
+      this.#warn({
+        code: 'pt-webgl2.unsupported-material-fields',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgl2] setScene: material fields are supplied ` +
+          `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
+        details: { fields: unsupportedMaterialFields },
       });
     }
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call

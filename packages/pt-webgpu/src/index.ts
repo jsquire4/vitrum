@@ -22,7 +22,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, asBackendTexture, narrowToBackendTexture } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS, asBackendTexture, narrowToBackendTexture } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -133,6 +133,29 @@ function collectUnsupportedDisplacementFields(scene: Scene): string[] {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
     for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+      if (material[field] != null) fields.add(field);
+    }
+  }
+  return Array.from(fields).sort();
+}
+
+// CAP-01 — the remaining material fields this backend silently drops, derived
+// from the ledger's per-field support matrix so warning + capability rows can
+// never drift. Displacement keeps its own dedicated warning; `extensions` is
+// the contract-sanctioned host-discretionary escape hatch (no warning).
+const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
+  (field) =>
+    BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
+    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
+    field !== 'extensions',
+);
+
+function collectUnsupportedMaterialFields(scene: Scene): string[] {
+  const fields = new Set<string>();
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
       if (material[field] != null) fields.add(field);
     }
   }
@@ -1102,6 +1125,23 @@ class PTEngineWebGPU implements Engine {
           `[vitrum/pt-webgpu] setScene: displacement material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
         details: { fields: unsupportedDisplacementFields },
+      });
+    }
+    // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
+    // driven: every 'unsupported' row in the ledger's pt-webgpu material support
+    // matrix except displacement, which has its own warning above). Once per
+    // setScene/repack, mirroring the displacement warning.
+    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene);
+    if (unsupportedMaterialFields.length > 0) {
+      this.#warn({
+        code: 'pt-webgpu.unsupported-material-fields',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          `[vitrum/pt-webgpu] setScene: material fields are supplied ` +
+          `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
+        details: { fields: unsupportedMaterialFields },
       });
     }
     const packed = buildPackedScene(scene, {

@@ -18,7 +18,7 @@ export interface GltfJson {
   images?: GltfImage[];
   samplers?: GltfSampler[];
   skins?: GltfSkin[];
-  animations?: unknown[];
+  animations?: GltfAnimation[];
   cameras?: unknown[];
   extensions?: Record<string, unknown>;
   extensionsUsed?: string[];
@@ -42,6 +42,8 @@ export interface GltfNode {
   translation?: [number, number, number];
   rotation?: [number, number, number, number]; // xyzw quaternion
   scale?: [number, number, number];
+  /** Instance morph-target weights; overrides the mesh-level `weights`. */
+  weights?: number[];
   extensions?: Record<string, unknown>;
 }
 
@@ -49,6 +51,8 @@ export interface GltfNode {
 export interface GltfMesh {
   name?: string;
   primitives: GltfPrimitive[];
+  /** Default morph-target weights (overridden by node-level `weights`). */
+  weights?: number[];
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
@@ -145,6 +149,37 @@ export interface GltfSkin {
   skeleton?: number;
   joints: number[];
   name?: string;
+}
+
+// ── Animation types ─────────────────────────────────────────────────────────
+// Reference: glTF 2.0 spec §3.11 (Animations)
+// https://www.khronos.org/registry/glTF/specs/2.0/glTF-2.0.html#animations
+
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
+export interface GltfAnimation {
+  name?: string;
+  channels?: GltfAnimationChannel[];
+  samplers?: GltfAnimationSampler[];
+}
+
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
+export interface GltfAnimationChannel {
+  sampler: number;
+  target: {
+    node?: number;
+    /** 'translation' | 'rotation' | 'scale' | 'weights' (unknown paths warn + skip). */
+    path: string;
+  };
+}
+
+/** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
+export interface GltfAnimationSampler {
+  /** Accessor index for keyframe times (SCALAR float seconds). */
+  input: number;
+  /** Accessor index for keyframe values. */
+  output: number;
+  /** 'LINEAR' (default) | 'STEP' | 'CUBICSPLINE' (unknown values warn + degrade to LINEAR). */
+  interpolation?: string;
 }
 
 // ── KHR_lights_punctual types ───────────────────────────────────────────────

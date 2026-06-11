@@ -8,8 +8,8 @@
 // return values are behavior-identical to the pre-extraction inline methods
 // (addPrimitive / removePrimitive / updatePrimitive / updateEmitter /
 // updateEnvironment + the 6 first-eligible-wins fast paths).
-import type { EngineWarning, Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
-import { asMat4, solveSkin } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS, asMat4, solveSkin } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
   BVH_NODE_FLOATS,
@@ -71,6 +71,27 @@ function collectUnsupportedDisplacementPatchFields(
 ): string[] {
   const fields: string[] = [];
   for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+    if (material[field] != null) fields.push(field);
+  }
+  return fields;
+}
+
+// CAP-01 — matrix-driven list of the remaining material fields pt-webgpu
+// silently drops (every 'unsupported' ledger row except displacement, which has
+// its own dedicated warning, and the host-discretionary `extensions` hatch).
+// Mirrors UNSUPPORTED_MATERIAL_FIELDS in index.ts.
+const UNSUPPORTED_PATCH_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
+  (field) =>
+    BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
+    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
+    field !== 'extensions',
+);
+
+function collectUnsupportedPatchMaterialFields(
+  material: Record<string, unknown>,
+): string[] {
+  const fields: string[] = [];
+  for (const field of UNSUPPORTED_PATCH_MATERIAL_FIELDS) {
     if (material[field] != null) fields.push(field);
   }
   return fields;
@@ -543,6 +564,20 @@ export class SceneMutationRouter {
               `[vitrum/pt-webgpu] updatePrimitive("${id}"): displacement material fields are supplied ` +
               `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
             details: { id, fields: unsupportedDisplacementFields },
+          });
+        }
+        // CAP-01 — same matrix-driven warning for the remaining dropped fields.
+        const unsupportedMaterialFields = collectUnsupportedPatchMaterialFields(mat);
+        if (unsupportedMaterialFields.length > 0) {
+          warnHost(host, {
+            code: 'pt-webgpu.unsupported-material-fields',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updatePrimitive',
+            message:
+              `[vitrum/pt-webgpu] updatePrimitive("${id}"): material fields are supplied ` +
+              `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
+            details: { id, fields: unsupportedMaterialFields },
           });
         }
         const changedEmissiveField =

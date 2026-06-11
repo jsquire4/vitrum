@@ -1,8 +1,10 @@
 import type { AnalyticShape, ScenePrimitive } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
+import type { MaterialSpec } from '../scene/material.js';
 import type {
   BackendSupportDetails,
+  BackendSupportMode,
   EngineCapabilities,
   FramePresentationMode,
   IncrementalPatchSupport,
@@ -249,10 +251,348 @@ const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticSh
   'h-channel-came': 'fallback-generated-mesh',
 });
 
-const DISPLACEMENT_MATERIALS_UNSUPPORTED: BackendSupportDetails['materials'] = Object.freeze({
+// ── CAP-01 — per-field material support matrix (2026-06-11) ──────────────────
+//
+// Every public `MaterialSpec` field has an explicit row for each shipping
+// backend, graded by READING the actual packer + shader consumption path:
+//   'native'      — the authored value demonstrably reaches a shader
+//                   contribution path with the field's documented semantics.
+//   'approximate' — consumed, but with materially different semantics
+//                   (quantization, reinterpretation, partial sub-field
+//                   consumption, shared-UV-transform substitution, …). The
+//                   divergence is documented on the row.
+//   'unsupported' — silently dropped by the backend's scene ingestion
+//                   (structured `*.unsupported-…` / `*.unconsumed-…` warnings
+//                   fire on setScene where render-affecting).
+//
+// Evidence trail (code-read 2026-06-11):
+//   pt-webgl2  — scene/materialsTexture.ts (93-texel packer) +
+//                scene/texturesArray.ts (SAMPLED_MAP_KEYS atlas) +
+//                glsl/render/get_surface_record_function.glsl.js +
+//                glsl/shader/bsdf/* + glsl/render/attenuate_hit_function.glsl.js.
+//   pt-webgpu  — scene/materialPacking.ts (27-vec4 packer) +
+//                scene/materialTextures.ts (6-vec4 texture descriptors) +
+//                wgsl/pathTrace/material.wgsl.ts + bsdf.wgsl.ts + kernel.wgsl.ts.
+//   walkaround — restir/packingHelpers.ts (quantized per-tri lanes) +
+//                restir/consumedMaterialFields.ts (allowlist; everything not in
+//                it is warned via `walkaround-hybrid.unconsumed-material-fields`)
+//                + shaders/shade.wgsl.ts / ris.wgsl.ts consumption.
+
+/**
+ * Runtime list of every public `MaterialSpec` key, in declaration order.
+ * The two compile-time asserts below force this array AND each backend's
+ * `materials` matrix to stay exhaustive: adding a field to `MaterialSpec`
+ * without extending both is a TypeScript error, not a silent omission.
+ */
+export const MATERIAL_SPEC_FIELDS = [
+  // Base PBR
+  'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
+  // Alpha / coverage
+  'alphaMode', 'alphaCutoff', 'opacity',
+  // Transmission / refraction
+  'transmission', 'ior', 'attenuationColor', 'attenuationDistance', 'thickness',
+  // Texture maps + their scalars
+  'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap',
+  'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap', 'aoMapIntensity',
+  'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
+  'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap', 'iridescenceThicknessMap',
+  'anisotropyMap', 'specularColorMap', 'specularIntensityMap',
+  'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias',
+  'lightMap', 'lightMapIntensity',
+  // Disney BSDF extensions
+  'sheen', 'sheenColor', 'sheenRoughness', 'clearcoat', 'clearcoatRoughness',
+  'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
+  // Dielectric specular (KHR_materials_specular) + IBL
+  'specularIntensity', 'specularColor', 'envMapIntensity',
+  // Spectral (RFE-01)
+  'spectralAttenuation', 'dispersionAbbeNumber',
+  // Volume scattering (RFE-02)
+  'scatteringCoefficient', 'scatteringAnisotropy', 'scatteringCoefficientRGB',
+  // Layered BSDF (RFE-03) + thin-film stack (RFE-04)
+  'frontLayer', 'backLayer', 'thinFilmStack',
+  // Anisotropic specular
+  'anisotropy', 'anisotropyRotation',
+  // Backend escape hatch
+  'extensions',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+// Compile-time exhaustiveness (reverse direction): a `MaterialSpec` key MISSING
+// from MATERIAL_SPEC_FIELDS makes this type non-never → TS2344 below.
+type _MissingMaterialSpecFields = Exclude<keyof MaterialSpec, (typeof MATERIAL_SPEC_FIELDS)[number]>;
+type _AssertMaterialFieldsExhaustive = _AssertExtends<never, _MissingMaterialSpecFields>;
+
+/** A full (non-partial) per-field material support matrix. Assignable to
+ *  `BackendSupportDetails['materials']` (which stays Partial for back-compat).
+ *  Internal — the public surface is the (Partial-typed) `supportDetails.materials`
+ *  plus the exported `MATERIAL_SPEC_FIELDS` key list. */
+type MaterialSupportMatrix = Readonly<
+  Record<(typeof MATERIAL_SPEC_FIELDS)[number], BackendSupportMode>
+>;
+
+/**
+ * walkaround-hybrid — the realtime GI stack's material model is QUANTIZED
+ * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
+ * 4-bit transmission, pre-baked Beer-Lambert tint) + f32 HDR emissive Le.
+ * Image TextureRefs are never sampled in the GI path. Everything not consumed
+ * is warned once per setScene via `walkaround-hybrid.unconsumed-material-fields`
+ * (restir/consumedMaterialFields.ts allowlist — this matrix mirrors it exactly:
+ * row !== 'unsupported' ⇔ field ∈ CONSUMED_MATERIAL_FIELDS).
+ */
+const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
+  // packBVHIndexWFromCore: RGBA8-quantized; replaced by attenuationColor on
+  // transmissive surfaces (packingHelpers.ts resolveTriColor mirror).
+  baseColor: 'approximate',
+  // packBVHRoughMetalFromCore: u8 lane + B1 default invariants (0.85 / glass 0.05).
+  roughness: 'approximate',
+  // u8 lane + a separate BINARY isMetal classification bit in bvhIndex.w.
+  metallic: 'approximate',
+  // packBVHEmissiveLeFromCore: full f32 HDR Le lane + ReSTIR-DI emitter
+  // classification (shared-bvh emitterClassify.ts).
+  emissive: 'native',
+  // Folded into emitter Le at classification (emitterClassify.ts Le = emissive·ei).
+  emissiveIntensity: 'native',
+  alphaMode: 'unsupported',
+  alphaCutoff: 'unsupported',
+  opacity: 'unsupported',
+  // 4-bit trans4 lane in bvhIndex.w (16 steps).
+  transmission: 'approximate',
+  // u8-quantized [1,3] lane (B1-ior-per-tri) + DDGI material entry.
+  ior: 'approximate',
+  // Beer-Lambert tint PRE-BAKED per triangle at pack time (bvh_beer lane) with
+  // `thickness` as a fixed slab — not per-ray path length.
+  attenuationColor: 'approximate',
+  attenuationDistance: 'approximate',
+  thickness: 'approximate',
+  baseColorMap: 'unsupported',
+  normalMap: 'unsupported',
+  normalScale: 'unsupported',
+  roughnessMap: 'unsupported',
+  metallicMap: 'unsupported',
+  transmissionMap: 'unsupported',
+  emissiveMap: 'unsupported',
+  alphaMap: 'unsupported',
+  aoMap: 'unsupported',
+  aoMapIntensity: 'unsupported',
+  clearcoatMap: 'unsupported',
+  clearcoatRoughnessMap: 'unsupported',
+  clearcoatNormalMap: 'unsupported',
+  clearcoatNormalScale: 'unsupported',
+  sheenColorMap: 'unsupported',
+  sheenRoughnessMap: 'unsupported',
+  iridescenceMap: 'unsupported',
+  iridescenceThicknessMap: 'unsupported',
+  anisotropyMap: 'unsupported',
+  specularColorMap: 'unsupported',
+  specularIntensityMap: 'unsupported',
+  bumpMap: 'unsupported',
+  bumpScale: 'unsupported',
   displacementMap: 'unsupported',
   displacementScale: 'unsupported',
   displacementBias: 'unsupported',
+  lightMap: 'unsupported',
+  lightMapIntensity: 'unsupported',
+  sheen: 'unsupported',
+  sheenColor: 'unsupported',
+  sheenRoughness: 'unsupported',
+  clearcoat: 'unsupported',
+  clearcoatRoughness: 'unsupported',
+  iridescence: 'unsupported',
+  iridescenceIor: 'unsupported',
+  iridescenceThicknessRange: 'unsupported',
+  specularIntensity: 'unsupported',
+  specularColor: 'unsupported',
+  envMapIntensity: 'unsupported',
+  spectralAttenuation: 'unsupported',
+  dispersionAbbeNumber: 'unsupported',
+  scatteringCoefficient: 'unsupported',
+  scatteringAnisotropy: 'unsupported',
+  scatteringCoefficientRGB: 'unsupported',
+  frontLayer: 'unsupported',
+  backLayer: 'unsupported',
+  thinFilmStack: 'unsupported',
+  anisotropy: 'unsupported',
+  anisotropyRotation: 'unsupported',
+  // extensions.surfaceTextureId → texType3 procedural-pattern lane;
+  // extensions.skipEmitter → emitter classification. Consumed as defined.
+  extensions: 'native',
+});
+
+/**
+ * pt-webgl2 — the 93-texel RGBA32F materials texture (materialsTexture.ts)
+ * carries near-the-full MaterialSpec; the GLSL surface-record/BSDF chain
+ * consumes it (get_surface_record_function.glsl.js, shader/bsdf/*). Texture
+ * maps resolve through the SAMPLED_MAP_KEYS atlas (texturesArray.ts) with
+ * per-map KHR_texture_transform + uv-set selection.
+ */
+const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
+  baseColor: 'native',
+  roughness: 'native',
+  metallic: 'native',
+  emissive: 'native',
+  emissiveIntensity: 'native',
+  alphaMode: 'native',
+  alphaCutoff: 'native',
+  opacity: 'native',
+  transmission: 'native',
+  ior: 'native',
+  // attenuate_hit_function.glsl.js — per-ray Beer-Lambert.
+  attenuationColor: 'native',
+  attenuationDistance: 'native',
+  // VALUE is dropped: only `thickness === 0` participates (thin-film-vs-volume
+  // discriminator `isThinFilm` + glass sidedness in materialsTexture.ts s13).
+  thickness: 'approximate',
+  baseColorMap: 'native',
+  normalMap: 'native',
+  normalScale: 'native',
+  roughnessMap: 'native',  // glTF G channel
+  metallicMap: 'native',   // glTF B channel
+  transmissionMap: 'native',
+  emissiveMap: 'native',
+  // Sampled (bit 6) with uv-set selection but NO KHR_texture_transform slot —
+  // an authored alphaMap.transform is ignored (get_surface_record: raw MAP_UV).
+  alphaMap: 'approximate',
+  aoMap: 'native',
+  aoMapIntensity: 'native',
+  clearcoatMap: 'native',
+  clearcoatRoughnessMap: 'native',
+  clearcoatNormalMap: 'native',
+  clearcoatNormalScale: 'native',
+  sheenColorMap: 'native',
+  sheenRoughnessMap: 'native',
+  iridescenceMap: 'native',
+  iridescenceThicknessMap: 'native',
+  anisotropyMap: 'unsupported',
+  specularColorMap: 'native',
+  specularIntensityMap: 'native',
+  bumpMap: 'native',
+  bumpScale: 'native',
+  displacementMap: 'unsupported',
+  displacementScale: 'unsupported',
+  displacementBias: 'unsupported',
+  lightMap: 'native',
+  lightMapIntensity: 'native',
+  sheen: 'native',
+  sheenColor: 'native',
+  sheenRoughness: 'native',
+  clearcoat: 'native',
+  clearcoatRoughness: 'native',
+  iridescence: 'native',
+  iridescenceIor: 'native',
+  iridescenceThicknessRange: 'native',
+  specularIntensity: 'native',
+  specularColor: 'native',
+  envMapIntensity: 'native',
+  // 32-sample uniform μ(λ) grid (s20..27), consumed in spectral mode.
+  spectralAttenuation: 'native',
+  dispersionAbbeNumber: 'native',
+  scatteringCoefficient: 'native',
+  scatteringAnisotropy: 'native',
+  // REINTERPRETED as the SSS/volume albedo (s16 sssAlbedo), not a per-channel
+  // σ_s override — materially different semantics from the contract field.
+  scatteringCoefficientRGB: 'approximate',
+  // transmission tint + per-face roughness override ARE consumed; the per-face
+  // `normalMap`/`normalScale` sub-fields are never packed (no atlas entry).
+  frontLayer: 'approximate',
+  backLayer: 'approximate',
+  // Full TMM evaluation; 35-layer cap (contract sanctions backend caps).
+  thinFilmStack: 'native',
+  anisotropy: 'unsupported',
+  anisotropyRotation: 'unsupported',
+  // Contract-sanctioned escape hatch this backend deliberately does not read
+  // (no warning — `extensions` is host-discretionary by design).
+  extensions: 'unsupported',
+});
+
+/**
+ * pt-webgpu — the 27-vec4 material buffer (materialPacking.ts) + the 6-vec4
+ * texture-descriptor buffer (materialTextures.ts) feed material.wgsl /
+ * bsdf.wgsl / kernel.wgsl. Caveat shared by every non-baseColor map row below:
+ * all maps of a material sample with baseColor's UV transform + texCoord
+ * (material.wgsl "v1 simplification") — an authored per-map transform is
+ * silently substituted, hence 'approximate'.
+ */
+const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
+  baseColor: 'native',
+  roughness: 'native',
+  metallic: 'native',
+  emissive: 'native',
+  emissiveIntensity: 'native',
+  alphaMode: 'native',
+  alphaCutoff: 'native',
+  opacity: 'native',
+  transmission: 'native',
+  ior: 'native',
+  // σ_a = −ln(attenuationColor)/attenuationDistance (WS4 vec4 #22) drives the
+  // volumetric walk's per-channel extinction — the glTF-correct derivation.
+  attenuationColor: 'native',
+  attenuationDistance: 'native',
+  // Never read: the volumetric path integrates REAL ray path lengths, so the
+  // slab-thickness approximation knob has no consumption site.
+  thickness: 'unsupported',
+  baseColorMap: 'native',
+  // Sampled + TBN-applied, but `normalScale` is never applied and the map
+  // shares baseColor's UV transform.
+  normalMap: 'approximate',
+  normalScale: 'unsupported',
+  // Single ORM slot (glTF combined: G=roughness, B=metallic); shared UV transform.
+  roughnessMap: 'approximate',
+  // Same ORM slot — silently dropped when its handle differs from roughnessMap
+  // (H51-B once-warn in materialTextures.ts).
+  metallicMap: 'approximate',
+  transmissionMap: 'unsupported',
+  emissiveMap: 'approximate', // shared baseColor UV transform
+  alphaMap: 'unsupported',
+  aoMap: 'approximate',       // shared baseColor UV transform
+  aoMapIntensity: 'native',
+  clearcoatMap: 'unsupported',
+  clearcoatRoughnessMap: 'unsupported',
+  clearcoatNormalMap: 'unsupported',
+  clearcoatNormalScale: 'unsupported',
+  sheenColorMap: 'unsupported',
+  sheenRoughnessMap: 'unsupported',
+  iridescenceMap: 'unsupported',
+  iridescenceThicknessMap: 'unsupported',
+  anisotropyMap: 'approximate', // shared baseColor UV transform
+  specularColorMap: 'unsupported',
+  specularIntensityMap: 'unsupported',
+  bumpMap: 'approximate',       // shared baseColor UV transform
+  bumpScale: 'native',
+  displacementMap: 'unsupported',
+  displacementScale: 'unsupported',
+  displacementBias: 'unsupported',
+  lightMap: 'approximate',      // shared baseColor UV transform
+  lightMapIntensity: 'native',
+  sheen: 'native',
+  sheenColor: 'native',
+  sheenRoughness: 'native',
+  clearcoat: 'native',
+  clearcoatRoughness: 'native',
+  iridescence: 'native',
+  iridescenceIor: 'native',
+  iridescenceThicknessRange: 'native',
+  // KHR_materials_specular scalars are never packed (materialPacking.ts has no
+  // specular lane); dielectric F0 comes from `ior` only.
+  specularIntensity: 'unsupported',
+  specularColor: 'unsupported',
+  envMapIntensity: 'native',
+  spectralAttenuation: 'native',
+  dispersionAbbeNumber: 'native',
+  scatteringCoefficient: 'native',
+  scatteringAnisotropy: 'native',
+  // Genuine per-channel σ_s (vec4 #3 → kernel.wgsl sigmaS) — native here,
+  // unlike pt-webgl2's albedo reinterpretation.
+  scatteringCoefficientRGB: 'native',
+  // transmission tint + per-face roughness override consumed; per-face
+  // `normalMap`/`normalScale` sub-fields never packed.
+  frontLayer: 'approximate',
+  backLayer: 'approximate',
+  // Full TMM evaluation; 8-layer cap (contract sanctions backend caps).
+  thinFilmStack: 'native',
+  anisotropy: 'native',
+  anisotropyRotation: 'native',
+  // Contract-sanctioned escape hatch this backend deliberately does not read
+  // (no warning — `extensions` is host-discretionary by design).
+  extensions: 'unsupported',
 });
 
 // ── Shared mutation/method constants (D1.4) ──────────────────────────────────
@@ -392,7 +732,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'approximate',
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
-      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
+      materials: WALKAROUND_MATERIALS,
       mutations: {
         transform: 'native',
         positions: 'native',
@@ -484,7 +824,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'unsupported',
       },
       analyticShapes: NO_ANALYTIC_SHAPES,
-      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
+      materials: PT_WEBGL2_MATERIALS,
       // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
       // (a full scene-texture/BVH repack, not a targeted in-place edit).
       // The incrementalPatchSupport flags above reflect the OUTCOME (patches
@@ -549,7 +889,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         'procedural-sky': 'approximate',
       },
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
-      materials: DISPLACEMENT_MATERIALS_UNSUPPORTED,
+      materials: PT_WEBGPU_MATERIALS,
       mutations: PT_WEBGPU_MUTATIONS,
     },
     methodPromises: {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKEND_PROMISE_LEDGER,
+  MATERIAL_SPEC_FIELDS,
   asBackendTexture,
   asBackendTextureFormat,
   narrowToBackendTexture,
@@ -87,6 +88,59 @@ describe('backend promise ledger', () => {
       expect(rec.supportDetails.materials.displacementScale).toBe('unsupported');
       expect(rec.supportDetails.materials.displacementBias).toBe('unsupported');
     }
+  });
+
+  // CAP-01 — the material support matrix is EXHAUSTIVE over MaterialSpec keys
+  // for every shipping backend. MATERIAL_SPEC_FIELDS itself is compile-time
+  // checked against `keyof MaterialSpec` in both directions (promiseLedger.ts),
+  // so a new MaterialSpec field fails typecheck AND this runtime pin.
+  it('keeps the per-field material support matrix exhaustive over MaterialSpec for every backend', () => {
+    expect(MATERIAL_SPEC_FIELDS.length).toBeGreaterThanOrEqual(63);
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      const matrixKeys = Object.keys(rec.supportDetails.materials).sort();
+      expect(matrixKeys, `materials matrix keys for ${id}`).toEqual(
+        [...MATERIAL_SPEC_FIELDS].sort(),
+      );
+      for (const field of MATERIAL_SPEC_FIELDS) {
+        const mode = rec.supportDetails.materials[field];
+        expect(
+          ['native', 'approximate', 'unsupported'],
+          `materials.${field} for ${id}`,
+        ).toContain(mode);
+      }
+    }
+  });
+
+  it('pins the spot-checked material matrix rows derived from code reads (CAP-01)', () => {
+    const wa = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials;
+    const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials;
+    const gpu = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials;
+
+    // walkaround: quantized scalar model — no image maps, no Disney lobes.
+    expect(wa.baseColor).toBe('approximate');
+    expect(wa.emissive).toBe('native');
+    expect(wa.baseColorMap).toBe('unsupported');
+    expect(wa.sheen).toBe('unsupported');
+    expect(wa.extensions).toBe('native');
+
+    // pt-webgl2: anisotropy trio is the un-packed gap; SSS RGB is reinterpreted.
+    expect(gl2.anisotropy).toBe('unsupported');
+    expect(gl2.anisotropyRotation).toBe('unsupported');
+    expect(gl2.anisotropyMap).toBe('unsupported');
+    expect(gl2.scatteringCoefficientRGB).toBe('approximate');
+    expect(gl2.thickness).toBe('approximate');
+    expect(gl2.thinFilmStack).toBe('native');
+
+    // pt-webgpu: KHR_materials_specular + per-lobe maps are not consumed;
+    // anisotropy trio IS native; scatteringCoefficientRGB is genuine σ_s.
+    expect(gpu.specularIntensity).toBe('unsupported');
+    expect(gpu.specularColor).toBe('unsupported');
+    expect(gpu.clearcoatMap).toBe('unsupported');
+    expect(gpu.sheenColorMap).toBe('unsupported');
+    expect(gpu.thickness).toBe('unsupported');
+    expect(gpu.anisotropy).toBe('native');
+    expect(gpu.scatteringCoefficientRGB).toBe('native');
+    expect(gpu.metallicMap).toBe('approximate');
   });
 
   it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {

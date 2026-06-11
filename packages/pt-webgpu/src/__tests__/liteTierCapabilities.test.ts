@@ -343,6 +343,97 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  it('setScene warns when other unsupported material fields are supplied (CAP-01)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.8, 0.2, 0.1],
+            roughness: 0.3,
+            metallic: 0,
+            // Unsupported on pt-webgpu per the CAP-01 matrix:
+            specularIntensity: 0.7,
+            specularColor: [1, 0.9, 0.8],
+            clearcoatMap: { handle: { id: 'cc' } },
+            thickness: 0.25,
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) =>
+      c.includes('specularIntensity') &&
+      c.includes('specularColor') &&
+      c.includes('clearcoatMap') &&
+      c.includes('thickness'),
+    )).toBe(true);
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.unsupported-material-fields' &&
+      Array.isArray(w.details?.fields) &&
+      w.details.fields.includes('specularIntensity') &&
+      w.details.fields.includes('specularColor') &&
+      w.details.fields.includes('clearcoatMap') &&
+      w.details.fields.includes('thickness'),
+    )).toBe(true);
+    // Consumed fields must NOT appear in the warning.
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.unsupported-material-fields' &&
+      Array.isArray(w.details?.fields) &&
+      (w.details.fields.includes('baseColor') || w.details.fields.includes('roughness')),
+    )).toBe(false);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('setScene does NOT emit unsupported-material-fields for a fully supported material (CAP-01)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0, anisotropy: 0.5 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    expect(structured.some((w) => w.code === 'pt-webgpu.unsupported-material-fields')).toBe(false);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   // B12 — point emitters no longer warn (they are now supported via texture packing).
   it('lite tier: setScene does NOT warn for point/spot/rect-area emitters (B12 supported)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

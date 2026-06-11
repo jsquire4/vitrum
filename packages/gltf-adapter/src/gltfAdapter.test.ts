@@ -684,14 +684,15 @@ describe('Draco rejection', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('out-of-scope feature warnings', () => {
-  it('warns about animations', async () => {
+  it('drops a malformed animation (no channels) with a warning', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
-    (gltf as GltfJson & { animations: unknown[] }).animations = [{ name: 'walk' }];
-    const { warnings } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('animation'))).toBe(true);
+    gltf.animations = [{ name: 'walk' }]; // no channels/samplers → not importable
+    const { animations, warnings } = await gltfToScene(gltf, { buffers });
+    expect(animations).toHaveLength(0);
+    expect(warnings.some(w => w.includes('no importable channels'))).toBe(true);
   });
 
-  it('warns about skins (rest-pose + animation-not-supported)', async () => {
+  it('warns about skins (rest pose; host drives the pose)', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.skins = [{ joints: [0] }];
     const { warnings } = await gltfToScene(gltf, { buffers });

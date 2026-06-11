@@ -167,6 +167,59 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('warns when unsupported (anisotropy) material fields are supplied (CAP-01)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const base = triScene();
+      const prim = base.primitives[0] as MeshPrimitive;
+      const scene: Scene = {
+        ...base,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            anisotropy: 0.8,
+            anisotropyRotation: 0.5,
+            anisotropyMap: { handle: { id: 'aniso' } },
+          },
+        }],
+      };
+      e.setScene(scene);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.unsupported-material-fields' &&
+        Array.isArray(w.details?.fields) &&
+        w.details.fields.includes('anisotropy') &&
+        w.details.fields.includes('anisotropyRotation') &&
+        w.details.fields.includes('anisotropyMap'),
+      )).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('anisotropy') && m.includes('not rendered'),
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT emit the unsupported-material-fields warning for a plain supported material (CAP-01)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      expect(structured.some((w) => w.code === 'pt-webgl2.unsupported-material-fields')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('renderFrame skips before a scene, then renders + accumulates one sample per call', async () => {
     const e = await createPTEngine_WebGL2(opts());
     expect(e.renderFrame(frame(16)).kind).toBe('skipped'); // no scene yet

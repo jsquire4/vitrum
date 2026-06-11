@@ -11,15 +11,28 @@
 //
 // Supported:
 //   - Skins → SkinnedMeshPrimitive (JOINTS_0 u8/u16, WEIGHTS_0 float/u8/u16,
-//     inverseBindMatrices, rest-pose joint world transforms).
+//     inverseBindMatrices, rest-pose joint world transforms, bindMatrix /
+//     bindMatrixInverse from the skinned node transform).
+//   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
+//     morphWeights (POSITION + NORMAL deltas; node/mesh weights; unskinned
+//     morphed meshes are promoted with a synthesized identity skeleton).
+//     TANGENT deltas are warn-skipped (core has no morph-tangent field).
+//   - Animations → core AnimationClip[] on the result (LINEAR / STEP /
+//     CUBICSPLINE; translation / rotation / scale / weights channels; channel
+//     node ids are `gltf-node-<i>`, resolved to primitives via
+//     result.animationTargets). Geometry is still imported at rest pose; the
+//     host samples clips (sampleAnimationClip) and pushes updates.
 //   - KHR_lights_punctual → SceneEmitter[] (point, spot, directional;
 //     world-transform applied to position/direction).
 //
-// Out of scope: animations (rest-pose only), cameras, morph targets,
-//   KHR_draco_mesh_compression, EXT_meshopt_compression.
+// Out of scope: cameras, KHR_draco_mesh_compression, EXT_meshopt_compression,
+//   morph TANGENT deltas, KHR_materials_volume.thicknessTexture (no core
+//   field).
 //
-// Primitive modes: only TRIANGLES (4) is converted; other modes emit a warning
-// and the primitive is skipped.
+// Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
+// TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
+// glTF §3.7.2.1, degenerates dropped). POINTS/LINES/LINE_LOOP/LINE_STRIP emit
+// a warning and the primitive is skipped (core has no point/line primitive).
 //
 // References:
 //   - glTF 2.0 specification (Khronos Group)
@@ -27,7 +40,9 @@
 //   - KHR_lights_punctual extension
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md
 
-import type { Scene, ScenePrimitive, SceneEmitter, MaterialSpec, Mat4 } from '@vitrum/core';
+import type {
+  Scene, ScenePrimitive, SceneEmitter, MaterialSpec, Mat4, AnimationClip,
+} from '@vitrum/core';
 import type { GltfJson, KhrLightsPunctualRoot } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 import type { DecodeImageFn } from './textures.js';
@@ -37,6 +52,13 @@ import { buildWorldTransforms } from './transforms.js';
 import { buildTextureHandleMap } from './textures.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
+import { animationNodeId, convertAnimations } from './animations.js';
+import {
+  GLTF_MODE_TRIANGLE_FAN,
+  GLTF_MODE_TRIANGLE_STRIP,
+  sequentialIndices,
+  triangulateTopology,
+} from './triangulation.js';
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
 
@@ -81,6 +103,40 @@ export interface GltfToSceneOptions {
 
 export interface GltfToSceneResult {
   readonly scene: Scene;
+  /**
+   * glTF animations converted to core `AnimationClip`s (empty when the file
+   * has none).
+   *
+   * CHANNEL-TARGET MAPPING: each channel's `target.node` is the stable id
+   * `gltf-node-<index>` (the glTF node index — see `animationNodeId()`), NOT a
+   * `ScenePrimitive.id`. Use `animationTargets` to resolve a channel node id
+   * to the primitive ids created from that node's mesh:
+   *
+   *   - `translation` / `rotation` / `scale` channels: re-compose the node's
+   *     local TRS from the sampled values, then push the new world transform
+   *     through `engine.updatePrimitive(primId, { transform })` for each
+   *     mapped primitive. NOTE: the adapter flattens the node hierarchy into
+   *     world transforms at import; channels animating an ANCESTOR of a mesh
+   *     node (or a joint node) have no mapped primitives — hosts that need
+   *     full scene-graph animation must retain the GltfJson hierarchy and
+   *     recompute world transforms themselves.
+   *   - `weights` channels: write the sampled vector into the skinned
+   *     primitive's `morphWeights`, re-run `solveSkin` (@vitrum/core), and
+   *     push the deformed `positions`/`normals` through `updatePrimitive`.
+   *   - Joint-node channels (skeletal animation): the channel id names the
+   *     joint's glTF node; after sampling the skeleton pose, hosts rebuild
+   *     `SkinnedMeshPrimitive.bones` (joint world matrices) and re-run
+   *     `solveSkin`. The adapter does not retarget skeletal clips.
+   *
+   * Evaluate clips with `sampleAnimationClip(clip, time)` from `@vitrum/core`.
+   */
+  readonly animations: ReadonlyArray<AnimationClip>;
+  /**
+   * Maps an animation channel node id (`gltf-node-<index>`) to the
+   * `ScenePrimitive.id`s created from that node's mesh. Nodes that produced no
+   * primitives (joints, empties, camera/light nodes) are absent.
+   */
+  readonly animationTargets: Readonly<Record<string, ReadonlyArray<string>>>;
   /** Non-fatal issues encountered during conversion. Inspect these for skipped
    *  primitives, unsupported extensions, missing buffers, sparse patches, etc. */
   readonly warnings: string[];
@@ -148,12 +204,6 @@ export async function gltfToScene(
   }
 
   // ── 3. Warn on out-of-scope top-level features ─────────────────────────────
-  if (gltf.animations && gltf.animations.length > 0) {
-    warnings.push(
-      `[vitrum/gltf-adapter] This glTF has ${gltf.animations.length} animation(s). ` +
-        'Animations are NOT supported in v1. Geometry will be imported at rest pose.',
-    );
-  }
   if (gltf.cameras && (gltf.cameras).length > 0) {
     warnings.push(
       '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
@@ -164,7 +214,9 @@ export async function gltfToScene(
     warnings.push(
       `[vitrum/gltf-adapter] This glTF has ${gltf.skins.length} skin(s). ` +
         'Skinned nodes are imported as SkinnedMeshPrimitive at rest pose. ' +
-        'Animations are NOT supported; the skeleton will not move after import.',
+        'The engine does not advance clips itself: drive the pose host-side by ' +
+        'sampling the imported animations (sampleAnimationClip), rebuilding bone ' +
+        'matrices, and re-running solveSkin.',
     );
   }
 
@@ -213,6 +265,7 @@ export async function gltfToScene(
 
   // ── 8. Flatten node → mesh → primitives ───────────────────────────────────
   const primitives: ScenePrimitive[] = [];
+  const animationTargets: Record<string, string[]> = {};
   let primIdCounter = 0;
 
   const gltfNodes = gltf.nodes ?? [];
@@ -235,17 +288,24 @@ export async function gltfToScene(
     const { bones, boneInverses } = skinData ?? {};
 
     for (const prim of mesh.primitives) {
-      // Mode check — only TRIANGLES (4) or absent (default=4) is supported.
+      // Mode check — TRIANGLES (4, default), TRIANGLE_STRIP (5) and
+      // TRIANGLE_FAN (6) are supported (strip/fan are triangulated into an
+      // indexed triangle list below). Point/line modes are skipped: the core
+      // Scene contract has no point/line primitive.
       const mode = prim.mode ?? GLTF_PRIMITIVE_MODE_TRIANGLES;
-      if (mode !== GLTF_PRIMITIVE_MODE_TRIANGLES) {
+      if (
+        mode !== GLTF_PRIMITIVE_MODE_TRIANGLES &&
+        mode !== GLTF_MODE_TRIANGLE_STRIP &&
+        mode !== GLTF_MODE_TRIANGLE_FAN
+      ) {
         const modeNames: Record<number, string> = {
           0: 'POINTS', 1: 'LINES', 2: 'LINE_LOOP', 3: 'LINE_STRIP',
-          5: 'TRIANGLE_STRIP', 6: 'TRIANGLE_FAN',
         };
         warnings.push(
           `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
-            `mode ${mode} (${modeNames[mode] ?? 'UNKNOWN'}). Only TRIANGLES (4) is supported. ` +
-            'This primitive is SKIPPED.',
+            `mode ${mode} (${modeNames[mode] ?? 'UNKNOWN'}). Only TRIANGLES (4), ` +
+            'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6) are supported (core has no ' +
+            'point/line primitive). This primitive is SKIPPED.',
         );
         continue;
       }
@@ -293,6 +353,23 @@ export async function gltfToScene(
           );
           continue;
         }
+      }
+
+      // TRIANGLE_STRIP / TRIANGLE_FAN → indexed triangle list (GLTF-05).
+      // Works for indexed and non-indexed inputs; degenerate (repeated-index)
+      // triangles are dropped per glTF §3.7.2.1 winding rules.
+      if (mode === GLTF_MODE_TRIANGLE_STRIP || mode === GLTF_MODE_TRIANGLE_FAN) {
+        const src = indices ?? sequentialIndices(positions.length / 3);
+        const tris = triangulateTopology(src, mode);
+        if (tris.length === 0) {
+          warnings.push(
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+              `${mode === GLTF_MODE_TRIANGLE_STRIP ? 'TRIANGLE_STRIP' : 'TRIANGLE_FAN'} primitive ` +
+              'yields no non-degenerate triangles. Primitive SKIPPED.',
+          );
+          continue;
+        }
+        indices = tris;
       }
 
       // Normals — generate flat normals if absent or unreadable.
@@ -380,13 +457,13 @@ export async function gltfToScene(
         }
       }
 
-      // Morph targets — warn and skip.
-      if (prim.targets && prim.targets.length > 0) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has ${prim.targets.length} ` +
-            'morph target(s). Morph targets are NOT supported in v1 and are ignored.',
-        );
-      }
+      // Morph targets (GLTF-04) — POSITION/NORMAL deltas + node/mesh weights.
+      // TANGENT deltas are warn-skipped (core SkinnedMeshPrimitive has no
+      // morph-tangent field).
+      const morph = _extractMorphTargets(
+        gltf, buffers, prim.targets, node.weights ?? mesh.weights,
+        positions.length / 3, `${mesh.name ?? node.mesh}`, warnings,
+      );
 
       // Material.
       const material =
@@ -395,6 +472,7 @@ export async function gltfToScene(
           : GLTF_DEFAULT_MATERIAL;
 
       const id = `gltf-prim-${primIdCounter++}`;
+      (animationTargets[animationNodeId(nodeIdx)] ??= []).push(id);
 
       // glTF §3.8: the skinned mesh node transform is the mesh bind matrix for
       // the imported rest pose. Preserve it so the core skin solver can return
@@ -408,7 +486,7 @@ export async function gltfToScene(
             'bind matrix. bindMatrix/bindMatrixInverse were omitted.',
         );
       }
-      const skinArg = (skinIndices && skinWeights && bones && boneInverses)
+      let skinArg = (skinIndices && skinWeights && bones && boneInverses)
         ? {
             skinIndices,
             skinWeights,
@@ -420,9 +498,36 @@ export async function gltfToScene(
             } : {}),
           }
         : undefined;
+
+      // Morphed-but-unskinned mesh: core carries morph targets only on
+      // SkinnedMeshPrimitive (solveSkin pre-blends morphs before LBS), so we
+      // promote the mesh with a synthesized identity skin — one identity bone,
+      // every vertex weighted [1,0,0,0]. The LBS pass is then a no-op and
+      // solveSkin output equals restPos + Σ w_t · Δ_t in mesh-local space
+      // (the primitive `transform` still applies on top, mirroring how
+      // bindMatrix is only needed for world-space bone chains).
+      if (morph && !skinArg) {
+        const vertexCount = positions.length / 3;
+        const identitySkinWeights = new Float32Array(vertexCount * 4);
+        for (let v = 0; v < vertexCount; v++) identitySkinWeights[v * 4] = 1;
+        const identityBone = new Float32Array(16);
+        identityBone[0] = 1; identityBone[5] = 1; identityBone[10] = 1; identityBone[15] = 1;
+        skinArg = {
+          skinIndices: new Uint32Array(vertexCount * 4), // all bone 0
+          skinWeights: identitySkinWeights,
+          bones: identityBone,
+          boneInverses: new Float32Array(identityBone),
+        };
+        warnings.push(
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
+            'promoted to SkinnedMeshPrimitive with a synthesized identity skeleton (1 bone). ' +
+            'Drive morphWeights and re-solve via @vitrum/core solveSkin to animate the blend shapes.',
+        );
+      }
+
       primitives.push(_buildPrimitive(
         id, worldMat, positions, normals, indices,
-        uvs, uv1, tangents, colors, material, skinArg,
+        uvs, uv1, tangents, colors, material, skinArg, morph,
       ));
     }
   }
@@ -475,13 +580,16 @@ export async function gltfToScene(
     }
   }
 
+  // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
+  const animations = convertAnimations(gltf, buffers, warnings);
+
   const scene: Scene = {
     primitives,
     emitters,
     environment: { kind: 'none' },
   };
 
-  return { scene, warnings };
+  return { scene, animations, animationTargets, warnings };
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -646,6 +754,7 @@ function _buildPrimitive(
     bindMatrix?: Float32Array;
     bindMatrixInverse?: Float32Array;
   },
+  morph?: MorphData,
 ): ScenePrimitive {
   const base = {
     id,
@@ -669,9 +778,132 @@ function _buildPrimitive(
       boneInverses: skin.boneInverses,
       ...(skin.bindMatrix ? { bindMatrix: skin.bindMatrix } : {}),
       ...(skin.bindMatrixInverse ? { bindMatrixInverse: skin.bindMatrixInverse } : {}),
+      ...(morph ? {
+        morphTargets: morph.morphTargets,
+        ...(morph.morphTargetNormals ? { morphTargetNormals: morph.morphTargetNormals } : {}),
+        morphWeights: morph.morphWeights,
+      } : {}),
     };
   }
   return { kind: 'mesh' as const, ...base };
+}
+
+// ── Morph-target extraction (GLTF-04) ────────────────────────────────────────
+
+interface MorphData {
+  /** Per-target POSITION deltas, each `vertexCount * 3` (zeros when a target
+   *  has no POSITION delta — glTF allows NORMAL-only targets). */
+  morphTargets: Float32Array[];
+  /** Per-target NORMAL deltas — present only when at least one target carries
+   *  NORMAL deltas; targets without one get zeros (solveSkin requires the
+   *  array to be parallel with morphTargets). */
+  morphTargetNormals?: Float32Array[];
+  /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
+   *  when neither is authored). */
+  morphWeights: Float32Array;
+}
+
+/**
+ * Parse glTF `primitive.targets` into core morph-target delta arrays.
+ *
+ * glTF §3.7.2.2: each target maps attribute names to accessors carrying
+ * DELTAS from the base attribute (sparse accessors are common here and are
+ * handled by `unpackAccessorFloat`). POSITION and NORMAL deltas map onto
+ * `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals`; TANGENT deltas
+ * are warn-skipped because core does not model morph-tangent deltas.
+ *
+ * Returns `undefined` when the primitive has no targets.
+ */
+function _extractMorphTargets(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  targets: ReadonlyArray<Record<string, number>> | undefined,
+  authoredWeights: number[] | undefined,
+  vertexCount: number,
+  meshLabel: string,
+  warnings: string[],
+): MorphData | undefined {
+  if (!targets || targets.length === 0) return undefined;
+  const tCount = targets.length;
+
+  const morphTargets: Float32Array[] = [];
+  const normalDeltas: (Float32Array | null)[] = [];
+  let anyNormals = false;
+  let warnedTangent = false;
+
+  for (let t = 0; t < tCount; t++) {
+    const target = targets[t]!;
+
+    // POSITION delta.
+    let posDelta = _tryUnpackFloat(
+      gltf, buffers, target['POSITION'],
+      `morph target ${t} POSITION for "${meshLabel}"`, warnings,
+    );
+    if (posDelta && posDelta.length !== vertexCount * 3) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Morph target ${t} POSITION delta length ${posDelta.length} ` +
+          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
+      );
+      posDelta = undefined;
+    }
+    morphTargets.push(posDelta ?? new Float32Array(vertexCount * 3));
+
+    // NORMAL delta.
+    let nrmDelta = _tryUnpackFloat(
+      gltf, buffers, target['NORMAL'],
+      `morph target ${t} NORMAL for "${meshLabel}"`, warnings,
+    );
+    if (nrmDelta && nrmDelta.length !== vertexCount * 3) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Morph target ${t} NORMAL delta length ${nrmDelta.length} ` +
+          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
+      );
+      nrmDelta = undefined;
+    }
+    if (nrmDelta) anyNormals = true;
+    normalDeltas.push(nrmDelta ?? null);
+
+    // TANGENT delta — core has no morph-tangent field.
+    if (target['TANGENT'] !== undefined && !warnedTangent) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph targets carry TANGENT deltas, ` +
+          'which @vitrum/core does not model (SkinnedMeshPrimitive has morphTargets / ' +
+          'morphTargetNormals only). TANGENT deltas are ignored.',
+      );
+      warnedTangent = true;
+    }
+
+    for (const attr of Object.keys(target)) {
+      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT') {
+        warnings.push(
+          `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
+            `"${meshLabel}" is ignored.`,
+        );
+      }
+    }
+  }
+
+  // Initial weights: node-level overrides mesh-level per glTF §3.7.2.2;
+  // absent weights default to 0 (rest pose).
+  const morphWeights = new Float32Array(tCount);
+  if (authoredWeights) {
+    if (authoredWeights.length !== tCount) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weights length ` +
+          `${authoredWeights.length} != target count ${tCount}; extra entries are ` +
+          'dropped / missing entries default to 0.',
+      );
+    }
+    for (let t = 0; t < tCount; t++) morphWeights[t] = authoredWeights[t] ?? 0;
+  }
+
+  return {
+    morphTargets,
+    ...(anyNormals
+      ? { morphTargetNormals: normalDeltas.map(n => n ?? new Float32Array(vertexCount * 3)) }
+      : {}),
+    morphWeights,
+  };
 }
 
 /**

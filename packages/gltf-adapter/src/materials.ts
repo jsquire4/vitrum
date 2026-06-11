@@ -53,11 +53,28 @@ function _parseTransmissionExt(
 
 function _parseVolumeExt(
   ext: Record<string, unknown>,
+  warnings: string[],
+  materialName: string,
 ): Partial<MaterialSpec> {
   const volExt = ext['KHR_materials_volume'] as
-    | { thicknessFactor?: number; attenuationDistance?: number; attenuationColor?: [number, number, number] }
+    | {
+        thicknessFactor?: number;
+        thicknessTexture?: { index: number };
+        attenuationDistance?: number;
+        attenuationColor?: [number, number, number];
+      }
     | undefined;
   if (!volExt) return {};
+  if (volExt.thicknessTexture) {
+    // Core MaterialSpec has no thicknessMap field; only the scalar
+    // thicknessFactor can be carried. Surface this honestly instead of
+    // silently dropping the texture.
+    warnings.push(
+      `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_volume.thicknessTexture, ` +
+        'but @vitrum/core MaterialSpec has no thickness map field. The texture is ignored; ' +
+        'only thicknessFactor is imported.',
+    );
+  }
   const thickness = volExt.thicknessFactor ?? 0;
   const attenuationDistance = volExt.attenuationDistance ?? Infinity;
   const attenuationColor: Vec3 | undefined = volExt.attenuationColor;
@@ -284,7 +301,7 @@ export function convertMaterial(
 
   // ── Per-extension partial specs (D13.5) ────────────────────────────────────
   const transmissionPartial = _parseTransmissionExt(ext, handleMap);
-  const volumePartial       = _parseVolumeExt(ext);
+  const volumePartial       = _parseVolumeExt(ext, warnings, gltfMat.name ?? '(unnamed)');
   const iorPartial          = _parseIorExt(ext);
   const specularPartial     = _parseSpecularExt(ext, handleMap);
   const sheenPartial        = _parseSheenExt(ext, handleMap);

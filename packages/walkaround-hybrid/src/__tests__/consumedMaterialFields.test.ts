@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
   CONSUMED_MATERIAL_FIELDS,
   collectUnconsumedMaterialFields,
@@ -104,6 +105,22 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'ior', 'extensions',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
+    }
+  });
+
+  // CAP-01 — the ledger's per-field material support matrix and this package's
+  // consumed-field allowlist are two views of the same code-derived truth.
+  // Pin their equivalence: a field is in CONSUMED_MATERIAL_FIELDS exactly when
+  // its walkaround-hybrid matrix row is not 'unsupported'.
+  it('matches the BACKEND_PROMISE_LEDGER walkaround-hybrid material support matrix', () => {
+    const matrix = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials;
+    for (const field of MATERIAL_SPEC_FIELDS) {
+      const mode = matrix[field];
+      expect(mode, `ledger row missing for ${field}`).toBeDefined();
+      expect(
+        CONSUMED_MATERIAL_FIELDS.has(field),
+        `allowlist/ledger drift on '${field}' (ledger: ${String(mode)})`,
+      ).toBe(mode !== 'unsupported');
     }
   });
 

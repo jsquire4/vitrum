@@ -155,7 +155,15 @@ function makeDevice(): GPUDevice {
     createBuffer: (desc: GPUBufferDescriptor) => buf(`created#${bufN++}`, desc.size),
     queue: {
       writeBuffer: vi.fn((buffer: unknown, offset: number, data: BufferSource) => {
-        writes.push({ buffer, offset, data });
+        // Snapshot the payload AT CALL TIME — the real GPUQueue.writeBuffer
+        // copies synchronously, so production code may legally reuse one
+        // scratch ArrayBuffer across writes (atrousVariance.ts re-packs the
+        // shared eager UBO each iteration). Storing by reference would alias
+        // every captured write to the final iteration's content.
+        const snapshot: ArrayBuffer = data instanceof ArrayBuffer
+          ? data.slice(0)
+          : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength);
+        writes.push({ buffer, offset, data: snapshot });
       }),
     },
   } as unknown as GPUDevice;
