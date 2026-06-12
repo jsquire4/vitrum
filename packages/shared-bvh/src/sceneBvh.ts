@@ -9,6 +9,7 @@ import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import { fingerprintBuffers } from './bufferFingerprint.js';
 import { clonePlainAabb, type PlainAabb } from './aabb.js';
 import { mergeWorldSpaceFromCore } from './worldSpaceMerge.js';
+import { MATERIAL_ATTEN_DIST_INFINITE } from './materialEntry.js';
 
 export interface SceneBvhBuffers {
   /** Flat BVHNode array: bounds (6 f32) + rightChild/triOffset + splitAxis/triCount. */
@@ -177,6 +178,13 @@ function materialSetHashFloats(materials: readonly MaterialSpec[]): number[] {
     const em = m.emissive ?? [0, 0, 0];
     const bc = m.baseColor ?? [1, 1, 1];
     const ac = m.attenuationColor ?? [1, 1, 1];
+    const attenuationDistance = m.attenuationDistance;
+    const attenDistF =
+      attenuationDistance === undefined ||
+      !Number.isFinite(attenuationDistance) ||
+      attenuationDistance <= 0
+        ? MATERIAL_ATTEN_DIST_INFINITE
+        : attenuationDistance;
     out.push(
       bc[0], bc[1], bc[2],
       em[0] * ei, em[1] * ei, em[2] * ei,
@@ -185,6 +193,8 @@ function materialSetHashFloats(materials: readonly MaterialSpec[]): number[] {
       m.transmission ?? 0,
       m.ior ?? 1.5,
       ac[0], ac[1], ac[2],
+      attenDistF,
+      m.thickness ?? 0,
     );
   }
   return out;

@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import { SceneBvh } from '../sceneBvh.js';
 
 // We spy on mergeWorldSpaceFromCore via the module; vitest's module mocking
@@ -16,7 +16,10 @@ import { SceneBvh } from '../sceneBvh.js';
 // merge invocations indirectly: since the merge is the only place that can
 // populate _buffers on a real SceneBvh, we use a subclass to instrument it.
 
-function minimalScene(roughness = 0.5): Scene {
+function minimalScene(material: number | Partial<MaterialSpec> = 0.5): Scene {
+  const materialOverrides = typeof material === 'number'
+    ? { roughness: material }
+    : material;
   return {
     primitives: [
       {
@@ -24,7 +27,7 @@ function minimalScene(roughness = 0.5): Scene {
         id: 'tri',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], roughness, metallic: 0 },
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, ...materialOverrides },
       },
     ],
     emitters: [],
@@ -104,6 +107,48 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
 
     bvh.updateFromCore(minimalScene(0.9));
     // Fingerprint differs → rebuild.
+    expect(bvh.buffers).not.toBe(first);
+  });
+
+  it('H33: no tag → attenuationDistance-only material edit triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      attenuationDistance: 1,
+      thickness: 0.25,
+    }));
+    const first = bvh.buffers;
+    expect(first).not.toBeNull();
+
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      attenuationDistance: 10,
+      thickness: 0.25,
+    }));
+
+    expect(bvh.buffers).not.toBe(first);
+  });
+
+  it('H33: no tag → thickness-only material edit triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      attenuationDistance: 3,
+      thickness: 0.25,
+    }));
+    const first = bvh.buffers;
+    expect(first).not.toBeNull();
+
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      attenuationDistance: 3,
+      thickness: 0.75,
+    }));
+
     expect(bvh.buffers).not.toBe(first);
   });
 

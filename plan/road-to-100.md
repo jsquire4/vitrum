@@ -619,7 +619,7 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 | Item | File | Action |
 |------|------|--------|
 | H32 glass TLAS shadow | `shared-bvh/wgsl/tlasTraversal.wgsl.ts`; `sceneTraversal.wgsl.ts` | ✅ CODE CLOSED: `traceTlasAny` now forwards `skipGlass` into a single closest-hit path and walkaround forwards the flag. Add a behavioral TLAS glass-shadow oracle before deleting all residual audit notes. |
-| H33 materialSig Beer-Lambert | `shared-bvh/src/sceneBvh.ts` `materialSetHashFloats` (~:173-191) — **NOT worldSpaceMerge; `materialSig` there already has the fields** | Add `attenuationDistance` + `thickness` to the hash so mutating only those fields bumps the DDGI content fingerprint (today it silently skips the rebuild) |
+| H33 materialSig Beer-Lambert | `shared-bvh/src/sceneBvh.ts`; `shared-bvh/src/__tests__/sceneBvhVersionTag.test.ts` | ✅ CLOSED (Wave 2): `materialSetHashFloats` now includes packed `attenuationDistance` (with the canonical no-attenuation sentinel) and `thickness`, so no-tag `SceneBvh.updateFromCore()` rebuilds when only Beer-Lambert distance/depth changes. Regression tests pin attenuationDistance-only and thickness-only edits. |
 | H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
 | Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
 | GRIS dead alloc H24 | `resourceManager.ts` | Gate on `regir.enabled` |
