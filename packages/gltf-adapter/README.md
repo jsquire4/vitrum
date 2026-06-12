@@ -116,6 +116,7 @@ asset's feature report.
 | Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Warn + skip (core has no point/line primitive) |
 | KHR_draco_mesh_compression | Supported via `opts.dracoDecode` hook. Without a hook: uncompressed fallback accessors when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | EXT_meshopt_compression | Supported via `opts.meshoptDecode` hook (bufferView-level — geometry, animation and image consumers all see decompressed data). Without a hook: spec fallback buffer when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
+| EXT_mesh_gpu_instancing | Unsupported. Optional node-level use warns and imports the base mesh once; compatibility reports an unsupported extension issue. Required use throws through `extensionsRequired` |
 | Morph targets (POSITION + NORMAL deltas, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). TANGENT deltas warn + skip |
 | Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`) |
 | Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels) | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback |

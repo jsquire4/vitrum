@@ -849,6 +849,10 @@ Evidence:
   `thicknessMap` through each backend's material support matrix.
 - Morph-target `TANGENT` deltas remain unsupported and are now compatibility
   scored as ignored primitive data.
+- `EXT_mesh_gpu_instancing` is explicitly unsupported rather than silently
+  ignored: optional node-level use emits an adapter warning and imports the base
+  mesh once, compatibility reports an unsupported extension issue at the node
+  source path, and required use stays a hard `extensionsRequired` rejection.
 
 Closure:
 - Decide per extension: implement, require host hook, translate approximately,

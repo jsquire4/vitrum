@@ -386,6 +386,13 @@ export async function gltfToScene(
   for (const [nodeIdx, worldMat] of worldTransforms) {
     const node = gltfNodes[nodeIdx];
     if (!node || node.mesh === undefined) continue;
+    if (node.extensions?.EXT_mesh_gpu_instancing !== undefined) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing, ` +
+          'but this adapter does not import accessor-driven instance transforms yet. ' +
+          'The base mesh is imported once with the node transform; instance attributes are ignored.',
+      );
+    }
 
     const mesh = gltfMeshes[node.mesh];
     if (!mesh) continue;

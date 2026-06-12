@@ -523,7 +523,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 
 #### 2F — Analytic + instancing (pt-webgpu full)
 
-Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-mesh` kind — adapter flattens to separate primitives. **Gap:** add `EXT_mesh_gpu_instancing` to Phase 1 extension matrix or explicitly `unsupported` with test.
+Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-mesh` kind — adapter flattens to separate primitives. **`EXT_mesh_gpu_instancing` decision DONE (2026-06-12):** explicitly unsupported + test-covered; optional use emits an adapter warning and imports the base mesh once, required use remains a hard required-extension rejection, and compatibility reports the extension as unsupported with the node source path.
 
 ---
 
@@ -695,7 +695,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 
 | Extension | Status | Action |
 |-----------|--------|--------|
-| `EXT_mesh_gpu_instancing` | Not imported | Implement → `instanced-mesh` primitive OR `unsupported` + test |
+| ~~`EXT_mesh_gpu_instancing`~~ ✅ policy closed | Not imported by design today; optional node-level use warns and imports the base mesh once; compatibility reports unsupported with node source path; required use throws via `extensionsRequired` | Native import to `instanced-mesh` remains future work, but arbitrary glTF now gets explicit rejection/degradation instead of silent loss |
 | `KHR_texture_basisu` | Hook only | Default browser transcoder path + docs |
 | `EXT_meshopt_compression` fallback buffer | Implemented | Verify with real samples |
 | Multiple UV sets | `TEXCOORD_1` imported | pt-webgpu uv-set bitmask; walkaround needs uv1 buffer |

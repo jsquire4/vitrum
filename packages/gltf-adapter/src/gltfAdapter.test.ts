@@ -241,6 +241,30 @@ describe('minimal triangle', () => {
     expect(scene.environment.kind).toBe('none');
   });
 
+  it('warns when optional EXT_mesh_gpu_instancing is ignored instead of silently dropping instances', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: {
+            TRANSLATION: 1,
+          },
+        },
+      },
+    };
+
+    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect(scene.primitives).toHaveLength(1);
+    expect(warnings.some((warning) =>
+      warning.includes('EXT_mesh_gpu_instancing') &&
+      warning.includes('imported once') &&
+      warning.includes('instance attributes are ignored'),
+    )).toBe(true);
+  });
+
   it('generates tangents for a normal-mapped primitive that omits TANGENT', async () => {
     const handle = { kind: 'decoded-normal' };
     const { gltf, buffers } = makeNormalMappedTriangleGltf();

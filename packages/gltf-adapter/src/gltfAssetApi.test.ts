@@ -412,6 +412,36 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }
   });
 
+  it('reports EXT_mesh_gpu_instancing as an explicit unsupported extension with node source path', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      nodes: [{
+        mesh: 0,
+        extensions: {
+          EXT_mesh_gpu_instancing: {
+            attributes: {
+              TRANSLATION: 1,
+            },
+          },
+        },
+      }],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+        }],
+      }],
+    });
+
+    expect(report.extensions.unsupportedOptional).toContain('EXT_mesh_gpu_instancing');
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'extension',
+      name: 'EXT_mesh_gpu_instancing',
+      support: 'unsupported',
+      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
+    }));
+  });
+
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
