@@ -119,6 +119,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   route every skinned mesh through the CPU `solveSkin()` fallback. The older
   count-only-cache concern is source-verified stale: cached bind groups are
   already invalidated by live shared position/normal buffer identity.
+- NRC self-training failures are no longer swallowed: `WalkaroundGPUPipeline`
+  reports rejecting `trainFromRecords()` calls as deduped non-fatal
+  `EngineError`s through `HybridEngine.onError` while the pipeline is live, and
+  still suppresses expected late failures after dispose. Focused diagnostics
+  tests pin report, dedupe, success reset, and post-dispose suppression.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative

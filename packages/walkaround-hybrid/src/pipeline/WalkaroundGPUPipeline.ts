@@ -35,7 +35,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
-import type { Scene } from '@vitrum/core';
+import type { EngineError, Scene } from '@vitrum/core';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
@@ -530,6 +530,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  are allocated — the default pipeline is provably untouched. Owns the MLP
    *  trainer + the @group(4) NRC resources; host-owns-cadence train per frame. */
   private _nrc: NrcSubsystem | null = null;
+  private readonly _onError: ((error: EngineError) => void) | null;
+  private _lastNrcTrainingErrorMessage: string | null = null;
   /** Bundled layout config passed to every `buildPassLayout` call so the four
    *  call sites can't drift. */
   private get _passLayoutConfig(): {
@@ -874,10 +876,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._temporalAccumAlpha;
   }
 
-  constructor(device: GPUDevice, width: number, height: number) {
+  constructor(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    diagnostics: { onError?: (error: EngineError) => void } = {},
+  ) {
     this._device = device;
     this._width  = width;
     this._height = height;
+    this._onError = diagnostics.onError ?? null;
     this._ddgi = new OptionalSubsystemBindingState(device);
     this._ppg  = new PPGCoordinator(device);
   }
@@ -1604,7 +1612,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this.#buildFrameContext(inputs, camMoveSqUpfront, checkerboardState);
 
     this.#dispatchPasses(passCtx, gateOpts, passLayout, encoder);
-    this.#tickSubsystemTraining(passLayout);
+    this._tickSubsystemTraining(passLayout);
 
     this._frameCount++;
     return true;
@@ -1929,7 +1937,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * GPU timeline. PPG is CPU-side; NRC maps a staging buffer async — both
    * are re-entrant-guarded inside their subsystems.
    */
-  #tickSubsystemTraining(_passLayout: ReturnType<typeof buildPassLayout>): void {
+  private _reportNrcTrainingFailure(raw: unknown): void {
+    if (!this._initialized || this._onError == null) return;
+    const detail = raw instanceof Error ? raw.message : String(raw);
+    if (this._lastNrcTrainingErrorMessage === detail) return;
+    this._lastNrcTrainingErrorMessage = detail;
+    this._onError({
+      kind: 'render',
+      message: `[WalkaroundGPUPipeline] NRC training failed; retaining previous NRC weights. ${detail}`,
+      fatal: false,
+      raw,
+    });
+  }
+
+  private _tickSubsystemTraining(_passLayout: ReturnType<typeof buildPassLayout>): void {
     // W9 follow-up — periodic training/refine cycle:
     // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
     this._ppg.maybeRunTrainingRefine(this._res, this._frameCount);
@@ -1938,11 +1959,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // step (Müller §5 self-training; HOST-OWNS-CADENCE — one step per frame).
     // Fire-and-forget: the readback maps async; a still-pending readback skips
     // this frame and picks up fresh records next frame (re-entrancy guarded in
-    // the subsystem). No-op when NRC is off. The promise rejection is swallowed
-    // so a transient device-lost during teardown never surfaces on the render
-    // hot path.
+    // the subsystem). No-op when NRC is off. Rejections are reported as
+    // non-fatal diagnostics while the pipeline is live; post-dispose failures
+    // remain suppressed because they are expected during teardown/device loss.
     if (this._nrc !== null) {
-      void this._nrc.trainFromRecords().catch(() => { /* device lost / disposed */ });
+      void this._nrc.trainFromRecords()
+        .then(() => { this._lastNrcTrainingErrorMessage = null; })
+        .catch((err: unknown) => { this._reportNrcTrainingFailure(err); });
     }
   }
 

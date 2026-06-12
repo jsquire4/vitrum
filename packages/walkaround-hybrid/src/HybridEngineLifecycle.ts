@@ -395,7 +395,9 @@ export class PipelineInitCoordinator {
       }
 
       // ── Phase: initializePipeline ────────────────────────────────────
-      pipeline = new WalkaroundGPUPipeline(device, host.width, host.height);
+      pipeline = new WalkaroundGPUPipeline(device, host.width, host.height, {
+        onError: (error) => host.reportError(error),
+      });
       const pipelineStart = performance.now();
 
       // T2.H2 — Neural denoiser: create + initialize InferenceGraph before
