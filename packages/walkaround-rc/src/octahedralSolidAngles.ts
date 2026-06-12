@@ -103,9 +103,9 @@ function sphericalQuadArea(
  *
  * Returns a `Float32Array` of length N² where entry `i*N + j` is the solid
  * angle (in steradians) of the direction bin at grid position (col=i%N,
- * row=i÷N).  Bin layout matches `octDirForIndex` in
- * `walkaroundDiffuseLighting.ts`: bin index = rowMajor, u is the column axis,
- * v is the row axis in [-1,+1]×[-1,+1].
+ * row=i÷N). Bin layout matches the raw cascade-merge WGSL convention: bin
+ * index = rowMajor, u is the column axis, v is the row axis in
+ * [-1,+1]×[-1,+1].
  *
  * Sum over all bins ≈ 4π within 1e-3 relative error.
  *

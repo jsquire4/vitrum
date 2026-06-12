@@ -237,6 +237,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   procedural-sky environment fallback warnings, `updateLighting()` warning and
   DDGI invalidation behavior, and `setSize()` resize/no-op behavior using
   fake pipeline/DDGI/RC collaborators.
+- The RC exported-surface/lifecycle residue landed in `@vitrum/walkaround-rc`:
+  raw `RCDispatcher.dispatchFrameRaw()` now snapshots binding-relevant inputs
+  and auto-invalidates cached bind groups when direct callers change `bvhMode`,
+  buffer sets, env bindings, device, cascade output buffers, or cascade bounds.
+  `cascadeDispatchInvalidation.test.ts` pins stable-frame reuse plus TLAS/bounds
+  rebuilds, and the stale RC mapping/README comments now match the current
+  no-`/three` raw package surface.
 - Verification after the previous sweep: root `npm run typecheck` clean and
   root `npm test` clean (`150` files, `1551` passing, `3` skipped). Verification
   after the current follow-up is in progress; focused typecheck/test runs are

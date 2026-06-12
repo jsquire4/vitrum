@@ -70,6 +70,28 @@ interface DispatchHandles {
   placeholderEnvTexture?: GPUTexture;
 }
 
+interface DispatchBindingSignature {
+  readonly device: GPUDevice;
+  readonly bvhMode: 'merged' | 'tlas';
+  readonly bvhNodesBuf: GPUBuffer;
+  readonly bvhIndicesBuf: GPUBuffer;
+  readonly bvhPositionsBuf: GPUBuffer;
+  readonly materialsBuf: GPUBuffer;
+  readonly triMaterialIdBuf: GPUBuffer;
+  readonly cascadeBufs: readonly GPUBuffer[];
+  readonly probeOriginWorld: readonly [number, number, number];
+  readonly roomSize: readonly [number, number, number];
+  readonly envTextureView: GPUTextureView | null;
+  readonly envSampler: GPUSampler | null;
+  readonly tlasNodesBuf: GPUBuffer | null;
+  readonly tlasInstanceIndicesBuf: GPUBuffer | null;
+  readonly tlasBlasRootsBuf: GPUBuffer | null;
+  readonly tlasInstanceWorldToLocalBuf: GPUBuffer | null;
+  readonly tlasInstanceLocalToWorldBuf: GPUBuffer | null;
+  readonly emittersBuf: GPUBuffer | null;
+  readonly lightsBuf: GPUBuffer | null;
+}
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 /**
@@ -265,6 +287,71 @@ function buildMergeUniformData(
   return d;
 }
 
+function sameVec3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
+function sameBufferArray(a: readonly GPUBuffer[], b: readonly GPUBuffer[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
+  return {
+    device: opts.device,
+    bvhMode: opts.bvhMode ?? 'merged',
+    bvhNodesBuf: opts.bvhNodesBuf,
+    bvhIndicesBuf: opts.bvhIndicesBuf,
+    bvhPositionsBuf: opts.bvhPositionsBuf,
+    materialsBuf: opts.materialsBuf,
+    triMaterialIdBuf: opts.triMaterialIdBuf,
+    cascadeBufs: [...opts.cascadeBufs],
+    probeOriginWorld: [...opts.probeOriginWorld] as [number, number, number],
+    roomSize: [...opts.roomSize] as [number, number, number],
+    envTextureView: opts.envTextureView ?? null,
+    envSampler: opts.envSampler ?? null,
+    tlasNodesBuf: opts.tlasNodesBuf ?? null,
+    tlasInstanceIndicesBuf: opts.tlasInstanceIndicesBuf ?? null,
+    tlasBlasRootsBuf: opts.tlasBlasRootsBuf ?? null,
+    tlasInstanceWorldToLocalBuf: opts.tlasInstanceWorldToLocalBuf ?? null,
+    tlasInstanceLocalToWorldBuf: opts.tlasInstanceLocalToWorldBuf ?? null,
+    emittersBuf: opts.emittersBuf ?? null,
+    lightsBuf: opts.lightsBuf ?? null,
+  };
+}
+
+function sameBindingSignature(
+  a: DispatchBindingSignature | null,
+  b: DispatchBindingSignature,
+): boolean {
+  return a != null &&
+    a.device === b.device &&
+    a.bvhMode === b.bvhMode &&
+    a.bvhNodesBuf === b.bvhNodesBuf &&
+    a.bvhIndicesBuf === b.bvhIndicesBuf &&
+    a.bvhPositionsBuf === b.bvhPositionsBuf &&
+    a.materialsBuf === b.materialsBuf &&
+    a.triMaterialIdBuf === b.triMaterialIdBuf &&
+    sameBufferArray(a.cascadeBufs, b.cascadeBufs) &&
+    sameVec3(a.probeOriginWorld, b.probeOriginWorld) &&
+    sameVec3(a.roomSize, b.roomSize) &&
+    a.envTextureView === b.envTextureView &&
+    a.envSampler === b.envSampler &&
+    a.tlasNodesBuf === b.tlasNodesBuf &&
+    a.tlasInstanceIndicesBuf === b.tlasInstanceIndicesBuf &&
+    a.tlasBlasRootsBuf === b.tlasBlasRootsBuf &&
+    a.tlasInstanceWorldToLocalBuf === b.tlasInstanceWorldToLocalBuf &&
+    a.tlasInstanceLocalToWorldBuf === b.tlasInstanceLocalToWorldBuf &&
+    a.emittersBuf === b.emittersBuf &&
+    a.lightsBuf === b.lightsBuf;
+}
+
 // ─── RCDispatcher class ───────────────────────────────────────────────────────
 
 /**
@@ -283,6 +370,7 @@ function buildMergeUniformData(
  */
 export class RCDispatcher {
   private _handles: DispatchHandles | null = null;
+  private _bindingSignature: DispatchBindingSignature | null = null;
   private _castShaderModule:  GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
   private _lastError: Error | null = null;
@@ -308,22 +396,21 @@ export class RCDispatcher {
    * Pipelines and bind groups are compiled/created lazily on the first call
    * (or after `dispose()`).
    *
-   * **Important — bind-group invalidation:** if `opts.bvhMode` changes between
-   * calls (merged ↔ tlas), or if the AABB / probe-origin bounds change in a way
-   * that requires different buffer bindings, the caller MUST call
-   * `invalidateBindings()` BEFORE the next `dispatchFrameRaw()` call. Failing to
-   * do so leaves the old bind groups bound against the new (different) pipeline
-   * layout, which produces silent GPU validation errors or undefined rendering.
-   *
-   * `RCSubsystem.refitCascadeBounds()` already calls `invalidateBindings()` when
-   * the scene AABB changes; callers that construct `RCDispatcher` directly are
-   * responsible for calling it on `bvhMode` or buffer-set transitions.
+   * Bind groups are reused while binding-relevant inputs are stable. When the
+   * raw caller swaps buffer sets, env bindings, bvhMode, device, cascade output
+   * buffers, or cascade bounds, the dispatcher releases cached bind groups and
+   * rebuilds them before dispatching.
    */
   dispatchFrameRaw(opts: RCDispatchOptsRaw): void {
     const device = opts.device;
+    const signature = bindingSignature(opts);
+    if (this._handles && !sameBindingSignature(this._bindingSignature, signature)) {
+      this.invalidateBindings();
+    }
     if (!this._handles) {
       try {
         this._handles = this._buildHandlesRaw(device, opts);
+        this._bindingSignature = signature;
         this._lastError = null;
       } catch (err: unknown) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -455,6 +542,7 @@ export class RCDispatcher {
       this._handles.placeholderEnvTexture?.destroy();
       this._handles = null;
     }
+    this._bindingSignature = null;
     for (const buf of this._dummyTlasBuffers) {
       buf.destroy();
     }

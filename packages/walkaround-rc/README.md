@@ -53,6 +53,8 @@ raw-WebGPU path.
 - `__tests__/rcKernelMath.test.ts` — pure math invariants (cascade geometry,
   uniform packing).
 - `__tests__/cascadeDimsOverride.test.ts` — per-engine cascade dimension override.
+- `__tests__/cascadeDispatchInvalidation.test.ts` — raw dispatcher bind-group
+  cache invalidation across binding-relevant input changes.
 - `__tests__/packageRootBoundary.test.ts` — verifies no three/webgpu import
   leaks from the package root.
 - `__tests__/rcBehavior.gpu.test.ts` — GPU-gated behavioral smoke (requires
