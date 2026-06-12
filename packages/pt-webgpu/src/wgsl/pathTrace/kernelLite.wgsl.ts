@@ -441,6 +441,15 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
         throughputAtVertex,
       );
     }

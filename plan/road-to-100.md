@@ -272,9 +272,10 @@ buckets that the A–D framing was missing:**
 >    acceptance criteria were added (texture wrap modes + mipmaps in Phase 1A;
 >    `environment:'none'` phantom skylight + grayscale-directional shortcut class
 >    widened into 2C), and **Phase 6** now carries the gap-ledger residue outside
->    the three targets (pt-webgl2 NEE selection bias, onError unification,
->    attachVitrum recreate scene-loss, lite single-BLAS, RC footguns, sampled
->    fingerprint, morph-normal skip, core contract additions). With Phases 0–6
+>    the three targets (onError unification, lite single-BLAS, RC footguns,
+>    sampled fingerprint, core contract additions; the pt-webgl2 NEE,
+>    pt-webgpu trace-lite shader-gate mismatch, attachVitrum recreate scene-loss,
+>    and morph-normal skip rows are closed by Wave 1). With Phases 0–6
 >    executed, this plan IS the categorical close.
 > 7. **FOLLOW-UP CROSSOUT PASS (2026-06-12):** verified and struck/narrowed the
 >    rows that landed after this addendum: glTF required `KHR_materials_unlit` /
@@ -539,17 +540,18 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 > **2026-06-12 reconciliation: W-HYB-01/02/03 are ✅ LANDED on `main`**
 > (verified on disk: NRC clear wired at `WalkaroundGPUPipeline.ts:1227`;
 > atrous per-iteration 256-byte UBO strides; init failures → `onError`).
-> H25/H28/H29 remain OPEN; H26-H27 closed in R8-B (keep oracle coverage).
+> H25/H28 are closed by code + tests; H29 is narrowed to non-default cap
+> end-to-end plumbing. H26-H27 closed in R8-B (keep oracle coverage).
 
 | ID | Status | File(s) | Fix | Footgun |
 |----|--------|---------|-----|---------|
 | W-HYB-01 | ✅ LANDED | — | `clearSlotClaims()` wired before NRC GI-RIS | — |
 | W-HYB-02 | ✅ LANDED | — | Per-iteration UBO bindings (256-byte strides) | — |
 | W-HYB-03 | ✅ LANDED | — | Init failures route to `onError` | — |
-| H25 | OPEN | `ppgPdf.wgsl.ts`, `dTree.ts` | Upward flux propagate OR disable interior sampling in `ppgEvalPdf` | PPG guides with wrong PDF — byte tests green |
+| H25 | ✅ CLOSED | `PPGCoordinator.ts`, `ppgPdf.wgsl.ts`, `dTree.ts`, `dTreeInteriorFlux.test.ts` | Bottom-up interior flux propagation is implemented before dTree refinement; CPU/GPU pdf logic now matches leaf flux / solid angle. | Residual promotion risk: no broad real-GPU PPG A/B in package tests. |
 | H26-H27 | ✅ CLOSED (R8-B) | `risGiNrc.wgsl.ts` | Spread + training target fixed — keep oracle tests | |
-| H28 | OPEN | `unetArchitecture.ts`, `relu.wgsl.ts` | Separate ReLU output buffer | `denoiser:'neural'` fails WebGPU validation |
-| H29 | OPEN | `ppgUpdate.wgsl.ts` | Template `MAX_DTREE_NODES_PER_CELL` from `resourceManager.ts` | Hardcoded 341 vs host cap |
+| H28 | ✅ CLOSED | `layerResourceAllocator.ts`, `reluPingPong.test.ts` | In-place ReLU layers now allocate a distinct output buffer and remap downstream tensor reads. | Broader neural weights/quality remain separate from H28. |
+| H29 | PARTIAL | `ppgUpdate.wgsl.ts`, `pipelineCompiler.ts`, `WalkaroundGPUPipeline.ts`, `PPGCoordinator.ts` | WGSL builder templates `MAX_DTREE_NODES_PER_CELL`, but high-level pipeline/coordinator only exercise the default 341 cap. | Non-default dTree cap still needs end-to-end option plumbing + test. |
 
 #### 3B — Emitters, environment, shadows (ledger truth)
 
@@ -616,7 +618,7 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 
 | Item | File | Action |
 |------|------|--------|
-| H32 glass TLAS shadow | `shared-bvh/wgsl/tlasTraversal.wgsl.ts` | skipGlass in closest-hit |
+| H32 glass TLAS shadow | `shared-bvh/wgsl/tlasTraversal.wgsl.ts`; `sceneTraversal.wgsl.ts` | ✅ CODE CLOSED: `traceTlasAny` now forwards `skipGlass` into a single closest-hit path and walkaround forwards the flag. Add a behavioral TLAS glass-shadow oracle before deleting all residual audit notes. |
 | H33 materialSig Beer-Lambert | `shared-bvh/src/sceneBvh.ts` `materialSetHashFloats` (~:173-191) — **NOT worldSpaceMerge; `materialSig` there already has the fields** | Add `attenuationDistance` + `thickness` to the hash so mutating only those fields bumps the DDGI content fingerprint (today it silently skips the rebuild) |
 | H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
 | Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
@@ -770,13 +772,14 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 
 | Item | File(s) | Fix or downgrade |
 |------|---------|------------------|
-| pt-webgl2 NEE 3-way selection bias | `direct_light_contribution_function.glsl.js:9,64` + `composeTraceGlsl.ts:589-592` | Two independent `rand(5)` draws make mesh-branch probability `(1−c/D)·((c+1)/D)` while pdf assumes `1/D` — mis-weights mesh/env NEE when analytic+mesh+env coexist; also no-env scenes still allocate the env slot (pure variance waste). Single-draw strategy selection |
+| pt-webgl2 NEE 3-way selection bias | `packages/pt-webgl2/src/glsl/render/direct_light_contribution_function.glsl.js`; `packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts` | ✅ DONE (Wave 1): analytic/mesh/env NEE now use one shared strategy variate (`neeStrategyU`) with cumulative cutoffs, so slot probabilities match the PDFs. Focused source/probability tests pin the single-draw selector and the old `1/3,4/9,2/9` regression. |
 | Engine `onError` shape unification | `createEngine` / `Engine.onError` / `attachVitrum.onEngineError` / `createProgressiveEngine.onError` | Four shapes, three names; progressive drops the phase/backend event. One `EngineError`-based shape + deprecation aliases |
-| `attachVitrum` auto-recreate scene loss | `vanilla.ts` (~:506) | Recreate restores ORIGINAL `opts.scene` — post-attach `setScene`/mutations silently reverted. Track last-known scene or document loudly |
+| `attachVitrum` auto-recreate scene loss | `packages/engine/src/lifecycle/vanilla.ts`; `packages/engine/src/__tests__/attachVitrumAutoRecreate.test.ts` | ✅ DONE (Wave 1): lifecycle now tracks the latest scene submitted through the exposed engine handle and recreates with that scene after device/context loss. Regression test simulates fatal `device-lost` and verifies the second `createEngine` call receives the updated scene. |
+| pt-webgpu trace-lite shader-gate mismatch | `packages/pt-webgpu/src/wgsl/pathTrace/causticLite.wgsl.ts`; `kernelLite.wgsl.ts`; `wgslContract.test.ts`; `wgslLiteContract.test.ts` | ✅ DONE (Wave 1): lite MNEE stub signature now matches the lite kernel material-extension call shape, and lite BSDF-environment reconnection receives the scalar clearcoat/sheen/iridescence fields it already evaluates. `npm run shader-gate` compiles `pt-webgpu/trace-lite`; contract tests pin stub/caller parity and the updated lite SHA/length. |
 | Lite tier single-BLAS | `uploadSceneBuffers.ts` lite path | Now honestly labeled, but `mergeWorldSpaceFromCore` (already consumed by 2 backends) would make multi-primitive lite real — implement (preferred) or keep ledgered |
 | RC exported-surface footguns | `cascadeDispatch.ts:298,317-320,728`; `HybridEngineRC.ts` | ✅ light-buffer lifecycle now invalidates bindings on nonzero→zero transitions; remaining: validate `cascadeDims` (2× ray-grid invariant), throw on violation, and cover bounds-change/stale-merge-uniform cases |
 | shared-bvh sampled fingerprint in correctness path | `bufferFingerprint.ts` + `sceneBvh.ts:131` | Sampled hash gates a REBUILD SKIP (stale BVH on miss), not just re-upload as documented — full-hash the geometry arrays or add a cheap length/sum guard |
-| `solveSkin` morph-normal silent skip | `core skinSolver.ts:242` | Wrong-length `morphTargetNormals` silently ignored while positions throw — make consistent |
+| `solveSkin` morph-normal silent skip | `packages/core/src/skinSolver.ts:242`; `packages/core/src/__tests__/skinSolver.test.ts` | ✅ DONE (Wave 1): active morphs now throw when `morphTargetNormals.length !== morphTargets.length`, and malformed normal-delta entry lengths remain throw-on-read. Focused test pins both cases. |
 | Core contract additions from Wave 3 | `material.ts`, `primitives.ts` | `morphTargetTangents`, `thicknessMap` (+ glTF adapter wiring + `doubleSided` decision from 1B) |
 
 ### Suggested commit sequence (no dates)

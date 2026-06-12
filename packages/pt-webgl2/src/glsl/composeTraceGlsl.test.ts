@@ -2,6 +2,8 @@
 // here, so we verify the chunk concatenation produced the right symbols in the right
 // order (struct-before-use is load-bearing — plan/three-removal/04-glsl-kernels.md §3).
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { composeTraceGlsl, RENDER_MAIN_SECTIONS, buildUniformDecls, UNIFORM_MANIFEST } from './composeTraceGlsl.js';
 import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
@@ -146,6 +148,50 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('float meshAreaLightForwardPdf(');
     // The forward-emission MIS site and the NEE branch both reference the count gate.
     expect(src).toContain('uMeshLightCount != 0u');
+  });
+
+  it('Phase 6: pt-webgl2 NEE strategy uses one selector variate for analytic/mesh/env slots', () => {
+    const directLightSource = readFileSync(
+      fileURLToPath(new URL('./render/direct_light_contribution_function.glsl.js', import.meta.url)),
+      'utf8',
+    );
+    const selectorCalls = directLightSource.match(/rand\( 5 \)/g) ?? [];
+    expect(selectorCalls).toHaveLength(1);
+    expect(directLightSource).toContain('float neeStrategyU = rand( 5 );');
+    expect(directLightSource).toContain('neeStrategyU < analyticCutoff');
+    expect(directLightSource).toContain('neeStrategyU < meshCutoff');
+    expect(directLightSource).not.toMatch(/else if[\s\S]*rand\( 5 \)/);
+  });
+
+  it('Phase 6: one-draw NEE strategy probabilities match the slot PDFs', () => {
+    const fixedSlots = (analyticSlots: number, meshSlots: number, envSlots: number) => {
+      const denom = analyticSlots + meshSlots + envSlots;
+      return {
+        analytic: analyticSlots / denom,
+        mesh: meshSlots / denom,
+        env: envSlots / denom,
+      };
+    };
+    const oldIndependentDraws = (analyticSlots: number, meshSlots: number, envSlots: number) => {
+      const denom = analyticSlots + meshSlots + envSlots;
+      const analytic = analyticSlots / denom;
+      const mesh = (1 - analytic) * ((analyticSlots + meshSlots) / denom);
+      return {
+        analytic,
+        mesh,
+        env: 1 - analytic - mesh,
+      };
+    };
+
+    const fixed = fixedSlots(1, 1, 1);
+    expect(fixed.analytic).toBeCloseTo(1 / 3, 12);
+    expect(fixed.mesh).toBeCloseTo(1 / 3, 12);
+    expect(fixed.env).toBeCloseTo(1 / 3, 12);
+
+    const old = oldIndependentDraws(1, 1, 1);
+    expect(old.analytic).toBeCloseTo(1 / 3, 12);
+    expect(old.mesh).toBeCloseTo(4 / 9, 12);
+    expect(old.env).toBeCloseTo(2 / 9, 12);
   });
 
   it('item 20: iesProfiles uniform is absent from the composed shader (IES removed)', () => {

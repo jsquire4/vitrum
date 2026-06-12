@@ -221,6 +221,39 @@ describe('solveSkin', () => {
     expect(positions[2]).toBeCloseTo(0);
   });
 
+  it('throws when morphTargetNormals count does not match morphTargets for active morphs', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      morphTargets: [
+        new Float32Array([1, 0, 0]),
+        new Float32Array([0, 1, 0]),
+      ],
+      morphTargetNormals: [new Float32Array([0, 0, 1])],
+      morphWeights: new Float32Array([1, 0]),
+    };
+
+    expect(() => solveSkin(prim)).toThrow(/morphTargetNormals length 1 != morphTargets 2/);
+  });
+
+  it('throws when an active morphTargetNormals entry has the wrong length', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      morphTargets: [new Float32Array([1, 0, 0])],
+      morphTargetNormals: [new Float32Array([0, 0])],
+      morphWeights: new Float32Array([1]),
+    };
+
+    expect(() => solveSkin(prim)).toThrow(/morphTargetNormals\[0\] length 2 != normals 3/);
+  });
+
   it('bindMatrix is honored — non-identity bind round-trips to identity skinning', () => {
     // bindMatrix = translate(5, 0, 0); bindMatrixInverse = translate(-5, 0, 0).
     // bones[0].matrixWorld = bindMatrix; boneInverse[0] = bindMatrixInverse.

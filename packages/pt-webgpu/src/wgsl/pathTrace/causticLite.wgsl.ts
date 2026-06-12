@@ -12,6 +12,15 @@ fn manifoldNeeContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
   throughput: vec3f,
 ) -> vec3f {
   _ = rng;
@@ -23,6 +32,15 @@ fn manifoldNeeContribution(
   _ = metallic;
   _ = transmission;
   _ = ior;
+  _ = clearcoat;
+  _ = clearcoatRoughness;
+  _ = sheen;
+  _ = sheenRoughness;
+  _ = sheenColor;
+  _ = iridescence;
+  _ = iridescenceIor;
+  _ = iridescenceThicknessMin;
+  _ = iridescenceThicknessMax;
   _ = throughput;
   return vec3f(0.0);
 }

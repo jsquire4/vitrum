@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -243,6 +244,28 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn pointLightReflectionCaustic(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFull(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+  });
+
+  it('keeps lite-tier MNEE stub signature aligned with the lite kernel call', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn manifoldNeeContribution(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('clearcoat: f32,');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('iridescenceThicknessMax: f32,');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.clearcoatRoughness,');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.iridescenceThicknessMax,');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('throughputAtVertex,');
+  });
+
+  it('keeps lite-tier environment reconnection call extension-aware', () => {
+    const callIndex = PT_WEBGPU_TRACE_LITE_WGSL.lastIndexOf(
+      'radiance = radiance + bsdfEnvironmentConnectionContribution(',
+    );
+    expect(callIndex).toBeGreaterThan(-1);
+    const call = PT_WEBGPU_TRACE_LITE_WGSL.slice(callIndex, callIndex + 700);
+    expect(call).toContain('mat.clearcoat,');
+    expect(call).toContain('mat.clearcoatRoughness,');
+    expect(call).toContain('mat.sheenColor,');
+    expect(call).toContain('mat.iridescenceThicknessMax,');
+    expect(call).toContain('throughputAtVertex,');
   });
 
   it('uses extension-aware BRDF/PDF evaluation for BDPT connection endpoints', () => {

@@ -5,8 +5,14 @@ export const direct_light_contribution_function = /*glsl*/`
 		vec3 result = vec3( 0.0 );
 		vec3 throughputRgb = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
 
-		// uniformly pick a light or environment map
-		if( lightsDenom != 0.0 && rand( 5 ) < float( lights.count ) / lightsDenom ) {
+		// Uniformly pick one NEE strategy slot with a single shared variate.
+		// PCG-backed rand(v) advances on every call, so using separate
+		// rand(5) calls for the analytic and mesh thresholds biases the
+		// slot probabilities away from the PDFs below.
+		float neeStrategyU = rand( 5 );
+		float analyticCutoff = lightsDenom != 0.0 ? float( lights.count ) / lightsDenom : 0.0;
+		float meshCutoff = lightsDenom != 0.0 ? float( lights.count + 1u ) / lightsDenom : 0.0;
+		if( lightsDenom != 0.0 && neeStrategyU < analyticCutoff ) {
 
 			// sample a light or environment. Back-face candidates are resampled up to
 			// 4 attempts before giving up to zero contribution.
@@ -65,7 +71,7 @@ export const direct_light_contribution_function = /*glsl*/`
 		} else if (
 			lightsDenom != 0.0 &&
 			uMeshLightCount != 0u &&
-			rand( 5 ) < float( lights.count + 1u ) / lightsDenom
+			neeStrategyU < meshCutoff
 		) {
 
 			// B4 — mesh-area triangle-light NEE. One strategy slot; the chosen point is

@@ -239,7 +239,12 @@ export function solveSkin(
           mp[i] = mp[i]! + w * delta[i]!;
         }
       }
-      if (prim.morphTargetNormals != null && prim.morphTargetNormals.length === tCount) {
+      if (prim.morphTargetNormals != null) {
+        if (prim.morphTargetNormals.length !== tCount) {
+          throw new Error(
+            `solveSkin: morphTargetNormals length ${prim.morphTargetNormals.length} != morphTargets ${tCount}.`,
+          );
+        }
         const mn: Float32Array = new Float32Array(prim.normals);
         morphedNormals = mn;
         for (let t = 0; t < tCount; t++) {

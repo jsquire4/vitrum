@@ -291,10 +291,13 @@ export const AUTO_RECREATE_WINDOW_MS = 30_000;
  *
  * @internal
  */
-function buildEngineFromOpts(opts: AttachVitrumOptions): Promise<EngineWithBackendId> {
+function buildEngineFromOpts(
+  opts: AttachVitrumOptions,
+  scene: AttachVitrumOptions['scene'] = opts.scene,
+): Promise<EngineWithBackendId> {
   return createEngine({
     canvas: opts.canvas,
-    scene: opts.scene,
+    scene,
     ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.debug != null ? { debug: opts.debug } : {}),
@@ -343,7 +346,16 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // ── Initial engine construction ─────────────────────────────────────────
   // `engine` is mutable so the auto-recreate path can swap it in place while
   // the stable handle facade (returned to the host) continues to work.
-  let engine = await buildEngineFromOpts(opts);
+  let currentScene = opts.scene;
+  const trackEngineScene = (target: EngineWithBackendId): void => {
+    const setScene = target.setScene.bind(target);
+    target.setScene = (scene) => {
+      setScene(scene);
+      currentScene = scene;
+    };
+  };
+  let engine = await buildEngineFromOpts(opts, currentScene);
+  trackEngineScene(engine);
 
   // ── ResizeObserver ───────────────────────────────────────────────────────
   let resizeObserver: ResizeObserver | undefined;
@@ -503,7 +515,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
     // 4. Recreate.
     try {
-      engine = await buildEngineFromOpts(opts);
+      engine = await buildEngineFromOpts(opts, currentScene);
+      trackEngineScene(engine);
     } catch (createErr) {
       console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
       autoRecreateMachine.recreating = false;

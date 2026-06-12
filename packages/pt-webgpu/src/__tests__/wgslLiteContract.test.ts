@@ -83,8 +83,13 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // BSDF-env connection route scalar clearcoat/sheen/iridescence fields
     // through evaluateBrdfFull/brdfDirectionalPdfFull, with anisotropy forced
     // to zero because lite has no anisotropy bindings.
-    expect(digest).toBe('ceaa2ade563b5222f633685b6f5036102f199dc209ef56121f68c1f64a4119fa');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138105);
+    // Re-pinned 2026-06-12: lite caustic/environment call signatures were
+    // re-synchronized with the lite kernel material-extension call sites after
+    // shader-gate caught a stale stub/caller mismatch. Caustic lite still returns
+    // zero by design; environment reconnection now receives the same scalar
+    // extension fields it already evaluates.
+    expect(digest).toBe('23c4d8920929a1339f7eacb715bd0ff20855d89fb62522433b83de68dd36c034');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138767);
   });
 });
 
