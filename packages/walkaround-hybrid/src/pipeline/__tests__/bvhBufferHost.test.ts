@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
+import { EMITTER_TRI_STRIDE_BYTES } from '../../restir/emitterList.js';
 
 vi.mock('../resourceManager.js', () => ({
   uploadBuffer: vi.fn((_device, data: ArrayBuffer, usage: number) => ({
@@ -65,29 +66,39 @@ function mockDevice(): GPUDevice {
   } as unknown as GPUDevice;
 }
 
+function storageBuffer(byteLength: number, count = 1) {
+  const cpuData = new ArrayBuffer(byteLength);
+  return { cpuData, byteLength, count };
+}
+
+function makeSceneBvhBuffers(emitterCount = 1): SceneBVHBuffers {
+  const buf = storageBuffer(64, 1);
+  const emitters = storageBuffer(EMITTER_TRI_STRIDE_BYTES * emitterCount, emitterCount);
+  const emitterCdf = storageBuffer(4 * emitterCount, emitterCount);
+  return {
+    bvhNodes: buf,
+    bvhIndex: buf,
+    bvhBeerColors: buf,
+    bvhEmissiveLe: buf,
+    bvhRoughMetal: buf,
+    bvhNormals: buf,
+    bvhPositions: buf,
+    emitters,
+    emitterCdf,
+    emitterCount,
+    totalEmissivePower: 0,
+    lightTree: buf,
+    lightTreeNodeCount: 0,
+    lightTreeEnabled: false,
+    bvhMode: 'merged',
+  } as SceneBVHBuffers;
+}
+
 describe('BvhBufferHost', () => {
   it('uploadInitial exposes scene bind-group resources', () => {
     const host = new BvhBufferHost();
     const device = mockDevice();
-    const cpu = new ArrayBuffer(64);
-    const buf = { cpuData: cpu, byteLength: 64, count: 1 };
-    host.uploadInitial(device, {
-      bvhNodes: buf,
-      bvhIndex: buf,
-      bvhBeerColors: buf,
-      bvhEmissiveLe: buf,
-      bvhRoughMetal: buf,
-      bvhNormals: buf,
-      bvhPositions: buf,
-      emitters: buf,
-      emitterCdf: buf,
-      emitterCount: 0,
-      totalEmissivePower: 0,
-      lightTree: buf,
-      lightTreeNodeCount: 0,
-      lightTreeEnabled: false,
-      bvhMode: 'merged',
-    } as SceneBVHBuffers);
+    host.uploadInitial(device, makeSceneBvhBuffers());
     const r = host.sceneBindGroupResources();
     const r2 = host.sceneBindGroupResources();
     expect(r.bvhNodesBuffer).toBeDefined();
@@ -102,6 +113,44 @@ describe('BvhBufferHost', () => {
     expect(mem['tlasNodesBuffer']).toMatchObject({ size: 16, usage: 0x80 });
     expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
     expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
+    host.dispose();
+  });
+
+  it('updateEmitters uses the canonical emitter payload count', () => {
+    const host = new BvhBufferHost();
+    const device = mockDevice();
+    host.uploadInitial(device, makeSceneBvhBuffers(1));
+
+    const next = makeSceneBvhBuffers(2);
+    host.updateEmitters(device, {
+      emitters: next.emitters,
+      emitterCdf: next.emitterCdf,
+      lightTree: next.lightTree,
+    });
+
+    expect(host.emitterBufferAndCount()?.count).toBe(2);
+    host.dispose();
+  });
+
+  it('updateEmitters rejects malformed emitter byte lengths before replacing live buffers', () => {
+    const host = new BvhBufferHost();
+    const device = mockDevice();
+    host.uploadInitial(device, makeSceneBvhBuffers(1));
+
+    const next = makeSceneBvhBuffers(1);
+    const malformed = {
+      cpuData: new ArrayBuffer(EMITTER_TRI_STRIDE_BYTES + 4),
+      byteLength: EMITTER_TRI_STRIDE_BYTES + 4,
+      count: 1,
+    };
+
+    expect(() => host.updateEmitters(device, {
+      emitters: malformed,
+      emitterCdf: next.emitterCdf,
+      lightTree: next.lightTree,
+    })).toThrow(/not aligned to the 80-byte EmitterTri stride/);
+    expect(host.emitterBufferAndCount()?.count).toBe(1);
+
     host.dispose();
   });
 

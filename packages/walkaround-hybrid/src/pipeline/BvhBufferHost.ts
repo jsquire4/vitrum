@@ -8,6 +8,7 @@ import { createDummyStorageBuffer, uploadBuffer, uploadBufferPadded } from './re
 import {
   packAnalyticPointSpotEmitters,
 } from '../restir/bvhSceneHelpers.js';
+import { EMITTER_TRI_STRIDE_BYTES } from '../restir/emitterList.js';
 import type { Scene } from '@vitrum/core';
 import {
   uploadBeerTexture,
@@ -95,7 +96,7 @@ export class BvhBufferHost {
   private _tlasInstanceWorldToLocalBuffer: GPUBuffer | null = null;
   private _tlasInstanceLocalToWorldBuffer: GPUBuffer | null = null;
   private _emitterBuffer: GPUBuffer | null = null;
-  /** Number of 80-byte EmitterTri entries in `_emitterBuffer` (for RC NEE). */
+  /** Number of EmitterTri entries in `_emitterBuffer` (for RC NEE). */
   private _emitterCount = 0;
   private _emitterCdfBuffer: GPUBuffer | null = null;
   private _lightTreeBuffer: GPUBuffer | null = null;
@@ -145,8 +146,15 @@ export class BvhBufferHost {
     // data the DDGI / emitter paths already use (shared.normals).
     this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
+    const emitterCount = validateEmitterPayload('uploadInitial', bvhBuffers.emitters);
+    if (bvhBuffers.emitterCount !== emitterCount) {
+      throw new RangeError(
+        `[BvhBufferHost] uploadInitial emitterCount ${bvhBuffers.emitterCount} does not match ` +
+        `emitters.count ${emitterCount}.`,
+      );
+    }
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
-    this._emitterCount = bvhBuffers.emitterCount;
+    this._emitterCount = emitterCount;
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
     // Combined light-tree + ReGIR-grid buffer (tree nodes in front, grid region
     // zeroed at the tail). `_regirGridBytes == 0` ⇒ exactly `uploadBuffer`.
@@ -313,13 +321,15 @@ export class BvhBufferHost {
     device: GPUDevice,
     bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'lightTree'>,
   ): void {
+    const nextEmitterCount = validateEmitterPayload('updateEmitters', bvhBuffers.emitters);
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     this._lightTreeBuffer?.destroy();
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
-    // updateEmitters' Pick omits emitterCount; derive from the packed byte
-    // length (EmitterTri = 80 bytes — cpuData is the raw packed array, exact).
-    this._emitterCount = bvhBuffers.emitters.cpuData.byteLength / 80;
+    // updateEmitters' Pick omits SceneBVHBuffers.emitterCount, but the
+    // StorageBufferHandle carries the canonical count and has already been
+    // byte-validated against EMITTER_TRI_STRIDE_BYTES above.
+    this._emitterCount = nextEmitterCount;
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
     // Re-upload the selection tree: emitters changed, so the tree's leaf
     // emitterIndex → emitter array mapping (and powers) changed with them.
@@ -491,4 +501,28 @@ export class BvhBufferHost {
       this._tlasInstanceLocalToWorldBuffer = dummy();
     }
   }
+}
+
+function validateEmitterPayload(
+  source: 'uploadInitial' | 'updateEmitters',
+  emitters: Pick<SceneBVHBuffers['emitters'], 'cpuData' | 'count'>,
+): number {
+  const byteLength = emitters.cpuData.byteLength;
+  if (byteLength % EMITTER_TRI_STRIDE_BYTES !== 0) {
+    throw new RangeError(
+      `[BvhBufferHost] ${source} emitters payload has ${byteLength} bytes, which is not aligned ` +
+      `to the ${EMITTER_TRI_STRIDE_BYTES}-byte EmitterTri stride.`,
+    );
+  }
+  const derivedCount = byteLength / EMITTER_TRI_STRIDE_BYTES;
+  if (!Number.isInteger(emitters.count) || emitters.count < 0) {
+    throw new RangeError(`[BvhBufferHost] ${source} emitters.count must be a non-negative integer.`);
+  }
+  if (emitters.count !== derivedCount) {
+    throw new RangeError(
+      `[BvhBufferHost] ${source} emitters.count ${emitters.count} does not match ` +
+      `${byteLength} packed bytes (${derivedCount} EmitterTri entries).`,
+    );
+  }
+  return emitters.count;
 }

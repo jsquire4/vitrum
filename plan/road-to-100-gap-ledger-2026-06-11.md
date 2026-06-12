@@ -104,6 +104,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `createTexture()`/padding allocation, with tests covering width overflow,
   height overflow, stale refreshes, and large triangle counts that previously
   could be truncated by 32-bit coercion.
+- `BvhBufferHost` no longer derives emitter count from a hardcoded `/ 80`:
+  the canonical `EMITTER_TRI_STRIDE_BYTES` layout constant is exported from the
+  emitter packer, `uploadInitial`/`updateEmitters` validate byte alignment and
+  declared count before upload, and tests pin the update path plus malformed
+  payload rejection.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative

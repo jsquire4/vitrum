@@ -41,12 +41,11 @@ interface Vector3Like {
  *   64..79 : Le.rgb + intensity
  * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
  */
-// EMITTER_STRIDE / EMITTER_FLOATS — file-local (only used inside this
-// module's emitter packer). The matching layout comment in
-// legacy/three/restirBvhCompute.ts references the names by spelling, not by
-// import. 2026-05-18 dead-code sweep verified zero non-self consumers.
-const EMITTER_STRIDE = 80;
-const EMITTER_FLOATS = EMITTER_STRIDE / 4;
+// Canonical byte stride for the shared EmitterTri storage layout. Import this
+// anywhere host-side code has to derive or validate an emitter count from raw
+// packed bytes.
+export const EMITTER_TRI_STRIDE_BYTES = 80;
+const EMITTER_FLOATS = EMITTER_TRI_STRIDE_BYTES / 4;
 
 
 interface EmitterListOptions {
