@@ -31,7 +31,7 @@
  * Workgroup size: 64 — matches `.compute(totalRays, [64])` in original.
  */
 
-import { CASCADE_DIMS, type CascadeDim } from './cascadePyramid.js';
+import { CASCADE_DIMS, validateCascadeDims, type CascadeDim } from './cascadePyramid.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
 
@@ -296,7 +296,7 @@ export class RCDispatcher {
   private readonly _cascadeDims: readonly CascadeDim[];
 
   constructor(cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
-    this._cascadeDims = cascadeDims;
+    this._cascadeDims = validateCascadeDims(cascadeDims, 'RCDispatcher cascadeDims');
   }
 
   get lastError(): Error | null {

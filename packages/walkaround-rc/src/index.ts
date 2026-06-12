@@ -10,7 +10,7 @@
 // Calculating Global Illumination."
 
 // Cascade pyramid geometry and raw storage layout.
-export { CASCADE_DIMS, CASCADE_COUNT } from './cascadePyramid.js';
+export { CASCADE_DIMS, CASCADE_COUNT, validateCascadeDims } from './cascadePyramid.js';
 export type { CascadeAABB, CascadeDim } from './cascadePyramid.js';
 export { allocateCascades, disposeCascades } from './cascadeBuffers.js';
 export type { CascadeBuffers } from './cascadeBuffers.js';

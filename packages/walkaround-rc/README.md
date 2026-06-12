@@ -27,6 +27,8 @@ arc for the emitter-NEE fix; two-scene RC acceptance gate
 - `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
   sizes. Hosts can override per-engine via
   `HybridEngineOptions.cascadeDims: readonly CascadeDim[]`.
+- `validateCascadeDims` — runtime guard for custom cascade overrides (positive
+  probe grids, square ray counts, 2x ray-grid steps, valid intervals).
 - `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` — raw WGSL strings for host
   inspection or headless WGSL-compile testing.
 - `computeOctahedralSolidAngles` — pure CPU helper used by cascade-merge math.

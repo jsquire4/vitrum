@@ -1,4 +1,9 @@
-import { CASCADE_DIMS, type CascadeAABB, type CascadeDim } from './cascadePyramid.js';
+import {
+  CASCADE_DIMS,
+  validateCascadeDims,
+  type CascadeAABB,
+  type CascadeDim,
+} from './cascadePyramid.js';
 
 export interface CascadeBuffers {
   /** Cascade dimensions used for allocation. */
@@ -28,6 +33,7 @@ export function allocateCascades(
   bounds: CascadeAABB,
   dims: readonly CascadeDim[] = CASCADE_DIMS,
 ): CascadeBuffers {
+  validateCascadeDims(dims, 'allocateCascades cascadeDims');
   const sx = Math.max(bounds.max[0] - bounds.min[0], 1e-6);
   const sy = Math.max(bounds.max[1] - bounds.min[1], 1e-6);
   const sz = Math.max(bounds.max[2] - bounds.min[2], 1e-6);
@@ -41,4 +47,3 @@ export function allocateCascades(
 export function disposeCascades(b: CascadeBuffers): void {
   b.cascades.length = 0;
 }
-

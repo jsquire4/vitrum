@@ -18,6 +18,7 @@ import {
   CASCADE_COUNT,
   RCDispatcher,
   allocateCascades,
+  validateCascadeDims,
   type CascadeDim,
 } from '../src/index.js';
 
@@ -72,5 +73,28 @@ describe('cascadeDims override (B3b)', () => {
     // Default constructor still works.
     const defaultDispatcher = new RCDispatcher();
     expect(defaultDispatcher).toBeInstanceOf(RCDispatcher);
+  });
+
+  it('validates cascadeDims before allocation or dispatch setup', () => {
+    const validSingle: CascadeDim[] = [
+      { probes: [2, 2, 2], rays: 16, intervalNear: 0, intervalFar: 4 },
+    ];
+    expect(validateCascadeDims(validSingle)).toBe(validSingle);
+    expect(() => allocateCascades(TINY_BOUNDS, validSingle)).not.toThrow();
+
+    expect(() => new RCDispatcher([])).toThrow(/at least one cascade/);
+    expect(() => new RCDispatcher([
+      { probes: [0, 2, 2], rays: 16, intervalNear: 0, intervalFar: 4 },
+    ])).toThrow(/probes\[0\]/);
+    expect(() => new RCDispatcher([
+      { probes: [2, 2, 2], rays: 18, intervalNear: 0, intervalFar: 4 },
+    ])).toThrow(/perfect square/);
+    expect(() => new RCDispatcher([
+      { probes: [2, 2, 2], rays: 16, intervalNear: 0, intervalFar: 4 },
+      { probes: [1, 1, 1], rays: 36, intervalNear: 4, intervalFar: 8 },
+    ])).toThrow(/double the previous cascade ray-grid width/);
+    expect(() => new RCDispatcher([
+      { probes: [2, 2, 2], rays: 16, intervalNear: 4, intervalFar: 4 },
+    ])).toThrow(/interval/);
   });
 });

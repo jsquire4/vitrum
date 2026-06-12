@@ -1048,6 +1048,11 @@ Do not carry these as open gaps unless the code regresses again.
   the 2026-06-12 Wave 3 fix. `SceneBvh.updateFromCore()` now uses
   `fingerprintBuffersExact()` for correctness-sensitive rebuild skips, while the
   sampled helper remains available only for versioning/upload heuristics.
+- RC cascade-dimension validation and hybrid bounds-refit stale merge uniforms:
+  stale after the 2026-06-12 Wave 4 fix. `validateCascadeDims()` enforces the
+  square/2x ray-grid contract before allocation/dispatch, and
+  `RCSubsystem.refitCascadeBounds()` invalidates dispatcher bindings when bounds
+  change so merge uniforms rebuild with fresh cascade geometry.
 - pt-webgl2 vertex color / secondary UV blanket gaps: stale after the
   2026-06-12 vertex-color wave. Current shader and attribute paths consume
   secondary UVs, and `COLOR_0` now threads from glTF/core primitives into

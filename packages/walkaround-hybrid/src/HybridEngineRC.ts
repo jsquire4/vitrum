@@ -29,7 +29,12 @@
  */
 
 import type { MaterialSpec, Scene } from '@vitrum/core';
-import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
+import {
+  RCDispatcher,
+  CASCADE_DIMS,
+  validateCascadeDims,
+  type CascadeDim,
+} from '@vitrum/walkaround-rc';
 import type { DDGILight } from './ddgi/types.js';
 import {
   buildRCSceneBVHFromCore,
@@ -102,6 +107,13 @@ interface RCFrameInputs {
 // packRCParams, packRCLights, and all layout constants are now in rc/packingHelpers.ts
 // and re-exported above (D2.6). Internal usages below continue via the local imports.
 
+function sameVec3(
+  a: readonly [number, number, number] | null,
+  b: readonly [number, number, number],
+): boolean {
+  return a != null && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
@@ -146,7 +158,7 @@ export class RCSubsystem implements PipelineSubsystem {
 
   constructor(device: GPUDevice, cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
     this._device = device;
-    this._cascadeDims = cascadeDims;
+    this._cascadeDims = validateCascadeDims(cascadeDims, 'RCSubsystem cascadeDims');
   }
 
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
@@ -170,12 +182,20 @@ export class RCSubsystem implements PipelineSubsystem {
     boundsMax: readonly [number, number, number],
   ): void {
     if (!this._cascadeBufs) return;
-    this._probeOriginWorld = [boundsMin[0], boundsMin[1], boundsMin[2]];
-    this._roomSize = [
+    const nextOrigin: [number, number, number] = [boundsMin[0], boundsMin[1], boundsMin[2]];
+    const nextSize: [number, number, number] = [
       Math.max(boundsMax[0] - boundsMin[0], 1e-6),
       Math.max(boundsMax[1] - boundsMin[1], 1e-6),
       Math.max(boundsMax[2] - boundsMin[2], 1e-6),
     ];
+    const changed =
+      !sameVec3(this._probeOriginWorld, nextOrigin) ||
+      !sameVec3(this._roomSize, nextSize);
+    this._probeOriginWorld = nextOrigin;
+    this._roomSize = nextSize;
+    if (changed) {
+      this._dispatcher?.invalidateBindings();
+    }
   }
 
   invalidateBindings(): void {

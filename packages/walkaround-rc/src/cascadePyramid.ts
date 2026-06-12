@@ -45,3 +45,64 @@ export interface CascadeAABB {
   readonly min: readonly [number, number, number];
   readonly max: readonly [number, number, number];
 }
+
+function assertPositiveInteger(value: unknown, path: string): asserts value is number {
+  if (!Number.isInteger(value) || (value as number) <= 0) {
+    throw new Error(`${path} must be a positive integer; received ${String(value)}`);
+  }
+}
+
+function assertFiniteNumber(value: unknown, path: string): asserts value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${path} must be a finite number; received ${String(value)}`);
+  }
+}
+
+/**
+ * Validate cascade dimensions before allocating buffers or compiling dispatch
+ * state. The merge shader assumes each cascade's ray grid is square and each
+ * higher cascade doubles the lower cascade's ray-grid width.
+ */
+export function validateCascadeDims(
+  dims: readonly CascadeDim[],
+  label = 'cascadeDims',
+): readonly CascadeDim[] {
+  if (!Array.isArray(dims) || dims.length === 0) {
+    throw new Error(`${label} must contain at least one cascade`);
+  }
+
+  let previousRayGrid = 0;
+  for (let i = 0; i < dims.length; i += 1) {
+    const dim = dims[i];
+    if (dim == null || !Array.isArray(dim.probes) || dim.probes.length !== 3) {
+      throw new Error(`${label}[${i}].probes must be a [x, y, z] tuple`);
+    }
+    assertPositiveInteger(dim.probes[0], `${label}[${i}].probes[0]`);
+    assertPositiveInteger(dim.probes[1], `${label}[${i}].probes[1]`);
+    assertPositiveInteger(dim.probes[2], `${label}[${i}].probes[2]`);
+    assertPositiveInteger(dim.rays, `${label}[${i}].rays`);
+
+    const rayGrid = Math.sqrt(dim.rays);
+    if (!Number.isInteger(rayGrid)) {
+      throw new Error(`${label}[${i}].rays must be a perfect square; received ${dim.rays}`);
+    }
+    if (i > 0 && rayGrid !== previousRayGrid * 2) {
+      throw new Error(
+        `${label}[${i}].rays must double the previous cascade ray-grid width; ` +
+        `sqrt(rays)=${rayGrid}, expected ${previousRayGrid * 2}`,
+      );
+    }
+    previousRayGrid = rayGrid;
+
+    assertFiniteNumber(dim.intervalNear, `${label}[${i}].intervalNear`);
+    assertFiniteNumber(dim.intervalFar, `${label}[${i}].intervalFar`);
+    if (dim.intervalNear < 0 || dim.intervalFar <= dim.intervalNear) {
+      throw new Error(
+        `${label}[${i}] interval must satisfy 0 <= intervalNear < intervalFar; ` +
+        `received ${dim.intervalNear}..${dim.intervalFar}`,
+      );
+    }
+  }
+
+  return dims;
+}

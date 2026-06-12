@@ -99,6 +99,10 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     expect(createCallsAfterBuild).toBeGreaterThan(0);
     const dispatcherBefore = (rc as unknown as { _dispatcher: unknown })._dispatcher;
     expect(dispatcherBefore).not.toBeNull();
+    const invalidateSpy = vi.spyOn(
+      dispatcherBefore as { invalidateBindings: () => void },
+      'invalidateBindings',
+    );
 
     // Grab the build-time merged positions mirror and shift every vertex +5 X
     // (simulating a moved instance), then refit.
@@ -118,6 +122,7 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     expect(createBuffer.mock.calls.length).toBe(createCallsAfterBuild);
     // Dispatcher is the SAME instance (not recreated).
     expect((rc as unknown as { _dispatcher: unknown })._dispatcher).toBe(dispatcherBefore);
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
 
     // Cascade probe bounds updated to the moved AABB.
     const geo = rc.getCascadeGeometry();
