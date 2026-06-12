@@ -35,6 +35,22 @@ function minimalScene(material: number | Partial<MaterialSpec> = 0.5): Scene {
   };
 }
 
+function equalLengthEditedVertexScene(y: number): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, y, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function f32FromBits(bits: number): number {
   const raw = new Uint32Array([bits >>> 0]);
   return new Float32Array(raw.buffer)[0] ?? 0;
@@ -150,6 +166,18 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     bvh.updateFromCore(minimalScene(0.9));
     // Fingerprint differs → rebuild.
     expect(bvh.buffers).not.toBe(first);
+  });
+
+  it('H24: no tag → equal-length vertex edit triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(equalLengthEditedVertexScene(1));
+    const first = bvh.buffers;
+    expect(first).not.toBeNull();
+
+    bvh.updateFromCore(equalLengthEditedVertexScene(0.25));
+
+    expect(bvh.buffers).not.toBe(first);
+    expect(bvh.buffers?.positions[9]).toBeCloseTo(0.25, 6);
   });
 
   it('no tag → large unsampled-byte geometry edit triggers rebuild', () => {

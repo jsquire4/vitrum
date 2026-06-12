@@ -563,7 +563,7 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 | Mesh-area `color`/`intensity` | `restir/bvhSceneHelpers.ts:316-318` | Ignored (H23) | Multiply Le |
 | Emitter `castShadow` | DDGI/ReSTIR paths | unsupported | Pack flag; gate in `shadingTerms.wgsl.ts` |
 | `primitiveCastShadow` GI-side | DDGI, ReSTIR-GI, RC | approximate | Extend `bvhCastShadowMask` to GI rays (`shared-bvh`, `probeUpdateRays.wgsl.ts`, `risGi.wgsl.ts`) |
-| `updateLighting` sun | `HybridEngine.ts:1524+` | DDGI sun not re-synced (items_to_fix) | Call `_ddgi.setLights(orientDdgiSunLights(...))` on `updateLighting` |
+| `updateLighting` sun | `HybridEngine.ts`; `HybridEngineDdgiSync.ts` | ✅ SOURCE-VERIFIED STALE: `updateLighting({ primaryLightDir })` re-syncs DDGI sun lights through `_syncDdgiLightsFromCoreScene()` or `orientDdgiSunLights(...)`; `primaryLightIntensity` also updates the DDGI sun multiplier with scene-directional single-count handling. | Keep mutation-matrix coverage |
 | `procedural-sky` | `resolveHybridEnvironment.ts` | Scalar approx | Either bake Preetham to probe rays or keep `approximate` + planner never recommends WA for procedural-sky assets |
 | RC sun RGB | `HybridEngineFrameOrchestrator.ts`; `hybridEngineFrameOrchestrator.test.ts` | ✅ CODE CLOSED: RC uses the scene directional emitter's RGB × intensity when present, with the legacy grey `primaryLightIntensity` fallback only when no scene directional exists. | Keep regression test with RC enabled |
 
@@ -624,6 +624,7 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 | H33 materialSig Beer-Lambert | `shared-bvh/src/sceneBvh.ts`; `shared-bvh/src/__tests__/sceneBvhVersionTag.test.ts` | ✅ CLOSED (Wave 2): `materialSetHashFloats` now includes packed `attenuationDistance` (with the canonical no-attenuation sentinel) and `thickness`, so no-tag `SceneBvh.updateFromCore()` rebuilds when only Beer-Lambert distance/depth changes. Regression tests pin attenuationDistance-only and thickness-only edits. |
 | H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
 | Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
+| H24 SceneBvh equal-length edits | `shared-bvh/src/sceneBvh.ts`; `sceneBvhVersionTag.test.ts` | ✅ CODE CLOSED: untagged `SceneBvh.updateFromCore()` uses exact buffer fingerprints, and the test pins equal-length vertex edits plus large unsampled-byte edits. |
 | H24 material resolver | `restir/bvhCore.ts`; `restir/__tests__/bvhCoreMaterialResolver.test.ts` | ✅ CODE CLOSED: duplicate mesh-like primitive ids now throw before TLAS packing can reuse the first material slot, and unknown resolver calls throw instead of falling back to material 0. |
 | H24 GPU skinning host-resource skip | `skin/GpuSkinningSubsystem.ts`; `gpuSkinningBindRouting.test.ts` | ✅ CODE CLOSED: missing GPU skinning position/normal buffers or mesh ranges now CPU-skin every skinned mesh instead of silently skipping. Count-only-cache risk is source-verified stale because cached bind groups key on live shared buffer identity. |
 | H24 NRC training diagnostics | `pipeline/WalkaroundGPUPipeline.ts`; `pipeline/__tests__/nrcTrainingDiagnostics.test.ts` | ✅ CODE CLOSED: `trainFromRecords()` rejections emit deduped non-fatal `EngineError`s through the engine error channel while live, and remain suppressed after dispose. |

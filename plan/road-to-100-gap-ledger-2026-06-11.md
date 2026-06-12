@@ -1105,7 +1105,14 @@ Do not carry these as open gaps unless the code regresses again.
 - shared-bvh sampled fingerprint in the `SceneBvh` rebuild-skip path: stale after
   the 2026-06-12 Wave 3 fix. `SceneBvh.updateFromCore()` now uses
   `fingerprintBuffersExact()` for correctness-sensitive rebuild skips, while the
-  sampled helper remains available only for versioning/upload heuristics.
+  sampled helper remains available only for versioning/upload heuristics. The
+  shared-bvh test suite now pins equal-length vertex edits as well as the large
+  unsampled-byte edit that originally motivated the exact fingerprint.
+- walkaround `updateLighting({ primaryLightDir })` does not re-sync DDGI sun:
+  stale. `HybridEngine.updateLighting()` calls `_syncDdgiLightsFromCoreScene()`
+  for core scenes and `orientDdgiSunLights(...)` for ctor-light-only scenes;
+  primary-light intensity updates also call `setSunIntensityMultiplier()` with
+  scene-directional single-count handling.
 - RC cascade-dimension validation and hybrid bounds-refit stale merge uniforms:
   stale after the 2026-06-12 Wave 4 fix. `validateCascadeDims()` enforces the
   square/2x ray-grid contract before allocation/dispatch, and
