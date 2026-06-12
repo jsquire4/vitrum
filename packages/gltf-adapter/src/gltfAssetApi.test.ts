@@ -272,6 +272,85 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       issue.support === 'unsupported',
     )).toBe(true);
   });
+
+  it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      extensionsUsed: ['EXT_unknown_feature', 'KHR_texture_basisu'],
+      cameras: [{ type: 'perspective' }],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          mode: 1,
+          targets: [{ TANGENT: 1 }],
+          material: 0,
+        }],
+      }],
+      materials: [{
+        doubleSided: true,
+        extensions: {
+          KHR_materials_pbrSpecularGlossiness: {
+            specularGlossinessTexture: { index: 0 },
+          },
+        },
+      }],
+    });
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(compatibility.issues.length).toBeGreaterThan(0);
+    expect(compatibility.issues.every((issue) => typeof issue.path === 'string' && issue.path.length > 0)).toBe(true);
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'EXT_unknown_feature',
+        support: 'unsupported',
+        path: 'extensionsUsed[0]',
+      }),
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_texture_basisu',
+        support: 'requires-hook',
+        path: 'extensionsUsed[1]',
+      }),
+      expect.objectContaining({
+        category: 'scene',
+        name: 'cameras',
+        support: 'unsupported',
+        path: 'cameras[0]',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'mode:1',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].mode',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'morphTargetTangents',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].targets[0].TANGENT',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'doubleSided',
+        support: 'approximate',
+        path: 'materials[0].doubleSided',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_pbrSpecularGlossiness',
+        support: 'approximate',
+        path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
+        support: 'approximate',
+        path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      }),
+    ]));
+  });
 });
 
 describe('loadGltfForEngine', () => {

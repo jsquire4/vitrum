@@ -34,6 +34,7 @@ export interface GltfExtensionReport {
   readonly requiresHook: readonly string[];
   readonly unsupportedOptional: readonly string[];
   readonly unsupportedRequired: readonly string[];
+  readonly sourcePaths: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface GltfPrimitiveFeatureReport {
@@ -50,6 +51,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasSkins: boolean;
   readonly hasVertexColors: boolean;
   readonly hasUv1: boolean;
+  readonly issuePaths: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface GltfMaterialFeatureReport {
@@ -65,6 +67,7 @@ export interface GltfMaterialFeatureReport {
   readonly specularGlossinessMaterialCount: number;
   readonly specularGlossinessTextureCount: number;
   readonly doubleSidedCount: number;
+  readonly issuePaths: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface GltfAnimationFeatureReport {
@@ -79,6 +82,7 @@ export interface GltfSceneGraphFeatureReport {
   readonly scenes: number;
   readonly nodes: number;
   readonly cameras: number;
+  readonly cameraPaths: readonly string[];
   readonly punctualLights: number;
 }
 
@@ -102,10 +106,10 @@ export interface GltfFeatureReport {
 }
 
 export interface GltfCompatibilityIssue {
-  readonly category: 'extension' | 'primitive' | 'material';
+  readonly category: 'extension' | 'primitive' | 'material' | 'scene';
   readonly name: string;
   readonly support: BackendSupportMode | 'requires-hook' | 'unknown';
-  readonly path?: string;
+  readonly path: string;
   readonly message: string;
 }
 
@@ -156,6 +160,33 @@ const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const UNSUPPORTED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
 
+type SourcePathMap = Map<string, string[]>;
+
+function addSourcePath(paths: SourcePathMap, key: string, path: string): void {
+  const current = paths.get(key);
+  if (current !== undefined) {
+    if (!current.includes(path)) current.push(path);
+    return;
+  }
+  paths.set(key, [path]);
+}
+
+function sourcePathRecord(paths: SourcePathMap): Readonly<Record<string, readonly string[]>> {
+  return Object.fromEntries(
+    [...paths.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, values]) => [key, values.slice().sort()]),
+  );
+}
+
+function firstSourcePath(
+  paths: Readonly<Record<string, readonly string[]>>,
+  key: string,
+  fallback: string,
+): string {
+  return paths[key]?.[0] ?? fallback;
+}
+
 export function analyzeGltfAsset(gltf: GltfJson): GltfFeatureReport {
   const extensions = analyzeExtensions(gltf);
   const resources = analyzeResources(gltf);
@@ -176,6 +207,7 @@ export function analyzeGltfAsset(gltf: GltfJson): GltfFeatureReport {
       scenes: gltf.scenes?.length ?? 0,
       nodes: gltf.nodes?.length ?? 0,
       cameras: gltf.cameras?.length ?? 0,
+      cameraPaths: (gltf.cameras ?? []).map((_, index) => `cameras[${index}]`),
       punctualLights,
     },
   };
@@ -209,6 +241,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'extension',
       name: ext,
       support: 'unsupported',
+      path: firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsRequired'),
       message: `Required glTF extension "${ext}" is not supported by the adapter.`,
     });
   }
@@ -217,6 +250,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'extension',
       name: ext,
       support: 'requires-hook',
+      path: firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsUsed'),
       message: `glTF extension "${ext}" requires host-supplied decode support.`,
     });
   }
@@ -225,6 +259,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'extension',
       name: ext,
       support: 'unsupported',
+      path: firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsUsed'),
       message: `Optional glTF extension "${ext}" has no Vitrum mapping today.`,
     });
   }
@@ -236,6 +271,7 @@ export function evaluateGltfBackendCompatibility(
         category: 'primitive',
         name: kind,
         support,
+        path: firstSourcePath(report.primitives.issuePaths, `kind:${kind}`, 'meshes'),
         message: `Backend ${backend} reports primitive kind "${kind}" as ${support}.`,
       });
     } else {
@@ -248,6 +284,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'primitive',
       name: `mode:${mode}`,
       support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, `mode:${mode}`, 'meshes'),
       message: `glTF primitive mode ${mode} has no core primitive representation.`,
     });
   }
@@ -257,7 +294,18 @@ export function evaluateGltfBackendCompatibility(
       category: 'primitive',
       name: 'morphTargetTangents',
       support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTangents', 'meshes'),
       message: 'glTF morph-target TANGENT deltas have no core primitive field and are ignored by the adapter.',
+    });
+  }
+
+  if (report.sceneGraph.cameras > 0) {
+    addIssue({
+      category: 'scene',
+      name: 'cameras',
+      support: 'unsupported',
+      path: report.sceneGraph.cameraPaths[0] ?? 'cameras',
+      message: 'glTF cameras are reported for host inspection but are not imported into the core Scene contract.',
     });
   }
 
@@ -266,6 +314,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'material',
       name: 'KHR_materials_pbrSpecularGlossiness',
       support: 'approximate',
+      path: firstSourcePath(report.materials.issuePaths, 'extension:KHR_materials_pbrSpecularGlossiness', 'materials'),
       message:
         'Archived specular-glossiness materials are converted approximately to metallic-roughness plus specular fields.',
     });
@@ -276,9 +325,26 @@ export function evaluateGltfBackendCompatibility(
       category: 'material',
       name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
       support: 'approximate',
+      path: firstSourcePath(
+        report.materials.issuePaths,
+        'specGlossGlossinessAlpha',
+        'materials',
+      ),
       message:
         'Archived specular-glossiness texture RGB is imported as specularColorMap, ' +
         'but glossiness-in-alpha is not baked into roughnessMap; scalar glossinessFactor drives roughness.',
+    });
+  }
+
+  if (report.materials.doubleSidedCount > 0) {
+    addIssue({
+      category: 'material',
+      name: 'doubleSided',
+      support: 'approximate',
+      path: firstSourcePath(report.materials.issuePaths, 'doubleSided', 'materials'),
+      message:
+        'glTF doubleSided is preserved in MaterialSpec.extensions for host inspection, ' +
+        'but Vitrum has no first-class double-sided/backface-normal contract yet.',
     });
   }
 
@@ -291,6 +357,7 @@ export function evaluateGltfBackendCompatibility(
         category: 'material',
         name: String(field),
         support,
+        path: firstSourcePath(report.materials.issuePaths, `field:${String(field)}`, 'materials'),
         message: `Backend ${backend} reports material field "${String(field)}" as ${support}.`,
       });
     }
@@ -342,7 +409,10 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
   const used = sorted(gltf.extensionsUsed ?? []);
   const required = sorted(gltf.extensionsRequired ?? []);
   const all = new Set([...used, ...required]);
-  collectNestedExtensionNames(gltf, all);
+  const sourcePaths: SourcePathMap = new Map();
+  (gltf.extensionsUsed ?? []).forEach((ext, index) => addSourcePath(sourcePaths, ext, `extensionsUsed[${index}]`));
+  (gltf.extensionsRequired ?? []).forEach((ext, index) => addSourcePath(sourcePaths, ext, `extensionsRequired[${index}]`));
+  collectNestedExtensionNames(gltf, all, sourcePaths);
 
   const supported: string[] = [];
   const requiresHook: string[] = [];
@@ -368,6 +438,7 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
     requiresHook: sorted(requiresHook),
     unsupportedOptional: sorted(unsupportedOptional),
     unsupportedRequired: sorted(unsupportedRequired),
+    sourcePaths: sourcePathRecord(sourcePaths),
   };
 }
 
@@ -399,6 +470,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   const byMode = new Map<string, number>();
   const unsupportedModes = new Set<string>();
   const attributeSemantics = new Set<string>();
+  const issuePaths: SourcePathMap = new Map();
   let total = 0;
   let usesDraco = false;
   let usesMeshopt = false;
@@ -409,31 +481,44 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasUv1 = false;
   let hasJointAttrs = false;
 
-  for (const mesh of gltf.meshes ?? []) {
-    for (const primitive of mesh.primitives ?? []) {
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
+      const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
       total += 1;
+      addSourcePath(issuePaths, 'kind:mesh', primitivePath);
       const mode = primitive.mode ?? 4;
       const modeKey = String(mode);
       byMode.set(modeKey, (byMode.get(modeKey) ?? 0) + 1);
-      if (UNSUPPORTED_PRIMITIVE_MODES.has(mode)) unsupportedModes.add(modeKey);
+      if (UNSUPPORTED_PRIMITIVE_MODES.has(mode)) {
+        unsupportedModes.add(modeKey);
+        addSourcePath(issuePaths, `mode:${modeKey}`, `${primitivePath}.mode`);
+      }
       for (const semantic of Object.keys(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
         if (semantic === 'TANGENT') hasTangents = true;
         if (semantic === 'COLOR_0') hasVertexColors = true;
         if (semantic === 'TEXCOORD_1') hasUv1 = true;
-        if (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0') hasJointAttrs = true;
+        if (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0') {
+          hasJointAttrs = true;
+          addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.${semantic}`);
+        }
       }
       const ext = primitive.extensions ?? {};
       if (ext['KHR_draco_mesh_compression']) usesDraco = true;
       if (Object.keys(ext).includes('EXT_meshopt_compression')) usesMeshopt = true;
       if ((primitive.targets?.length ?? 0) > 0) {
         hasMorphTargets = true;
-        if (primitive.targets?.some((target) => target['TANGENT'] !== undefined)) {
-          hasMorphTargetTangents = true;
+        addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.targets`);
+        for (const [targetIndex, target] of (primitive.targets ?? []).entries()) {
+          if (target['TANGENT'] !== undefined) {
+            hasMorphTargetTangents = true;
+            addSourcePath(issuePaths, 'morphTargetTangents', `${primitivePath}.targets[${targetIndex}].TANGENT`);
+          }
         }
       }
     }
   }
+  (gltf.skins ?? []).forEach((_, index) => addSourcePath(issuePaths, 'kind:skinned-mesh', `skins[${index}]`));
   for (const bv of gltf.bufferViews ?? []) {
     if (bv.extensions?.['EXT_meshopt_compression']) usesMeshopt = true;
   }
@@ -455,6 +540,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasSkins,
     hasVertexColors,
     hasUv1,
+    issuePaths: sourcePathRecord(issuePaths),
   };
 }
 
@@ -465,130 +551,154 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
   const uvSets = new Set<number>();
+  const issuePaths: SourcePathMap = new Map();
   let textureTransformCount = 0;
   let volumeThicknessTextureCount = 0;
   let specularGlossinessMaterialCount = 0;
   let specularGlossinessTextureCount = 0;
   let doubleSidedCount = 0;
 
-  const addField = (field: keyof MaterialSpec): void => {
+  const addField = (field: keyof MaterialSpec, path: string): void => {
     fields.add(field);
+    addSourcePath(issuePaths, `field:${String(field)}`, path);
   };
-  const addTexture = (field: keyof MaterialSpec, info?: GltfTextureInfo): void => {
+  const addTexture = (field: keyof MaterialSpec, info: GltfTextureInfo | undefined, path: string): void => {
     if (info == null) return;
     fields.add(field);
     textureFields.add(field);
+    addSourcePath(issuePaths, `field:${String(field)}`, path);
     uvSets.add(textureInfoUvSet(info));
     if (info.extensions?.KHR_texture_transform) textureTransformCount += 1;
   };
 
-  for (const mat of materials) {
+  for (const [materialIndex, mat] of materials.entries()) {
+    const matPath = `materials[${materialIndex}]`;
     const pbr = mat.pbrMetallicRoughness;
     if (pbr?.baseColorFactor) {
-      addField('baseColor');
-      if ((pbr.baseColorFactor[3] ?? 1) < 1) addField('opacity');
+      addField('baseColor', `${matPath}.pbrMetallicRoughness.baseColorFactor`);
+      if ((pbr.baseColorFactor[3] ?? 1) < 1) {
+        addField('opacity', `${matPath}.pbrMetallicRoughness.baseColorFactor[3]`);
+      }
     }
-    if (pbr?.metallicFactor !== undefined) addField('metallic');
-    if (pbr?.roughnessFactor !== undefined) addField('roughness');
-    addTexture('baseColorMap', pbr?.baseColorTexture);
+    if (pbr?.metallicFactor !== undefined) addField('metallic', `${matPath}.pbrMetallicRoughness.metallicFactor`);
+    if (pbr?.roughnessFactor !== undefined) addField('roughness', `${matPath}.pbrMetallicRoughness.roughnessFactor`);
+    addTexture('baseColorMap', pbr?.baseColorTexture, `${matPath}.pbrMetallicRoughness.baseColorTexture`);
     if (pbr?.metallicRoughnessTexture) {
-      addTexture('roughnessMap', pbr.metallicRoughnessTexture);
-      addTexture('metallicMap', pbr.metallicRoughnessTexture);
+      addTexture('roughnessMap', pbr.metallicRoughnessTexture, `${matPath}.pbrMetallicRoughness.metallicRoughnessTexture`);
+      addTexture('metallicMap', pbr.metallicRoughnessTexture, `${matPath}.pbrMetallicRoughness.metallicRoughnessTexture`);
     }
-    addTexture('normalMap', mat.normalTexture);
-    if (mat.normalTexture?.scale !== undefined) addField('normalScale');
-    addTexture('aoMap', mat.occlusionTexture);
-    if (mat.occlusionTexture?.strength !== undefined) addField('aoMapIntensity');
-    if (mat.emissiveFactor) addField('emissive');
-    addTexture('emissiveMap', mat.emissiveTexture);
+    addTexture('normalMap', mat.normalTexture, `${matPath}.normalTexture`);
+    if (mat.normalTexture?.scale !== undefined) addField('normalScale', `${matPath}.normalTexture.scale`);
+    addTexture('aoMap', mat.occlusionTexture, `${matPath}.occlusionTexture`);
+    if (mat.occlusionTexture?.strength !== undefined) addField('aoMapIntensity', `${matPath}.occlusionTexture.strength`);
+    if (mat.emissiveFactor) addField('emissive', `${matPath}.emissiveFactor`);
+    addTexture('emissiveMap', mat.emissiveTexture, `${matPath}.emissiveTexture`);
     if (mat.alphaMode !== undefined) {
-      addField('alphaMode');
+      addField('alphaMode', `${matPath}.alphaMode`);
       alphaModes.add(mat.alphaMode);
     }
-    if (mat.alphaCutoff !== undefined) addField('alphaCutoff');
-    if (mat.doubleSided) doubleSidedCount += 1;
+    if (mat.alphaCutoff !== undefined) addField('alphaCutoff', `${matPath}.alphaCutoff`);
+    if (mat.doubleSided) {
+      doubleSidedCount += 1;
+      addSourcePath(issuePaths, 'doubleSided', `${matPath}.doubleSided`);
+    }
 
     const ext = mat.extensions ?? {};
     for (const key of Object.keys(ext)) {
       extensions.add(key);
+      addSourcePath(issuePaths, `extension:${key}`, `${matPath}.extensions.${key}`);
       if (COMMON_UNSUPPORTED_EXTENSIONS.has(key)) unsupportedKnownExtensions.add(key);
     }
-    if (ext.KHR_materials_unlit) addField('shadingModel');
+    if (ext.KHR_materials_unlit) addField('shadingModel', `${matPath}.extensions.KHR_materials_unlit`);
     const transmission = ext.KHR_materials_transmission;
     if (transmission) {
-      if (transmission.transmissionFactor !== undefined) addField('transmission');
-      addTexture('transmissionMap', transmission.transmissionTexture);
+      if (transmission.transmissionFactor !== undefined) {
+        addField('transmission', `${matPath}.extensions.KHR_materials_transmission.transmissionFactor`);
+      }
+      addTexture('transmissionMap', transmission.transmissionTexture, `${matPath}.extensions.KHR_materials_transmission.transmissionTexture`);
     }
     const ior = ext.KHR_materials_ior;
-    if (ior?.ior !== undefined) addField('ior');
+    if (ior?.ior !== undefined) addField('ior', `${matPath}.extensions.KHR_materials_ior.ior`);
     const volume = ext.KHR_materials_volume;
     if (volume) {
-      if (volume.thicknessFactor !== undefined) addField('thickness');
-      addTexture('thicknessMap', volume.thicknessTexture);
-      if (volume.attenuationDistance !== undefined) addField('attenuationDistance');
-      if (volume.attenuationColor !== undefined) addField('attenuationColor');
+      if (volume.thicknessFactor !== undefined) addField('thickness', `${matPath}.extensions.KHR_materials_volume.thicknessFactor`);
+      addTexture('thicknessMap', volume.thicknessTexture, `${matPath}.extensions.KHR_materials_volume.thicknessTexture`);
+      if (volume.attenuationDistance !== undefined) {
+        addField('attenuationDistance', `${matPath}.extensions.KHR_materials_volume.attenuationDistance`);
+      }
+      if (volume.attenuationColor !== undefined) {
+        addField('attenuationColor', `${matPath}.extensions.KHR_materials_volume.attenuationColor`);
+      }
       if (volume.thicknessTexture) volumeThicknessTextureCount += 1;
     }
     const specular = ext.KHR_materials_specular;
     if (specular) {
-      if (specular.specularFactor !== undefined) addField('specularIntensity');
-      if (specular.specularColorFactor !== undefined) addField('specularColor');
-      addTexture('specularIntensityMap', specular.specularTexture);
-      addTexture('specularColorMap', specular.specularColorTexture);
+      if (specular.specularFactor !== undefined) addField('specularIntensity', `${matPath}.extensions.KHR_materials_specular.specularFactor`);
+      if (specular.specularColorFactor !== undefined) addField('specularColor', `${matPath}.extensions.KHR_materials_specular.specularColorFactor`);
+      addTexture('specularIntensityMap', specular.specularTexture, `${matPath}.extensions.KHR_materials_specular.specularTexture`);
+      addTexture('specularColorMap', specular.specularColorTexture, `${matPath}.extensions.KHR_materials_specular.specularColorTexture`);
     }
     const sheen = ext.KHR_materials_sheen;
     if (sheen) {
-      addField('sheen');
-      if (sheen.sheenColorFactor !== undefined) addField('sheenColor');
-      if (sheen.sheenRoughnessFactor !== undefined) addField('sheenRoughness');
-      addTexture('sheenColorMap', sheen.sheenColorTexture);
-      addTexture('sheenRoughnessMap', sheen.sheenRoughnessTexture);
+      addField('sheen', `${matPath}.extensions.KHR_materials_sheen`);
+      if (sheen.sheenColorFactor !== undefined) addField('sheenColor', `${matPath}.extensions.KHR_materials_sheen.sheenColorFactor`);
+      if (sheen.sheenRoughnessFactor !== undefined) addField('sheenRoughness', `${matPath}.extensions.KHR_materials_sheen.sheenRoughnessFactor`);
+      addTexture('sheenColorMap', sheen.sheenColorTexture, `${matPath}.extensions.KHR_materials_sheen.sheenColorTexture`);
+      addTexture('sheenRoughnessMap', sheen.sheenRoughnessTexture, `${matPath}.extensions.KHR_materials_sheen.sheenRoughnessTexture`);
     }
     const clearcoat = ext.KHR_materials_clearcoat;
     if (clearcoat) {
-      if (clearcoat.clearcoatFactor !== undefined) addField('clearcoat');
-      if (clearcoat.clearcoatRoughnessFactor !== undefined) addField('clearcoatRoughness');
-      addTexture('clearcoatMap', clearcoat.clearcoatTexture);
-      addTexture('clearcoatRoughnessMap', clearcoat.clearcoatRoughnessTexture);
-      addTexture('clearcoatNormalMap', clearcoat.clearcoatNormalTexture);
-      if (clearcoat.clearcoatNormalTexture?.scale !== undefined) addField('clearcoatNormalScale');
+      if (clearcoat.clearcoatFactor !== undefined) addField('clearcoat', `${matPath}.extensions.KHR_materials_clearcoat.clearcoatFactor`);
+      if (clearcoat.clearcoatRoughnessFactor !== undefined) addField('clearcoatRoughness', `${matPath}.extensions.KHR_materials_clearcoat.clearcoatRoughnessFactor`);
+      addTexture('clearcoatMap', clearcoat.clearcoatTexture, `${matPath}.extensions.KHR_materials_clearcoat.clearcoatTexture`);
+      addTexture('clearcoatRoughnessMap', clearcoat.clearcoatRoughnessTexture, `${matPath}.extensions.KHR_materials_clearcoat.clearcoatRoughnessTexture`);
+      addTexture('clearcoatNormalMap', clearcoat.clearcoatNormalTexture, `${matPath}.extensions.KHR_materials_clearcoat.clearcoatNormalTexture`);
+      if (clearcoat.clearcoatNormalTexture?.scale !== undefined) {
+        addField('clearcoatNormalScale', `${matPath}.extensions.KHR_materials_clearcoat.clearcoatNormalTexture.scale`);
+      }
     }
     const iridescence = ext.KHR_materials_iridescence;
     if (iridescence) {
-      if (iridescence.iridescenceFactor !== undefined) addField('iridescence');
-      if (iridescence.iridescenceIor !== undefined) addField('iridescenceIor');
+      if (iridescence.iridescenceFactor !== undefined) addField('iridescence', `${matPath}.extensions.KHR_materials_iridescence.iridescenceFactor`);
+      if (iridescence.iridescenceIor !== undefined) addField('iridescenceIor', `${matPath}.extensions.KHR_materials_iridescence.iridescenceIor`);
       if (
         iridescence.iridescenceThicknessMinimum !== undefined ||
         iridescence.iridescenceThicknessMaximum !== undefined
       ) {
-        addField('iridescenceThicknessRange');
+        addField('iridescenceThicknessRange', `${matPath}.extensions.KHR_materials_iridescence.iridescenceThicknessMinimum`);
       }
-      addTexture('iridescenceMap', iridescence.iridescenceTexture);
-      addTexture('iridescenceThicknessMap', iridescence.iridescenceThicknessTexture);
+      addTexture('iridescenceMap', iridescence.iridescenceTexture, `${matPath}.extensions.KHR_materials_iridescence.iridescenceTexture`);
+      addTexture('iridescenceThicknessMap', iridescence.iridescenceThicknessTexture, `${matPath}.extensions.KHR_materials_iridescence.iridescenceThicknessTexture`);
     }
     const anisotropy = ext.KHR_materials_anisotropy;
     if (anisotropy) {
-      if (anisotropy.anisotropyStrength !== undefined) addField('anisotropy');
-      if (anisotropy.anisotropyRotation !== undefined) addField('anisotropyRotation');
-      addTexture('anisotropyMap', anisotropy.anisotropyTexture);
+      if (anisotropy.anisotropyStrength !== undefined) addField('anisotropy', `${matPath}.extensions.KHR_materials_anisotropy.anisotropyStrength`);
+      if (anisotropy.anisotropyRotation !== undefined) addField('anisotropyRotation', `${matPath}.extensions.KHR_materials_anisotropy.anisotropyRotation`);
+      addTexture('anisotropyMap', anisotropy.anisotropyTexture, `${matPath}.extensions.KHR_materials_anisotropy.anisotropyTexture`);
     }
     const dispersion = ext.KHR_materials_dispersion;
     if (dispersion?.dispersion !== undefined && dispersion.dispersion > 0) {
-      addField('dispersionAbbeNumber');
+      addField('dispersionAbbeNumber', `${matPath}.extensions.KHR_materials_dispersion.dispersion`);
     }
     const emissiveStrength = ext.KHR_materials_emissive_strength;
-    if (emissiveStrength?.emissiveStrength !== undefined) addField('emissiveIntensity');
+    if (emissiveStrength?.emissiveStrength !== undefined) {
+      addField('emissiveIntensity', `${matPath}.extensions.KHR_materials_emissive_strength.emissiveStrength`);
+    }
     const specGloss = ext.KHR_materials_pbrSpecularGlossiness;
     if (specGloss) {
       specularGlossinessMaterialCount += 1;
-      addField('baseColor');
-      addField('roughness');
-      addField('metallic');
-      if (specGloss.diffuseFactor?.[3] !== undefined && specGloss.diffuseFactor[3] < 1) addField('opacity');
-      if (specGloss.specularFactor !== undefined) addField('specularColor');
-      addTexture('baseColorMap', specGloss.diffuseTexture);
-      addTexture('specularColorMap', specGloss.specularGlossinessTexture);
-      if (specGloss.specularGlossinessTexture) specularGlossinessTextureCount += 1;
+      const specGlossPath = `${matPath}.extensions.KHR_materials_pbrSpecularGlossiness`;
+      addField('baseColor', specGloss.diffuseFactor !== undefined ? `${specGlossPath}.diffuseFactor` : specGlossPath);
+      addField('roughness', specGloss.glossinessFactor !== undefined ? `${specGlossPath}.glossinessFactor` : specGlossPath);
+      addField('metallic', specGlossPath);
+      if (specGloss.diffuseFactor?.[3] !== undefined && specGloss.diffuseFactor[3] < 1) addField('opacity', `${specGlossPath}.diffuseFactor[3]`);
+      if (specGloss.specularFactor !== undefined) addField('specularColor', `${specGlossPath}.specularFactor`);
+      addTexture('baseColorMap', specGloss.diffuseTexture, `${specGlossPath}.diffuseTexture`);
+      addTexture('specularColorMap', specGloss.specularGlossinessTexture, `${specGlossPath}.specularGlossinessTexture`);
+      if (specGloss.specularGlossinessTexture) {
+        specularGlossinessTextureCount += 1;
+        addSourcePath(issuePaths, 'specGlossGlossinessAlpha', `${specGlossPath}.specularGlossinessTexture`);
+      }
     }
   }
 
@@ -605,6 +715,7 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
     specularGlossinessMaterialCount,
     specularGlossinessTextureCount,
     doubleSidedCount,
+    issuePaths: sourcePathRecord(issuePaths),
   };
 }
 
@@ -636,18 +747,28 @@ function textureInfoUvSet(info: GltfTextureInfo): number {
   return info.extensions?.KHR_texture_transform?.texCoord ?? info.texCoord ?? 0;
 }
 
-function collectNestedExtensionNames(value: unknown, out: Set<string>): void {
+function collectNestedExtensionNames(
+  value: unknown,
+  out: Set<string>,
+  sourcePaths: SourcePathMap,
+  path = '',
+): void {
   if (value == null || typeof value !== 'object') return;
   if (Array.isArray(value)) {
-    for (const item of value) collectNestedExtensionNames(item, out);
+    value.forEach((item, index) => collectNestedExtensionNames(item, out, sourcePaths, `${path}[${index}]`));
     return;
   }
   const obj = value as Record<string, unknown>;
   const ext = obj['extensions'];
   if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
-    for (const key of Object.keys(ext as Record<string, unknown>)) out.add(key);
+    for (const key of Object.keys(ext as Record<string, unknown>)) {
+      out.add(key);
+      addSourcePath(sourcePaths, key, path === '' ? `extensions.${key}` : `${path}.extensions.${key}`);
+    }
   }
-  for (const nested of Object.values(obj)) collectNestedExtensionNames(nested, out);
+  for (const [key, nested] of Object.entries(obj)) {
+    collectNestedExtensionNames(nested, out, sourcePaths, path === '' ? key : `${path}.${key}`);
+  }
 }
 
 function extractPunctualLightCount(gltf: GltfJson): number {
