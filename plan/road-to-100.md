@@ -804,6 +804,20 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 9. glTF material sweep + behavioral gate fixtures
 10. Ledger/README/fidelity matrix reconciliation
 
+### Active performance track
+
+These are real SOTA/performance gaps, but they do not block the contract claim
+that one predictable API can ingest and route arbitrary glTF assets. Promote
+them to hard 100% blockers only if the Road definition is widened from
+contract-complete to contract-complete plus SOTA throughput/convergence.
+
+1. Low-discrepancy sampling (`LD-SAMPLING-01`): shared Owen-scrambled Sobol or
+   PMJ02 tables, per-dimension assignment audit, blue-noise screen scrambling,
+   pt-webgpu integration, and pt-webgl2 RANDOM_TYPE revival/replacement.
+2. Compressed wide BVH traversal (`WBVH-01`): opt-in CWBVH-style builder,
+   packed node layout, WGSL traversal, CPU brute-force oracle, backend
+   capability flag, and binary-BVH fallback until parity/perf are proven.
+
 ### Execution dependency
 
 ```
@@ -818,24 +832,34 @@ P0 land commit
 ```
 
 Walkaround atlas (3D) and PT material parity (2B) can run in parallel after P0.
+LD-SAMPLING-01 can also run in parallel as a performance-quality track. WBVH-01
+should wait until the current BVH/material mutation contracts are stable enough
+that the wide layout can be proven against the binary-BVH oracle without moving
+targets.
 
 ### Summary
 
 - **Condensed to 5 phases:** land gates → glTF → PT → walkaround → orchestration → proof.
 - **Specificity:** file-level plug-in points, decoder contracts, bind-group footguns, integrator audit matrix, texture atlas architecture.
 - **Gap fill vs 85%:** texture decode bridge, EXT_mesh_gpu_instancing decision, animation×temporal GI, lite-tier rejection for fidelity, PTWG-MAT all paths, walkaround alpha/blending, examples/gltf-viewer, render-based glTF sweep (not analyze-only), `pickBackend` fix, double-sided/vertex-color, tangent generation at import, engine `gltfAsset` passthrough, documentation sync as part of done.
+- **Performance work preserved:** low-discrepancy sampling and compressed wide
+  BVH traversal are tracked as active SOTA/performance work, but not as
+  arbitrary-glTF API contract blockers. Shipped denoiser weights remain
+  post-100/provisioning work.
 
 Walkaround **100%** and arbitrary glTF **100%** are not the same: arbitrary glTF routes rich assets to PT backends via the planner; walkaround 100% still means permanent `unsupported` for spectral/displacement with explicit rejection, not silent gray materials.
 
 ---
 
-## Forward-looking — the post-100% SOTA wave (ADDED 2026-06-12, NOT in campaign scope)
+## Forward-looking — the post-100% SOTA wave (ADDED 2026-06-12)
 
 > Phases 0–6 above deliver **contract-complete**. This section is the separate
 > axis: convergence/throughput engineering where vitrum is below current SOTA
-> practice even after the campaign closes. Tracked here per roadmap §0.5
-> (frontier: tracked but deprioritized behind the fidelity grind). Ordered by
-> value-per-effort. None of these block 100% signoff.
+> practice even after the campaign closes. Tracked here per roadmap §0.5.
+> **2026-06-12 scope update:** F1 low-discrepancy sampling and F2 compressed
+> wide BVH traversal are tracked as an active performance track above, but they
+> remain separate from the arbitrary-glTF API contract. F3 shipped denoiser
+> weights stays post-100/provisioning work for now.
 >
 > Context: post-campaign vitrum is already at-or-beyond published in-browser
 > SOTA on *breadth* (no public browser engine ships spectral + BDPT + ReSTIR-PT
