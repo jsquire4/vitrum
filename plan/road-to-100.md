@@ -415,7 +415,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 
 | Task | Code | Footgun |
 |------|------|---------|
-| `@vitrum/engine/gltf` re-export | `packages/engine/src/gltf.ts` wraps `loadGltfForEngine` + `createEngine` | Keeps adapter independent but one-import DX |
+| ~~`@vitrum/engine/gltf` re-export~~ ✅ DONE | `packages/engine/src/gltf.ts` exports the adapter bridge and adds `loadGltfWithEngine()`, which injects `createEngine` and maps the glTF planner's selected backend to the matching engine preference. `packages/engine/package.json` exposes `./gltf` and declares the adapter dependency. Test: `gltfSubpathExport.test.ts`. | Adapter still owns loading/planning/controller logic; the engine subpath is a thin one-import DX wrapper. |
 | ~~Pass `decodeImage` + `dracoDecode` + `meshoptDecode` through bridge~~ ✅ DONE | `LoadGltfForEngineOptions` extends `LoadGltfAssetOptions`; `loadGltfForEngine` passes options through `loadGltfAsset` | Bridge without hooks still fails required compressed assets, but now through the intended hook contract |
 | ~~Return `textureDecodeReport`~~ ✅ DONE | `GltfAssetResult` + `GltfForEngineResult` expose the scene-level report; tests pin raw-image fallback entries. | Host knows before first frame which maps are raw/opaque/CPU-readable/ignored. |
 

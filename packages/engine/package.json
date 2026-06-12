@@ -11,6 +11,7 @@
   "types": "src/index.ts",
   "exports": {
     ".":           "./src/index.ts",
+    "./gltf":      "./src/gltf.ts",
     "./lifecycle": "./src/lifecycle/index.ts",
     "./react":     "./src/react/index.ts"
   },
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../core",
+    "@vitrum/gltf-adapter": "file:../gltf-adapter",
     "@vitrum/walkaround-hybrid": "file:../walkaround-hybrid",
     "@vitrum/pt-webgpu": "file:../pt-webgpu",
     "@vitrum/pt-webgl2": "file:../pt-webgl2"
