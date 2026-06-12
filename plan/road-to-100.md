@@ -355,9 +355,9 @@ render-changing wave lands, or A/B attribution becomes impossible.
 
 | Task | Code | Plug-in | Footgun |
 |------|------|---------|---------|
-| Typed errors | `packages/gltf-adapter/src/errors.ts` | Throw `GltfFetchFailed`, `GltfResourceNotFound` with `{ url, kind }` | Generic `Error` breaks `compatibilityMode` UX |
-| Cache hooks | `LoadGltfAssetOptions.cache` | Wrap `fetchArrayBuffer` in `assetLoader.ts` | Cache key must include `baseUri` + URL |
-| `loadGltfAndDecodeTextures()` helper | New `texturePipeline.ts` | After `gltfToScene`, walk all `TextureRef`s, call host `decodeImage` → replace handles with backend-ready pixels | **#1 arbitrary-glTF blocker:** Scene has maps but handles are `RawImageHandle` — pt-webgl2 `texturesArray.ts:4-10` needs `{width,height,data}` float RGBA linear |
+| ~~Typed errors~~ ✅ DONE | `packages/gltf-adapter/src/errors.ts`, `assetLoader.ts`, `gltfAssetApi.test.ts` | `GltfFetchFailed` / `GltfResourceNotFound` now carry `{ url, kind }` plus HTTP status when applicable; loader tests assert typed rejection. | Generic fetch/resource errors are gone from the high-level loader path. |
+| ~~Cache hooks~~ ✅ DONE | `LoadGltfAssetOptions.cache`, `assetLoader.ts`, `gltfAssetApi.test.ts` | `fetchArrayBuffer` now checks/sets a host cache for resolved asset/buffer/image URLs, keyed by final URL + resource kind. | Relative assets with different `baseUri`s resolve to different absolute keys. |
+| ~~`loadGltfAndDecodeTextures()` helper + decode report~~ ✅ API DONE | `assetLoader.ts`, `texturePipeline.ts`, `engineBridge.ts`, `index.ts`, `gltfAssetApi.test.ts` | High-level loading now returns `textureDecodeReport` and exports `loadGltfAndDecodeTextures()` as the explicit adapter-owned decode/report entry. The report walks the converted `Scene` and classifies each material `TextureRef` by field/path/UV/transform/handle-kind plus backend readiness (`pt-webgl2`, `pt-webgpu`, `walkaround-hybrid`). | This closes the adapter diagnostics/API surface; backend atlas/upload completion remains in 2B/3D. |
 | sRGB → linear | In decode helper | glTF baseColor textures are sRGB (`KHR_materials_unlit` too) | Double-linear if backend also decodes sRGB |
 | NPOT / max dim | In atlas builders (PT + WA) | Nearest resize to `max(dim)` like `texturesArray.ts:12-13` | `sampler2DArray` requires uniform layer size |
 | Basis/WebP/DDS | `compression.ts` pattern: host hook + `requires-hook` in report | `featureReport.ts` `EXTENSIONS_REQUIRING_HOST_HOOK` | Failing to pass hook must throw in `strict` mode, not warn-skip |
@@ -417,7 +417,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 |------|------|---------|
 | `@vitrum/engine/gltf` re-export | `packages/engine/src/gltf.ts` wraps `loadGltfForEngine` + `createEngine` | Keeps adapter independent but one-import DX |
 | ~~Pass `decodeImage` + `dracoDecode` + `meshoptDecode` through bridge~~ ✅ DONE | `LoadGltfForEngineOptions` extends `LoadGltfAssetOptions`; `loadGltfForEngine` passes options through `loadGltfAsset` | Bridge without hooks still fails required compressed assets, but now through the intended hook contract |
-| Return `textureDecodeReport` | List maps that still have `RawImageHandle` after decode pass | Host knows before first frame |
+| ~~Return `textureDecodeReport`~~ ✅ DONE | `GltfAssetResult` + `GltfForEngineResult` expose the scene-level report; tests pin raw-image fallback entries. | Host knows before first frame which maps are raw/opaque/CPU-readable/ignored. |
 
 ---
 

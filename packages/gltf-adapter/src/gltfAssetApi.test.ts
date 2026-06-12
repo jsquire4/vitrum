@@ -8,6 +8,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeGltfAsset,
   evaluateGltfBackendCompatibility,
+  GltfFetchFailed,
+  GltfResourceNotFound,
+  loadGltfAndDecodeTextures,
   loadGltfForEngine,
   loadGltfAsset,
   rankGltfBackends,
@@ -163,12 +166,121 @@ describe('loadGltfAsset', () => {
     expect((prim.material.baseColorMap as TextureRef).handle).toBe(decodedHandle);
     expect(result.featureReport.resources.externalBufferCount).toBe(1);
     expect(result.featureReport.resources.externalImageCount).toBe(1);
+    expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        primitiveId: 'gltf-prim-0',
+        materialField: 'baseColorMap',
+        handleKind: 'opaque',
+        path: 'scene.primitives[0].material.baseColorMap',
+      }),
+    ]));
     expect(result.recommendedBackend.backend).toBe('pt-webgl2');
   });
 
   it('throws a deterministic error for relative external resources without a baseUri', async () => {
     const gltf = makeExternalTexturedGltf();
-    await expect(loadGltfAsset(gltf)).rejects.toThrow('without a baseUri');
+    await expect(loadGltfAsset(gltf)).rejects.toBeInstanceOf(GltfResourceNotFound);
+    await expect(loadGltfAsset(gltf)).rejects.toMatchObject({
+      kind: 'buffer',
+      url: 'mesh.bin',
+    });
+  });
+
+  it('throws typed fetch failures with resource identity', async () => {
+    const fetch = vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }));
+
+    await expect(loadGltfAsset('https://cdn.test/missing.gltf', { fetch })).rejects.toBeInstanceOf(GltfFetchFailed);
+    await expect(loadGltfAsset('https://cdn.test/missing.gltf', { fetch })).rejects.toMatchObject({
+      kind: 'asset',
+      url: 'https://cdn.test/missing.gltf',
+      status: 404,
+      statusText: 'Not Found',
+    });
+  });
+
+  it('uses the cache hook for resolved asset, buffer, and image resources', async () => {
+    const gltf = makeExternalTexturedGltf();
+    const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+    const meshBytes = new Uint8Array(positions.byteLength + uvs.byteLength);
+    meshBytes.set(new Uint8Array(positions), 0);
+    meshBytes.set(new Uint8Array(uvs), positions.byteLength);
+    const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
+    const cacheStore = new Map<string, ArrayBuffer>();
+    const cache = {
+      get: vi.fn(async (key: { readonly url: string; readonly kind: string }) =>
+        cacheStore.get(`${key.kind}:${key.url}`)),
+      set: vi.fn(async (key: { readonly url: string; readonly kind: string }, data: ArrayBuffer) => {
+        cacheStore.set(`${key.kind}:${key.url}`, data);
+      }),
+    };
+    const fetch = vi.fn(async (url: string) => {
+      if (url === 'https://cdn.test/a/model.gltf') {
+        return response(textBuffer(JSON.stringify(gltf)), 'model/gltf+json');
+      }
+      if (url === 'https://cdn.test/a/mesh.bin') {
+        return response(meshBytes.buffer);
+      }
+      if (url === 'https://cdn.test/a/textures/albedo.png') {
+        return response(imageBytes, 'image/png');
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage: async () => ({ kind: 'decoded' }),
+    });
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage: async () => ({ kind: 'decoded' }),
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(cache.set.mock.calls.map(([key]) => `${key.kind}:${key.url}`)).toEqual([
+      'asset:https://cdn.test/a/model.gltf',
+      'buffer:https://cdn.test/a/mesh.bin',
+      'image:https://cdn.test/a/textures/albedo.png',
+    ]);
+    expect(cache.get.mock.calls.filter(([key]) =>
+      key.url === 'https://cdn.test/a/model.gltf' && key.kind === 'asset',
+    )).toHaveLength(2);
+  });
+
+  it('returns a textureDecodeReport for raw image fallback handles', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const result = await loadGltfAndDecodeTextures(gltf, { buffers });
+
+    expect(result.textureDecodeReport).toMatchObject({
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      rawImageCount: 1,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 0,
+    });
+    expect(result.textureDecodeReport.rawImageRefs).toEqual([
+      expect.objectContaining({
+        primitiveId: 'gltf-prim-0',
+        primitiveKind: 'mesh',
+        materialField: 'baseColorMap',
+        path: 'scene.primitives[0].material.baseColorMap',
+        handleKind: 'raw-image',
+        backendReadiness: {
+          ptWebgl2: 'opaque',
+          ptWebgpu: 'opaque',
+          walkaroundHybrid: 'ignored',
+        },
+      }),
+    ]);
   });
 });
 

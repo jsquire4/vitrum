@@ -12,6 +12,7 @@ import {
   type GltfAssetResult,
   type LoadGltfAssetOptions,
 } from './assetLoader.js';
+import type { GltfTextureDecodeReport } from './texturePipeline.js';
 import {
   createGltfSceneController,
   type GltfSceneController,
@@ -76,6 +77,7 @@ export interface GltfForEngineResult<TEngine extends GltfScenePatchTarget = Gltf
   readonly engine?: TEngine;
   readonly controller: GltfSceneController;
   readonly attached: boolean;
+  readonly textureDecodeReport: GltfTextureDecodeReport;
   readonly warnings: readonly string[];
 }
 
@@ -122,6 +124,7 @@ export async function loadGltfForEngine<
     ...(engine ? { engine } : {}),
     controller,
     attached,
+    textureDecodeReport: asset.textureDecodeReport,
     warnings: [...asset.warnings, ...controller.warnings],
   };
 }

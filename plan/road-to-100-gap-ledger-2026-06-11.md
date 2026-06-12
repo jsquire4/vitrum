@@ -215,6 +215,16 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   concentrated in sampler/PDF-schema paths: ReSTIR-PT reservoir payload/resolve,
   the visible-vertex source PDF tied to `sampleNextBounceDirection`, BDPT
   light-subpath scatter PDFs, and the inverse adjoint harness.
+- The sixteenth arbitrary-glTF loader/API slice landed in `@vitrum/gltf-adapter`:
+  high-level URL/resource loading now throws typed `GltfFetchFailed` /
+  `GltfResourceNotFound` errors with `{ url, kind }`, `LoadGltfAssetOptions.cache`
+  wraps resolved asset/buffer/image byte fetches, and `textureDecodeReport`
+  is exposed on both `GltfAssetResult` and `GltfForEngineResult`. The report
+  walks the converted scene's material `TextureRef`s and classifies field,
+  source path, UV set, transform presence, handle kind, and backend readiness
+  for pt-webgl2 / pt-webgpu / walkaround-hybrid. `loadGltfAndDecodeTextures()`
+  is exported as the explicit decode/report entry point while keeping backend
+  atlas/upload work in the PT and walkaround phases.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
   `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` pins
   transform refit, material refresh, emitter repack/GI invalidation,

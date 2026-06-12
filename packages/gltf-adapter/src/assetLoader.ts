@@ -17,6 +17,15 @@ import {
   type GltfBackendPolicy,
   type GltfFeatureReport,
 } from './featureReport.js';
+import {
+  buildTextureDecodeReport,
+  type GltfTextureDecodeReport,
+} from './texturePipeline.js';
+import {
+  GltfFetchFailed,
+  GltfResourceNotFound,
+  type GltfAssetResourceKind,
+} from './errors.js';
 
 export type GltfAssetInput = string | URL | ArrayBuffer | GltfJson;
 
@@ -33,11 +42,22 @@ export type GltfAssetFetch = (
   init?: { readonly signal?: AbortSignal },
 ) => Promise<GltfAssetFetchResponse>;
 
+export interface GltfAssetCacheKey {
+  readonly url: string;
+  readonly kind: GltfAssetResourceKind;
+}
+
+export interface GltfAssetCache {
+  get(key: GltfAssetCacheKey): ArrayBuffer | undefined | Promise<ArrayBuffer | undefined>;
+  set(key: GltfAssetCacheKey, data: ArrayBuffer): void | Promise<void>;
+}
+
 export interface LoadGltfAssetOptions extends GltfToSceneOptions {
   readonly baseUri?: string | URL;
   readonly fetch?: GltfAssetFetch;
   readonly signal?: AbortSignal;
   readonly backendPolicy?: GltfBackendPolicy;
+  readonly cache?: GltfAssetCache;
 }
 
 export interface GltfAssetResult extends GltfToSceneResult {
@@ -46,6 +66,7 @@ export interface GltfAssetResult extends GltfToSceneResult {
   readonly featureReport: GltfFeatureReport;
   readonly backendCompatibility: readonly GltfBackendCompatibility[];
   readonly recommendedBackend: GltfBackendCompatibility;
+  readonly textureDecodeReport: GltfTextureDecodeReport;
 }
 
 interface ParsedInput {
@@ -81,6 +102,7 @@ export async function loadGltfAsset(
     ...(options.materialVariant !== undefined ? { materialVariant: options.materialVariant } : {}),
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
+  const textureDecodeReport = buildTextureDecodeReport(sceneResult.scene);
 
   return {
     ...sceneResult,
@@ -89,7 +111,15 @@ export async function loadGltfAsset(
     featureReport,
     backendCompatibility,
     recommendedBackend: backendCompatibility[0]!,
+    textureDecodeReport,
   };
+}
+
+export async function loadGltfAndDecodeTextures(
+  input: GltfAssetInput,
+  options: LoadGltfAssetOptions = {},
+): Promise<GltfAssetResult> {
+  return loadGltfAsset(input, options);
 }
 
 async function parseInput(
@@ -97,8 +127,8 @@ async function parseInput(
   options: LoadGltfAssetOptions,
 ): Promise<ParsedInput> {
   if (typeof input === 'string' || input instanceof URL) {
-    const url = resolveUri(String(input), options.baseUri);
-    const bytes = await fetchArrayBuffer(url, options);
+    const url = resolveUri(String(input), options.baseUri, 'asset');
+    const bytes = await fetchArrayBuffer(url, options, 'asset');
     return parseArrayBufferInput(bytes, directoryUrl(url));
   }
   if (input instanceof ArrayBuffer) {
@@ -135,8 +165,8 @@ async function resolveExternalBuffers(
       buffers.set(index, uint8ToArrayBuffer(decodeDataUri(buffer.uri, `buffer ${index}`)));
       continue;
     }
-    const url = resolveUri(buffer.uri, baseUri);
-    const data = await fetchArrayBuffer(url, options);
+    const url = resolveUri(buffer.uri, baseUri, 'buffer');
+    const data = await fetchArrayBuffer(url, options, 'buffer');
     buffers.set(index, data);
   }
 }
@@ -150,42 +180,74 @@ async function resolveExternalImages(
   for (const [index, image] of (gltf.images ?? []).entries()) {
     if (image.bufferView !== undefined) continue;
     if (image.uri == null || image.uri.startsWith('data:')) continue;
-    const url = resolveUri(image.uri, baseUri);
-    const response = await fetchResource(url, options);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const url = resolveUri(image.uri, baseUri, 'image');
+    const fetched = await fetchImageBytes(url, options);
     out.set(index, {
-      bytes,
-      mimeType: image.mimeType ?? response.headers?.get('content-type') ?? inferMimeType(image.uri),
+      bytes: fetched.bytes,
+      mimeType: image.mimeType ?? fetched.mimeType ?? inferMimeType(image.uri),
     });
   }
   return out;
 }
 
+async function fetchImageBytes(
+  url: string,
+  options: LoadGltfAssetOptions,
+): Promise<{ readonly bytes: Uint8Array; readonly mimeType?: string }> {
+  const cacheKey = { url, kind: 'image' } satisfies GltfAssetCacheKey;
+  const cached = await options.cache?.get(cacheKey);
+  if (cached !== undefined) return { bytes: new Uint8Array(cached) };
+  const response = await fetchResource(url, options, 'image');
+  const data = await response.arrayBuffer();
+  await options.cache?.set(cacheKey, data);
+  const mimeType = response.headers?.get('content-type') ?? undefined;
+  return mimeType === undefined
+    ? { bytes: new Uint8Array(data) }
+    : { bytes: new Uint8Array(data), mimeType };
+}
+
 async function fetchArrayBuffer(
   url: string,
   options: LoadGltfAssetOptions,
+  kind: GltfAssetResourceKind,
 ): Promise<ArrayBuffer> {
-  const response = await fetchResource(url, options);
-  return response.arrayBuffer();
+  const cacheKey = { url, kind } satisfies GltfAssetCacheKey;
+  const cached = await options.cache?.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const response = await fetchResource(url, options, kind);
+  const data = await response.arrayBuffer();
+  await options.cache?.set(cacheKey, data);
+  return data;
 }
 
 async function fetchResource(
   url: string,
   options: LoadGltfAssetOptions,
+  kind: GltfAssetResourceKind,
 ): Promise<GltfAssetFetchResponse> {
   const fetchFn = (options.fetch ?? globalThis.fetch) as GltfAssetFetch | undefined;
   if (typeof fetchFn !== 'function') {
-    throw new Error(
-      '[vitrum/gltf-adapter] loadGltfAsset requires a fetch implementation for URL/external resources.',
-    );
+    throw new GltfResourceNotFound({
+      url,
+      kind,
+      message:
+        `[vitrum/gltf-adapter] loadGltfAsset requires a fetch implementation ` +
+        `for ${kind} resource "${url}".`,
+    });
   }
   const init = options.signal ? { signal: options.signal } : undefined;
-  const response = await fetchFn(url, init);
+  let response: GltfAssetFetchResponse;
+  try {
+    response = await fetchFn(url, init);
+  } catch (cause) {
+    throw new GltfFetchFailed({ url, kind, cause });
+  }
   if (response.ok === false) {
-    throw new Error(
-      `[vitrum/gltf-adapter] Failed to fetch "${url}": HTTP ${response.status ?? '?'} ` +
-        `${response.statusText ?? ''}`.trim(),
-    );
+    throw new GltfFetchFailed(Object.assign(
+      { url, kind },
+      response.status === undefined ? {} : { status: response.status },
+      response.statusText === undefined ? {} : { statusText: response.statusText },
+    ));
   }
   return response;
 }
@@ -207,15 +269,18 @@ function isGlb(buffer: ArrayBuffer): boolean {
   return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === 0x46546c67;
 }
 
-function resolveUri(uri: string, baseUri: string | URL | undefined): string {
+function resolveUri(uri: string, baseUri: string | URL | undefined, kind: GltfAssetResourceKind): string {
   if (uri.startsWith('data:')) return uri;
   try {
     return new URL(uri).toString();
   } catch {
     if (baseUri == null) {
-      throw new Error(
-        `[vitrum/gltf-adapter] Cannot resolve relative URI "${uri}" without a baseUri.`,
-      );
+      throw new GltfResourceNotFound({
+        url: uri,
+        kind,
+        message:
+          `[vitrum/gltf-adapter] Cannot resolve relative ${kind} URI "${uri}" without a baseUri.`,
+      });
     }
     return new URL(uri, baseUri).toString();
   }

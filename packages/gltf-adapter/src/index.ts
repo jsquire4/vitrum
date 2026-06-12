@@ -8,14 +8,33 @@
 
 export { gltfToScene } from './gltfToScene.js';
 export type { GltfToSceneOptions, GltfToSceneResult } from './gltfToScene.js';
-export { loadGltfAsset } from './assetLoader.js';
+export { loadGltfAndDecodeTextures, loadGltfAsset } from './assetLoader.js';
 export type {
+  GltfAssetCache,
+  GltfAssetCacheKey,
   GltfAssetFetch,
   GltfAssetFetchResponse,
   GltfAssetInput,
   GltfAssetResult,
   LoadGltfAssetOptions,
 } from './assetLoader.js';
+export {
+  GltfAdapterError,
+  GltfFetchFailed,
+  GltfResourceNotFound,
+} from './errors.js';
+export type { GltfAssetResourceKind } from './errors.js';
+export {
+  buildTextureDecodeReport,
+  classifyTextureHandle,
+} from './texturePipeline.js';
+export type {
+  GltfBackendTextureStatus,
+  GltfMaterialTextureField,
+  GltfTextureDecodeReport,
+  GltfTextureDecodeReportEntry,
+  GltfTextureHandleKind,
+} from './texturePipeline.js';
 export { GltfSceneController, createGltfSceneController } from './sceneController.js';
 export type {
   GltfAnimationApplyResult,

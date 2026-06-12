@@ -60,6 +60,40 @@ Returns `{ scene, animations, animationTargets, warnings }`:
 | `animationTargets` | `Record<string, string[]>` | Maps a channel node id (`gltf-node-<index>`) → the `ScenePrimitive.id`s created from that node's mesh |
 | `warnings` | `string[]` | Non-fatal conversion issues |
 
+### `loadGltfAsset(input, opts?)`
+
+High-level URL/GLB/JSON loader. It resolves external `.bin` buffers and image
+bytes, converts to a core `Scene`, analyzes feature use, ranks shipping
+backends, and returns a `textureDecodeReport` before the first frame renders.
+
+```ts
+import { loadGltfAsset } from '@vitrum/gltf-adapter';
+
+const asset = await loadGltfAsset('/assets/scene.gltf', {
+  fetch,
+  decodeImage: async (bytes, mimeType) => decodePixels(bytes, mimeType),
+  cache: myAssetByteCache,
+});
+
+console.log(asset.recommendedBackend.backend);
+console.table(asset.textureDecodeReport.entries);
+```
+
+`LoadGltfAssetOptions.cache` is keyed by the fully resolved URL plus resource
+kind (`asset`, `buffer`, or `image`). Fetch/resource failures throw typed
+`GltfFetchFailed` / `GltfResourceNotFound` errors with `{ url, kind }` fields.
+
+### `loadGltfForEngine(input, opts?)`
+
+One-call adapter-owned engine preparation. Hosts inject an existing engine or a
+factory; the adapter selects/checks the backend, creates a
+`GltfSceneController`, attaches the scene when requested, and forwards the same
+`textureDecodeReport` returned by `loadGltfAsset`.
+
+`compatibilityMode: 'reject-unsupported' | 'reject-degraded'` rejects before
+engine construction when the selected backend cannot satisfy the imported
+asset's feature report.
+
 ---
 
 ## Support matrix
@@ -108,7 +142,7 @@ Returns `{ scene, animations, animationTargets, warnings }`:
 | `KHR_materials_transmission.transmissionTexture` | `transmissionMap` |
 | `KHR_materials_ior.ior` | `ior` |
 | `KHR_materials_volume.thicknessFactor` | `thickness` |
-| `KHR_materials_volume.thicknessTexture` | — (warn + ignored; core has no thickness map field) |
+| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (reserved; backend support varies) |
 | `KHR_materials_volume.attenuationDistance` | `attenuationDistance` |
 | `KHR_materials_volume.attenuationColor` | `attenuationColor` |
 | `KHR_materials_specular.specularFactor` | `specularIntensity` |
@@ -172,8 +206,12 @@ frame and pushes the results:
   (see Compressed geometry). Without a hook the spec fallbacks apply, else warn + skip
   (or throw when the extension is in `extensionsRequired`).
 - **Morph TANGENT deltas**: warn + skipped (core `SkinnedMeshPrimitive` has no morph-tangent field).
-- **`KHR_materials_volume.thicknessTexture`**: warn + ignored (core `MaterialSpec` has no thickness map field).
-- **URI-based buffers / images**: the adapter does not fetch. Pre-load and supply via `opts.buffers` or `opts.decodeImage`.
+- **`KHR_materials_volume.thicknessTexture`**: imported as reserved
+  `thicknessMap`; backend support varies and compatibility reports surface
+  unsupported targets.
+- **Low-level URI-based buffers / images**: `gltfToScene` does not fetch. Use
+  `loadGltfAsset` for URL/base-URI loading, or pre-load and supply
+  `opts.buffers` / `opts.imageBytes`.
 
 ---
 
