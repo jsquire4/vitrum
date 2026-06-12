@@ -38,6 +38,10 @@ import { createRestirGIFrameResources } from './frameResources/createRestirGIFra
 import { createGtaoFrameResources } from './frameResources/createGtaoFrameResources.js';
 import { createNeuralFrameResources } from './frameResources/createNeuralFrameResources.js';
 import { createSvgfFrameResources } from './frameResources/createSvgfFrameResources.js';
+import {
+  PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+  PPG_DEFAULT_SPATIAL_CELLS,
+} from '../ppg/ppgConstants.js';
 
 // ─── Per-algorithm sub-struct interfaces ─────────────────────────────────────
 
@@ -624,8 +628,8 @@ export function allocatePPGResources(
     maxDTreeNodesPerCell?: number;
   },
 ): PPGFrameResources {
-  const maxSpatialCells = opts?.maxSpatialCells ?? 1_024;
-  const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? 341;
+  const maxSpatialCells = opts?.maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
+  const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
 
   // Layout constants — must match serialise.ts.
   const STREE_HEADER_F32 = 4;

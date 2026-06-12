@@ -540,8 +540,8 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 > **2026-06-12 reconciliation: W-HYB-01/02/03 are ✅ LANDED on `main`**
 > (verified on disk: NRC clear wired at `WalkaroundGPUPipeline.ts:1227`;
 > atrous per-iteration 256-byte UBO strides; init failures → `onError`).
-> H25/H28 are closed by code + tests; H29 is narrowed to non-default cap
-> end-to-end plumbing. H26-H27 closed in R8-B (keep oracle coverage).
+> H25/H28/H29 are closed by code + tests; H26-H27 closed in R8-B
+> (keep oracle coverage).
 
 | ID | Status | File(s) | Fix | Footgun |
 |----|--------|---------|-----|---------|
@@ -551,7 +551,7 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 | H25 | ✅ CLOSED | `PPGCoordinator.ts`, `ppgPdf.wgsl.ts`, `dTree.ts`, `dTreeInteriorFlux.test.ts` | Bottom-up interior flux propagation is implemented before dTree refinement; CPU/GPU pdf logic now matches leaf flux / solid angle. | Residual promotion risk: no broad real-GPU PPG A/B in package tests. |
 | H26-H27 | ✅ CLOSED (R8-B) | `risGiNrc.wgsl.ts` | Spread + training target fixed — keep oracle tests | |
 | H28 | ✅ CLOSED | `layerResourceAllocator.ts`, `reluPingPong.test.ts` | In-place ReLU layers now allocate a distinct output buffer and remap downstream tensor reads. | Broader neural weights/quality remain separate from H28. |
-| H29 | PARTIAL | `ppgUpdate.wgsl.ts`, `pipelineCompiler.ts`, `WalkaroundGPUPipeline.ts`, `PPGCoordinator.ts` | WGSL builder templates `MAX_DTREE_NODES_PER_CELL`, but high-level pipeline/coordinator only exercise the default 341 cap. | Non-default dTree cap still needs end-to-end option plumbing + test. |
+| H29 | ✅ CLOSED | `HybridEngineOptions.ts`, `HybridEngineConfig.ts`, `HybridEngineLifecycle.ts`, `WalkaroundGPUPipeline.ts`, `pipelineCompiler.ts`, `PPGCoordinator.ts`, `resourceManager.ts`, `giStateSnapshot.ts`, `HybridEngineGIState.ts`, `ppgUpdate.wgsl.ts` | `ppgMaxDTreeNodesPerCell` now threads from public engine options through derived config, init host, shader compile, PPG resource allocation, coordinator resize/upload/export/import, and GI snapshot v5 metadata. Focused tests cover config preservation, buffer-size math, WGSL defaults, v5 round-trip, and v4 default compatibility. | Residual promotion risk: broad real-GPU PPG A/B remains a hardware-validation queue item, not an implementation gap. |
 
 #### 3B — Emitters, environment, shadows (ledger truth)
 

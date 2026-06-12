@@ -919,6 +919,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       /** H47 — maximum PPG sTree spatial cells forwarded to allocatePPGResources.
        *  undefined ⇒ use allocatePPGResources default (1 024). */
       ppgMaxSpatialCells?: number;
+      /** H29 — maximum per-cell PPG dTree nodes. Threaded to both
+       *  buildPpgUpdateWgsl and allocatePPGResources so the shader stride and
+       *  buffers agree. undefined ⇒ default 341-node stride. */
+      ppgMaxDTreeNodesPerCell?: number;
       /** W11 — OIDN final-pass denoiser config (required when denoiser='oidn-final').
        *  Threaded into `registerBuiltinDenoisers` so the OIDN entry registers as a
        *  real (non-disabled) denoiser; missing on a 'oidn-final' selection causes
@@ -1099,6 +1103,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       ppgEnabled: options?.ppgEnabled ?? false,
+      ...(options?.ppgMaxDTreeNodesPerCell !== undefined
+        ? { ppgMaxDTreeNodesPerCell: options.ppgMaxDTreeNodesPerCell }
+        : {}),
       regirEnabled: this._regir.config.enabled,
       restirPtReuse: this._restirPtReuseStructural,
       // NRC ON ⇒ pass the subsystem's WGSL config so the gi-ris pipeline builds
@@ -1263,6 +1270,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._ppg.initialize(
       bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount,
       options?.ppgMaxSpatialCells,
+      options?.ppgMaxDTreeNodesPerCell,
     );
   }
 

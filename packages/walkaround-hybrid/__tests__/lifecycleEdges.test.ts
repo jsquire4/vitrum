@@ -347,6 +347,15 @@ function makeMinimalFrameResources(): FrameResources {
   } as unknown as FrameResources;
 }
 
+function lastCreatedBufferSize(device: GPUDevice, label: string): number | undefined {
+  const calls = (device.createBuffer as unknown as {
+    mock: { calls: Array<[desc: { label?: string; size: number }]> };
+  }).mock.calls;
+  return calls
+    .filter(([desc]) => desc.label === label)
+    .at(-1)?.[0].size;
+}
+
 describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps generation', () => {
   it('_maxSpatialCells is stored from initialize() args', () => {
     const device = makeMinimalPPGDevice();
@@ -362,6 +371,28 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
     expect((coord as unknown as { _maxSpatialCells: number | undefined })._maxSpatialCells).toBe(2048);
   });
 
+  it('stores maxDTreeNodesPerCell and allocates init/resize buffers with that stride', () => {
+    const device = makeMinimalPPGDevice();
+    const coord = new PPGCoordinator(device);
+    const fr = makeMinimalFrameResources();
+
+    coord.initialize(
+      { bvhPositions: { cpuData: new Float32Array(4).buffer, count: 1 } } as never,
+      fr, 64, 64, true, 0,
+      8,
+      17,
+    );
+
+    expect((coord as unknown as { _maxDTreeNodesPerCell: number | undefined })._maxDTreeNodesPerCell).toBe(17);
+    expect(lastCreatedBufferSize(device, 'ppg-fluxAtomics')).toBe(8 * 17 * 4);
+    expect(lastCreatedBufferSize(device, 'ppg-dTreeBuf')).toBe(8 * (4 + 17 * 8) * 4);
+
+    coord.onResize(makeMinimalFrameResources(), 128, 128, 1);
+
+    expect(lastCreatedBufferSize(device, 'ppg-fluxAtomics')).toBe(8 * 17 * 4);
+    expect(lastCreatedBufferSize(device, 'ppg-dTreeBuf')).toBe(8 * (4 + 17 * 8) * 4);
+  });
+
   it('_maxSpatialCells is undefined by default (no custom cap)', () => {
     const device = makeMinimalPPGDevice();
     const coord = new PPGCoordinator(device);
@@ -374,6 +405,7 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
     );
 
     expect((coord as unknown as { _maxSpatialCells: number | undefined })._maxSpatialCells).toBeUndefined();
+    expect((coord as unknown as { _maxDTreeNodesPerCell: number | undefined })._maxDTreeNodesPerCell).toBeUndefined();
   });
 
   it('onResize() bumps _frameResourcesGeneration', () => {

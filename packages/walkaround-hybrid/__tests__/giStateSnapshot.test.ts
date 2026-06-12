@@ -161,7 +161,7 @@ describe('GI state snapshot serialization', () => {
     const s = makeSnapshot();
     const buf = serializeGIState(s);
     // v3 snapshots have no SECTION_PPG bit, so deserialising returns ppg:undefined.
-    // Confirm that the current serializer produces v4 and the v3 path is via
+    // Confirm that the current serializer produces v5 and the v3 path is via
     // hand-patching the version word down to 3 (same layout, only section flags differ).
     // Since no v3 snaps exist in the wild yet, we simulate one by writing version=3.
     new DataView(buf).setUint32(4, 3, true);
@@ -172,13 +172,13 @@ describe('GI state snapshot serialization', () => {
   });
 });
 
-// ── PPG snapshot section (v4) ────────────────────────────────────────────────
+// ── PPG snapshot section (v5) ────────────────────────────────────────────────
 
 /**
  * Build a multi-cell STree with non-trivial directional distributions,
  * then serialise it to a PpgSnapshot. Mirrors the real coordinator path.
  */
-function makePpgSnapshot(maxSpatialCells = 1024): PpgSnapshot {
+function makePpgSnapshot(maxSpatialCells = 1024, maxDTreeNodesPerCell = 341): PpgSnapshot {
   const sceneBounds = { min: [-5, -5, -5] as [number, number, number], max: [5, 5, 5] as [number, number, number] };
   const sTree = buildSTree(sceneBounds);
 
@@ -194,6 +194,7 @@ function makePpgSnapshot(maxSpatialCells = 1024): PpgSnapshot {
   const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(sTree);
   return {
     maxSpatialCells,
+    maxDTreeNodesPerCell,
     sTreeBuf,
     dTreeBuf,
     dTreeOffsets,
@@ -202,7 +203,7 @@ function makePpgSnapshot(maxSpatialCells = 1024): PpgSnapshot {
   };
 }
 
-describe('GI state snapshot v4 PPG section', () => {
+describe('GI state snapshot v5 PPG section', () => {
   it('round-trips the PPG section byte-identically (sTreeBuf, dTreeBuf, dTreeOffsets)', () => {
     const ppg = makePpgSnapshot();
     const s = { ...makeSnapshot(), ppg };
@@ -210,6 +211,7 @@ describe('GI state snapshot v4 PPG section', () => {
     expect(back.ppg).toBeDefined();
     const p = back.ppg!;
     expect(p.maxSpatialCells).toBe(ppg.maxSpatialCells);
+    expect(p.maxDTreeNodesPerCell).toBe(ppg.maxDTreeNodesPerCell);
     expect(Array.from(p.sTreeBuf)).toEqual(Array.from(ppg.sTreeBuf));
     expect(Array.from(p.dTreeBuf)).toEqual(Array.from(ppg.dTreeBuf));
     expect(Array.from(p.dTreeOffsets)).toEqual(Array.from(ppg.dTreeOffsets));
@@ -256,6 +258,23 @@ describe('GI state snapshot v4 PPG section', () => {
     const reservoirBytes = 20 + restirGI.current.byteLength + restirGI.previous.byteLength + restirGI.spatial.byteLength;
     const ppgBytes = 48 /* PPG_SUBHEADER_BYTES */ + ppg.sTreeBuf.byteLength + ppg.dTreeBuf.byteLength + ppg.dTreeOffsets.byteLength;
     expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength + reservoirBytes + ppgBytes);
+  });
+
+  it('round-trips a non-default maxDTreeNodesPerCell in the v5 PPG sub-header', () => {
+    const ppg = makePpgSnapshot(2048, 97);
+    const s = { ...makeSnapshot(), ppg };
+    const back = deserializeGIState(serializeGIState(s));
+    expect(back.ppg?.maxSpatialCells).toBe(2048);
+    expect(back.ppg?.maxDTreeNodesPerCell).toBe(97);
+  });
+
+  it('defaults v4 PPG snapshots to the historical 341-node dTree cap', () => {
+    const ppg = makePpgSnapshot(1024, 97);
+    const s = { ...makeSnapshot(), ppg };
+    const buf = serializeGIState(s);
+    new DataView(buf).setUint32(4, 4, true); // v4 field [3] was not maxDTreeNodesPerCell.
+    const back = deserializeGIState(buf);
+    expect(back.ppg?.maxDTreeNodesPerCell).toBe(341);
   });
 
   it('rejects a PPG blob truncated below its declared size', () => {

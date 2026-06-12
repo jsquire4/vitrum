@@ -46,7 +46,11 @@
  *   group(1) binding(0) — ppgUBO: struct { sampleCount, fluxBudget, sampleCountBudget, _pad }
  */
 
-import { RESERVOIR_GI_STRIDE } from './ppgConstants.js';
+import {
+  PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+  PPG_DEFAULT_SPATIAL_CELLS,
+  RESERVOIR_GI_STRIDE,
+} from './ppgConstants.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 /**
@@ -60,7 +64,7 @@ import type { WgslModule } from '../wgslTypes.js';
  * allocation value so both the shader and the host agree on the per-cell stride
  * at every configuration.
  */
-export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
+export { PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL, PPG_DEFAULT_SPATIAL_CELLS };
 
 /**
  * Build the PPG update kernel WGSL source for a given per-cell dTree node cap.
@@ -79,7 +83,9 @@ export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
  *   buffer (= `fluxAtomicsBuf.size / 4 / maxSpatialCells`).  Default 341
  *   (depth-4 full quadtree: 1+4+16+64+256).
  */
-export function buildPpgUpdateWgsl(maxDTreeNodesPerCell: number = 341): string {
+export function buildPpgUpdateWgsl(
+  maxDTreeNodesPerCell: number = PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+): string {
   return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Muller et al. 2017 section 3.3 - training from accepted GI reservoir samples.
@@ -268,7 +274,7 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
  * MUST call buildPpgUpdateWgsl() with the live allocation value instead of
  * using this constant when compiling the actual GPU pipeline.
  */
-export const PPG_UPDATE_WGSL: string = buildPpgUpdateWgsl(341);
+export const PPG_UPDATE_WGSL: string = buildPpgUpdateWgsl();
 
 /** W1-R6 — declarative include-graph entry. Requires the canonical
  *  Rec.709 luminance helper and ppgTreeLayout for the shared layout constants.

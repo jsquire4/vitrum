@@ -20,7 +20,12 @@ import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { buildSTree, splitOverflowLeaves } from '../ppg/sTree.js';
 import { refineDTree } from '../ppg/dTree.js';
 import { serialiseSTree, deserialiseSTree, type SerialisedSTree } from '../ppg/serialise.js';
-import { PPG_MIS_ALPHA, PPG_FLUX_DECAY } from '../ppg/ppgConstants.js';
+import {
+  PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+  PPG_DEFAULT_SPATIAL_CELLS,
+  PPG_MIS_ALPHA,
+  PPG_FLUX_DECAY,
+} from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
 import { allocatePPGResources, type FrameResources, type PPGFrameResources } from './resourceManager.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
@@ -63,6 +68,9 @@ export class PPGCoordinator implements PipelineSubsystem {
    *  allocatePPGResources — without this, an sTree that has grown beyond
    *  the default 1024 cells would overflow the under-allocated buffer. */
   private _maxSpatialCells: number | undefined = undefined;
+  /** Retained from initialize() so onResize(), export, and import enforce the
+   *  same per-cell dTree stride as the compiled update shader. */
+  private _maxDTreeNodesPerCell: number | undefined = undefined;
   /** CPU-side PPG model (sTree + per-cell dTrees). Allocated at
    *  initialize() when ppgEnabled is true; serialised to GPU buffers per
    *  frame (Phase 1: static empty tree uploaded once). */
@@ -125,6 +133,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     _frameCount: number,
     /** H47 — forwarded to allocatePPGResources `maxSpatialCells`; undefined = default 1 024. */
     maxSpatialCells?: number,
+    /** H29 — forwarded to allocatePPGResources `maxDTreeNodesPerCell`; undefined = default 341. */
+    maxDTreeNodesPerCell?: number,
   ): void {
     if (!ppgEnabled) {
       this._enabled = false;
@@ -133,6 +143,7 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._enabled = true;
     // Retain for onResize() so it forwards the same cap on resize.
     this._maxSpatialCells = maxSpatialCells;
+    this._maxDTreeNodesPerCell = maxDTreeNodesPerCell;
     // Derive scene bounds from the uploaded BVH if available; the initial
     // single-cell sTree root must cover the rendered scene before adaptive
     // splits begin.
@@ -142,7 +153,7 @@ export class PPGCoordinator implements PipelineSubsystem {
       this._device,
       width,
       height,
-      maxSpatialCells !== undefined ? { maxSpatialCells } : undefined,
+      this._allocationOptions(),
     );
     this._uploadTree(frameResources);
     this._writeUpdateUBO(frameResources, width, height);
@@ -170,7 +181,7 @@ export class PPGCoordinator implements PipelineSubsystem {
       this._device,
       width,
       height,
-      this._maxSpatialCells !== undefined ? { maxSpatialCells: this._maxSpatialCells } : undefined,
+      this._allocationOptions(),
     );
     // Bump the generation so any in-flight readback chain that captured the
     // old frameResources knows its resource references are now stale.
@@ -296,20 +307,24 @@ export class PPGCoordinator implements PipelineSubsystem {
    * Returns `null` when PPG is disabled or not yet initialised (the caller
    * should treat a null return as "no PPG section in snapshot").
    *
-   * The returned `SerialisedSTree` plus `maxSpatialCells` and `sceneBounds`
-   * are the three pieces `GIStateSnapshot.ppg` stores.
+   * The returned `SerialisedSTree` plus `maxSpatialCells`,
+   * `maxDTreeNodesPerCell`, and `sceneBounds` are the pieces
+   * `GIStateSnapshot.ppg` stores.
    */
   exportSTree(): (SerialisedSTree & {
     maxSpatialCells: number;
+    maxDTreeNodesPerCell: number;
     sceneBoundsMin: readonly [number, number, number];
     sceneBoundsMax: readonly [number, number, number];
   }) | null {
     if (!this._enabled || !this._sTree) return null;
-    const serialised = serialiseSTree(this._sTree);
-    const maxSpatialCells = this._maxSpatialCells ?? 1_024; // PPG_DEFAULT_SPATIAL_CELLS
+    const maxDTreeNodesPerCell = this._maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    const serialised = serialiseSTree(this._sTree, maxDTreeNodesPerCell);
+    const maxSpatialCells = this._maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
     return {
       ...serialised,
       maxSpatialCells,
+      maxDTreeNodesPerCell,
       sceneBoundsMin: [
         this._sceneAABB.min[0], this._sceneAABB.min[1], this._sceneAABB.min[2],
       ] as const,
@@ -326,10 +341,10 @@ export class PPGCoordinator implements PipelineSubsystem {
    * on the very next frame.
    *
    * Compatibility checks:
-   *   1. `maxSpatialCells` must match the live coordinator's cap (stored as
-   *      `_maxSpatialCells`; default 1 024 when unset). A mismatch means the
-   *      dTreeIndex values in the snapshot's sTree nodes may be out-of-bounds
-   *      for the live GPU buffer allocation — reject loudly.
+   *   1. `maxSpatialCells` and `maxDTreeNodesPerCell` must match the live
+   *      coordinator caps (defaults 1 024 / 341 when unset). A mismatch means
+   *      the sTree indices or dTree stride may be out-of-bounds for the live GPU
+   *      buffer allocation — reject loudly.
    *   2. `sceneBoundsMin/Max` must match `_sceneAABB` within ε=1e-3 so a
    *      snapshot trained on a different scene's geometry is rejected before
    *      its guiding distribution poisons the live training.
@@ -343,6 +358,7 @@ export class PPGCoordinator implements PipelineSubsystem {
   importSTree(
     snapshot: {
       maxSpatialCells: number;
+      maxDTreeNodesPerCell?: number;
       sTreeBuf: Float32Array;
       dTreeBuf: Float32Array;
       dTreeOffsets: Uint32Array;
@@ -354,11 +370,23 @@ export class PPGCoordinator implements PipelineSubsystem {
     if (!this._enabled) return false;
 
     // ── Compatibility: maxSpatialCells ───────────────────────────────────────
-    const liveCap = this._maxSpatialCells ?? 1_024;
+    const liveCap = this._maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
     if (snapshot.maxSpatialCells !== liveCap) {
       console.warn(
         `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
         `snapshot=${snapshot.maxSpatialCells}, live=${liveCap}. ` +
+        `PPG restore rejected; guided sampling will restart cold.`,
+      );
+      return false;
+    }
+
+    // ── Compatibility: maxDTreeNodesPerCell ─────────────────────────────────
+    const liveDTreeCap = this._maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    const snapshotDTreeCap = snapshot.maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    if (snapshotDTreeCap !== liveDTreeCap) {
+      console.warn(
+        `[PPGCoordinator] importSTree: maxDTreeNodesPerCell mismatch — ` +
+        `snapshot=${snapshotDTreeCap}, live=${liveDTreeCap}. ` +
         `PPG restore rejected; guided sampling will restart cold.`,
       );
       return false;
@@ -432,6 +460,19 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._device.queue.writeBuffer(ppg.sTreeBuf, 0, sTreeBuf.buffer, sTreeBuf.byteOffset, sTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeBuf, 0, dTreeBuf.buffer, dTreeBuf.byteOffset, dTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeOffsetsBuf, 0, dTreeOffsets.buffer, dTreeOffsets.byteOffset, dTreeOffsets.byteLength);
+  }
+
+  private _allocationOptions(): {
+    maxSpatialCells?: number;
+    maxDTreeNodesPerCell?: number;
+  } | undefined {
+    if (this._maxSpatialCells === undefined && this._maxDTreeNodesPerCell === undefined) {
+      return undefined;
+    }
+    return {
+      ...(this._maxSpatialCells !== undefined ? { maxSpatialCells: this._maxSpatialCells } : {}),
+      ...(this._maxDTreeNodesPerCell !== undefined ? { maxDTreeNodesPerCell: this._maxDTreeNodesPerCell } : {}),
+    };
   }
 
   /**

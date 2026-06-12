@@ -109,6 +109,9 @@ export interface PipelineInitHost {
   /** H47 — maximum PPG sTree spatial cells forwarded to allocatePPGResources.
    *  undefined ⇒ use the allocator's built-in default (1 024). */
   readonly ppgMaxSpatialCells: number | undefined;
+  /** H29 — maximum per-cell PPG dTree nodes forwarded to shader compile and
+   *  allocatePPGResources. undefined ⇒ default 341-node stride. */
+  readonly ppgMaxDTreeNodesPerCell: number | undefined;
   /** Checkerboard half-res shading — when true shade.wgsl AND the two DI spatial
    *  passes compact their dispatch to one checkerboard phase per frame and
    *  ResolvePass reprojects the gap; false (default) shades every pixel + passes
@@ -186,6 +189,7 @@ export type HybridInitStaticConfig = Pick<
   | 'nrcEnabled'
   | 'ppgEnabled'
   | 'ppgMaxSpatialCells'
+  | 'ppgMaxDTreeNodesPerCell'
   | 'checkerboard'
   | 'ppgDispatchInterval'
   | 'regirConfig'
@@ -446,6 +450,11 @@ export class PipelineInitCoordinator {
           // pipeline's allocatePPGResources default (1 024) applies.
           ...(host.ppgMaxSpatialCells !== undefined
             ? { ppgMaxSpatialCells: host.ppgMaxSpatialCells }
+            : {}),
+          // H29 — PPG max per-cell dTree nodes. Omit when undefined so the
+          // shader builder/resource allocator default (341) applies.
+          ...(host.ppgMaxDTreeNodesPerCell !== undefined
+            ? { ppgMaxDTreeNodesPerCell: host.ppgMaxDTreeNodesPerCell }
             : {}),
           // ReGIR (Boksansky 2021) grid-based DI light selection. Omit the key
           // entirely when undefined (exactOptionalPropertyTypes) so the

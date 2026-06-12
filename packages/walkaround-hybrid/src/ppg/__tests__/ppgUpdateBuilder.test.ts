@@ -5,7 +5,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildPpgUpdateWgsl, PPG_DEFAULT_SPATIAL_CELLS } from '../ppgUpdate.wgsl.js';
+import {
+  buildPpgUpdateWgsl,
+  PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+  PPG_DEFAULT_SPATIAL_CELLS,
+} from '../ppgUpdate.wgsl.js';
 
 describe('buildPpgUpdateWgsl (H29 single-source dTree stride)', () => {
   it('default build (341) contains 341u in the MAX_DTREE_NODES_PER_CELL declaration', () => {
@@ -28,6 +32,10 @@ describe('buildPpgUpdateWgsl (H29 single-source dTree stride)', () => {
 
   it('PPG_DEFAULT_SPATIAL_CELLS is exported and equals 1024', () => {
     expect(PPG_DEFAULT_SPATIAL_CELLS).toBe(1_024);
+  });
+
+  it('PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL is exported and equals 341', () => {
+    expect(PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL).toBe(341);
   });
 
   it('each distinct cap produces distinct WGSL (not accidentally cached)', () => {

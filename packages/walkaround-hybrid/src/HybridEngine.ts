@@ -2298,6 +2298,8 @@ export class HybridEngine implements Engine {
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
       // H47 — PPG max spatial cells. undefined ⇒ allocatePPGResources default (1 024).
       ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,
+      // H29 — PPG max per-cell dTree nodes. undefined ⇒ default 341-node stride.
+      ppgMaxDTreeNodesPerCell: this._cfg.ppgMaxDTreeNodesPerCell,
       // Checkerboard half-res shading — flips the ResolvePass gate + the
       // per-frame shade UBO fields. OFF (default) is bit-identical.
       checkerboard: this._cfg.checkerboard,

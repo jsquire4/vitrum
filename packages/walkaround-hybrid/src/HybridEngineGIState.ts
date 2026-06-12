@@ -41,6 +41,7 @@ export async function exportGIStateImpl(deps: GIStateDeps): Promise<GIStateSnaps
   const ppgRaw = deps.pipeline?.exportPPGSTree() ?? null;
   const ppg = ppgRaw != null ? {
     maxSpatialCells: ppgRaw.maxSpatialCells,
+    maxDTreeNodesPerCell: ppgRaw.maxDTreeNodesPerCell,
     sTreeBuf: ppgRaw.sTreeBuf,
     dTreeBuf: ppgRaw.dTreeBuf,
     dTreeOffsets: ppgRaw.dTreeOffsets,

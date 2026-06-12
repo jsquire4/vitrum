@@ -772,6 +772,23 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly ppgMaxSpatialCells?: number;
 
   /**
+   * Maximum number of adaptive dTree nodes allocated per spatial cell.
+   *
+   * Default: 341 — a full depth-4 directional quadtree
+   * (1 + 4 + 16 + 64 + 256 nodes), matching `PPG_DTREE_MAX_DEPTH = 4`.
+   *
+   * This cap is **structural**: it sizes the dTree storage buffer and flux
+   * atomics, templates the PPG update shader's per-cell stride, clamps CPU
+   * tree uploads, and is recorded in GI snapshots so incompatible restores are
+   * rejected. Lowering it saves VRAM and update/readback bandwidth but limits
+   * directional refinement; raising it only helps once the CPU dTree max depth
+   * is raised too.
+   *
+   * Only meaningful when `ppgEnabled: true`.
+   */
+  readonly ppgMaxDTreeNodesPerCell?: number;
+
+  /**
    * PPG train-pass dispatch cadence (Müller 2017 §3.3). The path-guiding
    * `update` compute pass runs only on frames where
    * `frameCount % ppgDispatchInterval === 0`. The learned sTree/dTree GPU

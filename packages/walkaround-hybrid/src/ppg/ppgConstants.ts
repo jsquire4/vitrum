@@ -47,6 +47,25 @@ export const PPG_DTREE_MAX_DEPTH = 4;
 export const PPG_DTREE_INITIAL_DEPTH = 2;
 
 /**
+ * Default maximum number of adaptive sTree leaf cells allocated by the PPG
+ * GPU buffers. This is the public `HybridEngineOptions.ppgMaxSpatialCells`
+ * default and the compatibility value stored in GI snapshots when hosts do
+ * not override the cap.
+ */
+export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
+
+/**
+ * Default maximum number of dTree nodes allocated per spatial cell.
+ *
+ * Depth-4 directional quadtree capacity:
+ *   1 + 4 + 16 + 64 + 256 = 341 nodes.
+ *
+ * The same value must size `allocatePPGResources`, template the PPG update
+ * WGSL stride, clamp CPU tree uploads, and gate GI snapshot restores.
+ */
+export const PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL = 341;
+
+/**
  * MIS mixing weight α — fraction of the guiding PDF used in the source-pdf
  * mixture `p_src = α·p_guide + (1−α)·p_cos` (Müller §3.4). This is consumed
  * live by the gi-ris guided sampling path: `risGi.wgsl` draws candidates from

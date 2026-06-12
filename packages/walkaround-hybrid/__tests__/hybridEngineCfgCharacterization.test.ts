@@ -74,6 +74,8 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 3,
     ppgDispatchInterval: 5,
+    ppgMaxSpatialCells: 2048,
+    ppgMaxDTreeNodesPerCell: 97,
     targetFrameIntervalMs: 12,
     tuning: { directFireflyClamp: 8, triIntersectEpsilon: 1e-7 },
     pipelineRebuildKey: 'rk-42',
@@ -143,6 +145,8 @@ describe('HybridEngine._initStaticConfig — migrated config values unchanged', 
     expect(cfg['restirPtReuse']).toBe(golden.restirPtReuse === 1);
     expect(cfg['nrcEnabled']).toBe(golden.nrcEnabled === 1);
     expect(cfg['ppgDispatchInterval']).toBe(golden.ppgDispatchInterval);
+    expect(cfg['ppgMaxSpatialCells']).toBe(golden.ppgMaxSpatialCells);
+    expect(cfg['ppgMaxDTreeNodesPerCell']).toBe(golden.ppgMaxDTreeNodesPerCell);
     expect(cfg['regirConfig']).toBe(golden.regirConfig);
   });
 });

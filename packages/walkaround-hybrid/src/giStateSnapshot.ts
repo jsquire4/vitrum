@@ -51,6 +51,8 @@
  * transferable `ArrayBuffer` for storage.
  */
 
+import { PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL } from './ppg/ppgConstants.js';
+
 /** Magic + version for the binary container (bump VERSION on any layout change). */
 const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
 /**
@@ -73,8 +75,12 @@ const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
  *      `maxSpatialCells` is stored so the importer can reject a snapshot trained
  *      with a different buffer capacity (a mismatched cap means the dTreeIndex
  *      values inside the sTree might be out-of-bounds for the live GPU buffers).
+ * v5 — reuses PPG sub-header field [3] for `maxDTreeNodesPerCell`, the per-cell
+ *      dTree stride baked into the PPG update shader and flux buffer. v4 PPG
+ *      snapshots are still accepted and interpreted with the historical default
+ *      cap of 341 nodes/cell.
  */
-const GI_SNAPSHOT_VERSION = 4;
+const GI_SNAPSHOT_VERSION = 5;
 const HEADER_BYTES = 64; // fixed header, data blocks follow
 
 /** Header section-flags bitfield (header offset 52, u32). Bit 0 = ReSTIR-GI present. */
@@ -86,11 +92,11 @@ const RESTIR_GI_SUBHEADER_BYTES = 20; // halfW(u32) halfH(u32) strideU32(u32) bu
 /**
  * Sub-header preceding the PPG blob when SECTION_PPG is set (v4+).
  *
- * Layout (6 × u32 = 24 bytes):
+ * Layout (12 × 4-byte fields):
  *   [0] maxSpatialCells   — GPU buffer capacity cap (for compatibility guard)
  *   [1] sTreeNodeCount    — number of sTree nodes serialised into sTreeBuf
  *   [2] dTreeCount        — number of per-cell dTrees (= leaf count)
- *   [3] sTreeBufF32Len    — length of the sTreeBuf Float32Array in f32 elements
+ *   [3] maxDTreeNodesPerCell — per-cell dTree stride (v5+; v4 repeated [1])
  *   [4] dTreeBufF32Len    — length of the dTreeBuf Float32Array in f32 elements
  *   [5] dTreeOffsetsByteLen — byte length of the dTreeOffsets Uint32Array
  *   [6] sceneBoundsMinX   — (f32) scene AABB min.x
@@ -145,9 +151,10 @@ export interface RestirGISnapshot {
  * `PPGCoordinator._uploadTree()` — so import is a straight pass-through to the
  * existing upload path.
  *
- * Compatibility guard fields (`maxSpatialCells` and `sceneBounds`) are recorded
- * so the importer can reject a snapshot trained with a different buffer capacity
- * or scene geometry, rather than silently poisoning the live guiding distribution.
+ * Compatibility guard fields (`maxSpatialCells`, `maxDTreeNodesPerCell`, and
+ * `sceneBounds`) are recorded so the importer can reject a snapshot trained with
+ * a different buffer capacity, shader/resource stride, or scene geometry,
+ * rather than silently poisoning the live guiding distribution.
  */
 export interface PpgSnapshot {
   /**
@@ -158,6 +165,13 @@ export interface PpgSnapshot {
    * out-of-bounds for the live GPU buffers.
    */
   readonly maxSpatialCells: number;
+  /**
+   * Per-cell dTree node cap used when this snapshot was trained. A restore is
+   * rejected when the live engine was constructed with a different
+   * `ppgMaxDTreeNodesPerCell` (or the default when omitted). Mismatch means the
+   * serialised dTree offsets and the PPG update shader's flux stride disagree.
+   */
+  readonly maxDTreeNodesPerCell: number;
   /** Flat sTree node buffer (header + N nodes × 16 f32). */
   readonly sTreeBuf: Float32Array;
   /** Concatenated per-cell dTree buffers. */
@@ -282,7 +296,7 @@ export function serializeGIState(s: GIStateSnapshot): ArrayBuffer {
     dv.setUint32(po, p.maxSpatialCells, true); po += 4;           // [0]
     dv.setUint32(po, p.sTreeBuf.length, true); po += 4;            // [1] sTreeBufF32Len
     dv.setUint32(po, p.dTreeOffsets.length, true); po += 4;        // [2] dTreeCount
-    dv.setUint32(po, p.sTreeBuf.length, true); po += 4;            // [3] sTreeBufF32Len (repeated for clarity)
+    dv.setUint32(po, p.maxDTreeNodesPerCell, true); po += 4;       // [3] maxDTreeNodesPerCell (v5)
     dv.setUint32(po, p.dTreeBuf.length, true); po += 4;            // [4] dTreeBufF32Len
     dv.setUint32(po, p.dTreeOffsets.byteLength, true); po += 4;    // [5] dTreeOffsetsByteLen
     dv.setFloat32(po, p.sceneBoundsMin[0], true); po += 4;         // [6]
@@ -315,13 +329,14 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     throw new Error(`deserializeGIState: bad magic 0x${magic.toString(16)} (not a GI snapshot).`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  // v3 (SH irradiance, no PPG) and v4 (adds optional PPG section) are both
-  // accepted. v3 readers see no PPG section flag and return ppg:undefined
-  // (cold PPG start — not an error). v1/v2 carried an OCTAHEDRAL irradiance
+  // v3 (SH irradiance, no PPG), v4 (adds optional PPG section), and v5 (adds
+  // PPG maxDTreeNodesPerCell metadata) are accepted. v3 readers see no PPG
+  // section flag and return ppg:undefined (cold PPG start — not an error).
+  // v4 PPG sections default the new dTree cap to 341. v1/v2 carried an OCTAHEDRAL irradiance
   // atlas whose bytes are meaningless to the SH-era sampler, so backward-accept
   // was intentionally dropped at the v2->v3 break and remains dropped here.
-  if (version !== 3 && version !== GI_SNAPSHOT_VERSION) {
-    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION} or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
+  if (version !== 3 && version !== 4 && version !== GI_SNAPSHOT_VERSION) {
+    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
   }
   const dx = dv.getUint32(o, true); o += 4;
   const dy = dv.getUint32(o, true); o += 4;
@@ -387,7 +402,10 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
   const maxSpatialCells = dv.getUint32(po, true); po += 4;     // [0]
   const sTreeBufF32Len  = dv.getUint32(po, true); po += 4;     // [1] / [3]
   const dTreeCount      = dv.getUint32(po, true); po += 4;     // [2]
-  po += 4;                                                       // [3] repeat of [1], skip
+  const ppgField3       = dv.getUint32(po, true); po += 4;     // [3] v5 maxDTreeNodesPerCell / v4 repeat of [1]
+  const maxDTreeNodesPerCell = version >= 5
+    ? ppgField3
+    : PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
   const dTreeBufF32Len      = dv.getUint32(po, true); po += 4; // [4]
   const dTreeOffsetsByteLen = dv.getUint32(po, true); po += 4; // [5]
   const sbMinX = dv.getFloat32(po, true); po += 4;              // [6]
@@ -414,6 +432,7 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
   }
   const ppg: PpgSnapshot = {
     maxSpatialCells,
+    maxDTreeNodesPerCell,
     sTreeBuf,
     dTreeBuf,
     dTreeOffsets,

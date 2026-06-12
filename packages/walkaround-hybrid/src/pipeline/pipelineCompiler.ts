@@ -77,7 +77,10 @@ import {
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
-import { buildPpgUpdateWgsl } from '../ppg/ppgUpdate.wgsl.js';
+import {
+  buildPpgUpdateWgsl,
+  PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+} from '../ppg/ppgUpdate.wgsl.js';
 
 /**
  * Keys in `CompiledPipelines` whose value type is `GPUComputePipeline` (not
@@ -433,7 +436,8 @@ export async function compilePipelines(
   // H29: the WGSL MAX_DTREE_NODES_PER_CELL is built from the live allocation
   // value (opts.ppgMaxDTreeNodesPerCell) so the shader and host stride agree.
   if (opts?.ppgEnabled) {
-    const ppgMaxDTreeNodesPerCell = opts?.ppgMaxDTreeNodesPerCell ?? 341;
+    const ppgMaxDTreeNodesPerCell = opts?.ppgMaxDTreeNodesPerCell
+      ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
     const ppgUpdateModule = {
       name: 'ppgUpdate' as const,
       source: buildPpgUpdateWgsl(ppgMaxDTreeNodesPerCell),

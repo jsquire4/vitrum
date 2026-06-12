@@ -73,6 +73,9 @@ export interface ParsedHybridEngineConfig {
   /** H47 — maximum PPG sTree spatial cells, threaded to `allocatePPGResources`.
    *  `undefined` ⇒ use allocatePPGResources default (1 024). */
   readonly ppgMaxSpatialCells: number | undefined;
+  /** H29 — maximum per-cell PPG dTree nodes, threaded to shader compile and
+   *  `allocatePPGResources`. `undefined` ⇒ use the default 341-node stride. */
+  readonly ppgMaxDTreeNodesPerCell: number | undefined;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  `false` by default (no preset ⇒ ultra ⇒ off); the `medium`/`low` presets
    *  enable it, `ultra`/`high` keep it off. Threaded into
@@ -339,6 +342,11 @@ export function deriveHybridEngineConfig(
     // H47 — PPG max spatial cells. Pass-through; undefined = allocatePPGResources
     // default (1 024). No clamping here — the allocator handles its own floor.
     ppgMaxSpatialCells: opts.ppgMaxSpatialCells,
+    // H29 — PPG max dTree nodes per spatial cell. Pass-through; undefined =
+    // allocatePPGResources / buildPpgUpdateWgsl default (341). The pipeline
+    // threads this to BOTH shader compile and resource allocation so the GPU
+    // update kernel stride matches the buffers.
+    ppgMaxDTreeNodesPerCell: opts.ppgMaxDTreeNodesPerCell,
     // ReGIR (Boksansky 2021) grid-based DI light selection. Pass-through from
     // opts; `undefined` ⇒ off (the pipeline's resolveReGIRConfig default).
     regirConfig: opts.regir,
