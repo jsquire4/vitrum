@@ -244,6 +244,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `cascadeDispatchInvalidation.test.ts` pins stable-frame reuse plus TLAS/bounds
   rebuilds, and the stale RC mapping/README comments now match the current
   no-`/three` raw package surface.
+- The H37 RC glass-visibility residual landed in `@vitrum/walkaround-rc`:
+  rect-area emitter NEE and point/spot fixture direct-light shadows now use
+  `rcTraceAny(..., skipGlass=true)` instead of closest-hit occlusion, so
+  transmissive geometry no longer fully blocks coarse RC direct light. The
+  merged-mode RC upload path now packs canonical `bvhIndex.w` payloads from core
+  materials, so the `trans4` glass filter works outside TLAS mode too. The
+  focused `rcLightEvalWgsl.test.ts` gate pins the direct-light WGSL call sites,
+  and `rcMergedRefit.test.ts` pins merged-mode glass payload packing.
 - Verification after the previous sweep: root `npm run typecheck` clean and
   root `npm test` clean (`150` files, `1551` passing, `3` skipped). Verification
   after the current follow-up is in progress; focused typecheck/test runs are

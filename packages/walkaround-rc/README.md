@@ -52,6 +52,8 @@ raw-WebGPU path.
   solid-angle table.
 - `__tests__/rcKernelMath.test.ts` — pure math invariants (cascade geometry,
   uniform packing).
+- `__tests__/rcLightEvalWgsl.test.ts` — direct-light WGSL contract for
+  glass-skip shadow visibility.
 - `__tests__/cascadeDimsOverride.test.ts` — per-engine cascade dimension override.
 - `__tests__/cascadeDispatchInvalidation.test.ts` — raw dispatcher bind-group
   cache invalidation across binding-relevant input changes.

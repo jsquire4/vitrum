@@ -25,6 +25,7 @@ export interface SceneBVH {
   bvhNodes: StorageAttributeLike<Float32Array>;
   positions: StorageAttributeLike<Float32Array>;
   indices: StorageAttributeLike<Uint32Array>;
+  coreMaterials: readonly MaterialSpec[];
   materials: StorageAttributeLike<Float32Array>;
   triMaterialId: StorageAttributeLike<Uint32Array>;
   bounds: {
@@ -74,6 +75,7 @@ export function buildRCSceneBVHFromCore(
     bvhNodes: attr(merged.bvhNodes, 8),
     positions: attr(merged.positions, 4),
     indices: attr(merged.indices, 3),
+    coreMaterials: merged.materials,
     materials: attr(materialFloats, 16),
     triMaterialId: attr(merged.triMaterialId, 1),
     bounds: {

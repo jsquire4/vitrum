@@ -17,6 +17,11 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 
 installWebGPUPolyfills();
 
+type MockBuffer = GPUBuffer & {
+  readonly label?: string;
+  readonly mappedBytes: ArrayBuffer;
+};
+
 /** Mock GPUDevice recording createBuffer + writeBuffer; buffers are tagged by
  *  their label so we can assert which got re-uploaded. */
 function makeMockDevice(): {
@@ -24,13 +29,17 @@ function makeMockDevice(): {
   createBuffer: ReturnType<typeof vi.fn>;
   writeBuffer: ReturnType<typeof vi.fn>;
 } {
-  const createBuffer = vi.fn((desc: { label?: string; size?: number }): unknown => ({
-    label: desc.label,
-    size: desc.size,
-    getMappedRange: () => new ArrayBuffer(Math.max(16, desc.size ?? 16)),
-    unmap: vi.fn(),
-    destroy: vi.fn(),
-  }));
+  const createBuffer = vi.fn((desc: { label?: string; size?: number }): unknown => {
+    const mappedBytes = new ArrayBuffer(Math.max(16, desc.size ?? 16));
+    return {
+      label: desc.label,
+      size: desc.size,
+      mappedBytes,
+      getMappedRange: () => mappedBytes,
+      unmap: vi.fn(),
+      destroy: vi.fn(),
+    };
+  });
   const writeBuffer = vi.fn();
   const device = {
     createBuffer,
@@ -40,6 +49,15 @@ function makeMockDevice(): {
 }
 
 const GREY: MaterialSpec = { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0 };
+const GLASS: MaterialSpec = {
+  baseColor: [0.8, 0.95, 1.0],
+  roughness: 0,
+  metallic: 0,
+  transmission: 0.8,
+  attenuationColor: [0.8, 0.95, 1.0],
+  attenuationDistance: 2,
+  thickness: 0.1,
+};
 
 /** One quad (two tris) as a core MeshPrimitive (winding mirrors the RC
  *  core-equivalence fixtures). */
@@ -89,6 +107,35 @@ function cubeScene(): Scene {
 }
 
 describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
+  it('packs transmission into merged RC bvhIndex.w so skipGlass works outside TLAS mode', async () => {
+    const { RCSubsystem } = await import('../src/HybridEngineRC.js');
+    const { device, createBuffer } = makeMockDevice();
+    const rc = new RCSubsystem(device);
+
+    rc.setSceneFromCore({
+      primitives: [quad('glass-pane', [
+        [-0.5, -0.5, 0],
+        [0.5, -0.5, 0],
+        [0.5, 0.5, 0],
+        [-0.5, 0.5, 0],
+      ], [0, 0, 1], GLASS)],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+
+    const indexBuffer = createBuffer.mock.results
+      .map((result) => result.value as MockBuffer)
+      .find((buffer) => buffer.label === 'rc-bvh-indices');
+    expect(indexBuffer).toBeDefined();
+
+    const words = new Uint32Array(indexBuffer!.mappedBytes);
+    expect(words.length).toBeGreaterThanOrEqual(8);
+    for (const triPayload of [words[3]!, words[7]!]) {
+      const trans4 = (triPayload >> 4) & 0xF;
+      expect(trans4).toBeGreaterThan(4);
+    }
+  });
+
   it('refits positions + nodes via writeBuffer without realloc or dispatcher recreation', async () => {
     const { RCSubsystem } = await import('../src/HybridEngineRC.js');
     const { device, createBuffer, writeBuffer } = makeMockDevice();

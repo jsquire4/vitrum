@@ -42,9 +42,9 @@ import {
   type StorageAttributeLike,
   type SceneBVH,
 } from './rc/bvhCore.js';
-import { padTriangleIndicesToVec4 } from './ddgi/probeUpdateMaterials.js';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
+import { packBVHIndexWFromCore } from './restir/packingHelpers.js';
 import {
   isRestirTlasOnlyRefit,
   makeRestirBvhSnapshot,
@@ -567,16 +567,22 @@ export class RCSubsystem implements PipelineSubsystem {
     // the raw stride-3 bytes makes the GPU read `bvhIndex.xyz[t]` from byte 16·t
     // while the data lives at 12·t — correct ONLY for tri 0 (16·0==12·0); for tri≥1
     // it reads ACROSS triangle boundaries → wrong vertices → tree-shape-dependent
-    // garbage (the F-RC1 17.75 dB / 3× lit-slot divergence). Pad to stride-4 (vec4u,
-    // .w=0) before upload, EXACTLY as the sibling DDGI merged path does
-    // (`probeUpdateBvhBuffers.rebuildProbeBvhFromScene` → `padTriangleIndicesToVec4`,
-    // which is why DDGI over the same builder renders correctly at 82 dB). RC's TLAS
-    // path already feeds stride-4 (`snap.bvhIndex`), so only the merged upload needed
-    // this. The stride-3 `bvh.indices` is retained unchanged for the refit fast path
-    // (`refitBvhBounds` reads `indices[t*3+k]`), so the CPU mirror at `setSceneFromCore` stays
-    // stride-3. The index buffer is never re-uploaded on a transform refit, so padding
-    // once here is sufficient.
-    const idxStride4 = padTriangleIndicesToVec4(bvh.indices.array);
+    // garbage (the F-RC1 17.75 dB / 3× lit-slot divergence). Pack to stride-4
+    // before upload. H37: the .w lane must NOT be zero-filled, because
+    // rcTraceAny(..., skipGlass=true) reads its transmission nibble (`trans4`) to
+    // skip glass. Use the same core-material payload packer as the ReSTIR/TLAS
+    // path so merged and TLAS RC visibility agree. The stride-3 `bvh.indices` is
+    // retained unchanged for the refit fast path (`refitBvhBounds` reads
+    // `indices[t*3+k]`), so the CPU mirror at `setSceneFromCore` stays stride-3.
+    // The index buffer is never re-uploaded on a transform refit, so packing once
+    // here is sufficient.
+    const triCount = Math.floor(bvh.indices.array.length / 3);
+    const idxStride4 = packBVHIndexWFromCore(
+      bvh.indices.array,
+      bvh.triMaterialId.array,
+      bvh.coreMaterials,
+      triCount,
+    );
     return {
       bvhNodesBuf:      this._uploadAttribute(bvh.bvhNodes,      'rc-bvh-nodes'),
       bvhIndicesBuf:    this._uploadTypedArray(idxStride4,        'rc-bvh-indices'),
