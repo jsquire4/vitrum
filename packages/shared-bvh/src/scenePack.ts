@@ -942,9 +942,13 @@ export function refitTlasTransforms(
     }
     for (const { instance, nonInvertible } of resolved) {
       if (nonInvertible) {
-        warnings.push(
-          `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
-        );
+        return {
+          ok: false,
+          reason:
+            `refitTlasTransforms: primitive "${primitive.id}" has a non-invertible ` +
+            `instance transform. Rebuild the pack so the singular instance can be skipped ` +
+            `instead of refit as identity-at-origin.`,
+        };
       }
       refitAabbs.push({ min: instance.aabbMin, max: instance.aabbMax });
       pendingTlasInstances.push(instance);

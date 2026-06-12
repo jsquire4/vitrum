@@ -142,6 +142,35 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.tlasNodes[0]).not.toBe(packed.tlasNodes[0]);
   });
 
+  it('H34-e: transform-only refit rejects a newly non-invertible transform', () => {
+    const base = unitTriMesh('tri');
+    const packed = packSceneFromCore(
+      { primitives: [base], emitters: [], environment: { kind: 'none' } },
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const rebuilt = refitTlasTransforms(
+      { primitives: [unitTriMesh('tri', singular)], emitters: [], environment: { kind: 'none' } },
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+      },
+    );
+
+    expect(rebuilt.ok).toBe(false);
+    if (rebuilt.ok) return;
+    expect(rebuilt.reason).toMatch(/non-invertible instance transform/);
+    expect(rebuilt.reason).toMatch(/identity-at-origin/);
+  });
+
   it('SP-3: instanced mesh produces four TLAS instances', () => {
     const scene: Scene = {
       primitives: [{
