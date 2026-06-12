@@ -139,4 +139,38 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
     expect(dispatcher.getLatestDenoised()).toBeNull();
     dispatcher.dispose();
   });
+
+  it('OIDNFinalDispatcher forwards runtime failures to the structured error hook', async () => {
+    const thrown = new Error('mock ORT model failure');
+    const denoiseFinal = vi.fn(async () => { throw thrown; });
+    const onError = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dispatcher = new OIDNFinalDispatcher(
+        { modelUrl: '/models/oidn_rt_hdr.onnx' },
+        async () => ({ denoiseFinal }),
+        mockReadback(),
+        { onError },
+      );
+
+      dispatcher.kickIfReady(
+        makeStubDevice(),
+        { color: {} as GPUTexture },
+        2,
+        2,
+      );
+      await new Promise((r) => setImmediate(r));
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(thrown);
+      expect(dispatcher.getState()).toMatchObject({
+        status: 'failed',
+        reason: 'mock ORT model failure',
+        retryable: true,
+      });
+      dispatcher.dispose();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

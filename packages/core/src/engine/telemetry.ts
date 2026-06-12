@@ -103,12 +103,14 @@ export interface FrameStats {
  *  - `'gpu-internal'`    — WebGPU `GPUInternalError`; driver/hardware-level.
  *  - `'device-lost'`     — `GPUDevice.lost` resolved (`fatal: true`).
  *  - `'context-lost'`    — WebGL2 `webglcontextlost` event (`fatal: true`).
+ *  - `'denoiser'`        — Async denoiser/readback/model failure.  Usually
+ *    recoverable; the engine keeps rendering the raw or previous denoised signal.
  *  - `'render'`          — Exception thrown inside `renderFrame` (fatal only
  *    after consecutive-throw threshold; see `attachVitrum`).
  */
 export interface EngineError {
   /** Error category — discriminant for error-specific handling. */
-  readonly kind: 'gpu-validation' | 'gpu-internal' | 'device-lost' | 'context-lost' | 'render';
+  readonly kind: 'gpu-validation' | 'gpu-internal' | 'device-lost' | 'context-lost' | 'denoiser' | 'render';
   /** Human-readable description of the error. */
   readonly message: string;
   /** When `true` the engine is in `'error'` state; dispose and recreate. */

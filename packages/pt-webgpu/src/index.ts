@@ -325,6 +325,10 @@ function emitPteWarning(
   }
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 class PTEngineWebGPU implements Engine {
   readonly #slot: StateSlot;
   readonly #device: GPUDevice;
@@ -489,6 +493,16 @@ class PTEngineWebGPU implements Engine {
         dispatcherOpts,
         opts.oidnBridgeLoader,
         opts.oidnReadbackFn,
+        {
+          onError: (err) => {
+            this.#emitError({
+              kind: 'denoiser',
+              message: `[vitrum/pt-webgpu] OIDN final denoiser failed: ${errorMessage(err)}`,
+              fatal: false,
+              raw: err,
+            });
+          },
+        },
       );
     } else {
       this.#postDenoiser = null;

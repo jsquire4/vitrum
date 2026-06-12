@@ -29,6 +29,10 @@ import {
   oidnDefaultLoader,
 } from '@vitrum/shared-denoisers';
 
+export interface OIDNFinalDispatcherRuntimeHooks {
+  readonly onError?: (err: unknown) => void;
+}
+
 // Re-export the shared types so existing importers of this module are unchanged.
 export type {
   OIDNFinalDispatcherOptions,
@@ -58,6 +62,7 @@ export class OIDNFinalDispatcher {
     opts: OIDNFinalDispatcherOptions,
     loader?: OIDNBridgeLoader,
     readback?: OidnReadbackFn,
+    hooks?: OIDNFinalDispatcherRuntimeHooks,
   ) {
     if (opts.modelUrl === undefined || opts.modelUrl.length === 0) {
       throw new Error(
@@ -74,6 +79,7 @@ export class OIDNFinalDispatcher {
       // pt-webgpu calls preloadOIDNModel on bridge init (behavioral
       // difference from pt-webgl — preserved intentionally).
       preloadOnBridgeInit: true,
+      ...(hooks?.onError != null ? { onError: hooks.onError } : {}),
     });
   }
 
