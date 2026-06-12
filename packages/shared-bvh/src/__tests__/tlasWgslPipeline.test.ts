@@ -22,4 +22,14 @@ describe('TLAS WGSL pipeline exports', () => {
     expect(TLAS_SCENE_HIT_TRAVERSAL_WGSL).toContain('fn traceTlasAny(');
     expect(TLAS_SCENE_HIT_TRAVERSAL_WGSL).toContain('array<u32, 64>');
   });
+
+  it('threads skipGlass through TLAS closest-hit shadow traversal (H32)', () => {
+    expect(TLAS_TRAVERSAL_WGSL).toContain('fn traceTlasAny(');
+    expect(TLAS_TRAVERSAL_WGSL).toContain(
+      'bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass,',
+    );
+    expect(BVH_INTERSECT_WGSL).toContain('if (skipGlass) {');
+    expect(BVH_INTERSECT_WGSL).toContain('let trans4 = (idxEntry.w >> 4u) & 0xFu;');
+    expect(BVH_INTERSECT_WGSL).toContain('if (trans4 > 4u) { continue; }');
+  });
 });
