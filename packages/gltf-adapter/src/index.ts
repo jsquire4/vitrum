@@ -44,6 +44,8 @@ export type {
   GltfAnimationApplyResult,
   GltfApplyAnimationOptions,
   GltfApplyVariantOptions,
+  GltfBlendAnimationOptions,
+  GltfBlendApplyResult,
   GltfClipSelector,
   GltfPrimitivePatchRecord,
   GltfSceneControllerInput,

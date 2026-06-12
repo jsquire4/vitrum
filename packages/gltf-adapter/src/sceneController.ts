@@ -51,6 +51,13 @@ export interface GltfApplyAnimationOptions {
   readonly forceSetScene?: boolean;
 }
 
+export interface GltfBlendAnimationOptions {
+  readonly engine?: GltfScenePatchTarget;
+  readonly loop?: boolean;
+  readonly forceSetScene?: boolean;
+  readonly times?: readonly number[];
+}
+
 export interface GltfApplyVariantOptions {
   readonly engine?: GltfScenePatchTarget;
   readonly forceSetScene?: boolean;
@@ -65,6 +72,17 @@ export interface GltfAnimationApplyResult {
   readonly clip: AnimationClip;
   readonly requestedTime: number;
   readonly localTime: number;
+  readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly scene: Scene;
+  readonly warnings: readonly string[];
+  readonly usedSetScene: boolean;
+}
+
+export interface GltfBlendApplyResult {
+  readonly clips: readonly AnimationClip[];
+  readonly requestedTimes: readonly number[];
+  readonly localTimes: readonly number[];
+  readonly weights: readonly number[];
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
@@ -188,82 +206,63 @@ export class GltfSceneController {
     const clip = this.#resolveClip(selector);
     const localTime = normalizeClipTime(clip, time, options.loop ?? false);
     const samples = sampleAnimationClip(clip, localTime);
-    const locals = cloneLocalStates(this.#baseLocals);
-    const morphWeightsByNode = new Map<number, Float32Array>();
     const frameWarnings: string[] = [];
-
-    for (const sample of samples) {
-      this.#applySampleToLocals(sample, locals, morphWeightsByNode, frameWarnings);
-    }
-
-    const worldTransforms = buildWorldTransformsForLocals(this.gltf, this.#rootNodes(), locals);
-    const patchMap = new Map<string, Partial<ScenePrimitive>>();
-
-    for (const [nodeIndex, primitiveIds] of this.#nodeToPrimitiveIds) {
-      const world = worldTransforms.get(nodeIndex);
-      if (!world) continue;
-      for (const id of primitiveIds) {
-        const current = findPrimitive(this.#scene, id);
-        if (!current) continue;
-        if (!mat4AlmostEqual(primitiveTransform(current), world)) {
-          mergePrimitivePatch(patchMap, id, { transform: world } as Partial<ScenePrimitive>);
-        }
-      }
-    }
-
-    for (const [nodeIndex, weights] of morphWeightsByNode) {
-      const primitiveIds = this.#nodeToPrimitiveIds.get(nodeIndex) ?? [];
-      for (const id of primitiveIds) {
-        const patch = this.#buildMorphPatch(id, weights, frameWarnings);
-        if (patch) mergePrimitivePatch(patchMap, id, patch);
-      }
-    }
-
-    for (const [id, binding] of this.#skinBindingsByPrimitiveId) {
-      const patch = this.#buildSkinPatch(id, binding, worldTransforms, patchMap.get(id), frameWarnings);
-      if (patch) mergePrimitivePatch(patchMap, id, patch);
-    }
-
-    const primitivePatches = Array.from(patchMap, ([id, patch]) => ({ id, patch }));
-    const target = options.engine ?? this.#engine;
-    let nextScene = this.#scene;
-    for (const { id, patch } of primitivePatches) {
-      nextScene = patchPrimitiveInScene(nextScene, id, patch);
-    }
-
-    let usedSetScene = false;
-    if (target && primitivePatches.length > 0) {
-      if (!options.forceSetScene && target.updatePrimitive) {
-        try {
-          for (const { id, patch } of primitivePatches) {
-            target.updatePrimitive(id, patch);
-          }
-        } catch (err) {
-          const message = errorMessage(err);
-          frameWarnings.push(
-            `[vitrum/gltf-adapter] GltfSceneController.applyAnimation: ` +
-              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
-          );
-          target.setScene(nextScene);
-          usedSetScene = true;
-        }
-      } else {
-        target.setScene(nextScene);
-        usedSetScene = true;
-      }
-    }
-
-    this.#scene = nextScene;
-    if (frameWarnings.length > 0) this.#warnings.push(...frameWarnings);
+    const applied = this.#applySampledChannels(samples, options, frameWarnings, 'applyAnimation');
 
     return {
       clip,
       requestedTime: time,
       localTime,
-      primitivePatches,
-      scene: this.#scene,
+      primitivePatches: applied.primitivePatches,
+      scene: applied.scene,
       warnings: frameWarnings,
-      usedSetScene,
+      usedSetScene: applied.usedSetScene,
+    };
+  }
+
+  blend(
+    selectors: readonly GltfClipSelector[],
+    weights: readonly number[],
+    time = this.#clock,
+    options: GltfBlendAnimationOptions = {},
+  ): GltfBlendApplyResult {
+    if (selectors.length === 0) {
+      throw new Error('[vitrum/gltf-adapter] GltfSceneController.blend: at least one clip is required.');
+    }
+    if (selectors.length !== weights.length) {
+      throw new Error(
+        `[vitrum/gltf-adapter] GltfSceneController.blend: clip count (${selectors.length}) ` +
+          `does not match weight count (${weights.length}).`,
+      );
+    }
+    if (options.times && options.times.length !== selectors.length) {
+      throw new Error(
+        `[vitrum/gltf-adapter] GltfSceneController.blend: times count (${options.times.length}) ` +
+          `does not match clip count (${selectors.length}).`,
+      );
+    }
+
+    const clips = selectors.map((selector) => this.#resolveClip(selector));
+    const positiveWeights = normalizeBlendWeights(weights);
+    const requestedTimes = clips.map((_, index) => options.times?.[index] ?? time);
+    const localTimes = clips.map((clip, index) =>
+      normalizeClipTime(clip, requestedTimes[index] ?? 0, options.loop ?? false),
+    );
+    const perClipSamples = clips.map((clip, index) => sampleAnimationClip(clip, localTimes[index] ?? 0));
+    const samples = blendSampledChannels(perClipSamples, positiveWeights);
+    const frameWarnings: string[] = [];
+    const applied = this.#applySampledChannels(samples, options, frameWarnings, 'blend');
+
+    this.#clock = time;
+    return {
+      clips,
+      requestedTimes,
+      localTimes,
+      weights: positiveWeights,
+      primitivePatches: applied.primitivePatches,
+      scene: applied.scene,
+      warnings: frameWarnings,
+      usedSetScene: applied.usedSetScene,
     };
   }
 
@@ -429,6 +428,90 @@ export class GltfSceneController {
     } else if (sample.path === 'scale') {
       state.scale = readVec3(sample.value, [1, 1, 1]);
     }
+  }
+
+  #applySampledChannels(
+    samples: readonly SampledChannel[],
+    options: Pick<GltfApplyAnimationOptions, 'engine' | 'forceSetScene'>,
+    frameWarnings: string[],
+    caller: 'applyAnimation' | 'blend',
+  ): {
+    primitivePatches: readonly GltfPrimitivePatchRecord[];
+    scene: Scene;
+    usedSetScene: boolean;
+  } {
+    const locals = cloneLocalStates(this.#baseLocals);
+    const morphWeightsByNode = new Map<number, Float32Array>();
+
+    for (const sample of samples) {
+      this.#applySampleToLocals(sample, locals, morphWeightsByNode, frameWarnings);
+    }
+
+    const worldTransforms = buildWorldTransformsForLocals(this.gltf, this.#rootNodes(), locals);
+    const patchMap = new Map<string, Partial<ScenePrimitive>>();
+
+    for (const [nodeIndex, primitiveIds] of this.#nodeToPrimitiveIds) {
+      const world = worldTransforms.get(nodeIndex);
+      if (!world) continue;
+      for (const id of primitiveIds) {
+        const current = findPrimitive(this.#scene, id);
+        if (!current) continue;
+        if (!mat4AlmostEqual(primitiveTransform(current), world)) {
+          mergePrimitivePatch(patchMap, id, { transform: world } as Partial<ScenePrimitive>);
+        }
+      }
+    }
+
+    for (const [nodeIndex, weights] of morphWeightsByNode) {
+      const primitiveIds = this.#nodeToPrimitiveIds.get(nodeIndex) ?? [];
+      for (const id of primitiveIds) {
+        const patch = this.#buildMorphPatch(id, weights, frameWarnings);
+        if (patch) mergePrimitivePatch(patchMap, id, patch);
+      }
+    }
+
+    for (const [id, binding] of this.#skinBindingsByPrimitiveId) {
+      const patch = this.#buildSkinPatch(id, binding, worldTransforms, patchMap.get(id), frameWarnings);
+      if (patch) mergePrimitivePatch(patchMap, id, patch);
+    }
+
+    const primitivePatches = Array.from(patchMap, ([id, patch]) => ({ id, patch }));
+    const target = options.engine ?? this.#engine;
+    let nextScene = this.#scene;
+    for (const { id, patch } of primitivePatches) {
+      nextScene = patchPrimitiveInScene(nextScene, id, patch);
+    }
+
+    let usedSetScene = false;
+    if (target && primitivePatches.length > 0) {
+      if (!options.forceSetScene && target.updatePrimitive) {
+        try {
+          for (const { id, patch } of primitivePatches) {
+            target.updatePrimitive(id, patch);
+          }
+        } catch (err) {
+          const message = errorMessage(err);
+          frameWarnings.push(
+            `[vitrum/gltf-adapter] GltfSceneController.${caller}: ` +
+              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+          );
+          target.setScene(nextScene);
+          usedSetScene = true;
+        }
+      } else {
+        target.setScene(nextScene);
+        usedSetScene = true;
+      }
+    }
+
+    this.#scene = nextScene;
+    if (frameWarnings.length > 0) this.#warnings.push(...frameWarnings);
+
+    return {
+      primitivePatches,
+      scene: this.#scene,
+      usedSetScene,
+    };
   }
 
   #buildMorphPatch(
@@ -651,6 +734,100 @@ function materialForIndex(
       'is missing. The glTF default material is used.',
   );
   return GLTF_DEFAULT_MATERIAL;
+}
+
+function normalizeBlendWeights(weights: readonly number[]): number[] {
+  const positive = weights.map((weight) =>
+    Number.isFinite(weight) && weight > 0 ? weight : 0,
+  );
+  const sum = positive.reduce((acc, weight) => acc + weight, 0);
+  if (sum <= 0) {
+    throw new Error('[vitrum/gltf-adapter] GltfSceneController.blend: at least one weight must be positive.');
+  }
+  return positive.map((weight) => weight / sum);
+}
+
+function blendSampledChannels(
+  perClipSamples: readonly (readonly SampledChannel[])[],
+  weights: readonly number[],
+): SampledChannel[] {
+  const accumulators = new Map<string, {
+    node: SampledChannel['node'];
+    path: SampledChannel['path'];
+    value: Float32Array;
+    weightSum: number;
+    referenceQuat?: Float32Array;
+  }>();
+
+  for (let clipIndex = 0; clipIndex < perClipSamples.length; clipIndex += 1) {
+    const weight = weights[clipIndex] ?? 0;
+    if (weight <= 0) continue;
+    for (const sample of perClipSamples[clipIndex] ?? []) {
+      const key = `${sample.node}\u0000${sample.path}`;
+      let acc = accumulators.get(key);
+      if (!acc) {
+        acc = {
+          node: sample.node,
+          path: sample.path,
+          value: new Float32Array(sample.value.length),
+          weightSum: 0,
+          ...(sample.path === 'rotation' ? { referenceQuat: new Float32Array(sample.value) } : {}),
+        };
+        accumulators.set(key, acc);
+      }
+      if (sample.value.length > acc.value.length) {
+        const grown = new Float32Array(sample.value.length);
+        grown.set(acc.value);
+        acc.value = grown;
+      }
+
+      const sign = sample.path === 'rotation' && acc.referenceQuat && quatDot(acc.referenceQuat, sample.value) < 0
+        ? -1
+        : 1;
+      for (let i = 0; i < sample.value.length; i += 1) {
+        acc.value[i] = (acc.value[i] ?? 0) + (sample.value[i] ?? 0) * weight * sign;
+      }
+      acc.weightSum += weight;
+    }
+  }
+
+  const out: SampledChannel[] = [];
+  for (const acc of accumulators.values()) {
+    if (acc.weightSum <= 0) continue;
+    const value = new Float32Array(acc.value.length);
+    if (acc.path === 'rotation') {
+      value.set(acc.value);
+      normalizeQuatInPlace(value);
+    } else {
+      for (let i = 0; i < acc.value.length; i += 1) {
+        value[i] = (acc.value[i] ?? 0) / acc.weightSum;
+      }
+    }
+    out.push({ node: acc.node, path: acc.path, value });
+  }
+  return out;
+}
+
+function quatDot(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  return (a[0] ?? 0) * (b[0] ?? 0) +
+    (a[1] ?? 0) * (b[1] ?? 0) +
+    (a[2] ?? 0) * (b[2] ?? 0) +
+    (a[3] ?? 1) * (b[3] ?? 1);
+}
+
+function normalizeQuatInPlace(value: Float32Array): void {
+  const len = Math.hypot(value[0] ?? 0, value[1] ?? 0, value[2] ?? 0, value[3] ?? 1);
+  if (len > 1e-8 && Number.isFinite(len)) {
+    value[0] = (value[0] ?? 0) / len;
+    value[1] = (value[1] ?? 0) / len;
+    value[2] = (value[2] ?? 0) / len;
+    value[3] = (value[3] ?? 1) / len;
+  } else {
+    value[0] = 0;
+    value[1] = 0;
+    value[2] = 0;
+    value[3] = 1;
+  }
 }
 
 function normalizeClipTime(clip: AnimationClip, time: number, loop: boolean): number {

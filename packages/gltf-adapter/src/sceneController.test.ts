@@ -42,6 +42,7 @@ function animatedHierarchyGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
     [0, 1],
     [0, 0, 0, 2, 0, 0],
+    [0, 0, 0, 0, 4, 0],
   ]);
   return {
     buffers: new Map([[0, packed.buffer]]),
@@ -58,14 +59,22 @@ function animatedHierarchyGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
         { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' },
         { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' },
+        { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3' },
       ],
       bufferViews: packed.views,
       buffers: [{ byteLength: packed.buffer.byteLength }],
-      animations: [{
-        name: 'parent-slide',
-        samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
-        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
-      }],
+      animations: [
+        {
+          name: 'parent-slide',
+          samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+        },
+        {
+          name: 'parent-lift',
+          samplers: [{ input: 1, output: 3, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+        },
+      ],
     },
   };
 }
@@ -76,6 +85,7 @@ function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
     [1, 0, 0, 1, 0, 0, 1, 0, 0],
     [0, 1],
     [0, 1],
+    [0, 0],
   ]);
   return {
     buffers: new Map([[0, packed.buffer]]),
@@ -93,14 +103,22 @@ function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
         { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
         { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
         { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 4, componentType: 5126, count: 2, type: 'SCALAR' },
       ],
       bufferViews: packed.views,
       buffers: [{ byteLength: packed.buffer.byteLength }],
-      animations: [{
-        name: 'morph-on',
-        samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
-        channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
-      }],
+      animations: [
+        {
+          name: 'morph-on',
+          samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
+        },
+        {
+          name: 'morph-off',
+          samplers: [{ input: 2, output: 4, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
+        },
+      ],
     },
   };
 }
@@ -321,6 +339,41 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
     expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
     expect(frame.warnings.some((w) => w.includes('material fast path unavailable'))).toBe(true);
+  });
+
+  it('blends transform clips per channel before patching primitives', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.blend(['parent-slide', 'parent-lift'], [0.25, 0.75], 1, {
+      engine: { setScene: vi.fn(), updatePrimitive },
+    });
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(frame.weights).toEqual([0.25, 0.75]);
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    const patch = frame.primitivePatches[0]!.patch as { transform: Float32Array };
+    expect(patch.transform[12]).toBeCloseTo(0.5);
+    expect(patch.transform[13]).toBeCloseTo(3);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0.5);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[13]).toBeCloseTo(3);
+  });
+
+  it('blends morph weights before skin solving', async () => {
+    const { gltf, buffers } = morphGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.blend(['morph-on', 'morph-off'], [0.25, 0.75], 1);
+
+    const patch = frame.primitivePatches[0]!.patch as {
+      morphWeights: Float32Array;
+      positions: Float32Array;
+    };
+    expect(patch.morphWeights[0]).toBeCloseTo(0.25);
+    expect(Array.from(patch.positions)).toEqual([0.25, 0, 0, 1.25, 0, 0, 0.25, 1, 0]);
   });
 
   it('samples morph-weight channels, solves the promoted skinned primitive, and patches deformed geometry', async () => {
