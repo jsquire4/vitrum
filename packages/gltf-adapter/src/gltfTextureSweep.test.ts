@@ -40,6 +40,26 @@ function expectedTransform(i: number): { offset: [number, number]; scale: [numbe
   };
 }
 
+function expectedWrap(i: number): { wrapS: 'repeat' | 'clamp-to-edge' | 'mirrored-repeat'; wrapT: 'repeat' | 'clamp-to-edge' | 'mirrored-repeat' } {
+  const modes = ['repeat', 'clamp-to-edge', 'mirrored-repeat'] as const;
+  return {
+    wrapS: modes[i % modes.length]!,
+    wrapT: modes[(i + 2) % modes.length]!,
+  };
+}
+
+function samplerForOrdinal(i: number): { wrapS?: number; wrapT?: number } {
+  const { wrapS, wrapT } = expectedWrap(i);
+  const code = (mode: 'repeat' | 'clamp-to-edge' | 'mirrored-repeat'): number | undefined =>
+    mode === 'repeat' ? undefined : mode === 'clamp-to-edge' ? 33071 : 33648;
+  const sampler: { wrapS?: number; wrapT?: number } = {};
+  const wrapSCode = code(wrapS);
+  const wrapTCode = code(wrapT);
+  if (wrapSCode !== undefined) sampler.wrapS = wrapSCode;
+  if (wrapTCode !== undefined) sampler.wrapT = wrapTCode;
+  return sampler;
+}
+
 /** Texture info for ordinal `i`: info-level texCoord 0, transform-level
  *  texCoord OVERRIDE 1 + distinct offset/scale/rotation. */
 function texInfo(i: number): GltfTextureInfo {
@@ -142,7 +162,8 @@ function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } 
         },
       },
     }],
-    textures: Array.from({ length: TEXTURE_COUNT }, () => ({ source: 0 })),
+    textures: Array.from({ length: TEXTURE_COUNT }, (_, i) => ({ source: 0, sampler: i })),
+    samplers: Array.from({ length: TEXTURE_COUNT }, (_, i) => samplerForOrdinal(i)),
     images: [{ bufferView: 1, mimeType: 'image/png' }],
     accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
     bufferViews: [
@@ -180,6 +201,9 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       expect(ref!.transform?.offset).toEqual(t.offset);
       expect(ref!.transform?.scale).toEqual(t.scale);
       expect(ref!.transform?.rotation).toBeCloseTo(t.rotation, 10);
+      const wrap = expectedWrap(ordinal);
+      expect(ref!.wrapS ?? 'repeat').toBe(wrap.wrapS);
+      expect(ref!.wrapT ?? 'repeat').toBe(wrap.wrapT);
     },
   );
 

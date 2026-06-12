@@ -57,7 +57,8 @@ function makeExternalTexturedGltf(): GltfJson {
         baseColorTexture: { index: 0, texCoord: 0 },
       },
     }],
-    textures: [{ source: 0 }],
+    textures: [{ source: 0, sampler: 0 }],
+    samplers: [{ wrapS: 33071, wrapT: 33648 }],
     images: [{ uri: 'textures/albedo.png', mimeType: 'image/png' }],
     accessors: [
       { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
@@ -164,6 +165,8 @@ describe('loadGltfAsset', () => {
     const prim = result.scene.primitives[0] as MeshPrimitive;
     expect(Array.from(prim.positions)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     expect((prim.material.baseColorMap as TextureRef).handle).toBe(decodedHandle);
+    expect((prim.material.baseColorMap as TextureRef).wrapS).toBe('clamp-to-edge');
+    expect((prim.material.baseColorMap as TextureRef).wrapT).toBe('mirrored-repeat');
     expect(result.featureReport.resources.externalBufferCount).toBe(1);
     expect(result.featureReport.resources.externalImageCount).toBe(1);
     expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
@@ -172,6 +175,8 @@ describe('loadGltfAsset', () => {
         materialField: 'baseColorMap',
         handleKind: 'opaque',
         path: 'scene.primitives[0].material.baseColorMap',
+        wrapS: 'clamp-to-edge',
+        wrapT: 'mirrored-repeat',
       }),
     ]));
     expect(result.recommendedBackend.backend).toBe('pt-webgl2');
@@ -273,6 +278,8 @@ describe('loadGltfAsset', () => {
         primitiveKind: 'mesh',
         materialField: 'baseColorMap',
         path: 'scene.primitives[0].material.baseColorMap',
+        wrapS: 'repeat',
+        wrapT: 'repeat',
         handleKind: 'raw-image',
         backendReadiness: {
           ptWebgl2: 'opaque',

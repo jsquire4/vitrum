@@ -351,7 +351,7 @@ export async function gltfToScene(
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
   const coreMaterials = (gltf.materials ?? []).map((m) =>
-    convertMaterial(m, handleMap, warnings),
+    convertMaterial(m, handleMap, warnings, gltf),
   );
   const selectedMaterialVariant = _resolveMaterialVariantSelection(
     gltf,

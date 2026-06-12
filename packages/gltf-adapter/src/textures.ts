@@ -19,7 +19,7 @@
 
 import type { GltfJson } from './gltfTypes.js';
 import type { GltfTexture } from './gltfTypes.js';
-import type { TextureRef, UvTransform } from '@vitrum/core';
+import type { TextureRef, TextureWrapMode, UvTransform } from '@vitrum/core';
 
 export type GltfTextureSourceExtension =
   | 'KHR_texture_basisu'
@@ -262,6 +262,12 @@ function uvTransformFromExt(
   return result;
 }
 
+function textureWrapMode(value: number | undefined): TextureWrapMode {
+  if (value === 33071) return 'clamp-to-edge';
+  if (value === 33648) return 'mirrored-repeat';
+  return 'repeat';
+}
+
 /**
  * Resolve a GltfTextureInfo to a TextureRef, given the decoded handle map.
  * Returns undefined if the texture is missing or its image failed to decode.
@@ -269,6 +275,7 @@ function uvTransformFromExt(
 export function resolveTextureRef(
   info: { index: number; texCoord?: number; extensions?: Record<string, unknown> } | undefined,
   handleMap: Map<number, unknown>,
+  gltf?: Pick<GltfJson, 'textures' | 'samplers'>,
 ): TextureRef | undefined {
   if (!info) return undefined;
   const handle = handleMap.get(info.index);
@@ -279,11 +286,17 @@ export function resolveTextureRef(
     | undefined);
   const texCoord = khrTransform?.texCoord ?? info.texCoord ?? 0;
   const transform = uvTransformFromExt(khrTransform);
+  const samplerIdx = gltf?.textures?.[info.index]?.sampler;
+  const sampler = samplerIdx !== undefined ? gltf?.samplers?.[samplerIdx] : undefined;
+  const wrapS = textureWrapMode(sampler?.wrapS);
+  const wrapT = textureWrapMode(sampler?.wrapT);
 
   const ref: TextureRef = {
     handle,
     ...(texCoord !== 0 ? { texCoord } : {}),
     ...(transform ? { transform } : {}),
+    ...(wrapS !== 'repeat' ? { wrapS } : {}),
+    ...(wrapT !== 'repeat' ? { wrapT } : {}),
   };
   return ref;
 }

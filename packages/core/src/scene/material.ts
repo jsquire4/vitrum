@@ -469,21 +469,29 @@ export interface UvTransform {
   readonly rotation?: number; // radians, CCW about (0,0) (default 0)
 }
 
+/** Texture coordinate wrapping mode. Mirrors glTF sampler wrapS/wrapT values:
+ *  `repeat` (10497), `clamp-to-edge` (33071), and `mirrored-repeat` (33648). */
+export type TextureWrapMode = 'repeat' | 'clamp-to-edge' | 'mirrored-repeat';
+
 /**
  * Texture reference. `handle` is the opaque backend/binding payload (a
  * `WebGLTexture` + metadata, a `GPUTexture`, a `Uint8Array` + descriptor, …) —
  * core never inspects it. `texCoord` selects the mesh UV channel
  * (0 = `MeshPrimitive.uvs`, 1 = `MeshPrimitive.uv1`); default 0. `transform`
- * carries `KHR_texture_transform`.
+ * carries `KHR_texture_transform`. `wrapS` / `wrapT` carry sampler address
+ * modes so host adapters do not silently drop glTF sampler semantics; omitted
+ * means `repeat`, matching the glTF default.
  *
  * Host adapters construct these; backends read `.handle` to upload/sample and
- * `.texCoord`/`.transform` to resolve UVs. Use `asTextureRef(handle)` for the
- * common no-transform case.
+ * `.texCoord`/`.transform`/wrap modes to resolve UVs. Use
+ * `asTextureRef(handle)` for the common no-transform/default-wrap case.
  */
 export interface TextureRef {
   readonly handle: unknown;
   readonly texCoord?: number;
   readonly transform?: UvTransform;
+  readonly wrapS?: TextureWrapMode;
+  readonly wrapT?: TextureWrapMode;
 }
 
 /** Wrap an opaque handle as a `TextureRef` (channel 0, identity transform). */

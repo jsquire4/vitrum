@@ -1,6 +1,6 @@
 // texturePipeline.ts — scene-level diagnostics for decoded glTF texture handles.
 
-import type { MaterialSpec, Scene, ScenePrimitive, TextureRef } from '@vitrum/core';
+import type { MaterialSpec, Scene, ScenePrimitive, TextureRef, TextureWrapMode } from '@vitrum/core';
 import type { RawImageHandle } from './textures.js';
 
 export type GltfMaterialTextureField =
@@ -44,6 +44,8 @@ export interface GltfTextureDecodeReportEntry {
   readonly path: string;
   readonly texCoord: number;
   readonly hasTransform: boolean;
+  readonly wrapS: TextureWrapMode;
+  readonly wrapT: TextureWrapMode;
   readonly handleKind: GltfTextureHandleKind;
   readonly backendReadiness: {
     readonly ptWebgl2: GltfBackendTextureStatus;
@@ -105,6 +107,8 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         path: `scene.primitives[${primitiveIndex}].material.${field}`,
         texCoord: ref.texCoord ?? 0,
         hasTransform: ref.transform !== undefined,
+        wrapS: ref.wrapS ?? 'repeat',
+        wrapT: ref.wrapT ?? 'repeat',
         handleKind,
         backendReadiness: backendReadinessForHandle(handleKind),
       });
