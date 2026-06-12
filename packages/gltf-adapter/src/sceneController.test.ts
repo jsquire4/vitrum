@@ -194,6 +194,29 @@ describe('GltfSceneController', () => {
     expect((scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
   });
 
+  it('falls back to setScene when updatePrimitive throws', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn(() => {
+      throw new Error('geometry patch rejected');
+    });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('parent-slide', 1, {
+      engine: { setScene, updatePrimitive },
+    });
+
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(frame.usedSetScene).toBe(true);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    const scene = setScene.mock.calls[0]![0] as Scene;
+    expect((scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
+    expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
+    expect(frame.warnings.some((w) => w.includes('geometry patch rejected'))).toBe(true);
+  });
+
   it('samples morph-weight channels, solves the promoted skinned primitive, and patches deformed geometry', async () => {
     const { gltf, buffers } = morphGltf();
     const result = await gltfToScene(gltf, { buffers });
@@ -224,4 +247,3 @@ describe('GltfSceneController', () => {
     expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
   });
 });
-

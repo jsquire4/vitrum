@@ -26,6 +26,13 @@
 import { tonemapWgsl } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
+const COMPOSITE_VARYINGS_WGSL = /* wgsl */ `
+struct CompositeVaryings {
+  @builtin(position) clip: vec4f,
+  @location(0) uv: vec2f,
+}
+`;
+
 // The vertex shader emits a [0,1]² screen UV (location 0) alongside the
 // clip-space position. The UV is the load-bearing value for the resolution-
 // factor blit (see fragMain): because it is a vertex-shader output interpolated
@@ -34,10 +41,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 // sized (and therefore useless for indexing an internal-res texture under
 // resolutionFactor < 1), but `uv` is resolution-independent.
 export const COMPOSITE_VERT_WGSL = /* wgsl */ `
-struct CompositeVaryings {
-  @builtin(position) clip: vec4f,
-  @location(0) uv: vec2f,
-}
+${COMPOSITE_VARYINGS_WGSL}
 
 @vertex
 fn vertMain(@builtin(vertex_index) idx: u32) -> CompositeVaryings {
@@ -60,6 +64,8 @@ fn vertMain(@builtin(vertex_index) idx: u32) -> CompositeVaryings {
 
 function buildCompositFragWgsl(): string {
   return /* wgsl */ `
+${COMPOSITE_VARYINGS_WGSL}
+
 @group(0) @binding(0) var denoisedTex: texture_2d<f32>;
 @group(0) @binding(1) var _compositeSampler: sampler;
 

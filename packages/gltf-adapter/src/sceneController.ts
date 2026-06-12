@@ -79,6 +79,10 @@ interface SkinBinding {
 
 const NODE_ID_PREFIX = 'gltf-node-';
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function createGltfSceneController(
   input: GltfSceneControllerInput,
   options: GltfSceneControllerOptions = {},
@@ -210,8 +214,18 @@ export class GltfSceneController {
     let usedSetScene = false;
     if (target && primitivePatches.length > 0) {
       if (!options.forceSetScene && target.updatePrimitive) {
-        for (const { id, patch } of primitivePatches) {
-          target.updatePrimitive(id, patch);
+        try {
+          for (const { id, patch } of primitivePatches) {
+            target.updatePrimitive(id, patch);
+          }
+        } catch (err) {
+          const message = errorMessage(err);
+          frameWarnings.push(
+            `[vitrum/gltf-adapter] GltfSceneController.applyAnimation: ` +
+              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+          );
+          target.setScene(nextScene);
+          usedSetScene = true;
         }
       } else {
         target.setScene(nextScene);
