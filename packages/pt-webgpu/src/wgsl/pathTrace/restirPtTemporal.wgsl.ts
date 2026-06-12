@@ -147,7 +147,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   // unbiased approximation (p̂ only sets resampling variance, not the mean).
   let woCur  = restirpt_safe_normalize(params.cameraPos.xyz - rCur.xv);
   let woPrev = restirpt_safe_normalize(params.cameraPos.xyz - rPrev.xv);
-  let pHatCur_native = restirPtTargetAt(rCur.xv, rCur.nv, woCur, rCur.albV, rCur.roughnessV, rCur.metalV, rCur.xs, rCur.Lo);
+  let pHatCur_native = restirPtTargetForDomain(rCur, woCur, rCur.xs, rCur.Lo);
 
   // Decide whether prev is a VALID reconnection-shift candidate (prefix match,
   // non-degenerate base half-G, positive Jacobian, non-zero shifted+native
@@ -161,17 +161,15 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   var pHatPrev_native: f32 = 0.0;
   if (prevValid) {
     J = restirPtShiftJacobian(rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns);
-    pHatPrev_atCur  = restirPtTargetAt(rCur.xv, rCur.nv, woCur, rCur.albV, rCur.roughnessV, rCur.metalV, rPrev.xs, rPrev.Lo);
-    pHatPrev_native = restirPtTargetAt(rPrev.xv, rPrev.nv, woPrev, rPrev.albV, rPrev.roughnessV, rPrev.metalV, rPrev.xs, rPrev.Lo);
+    pHatPrev_atCur  = restirPtTargetForDomain(rCur, woCur, rPrev.xs, rPrev.Lo);
+    pHatPrev_native = restirPtTargetForDomain(rPrev, woPrev, rPrev.xs, rPrev.Lo);
     prevValid = (J > 0.0)
              && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
              && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
   }
 
   var rGris = emptyReservoirPTHero();
-  rGris.xv = rCur.xv; rGris.nv = rCur.nv;
-  rGris.albV = rCur.albV; rGris.roughnessV = rCur.roughnessV; rGris.metalV = rCur.metalV;
-  rGris.prefixVertexCount = rCur.prefixVertexCount;
+  copyReservoirPTVisibleDomain(&rGris, rCur);
 
   // Canonical (current) sample, MIS-weighted against the prev pair.
   if (rCur.M > 0u && pHatCur_native > 1e-9) {
@@ -179,7 +177,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     if (prevValid) {
       // prev's sample re-rooted onto the CURRENT domain is p̂_cur(T z_prev); the
       // canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
-      let pHatPrev_atCurSample = restirPtTargetAt(rPrev.xv, rPrev.nv, woPrev, rPrev.albV, rPrev.roughnessV, rPrev.metalV, rCur.xs, rCur.Lo);
+      let pHatPrev_atCurSample = restirPtTargetForDomain(rPrev, woPrev, rCur.xs, rCur.Lo);
       let denomCur = restirPtPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
       m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
     }

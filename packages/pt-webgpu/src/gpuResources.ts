@@ -97,7 +97,7 @@ function _sampledTex(binding: number): GPUBindGroupLayoutEntry {
  */
 class ReservoirResources {
   /**
-   * Full-res ReservoirPTHero ping-pong buffers (144 B/px = 36 u32). `Cur` is the
+   * Full-res ReservoirPTHero ping-pong buffers (192 B/px = 48 u32). `Cur` is the
    * producer output that the temporal pass fuses in place; `Prev` is last frame's
    * temporal output (read-only this frame). `swapReservoirs()` exchanges them at
    * frame end so this frame's resolved reservoir becomes next frame's history.
@@ -432,13 +432,13 @@ export class GpuResources {
   liteLightTexture: GPUTexture | null = null;
   liteLightTextureView: GPUTextureView | null = null;
 
-  /** Bytes per ReservoirPTHero (36 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
+  /** Bytes per ReservoirPTHero (48 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
    *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
-  static readonly RESERVOIR_PT_HERO_BYTES = 144;
+  static readonly RESERVOIR_PT_HERO_BYTES = 192;
   /** RestirPtParams UBO byte size (8 × 4-byte fields). */
   static readonly RESTIR_PT_PARAMS_BYTES = 32;
   /**
-   * Safety ceiling for EACH reservoir ping-pong buffer. 144 B/px is ~298 MB at
+   * Safety ceiling for EACH reservoir ping-pong buffer. 192 B/px is ~398 MB at
    * 1920×1080; above this ceiling we refuse to grow (skip reuse this frame) rather
    * than silently allocate. Mirrors the BDPT eye-stack ceiling discipline.
    */

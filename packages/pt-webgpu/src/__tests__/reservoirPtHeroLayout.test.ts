@@ -21,7 +21,7 @@ import {
   RESTIR_PT_PARAMS_WGSL,
 } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
 
-// ── FROZEN GOLDEN — the ReservoirPTHero 144-byte (36 u32) layout ─────────────
+// ── FROZEN GOLDEN — the ReservoirPTHero 192-byte (48 u32) layout ─────────────
 // field → u32 index. Transcribed by hand from the layout comment. A reorder MUST
 // fail. f32 fields go through bitcast<u32>(); u32 fields (M, prefixVertexCount,
 // rngSeed, _padHybrid) are raw.
@@ -43,11 +43,21 @@ const GOLDEN_FIELD_INDEX: Record<string, number> = {
   'r.roughnessV': 26,
   'r.metalV': 27,
   'r.albV.x': 28, 'r.albV.y': 29, 'r.albV.z': 30,
-  'r._pad1': 31,
-  'r.hybridJacCache': 32,
-  'r.hybridShiftPdf': 33,
-  'r.rngSeed': 34,
-  'r._padHybrid': 35,
+  'r.clearcoatV': 31,
+  'r.clearcoatRoughnessV': 32,
+  'r.sheenV': 33,
+  'r.sheenRoughnessV': 34,
+  'r.sheenColorV.x': 35, 'r.sheenColorV.y': 36, 'r.sheenColorV.z': 37,
+  'r.iridescenceV': 38,
+  'r.iridescenceIorV': 39,
+  'r.iridescenceThicknessMinV': 40,
+  'r.iridescenceThicknessMaxV': 41,
+  'r.anisotropyV': 42,
+  'r.anisotropyRotationV': 43,
+  'r.hybridJacCache': 44,
+  'r.hybridShiftPdf': 45,
+  'r.rngSeed': 46,
+  'r._padHybrid': 47,
 };
 
 const RAW_U32_FIELDS = new Set(['r.M', 'r.prefixVertexCount', 'r.rngSeed', 'r._padHybrid']);
@@ -69,9 +79,9 @@ function fnBody(src: string, fnName: string): string {
   return src.slice(open + 1, i);
 }
 
-describe('ReSTIR-PT hero reservoir — ReservoirPTHero stride = 36 u32 / 144 bytes', () => {
-  it('declares RESERVOIR_PT_HERO_STRIDE = 36u', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 36u;');
+describe('ReSTIR-PT hero reservoir — ReservoirPTHero stride = 48 u32 / 192 bytes', () => {
+  it('declares RESERVOIR_PT_HERO_STRIDE = 48u', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 48u;');
   });
 
   it('declares the ReservoirPTHero struct', () => {
@@ -120,11 +130,21 @@ describe('ReSTIR-PT hero reservoir — every field at its golden u32 index', () 
       { lhs: 'r.roughnessV', indices: [26], raw: false },
       { lhs: 'r.metalV', indices: [27], raw: false },
       { lhs: 'r.albV', indices: [28, 29, 30], raw: false },
-      { lhs: 'r._pad1', indices: [31], raw: false },
-      { lhs: 'r.hybridJacCache', indices: [32], raw: false },
-      { lhs: 'r.hybridShiftPdf', indices: [33], raw: false },
-      { lhs: 'r.rngSeed', indices: [34], raw: true },
-      { lhs: 'r._padHybrid', indices: [35], raw: true },
+      { lhs: 'r.clearcoatV', indices: [31], raw: false },
+      { lhs: 'r.clearcoatRoughnessV', indices: [32], raw: false },
+      { lhs: 'r.sheenV', indices: [33], raw: false },
+      { lhs: 'r.sheenRoughnessV', indices: [34], raw: false },
+      { lhs: 'r.sheenColorV', indices: [35, 36, 37], raw: false },
+      { lhs: 'r.iridescenceV', indices: [38], raw: false },
+      { lhs: 'r.iridescenceIorV', indices: [39], raw: false },
+      { lhs: 'r.iridescenceThicknessMinV', indices: [40], raw: false },
+      { lhs: 'r.iridescenceThicknessMaxV', indices: [41], raw: false },
+      { lhs: 'r.anisotropyV', indices: [42], raw: false },
+      { lhs: 'r.anisotropyRotationV', indices: [43], raw: false },
+      { lhs: 'r.hybridJacCache', indices: [44], raw: false },
+      { lhs: 'r.hybridShiftPdf', indices: [45], raw: false },
+      { lhs: 'r.rngSeed', indices: [46], raw: true },
+      { lhs: 'r._padHybrid', indices: [47], raw: true },
     ];
     for (const body of [loadRw, loadRo]) {
       for (const { lhs, indices, raw } of checks) {
@@ -138,17 +158,17 @@ describe('ReSTIR-PT hero reservoir — every field at its golden u32 index', () 
     }
   });
 
-  it('no write touches an index >= 36 (stride bound)', () => {
+  it('no write touches an index >= 48 (stride bound)', () => {
     const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
     expect(writes.length).toBeGreaterThan(0);
-    for (const idx of writes) expect(idx).toBeLessThan(36);
+    for (const idx of writes) expect(idx).toBeLessThan(48);
   });
 
-  it('writes all 36 indices [0..35] exactly once', () => {
+  it('writes all 48 indices [0..47] exactly once', () => {
     const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
     const seen = new Set(writes);
-    expect(seen.size).toBe(36);
-    for (let i = 0; i < 36; i++) expect(seen.has(i), `index ${i} written`).toBe(true);
+    expect(seen.size).toBe(48);
+    for (let i = 0; i < 48; i++) expect(seen.has(i), `index ${i} written`).toBe(true);
   });
 });
 
@@ -175,6 +195,11 @@ describe('ReSTIR-PT hero reservoir — empty constructor zeroes every field', ()
     expect(empty).toContain('r.roughnessV = 0.0;');
     expect(empty).toContain('r.metalV = 0.0;');
     expect(empty).toContain('r.albV = vec3f(0.0);');
+    expect(empty).toContain('r.clearcoatV = 0.0;');
+    expect(empty).toContain('r.sheenV = 0.0;');
+    expect(empty).toContain('r.sheenColorV = vec3f(0.0);');
+    expect(empty).toContain('r.iridescenceIorV = 1.3;');
+    expect(empty).toContain('r.anisotropyV = 0.0;');
   });
 
   it('zero-initialises the Phase-0 (written-but-unread) hybrid + rngSeed headroom', () => {

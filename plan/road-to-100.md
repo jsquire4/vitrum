@@ -491,7 +491,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | BSDF connections | `connect.wgsl.ts`, `connectLite.wgsl.ts` | ✅ local helper propagation closed (area/env full-tier; env lite; area-lite remains deliberate zero stub) |
 | BDPT | `bdptConnection.wgsl.ts`, `bdptLightSubpath.wgsl.ts` | ✅ eye↔light connection uses full helpers; **open:** light-subpath scatter still uses base helpers / sampler payload |
 | SPPM / caustics | `caustic.wgsl.ts`, `sppmBindings.wgsl.ts` | ✅ receiver-side SPPM/caustic BRDF/PDF helper propagation closed |
-| ReSTIR-PT | `restirPtProducer.wgsl.ts`, `restirPtCompose.wgsl.ts`, `reservoirPtHero.wgsl.ts`, `restirPtResolve.wgsl.ts` | ✅ producer direct/onward paths use full helpers; **open:** reservoir payload/resolve still stores only base lobes and source PDFs track the current sampler |
+| ReSTIR-PT | `restirPtProducer.wgsl.ts`, `restirPtCompose.wgsl.ts`, `reservoirPtHero.wgsl.ts`, `restirPtResolve.wgsl.ts` | ✅ producer direct/onward paths use full helpers; ✅ scalar-lobe reservoir payload/target/resolve now uses full visible-domain helpers (`ReservoirPTHero` 48-word layout); **open:** visible-vertex texture-map parity and clearcoat/sheen source-lobe sampling/PDF schema still need a dedicated sampler pass |
 | Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | OPEN — derivatives still target the base BRDF parameterization |
 | Present | `present.wgsl.ts` tonemap only — no BSDF | N/A |
 

@@ -248,9 +248,9 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   endpoint evals/PDF overrides, and the ReSTIR-PT producer suffix-Lo estimator
   now use `evaluateBrdfFull` / `brdfDirectionalPdfFull` where the needed
   material fields are locally available. Remaining base-helper sites are now
-  concentrated in sampler/PDF-schema paths: ReSTIR-PT reservoir payload/resolve,
-  the visible-vertex source PDF tied to `sampleNextBounceDirection`, BDPT
-  light-subpath scatter PDFs, and the inverse adjoint harness.
+  concentrated in sampler/PDF-schema paths: ReSTIR-PT visible-vertex material-map
+  parity, clearcoat/sheen source sampling, BDPT light-subpath scatter PDFs, and
+  the inverse adjoint harness.
 - The sixteenth arbitrary-glTF loader/API slice landed in `@vitrum/gltf-adapter`:
   high-level URL/resource loading now throws typed `GltfFetchFailed` /
   `GltfResourceNotFound` errors with `{ url, kind }`, `LoadGltfAssetOptions.cache`
@@ -267,6 +267,18 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   import. Authored tangents are preserved unchanged, and missing-UV/degenerate
   cases emit adapter warnings instead of silently pretending the tangent-space
   basis exists.
+- The eighteenth pt-webgpu ReSTIR-PT material-lobe slice landed:
+  `ReservoirPTHero` widened from 36 to 48 u32 words and now serializes the
+  visible vertex's scalar clearcoat/sheen/iridescence fields plus anisotropy
+  state. Producer, temporal, spatial, finalise, and resolve all route p-hat /
+  reconstruction through the same full-lobe visible-domain helper, and resolve
+  now uses `evaluateBrdfFull` instead of the base helper. The producer samples
+  anisotropic visible-vertex specular directions and computes the matching
+  anisotropic base source PDF while deliberately excluding clearcoat/sheen from
+  `pdfSrc` until those lobes are actually sampled. Focused reservoir-layout and
+  ReSTIR-PT contract tests pin the 192-byte layout, field serialization,
+  domain-copy helper, full-lobe target/resolve, and anisotropic producer path;
+  the WGSL shader gate compiles all four ReSTIR-PT passes.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
   `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` pins
   transform refit, material refresh, emitter repack/GI invalidation,
@@ -759,19 +771,24 @@ Evidence:
   receiver gather, MNEE caustic receiver paths, BDPT connection endpoints, and
   ReSTIR-PT producer suffix Lo now use full BRDF/PDF helpers where the needed
   material fields are locally available.
-- Remaining base-helper sites are not simple omissions: ReSTIR-PT
-  `ReservoirPTHero` stores only `albV/roughnessV/metalV`, resolve/temporal/
-  spatial targets inherit that layout, the producer's source PDF is tied to the
-  current `sampleNextBounceDirection` sampler, BDPT light-subpath scatter PDFs
-  are tied to the light-subpath sampler, and inverse adjoints use a separate
-  derivative model.
+- ReSTIR-PT reservoir payload/target/resolve scalar-lobe parity is now closed:
+  `ReservoirPTHero` stores scalar clearcoat/sheen/iridescence fields and
+  anisotropy state, temporal/spatial copy the full visible-domain payload, p-hat
+  uses `evaluateBrdfFull`, and resolve reconstructs with `evaluateBrdfFull`.
+- Remaining base-helper or approximate sites are not simple omissions: ReSTIR-PT
+  visible-vertex texture-map parity still needs the same baseColor/ORM/normal/
+  bump/layer treatment as the main shade prologue; clearcoat/sheen are evaluated
+  but not sampled as producer source lobes, so `pdfSrc` intentionally remains the
+  actual anisotropic base sampling density; BDPT light-subpath scatter PDFs are
+  tied to the light-subpath sampler; inverse adjoints use a separate derivative
+  model.
 
 Closure:
-- Redesign sampler/PDF coherence: extend `sampleNextBounceDirection` and the
-  associated source/reverse PDFs for clearcoat/sheen/iridescence/aniso sampling
-  rather than only changing evaluation.
-- Widen `ReservoirPTHero` and host byte-size/layout tests if ReSTIR-PT
-  visible-vertex extension targets are promoted.
+- Redesign sampler/PDF coherence: extend `sampleNextBounceDirection`, the
+  ReSTIR-PT producer source sampler, and associated source/reverse PDFs for
+  clearcoat/sheen sampling rather than only changing evaluation.
+- Add visible-vertex material-map parity to the ReSTIR-PT producer/payload path
+  or mark the map subset approximate with structured capability detail.
 - Extend BDPT light-subpath sampling/PDF bookkeeping before marking light-path
   extension-lobe parity closed.
 - Add material-furnace and lobe-specific tests plus reference A/B before

@@ -97,7 +97,12 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
   // FULL visible-vertex BRDF (NOT the diffuse proxy target). With W = 1/p_src for
   // the chosen sample, f·cos·Lo·W = f·cos·Lo/p_src = the unbiased single-bounce
   // estimator (see the file header).
-  let fBsdf = evaluateBrdf(r.albV, r.roughnessV, r.metalV, r.nv, wo, wiRecon);
+  let fBsdf = evaluateBrdfFull(
+    r.albV, r.roughnessV, r.metalV, r.nv, wo, wiRecon,
+    r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
+    r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
+    r.anisotropyV, r.anisotropyRotationV,
+  );
   let indirect = fBsdf * cosTheta * r.Lo * r.W;
 
   rpt_result[pixelIdx] = vec4f(max(indirect, vec3f(0.0)), 1.0);

@@ -158,13 +158,13 @@ export const RESTIR_PT_PARAMS_FIELDS = [
 export const RESTIR_PT_PARAMS_BYTES = 32;
 
 export const RESERVOIR_PT_HERO_WGSL = /* wgsl */ `// ============================================================
-// ReSTIR-PT / GRIS hero reservoir (ReservoirPTHero, 144 bytes = 36 × u32).
+// ReSTIR-PT / GRIS hero reservoir (ReservoirPTHero, 192 bytes = 48 × u32).
 // Full-res, arbitrary visible-vertex material. Mirrors the walkaround-hybrid
 // ReservoirPT field set + bitcast serialization, widened for the hero stack:
 //   - pdfSrc (the REAL visible-vertex BSDF sampling pdf) for unbiased glossy
 //     reconstruction (the diffuse GI version cosine-samples and does not need it),
-//   - the visible-vertex material (roughness/metallic/albedo) so the RESOLVE pass
-//     can evaluate the FULL BRDF (not a diffuse proxy),
+//   - the visible-vertex material (base + scalar extension lobes + anisotropy) so
+//     the RESOLVE pass can evaluate the FULL BRDF (not a diffuse proxy),
 //   - Phase-0 hybrid-shift + rngSeed headroom (written-but-UNREAD this increment).
 // ============================================================
 struct ReservoirPTHero {
@@ -186,17 +186,27 @@ struct ReservoirPTHero {
   prefixVertexCount: u32,   // path-prefix vertex count (1 here)    idx 25
   roughnessV:        f32,   // visible-vertex roughness (resolve)   idx 26
   metalV:            f32,   // visible-vertex metallic (resolve)    idx 27
-  // ── visible-vertex albedo (resolve evaluates the FULL BRDF) ──
+  // ── visible-vertex BRDF payload (resolve evaluates the FULL BRDF) ──
   albV:              vec3f, // visible-vertex baseColor             idx 28..30
-  _pad1:             f32,   //                                      idx 31
+  clearcoatV:        f32,   // clearcoat scalar                     idx 31
+  clearcoatRoughnessV: f32, // clearcoat roughness                  idx 32
+  sheenV:            f32,   // sheen scalar                         idx 33
+  sheenRoughnessV:   f32,   // sheen roughness                      idx 34
+  sheenColorV:       vec3f, // sheen colour                         idx 35..37
+  iridescenceV:      f32,   // iridescence scalar                   idx 38
+  iridescenceIorV:   f32,   // iridescence IOR                      idx 39
+  iridescenceThicknessMinV: f32, // min film thickness              idx 40
+  iridescenceThicknessMaxV: f32, // max film thickness              idx 41
+  anisotropyV:       f32,   // visible-vertex anisotropy strength   idx 42
+  anisotropyRotationV: f32, // visible-vertex anisotropy rotation   idx 43
   // ── Phase-0 hybrid-shift + rngSeed headroom (WRITTEN-but-UNREAD here) ──
-  hybridJacCache:    f32,   // future replayed-prefix shift Jacobian idx 32
-  hybridShiftPdf:    f32,   // future replayed-prefix reverse pdf    idx 33
-  rngSeed:           u32,   // future random-replay decorrelated seed idx 34
-  _padHybrid:        u32,   //                                      idx 35
+  hybridJacCache:    f32,   // future replayed-prefix shift Jacobian idx 44
+  hybridShiftPdf:    f32,   // future replayed-prefix reverse pdf    idx 45
+  rngSeed:           u32,   // future random-replay decorrelated seed idx 46
+  _padHybrid:        u32,   //                                      idx 47
 };
 
-// ReservoirPTHero byte layout (144 bytes = 36 × u32):
+// ReservoirPTHero byte layout (192 bytes = 48 × u32):
 //   [0..2]   xv.xyz        [3]    _pad0
 //   [4..6]   nv.xyz        [7]    W
 //   [8..10]  xs.xyz        [11]   w_sum
@@ -205,13 +215,20 @@ struct ReservoirPTHero {
 //   [20..22] wi_recon.xyz  [23]   distRecon
 //   [24]     cosReconOut   [25]   prefixVertexCount
 //   [26]     roughnessV    [27]   metalV
-//   [28..30] albV.xyz      [31]   _pad1
-//   [32]     hybridJacCache  (Phase-0, unread)
-//   [33]     hybridShiftPdf  (Phase-0, unread)
-//   [34]     rngSeed         (Phase-0, unread)
-//   [35]     _padHybrid
-// Strided storage in array<u32> (4-byte elements) — stride = 36 u32.
-const RESERVOIR_PT_HERO_STRIDE: u32 = 36u;
+//   [28..30] albV.xyz      [31]   clearcoatV
+//   [32]     clearcoatRoughnessV
+//   [33]     sheenV        [34]   sheenRoughnessV
+//   [35..37] sheenColorV.xyz
+//   [38]     iridescenceV  [39]   iridescenceIorV
+//   [40]     iridescenceThicknessMinV
+//   [41]     iridescenceThicknessMaxV
+//   [42]     anisotropyV   [43]   anisotropyRotationV
+//   [44]     hybridJacCache  (Phase-0, unread)
+//   [45]     hybridShiftPdf  (Phase-0, unread)
+//   [46]     rngSeed         (Phase-0, unread)
+//   [47]     _padHybrid
+// Strided storage in array<u32> (4-byte elements) — stride = 48 u32.
+const RESERVOIR_PT_HERO_STRIDE: u32 = 48u;
 
 fn emptyReservoirPTHero() -> ReservoirPTHero {
   var r: ReservoirPTHero;
@@ -226,7 +243,17 @@ fn emptyReservoirPTHero() -> ReservoirPTHero {
   r.roughnessV = 0.0;
   r.metalV = 0.0;
   r.albV = vec3f(0.0);
-  r._pad1 = 0.0;
+  r.clearcoatV = 0.0;
+  r.clearcoatRoughnessV = 0.0;
+  r.sheenV = 0.0;
+  r.sheenRoughnessV = 0.0;
+  r.sheenColorV = vec3f(0.0);
+  r.iridescenceV = 0.0;
+  r.iridescenceIorV = 1.3;
+  r.iridescenceThicknessMinV = 100.0;
+  r.iridescenceThicknessMaxV = 400.0;
+  r.anisotropyV = 0.0;
+  r.anisotropyRotationV = 0.0;
   // Phase-0 headroom — zero-initialised, READ BY NO PASS in this increment.
   r.hybridJacCache = 0.0;
   r.hybridShiftPdf = 0.0;
@@ -255,11 +282,21 @@ fn loadReservoirPTHero_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) ->
   r.roughnessV        = bitcast<f32>(buf[b + 26u]);
   r.metalV            = bitcast<f32>(buf[b + 27u]);
   r.albV              = vec3f(bitcast<f32>(buf[b + 28u]), bitcast<f32>(buf[b + 29u]), bitcast<f32>(buf[b + 30u]));
-  r._pad1             = bitcast<f32>(buf[b + 31u]);
-  r.hybridJacCache    = bitcast<f32>(buf[b + 32u]);
-  r.hybridShiftPdf    = bitcast<f32>(buf[b + 33u]);
-  r.rngSeed           = buf[b + 34u];
-  r._padHybrid        = buf[b + 35u];
+  r.clearcoatV        = bitcast<f32>(buf[b + 31u]);
+  r.clearcoatRoughnessV = bitcast<f32>(buf[b + 32u]);
+  r.sheenV            = bitcast<f32>(buf[b + 33u]);
+  r.sheenRoughnessV   = bitcast<f32>(buf[b + 34u]);
+  r.sheenColorV       = vec3f(bitcast<f32>(buf[b + 35u]), bitcast<f32>(buf[b + 36u]), bitcast<f32>(buf[b + 37u]));
+  r.iridescenceV      = bitcast<f32>(buf[b + 38u]);
+  r.iridescenceIorV   = bitcast<f32>(buf[b + 39u]);
+  r.iridescenceThicknessMinV = bitcast<f32>(buf[b + 40u]);
+  r.iridescenceThicknessMaxV = bitcast<f32>(buf[b + 41u]);
+  r.anisotropyV       = bitcast<f32>(buf[b + 42u]);
+  r.anisotropyRotationV = bitcast<f32>(buf[b + 43u]);
+  r.hybridJacCache    = bitcast<f32>(buf[b + 44u]);
+  r.hybridShiftPdf    = bitcast<f32>(buf[b + 45u]);
+  r.rngSeed           = buf[b + 46u];
+  r._padHybrid        = buf[b + 47u];
   return r;
 }
 
@@ -283,11 +320,21 @@ fn loadReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u
   r.roughnessV        = bitcast<f32>(buf[b + 26u]);
   r.metalV            = bitcast<f32>(buf[b + 27u]);
   r.albV              = vec3f(bitcast<f32>(buf[b + 28u]), bitcast<f32>(buf[b + 29u]), bitcast<f32>(buf[b + 30u]));
-  r._pad1             = bitcast<f32>(buf[b + 31u]);
-  r.hybridJacCache    = bitcast<f32>(buf[b + 32u]);
-  r.hybridShiftPdf    = bitcast<f32>(buf[b + 33u]);
-  r.rngSeed           = buf[b + 34u];
-  r._padHybrid        = buf[b + 35u];
+  r.clearcoatV        = bitcast<f32>(buf[b + 31u]);
+  r.clearcoatRoughnessV = bitcast<f32>(buf[b + 32u]);
+  r.sheenV            = bitcast<f32>(buf[b + 33u]);
+  r.sheenRoughnessV   = bitcast<f32>(buf[b + 34u]);
+  r.sheenColorV       = vec3f(bitcast<f32>(buf[b + 35u]), bitcast<f32>(buf[b + 36u]), bitcast<f32>(buf[b + 37u]));
+  r.iridescenceV      = bitcast<f32>(buf[b + 38u]);
+  r.iridescenceIorV   = bitcast<f32>(buf[b + 39u]);
+  r.iridescenceThicknessMinV = bitcast<f32>(buf[b + 40u]);
+  r.iridescenceThicknessMaxV = bitcast<f32>(buf[b + 41u]);
+  r.anisotropyV       = bitcast<f32>(buf[b + 42u]);
+  r.anisotropyRotationV = bitcast<f32>(buf[b + 43u]);
+  r.hybridJacCache    = bitcast<f32>(buf[b + 44u]);
+  r.hybridShiftPdf    = bitcast<f32>(buf[b + 45u]);
+  r.rngSeed           = buf[b + 46u];
+  r._padHybrid        = buf[b + 47u];
   return r;
 }
 
@@ -324,12 +371,24 @@ fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: 
   buf[b + 28u] = bitcast<u32>(r.albV.x);
   buf[b + 29u] = bitcast<u32>(r.albV.y);
   buf[b + 30u] = bitcast<u32>(r.albV.z);
-  buf[b + 31u] = bitcast<u32>(r._pad1);
+  buf[b + 31u] = bitcast<u32>(r.clearcoatV);
+  buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);
+  buf[b + 33u] = bitcast<u32>(r.sheenV);
+  buf[b + 34u] = bitcast<u32>(r.sheenRoughnessV);
+  buf[b + 35u] = bitcast<u32>(r.sheenColorV.x);
+  buf[b + 36u] = bitcast<u32>(r.sheenColorV.y);
+  buf[b + 37u] = bitcast<u32>(r.sheenColorV.z);
+  buf[b + 38u] = bitcast<u32>(r.iridescenceV);
+  buf[b + 39u] = bitcast<u32>(r.iridescenceIorV);
+  buf[b + 40u] = bitcast<u32>(r.iridescenceThicknessMinV);
+  buf[b + 41u] = bitcast<u32>(r.iridescenceThicknessMaxV);
+  buf[b + 42u] = bitcast<u32>(r.anisotropyV);
+  buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);
   // Phase-0 headroom (written-but-unread this increment).
-  buf[b + 32u] = bitcast<u32>(r.hybridJacCache);
-  buf[b + 33u] = bitcast<u32>(r.hybridShiftPdf);
-  buf[b + 34u] = r.rngSeed;
-  buf[b + 35u] = r._padHybrid;
+  buf[b + 44u] = bitcast<u32>(r.hybridJacCache);
+  buf[b + 45u] = bitcast<u32>(r.hybridShiftPdf);
+  buf[b + 46u] = r.rngSeed;
+  buf[b + 47u] = r._padHybrid;
 }
 
 // Streaming RIS reservoir update (Talbot 2005 / Bitterli 2020). Mirrors
@@ -352,6 +411,26 @@ fn updateReservoirPT(
   }
 }
 
+fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: ReservoirPTHero) {
+  (*dst).xv = src.xv;
+  (*dst).nv = src.nv;
+  (*dst).albV = src.albV;
+  (*dst).roughnessV = src.roughnessV;
+  (*dst).metalV = src.metalV;
+  (*dst).clearcoatV = src.clearcoatV;
+  (*dst).clearcoatRoughnessV = src.clearcoatRoughnessV;
+  (*dst).sheenV = src.sheenV;
+  (*dst).sheenRoughnessV = src.sheenRoughnessV;
+  (*dst).sheenColorV = src.sheenColorV;
+  (*dst).iridescenceV = src.iridescenceV;
+  (*dst).iridescenceIorV = src.iridescenceIorV;
+  (*dst).iridescenceThicknessMinV = src.iridescenceThicknessMinV;
+  (*dst).iridescenceThicknessMaxV = src.iridescenceThicknessMaxV;
+  (*dst).anisotropyV = src.anisotropyV;
+  (*dst).anisotropyRotationV = src.anisotropyRotationV;
+  (*dst).prefixVertexCount = src.prefixVertexCount;
+}
+
 // The hero target function p̂ in the domain whose visible vertex is xv:
 //   p̂(z) = luminance( f_bsdf(xv; wo→wi) · max(0, cos(nv, wi)) · Lo ),  wi = xv→xs
 // the INTEGRAND-MATCHING target (the luminance of the real unshadowed reconnection
@@ -363,15 +442,50 @@ fn updateReservoirPT(
 // only reduces RESAMPLING VARIANCE — decisively for a GLOSSY visible vertex whose
 // direction-sensitive BRDF the old cosine proxy mis-weighted (the documented prefix-1
 // glossy drift, fixed here). Returns 0 on a degenerate / back-facing edge.
-fn restirPtTargetAt(xv: vec3f, nv: vec3f, wo: vec3f, albV: vec3f, roughnessV: f32, metalV: f32, xs: vec3f, Lo: vec3f) -> f32 {
+fn restirPtTargetAt(
+  xv: vec3f,
+  nv: vec3f,
+  wo: vec3f,
+  albV: vec3f,
+  roughnessV: f32,
+  metalV: f32,
+  clearcoatV: f32,
+  clearcoatRoughnessV: f32,
+  sheenV: f32,
+  sheenRoughnessV: f32,
+  sheenColorV: vec3f,
+  iridescenceV: f32,
+  iridescenceIorV: f32,
+  iridescenceThicknessMinV: f32,
+  iridescenceThicknessMaxV: f32,
+  anisotropyV: f32,
+  anisotropyRotationV: f32,
+  xs: vec3f,
+  Lo: vec3f,
+) -> f32 {
   let d = xs - xv;
   let dist2 = dot(d, d);
   if (dist2 < 1e-8) { return 0.0; }
   let wi = d * inverseSqrt(dist2);
   let cosTheta = max(0.0, dot(nv, wi));
   if (cosTheta <= 0.0) { return 0.0; }
-  let f = evaluateBrdf(albV, roughnessV, metalV, nv, wo, wi);
+  let f = evaluateBrdfFull(
+    albV, roughnessV, metalV, nv, wo, wi,
+    clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,
+    iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
+    anisotropyV, anisotropyRotationV,
+  );
   return luminance(f * cosTheta * Lo);
+}
+
+fn restirPtTargetForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f, Lo: vec3f) -> f32 {
+  return restirPtTargetAt(
+    r.xv, r.nv, wo, r.albV, r.roughnessV, r.metalV,
+    r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
+    r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
+    r.anisotropyV, r.anisotropyRotationV,
+    xs, Lo,
+  );
 }
 
 // ── GRIS pairwise MIS (Lin 2022 §"pairwise MIS") — mirrors walkaround-hybrid's
@@ -405,7 +519,7 @@ fn restirPtPairwiseDenomCanonical(
 fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32, cameraPos: vec3f) {
   if ((*r).M > 0u) {
     let wo = restirpt_safe_normalize(cameraPos - (*r).xv);
-    let pHatF = restirPtTargetAt((*r).xv, (*r).nv, wo, (*r).albV, (*r).roughnessV, (*r).metalV, (*r).xs, (*r).Lo);
+    let pHatF = restirPtTargetForDomain((*r), wo, (*r).xs, (*r).Lo);
     let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
     (*r).W = min(W_raw, wCap);
   }

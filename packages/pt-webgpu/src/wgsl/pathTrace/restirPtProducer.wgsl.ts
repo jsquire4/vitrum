@@ -446,9 +446,20 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let roughnessV = max(vMat.roughness, 0.02);
   let metallicV = vMat.metallic;
   let transmissionV = vMat.transmission;
+  let clearcoatV = vMat.clearcoat;
+  let clearcoatRoughnessV = vMat.clearcoatRoughness;
+  let sheenV = vMat.sheen;
+  let sheenRoughnessV = vMat.sheenRoughness;
+  let sheenColorV = vMat.sheenColor;
+  let iridescenceV = vMat.iridescence;
+  let iridescenceIorV = vMat.iridescenceIor;
+  let iridescenceThicknessMinV = vMat.iridescenceThicknessMin;
+  let iridescenceThicknessMaxV = vMat.iridescenceThicknessMax;
+  let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);
+  let anisotropyRotationV = materialAnisotropyRotation(vMatId, vHit.triIndex, vHit.baryVW);
 
   // Specular / transmissive visible vertex → not reusable; write empty.
-  if (!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {
+  if (vMat.isUnlit || !rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
     return;
   }
@@ -459,6 +470,14 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   var tanT: vec3f;
   var tanB: vec3f;
   buildOnb(nv, &tanT, &tanB);
+  if (anisotropyV > 1e-4) {
+    let c = cos(anisotropyRotationV);
+    let s = sin(anisotropyRotationV);
+    let rotatedT = c * tanT + s * tanB;
+    let rotatedB = -s * tanT + c * tanB;
+    tanT = rotatedT;
+    tanB = rotatedB;
+  }
   let cosO = max(dot(nv, woV), 0.0);
   let f0V = mix(vec3f(0.04), baseColorV, metallicV);
   let fresV = fresnelSchlick(cosO, f0V);
@@ -471,7 +490,12 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   var wiRecon = vec3f(0.0);
   let xiLobe = rand_f32(&rng);
   if (xiLobe < specProb) {
-    let bs = glossyReflectionSample(&rng, woV, nv, tanT, tanB, roughnessV);
+    var bs: BsdfSample;
+    if (anisotropyV > 1e-4) {
+      bs = glossyReflectionSampleAnisotropic(&rng, woV, nv, tanT, tanB, roughnessV, anisotropyV);
+    } else {
+      bs = glossyReflectionSample(&rng, woV, nv, tanT, tanB, roughnessV);
+    }
     wiRecon = bs.wi;
   } else {
     let bs = cosineHemisphereSample(&rng, nv);
@@ -491,7 +515,12 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // the f·cos·Lo/p_src estimator. p_src ≤ 0 is rare (and its f·cos contribution is
   // ~0 anyway), so dropping the single frame's sample is the correct, unbiased
   // choice; the temporal history is re-seeded the next non-degenerate frame.
-  let pdfSrc = brdfDirectionalPdf(baseColorV, roughnessV, metallicV, 0.0, vMat.ior, nv, woV, wiRecon);
+  let pdfSrc = brdfDirectionalPdfFull(
+    baseColorV, roughnessV, metallicV, 0.0, vMat.ior, nv, woV, wiRecon,
+    0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,
+    iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
+    anisotropyV, anisotropyRotationV,
+  );
   if (pdfSrc <= 1e-8) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
     return;
@@ -541,13 +570,24 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   var r = emptyReservoirPTHero();
   r.xv = xv; r.nv = nv;
   r.albV = baseColorV; r.roughnessV = roughnessV; r.metalV = metallicV;
+  r.clearcoatV = clearcoatV;
+  r.clearcoatRoughnessV = clearcoatRoughnessV;
+  r.sheenV = sheenV;
+  r.sheenRoughnessV = sheenRoughnessV;
+  r.sheenColorV = sheenColorV;
+  r.iridescenceV = iridescenceV;
+  r.iridescenceIorV = iridescenceIorV;
+  r.iridescenceThicknessMinV = iridescenceThicknessMinV;
+  r.iridescenceThicknessMaxV = iridescenceThicknessMaxV;
+  r.anisotropyV = anisotropyV;
+  r.anisotropyRotationV = anisotropyRotationV;
   r.prefixVertexCount = 1u;
   // Candidate target (integrand-matching: f_bsdf·cos·Lo with the visible-vertex
   // BRDF) for the single reconnection sample. The candidate weight is p̂ / p_src.
   // For 1-sample RIS p̂ cancels in W = w_sum/p̂ = 1/p_src, so this does NOT change the
   // producer's mean — it sets the cross-frame-consistent p̂ the temporal MIS
   // resamples against (the same target finalise uses).
-  let pHat = restirPtTargetAt(xv, nv, woV, baseColorV, roughnessV, metallicV, xs, Lo);
+  let pHat = restirPtTargetForDomain(r, woV, xs, Lo);
   let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);
   updateReservoirPT(&r, xs, ns, Lo, pdfSrc, wCandidate, &rng);
   // GRIS finalize: W = w_sum / p̂ (NO /M — the temporal pass folds with MIS).

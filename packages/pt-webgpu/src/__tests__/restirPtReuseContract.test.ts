@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { composePtWebgpuReuseWgsl } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
 import { RESTIR_PT_TEMPORAL_WGSL } from '../wgsl/pathTrace/restirPtTemporal.wgsl.js';
+import { RESTIR_PT_SPATIAL_WGSL } from '../wgsl/pathTrace/restirPtSpatial.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 import { RESTIR_PT_RESOLVE_WGSL } from '../wgsl/pathTrace/restirPtResolve.wgsl.js';
 import { RESERVOIR_PT_HERO_WGSL } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
@@ -55,9 +56,12 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
       'fn traceClosest(',
       'fn traceAny(',
       'fn evaluateBrdf(',
+      'fn evaluateBrdfFull(',
       'fn brdfDirectionalPdf(',
+      'fn brdfDirectionalPdfFull(',
       'fn cosineHemisphereSample(',
       'fn glossyReflectionSample(',
+      'fn glossyReflectionSampleAnisotropic(',
       'fn decodeMaterial(',
       'fn hitMaterialId(',
       'fn sampleEnvironmentColor(',
@@ -68,6 +72,8 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
       'fn luminance(',
       'fn buildOnb(',
       'fn fresnelSchlick(',
+      'fn materialAnisotropy(',
+      'fn materialAnisotropyRotation(',
       'struct FrameParams {',
     ]) {
       expect(composed.includes(def), `composed unit defines ${def}`).toBe(true);
@@ -106,8 +112,10 @@ describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finaliz
     // for a glossy visible vertex whose BRDF the old cosine proxy mis-weighted.
     const targetBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn restirPtTargetAt('),
-    ).split('\n').slice(0, 12).join('\n');
-    expect(targetBody).toContain('evaluateBrdf(albV, roughnessV, metalV, nv, wo, wi)');
+    ).split('\n').slice(0, 36).join('\n');
+    expect(targetBody).toContain('evaluateBrdfFull(');
+    expect(targetBody).toContain('clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,');
+    expect(targetBody).toContain('anisotropyV, anisotropyRotationV,');
     expect(targetBody).toContain('luminance(f * cosTheta * Lo)');
     expect(targetBody).not.toContain('INV_PI'); // the old diffuse-cosine proxy is gone
     // wo is threaded from the camera at the call sites (producer + temporal + finalize).
@@ -167,9 +175,11 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
 
 describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () => {
   it('stores the REAL source BSDF pdf (pdfSrc) for unbiased glossy reconstruction', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let pdfSrc = brdfDirectionalPdfFull(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'let pdfSrc = brdfDirectionalPdf(baseColorV, roughnessV, metallicV, 0.0, vMat.ior, nv, woV, wiRecon);',
+      '0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,',
     );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyV, anisotropyRotationV,');
   });
 
   it('evaluates suffix Lo direct lighting and onward throughput with extension-aware BRDF helpers', () => {
@@ -185,24 +195,72 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');
   });
 
+  it('stores the visible-vertex extension payload and uses anisotropic producer sampling', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('bs = glossyReflectionSampleAnisotropic(&rng, woV, nv, tanT, tanB, roughnessV, anisotropyV);');
+    for (const field of [
+      'r.clearcoatV = clearcoatV;',
+      'r.clearcoatRoughnessV = clearcoatRoughnessV;',
+      'r.sheenV = sheenV;',
+      'r.sheenRoughnessV = sheenRoughnessV;',
+      'r.sheenColorV = sheenColorV;',
+      'r.iridescenceV = iridescenceV;',
+      'r.iridescenceIorV = iridescenceIorV;',
+      'r.iridescenceThicknessMinV = iridescenceThicknessMinV;',
+      'r.iridescenceThicknessMaxV = iridescenceThicknessMaxV;',
+      'r.anisotropyV = anisotropyV;',
+      'r.anisotropyRotationV = anisotropyRotationV;',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(field);
+    }
+  });
+
   it('gates specular / transmissive visible vertices to an EMPTY reservoir (no reuse)', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptIsReusableVisibleVertex(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.01) { return false; }');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'if (!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {',
+      'if (vMat.isUnlit || !rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {',
     );
   });
 });
 
 describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy target)', () => {
   it('evaluates the full visible-vertex BRDF and forms f·cos·Lo·W', () => {
-    expect(RESTIR_PT_RESOLVE_WGSL).toContain(
-      'let fBsdf = evaluateBrdf(r.albV, r.roughnessV, r.metalV, r.nv, wo, wiRecon);',
-    );
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let fBsdf = evaluateBrdfFull(');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.anisotropyV, r.anisotropyRotationV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('let indirect = fBsdf * cosTheta * r.Lo * r.W;');
   });
 
   it('does NOT use the diffuse-cosine proxy (restirPtTargetAt) in reconstruction', () => {
     expect(RESTIR_PT_RESOLVE_WGSL).not.toContain('restirPtTargetAt');
+  });
+});
+
+describe('ReSTIR-PT reservoir — visible-material payload is serialized with the reservoir', () => {
+  it('bumps the reservoir stride and stores scalar extension-lobe fields', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 192 bytes = 48 × u32');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 48u;');
+    for (const line of [
+      'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
+      'buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);',
+      'buf[b + 33u] = bitcast<u32>(r.sheenV);',
+      'buf[b + 34u] = bitcast<u32>(r.sheenRoughnessV);',
+      'buf[b + 35u] = bitcast<u32>(r.sheenColorV.x);',
+      'buf[b + 38u] = bitcast<u32>(r.iridescenceV);',
+      'buf[b + 42u] = bitcast<u32>(r.anisotropyV);',
+      'buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);',
+      'buf[b + 47u] = r._padHybrid;',
+    ]) {
+      expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
+    }
+  });
+
+  it('copies the full visible-material domain into temporal/spatial output reservoirs', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn copyReservoirPTVisibleDomain(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).clearcoatV = src.clearcoatV;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).anisotropyRotationV = src.anisotropyRotationV;');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rGris, rCur);');
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rOut, rCenter);');
   });
 });

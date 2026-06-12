@@ -99,26 +99,15 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
   );
 
   let woCenter = restirpt_safe_normalize(params.cameraPos.xyz - rCenter.xv);
-  let pHatCanonNative = restirPtTargetAt(
-    rCenter.xv, rCenter.nv, woCenter,
-    rCenter.albV, rCenter.roughnessV, rCenter.metalV,
-    rCenter.xs, rCenter.Lo);
+  let pHatCanonNative = restirPtTargetForDomain(rCenter, woCenter, rCenter.xs, rCenter.Lo);
   let cR = f32(rCenter.M);
 
   // ── Pass-1 GATHER accepted neighbours (full-GBH needs the domain set up front)
   var nQ: u32 = 0u;
-  var qXv:     array<vec3f, 5>;
-  var qNv:     array<vec3f, 5>;
+  var qR:      array<ReservoirPTHero, 5>;
   var qWo:     array<vec3f, 5>;
-  var qAlb:    array<vec3f, 5>;
-  var qRough:  array<f32, 5>;
-  var qMetal:  array<f32, 5>;
-  var qXs:     array<vec3f, 5>;
-  var qNs:     array<vec3f, 5>;
-  var qLo:     array<vec3f, 5>;
   var qC:      array<f32, 5>;
   var qW:      array<f32, 5>;
-  var qPdfSrc: array<f32, 5>;  // the REAL source BSDF pdf stored in each neighbour's reservoir
   var qJ:      array<f32, 5>;
 
   for (var i: u32 = 0u; i < K_RPT_SPATIAL; i = i + 1u) {
@@ -148,38 +137,28 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
 
     let woQ = restirpt_safe_normalize(params.cameraPos.xyz - rQ.xv);
     // Non-degenerate shifted + native targets, else q contributes nothing.
-    let pHatQ_atR = restirPtTargetAt(
-      rCenter.xv, rCenter.nv, woCenter,
-      rCenter.albV, rCenter.roughnessV, rCenter.metalV,
-      rQ.xs, rQ.Lo);
+    let pHatQ_atR = restirPtTargetForDomain(rCenter, woCenter, rQ.xs, rQ.Lo);
     if (pHatQ_atR < 1e-9) { continue; }
-    let pHatQ_native = restirPtTargetAt(
-      rQ.xv, rQ.nv, woQ, rQ.albV, rQ.roughnessV, rQ.metalV, rQ.xs, rQ.Lo);
+    let pHatQ_native = restirPtTargetForDomain(rQ, woQ, rQ.xs, rQ.Lo);
     if (pHatQ_native < 1e-9) { continue; }
 
     // Reconnection VISIBILITY — required for unbiasedness.
     if (!rptSpatialReconVisible(rCenter.xv, rCenter.nv, rQ.xs)) { continue; }
 
     let Mq = min(rQ.M, RPT_SPATIAL_M_CLAMP);
-    qXv[nQ] = rQ.xv; qNv[nQ] = rQ.nv; qWo[nQ] = woQ;
-    qAlb[nQ] = rQ.albV; qRough[nQ] = rQ.roughnessV; qMetal[nQ] = rQ.metalV;
-    qXs[nQ] = rQ.xs; qNs[nQ] = rQ.ns; qLo[nQ] = rQ.Lo;
-    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qPdfSrc[nQ] = rQ.pdfSrc; qJ[nQ] = J;
+    qR[nQ] = rQ; qWo[nQ] = woQ;
+    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qJ[nQ] = J;
     nQ = nQ + 1u;
   }
 
   var rOut = emptyReservoirPTHero();
-  rOut.xv = rCenter.xv; rOut.nv = rCenter.nv;
-  rOut.albV = rCenter.albV; rOut.roughnessV = rCenter.roughnessV; rOut.metalV = rCenter.metalV;
-  rOut.prefixVertexCount = rCenter.prefixVertexCount;
+  copyReservoirPTVisibleDomain(&rOut, rCenter);
 
   // ── Pass-2 FOLD: canonical sample with its full-GBH weight ──
   if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
     var denomR = cR * pHatCanonNative; // canonical's own native term
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomR += qC[j] * restirPtTargetAt(
-        qXv[j], qNv[j], qWo[j], qAlb[j], qRough[j], qMetal[j],
-        rCenter.xs, rCenter.Lo);
+      denomR += qC[j] * restirPtTargetForDomain(qR[j], qWo[j], rCenter.xs, rCenter.Lo);
     }
     let m_canon = select(0.0, (cR * pHatCanonNative) / denomR, denomR > 1e-12);
     // Canonical: no shift (already at this pixel; J = 1).
@@ -191,28 +170,22 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
 
   // ── Pass-2 FOLD: each neighbour's sample with its full-GBH weight ──
   for (var i: u32 = 0u; i < nQ; i = i + 1u) {
-    let pHatQ_native = restirPtTargetAt(
-      qXv[i], qNv[i], qWo[i], qAlb[i], qRough[i], qMetal[i], qXs[i], qLo[i]);
+    let pHatQ_native = restirPtTargetForDomain(qR[i], qWo[i], qR[i].xs, qR[i].Lo);
     // GBH denominator: canonical's target for z_q + every neighbour's target.
-    var denomQ = cR * restirPtTargetAt(
-      rCenter.xv, rCenter.nv, woCenter,
-      rCenter.albV, rCenter.roughnessV, rCenter.metalV, qXs[i], qLo[i]);
+    var denomQ = cR * restirPtTargetForDomain(rCenter, woCenter, qR[i].xs, qR[i].Lo);
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomQ += qC[j] * restirPtTargetAt(
-        qXv[j], qNv[j], qWo[j], qAlb[j], qRough[j], qMetal[j], qXs[i], qLo[i]);
+      denomQ += qC[j] * restirPtTargetForDomain(qR[j], qWo[j], qR[i].xs, qR[i].Lo);
     }
     let m_q = select(0.0, (qC[i] * pHatQ_native) / denomQ, denomQ > 1e-12);
     // p̂_r(T z_q): q's sample re-rooted onto the canonical visible vertex.
-    let pHatQ_atR = restirPtTargetAt(
-      rCenter.xv, rCenter.nv, woCenter,
-      rCenter.albV, rCenter.roughnessV, rCenter.metalV, qXs[i], qLo[i]);
+    let pHatQ_atR = restirPtTargetForDomain(rCenter, woCenter, qR[i].xs, qR[i].Lo);
     let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
     let oldM = rOut.M;
     // Pass the neighbour's real source BSDF pdf (pdfSrc) — NOT the unbiased contribution
     // weight W. W already bakes in 1/pdfSrc (W = w_sum/p̂ after finalise); passing W here
     // would store an energy-scaled pdf that corrupts the reconstructed path when this
     // neighbour's sample wins. pdfSrc is the denominator for the resolve unbiased estimator.
-    updateReservoirPT(&rOut, qXs[i], qNs[i], qLo[i], qPdfSrc[i], w_q, &rng);
+    updateReservoirPT(&rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].pdfSrc, w_q, &rng);
     rOut.M = oldM + u32(qC[i]);
   }
 
