@@ -21,6 +21,7 @@ import type { MaterialSpec, Vec3 } from '@vitrum/core';
 import { resolveTextureRef } from './textures.js';
 
 const KNOWN_KHR_EXTENSIONS = new Set([
+  'KHR_materials_unlit',
   'KHR_materials_transmission',
   'KHR_materials_ior',
   'KHR_materials_volume',
@@ -29,8 +30,17 @@ const KNOWN_KHR_EXTENSIONS = new Set([
   'KHR_materials_clearcoat',
   'KHR_materials_iridescence',
   'KHR_materials_anisotropy',
+  'KHR_materials_dispersion',
   'KHR_materials_emissive_strength',
   'KHR_texture_transform', // per-texture, handled at TextureRef level
+  'KHR_materials_variants',
+  'KHR_materials_pbrSpecularGlossiness',
+]);
+
+const KNOWN_UNSUPPORTED_EXTENSION_MESSAGES: Readonly<Partial<Record<string, string>>> = {};
+
+const PRESERVE_RAW_EXTENSION_KEYS = new Set([
+  'KHR_materials_pbrSpecularGlossiness',
 ]);
 
 // ── Per-extension parsers (D13.5) ──────────────────────────────────────────────
@@ -53,33 +63,24 @@ function _parseTransmissionExt(
 
 function _parseVolumeExt(
   ext: Record<string, unknown>,
-  warnings: string[],
-  materialName: string,
+  handleMap: Map<number, unknown>,
 ): Partial<MaterialSpec> {
   const volExt = ext['KHR_materials_volume'] as
     | {
         thicknessFactor?: number;
-        thicknessTexture?: { index: number };
+        thicknessTexture?: { index: number; texCoord?: number };
         attenuationDistance?: number;
         attenuationColor?: [number, number, number];
       }
     | undefined;
   if (!volExt) return {};
-  if (volExt.thicknessTexture) {
-    // Core MaterialSpec has no thicknessMap field; only the scalar
-    // thicknessFactor can be carried. Surface this honestly instead of
-    // silently dropping the texture.
-    warnings.push(
-      `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_volume.thicknessTexture, ` +
-        'but @vitrum/core MaterialSpec has no thickness map field. The texture is ignored; ' +
-        'only thicknessFactor is imported.',
-    );
-  }
   const thickness = volExt.thicknessFactor ?? 0;
+  const thicknessMap = resolveTextureRef(volExt.thicknessTexture, handleMap);
   const attenuationDistance = volExt.attenuationDistance ?? Infinity;
   const attenuationColor: Vec3 | undefined = volExt.attenuationColor;
   return {
     thickness,
+    ...(thicknessMap ? { thicknessMap } : {}),
     attenuationDistance,
     ...(attenuationColor ? { attenuationColor } : {}),
   };
@@ -228,6 +229,82 @@ function _parseAnisotropyExt(
   };
 }
 
+function _parseDispersionExt(
+  ext: Record<string, unknown>,
+  warnings: string[],
+  materialName: string,
+): Partial<MaterialSpec> {
+  const dispersionExt = ext['KHR_materials_dispersion'] as { dispersion?: number } | undefined;
+  if (!dispersionExt || dispersionExt.dispersion === undefined) return {};
+  const dispersion = dispersionExt.dispersion;
+  if (!Number.isFinite(dispersion) || dispersion < 0) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_dispersion ` +
+        `with invalid dispersion=${String(dispersion)}. Dispersion is ignored.`,
+    );
+    return {};
+  }
+  if (dispersion === 0) return {};
+  return {
+    // KHR_materials_dispersion defines `dispersion = 20 / Abbe number`.
+    dispersionAbbeNumber: 20 / dispersion,
+  };
+}
+
+function _parseSpecularGlossinessExt(
+  ext: Record<string, unknown>,
+  handleMap: Map<number, unknown>,
+  warnings: string[],
+  materialName: string,
+  alphaMode: MaterialSpec['alphaMode'],
+): Partial<MaterialSpec> {
+  const sgExt = ext['KHR_materials_pbrSpecularGlossiness'] as
+    | {
+        diffuseFactor?: [number, number, number, number];
+        diffuseTexture?: { index: number; texCoord?: number };
+        specularFactor?: [number, number, number];
+        glossinessFactor?: number;
+        specularGlossinessTexture?: { index: number; texCoord?: number };
+      }
+    | undefined;
+  if (!sgExt) return {};
+
+  warnings.push(
+    `[vitrum/gltf-adapter] Material "${materialName}" uses archived ` +
+      'KHR_materials_pbrSpecularGlossiness. Scalar diffuse/specular/glossiness ' +
+      'values are converted approximately to metallic-roughness + specular fields.',
+  );
+
+  const diffuseFactor = sgExt.diffuseFactor ?? [1, 1, 1, 1];
+  const specularFactor = sgExt.specularFactor ?? [1, 1, 1];
+  const glossinessFactor = sgExt.glossinessFactor ?? 1;
+  const diffuseTexture = resolveTextureRef(sgExt.diffuseTexture, handleMap);
+  const specularGlossinessTexture = resolveTextureRef(sgExt.specularGlossinessTexture, handleMap);
+
+  if (specularGlossinessTexture) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Material "${materialName}" uses ` +
+        'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture. The RGB ' +
+        'specular map is imported as specularColorMap, but glossiness-in-alpha ' +
+        'cannot be inverted into a roughnessMap without a texture bake, so the ' +
+        'scalar glossinessFactor is used for roughness.',
+    );
+  }
+
+  const opacity = diffuseFactor[3] < 1 && alphaMode !== 'opaque'
+    ? { opacity: diffuseFactor[3] }
+    : {};
+  return {
+    baseColor: [diffuseFactor[0], diffuseFactor[1], diffuseFactor[2]],
+    roughness: 1 - clamp01(glossinessFactor),
+    metallic: 0,
+    specularColor: [specularFactor[0], specularFactor[1], specularFactor[2]],
+    ...(diffuseTexture ? { baseColorMap: diffuseTexture } : {}),
+    ...(specularGlossinessTexture ? { specularColorMap: specularGlossinessTexture } : {}),
+    ...opacity,
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
@@ -285,13 +362,20 @@ export function convertMaterial(
   const alphaCutoff = gltfMat.alphaCutoff;
   // Combine baseColor alpha factor into opacity for blend/mask materials.
   const opacity = baseColorAlpha < 1 && alphaMode !== 'opaque' ? baseColorAlpha : undefined;
+  const shadingModel = ext.KHR_materials_unlit ? 'unlit' as const : undefined;
 
   // ── doubleSided ────────────────────────────────────────────────────────────
   const doubleSided = gltfMat.doubleSided ?? false;
 
-  // ── Unknown extension warnings ────────────────────────────────────────────
+  // ── Extension policy warnings ─────────────────────────────────────────────
   for (const key of Object.keys(ext)) {
-    if (!KNOWN_KHR_EXTENSIONS.has(key)) {
+    const unsupportedMessage = KNOWN_UNSUPPORTED_EXTENSION_MESSAGES[key];
+    if (unsupportedMessage) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses ${key}. ` +
+          unsupportedMessage,
+      );
+    } else if (!KNOWN_KHR_EXTENSIONS.has(key)) {
       warnings.push(
         `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses unknown extension ` +
           `"${key}" which is not mapped to a core MaterialSpec field. It is stored in extensions.`,
@@ -301,19 +385,28 @@ export function convertMaterial(
 
   // ── Per-extension partial specs (D13.5) ────────────────────────────────────
   const transmissionPartial = _parseTransmissionExt(ext, handleMap);
-  const volumePartial       = _parseVolumeExt(ext, warnings, gltfMat.name ?? '(unnamed)');
+  const volumePartial       = _parseVolumeExt(ext, handleMap);
   const iorPartial          = _parseIorExt(ext);
   const specularPartial     = _parseSpecularExt(ext, handleMap);
   const sheenPartial        = _parseSheenExt(ext, handleMap);
   const clearcoatPartial    = _parseClearcoatExt(ext, handleMap);
   const iridescencePartial  = _parseIridescenceExt(ext, handleMap);
   const anisotropyPartial   = _parseAnisotropyExt(ext, handleMap);
+  const dispersionPartial   = _parseDispersionExt(ext, warnings, gltfMat.name ?? '(unnamed)');
+  const specGlossPartial    = _parseSpecularGlossinessExt(
+    ext,
+    handleMap,
+    warnings,
+    gltfMat.name ?? '(unnamed)',
+    alphaMode,
+  );
 
   // ── Assemble MaterialSpec ─────────────────────────────────────────────────
   const mat: MaterialSpec = {
     baseColor,
     roughness,
     metallic,
+    ...(shadingModel ? { shadingModel } : {}),
     ...(emissive[0] !== 0 || emissive[1] !== 0 || emissive[2] !== 0 ? { emissive } : {}),
     ...(emissiveIntensity !== 1 ? { emissiveIntensity } : {}),
     ...(emissiveMap ? { emissiveMap } : {}),
@@ -335,11 +428,17 @@ export function convertMaterial(
     ...clearcoatPartial,
     ...iridescencePartial,
     ...anisotropyPartial,
+    ...dispersionPartial,
+    ...specGlossPartial,
     extensions: {
       ...(doubleSided ? { doubleSided: true } : {}),
-      // Preserve unknown extensions as raw data under their original key.
+      // Preserve unknown/unsupported extensions as raw data under their original key.
       ...Object.fromEntries(
-        Object.entries(ext).filter(([key]) => !KNOWN_KHR_EXTENSIONS.has(key)),
+        Object.entries(ext).filter(([key]) =>
+          !KNOWN_KHR_EXTENSIONS.has(key) ||
+          KNOWN_UNSUPPORTED_EXTENSION_MESSAGES[key] ||
+          PRESERVE_RAW_EXTENSION_KEYS.has(key),
+        ),
       ),
     },
   };
@@ -356,3 +455,8 @@ export const GLTF_DEFAULT_MATERIAL: MaterialSpec = {
   roughness: 1,
   metallic: 1,
 };
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0, value));
+}

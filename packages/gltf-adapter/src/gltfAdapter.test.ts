@@ -17,7 +17,7 @@
 //   13. Skins → SkinnedMeshPrimitive (JOINTS_0 u8 + u16, WEIGHTS_0 float, inverseBindMatrices)
 //   14. KHR_lights_punctual → SceneEmitter[] (point, spot, directional; world-transform applied)
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
 import type { GltfJson } from './gltfTypes.js';
 import type {
@@ -315,6 +315,67 @@ describe('material field mapping', () => {
     expect(ref.transform?.rotation).toBeCloseTo(0.125);
   });
 
+  it('decodes baseColorTexture images embedded as data: URIs', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const handle = { kind: 'decoded-data-uri-texture' };
+    const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
+      expect(Array.from(bytes)).toEqual([1, 2, 3]);
+      expect(mimeType).toBe('image/png');
+      return handle;
+    });
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{ source: 0 }],
+      images: [{ uri: 'data:image/png;base64,AQID' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
+      buffers: [{ byteLength: posBuf.byteLength }],
+    };
+
+    const { scene } = await gltfToScene(gltf, {
+      buffers: new Map([[0, posBuf]]),
+      decodeImage,
+    });
+
+    expect(decodeImage).toHaveBeenCalledOnce();
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    const ref = mat.baseColorMap as TextureRef;
+    expect(ref.handle).toBe(handle);
+  });
+
+  it('warns and skips external URI images instead of handing them to decodeImage', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const decodeImage = vi.fn(async () => ({ kind: 'should-not-be-used' }));
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{ source: 0 }],
+      images: [{ uri: 'textures/albedo.png', mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
+      buffers: [{ byteLength: posBuf.byteLength }],
+    };
+
+    const { scene, warnings } = await gltfToScene(gltf, {
+      buffers: new Map([[0, posBuf]]),
+      decodeImage,
+    });
+
+    expect(decodeImage).not.toHaveBeenCalled();
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.baseColorMap).toBeUndefined();
+    expect(warnings.some((w) => w.includes('external image URIs'))).toBe(true);
+  });
+
   it('maps emissiveFactor', async () => {
     const { gltf, buffers } = makeGltfWithMaterial({
       pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] },
@@ -472,6 +533,19 @@ describe('material field mapping', () => {
     expect(warnings.some(w => w.includes('MY_custom_extension'))).toBe(true);
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect((mat.extensions as Record<string, unknown>)?.['MY_custom_extension']).toEqual({ foo: 42 });
+  });
+
+  it('rejects unknown required extensions instead of silently ignoring them', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      extensions: {
+        MY_optional_extension: { foo: 42 },
+      },
+    });
+    (gltf as GltfJson & { extensionsRequired: string[] }).extensionsRequired = ['VENDOR_required_extension'];
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toThrow(
+      /extensionsRequired includes unsupported extension "VENDOR_required_extension"/,
+    );
   });
 });
 

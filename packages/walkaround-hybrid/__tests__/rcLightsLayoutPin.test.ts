@@ -27,9 +27,10 @@
  *   };                       // total: 16 + 16 × 64 = 1040 bytes
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   packRCLights,
+  RCSubsystem,
   RC_LIGHTS_BUFFER_BYTES,
   RC_LIGHTS_HEADER_BYTES,
   RC_LIGHT_ENTRY_BYTES,
@@ -227,5 +228,54 @@ describe('packRCLights output byte alignment', () => {
   it('sun-kind lights are excluded', () => {
     const buf = packRCLights([{ kind: 'sun', on: true, intensity: 10 }]);
     expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(0);
+  });
+});
+
+describe('RCSubsystem light buffer lifecycle', () => {
+  it('invalidates dispatcher bindings when analytic lights transition from nonzero to zero', () => {
+    const savedUsage = (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage;
+    (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage = {
+      STORAGE: 1,
+      COPY_DST: 2,
+    };
+
+    try {
+      const buffers: Array<{
+        destroy: ReturnType<typeof vi.fn>;
+        label: string | undefined;
+        size: number;
+      }> = [];
+      const device = {
+        createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+          const buffer = {
+            label: desc.label,
+            size: desc.size,
+            destroy: vi.fn(),
+            getMappedRange: vi.fn(() => new ArrayBuffer(desc.size)),
+            unmap: vi.fn(),
+          };
+          buffers.push(buffer);
+          return buffer;
+        }),
+        queue: { writeBuffer: vi.fn() },
+      } as unknown as GPUDevice;
+      const rc = new RCSubsystem(device);
+      const invalidateSpy = vi.spyOn(rc, 'invalidateBindings');
+
+      rc.updateLights([POINT_LIGHT]);
+      expect(device.createBuffer).toHaveBeenCalledTimes(1);
+      expect(buffers[0]!.label).toBe('rc-lights');
+      expect(buffers[0]!.size).toBe(RC_LIGHTS_BUFFER_BYTES);
+      expect(invalidateSpy).toHaveBeenCalledTimes(1);
+
+      invalidateSpy.mockClear();
+      rc.updateLights([]);
+
+      expect(buffers[0]!.destroy).toHaveBeenCalledOnce();
+      expect(device.createBuffer).toHaveBeenCalledTimes(1);
+      expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage = savedUsage;
+    }
   });
 });

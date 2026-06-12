@@ -197,8 +197,18 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // store Le/(pdfPick*pdfArea), use a distinct area-emitter sentinel, and
     // the connection no longer double-multiplies endpoint cosines. RENDER-
     // CHANGING for bdpt:true area-light scenes; CPU oracle pins the mean.
-    expect(digest).toBe('e2e7c2e69d28d0437d374feba2c73cd00a4e157c4118d5e1abf38277e76a13f3');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(317588);
+    // Re-pinned 2026-06-11 (PTWG-MAT-01 partial): full-tier BSDF-side
+    // area-light/environment connections now pass decoded extension lobe
+    // scalars into connect.wgsl and use evaluateBrdfFull/brdfDirectionalPdfFull.
+    // SPPM receiver gathering now also evaluates photons with evaluateBrdfFull
+    // using the current hit's extension fields. MNEE receiver-side caustic
+    // BRDF/PDF evaluations do the same. BDPT eye/light connection endpoint
+    // evals and straddle PDF overrides use the full helpers as well.
+    // RENDER-CHANGING for clearcoat/sheen/iridescence/aniso materials hit by
+    // BSDF-sampled area/env connections or SPPM caustics; zero-extension
+    // materials remain behaviorally unchanged.
+    expect(digest).toBe('f2765947ab0b69f9e203816d7c6614a907d9f507a8e9fc066e8a14a5906b73be');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326192);
   });
 });
 
@@ -209,6 +219,38 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 27u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.isUnlit');
+  });
+
+  it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bsdfAreaLightConnectionContribution(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoat: f32,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.clearcoatRoughness,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('anisoRotation,');
+  });
+
+  it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmGatherProgressive(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatRoughness : f32,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('photonMapContribution(');
+  });
+
+  it('uses extension-aware BRDF/PDF evaluation for MNEE caustic receivers', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn pointLightReflectionCaustic(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+  });
+
+  it('uses extension-aware BRDF/PDF evaluation for BDPT connection endpoints', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn evaluateBdptConnection(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFull(');
   });
 
   it('includes hero-wavelength MIS helpers when spectral mode is enabled', () => {

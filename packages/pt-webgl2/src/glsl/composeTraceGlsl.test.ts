@@ -18,6 +18,7 @@ describe('composeTraceGlsl', () => {
 
   it('emits the material struct', () => {
     expect(src).toContain('struct Material {');
+    expect(src).toContain('bool unlit;');
   });
 
   it('emits the surface-record struct', () => {
@@ -33,6 +34,8 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('void main() {');
     expect(src).toContain('for ( int i = 0; i < bounces; i ++ )');
     expect(src).toContain('Ray ray = getCameraRay();');
+    expect(src).toContain('if ( material.unlit )');
+    expect(src).toContain('pc_fragColor.rgb += surf.color * throughputRgb;');
   });
 
   it('inlines the <common> shim symbols the kernels reference', () => {
@@ -154,9 +157,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32297', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32411', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32297);
+    expect(assembled).toHaveLength(32411);
     // All 9 sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(9);
     expect(assembled).toContain('void main() {');

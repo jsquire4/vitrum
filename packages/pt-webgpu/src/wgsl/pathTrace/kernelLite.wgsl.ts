@@ -171,7 +171,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, lightDir));
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, lightDir);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              0.0, 0.0);
             directLi = throughput * brdf * nDotL * params.lightDir.w;
           }
         }
@@ -198,7 +201,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           // SHADOW-01 — extra.z carries the emitter castShadowDisabled flag.
           if (extra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              0.0, 0.0);
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
             directLi = throughput * brdf * nDotL * radOut * attenuation;
@@ -236,7 +242,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               let nDotL = max(0.0, dot(normal, wi));
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
-              let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+              let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                0.0, 0.0);
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
               directLi = throughput * brdf * nDotL * softness * sradOut * attenuation;
             }
@@ -282,7 +291,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let wi = toLight / dist;
           let nDotL = max(dot(normal, wi), 0.0);
           if (nDotL > 0.0) {
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              0.0, 0.0);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
@@ -318,8 +330,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         if (nDotL > 1e-6) {
           let shadowRay = Ray(hitPos + normal * 1e-3, envDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
-            let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir);
+            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              0.0, 0.0);
+            let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
+              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              0.0, 0.0);
             // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
@@ -342,6 +360,15 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
@@ -393,6 +420,15 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
         throughputAtVertex,
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(

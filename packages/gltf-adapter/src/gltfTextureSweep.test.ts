@@ -11,8 +11,8 @@
 // The imported map list is enumerated from materials.ts/textures.ts call
 // sites; if a new resolveTextureRef consumer is added, extend SWEEP_MAPS.
 //
-// Also pins the honest diagnostic for KHR_materials_volume.thicknessTexture,
-// which core MaterialSpec cannot carry (no thickness-map field).
+// Also pins KHR_materials_volume.thicknessTexture now that core carries it as
+// the reserved `thicknessMap` material field.
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
@@ -196,7 +196,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     expect(mat.clearcoatNormalScale).toBeCloseTo(0.25);
   });
 
-  it('KHR_materials_volume.thicknessTexture warns (core has no thickness map field)', async () => {
+  it('KHR_materials_volume.thicknessTexture maps to thicknessMap', async () => {
     const { gltf, buffers } = makeSweepGltf();
     const mats = gltf.materials!;
     mats[0] = {
@@ -216,6 +216,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     });
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect(mat.thickness).toBeCloseTo(0.5);
-    expect(warnings.some(w => w.includes('thicknessTexture'))).toBe(true);
+    expect(mat.thicknessMap?.handle).toEqual({ kind: 'decoded-texture' });
+    expect(warnings.some(w => w.includes('thicknessTexture'))).toBe(false);
   });
 });

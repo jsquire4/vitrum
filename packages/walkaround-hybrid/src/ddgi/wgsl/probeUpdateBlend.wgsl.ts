@@ -243,6 +243,13 @@ fn probeUpdateBlendVisibility(
   if (totalWeight > 1e-5) {
     newDepth   = newDepth / totalWeight;
     newDepthSq = newDepthSq / totalWeight;
+  } else {
+    // No aligned finite hit samples means this visibility texel is open sky,
+    // not "occluder at distance zero". Use a finite far-visible sentinel that
+    // survives rgba16float storage and keeps Chebyshev visibility open for
+    // ordinary scene-scale receivers.
+    newDepth   = 65504.0;
+    newDepthSq = 65504.0;
   }
 
   let atlasCoord = visAtlasCoord(probeIdx, pixel);

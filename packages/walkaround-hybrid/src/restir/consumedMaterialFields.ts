@@ -17,6 +17,9 @@
  *                           resolveRoughMetal
  *  metallic               packingHelpers.ts – packBVHIndexWFromCore (isMetal
  *                           flag) + packBVHRoughMetalFromCore
+ *  shadingModel           packingHelpers.ts – packBVHRoughMetalFromCore
+ *                           encodes unlit as a material flag; shade.wgsl
+ *                           emits base color directly for unlit surfaces
  *  emissive               packingHelpers.ts – packBVHEmissiveLeFromCore via
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
@@ -42,6 +45,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'baseColor',
   'roughness',
   'metallic',
+  'shadingModel',
   'emissive',
   'emissiveIntensity',
   'transmission',

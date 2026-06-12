@@ -79,9 +79,11 @@ describe('MNEE reflection caustic — kernel wiring (Phase I.1)', () => {
     // The reflection caustic runs BEFORE (and independent of) the legacy
     // transmissive cone-search gate — so a diffuse floor catches a mirror caustic
     // with no glass present. The transmissive branch sums on top.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('var total = pointLightReflectionCaustic(');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
-      'var total = pointLightReflectionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);',
+      'clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,',
     );
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('anisotropy, anisotropyRotation,');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('return total + transmissiveContribution;');
   });
 });

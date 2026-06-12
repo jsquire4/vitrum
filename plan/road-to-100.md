@@ -229,3 +229,686 @@ buckets that the A–D framing was missing:**
 - **sun-NEE default: DECIDED + DONE (2026-06-10, item 4 R8-A).** `lo_sunNEE` wired in `shade.wgsl.ts` — deterministic shadow ray + evalGGX BRDF, default-ON for opaque surfaces, no flag required. `lo_sg_caustic` (stainedGlass flag) unchanged — tinted-glass transmittance path. No double-count vs DDGI indirect: DDGI stores sun→wall radiance at the PROBE bounce surface; lo_sunNEE is sun→receiver DIRECT, disjoint paths. Behavioral gate: `wh/directional-sun` (LUM_THRESHOLD 0.005, intensity 3.0). Render-changing for directional-lit scenes → V28-B recapture in R8-C.
 - **B1:** glossy GI via ReSTIR-GI full-BRDF p̂, or specular probes, or keep punting glossy to the PT backend?
 - **B1 tail + B1-ior-per-tri: DONE (2026-06-10).** R8-B tail: 1-interface refraction walk in `risGi.wgsl.ts`; shade `lo_transmittedGI` weights by Fresnel-T × Beer tint; `wh/glass-gi` behavioral gate PASS. **B1-ior-per-tri (2026-06-10 follow-up, DONE):** `bvh_material` bits[15:8] carry IOR quantized over [1.0, 3.0] (step ≈ 0.008); `materialDecode.wgsl` exposes `decodeIor()`; risGi glass walk decodes per-tri IOR via `decodeIor(glassPrimaryPacked)` (no more hardcoded 1.5); shade `lo_transmittedGI` computes Schlick F0 from per-tri IOR (`((ior−1)/(ior+1))²`); rough-glass GI: roughness > 0.1 perturbs the Snell refracted direction by a GGX-distributed offset (one sample, per-tri roughness) so frosted glass receives blurred GI; smooth glass stays exact-Snell-byte-identical. Default IOR=1.5 → byte 64 → decodes to 1.502 (error < 0.003, within glass dispersion); `packBVHRoughMetalFromCore` / structural packer / `repackBVHMaterialRange` all updated. 20 new tests in `roughMetalPacking.test.ts` + `b1GlossyMetalGi.test.ts`. Shader-gate 51/51, behavioral-gate 28/28, vitest 1490/1490. Render-changing for non-1.5-IOR glass → V28-B recapture in R8-C.
+
+---
+
+## Addendum — 2026-06-11 condensed implementation spec (glTF + walkaround + arbitrary glTF)
+
+> Authored 2026-06-11 from a code-truth audit of `@vitrum/gltf-adapter` (working tree),
+> `promiseLedger.ts`, engine entry points, walkaround consumption, and pt-backend material
+> gaps. **No timelines or effort estimates.** Supersedes the conversational plan from the
+> same session for execution ordering; does not retract the A–D bucket items above — this
+> addendum is the **closure checklist** for the three user-facing 100% targets.
+>
+> **Baseline:** `main` @ `309fdebe` (oracle math fixes). ~2,148 LOC uncommitted across
+> gltf-adapter, engine bridge, unlit all backends, H30 canvas sizing, progressive handoff
+> fallback, ledger fixes. **Land Phase 0 first** before treating any claim below as shipped.
+>
+> **Companion docs:** `plan/road-to-100-gap-ledger-2026-06-11.md`, `items_to_fix.md` §H.
+>
+> **REVIEW RECONCILIATION (2026-06-12, lead-verified against `main@309fdebe`):**
+> 1. **Several P0 rows below were already landed and pushed before this addendum
+>    was written** — they are now marked `✅ LANDED` in place. Do NOT re-execute
+>    them; verify-on-read if in doubt. Affected: Phase 2A (PTWG-01..05, WEBGL2-01,
+>    H49), Phase 3A (W-HYB-01/02/03), Phase 1C (GLTF-01, CORE-01).
+> 2. **H49 was wrong, not just stale**: pt-webgl2 ALREADY packs
+>    `specularColor`/`specularIntensity` (+ both maps) at `materialsTexture.ts:168-232`;
+>    the ledger correctly grades them native. Row struck.
+> 3. **H33's fix target was the wrong file**: `worldSpaceMerge.ts` `materialSig`
+>    already includes attenuation fields. The real drift is
+>    `sceneBvh.ts` `materialSetHashFloats` (~:173-191), which carries
+>    `attenuationColor` only and omits `attenuationDistance`/`thickness` —
+>    mutating only those fields skips the DDGI rebuild. Row corrected in 3G.
+> 4. **V28-B baseline recapture was dropped from this addendum** — restored as
+>    Phase 0.3. `309fdebe` is heavily render-changing (env-DI fix alone should
+>    visibly brighten HDRI scenes; ALL pre-309fdebe baselines embed the ~66× bias).
+> 5. **DECISION LOCKED (user, 2026-06-12): walkaround gets the FULL texture atlas**
+>    — Phases 3C/3D/3E as written are committed scope, not optional. The apparent
+>    conflict with the acceptance table (ledger-truth is already satisfied by
+>    `unsupported` grades post-CAP-01) is resolved in favor of implementation:
+>    walkaround material rows are expected to PROMOTE to native/approximate via
+>    the atlas, not rest at honest-unsupported.
+> 6. **COMPLETENESS PASS (2026-06-12):** three verified holes INSIDE the plan's own
+>    acceptance criteria were added (texture wrap modes + mipmaps in Phase 1A;
+>    `environment:'none'` phantom skylight + grayscale-directional shortcut class
+>    widened into 2C), and **Phase 6** now carries the gap-ledger residue outside
+>    the three targets (pt-webgl2 NEE selection bias, onError unification,
+>    attachVitrum recreate scene-loss, lite single-BLAS, RC footguns, sampled
+>    fingerprint, morph-normal skip, core contract additions). With Phases 0–6
+>    executed, this plan IS the categorical close.
+> 7. **FOLLOW-UP CROSSOUT PASS (2026-06-12):** verified and struck/narrowed the
+>    rows that landed after this addendum: glTF required `KHR_materials_unlit` /
+>    `KHR_materials_pbrSpecularGlossiness`, scalar spec-gloss compatibility
+>    scoring, morph-tangent/point-line unsupported policy tests, bridge hook
+>    pass-through, walkaround + PT unlit branches (`shadingModel` remains
+>    intentionally `approximate`), and the pt-webgpu local BRDF-helper propagation
+>    wave. Remaining payload/sampler/schema gaps stay open in place.
+
+### What 100% means (acceptance, not aspiration)
+
+| Target | Done when |
+|--------|-----------|
+| **glTF** | `loadGltfAsset` → `loadGltfForEngine` handles URL/GLB/JSON+external resources; `analyzeGltfAsset` + `rankGltfBackends` are complete; `GltfSceneController` drives skin/morph/TRS; every extension in `REQUIRED_EXTENSION_SUPPORT` (`featureReport.ts:124-145`) has import + compatibility + test; zero silent `console.warn` in adapter (warnings in return value only). |
+| **Walkaround** | Every `MaterialSpec` key graded `native`/`approximate` in `WALKAROUND_MATERIALS` is consumed in GPU shaders; `CONSUMED_MATERIAL_FIELDS` (`consumedMaterialFields.ts`) matches ledger exactly; emitter/environment/shadow grades match runtime; P0 walkaround bugs (W-HYB-01..03, H25-H29) closed. |
+| **Arbitrary glTF** | For any asset in Khronos sample set + internal hero fixtures: `loadGltfAsset` succeeds or throws structurally; `evaluateGltfBackendCompatibility(selectedBackend).unsupportedCount === 0` for used features OR `compatibilityMode` rejects before render; rendered output passes material-furnace + reference gate on **recommended** backend; `prefer:'auto'` uses feature report, not triangle count alone. |
+
+**Explicit non-goals** (otherwise "100%" is undefined): point/line primitives, displacement tessellation, production neural weights, true Hachisuka SPPM (A4-progressive shipped — separate from this campaign), cross-host GPU certification.
+
+### Why plans stall at ~85% (gaps this spec closes)
+
+| Trap | Symptom | This spec addresses |
+|------|---------|---------------------|
+| glTF API without **texture decode bridge** | Scene loads, everything flat gray | Phase 1 § Texture pipeline |
+| Compatibility planner without **engine wiring** | Correct backend known, wrong one created | Phase 4 § `createEngine` + `VitrumCanvas` |
+| Walkaround **scalar-only** + ledger drift | Textured glTF "works" with warnings | Phase 3 § Texture atlas (non-optional for WA 100%) |
+| **PTWG-MAT-01** only on megakernel | glTF clearcoat wrong in BDPT/SPPM/ReSTIR | Phase 2 § Integrator audit matrix |
+| **Lite tier** used for arbitrary glTF | Missing maps/TLAS silently | Phase 4 § Lite policy + Phase 2 |
+| Animation **without** skin+morph+material sync | Controller patches positions, normals wrong | Phase 1 § Controller + Phase 4 |
+| **Tangent** bugs on pt-webgl2 | Normal maps wrong on glTF | Phase 2 § WEBGL2-01 |
+| Oracle fixes **without** reference renders | Tests green, images wrong | Phase 5 |
+| Uncommitted work | "Plan done", `main` unchanged | Phase 0 |
+| `pickBackend` triangle budget (`createEngineScale.ts:46-47`) | Textured asset → walkaround | Phase 4 |
+| PPG/NRC/neural **enabled but broken** | Optional features crash bind groups | Phase 3 § Subsystems |
+| **items_to_fix §H** residue | Silent wrong behavior | Woven into phases below |
+
+---
+
+### Phase 0 — Land baseline + mechanical gates
+
+#### 0.1 Commit working tree
+
+**Files:** 55 modified + 7 new under `packages/gltf-adapter/`, `packages/engine/`, `packages/core/`, `packages/walkaround-hybrid/`, `packages/pt-webgpu/`.
+
+**Footgun:** ~~`textures.ts` header still says "adapter does not fetch external image URIs" while `assetLoader.ts` does~~ ✅ fixed — the file header now describes the pluggable image-byte handoff. The low-level `getImageBytes` warning remains intentional for callers that bypass `loadGltfAsset`.
+
+#### 0.2 Gate infrastructure (blocks false 100%)
+
+| Gate | Plug-in | Footgun |
+|------|---------|---------|
+| **GATE-01** | Extend `ledgerVsCapabilities.test.ts` — runtime `buildCapabilities()` must match `BACKEND_PROMISE_LEDGER` for pt-webgl2 lite/full aux buffers | Ledger said `supportsAuxBuffers:false` while full tier had MRT — already bit you (H39) |
+| **GATE-02** | Per `native` material row: one test that packs + shader string pin OR readback oracle | Byte-identity SHA tests can be green while both sides share a bug |
+| **GATE-06** | `npm run shader-gate` in CI for every `PASS_ORDER` variant including walkaround texture bind layout | WGSL string tests don't compile shaders |
+| **GATE-GLTF** | `gltfKhronosSweep.test.ts` — `analyzeGltfAsset` only, no network in CI (fixtures vendored) | Live URL tests flake in CI |
+
+#### 0.3 V28-B baseline recapture (restored 2026-06-12 — was dropped from this addendum)
+
+`309fdebe` (oracle math fixes) is render-changing on: walkaround DI (env ~66×
+brighter where the bias applied, selected-xi −30% correction), DDGI visibility
+in open scenes, pt-webgpu BDPT connections (~5×), lite rect NEE. **Every
+pre-309fdebe reference render and benchmark baseline embeds the old biases**
+(same class as the within-leaf-hit precedent: improvement confirmations, not
+regression suspects). Recapture via `~/projects/wsl-gpu` before any later
+render-changing wave lands, or A/B attribution becomes impossible.
+
+---
+
+### Phase 1 — glTF pipeline 100%
+
+#### 1A — Asset loading (`assetLoader.ts`)
+
+**Already in working tree:** `loadGltfAsset`, external buffer/image fetch, `extensionsRequired` enforcement, `imageBytes` map.
+
+**Still required:**
+
+| Task | Code | Plug-in | Footgun |
+|------|------|---------|---------|
+| Typed errors | `packages/gltf-adapter/src/errors.ts` | Throw `GltfFetchFailed`, `GltfResourceNotFound` with `{ url, kind }` | Generic `Error` breaks `compatibilityMode` UX |
+| Cache hooks | `LoadGltfAssetOptions.cache` | Wrap `fetchArrayBuffer` in `assetLoader.ts` | Cache key must include `baseUri` + URL |
+| `loadGltfAndDecodeTextures()` helper | New `texturePipeline.ts` | After `gltfToScene`, walk all `TextureRef`s, call host `decodeImage` → replace handles with backend-ready pixels | **#1 arbitrary-glTF blocker:** Scene has maps but handles are `RawImageHandle` — pt-webgl2 `texturesArray.ts:4-10` needs `{width,height,data}` float RGBA linear |
+| sRGB → linear | In decode helper | glTF baseColor textures are sRGB (`KHR_materials_unlit` too) | Double-linear if backend also decodes sRGB |
+| NPOT / max dim | In atlas builders (PT + WA) | Nearest resize to `max(dim)` like `texturesArray.ts:12-13` | `sampler2DArray` requires uniform layer size |
+| Basis/WebP/DDS | `compression.ts` pattern: host hook + `requires-hook` in report | `featureReport.ts` `EXTENSIONS_REQUIRING_HOST_HOOK` | Failing to pass hook must throw in `strict` mode, not warn-skip |
+| **Texture wrap modes (ADDED 2026-06-12 — verified hole)** | `TextureRef.wrapS/wrapT` in core (`repeat`/`clamp`/`mirror`) + adapter reads `gltf.samplers` (parsed today, consumed NOWHERE) + backend honor: pt-webgl2 atlas is hard `CLAMP_TO_EDGE` (`texturesArray.ts:236-237`) → shader-side `fract()` per wrap mode or per-layer sampler strategy; same audit for pt-webgpu samplers | **Tiled/repeating textures are everywhere in real glTF — this alone fails the Khronos-sweep acceptance row.** KHR_texture_transform scale>1 currently edge-smears |
+| **Mipmaps (ADDED 2026-06-12 — verified hole)** | pt-webgpu `materialTextureArray.ts` creates `mipLevelCount:1` while sampling with `mipmapFilter:'linear'` — generate mip chain at upload (compute blit or CPU) | Minification aliasing on every real textured asset; also fix the RGBA8-only raw-data `bytesPerRow` assumption in the same file |
+
+#### 1B — Feature report & planner (`featureReport.ts`)
+
+**Already:** `analyzeGltfAsset`, `evaluateGltfBackendCompatibility`, `rankGltfBackends`, per-field ledger crosswalk.
+
+**Still required:**
+
+| Task | Code | Footgun |
+|------|------|---------|
+| Source paths on every issue | `GltfCompatibilityIssue.path` — e.g. `materials[2].normalTexture` | Without paths, hosts can't fix assets |
+| ~~Scalar `KHR_materials_pbrSpecularGlossiness` scoring~~ ✅ DONE | `specularGlossinessMaterialCount` + compatibility issue `KHR_materials_pbrSpecularGlossiness` | Texture-alpha glossiness remains the next row |
+| Spec-gloss glossiness-alpha | `materials.ts` + issue row `glossinessAlpha: approximate` | RGB imported as `specularColorMap` but roughness not baked from alpha — test in `gltfExtensionPolicy.test.ts` documents gap |
+| ~~Morph `TANGENT` unsupported policy~~ ✅ DONE | `hasMorphTargetTangents` + unsupported compatibility issue + warn-skip import path | Core `morphTargetTangents` can remain a future contract expansion, not a blocker |
+| Cameras | `GltfFeatureReport.sceneGraph.cameras` count is present; add issue when `gltf.cameras.length > 0` | Don't put cameras in `Scene` — no consumer |
+| Double-sided | `materials.doubleSidedCount` is present and raw `extensions.doubleSided` is preserved; add compatibility/render policy | glTF doubleSided still has no first-class `MaterialSpec`/primitive contract |
+
+#### 1C — Import (`gltfToScene.ts`, `materials.ts`, `accessors.ts`)
+
+**Closed:** strip/fan triangulation, morph POSITION/NORMAL, animations, skins, punctual lights, KHR material extensions, `resolveTextureRef` UV/transform.
+
+**Still required:**
+
+| Task | Code | Footgun |
+|------|------|---------|
+| ~~**GLTF-01** bind matrices~~ ✅ LANDED | `gltfToScene.ts:402-419` emits `bindMatrix`/`bindMatrixInverse` (warn fallback when uncomputable) | — |
+| ~~**CORE-01** CUBICSPLINE quats~~ ✅ LANDED | `sampleAnimationClip` normalizes LINEAR/STEP/clamped/CUBICSPLINE rotations | — |
+| Generate tangents when missing | After unpack POSITION/NORMAL/uvs, call `generateTangents()` (new in `gltf-adapter` or reuse logic from pt-webgl2) | glTF often omits TANGENT; normal maps break without (WEBGL2-01) |
+| `COLOR_0` vertex colors | Already unpacked — add to `GltfFeatureReport` + multiply in backends or `baseColor` bake at import | glTF vertex color × baseColor |
+| Sparse accessors | More fixtures in `accessors.ts` tests | Production glTF uses sparse heavily |
+| ~~Point/line modes~~ ✅ DONE | Product decision: keep unsupported; `gltfPointLinePrimitivePolicy.test.ts` pins structured compatibility issues + warn-skip import | Don't "half support" — either add `ScenePrimitive` kind later or keep rejecting |
+
+#### 1D — Runtime controller (`sceneController.ts`)
+
+**Already:** `seek`, `advance`, skin bones via `solveSkin`, morph weights, `updatePrimitive` with `setScene` fallback.
+
+**Still required:**
+
+| Task | Code | Plug-in | Footgun |
+|------|------|---------|---------|
+| Multi-clip blend | `GltfSceneController.blend(clips, weights)` | Sample each clip, accumulate TRS/morph | Order matters: morph before `solveSkin` (same as static import) |
+| `KHR_materials_variants` at runtime | `controller.setVariant(name)` → re-run `convertMaterial` for affected primitives → `materialPatch` or `setScene` | Variant switch must invalidate material fast-path caches on walkaround |
+| ~~Engine attach API~~ ✅ DONE | `controller.attachEngine(engine, { setScene })` exists and `loadGltfForEngine` attaches after load | Use `attachScene:false` / `setScene:false` when the host already set the scene |
+| Patch routing per backend | Use `patchPrimitiveInScene` then `updatePrimitive` — on throw, `setScene` | `ProgressiveHandoffCoordinator` pattern (`progressiveHandoff.ts`) | Partial patch on one engine desyncs handoff pair |
+
+#### 1E — Engine bridge (`engineBridge.ts`)
+
+**Already:** `loadGltfForEngine`, `compatibilityMode`, factory injection.
+
+**Still required:**
+
+| Task | Code | Footgun |
+|------|------|---------|
+| `@vitrum/engine/gltf` re-export | `packages/engine/src/gltf.ts` wraps `loadGltfForEngine` + `createEngine` | Keeps adapter independent but one-import DX |
+| ~~Pass `decodeImage` + `dracoDecode` + `meshoptDecode` through bridge~~ ✅ DONE | `LoadGltfForEngineOptions` extends `LoadGltfAssetOptions`; `loadGltfForEngine` passes options through `loadGltfAsset` | Bridge without hooks still fails required compressed assets, but now through the intended hook contract |
+| Return `textureDecodeReport` | List maps that still have `RawImageHandle` after decode pass | Host knows before first frame |
+
+---
+
+### Phase 2 — PT backends (pt-webgl2 + pt-webgpu full) — material & integrator 100%
+
+Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
+
+#### 2A — P0 correctness (do before fidelity promotion)
+
+> **2026-06-12 reconciliation: ALL rows in this table are ✅ LANDED on `main`**
+> (waves `00047313`..`f1b1dd79` + verified on disk). Kept for audit history only
+> — do not re-execute.
+
+| ID | Status | Evidence |
+|----|--------|----------|
+| PTWG-01 | ✅ LANDED | `state==='error'` blocks at `pt-webgpu/src/index.ts:783` |
+| PTWG-02 | ✅ LANDED | old-OR-new implicit-emitter repack in `sceneMutationRouter.ts` |
+| PTWG-03–04 | ✅ LANDED | `lightSelectInvPdf` all source kinds (`sppmBindings.wgsl.ts:394+`); flux oracle PASSES (energy conserved ±3%) |
+| PTWG-05 | ✅ LANDED | Abbe/spectralMinMu lanes split |
+| WEBGL2-01 | ✅ LANDED | authored tangent XYZW + nonzero fallback handedness (`attributesTextureArray.ts:252`) |
+| H49 | ✅ STRUCK — was WRONG, not stale | `specularColor`/`specularIntensity` + maps ALREADY packed at `materialsTexture.ts:168-232`; ledger grades native |
+
+#### 2B — Material packing gaps → ledger `native`
+
+**pt-webgl2** (`materialsTexture.ts` + GLSL): only `anisotropy*`, `displacement*`, `thicknessMap` remain unsupported.
+
+| Field | Work |
+|-------|------|
+| `thicknessMap` | Sample in volume path or stay unsupported with compatibility reject |
+| `anisotropy*` | Port pt-webgpu `bsdf.wgsl.ts` aniso or keep unsupported + planner rejects |
+
+**pt-webgpu** (`materialPacking.ts`, `materialTextures.ts`, `material.wgsl.ts`):
+
+| Field | Work | Footgun |
+|-------|------|---------|
+| `normalScale` | Multiply in `applyNormalMap` | Ledger says approximate for `normalMap` partly because of this |
+| `transmissionMap`, `alphaMap` | Add descriptor slots in `materialTextures.ts` `DESCRIPTOR_FIELDS` | Group 3 binding count — check `maxStorageTexturesPerShaderStage` |
+| `clearcoat*Map`, `sheen*Map`, `iridescence*Map`, `specular*Map` | Extend descriptor list (pt-webgl2 has 17 maps; pt-webgpu has 6) | **H52:** pt-webgpu packs scalars but not maps for extensions |
+| `specularIntensity`, `specularColor` | New vec4 lane in `materialPacking.ts` | glTF KHR_materials_specular |
+| Per-map UV transform | Stop sharing `baseColor` transform in `material.wgsl.ts` "v1 simplification" | glTF `KHR_texture_transform` per texture |
+| `thickness` scalar | Use or keep `unsupported` with honest report | Volume walk uses real path lengths — scalar thickness ambiguous |
+| ~~`shadingModel` branch verification~~ ✅ DONE | Packed/consumed as terminal unlit branch in pt-webgpu; ledger intentionally remains `approximate`, not `native` | Native would require different semantics (for example emissive-light participation), so do not over-promote |
+
+**Plug-in pattern for new map:**
+1. Add to `materialTextures.ts` collector.
+2. Add binding index in `material.wgsl.ts` `materialTexDescriptors`.
+3. Sample in `shadePrologue.wgsl.ts` / `bsdf.wgsl.ts`.
+4. Update `PT_WEBGPU_MATERIALS` row.
+5. Add `scenePack.materials.test.ts` + wgslContract field pin.
+6. Reject from `incrementalPatch.ts` material fast-path if map handles change (already pattern for texture maps).
+
+#### 2C — PTWG-MAT-01 integrator audit (mandatory for extension lobes)
+
+> **SCOPE WIDENED (2026-06-12):** the audit is NOT extension-lobes-only. It must
+> also close the **grayscale single-directional shortcut class** — in-medium NEE
+> (`kernel.wgsl.ts` `params.lightDir.w` path), MNEE cone-search
+> (`caustic.wgsl.ts:846,883`), SPPM directional emitter, BDPT bounce-0, and
+> ReSTIR-PT `rptDirectAtVertex` all still light from the mean-gray mirrored
+> directional the megakernel outgrew (chromatic loss + missing light kinds in
+> those paths). Also in scope: BDPT's hardcoded 50-unit emitter placement radius
+> (`bdptLightSubpath.wgsl.ts` `emitPos = -lightDir * 50.0`) — derive from scene
+> bounds; and `environment:'none'` must stop returning the lit `sampleSky`
+> gradient (`connect.wgsl.ts:59-63`) — a no-environment scene gets free ambient
+> light today, a contract violation.
+
+Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extension lobes must match across paths:
+
+| Path | File | Status |
+|------|------|--------|
+| Eye path NEE | `kernel.wgsl.ts` / `kernelLite.wgsl.ts` | ✅ direct-light NEE and BSDF connection helper calls now use `evaluateBrdfFull` / `brdfDirectionalPdfFull`; still open for path-sampling PDFs in `kernel.wgsl.ts` tied to `sampleNextBounceDirection` |
+| BSDF connections | `connect.wgsl.ts`, `connectLite.wgsl.ts` | ✅ local helper propagation closed (area/env full-tier; env lite; area-lite remains deliberate zero stub) |
+| BDPT | `bdptConnection.wgsl.ts`, `bdptLightSubpath.wgsl.ts` | ✅ eye↔light connection uses full helpers; **open:** light-subpath scatter still uses base helpers / sampler payload |
+| SPPM / caustics | `caustic.wgsl.ts`, `sppmBindings.wgsl.ts` | ✅ receiver-side SPPM/caustic BRDF/PDF helper propagation closed |
+| ReSTIR-PT | `restirPtProducer.wgsl.ts`, `restirPtCompose.wgsl.ts`, `reservoirPtHero.wgsl.ts`, `restirPtResolve.wgsl.ts` | ✅ producer direct/onward paths use full helpers; **open:** reservoir payload/resolve still stores only base lobes and source PDFs track the current sampler |
+| Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | OPEN — derivatives still target the base BRDF parameterization |
+| Present | `present.wgsl.ts` tonemap only — no BSDF | N/A |
+
+**Footgun:** Fixing megakernel only used to leave BDPT/SPPM wrong for glTF clearcoat scenes with `bdpt:true`; that local helper class is now narrowed. The remaining class is sampler/payload coherence, not just missed function calls.
+
+#### 2D — pt-webgl2 scope gaps for arbitrary glTF
+
+| Gap | Code | Footgun |
+|-----|------|---------|
+| Analytic primitives | `PT_WEBGL2_SUPPORT` empty + `partitionSceneBySupport` drops analytics | glTF doesn't use analytics — OK if planner never picks pt-webgl2 for analytics |
+| Procedural sky | No env — host must supply `hdri` separately | glTF has no sky; document |
+| Procedural sky on PT | Copy pt-webgpu Preetham bake (`environmentPacking.ts`) | |
+| Mutations all `fallback-rebuild` | `capabilities.ts:85-92` overrides ledger mutations | Animation via controller causes full repack every frame — **performance footgun**; add fast paths mirroring `sceneMutationRouter.ts` |
+| No `setSize` | Host uses `FrameInput.viewport` | Document in `Engine` JSDoc; optional `setSize` on PT |
+| Denoiser | No in-engine path | `compatibilityReport` should note OIDN unavailable on pt-webgl2 |
+| Caustics | Heuristic not MNEE (`options.ts`) | Don't grade `manifold-nee` as native in docs |
+
+#### 2E — pt-webgpu lite tier policy
+
+**For arbitrary glTF 100%:** lite is **not** a target. Code required:
+
+| Task | File | Behavior |
+|------|------|----------|
+| `loadGltfForEngine` rejects lite for `reject-degraded` | `engineBridge.ts` | If `recommendedBackend` is pt-webgpu but device selects lite, throw or fall back to pt-webgl2 |
+| `rankGltfBackends` lite row | `featureReport.ts` | Score lite separately or mark `pt-webgpu-lite` pseudo-backend |
+| PTWG-07 verify | `sceneMutationRouter.ts`, lite texture refresh | Emitter/env mutation must refresh `liteLightTex` / `liteEnvTex` |
+
+**Footgun:** `connectLite.wgsl.ts` `bsdfAreaLightConnectionContribution` returns zero **by design** — lite uses one-sided area NEE (`kernelLite.wgsl.ts` after PTWG-LITE-01 fix). Don't "implement stub" without fixing estimator.
+
+#### 2F — Analytic + instancing (pt-webgpu full)
+
+Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-mesh` kind — adapter flattens to separate primitives. **Gap:** add `EXT_mesh_gpu_instancing` to Phase 1 extension matrix or explicitly `unsupported` with test.
+
+---
+
+### Phase 3 — Walkaround-hybrid 100%
+
+> **SCOPE DECISION LOCKED (user, 2026-06-12): the FULL texture atlas is committed
+> scope.** Phases 3C (alpha), 3D (atlas: all maps + UV/tangent buffers), and 3E
+> (extension lobes) execute as written — they are requirements, not options.
+> "Ledger truth via `unsupported` grades" is NOT an acceptable terminal state for
+> walkaround material maps; rows are expected to promote to native/approximate
+> through the atlas. Permanent-unsupported exceptions remain only the 3F list
+> (spectral/displacement/thin-film/layers).
+
+#### 3A — P0 subsystem & pipeline correctness
+
+> **2026-06-12 reconciliation: W-HYB-01/02/03 are ✅ LANDED on `main`**
+> (verified on disk: NRC clear wired at `WalkaroundGPUPipeline.ts:1227`;
+> atrous per-iteration 256-byte UBO strides; init failures → `onError`).
+> H25/H28/H29 remain OPEN; H26-H27 closed in R8-B (keep oracle coverage).
+
+| ID | Status | File(s) | Fix | Footgun |
+|----|--------|---------|-----|---------|
+| W-HYB-01 | ✅ LANDED | — | `clearSlotClaims()` wired before NRC GI-RIS | — |
+| W-HYB-02 | ✅ LANDED | — | Per-iteration UBO bindings (256-byte strides) | — |
+| W-HYB-03 | ✅ LANDED | — | Init failures route to `onError` | — |
+| H25 | OPEN | `ppgPdf.wgsl.ts`, `dTree.ts` | Upward flux propagate OR disable interior sampling in `ppgEvalPdf` | PPG guides with wrong PDF — byte tests green |
+| H26-H27 | ✅ CLOSED (R8-B) | `risGiNrc.wgsl.ts` | Spread + training target fixed — keep oracle tests | |
+| H28 | OPEN | `unetArchitecture.ts`, `relu.wgsl.ts` | Separate ReLU output buffer | `denoiser:'neural'` fails WebGPU validation |
+| H29 | OPEN | `ppgUpdate.wgsl.ts` | Template `MAX_DTREE_NODES_PER_CELL` from `resourceManager.ts` | Hardcoded 341 vs host cap |
+
+#### 3B — Emitters, environment, shadows (ledger truth)
+
+| Item | File(s) | Current | Required for native |
+|------|---------|---------|---------------------|
+| Point/spot DI | `shade.wgsl.ts` `lo_analyticNEE`, `analytic_lights` binding 13 | H41 wired in code | Verify emitter upload populates binding 13 — trace from `coreEmittersToDDGILights` / emitter pack |
+| Mesh-area `color`/`intensity` | `restir/bvhSceneHelpers.ts:316-318` | Ignored (H23) | Multiply Le |
+| Emitter `castShadow` | DDGI/ReSTIR paths | unsupported | Pack flag; gate in `shadingTerms.wgsl.ts` |
+| `primitiveCastShadow` GI-side | DDGI, ReSTIR-GI, RC | approximate | Extend `bvhCastShadowMask` to GI rays (`shared-bvh`, `probeUpdateRays.wgsl.ts`, `risGi.wgsl.ts`) |
+| `updateLighting` sun | `HybridEngine.ts:1524+` | DDGI sun not re-synced (items_to_fix) | Call `_ddgi.setLights(orientDdgiSunLights(...))` on `updateLighting` |
+| `procedural-sky` | `resolveHybridEnvironment.ts` | Scalar approx | Either bake Preetham to probe rays or keep `approximate` + planner never recommends WA for procedural-sky assets |
+| RC sun RGB | `HybridEngineFrameOrchestrator.ts:363-368` | Monochrome (H24) | Pass color |
+
+#### 3C — Alpha & blending (glTF `alphaMode`)
+
+Walkaround has **no** alpha today (`alphaMode/opacity/alphaMap` unsupported).
+
+| Step | Code | Footgun |
+|------|------|---------|
+| Pack alphaMode + cutoff | `packingHelpers.ts` new bits in `bvhIndex.w` or `bvh_material` | 4-bit transmission lane already crowded |
+| Shade discard | `shade.wgsl.ts` | Must happen before ReSTIR writes reservoirs |
+| Composite blend | `composite.wgsl.ts` | Swapchain `rgba8unorm` blend state — walkaround writes swapchain via composite |
+| `alphaMap` | Requires Phase 3D texture atlas | |
+
+#### 3D — Texture atlas (non-optional for walkaround material 100%)
+
+**Architecture (mirror pt-webgl2):**
+
+```
+Scene MaterialSpec.*Map
+  → walkaround-hybrid/src/scene/textureAtlas.ts (NEW)
+  → GPU texture_2d_array + layerOf map
+  → per-tri materialId + uvSet in BVH buffers
+  → shade.wgsl.ts / ris.wgsl.ts sample
+```
+
+| Component | File(s) | Notes |
+|-----------|---------|-------|
+| Atlas build | `textureAtlas.ts` | Reuse pixel read logic from `pt-webgl2/texturesArray.ts:79+` |
+| UV buffer | `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | **Must** propagate `uvs` stride-2 and `uv1` — merge already can (`worldSpaceMerge` per H33 fix) |
+| Tangent buffer | `bvh_normal` exists; add `bvh_tangent` or pack in aux buffer | Normal maps require TBN in `materialDecode.wgsl.ts` |
+| Bind group | `bindGroupLayouts.ts`, `WalkaroundGPUPipeline.ts` | New group or extend scene group — watch bind limit |
+| Material index per tri | Extend `bvhIndex.w` or parallel `bvh_matId` buffer | Scalar lanes stay for fallback when no map |
+| `materialPatch` fast path | `HybridEnginePrimitiveUpdates.ts` | Texture handle change → invalidate atlas slice, not full `setScene` |
+| Ledger | `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | One row promotion per map with test |
+
+**Footguns:**
+- Sampling baseColor UV for all maps (pt-webgpu v1 bug) — use per-map `TextureRef.texCoord` + `transform` from glTF.
+- `materialPatch` with maps currently may not rebuild atlas — test in `mutationMatrix.test.ts`.
+- ReSTIR primary hit uses different UV than shade — must share `materialDecode` helpers.
+- Atlas rebuild on every animation frame if UVs deform — morph targets need UV-aware or full atlas refresh.
+
+#### 3E — Extension lobes on walkaround (clearcoat, sheen, iridescence, specular, anisotropy)
+
+After 3D: extend `ggxBrdf.wgsl.ts` + `materialDecode.wgsl.ts` + packing lanes.
+
+**Footgun:** Walkaround is not a path tracer — clearcoat/sheen are approximations. Grade `approximate` unless energy conservation verified; planner must surface this.
+
+#### 3F — Fields intentionally permanent `unsupported` on walkaround
+
+Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersionAbbeNumber`, `thinFilmStack`, `scattering*`, `frontLayer`/`backLayer` (unless stained-glass scope). **Arbitrary glTF 100%** routes assets using these to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
+
+#### 3G — Structural debt (items_to_fix §H)
+
+| Item | File | Action |
+|------|------|--------|
+| H32 glass TLAS shadow | `shared-bvh/wgsl/tlasTraversal.wgsl.ts` | skipGlass in closest-hit |
+| H33 materialSig Beer-Lambert | `shared-bvh/src/sceneBvh.ts` `materialSetHashFloats` (~:173-191) — **NOT worldSpaceMerge; `materialSig` there already has the fields** | Add `attenuationDistance` + `thickness` to the hash so mutating only those fields bumps the DDGI content fingerprint (today it silently skips the rebuild) |
+| H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
+| Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
+| GRIS dead alloc H24 | `resourceManager.ts` | Gate on `regir.enabled` |
+| DDGI error swallow | `DDGI.ts:303-346` | Propagate to `onError` |
+
+---
+
+### Phase 4 — Arbitrary glTF orchestration (cross-backend)
+
+#### 4A — Single host path
+
+```
+loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
+  → textureDecodePass()
+  → rankGltfBackends(report, policy)
+  → createEngine({ prefer, scene, gltfAsset: result })  // NEW: optional gltfAsset
+  → controller.attachEngine(engine)
+  → loop: controller.advance(dt); engine.renderFrame(...)
+```
+
+| Task | File | Footgun |
+|------|------|---------|
+| `createEngine` accepts `gltfAsset?: GltfAssetResult` | `createEngine.ts`, `createEngineInternals.ts` | When present, `pickBackend` defers to `recommendedBackend.backend` |
+| Replace triangle-only auto | `createEngineScale.ts` `pickBackend` | 500k tri budget ignores material richness |
+| `VitrumCanvas` `gltf` prop | `VitrumCanvas.tsx` | Load on mount, recreate engine on url change |
+| `ProgressiveHandoffCoordinator` + glTF | `progressiveHandoff.ts` | Already has scene fallback; add `controller` reference for animated handoff |
+| Shared-device handoff | `createProgressiveEngine.ts` | Textures must be `GPUTexture` compatible — decode to GPU on WebGPU path, not CPU-only handles |
+| Examples | `examples/gltf-viewer/` (NEW) | Examples exist (`examples/attach-vitrum/`) but **no glTF example** — gap for DX 100% |
+
+#### 4B — Compatibility enforcement
+
+| Mode | When to throw |
+|------|----------------|
+| `best-effort` | Never; warnings in `GltfAssetResult.warnings` + `Engine.onWarning` |
+| `reject-unsupported` | Any used field `unsupported` on selected backend |
+| `reject-degraded` | Any non-`native` issue including `approximate`, `requires-hook` without hook |
+
+**Plug-in:** `engineBridge.ts` `enforceCompatibility` — extend to check `report.primitives.unsupportedModes.length` for used modes.
+
+#### 4C — Texture handle contract (all backends)
+
+| Backend | Expects `TextureRef.handle` | Decoder output |
+|---------|------------------------------|----------------|
+| pt-webgl2 | `{width,height,data:Float32Array}` RGBA linear or DataTexture-shaped | `texturesArray.ts:79` |
+| pt-webgpu | Opaque; uploaded via `webGpuTextureUpload` path in scene pack | GPU texture handle after upload |
+| walkaround (Phase 3D) | Same as pt-webgl2 for atlas build | CPU pixels → atlas |
+
+**New shared package or `gltf-adapter/decodeTextures.ts`:** `decodeSceneTextures(scene, { decodeImage, target: 'cpu-linear' | 'webgpu' })` — single entry.
+
+**Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.
+
+#### 4D — Animation + temporal GI
+
+| Concern | Code | Footgun |
+|---------|------|---------|
+| ReSTIR temporal reset | `HybridEngine.ts` `reset()` on topology change | Controller morph/topology must call `reset` or reservoirs ghost |
+| DDGI probe invalidation | `updatePrimitive` material vs transform | Transform refit must invalidate probe cache (`HybridEngineGiPropagation.ts`) |
+| pt-webgpu accum | `renderFrame` motion vectors | Animated scenes need correct `prevView`/`prevProj` in `attachVitrum` |
+| Skinning GPU path | `GpuSkinningSubsystem` vs CPU `solveSkin` | Controller uses CPU `solveSkin` — OK; GPU skinning path must receive bone patches too |
+
+#### 4E — Engine integration residue (H31)
+
+| Item | File |
+|------|------|
+| `backendId` on attach handle | `vanilla.ts` |
+| `createProgressiveEngine` `onError` on canvas configure | `createProgressiveEngine.ts:307` |
+| `analyticPrimitiveToMesh` UVs | `packages/core/src/analyticToMesh.ts` |
+| `idempotentDispose` errors | `idempotentDispose.ts` → `onError` |
+
+#### 4F — Extensions not yet in spec (gap fill for true arbitrary glTF)
+
+| Extension | Status | Action |
+|-----------|--------|--------|
+| `EXT_mesh_gpu_instancing` | Not imported | Implement → `instanced-mesh` primitive OR `unsupported` + test |
+| `KHR_texture_basisu` | Hook only | Default browser transcoder path + docs |
+| `EXT_meshopt_compression` fallback buffer | Implemented | Verify with real samples |
+| Multiple UV sets | `TEXCOORD_1` imported | pt-webgpu uv-set bitmask; walkaround needs uv1 buffer |
+| `KHR_materials_emissive_strength` | Imported | Verify × on all backends |
+| Draco `extensionsRequired` without hook | Throws | Good — keep |
+
+---
+
+### Phase 5 — Closure: prove 100% (not 85%)
+
+#### 5A — Material furnace + glTF sweep
+
+**New:** `tools/gltf-material-sweep/`
+
+For each fixture in `tools/reference-assets/gltf/`:
+1. `loadGltfAsset` + `decodeSceneTextures`
+2. `evaluateGltfBackendCompatibility` for each backend
+3. Render 64spp on **recommended** backend
+4. Assert `meanLum > ε`, no GPU validation errors
+5. Compare hash to golden PNG (tolerance for MC noise on PT)
+
+**Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
+
+#### 5B — Oracle suite (keep green)
+
+| Oracle | File | Regression guard |
+|--------|------|------------------|
+| PTWG-BDPT-01 | `oracle.bdptConnectionCosine.test.ts` | BDPT glTF area lights |
+| HYB-GI-01/02 | `oracle.restirDiEstimator.test.ts` | Env + area DI |
+| HYB-DDGI-01 | `oracle.ddgiVisibilityMoments.test.ts` | Probe visibility |
+| PTWG-LITE-01 | `oracle.liteRectMis.test.ts` | Lite policy |
+
+#### 5C — Mutation matrix GPU observability
+
+Extend `walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` + pt-webgpu mutation tests:
+- After `updatePrimitive`/`updateEmitter`/`updateEnvironment`, assert bind group recreation flags, buffer generation counters, or mock `writeBuffer` call counts.
+
+#### 5D — Documentation sync (part of 100% — prevents false claims)
+
+| Artifact | Action |
+|----------|--------|
+| `BACKEND_PROMISE_LEDGER` | Sole truth; READMEs cite ledger not prose |
+| `plan/renderer-fidelity-matrix.md` | Remove deleted `pt-webgl` column; add pt-webgl2 |
+| `items_to_fix.md` §H | Close items as fixed or strike |
+| ~~H30~~ ✅ CLOSED | Canvas backing store sizing is now applied before engine construction; `attachVitrumLoop.test.ts` pins CSS×DPR sizing |
+| H57 | Strike "no examples" — add `gltf-viewer` instead |
+
+#### 5E — Behavioral gate expansion
+
+Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit, textured PBR, transmission glass, skinned animated, Draco (with mock decoder).
+
+---
+
+### Master checklist: 65 material fields × walkaround path to ledger truth
+
+| Category | Fields | Walkaround work |
+|----------|--------|-----------------|
+| Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; fix H23 emissive |
+| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | 3C + 3D |
+| Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
+| Disney scalars | sheen*, clearcoat*, iridescence*, specular*, anisotropy* | 3E |
+| Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
+| Displacement | displacement* | Permanent unsupported all backends |
+
+**pt-webgl2:** 9 unsupported → 0–3 unsupported (anisotropy, displacement, thicknessMap decision).
+
+**pt-webgpu:** 22 unsupported → 0–5 (thickness, displacement, some maps if bind limits force tier split).
+
+---
+
+### Phase 6 — Ledger residue outside the three targets (ADDED 2026-06-12)
+
+> The three-target addendum does not retract the gap ledger's categorical close
+> condition. These verified-open items are NOT covered by Phases 0–5 and must be
+> implemented or explicitly downgraded before "100%" signoff:
+
+| Item | File(s) | Fix or downgrade |
+|------|---------|------------------|
+| pt-webgl2 NEE 3-way selection bias | `direct_light_contribution_function.glsl.js:9,64` + `composeTraceGlsl.ts:589-592` | Two independent `rand(5)` draws make mesh-branch probability `(1−c/D)·((c+1)/D)` while pdf assumes `1/D` — mis-weights mesh/env NEE when analytic+mesh+env coexist; also no-env scenes still allocate the env slot (pure variance waste). Single-draw strategy selection |
+| Engine `onError` shape unification | `createEngine` / `Engine.onError` / `attachVitrum.onEngineError` / `createProgressiveEngine.onError` | Four shapes, three names; progressive drops the phase/backend event. One `EngineError`-based shape + deprecation aliases |
+| `attachVitrum` auto-recreate scene loss | `vanilla.ts` (~:506) | Recreate restores ORIGINAL `opts.scene` — post-attach `setScene`/mutations silently reverted. Track last-known scene or document loudly |
+| Lite tier single-BLAS | `uploadSceneBuffers.ts` lite path | Now honestly labeled, but `mergeWorldSpaceFromCore` (already consumed by 2 backends) would make multi-primitive lite real — implement (preferred) or keep ledgered |
+| RC exported-surface footguns | `cascadeDispatch.ts:298,317-320,728`; `HybridEngineRC.ts` | ✅ light-buffer lifecycle now invalidates bindings on nonzero→zero transitions; remaining: validate `cascadeDims` (2× ray-grid invariant), throw on violation, and cover bounds-change/stale-merge-uniform cases |
+| shared-bvh sampled fingerprint in correctness path | `bufferFingerprint.ts` + `sceneBvh.ts:131` | Sampled hash gates a REBUILD SKIP (stale BVH on miss), not just re-upload as documented — full-hash the geometry arrays or add a cheap length/sum guard |
+| `solveSkin` morph-normal silent skip | `core skinSolver.ts:242` | Wrong-length `morphTargetNormals` silently ignored while positions throw — make consistent |
+| Core contract additions from Wave 3 | `material.ts`, `primitives.ts` | `morphTargetTangents`, `thicknessMap` (+ glTF adapter wiring + `doubleSided` decision from 1B) |
+
+### Suggested commit sequence (no dates)
+
+1. Land glTF API + engine bridge + controller + unlit all backends
+2. Texture decode helper + pt-webgl2/pt-webgpu upload integration
+3. P0 walkaround + pt-webgpu correctness (W-HYB, PTWG, H25-H29)
+4. WEBGL2-01 + H49 + GLTF-01 + CORE-01
+5. PTWG-MAT-01 integrator audit + material descriptor expansion
+6. Walkaround texture atlas + UV/tangent buffers
+7. Walkaround alpha + shadow GI parity
+8. `createEngine` + `pickBackend` glTF-aware + `examples/gltf-viewer`
+9. glTF material sweep + behavioral gate fixtures
+10. Ledger/README/fidelity matrix reconciliation
+
+### Execution dependency
+
+```
+P0 land commit
+  → P0 correctness (W-HYB, PTWG, PPG, NRC, neural binds)
+    → PT material parity (2B, 2C) + WEBGL2-01
+      → glTF API harden (1A-1E) + engine/gltf wrapper (1E)
+        → pickBackend + compatibility enforcement (4A, 4B)
+          → Walkaround alpha (3C) → Walkaround atlas (3D) → Walkaround lobes (3E)
+            → Material furnace (5A) + gates (Phase 0.2, Phase 5)
+              → 100% signoff
+```
+
+Walkaround atlas (3D) and PT material parity (2B) can run in parallel after P0.
+
+### Summary
+
+- **Condensed to 5 phases:** land gates → glTF → PT → walkaround → orchestration → proof.
+- **Specificity:** file-level plug-in points, decoder contracts, bind-group footguns, integrator audit matrix, texture atlas architecture.
+- **Gap fill vs 85%:** texture decode bridge, EXT_mesh_gpu_instancing decision, animation×temporal GI, lite-tier rejection for fidelity, PTWG-MAT all paths, walkaround alpha/blending, examples/gltf-viewer, render-based glTF sweep (not analyze-only), `pickBackend` fix, double-sided/vertex-color, tangent generation at import, engine `gltfAsset` passthrough, documentation sync as part of done.
+
+Walkaround **100%** and arbitrary glTF **100%** are not the same: arbitrary glTF routes rich assets to PT backends via the planner; walkaround 100% still means permanent `unsupported` for spectral/displacement with explicit rejection, not silent gray materials.
+
+---
+
+## Forward-looking — the post-100% SOTA wave (ADDED 2026-06-12, NOT in campaign scope)
+
+> Phases 0–6 above deliver **contract-complete**. This section is the separate
+> axis: convergence/throughput engineering where vitrum is below current SOTA
+> practice even after the campaign closes. Tracked here per roadmap §0.5
+> (frontier: tracked but deprioritized behind the fidelity grind). Ordered by
+> value-per-effort. None of these block 100% signoff.
+>
+> Context: post-campaign vitrum is already at-or-beyond published in-browser
+> SOTA on *breadth* (no public browser engine ships spectral + BDPT + ReSTIR-PT
+> + MNEE + progressive SPPM + inverse rendering + a gated realtime GI track).
+> The items below are where the *engineering* axis lags the field.
+
+### F1 — Low-discrepancy sampling (biggest convergence win per effort)
+
+Both converged backends run PCG only; pt-webgl2's Sobol/stratified branches are
+pinned dead (1×1 dummy textures, `featureTypes.ts`), shared-samplers has only
+Hammersley/PCG. SOTA is Owen-scrambled Sobol or PMJ02 + blue-noise screen-space
+distribution — typically a 2–4× effective-convergence multiplier.
+**Work:** real table generation in `shared-samplers` (Owen-Sobol or PMJ02,
+CPU-baked, uploaded as textures/buffers), per-dimension assignment audit
+(bounce/lobe/light dims), blue-noise rank-1 screen scramble; revive or replace
+the dead pt-webgl2 RANDOM_TYPE branches; pt-webgpu equivalent in
+`kernel.wgsl.ts` RNG plumbing. Validate via equal-time RMSE A/B on the
+reference scenes (self-validating: error curves, not eyeballs).
+
+### F2 — Compressed wide BVH traversal (biggest throughput win)
+
+Binary SAH + stack traversal is solid but compute-shader SOTA is 8-wide
+compressed BVH (CWBVH-style): ~2× traversal throughput, smaller memory
+footprint. Light tree is median-split, not full adaptive Estévez-Kulla (already
+documented in `lightTree.ts:33-35`).
+**Work:** CWBVH build + traversal kernels in `shared-bvh` behind the existing
+single-sourced stride/WGSL contract pattern; CPU brute-force oracles like the
+existing T1 set; per-backend opt-in until parity proven. Becomes decisive if/when
+a WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores
+in the browser for anyone).
+
+### F3 — Shipped denoiser weights (out-of-the-box UX)
+
+OIDN arrives via host-supplied ONNX with no weights shipped (A10 production
+neural weights = declared non-goal of the campaign). SOTA UX is denoised by
+default. **Work:** license-vetted OIDN weight distribution (or train the
+in-repo UNet to production quality), wasm/webgpu execution path that needs no
+host wiring, `denoiser:'auto'` default that engages when weights resolve.
+
+### F4 — Wavefront path tracing (largest rearchitecture — only if profiling demands)
+
+Megakernel with a hard 8-bounce structural cap (`kernel.wgsl.ts` bounceLimit).
+Wavefront scheduling (per-bounce queue compaction) is how current GPU PTs kill
+warp divergence at depth. **Work:** queue/compaction infrastructure, kernel
+split (generate/extend/shade/connect), persistent state buffers. Big; gate the
+decision on divergence profiling, not fashion. The 8-bounce cap lift falls out.
+
+### F5 — Heterogeneous volumes
+
+Homogeneous media + SSS random walk only; pt-webgl2's fog-volume GLSL is dead
+code (uniforms never uploaded). SOTA is null-collision delta/ratio tracking over
+grids (NanoVDB-class). **Work:** core contract for volume primitives first
+(extension point exists: `AnalyticShape`/`Material.extensions`), then
+delta-tracking integrator on pt-webgpu. Only if the product wants smoke/clouds —
+stained-glass design center may never need it.
+
+### F-BRIDGE — Experimental no-hardware-RT bridge (ADDED 2026-06-12)
+
+> Strategy: compute shaders can't out-muscle RT cores at traversal, so don't
+> compete — **trace fewer rays (reuse/upscale), cheaper rays (proxies/LOD), or
+> none (caches)**. Stacked estimate ~25–65× effective vs the 10–50× hardware-RT
+> promise (amortization-shaped: fast-moving scenes benefit less). All items pass
+> the feasibility bar: public source, web-portable, not RTX-locked.
+>
+> | Lever | What | Gain | Feasibility |
+> |-------|------|------|-------------|
+> | Subgroups + f16 | Wave intrinsics for traversal compaction; f16 BVH/material bandwidth | 1.3–2× | Shipping in Chrome today; plumbing only |
+> | Blue-noise error diffusion | Heitz–Belcour screen-space scrambling — same error, far cleaner look | perceptual | Paper + ref code public; tiny |
+> | FSR2-class temporal upscaling | Render 50–60% res, reconstruct; motion vectors + depth already produced | 3–4× | FSR2 MIT HLSL → WGSL port; no browser PT has done it |
+> | SHaRC radiance cache | World-space hash-grid cache, early path termination; non-neural cousin of NRC, can share its termination seam | ~2× path length | NVIDIA open source, plain compute |
+> | SDF/proxy secondary rays | Software-Lumen trick: diffuse GI traces SDF/voxel proxy, only primary/specular touch triangles | 5–10× on secondary | Well documented (UE source readable); walkaround proves the dual-representation pattern |
+> | Stochastic bounce LOD | Bounces ≥2 trace a decimated BVH (geometry version of the dead `materialLodDepth` idea) | scene-dep | Simple, low risk |
+> | Shadow-map NEE assist | Rasterized shadow map answers dominant-light shadow rays; trace only the penumbra band | large (shadow rays dominate) | Walkaround raster primary shows the seam exists |
+> | Server-side RT-baked GI | Converge GI state on real RT hardware off-device, ship via GI-state v4 export; browser refines | n/a (offload) | Works today; productizes app-idea #3 |
+> | Persistent threads + ray sorting | Morton-binned wavefront (Aila/Laine lineage) — F4 done aggressively | 1.5–2× | Classic public literature; higher effort |
+> | Subgroup matrix (experimental) | WMMA-class MLP inference for NRC/neural denoiser | NRC-specific | Chrome experimental flag; wait for stabilization |
+>
+> Unlock target: T2-4 (multiplayer GI editing), T2-5 (sensor twins), and
+> 30–60fps path tracing of moderate scenes **without** the WebGPU RT extension.
+
+### F6 — Unbiased realtime GI default (GRIS default-on)
+
+Default ReSTIR-GI reuse is deliberately biased (clamped-Jacobian; A8 decision
+keeps exact GRIS off-default). The unbiased-reuse literature is the published
+SOTA. **Work:** GPU-validate the existing GRIS path at production settings
+(perf + flicker), then flip the default; the oracle infrastructure from this
+campaign (`oracle.restirDiEstimator`) extends to pin the GI estimator the same
+way.

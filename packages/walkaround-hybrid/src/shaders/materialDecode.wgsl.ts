@@ -70,11 +70,19 @@ fn decodeIor(packed: u32) -> f32 {
   return 1.0 + f32(byte) / 255.0 * 2.0;
 }
 
-// SHADOW-01 (2026-06-11) — bv_material bits[7:0] (formerly reserved): bit 0 =
+// SHADOW-01 (2026-06-11) — bvh_material bits[7:0] (formerly reserved): bit 0 =
 // castShadowDisabled (1 ⟺ the source primitive set castShadow:false). The DI
 // shadow predicates consume it via the shared-bvh cast-shadow-masked any-hit
 // traversal (traceSceneAnyCastMask), which reads the raw word directly —
-// no decode helper needed here. Bits 1-7 remain reserved (zero).
+// no decode helper needed here.
+//
+// GLTF-unlit (2026-06-11) — bit 1 = unlit shading model. Shade consumes it as
+// an approximate glTF KHR_materials_unlit path: lighting-independent base color
+// written to the direct channel, with indirect zeroed.
+fn decodeIsUnlitMaterial(packed: u32) -> bool {
+  return (packed & 0x2u) != 0u;
+}
+// Bits 2-7 remain reserved (zero).
 
 `;
 

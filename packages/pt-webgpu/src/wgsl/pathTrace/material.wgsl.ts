@@ -925,6 +925,7 @@ struct DecodedMaterial {
   // reflectance; the RGB path never reads these.
   spectralReflCoeffs: vec3f,
   hasSpectralReflectance: bool,
+  isUnlit: bool,
 }
 
 // A3 — evaluate the Jakob & Hanika 2019 sigmoid-polynomial spectral reflectance
@@ -992,7 +993,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m23Index = m0Index + 23u; // H52 clearcoat/sheen vec4
   let m24Index = m0Index + 24u; // H52 sheenColor + iridescence vec4
   let m25Index = m0Index + 25u; // H52 iridescence params vec4
-  let m26Index = m0Index + 26u; // A3 baseColor Jakob-Hanika sigmoid coeffs vec4
+  let m26Index = m0Index + 26u; // A3 baseColor Jakob-Hanika coeffs + material flags vec4
   let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
   let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
   let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
@@ -1045,7 +1046,8 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.iridescenceThicknessMax = max(m25.z, 0.0);
   // A3 — baseColor spectral reflectance (Jakob-Hanika sigmoid coeffs).
   mat.spectralReflCoeffs = m26.xyz;
-  mat.hasSpectralReflectance = m26.w > 0.5;
+  mat.hasSpectralReflectance = (u32(max(m26.w, 0.0)) & 1u) != 0u;
+  mat.isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
   // A material has a PARTICIPATING MEDIUM the eye path must traverse when it is
   // transmissive AND has either scattering (σ_s) OR Beer-Lambert absorption
   // (σ_a from attenuationColor / a spectral-attenuation curve). The σ_a-only case

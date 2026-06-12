@@ -1,5 +1,21 @@
 # Road to 100 handoff - 2026-06-11
 
+> **UPDATE (2026-06-11, late Codex follow-up).** After the Claude waves below,
+> another closure sweep landed in the working tree: attachVitrum pre-construction
+> canvas sizing + `onWarning` forwarding, VitrumCanvas creation-time `advanced`
+> updates, progressive handoff symmetric `setScene()` fallback, glTF data-URI
+> texture decode + unsupported `extensionsRequired` rejection, RC zero-light
+> binding invalidation, and pt-webgpu SPPM oversized pixel-stats placeholder
+> fallback. A later source-read of external glTF/API feedback corrected the
+> pt-webgl2 promise ledger (`debug.pickPrimitive` + full-tier aux buffers) and
+> rewrote the P4 ledger section around the real remaining target: one predictable
+> arbitrary-glTF asset API (`loadGltfAsset`, feature report, backend
+> compatibility planner, playback controller), rather than stale claims that
+> compression/animations/morphs/strip/fan are unimplemented. Verification was
+> rerun under WSL Node 24.13.0: root
+> `npm run typecheck` clean and root `npm test` clean (`149` files, `1543`
+> passing, `3` skipped). The `gltf-adapter` count is now `118` tests.
+>
 > **UPDATE (2026-06-11, afternoon — Claude waves 3+4).** Two more waves landed
 > AFTER the sections below were written. Read this block first; the original
 > sections remain accurate for everything they cover but their "remaining gaps"
@@ -42,7 +58,7 @@
 > - GLTF-02 CLOSED: dependency-free Draco/meshopt via host decoder hooks
 >   (`compression.ts`: `dracoDecode`/`meshoptDecode`, spec fallbacks,
 >   extensionsRequired enforcement, decoded data routed through standard
->   accessor normalization; gltf-adapter now 115 tests). Real-decoder wiring
+>   accessor normalization; gltf-adapter now 118 tests). Real-decoder wiring
 >   examples in the README.
 > - P3 ORACLES BUILT (no renderer math changed) — `oracle.*.test.ts` in
 >   pt-webgpu/walkaround `__tests__`, deterministic, each step cites WGSL
@@ -138,9 +154,8 @@ Focused checks run after the latest work:
 
 Known verification not yet done:
 
-- Full workspace `npm test` was not run from the desktop shell because the
-  Windows npm/Vitest optional native package set does not match the WSL
-  `node_modules`. Use Linux Node directly for focused tests.
+- Superseded by the late Codex follow-up above: full workspace `npm test` was
+  rerun successfully from WSL Node 24.13.0.
 - GPU/reference-render A/B remains pending for render-changing paths, especially
   WebGL2 tangent-space normal/bump maps and pt-webgpu SPPM photon-map scenes.
 

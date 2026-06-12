@@ -142,6 +142,15 @@ fn bsdfAreaLightConnectionContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   _ = hitPos;
@@ -153,6 +162,15 @@ fn bsdfAreaLightConnectionContribution(
   _ = metallic;
   _ = transmission;
   _ = ior;
+  _ = clearcoat;
+  _ = clearcoatRoughness;
+  _ = sheen;
+  _ = sheenRoughness;
+  _ = sheenColor;
+  _ = iridescence;
+  _ = iridescenceIor;
+  _ = iridescenceThicknessMin;
+  _ = iridescenceThicknessMax;
   _ = throughputAtVertex;
   return vec3f(0.0);
 }
@@ -167,18 +185,37 @@ fn bsdfEnvironmentConnectionContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return vec3f(0.0); }
-  let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  let bsdfPdf = brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    0.0, 0.0,
+  );
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
   let shadowRay = Ray(hitPos + normal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
   let envPdf = environmentPdf(wi);
   let envColor = sampleEnvironmentColor(wi);
   let misWeight = powerHeuristic(bsdfPdf, envPdf);
-  let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+  let brdf = evaluateBrdfFull(
+    baseColor, roughness, metallic, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    0.0, 0.0,
+  );
   return throughputAtVertex * brdf * nDotL * envColor * misWeight / max(bsdfPdf, 1e-6);
 }
 `;

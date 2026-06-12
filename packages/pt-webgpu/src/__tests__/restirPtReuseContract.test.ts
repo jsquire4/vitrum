@@ -172,6 +172,14 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     );
   });
 
+  it('evaluates suffix Lo direct lighting and onward throughput with extension-aware BRDF helpers', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptDirectAtVertex(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatRoughness: f32,');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateBrdfFull(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFull(');
+  });
+
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');

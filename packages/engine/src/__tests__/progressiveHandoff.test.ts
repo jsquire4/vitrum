@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asMat4, type Engine, type FrameInput, type FrameOutput } from '@vitrum/core';
+import { asMat4, type Engine, type FrameInput, type FrameOutput, type Scene, type ScenePrimitive } from '@vitrum/core';
 import { ProgressiveHandoffCoordinator } from '../progressiveHandoff.js';
 
 /** Minimal stub engine that records renderFrame / reset and reports an
@@ -37,6 +37,24 @@ function input(x: number): FrameInput {
     projMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
     cameraPosition: [x, 0, 0],
   } as unknown as FrameInput;
+}
+
+function meshPrimitive(id = 'p'): ScenePrimitive {
+  return {
+    kind: 'mesh',
+    id,
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+  } as unknown as ScenePrimitive;
+}
+
+function sceneWithPrimitive(primitive = meshPrimitive()): Scene {
+  return {
+    primitives: [primitive],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
 }
 
 describe('ProgressiveHandoffCoordinator', () => {
@@ -148,7 +166,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     c.frame(input(0));
     expect(c.frame(input(0)).phase).toBe('converging');
 
-    const scene = { primitives: [], emitters: [], environment: { kind: 'none' } } as unknown as Parameters<typeof c.setScene>[0];
+    const scene = sceneWithPrimitive();
     c.setScene(scene);
     expect(rt.setScene).toHaveBeenCalledWith(scene);
     expect(cv.setScene).toHaveBeenCalledWith(scene);
@@ -166,6 +184,90 @@ describe('ProgressiveHandoffCoordinator', () => {
     c.removePrimitive('q');
     expect(rt.removePrimitive).toHaveBeenCalledWith('q');
     expect(cv.removePrimitive).toHaveBeenCalledWith('q');
+  });
+
+  it('falls back to setScene on both engines when an incremental primitive method is absent', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).updatePrimitive;
+    const scene = sceneWithPrimitive();
+    const nextPositions = new Float32Array([9, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    c.updatePrimitive('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+
+    expect(rt.updatePrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).toHaveBeenCalledTimes(1);
+    expect(cv.setScene).toHaveBeenCalledTimes(1);
+    const patched = rt.setScene.mock.calls[0]![0] as Scene;
+    expect((patched.primitives[0] as { positions: Float32Array }).positions).toBe(nextPositions);
+    expect(cv.setScene).toHaveBeenCalledWith(patched);
+    expect(c.phase).toBe('realtime');
+  });
+
+  it('throws before mutating either engine when no scene fallback exists and an incremental method is absent', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).updatePrimitive;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    expect(() => {
+      c.updatePrimitive('p', { positions: new Float32Array(9) } as Partial<ScenePrimitive>);
+    }).toThrow(/both engines must implement updatePrimitive/);
+    expect(rt.updatePrimitive).not.toHaveBeenCalled();
+    expect(cv.setScene).not.toHaveBeenCalled();
+  });
+
+  it('preserves core patch invariants when building a scene fallback', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).updatePrimitive;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      stillFramesBeforeHandoff: 1,
+    });
+
+    expect(() => {
+      c.updatePrimitive('missing', { positions: new Float32Array(9) } as Partial<ScenePrimitive>);
+    }).toThrow(/primitive "missing" not found/);
+    expect(rt.setScene).not.toHaveBeenCalled();
+    expect(cv.setScene).not.toHaveBeenCalled();
+  });
+
+  it('falls back to setScene on both engines when a primitive fast path rejects', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    cv.updatePrimitive.mockImplementation(() => {
+      throw new Error('backend cannot patch this primitive');
+    });
+    const scene = sceneWithPrimitive();
+    const nextPositions = new Float32Array([4, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    c.updatePrimitive('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+
+    expect(rt.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(cv.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(rt.setScene).toHaveBeenCalledTimes(1);
+    expect(cv.setScene).toHaveBeenCalledTimes(1);
+    const patched = cv.setScene.mock.calls[0]![0] as Scene;
+    expect((patched.primitives[0] as { positions: Float32Array }).positions).toBe(nextPositions);
   });
 
   it('reset() forces back to real-time and re-arms the converged reset', () => {

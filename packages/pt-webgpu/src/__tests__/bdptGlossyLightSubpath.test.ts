@@ -63,7 +63,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
     // The MIS pdf bookkeeping (fwdEe + revLcMinus) also uses the real BSDF pdf.
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvWoPrev, lcToE)');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvWoPrev, lcToE,');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,',
+    );
     // Legacy pseudo emitters keep the Lambertian emission profile; finite area
     // emitters use a distinct sentinel and contribute no extra endpoint factor.
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId == -1.0) {');

@@ -213,6 +213,17 @@ fn pointLightReflectionCaustic(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughput: vec3f,
 ) -> vec3f {
   // A specular reflector cannot itself host the receiver-side diffuse caustic, and
@@ -319,7 +330,12 @@ fn pointLightReflectionCaustic(
       }
       if (legBBlocked) { continue; }
       // DELTA connection: throughput · f_r · E (E already carries cosθ_recv).
-      let fr = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+      let fr = evaluateBrdfFull(
+        baseColor, roughness, metallic, normal, wo, wi,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
+      );
       contribution = contribution + throughput * fr * e;
       found = true;
     }
@@ -407,6 +423,17 @@ fn pointLightRefractionCaustic(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughput: vec3f,
 ) -> vec3f {
   // Same receiver gate as the reflection caustic: only a sufficiently rough,
@@ -548,7 +575,12 @@ fn pointLightRefractionCaustic(
       // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a
       // point-light specular refraction caustic is unreachable by any other
       // technique, exactly like the reflection case).
-      let fr = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+      let fr = evaluateBrdfFull(
+        baseColor, roughness, metallic, normal, wo, wi,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
+      );
       contribution = contribution + throughput * fr * e;
       found = true;
     }
@@ -626,6 +658,17 @@ fn pointLightGlassSlabCaustic(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughput: vec3f,
 ) -> vec3f {
   // Same receiver gate as the other caustics: only a sufficiently rough, non-metallic
@@ -745,7 +788,12 @@ fn pointLightGlassSlabCaustic(
       if (causticTransmissiveLegBlocked(v1 + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
       // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a point-light
       // 2-vertex specular caustic is unreachable by any other technique).
-      let fr = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+      let fr = evaluateBrdfFull(
+        baseColor, roughness, metallic, normal, wo, wi,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
+      );
       contribution = contribution + throughput * fr * e;
       found = true;
     }
@@ -820,25 +868,54 @@ fn manifoldNeeContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughput: vec3f,
 ) -> vec3f {
   // REAL Hanika-2015 reflection caustic (point lights + a smooth metallic mirror).
   // Runs for ANY receiver (independent of the transmissive gate below) so a diffuse
   // floor catches a mirror caustic with no glass in the scene. Delta connection —
   // already MIS-complete on its own (no other technique reaches it).
-  var total = pointLightReflectionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+  var total = pointLightReflectionCaustic(
+    rng, hitPos, normal, wo, baseColor, roughness, metallic,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+    throughput,
+  );
 
   // REAL refraction caustic (point lights + a flat REFRACTIVE interface above the
   // receiver — the "water surface"). Also runs for ANY receiver (its own seed search
   // finds the transmissive interface), independent of whether THIS receiver is
   // transmissive. Same DELTA-connection, MIS-complete-on-its-own status.
-  total = total + pointLightRefractionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+  total = total + pointLightRefractionCaustic(
+    rng, hitPos, normal, wo, baseColor, roughness, metallic,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+    throughput,
+  );
 
   // REAL GLASS-SLAB caustic (point lights + a 2-interface glass slab between the light
   // and the receiver — the canonical glass caustic beyond a single water surface).
   // 2-vertex specular chain light → v1 → v2 → receiver, block-tridiagonal Newton-
   // solved. Also runs for ANY receiver; same DELTA-connection, MIS-complete status.
-  total = total + pointLightGlassSlabCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+  total = total + pointLightGlassSlabCaustic(
+    rng, hitPos, normal, wo, baseColor, roughness, metallic,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+    throughput,
+  );
 
   // Legacy transmissive (glass) cone-search APPROXIMATION — DIRECTIONAL light only.
   // Promoting this onto the validated mneeNewtonSolveChain2 is Phase I.1 step 4
@@ -875,8 +952,18 @@ fn manifoldNeeContribution(
     if (traceAny(visibilityRay, 1e-4, INFINITY)) {
       continue;
     }
-    let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, candidateDir);
-    let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir);
+    let brdf = evaluateBrdfFull(
+      baseColor, roughness, metallic, normal, wo, candidateDir,
+      clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      anisotropy, anisotropyRotation,
+    );
+    let brdfPdf = brdfDirectionalPdfFull(
+      baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir,
+      clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      anisotropy, anisotropyRotation,
+    );
     let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
     let samplePdf = conePdf / f32(mneeSteps);
     let misWeight = powerHeuristic(samplePdf, brdfPdf);
@@ -923,6 +1010,17 @@ fn photonMapContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughput: vec3f,
   heroLambda: f32,
 ) -> vec3f {
@@ -930,6 +1028,12 @@ fn photonMapContribution(
   // stats buffer and returns the current SPPM caustic estimate.
   // Item 21: heroLambda lets the gather resolve RGB photon flux at the eye path's
   // hero wavelength in spectral mode (same treatment as all other RGB sources).
-  return sppmGatherProgressive(pixelIndex, hitPos, normal, wo, baseColor, roughness, metallic, throughput, heroLambda);
+  return sppmGatherProgressive(
+    pixelIndex, hitPos, normal, wo, baseColor, roughness, metallic,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+    throughput, heroLambda,
+  );
 }
 `;

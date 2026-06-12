@@ -119,6 +119,7 @@ describe('backend promise ledger', () => {
     // walkaround: quantized scalar model — no image maps, no Disney lobes.
     expect(wa.baseColor).toBe('approximate');
     expect(wa.emissive).toBe('native');
+    expect(wa.shadingModel).toBe('approximate');
     expect(wa.baseColorMap).toBe('unsupported');
     expect(wa.sheen).toBe('unsupported');
     expect(wa.extensions).toBe('native');
@@ -128,6 +129,7 @@ describe('backend promise ledger', () => {
     expect(gl2.anisotropyRotation).toBe('unsupported');
     expect(gl2.anisotropyMap).toBe('unsupported');
     expect(gl2.scatteringCoefficientRGB).toBe('approximate');
+    expect(gl2.shadingModel).toBe('approximate');
     expect(gl2.thickness).toBe('approximate');
     expect(gl2.thinFilmStack).toBe('native');
 
@@ -135,6 +137,7 @@ describe('backend promise ledger', () => {
     // anisotropy trio IS native; scatteringCoefficientRGB is genuine σ_s.
     expect(gpu.specularIntensity).toBe('unsupported');
     expect(gpu.specularColor).toBe('unsupported');
+    expect(gpu.shadingModel).toBe('approximate');
     expect(gpu.clearcoatMap).toBe('unsupported');
     expect(gpu.sheenColorMap).toBe('unsupported');
     expect(gpu.thickness).toBe('unsupported');

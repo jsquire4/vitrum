@@ -24,7 +24,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { BACKEND_PROMISE_LEDGER } from '../engine/promiseLedger.js';
-import { PT_WEBGL2_SUPPORT } from '@vitrum/pt-webgl2/src/capabilities.js';
+import { buildCapabilities as buildPtWebgl2Capabilities, PT_WEBGL2_SUPPORT } from '@vitrum/pt-webgl2/src/capabilities.js';
 
 function sorted(values: Iterable<string>): string[] {
   return Array.from(values).sort();
@@ -72,6 +72,20 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
         `mutations.${key} should be fallback-rebuild or unsupported, got '${grade}'`,
       ).toBe(true);
     }
+  });
+
+  it('debugSurface matches the method promise row', () => {
+    const caps = buildPtWebgl2Capabilities('none', 8, Infinity, false);
+    expect(caps.debugSurface).toBe(true);
+    expect(ledger.methodPromises.debug).toBe(caps.debugSurface);
+  });
+
+  it('supportsAuxBuffers matches the full-tier ledger row while lite remains a per-instance downgrade', () => {
+    const fullCaps = buildPtWebgl2Capabilities('none', 8, Infinity, true);
+    const liteCaps = buildPtWebgl2Capabilities('none', 8, Infinity, false);
+    expect(fullCaps.supportsAuxBuffers).toBe(true);
+    expect(ledger.supportsAuxBuffers).toBe(fullCaps.supportsAuxBuffers);
+    expect(liteCaps.supportsAuxBuffers).toBe(false);
   });
 
   it('analytic primitiveKind not in supportedPrimitiveKinds (warn-and-skip)', () => {

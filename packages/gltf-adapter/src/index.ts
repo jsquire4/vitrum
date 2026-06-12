@@ -8,9 +8,63 @@
 
 export { gltfToScene } from './gltfToScene.js';
 export type { GltfToSceneOptions, GltfToSceneResult } from './gltfToScene.js';
+export { loadGltfAsset } from './assetLoader.js';
+export type {
+  GltfAssetFetch,
+  GltfAssetFetchResponse,
+  GltfAssetInput,
+  GltfAssetResult,
+  LoadGltfAssetOptions,
+} from './assetLoader.js';
+export { GltfSceneController, createGltfSceneController } from './sceneController.js';
+export type {
+  GltfAnimationApplyResult,
+  GltfApplyAnimationOptions,
+  GltfClipSelector,
+  GltfPrimitivePatchRecord,
+  GltfSceneControllerInput,
+  GltfSceneControllerOptions,
+  GltfScenePatchTarget,
+} from './sceneController.js';
+export { loadGltfForEngine } from './engineBridge.js';
+export type {
+  GltfCompatibilityMode,
+  GltfEngineFactory,
+  GltfEngineFactoryInput,
+  GltfEngineSelection,
+  GltfForEngineResult,
+  LoadGltfForEngineOptions,
+} from './engineBridge.js';
+export {
+  analyzeGltfAsset,
+  evaluateGltfBackendCompatibility,
+  rankGltfBackends,
+  recommendGltfBackend,
+} from './featureReport.js';
+export type {
+  GltfAnimationFeatureReport,
+  GltfBackendCompatibility,
+  GltfBackendPolicy,
+  GltfCompatibilityIssue,
+  GltfExtensionReport,
+  GltfFeatureReport,
+  GltfMaterialFeatureReport,
+  GltfPrimitiveFeatureReport,
+  GltfResourceFeatureReport,
+  GltfResourceKind,
+  GltfResourceUse,
+  GltfSceneGraphFeatureReport,
+} from './featureReport.js';
 export { animationNodeId } from './animations.js';
 export type { GltfJson } from './gltfTypes.js';
-export type { DecodeImageFn, RawImageHandle } from './textures.js';
+export { GLTF_TEXTURE_SOURCE_EXTENSIONS } from './textures.js';
+export type {
+  DecodeImageFn,
+  GltfImageBytes,
+  GltfImageBytesMap,
+  GltfTextureSourceExtension,
+  RawImageHandle,
+} from './textures.js';
 // Compressed-geometry decoder hook contract (GLTF-02): the host injects
 // KHR_draco_mesh_compression / EXT_meshopt_compression decoders; the package
 // itself bundles none. See README "Compressed geometry".

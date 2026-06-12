@@ -84,55 +84,190 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   submitted scenes contain them, and walkaround-hybrid pins them through its
   unconsumed-material allowlist.
 
+Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
+
+- `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
+  `createEngine()` runs and forwards `onWarning` through the facade.
+- `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
+  recreating the engine; `onAttachError` remains ref-stabilized.
+- `ProgressiveHandoffCoordinator` can be constructed with an authoritative
+  `scene` snapshot and falls back to `setScene()` on both engines when either
+  incremental primitive path is missing or rejects; fallback patching uses the
+  core `patchPrimitiveInScene()` invariant layer.
+- `gltf-adapter` decodes embedded `data:` URI images locally and rejects
+  unsupported `extensionsRequired` entries instead of silently importing an
+  invalid scene.
+- `RCSubsystem.updateLights([])` now invalidates dispatcher bindings when the
+  analytic light buffer is destroyed on a nonzero -> zero transition.
+- `pt-webgpu` SPPM per-pixel stats allocation now replaces stale oversized
+  buffers with a 64-byte placeholder, resets recorded stats dimensions to zero,
+  invalidates group-3 bindings, and excludes SPPM from `sppmReady` when pixel
+  stats allocation fails.
+- The other-agent glTF/API feedback was reviewed against source. Its material
+  support counts are valid, and the pt-webgl2 static ledger drift was corrected:
+  full-tier aux buffers and `debug.pickPrimitive` are now represented in
+  `BACKEND_PROMISE_LEDGER` and pinned by `ledgerVsCapabilities.test.ts`.
+- The first arbitrary-glTF API slice landed in `@vitrum/gltf-adapter`:
+  `loadGltfAsset()`, `analyzeGltfAsset()`, backend compatibility ranking, and
+  external image-byte plumbing through `gltfToScene()`. URL/base-URI JSON glTF
+  can now fetch external `.bin` buffers and external image URIs with host fetch /
+  decode hooks, and the result carries a structured feature report plus backend
+  recommendations.
+- The second arbitrary-glTF runtime slice landed in `@vitrum/gltf-adapter`:
+  `GltfSceneController` / `createGltfSceneController()` now retain the imported
+  glTF node hierarchy, evaluate core `AnimationClip`s, recompute hierarchical
+  world transforms, rebuild skinned bone matrices from animated joint nodes,
+  solve morph weights through `solveSkin()`, and dispatch primitive patches via
+  `updatePrimitive()` with `setScene()` fallback. The controller fixtures cover
+  ancestor-node animation, mutation fallback, morph-weight playback, and skeletal
+  joint playback. The glTF adapter suite is now 126 tests.
+- The third arbitrary-glTF extension-policy slice landed in `@vitrum/gltf-adapter`:
+  `KHR_materials_dispersion` now imports to `MaterialSpec.dispersionAbbeNumber`
+  (`dispersion = 20 / Abbe`), texture-source extensions
+  (`KHR_texture_basisu`, `EXT_texture_webp`, `MSFT_texture_dds`) are opt-in via
+  `textureSourceExtensions` and route alternate image sources through the host
+  image decoder, required texture-source extensions fail deterministically unless
+  enabled, and `KHR_materials_variants` now selects primitive material mappings
+  by variant name or index.
+- The fourth arbitrary-glTF material-mapping slice landed in
+  `@vitrum/gltf-adapter`: `gltfTextureSweep.test.ts` now pins every imported
+  base/KHR material texture map through `TextureRef.handle`,
+  `TextureRef.texCoord`, and `KHR_texture_transform` offset/scale/rotation
+  preservation, including the shared metallic-roughness ORM texture mapping to
+  both `roughnessMap` and `metallicMap`. The same sweep now pins
+  `KHR_materials_volume.thicknessTexture` import through the reserved
+  `MaterialSpec.thicknessMap` field. The glTF adapter suite is now 135 tests.
+- The fifth arbitrary-glTF API/compatibility slice landed in
+  `@vitrum/gltf-adapter`: `loadGltfForEngine()` now combines `loadGltfAsset()`,
+  backend compatibility selection, optional compatibility rejection, injected
+  engine construction or existing-engine attachment, and
+  `GltfSceneController` creation without adding an `@vitrum/engine` dependency.
+  Compatibility scoring now treats morph-target `TANGENT` deltas as structured
+  unsupported issues instead of passive inventory counts, while
+  `loadGltfForEngine(..., compatibilityMode: 'reject-degraded')` discounts
+  host hooks that were actually supplied for Draco, meshopt, and texture-source
+  extensions.
+- The sixth arbitrary-glTF extension-policy slice landed in
+  `@vitrum/gltf-adapter`: archived
+  `KHR_materials_pbrSpecularGlossiness` scalar `diffuseFactor`,
+  `specularFactor`, and `glossinessFactor` are now converted approximately to
+  `baseColor`, `specularColor`, `roughness = 1 - glossiness`, and
+  `metallic = 0`, with raw extension data preserved. Its
+  `specularGlossinessTexture` RGB path maps to `specularColorMap`; glossiness
+  in alpha remains a warned, structured approximate downgrade because the
+  current `TextureRef` contract cannot invert/bake that channel into
+  `roughnessMap`. The glTF adapter suite is now 136 tests.
+- The seventh arbitrary-glTF primitive-policy slice landed in
+  `@vitrum/gltf-adapter`: `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP`
+  now have a focused policy fixture proving deterministic skip warnings and
+  structured `mode:<n>` unsupported compatibility issues. The glTF adapter
+  suite is now 138 tests.
+- The eighth arbitrary-glTF contract slice landed across `@vitrum/core` and
+  `@vitrum/gltf-adapter`: `MaterialSpec.shadingModel?: 'pbr' | 'unlit'` is now
+  a first-class contract field and `KHR_materials_unlit` imports to
+  `shadingModel: 'unlit'` instead of an adapter warning. Backend compatibility
+  ranking now reports unlit assets through the normal material field support
+  path: pt-webgl2, pt-webgpu, and walkaround-hybrid are `approximate`.
+- The ninth arbitrary-glTF contract slice landed across `@vitrum/core` and
+  `@vitrum/gltf-adapter`: `MaterialSpec.thicknessMap` is now a reserved texture
+  field, every backend promise-ledger material matrix explicitly marks it
+  unsupported, and `KHR_materials_volume.thicknessTexture` imports to
+  `thicknessMap` instead of being dropped with a warning. Backend compatibility
+  ranking now reports volume thickness textures through the normal material
+  field support path.
+- The tenth arbitrary-glTF downgrade-policy slice landed in
+  `@vitrum/gltf-adapter`: assets using archived
+  `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` now receive a
+  structured approximate compatibility issue for the unbaked glossiness alpha
+  channel. RGB still imports as `specularColorMap`; strict/reject-degraded
+  policies now see the lossy roughness conversion instead of relying only on an
+  importer warning.
+- The eleventh pt-webgpu material slice landed in `@vitrum/pt-webgpu`: the
+  packed material flags now encode `MaterialSpec.shadingModel === 'unlit'`, the
+  full and lite WGSL decoders expose `mat.isUnlit`, and the shared shade
+  prologue terminates unlit hits with base-color radiance before NEE/BSDF/medium
+  logic. The promise ledger promotes pt-webgpu `shadingModel` to `approximate`
+  because the branch is visible-color correct but does not sample unlit surfaces
+  as light sources.
+- The twelfth pt-webgl2 material slice landed in `@vitrum/pt-webgl2`: material
+  sample 14's flag lane now encodes `MaterialSpec.shadingModel === 'unlit'`,
+  `readMaterialInfo()` exposes `material.unlit`, and the composed GLSL main loop
+  terminates unlit hits with `surf.color * throughputRgb` after G-buffer capture
+  and before env/NEE/BDPT/BSDF logic. The promise ledger promotes pt-webgl2
+  `shadingModel` to `approximate` for the same non-light-sampled reason.
+- The thirteenth walkaround-hybrid material slice landed:
+  `bvh_material` material-flag bit 1 now carries
+  `MaterialSpec.shadingModel === 'unlit'`, `decodeIsUnlitMaterial()` exposes it
+  to WGSL, and `shade.wgsl` emits base-color radiance directly with zero
+  indirect for unlit hits. Bit 0 remains the primitive cast-shadow-disabled
+  flag; rough/metal/IOR lanes are unchanged.
+- The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
+  accepts `KHR_materials_unlit` and archived
+  `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,
+  and scalar-only spec-gloss conversion now emits a structured approximate
+  compatibility issue instead of only an importer warning.
+- The fifteenth pt-webgpu material-lobe slice landed: full-tier BSDF-side
+  area/environment connections, lite direct/environment paths, lite BSDF-env
+  connection, SPPM receiver gathers, MNEE caustic receivers, BDPT connection
+  endpoint evals/PDF overrides, and the ReSTIR-PT producer suffix-Lo estimator
+  now use `evaluateBrdfFull` / `brdfDirectionalPdfFull` where the needed
+  material fields are locally available. Remaining base-helper sites are now
+  concentrated in sampler/PDF-schema paths: ReSTIR-PT reservoir payload/resolve,
+  the visible-vertex source PDF tied to `sampleNextBounceDirection`, BDPT
+  light-subpath scatter PDFs, and the inverse adjoint harness.
+- The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
+  `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` pins
+  transform refit, material refresh, emitter repack/GI invalidation,
+  procedural-sky environment fallback warnings, `updateLighting()` warning and
+  DDGI invalidation behavior, and `setSize()` resize/no-op behavior using
+  fake pipeline/DDGI/RC collaborators.
+- Verification after the previous sweep: root `npm run typecheck` clean and
+  root `npm test` clean (`150` files, `1551` passing, `3` skipped). Verification
+  after the current follow-up is in progress; focused typecheck/test runs are
+  listed in the handoff/final response for this work session.
+
 Not fully closed yet:
 
 - GPU/reference-render A/B is still pending for the render-changing paths:
   WebGL2 tangent-space normal/bump maps and pt-webgpu SPPM photon-map scenes.
-- GLTF-06 is only partly closed: combined metallic-roughness and shared
-  `KHR_texture_transform` UV-set import are pinned, but the adapter still needs
-  a per-KHR-extension texture-map fixture sweep before the whole material parity
-  audit can be called closed.
+- GLTF-06 adapter-side texture mapping is now mechanically pinned by
+  `gltfTextureSweep.test.ts`. The remaining GLTF-06/material-parity work is
+  backend consumption fidelity (`GLTF-API-06` / `CAP-01` / `PTWG-MAT-01`), not
+  low-level adapter map plumbing.
+- `loadGltfForEngine()` closes the adapter-owned engine-preparation path. A
+  future `@vitrum/engine/gltf` subpath is a package-boundary/product decision,
+  not a required code path for the one-call adapter API.
 - A future lite-tier implementation could bake transformed/instanced scenes into
   a lite-consumed world-space BVH, but the current professional contract is now
   honest: those paths are not advertised as supported on lite.
 - GitNexus remains unavailable in this desktop/UNC path; impact review for this
   wave used direct source reads, call-chain inspection, package typechecks, and
   focused Vitest runs under Linux Node instead.
-- Full workspace `npm test` was not run from the desktop shell because Windows
-  npm/Vitest optional native packages do not match the WSL-installed
-  `node_modules`. Focused tests were run with Linux Node.
 
 ### W-HYB-01 - NRC slot claims are never cleared
 
-Evidence:
-- `NRCSubsystem.clearSlotClaims()` exists and the subsystem notes slot claims
-  should be cleared each active frame:
-  `packages/walkaround-hybrid/src/neural/nrc/nrcSubsystem.ts`.
-- `nrcQuery.wgsl.ts` uses atomic slot claims that will keep rejecting slots if
-  the claim buffer is not reset.
-- Frame orchestration updates the NRC camera PDF and copies records, but no
-  `clearSlotClaims()` call is wired before GI-RIS/training dispatch.
+Status:
+- Closed/stale. `WalkaroundGPUPipeline` now supplies
+  `nrcClearSlotClaims: (encoder) => this._nrc!.clearSlotClaims(encoder)` into
+  registered pass resources, and `NRCSubsystem.clearSlotClaims()` clears the
+  claim buffer each active frame.
 
 Closure:
-- Encode `this._nrc?.clearSlotClaims(encoder)` before the active NRC GI-RIS path.
-- Add an order/recording test proving clear -> GI-RIS -> readback/copy.
+- Keep an order/recording test on the NRC path if this is promoted from source
+  audit to formal gate coverage.
 
 ### W-HYB-02 - Default atrous denoisers reuse one UBO across encoded dispatches
 
-Evidence:
-- `AtrousVarianceDenoiser` writes the same `_atrousUboRef.buf` per iteration.
-- `AtrousDenoiser` and `AtrousIndirectPass` do the same through
-  `buildAtrousBindGroup()`.
-- `runAtrousChain()` encodes all passes into one command encoder, so queued
-  `queue.writeBuffer()` calls can leave every dispatch seeing the final step.
-- `svgf-real` and `shared-denoisers` already use the safer per-iteration UBO
-  pattern.
+Status:
+- Closed/stale. `buildAtrousBindGroup()` now packs each iteration into an
+  aligned byte range and binds `{ buffer, offset, size }`; `AtrousDenoiser`,
+  `AtrousIndirectPass`, and `AtrousVarianceDenoiser` pass per-iteration offsets
+  instead of rebinding the same zero-offset UBO range for every encoded dispatch.
 
 Closure:
-- Allocate/bind distinct UBOs per iteration or use dynamic offsets for all
-  non-SVGF atrous chains.
-- Add a bind-group recording test that proves every iteration has the intended
-  step size.
+- Keep focused bind-group offset tests for direct, indirect, and variance
+  chains; no further algorithmic change is required for the original UBO-race
+  finding.
 
 ### W-HYB-03 - Hybrid async init/DDGI runtime failures bypass `onError`
 
@@ -498,14 +633,21 @@ Closure:
 
 ### HYB-DDGI-01 - DDGI no-hit visibility moments may poison visibility
 
-Evidence:
-- Miss rays store sky radiance with `hitDistance = BVH_INTERSECT_INFINITY`.
-- Visibility blending squares distance into an `rgba16float` atlas.
-- Receiver Chebyshev consumes those moments directly.
+Status:
+- Closed mechanically in the 2026-06-11 follow-up sweep.
+- Finite hit samples still drive the visibility mean/depth² moments.
+- Sky-miss samples (`hitDistance >= DDGI_MISS_DISTANCE`) are skipped so they no
+  longer overflow the `rgba16float` visibility atlas.
+- All-miss/open-sky visibility texels now write a finite far-visible sentinel
+  (`65504.0`, the rgba16f max finite value) instead of zero moments, avoiding
+  false zero-depth occlusion on first-frame/open-sky probes.
+- `packages/walkaround-hybrid/src/__tests__/oracle.ddgiVisibilityMoments.test.ts`
+  now covers all-hit wall occlusion, historical one-miss poisoning, skipped
+  one-miss regression, and all-sky open visibility.
 
-Closure:
-- Define finite miss-depth semantics, or skip/no-hit visibility samples.
-- Add CPU/GPU oracles for open sky, partial occlusion, and closed-room probes.
+Remaining:
+- GPU/reference A/B for full DDGI scenes is still a promotion gate, but the
+  source-level visibility-moment defect is closed by the CPU oracle.
 
 ### HYB-SKY-01 - walkaround procedural sky remains approximate
 
@@ -539,58 +681,255 @@ Closure:
 
 Evidence:
 - Direct NEE uses full BRDF evaluation.
-- BSDF area/env connection and BDPT connection/light-subpath use base BRDF/PDF.
-- SPPM, ReSTIR-PT, caustic, lite, and reservoir paths need the same audit.
+- Full-tier BSDF area/env connection, lite direct/env, lite BSDF-env, SPPM
+  receiver gather, MNEE caustic receiver paths, BDPT connection endpoints, and
+  ReSTIR-PT producer suffix Lo now use full BRDF/PDF helpers where the needed
+  material fields are locally available.
+- Remaining base-helper sites are not simple omissions: ReSTIR-PT
+  `ReservoirPTHero` stores only `albV/roughnessV/metalV`, resolve/temporal/
+  spatial targets inherit that layout, the producer's source PDF is tied to the
+  current `sampleNextBounceDirection` sampler, BDPT light-subpath scatter PDFs
+  are tied to the light-subpath sampler, and inverse adjoints use a separate
+  derivative model.
 
 Closure:
-- Audit every `evaluateBrdf` and `brdfDirectionalPdf` call site.
-- Route full decoded material/extension parameters through contribution and MIS
-  pdf paths where fidelity is promised.
-- Add material-furnace and lobe-specific tests.
+- Redesign sampler/PDF coherence: extend `sampleNextBounceDirection` and the
+  associated source/reverse PDFs for clearcoat/sheen/iridescence/aniso sampling
+  rather than only changing evaluation.
+- Widen `ReservoirPTHero` and host byte-size/layout tests if ReSTIR-PT
+  visible-vertex extension targets are promoted.
+- Extend BDPT light-subpath sampling/PDF bookkeeping before marking light-path
+  extension-lobe parity closed.
+- Add material-furnace and lobe-specific tests plus reference A/B before
+  promoting these rows from approximate/experimental.
 
 ### PTWG-LITE-01 - Lite rect/disc area MIS is one-sided
 
 Evidence:
-- Lite rect/disc NEE applies MIS against BRDF pdf.
-- Complementary BSDF-to-area-light connection returns zero.
+- Lite rect/disc NEE now uses a one-sided area estimator because
+  `connectLite` intentionally has no complementary BSDF-to-area-light path.
+- Complementary BSDF-to-area-light connection still returns zero by policy.
 
 Closure:
-- Implement lite rect/disc ray-light connection, or use a non-MIS NEE weighting
-  appropriate for one-sided sampling.
-- Add a rect/disc area reference test.
+- Closed for the current lite contract by the non-MIS one-sided estimator and
+  CPU oracle coverage.
+- Optional future promotion: implement lite rect/disc ray-light connection and
+  reintroduce matched MIS with rect/disc reference tests.
 
 ## P4 glTF and asset ingestion completeness
 
 These matter because professional users will judge the library by whether common
-production assets survive ingestion.
+production assets survive ingestion. The target is not merely "the low-level
+adapter can return a `Scene`." The target is one predictable asset API that can
+load a normal glTF/GLB, classify the asset's features, select or reject a backend
+honestly, drive animations/morphs/skins through the engine mutation contract, and
+surface every degradation as structured data.
 
-### GLTF-02 - Draco and meshopt compressed primitives are skipped
+### GLTF-API-01 - turnkey asset loading is still host-written
 
-Closure:
-- Add decoder hooks/dependency strategy for `KHR_draco_mesh_compression` and
-  `EXT_meshopt_compression`.
-- Add fixtures for both compressed paths.
-
-### GLTF-03 - glTF animations are not imported
-
-Closure:
-- Parse glTF animations, samplers, channels, interpolation modes, node targets,
-  skeletal targets, and morph target weights into core animation clips.
-- Add LINEAR, STEP, CUBICSPLINE, skin, and morph animation fixtures.
-
-### GLTF-04 - glTF morph targets are skipped by the adapter
-
-Closure:
-- Import POSITION/NORMAL/TANGENT morph target deltas and weights.
-- Add triangle morph coverage, normal morph, tangent morph, and skinned+morphed
-  fixtures.
-
-### GLTF-05 - Non-triangle primitive modes are skipped
+Status:
+- `loadGltfAsset(input, options)` now accepts `URL | string | ArrayBuffer |
+  GltfJson`.
+- URL/string inputs resolve a base URI automatically; explicit `baseUri` is
+  supported for object/ArrayBuffer inputs.
+- External `.bin` buffers and external image URIs are fetched via host-supplied
+  `fetch` or `globalThis.fetch`.
+- External image bytes are plumbed into `gltfToScene()` through `imageBytes`;
+  embedded GLB images, `data:` URI images, and bufferView images still use the
+  existing path.
+- Abort signals and deterministic fetch/base-URI errors are wired.
 
 Closure:
-- Either triangulate supported glTF primitive modes or explicitly document and
-  diagnose unsupported modes.
-- Add fixture coverage for at least triangle strip/fan if supported.
+- Mostly closed for the first professional API slice.
+- Still optional/future: explicit cache hooks, broader malformed-resource
+  fixtures, and real-world sample-asset sweeps.
+
+### GLTF-API-02 - asset feature reporting is missing
+
+Status:
+- `analyzeGltfAsset()` now reports used/required extensions, hook-required
+  extensions, unsupported optional/required extensions, external resources,
+  primitive modes/attributes, expected primitive kinds, material fields/maps,
+  texture UV sets/transforms, skins, morphs, animations, cameras, and punctual
+  lights.
+- `loadGltfAsset()` returns this report beside the converted `Scene`.
+
+Closure:
+- Closed for structured inventory.
+- Still optional/future: source-path granularity for every nested feature and
+  broader Khronos sample-model golden reports.
+
+### GLTF-API-03 - backend choice happens before asset compatibility is known
+
+Status:
+- `evaluateGltfBackendCompatibility()`, `rankGltfBackends()`, and
+  `recommendGltfBackend()` now compare a `GltfFeatureReport` with
+  `BACKEND_PROMISE_LEDGER`.
+- `loadGltfAsset()` returns `backendCompatibility` plus `recommendedBackend`.
+- Fidelity policy ranks textured assets away from walkaround-hybrid when the
+  ledger reports unsupported material fields.
+
+Closure:
+- Planner/ranking is closed as a library utility.
+- The adapter-owned engine-preparation bridge is closed:
+  `loadGltfForEngine()` selects or overrides a backend, applies compatibility
+  gates, creates/attaches an engine through a host-injected factory or existing
+  engine, and returns a `GltfSceneController`.
+- Optional future product shape: expose an `@vitrum/engine/gltf` subpath that
+  adapts `loadGltfForEngine()` to `createEngine()`'s concrete canvas/preference
+  options. This is not required for the host-agnostic adapter API.
+
+### GLTF-API-04 - animation playback/update orchestration
+
+Status:
+- `GltfSceneController` / `createGltfSceneController()` is now the turnkey
+  runtime bridge for imported animations.
+- It evaluates clips at absolute time, recomposes the glTF node hierarchy from
+  import-time base TRS, updates direct mesh nodes and animated ancestors,
+  rebuilds skinned `bones` arrays from animated joint nodes, applies morph
+  weight channels, runs `solveSkin()`, and emits `updatePrimitive()` patches
+  with `setScene()` fallback for targets without an incremental method.
+- `seek()`, `advance(dt)`, active clip selection, looped advance, and applied
+  patch/warning reporting are implemented.
+- Fixtures now cover parent-node animation, joint animation, morph weights, and
+  fallback from incremental patches to full `setScene()`.
+
+Closure:
+- Closed for single-clip playback and engine mutation orchestration.
+- Still optional/future: multi-clip blending/cross-fades, explicit play/pause
+  clock ownership helpers, richer topology-changing animation diagnostics,
+  multi-primitive mesh-node fixture coverage, mixed skin+morph fixture coverage,
+  and broader real-world animated sample sweeps.
+
+### GLTF-API-05 - common glTF extensions are not represented
+
+Evidence:
+- The adapter's required-extension allowlist covers Draco, meshopt,
+  punctual lights, transmission/ior/volume/specular/sheen/clearcoat/
+  iridescence/anisotropy/dispersion/emissive_strength, texture_transform, and
+  opt-in texture-source extensions.
+- `KHR_materials_dispersion` now maps to the core dispersion field.
+- `KHR_texture_basisu`, `EXT_texture_webp`, and `MSFT_texture_dds` are
+  represented as host-decode-required alternate texture-source paths.
+- `KHR_materials_variants` now supports a `materialVariant` selection option and
+  falls back to base materials when no active variant is selected.
+- `KHR_materials_unlit` now maps to the core `MaterialSpec.shadingModel`
+  contract field and compatibility scoring reports `shadingModel` through each
+  backend's material support matrix. pt-webgl2, pt-webgpu, and
+  walkaround-hybrid consume it as an approximate lighting-independent base-color
+  path.
+- Archived `KHR_materials_pbrSpecularGlossiness` scalar factors now translate
+  approximately to the core metallic-roughness + specular fields; raw extension
+  data is preserved for hosts that need exact legacy semantics.
+- Archived `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` now
+  emits a structured approximate compatibility issue for glossiness-in-alpha
+  because the current adapter imports RGB as `specularColorMap` but does not
+  bake alpha into `roughnessMap`.
+- Required-extension policy now accepts `KHR_materials_unlit` and archived
+  `KHR_materials_pbrSpecularGlossiness`; scalar-only spec-gloss conversion is
+  compatibility-scored as approximate even without a texture.
+- `KHR_materials_volume.thicknessTexture` now maps to the reserved core
+  `MaterialSpec.thicknessMap` field, and compatibility scoring reports
+  `thicknessMap` through each backend's material support matrix.
+- Morph-target `TANGENT` deltas remain unsupported and are now compatibility
+  scored as ignored primitive data.
+
+Closure:
+- Decide per extension: implement, require host hook, translate approximately,
+  or reject with a structured compatibility error.
+- High-priority remaining implementations: optional texture-bake parity for
+  `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
+  glossiness-in-alpha, and real backend consumption for
+  `MaterialSpec.thicknessMap`.
+- Add core fields only when at least one backend consumes them or the
+  compatibility report can honestly say they are imported-but-unsupported.
+- Continue adding real-world sample sweeps for supported/approximate required
+  and optional extensions.
+
+### GLTF-API-06 - material parity is still the dominant arbitrary-asset gap
+
+Evidence:
+- The verified support counts above show walkaround-hybrid is not a general PBR
+  target today.
+- pt-webgl2 is the closest material-complete backend, but still has unsupported
+  rows and needs tests for the high-value rows it claims.
+- pt-webgpu has substantial material support but still needs extension-lobe
+  parity across the remaining sampler/schema paths (`PTWG-MAT-01`). The local
+  non-schema paths now use the full helpers: full/lite direct and env lighting,
+  full BSDF-side area/env connections, lite BSDF-env connection, SPPM receiver
+  gather, MNEE receiver caustics, BDPT connection endpoints, and ReSTIR-PT
+  producer suffix Lo.
+
+Closure:
+- Complete `CAP-01` / `GATE-02` before calling arbitrary glTF closed.
+- Prefer pt-webgl2/full pt-webgpu for fidelity policy until walkaround either
+  implements texture-driven PBR fallback or is explicitly a realtime-profile
+  target in the compatibility report.
+- Add a glTF material sweep that feeds each imported material feature through
+  all shipping backends and asserts native/approximate/unsupported diagnostics.
+- Remaining pt-webgpu material-lobe work must be scheduled as schema/sampler
+  work, not helper plumbing: ReSTIR-PT visible-vertex reservoir payload/resolve,
+  `sampleNextBounceDirection` lobe sampling/PDF, BDPT light-subpath scatter PDFs,
+  and inverse/adjoint gradients.
+
+### GLTF-02 - Draco and meshopt compressed primitives
+
+Status:
+- Lower-level import is implemented through host-supplied
+  `KHR_draco_mesh_compression` and `EXT_meshopt_compression` decoder hooks, with
+  fallback behavior and `extensionsRequired` rejection.
+- `packages/gltf-adapter/src/gltfCompression.test.ts` currently covers both
+  compressed paths.
+
+Closure:
+- Fold decoder-hook requirements into `loadGltfAsset()` / `GltfFeatureReport`.
+- Add real-world compressed sample assets beyond the synthetic unit fixtures.
+
+### GLTF-03 - glTF animation import
+
+Status:
+- The adapter imports animation samplers/channels into core `AnimationClip[]`.
+- Core sampling handles LINEAR, STEP, and CUBICSPLINE, including rotation
+  normalization.
+- `packages/gltf-adapter/src/gltfModesMorphsAnimations.test.ts` covers import
+  mechanics.
+
+Closure:
+- Treat import as closed at the low-level adapter layer.
+- Runtime playback/update orchestration is closed for single-clip animation via
+  `GltfSceneController`; remaining work is optional/future broadening called out
+  under `GLTF-API-04`.
+
+### GLTF-04 - glTF morph target import
+
+Status:
+- POSITION and NORMAL morph target deltas and node/mesh weights import into the
+  core primitive shape; unskinned morphed meshes are promoted through an identity
+  skeleton path.
+- TANGENT morph deltas are still skipped because core has no morph-tangent
+  field.
+
+Closure:
+- Decide whether morph tangents need a core field or an explicit structured
+  unsupported diagnostic.
+- Controller-side morph playback is closed under `GLTF-API-04`.
+
+### GLTF-05 - glTF primitive modes
+
+Status:
+- TRIANGLES imports directly.
+- TRIANGLE_STRIP and TRIANGLE_FAN are triangulated into indexed triangle lists.
+- POINTS/LINES/LINE_LOOP/LINE_STRIP still warn and skip because core has no
+  point/line primitive; this is now structured in compatibility reporting as
+  `mode:<n>` unsupported primitive issues.
+
+Closure:
+- Treat strip/fan as closed.
+- Treat point/line modes as closed for the current professional contract:
+  unsupported, deterministic, and test-covered by
+  `packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts`.
+- Optional future promotion: add generated fallback geometry or native point/line
+  primitive kinds, then promote the compatibility rows with render tests.
 
 ### GLTF-06 - glTF material mapping needs parity audit
 
@@ -600,9 +939,15 @@ Closure:
 - `KHR_texture_transform.texCoord` override is closed in the shared
   `resolveTextureRef()` importer, with an end-to-end adapter fixture proving
   `TextureRef.texCoord` and transform fields survive `gltfToScene()`.
-- Still open: verify texture coordinate sets and transforms for every imported
-  extension map with explicit fixtures, not only shared helper coverage.
-- Add fixtures for KHR material extensions that core claims to carry.
+- The per-extension texture-map fixture sweep is closed:
+  `packages/gltf-adapter/src/gltfTextureSweep.test.ts` enumerates every
+  `resolveTextureRef()` consumer in `materials.ts` and proves the decoded handle,
+  UV-set override, and KHR texture transform survive `gltfToScene()` for each
+  imported base/KHR material map.
+- Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`: add walkaround
+  unlit parity, texture-bake handling for specular-glossiness texture
+  alpha if exact legacy parity is required, real backend consumption for
+  thicknessMap, and backend material-consumption parity.
 
 ## P5 validation and promotion gates
 
@@ -629,6 +974,19 @@ For every mutation type:
   denoiser history, and GI propagation all update together.
 - Include pt-webgpu lite/full separately.
 
+Status:
+- pt-webgpu has broad focused mutation coverage across primitive, emitter,
+  environment, add/remove, lite downgrade, emissive stale-light, reservoir, and
+  resource paths.
+- pt-webgl2 fallback mutation behavior is covered as rebuild-style behavior.
+- walkaround-hybrid now has a focused non-GPU seam test for transform, material,
+  emitter, environment, lighting, and resize behavior.
+
+Remaining:
+- Full GPU/resource mutation matrix promotion still needs end-to-end tests where
+  real GPU buffers, bind groups, denoiser history, and GI propagation are
+  observable together.
+
 ### GATE-04 - Renderer math oracle suite
 
 Add independent oracles for:
@@ -636,7 +994,9 @@ Add independent oracles for:
 - BDPT contribution/pdf assembly.
 - DI ReSTIR candidate accounting and selected-point shading.
 - DDGI miss visibility semantics.
-- Extension-lobe contribution/PDF parity.
+- Extension-lobe contribution/PDF parity for the remaining schema paths:
+  ReSTIR-PT reservoir/resolve, source sampler/PDF coherence, BDPT light-subpath
+  sampler PDFs, and inverse adjoints.
 
 ### GATE-05 - Reference-render A/B suite
 
@@ -671,14 +1031,21 @@ Do not carry these as open gaps unless the code regresses again.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial
   lite rendering has those paths; emitter/environment mutation texture sync is
   closed, and transform/topology support is now truthfully downgraded on lite.
+- Blanket "glTF compression/animations/morphs/strip/fan are not imported":
+  stale. Those lower-level importer paths are implemented and covered by the
+  glTF adapter suite; the open gap is turnkey arbitrary-asset loading,
+  compatibility planning, and playback/update orchestration.
 
 ## Recommended execution order
 
 1. Close P0 correctness firebreak.
 2. Close P1 capability honesty so hosts can trust the engine while deeper
    fidelity work continues.
-3. Close P3 renderer math oracles before making large shader changes.
-4. Close P2 backend-wide contract implementation/downgrades.
-5. Close P4 glTF ingestion completeness.
+3. Close the new P4 glTF API layer (`loadGltfAsset`, feature report,
+   compatibility planner, playback controller) so arbitrary assets enter through
+   one predictable path.
+4. Close P3 renderer math oracles before making large shader changes.
+5. Close P2 backend-wide contract implementation/downgrades and material parity
+   promotions that the glTF compatibility planner exposes.
 6. Run P5 gates and update `items_to_fix.md` / fidelity matrix only after code and
    tests agree.

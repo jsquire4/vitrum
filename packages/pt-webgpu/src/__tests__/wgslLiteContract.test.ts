@@ -79,8 +79,12 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-11 (PTWG-LITE-01): lite rect/disc analytic records use
     // one-sided area NEE because connectLite has no BSDF->area-light complement.
     // RENDER-CHANGING for lite rect/disc scenes; CPU oracle pins unbiased mean.
-    expect(digest).toBe('a2ba562b0d5f836c7072abd59af497554203f67dcd04165452a06fa1efca88b7');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(134506);
+    // Re-pinned 2026-06-11 (PTWG-MAT-01 partial): lite direct/env paths and
+    // BSDF-env connection route scalar clearcoat/sheen/iridescence fields
+    // through evaluateBrdfFull/brdfDirectionalPdfFull, with anisotropy forced
+    // to zero because lite has no anisotropy bindings.
+    expect(digest).toBe('ceaa2ade563b5222f633685b6f5036102f199dc209ef56121f68c1f64a4119fa');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138105);
   });
 });
 
@@ -91,6 +95,14 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('pointLights');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.isUnlit');
+  });
+
+  it('routes lite scalar extension lobes through full BRDF helpers with zero anisotropy', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.clearcoatRoughness,');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('0.0, 0.0);');
   });
 
   it('keeps mesh BVH trace and directional direct lighting', () => {

@@ -18,12 +18,33 @@
 //   The README's support matrix documents this ownership boundary.
 
 import type { GltfJson } from './gltfTypes.js';
+import type { GltfTexture } from './gltfTypes.js';
 import type { TextureRef, UvTransform } from '@vitrum/core';
+
+export type GltfTextureSourceExtension =
+  | 'KHR_texture_basisu'
+  | 'EXT_texture_webp'
+  | 'MSFT_texture_dds';
+
+export const GLTF_TEXTURE_SOURCE_EXTENSIONS: readonly GltfTextureSourceExtension[] = [
+  'KHR_texture_basisu',
+  'EXT_texture_webp',
+  'MSFT_texture_dds',
+];
 
 export type DecodeImageFn = (
   bytes: Uint8Array,
   mimeType: string,
 ) => Promise<unknown>;
+
+export interface GltfImageBytes {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+}
+
+export type GltfImageBytesMap =
+  | ReadonlyMap<number, GltfImageBytes>
+  | Record<number, GltfImageBytes>;
 
 /**
  * Raw-bytes fallback returned when no decodeImage function is supplied and
@@ -39,13 +60,15 @@ export interface RawImageHandle {
 
 /**
  * Resolve a glTF image index to bytes + mimeType from a bufferView.
- * URI-based images are skipped (the adapter does not fetch).
+ * Data URI images are decoded locally. External URI images are skipped (the
+ * adapter does not fetch).
  */
 function getImageBytes(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   imageIndex: number,
   warnings: string[],
+  externalImages?: ReadonlyMap<number, GltfImageBytes>,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const image = gltf.images?.[imageIndex];
   if (!image) return undefined;
@@ -61,15 +84,58 @@ function getImageBytes(
   }
 
   if (image.uri) {
+    if (image.uri.startsWith('data:')) {
+      const decoded = decodeDataUri(image.uri, warnings, image.name ?? String(imageIndex));
+      if (decoded != null) return decoded;
+    }
+    const external = externalImages?.get(imageIndex);
+    if (external != null) return external;
     warnings.push(
       `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" has a URI ("${image.uri.substring(0, 60)}…"). ` +
-        'The adapter does not fetch URIs. Supply pre-loaded buffers via opts.buffers ' +
-        'or provide an opts.decodeImage callback that handles data: URIs. Image skipped.',
+        'The adapter does not fetch external image URIs. Embed the image in a bufferView or data: URI. Image skipped.',
     );
     return undefined;
   }
 
   return undefined;
+}
+
+function decodeDataUri(
+  uri: string,
+  warnings: string[],
+  label: string,
+): { bytes: Uint8Array; mimeType: string } | undefined {
+  const comma = uri.indexOf(',');
+  if (comma < 0) {
+    warnings.push(`[vitrum/gltf-adapter] Image "${label}" has a malformed data: URI. Image skipped.`);
+    return undefined;
+  }
+  const meta = uri.slice(5, comma);
+  const payload = uri.slice(comma + 1);
+  const parts = meta.split(';').filter(Boolean);
+  const mimeType = parts.find((p) => !p.includes('=')) ?? 'application/octet-stream';
+  const isBase64 = parts.some((p) => p.toLowerCase() === 'base64');
+  try {
+    if (isBase64) {
+      if (typeof globalThis.atob !== 'function') {
+        warnings.push(
+          `[vitrum/gltf-adapter] Image "${label}" uses base64 data: URI, but atob() is unavailable. Image skipped.`,
+        );
+        return undefined;
+      }
+      const bin = globalThis.atob(payload.replace(/\s+/g, ''));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      return { bytes, mimeType };
+    }
+    return { bytes: new TextEncoder().encode(decodeURIComponent(payload)), mimeType };
+  } catch (err) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Image "${label}" data: URI could not be decoded: ` +
+        `${err instanceof Error ? err.message : String(err)}. Image skipped.`,
+    );
+    return undefined;
+  }
 }
 
 /** Decode a single glTF image to an opaque handle via the provided callback. */
@@ -111,15 +177,19 @@ export async function buildTextureHandleMap(
   buffers: Map<number, ArrayBuffer>,
   decodeFn: DecodeImageFn | undefined,
   warnings: string[],
+  externalImages?: GltfImageBytesMap,
+  textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
 ): Promise<Map<number, unknown>> {
   const textures = gltf.textures ?? [];
   const imageHandles = new Map<number, Promise<unknown>>();
+  const externalImageMap = normalizeImageBytesMap(externalImages);
+  const sourceExtensions = new Set(textureSourceExtensions);
 
   // Kick off unique image decodes in parallel.
   for (const tex of textures) {
-    if (tex.source !== undefined && !imageHandles.has(tex.source)) {
-      const imageIdx = tex.source;
-      const imgData = getImageBytes(gltf, buffers, imageIdx, warnings);
+    const imageIdx = resolveTextureImageSource(tex, sourceExtensions, warnings);
+    if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
+      const imgData = getImageBytes(gltf, buffers, imageIdx, warnings, externalImageMap);
       if (imgData) {
         imageHandles.set(
           imageIdx,
@@ -132,13 +202,48 @@ export async function buildTextureHandleMap(
   // Await all.
   const resolved = new Map<number, unknown>();
   for (const [texIdx, tex] of textures.entries()) {
-    if (tex.source !== undefined) {
-      const p = imageHandles.get(tex.source);
+    const imageIdx = resolveTextureImageSource(tex, sourceExtensions, warnings);
+    if (imageIdx !== undefined) {
+      const p = imageHandles.get(imageIdx);
       if (p) resolved.set(texIdx, await p);
     }
   }
 
   return resolved;
+}
+
+function resolveTextureImageSource(
+  texture: GltfTexture,
+  enabledExtensions: ReadonlySet<string>,
+  warnings: string[],
+): number | undefined {
+  for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
+    if (!enabledExtensions.has(extName)) continue;
+    const source = texture.extensions?.[extName]?.source;
+    if (source !== undefined) return source;
+  }
+
+  const available = GLTF_TEXTURE_SOURCE_EXTENSIONS.filter((extName) =>
+    texture.extensions?.[extName]?.source !== undefined,
+  );
+  if (texture.source === undefined && available.length > 0) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Texture uses ${available.join(', ')} but none of those ` +
+        'texture-source extensions were enabled. Pass opts.textureSourceExtensions to select ' +
+        'an alternate image source. Texture skipped.',
+    );
+  }
+  return texture.source;
+}
+
+function normalizeImageBytesMap(
+  images: GltfImageBytesMap | undefined,
+): ReadonlyMap<number, GltfImageBytes> | undefined {
+  if (images == null) return undefined;
+  if (images instanceof Map) return images;
+  const out = new Map<number, GltfImageBytes>();
+  for (const [k, v] of Object.entries(images)) out.set(Number(k), v);
+  return out;
 }
 
 /** Extract a UvTransform from a KHR_texture_transform extension block. */

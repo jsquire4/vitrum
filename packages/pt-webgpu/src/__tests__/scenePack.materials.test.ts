@@ -217,6 +217,17 @@ describe('A3 spectral reflectance coefficient packing', () => {
     expect(packed[SPEC_OFFSET + 3]).toBe(1); // hasSpectralReflectance flag
   });
 
+  it('packs MaterialSpec.shadingModel=unlit as bit1 in vec4 #26 .w', () => {
+    const pbr = materialToPackedVec4s({
+      baseColor: [0.2, 0.4, 0.8], roughness: 0.5, metallic: 0,
+    } as never);
+    const unlit = materialToPackedVec4s({
+      baseColor: [0.2, 0.4, 0.8], roughness: 0.5, metallic: 0, shadingModel: 'unlit',
+    } as never);
+    expect(pbr[SPEC_OFFSET + 3]).toBe(1);
+    expect(unlit[SPEC_OFFSET + 3]).toBe(3);
+  });
+
   it('round-trips a neutral grey to a flat spectrum (≈ albedo at all λ)', () => {
     // A neutral grey albedo must upsample to a near-flat reflectance whose
     // CMF integral reproduces the grey — the flat-spectrum invariant the GPU

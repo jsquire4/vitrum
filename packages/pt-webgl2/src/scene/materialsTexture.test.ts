@@ -163,6 +163,18 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 16, 3)]).toBe(0); // 0 layers
   });
 
+  it('shadingModel=unlit sets the UNLIT flag bit (s14.a)', () => {
+    const unlit: MaterialSpec = {
+      baseColor: [0.2, 0.4, 0.8],
+      roughness: 0.5,
+      metallic: 0,
+      shadingModel: 'unlit',
+    };
+    const d = packMaterialsTexture([unlit]).data;
+    const flags = d[texel(0, 14, 3)]!;
+    expect((flags & (1 << 5)) !== 0).toBe(true);
+  });
+
   it('thin-film stack populates layer payload (s28+) + feature flags (s17.a)', () => {
     const film: MaterialSpec = {
       baseColor: [1, 1, 1],

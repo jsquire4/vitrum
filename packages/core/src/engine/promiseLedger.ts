@@ -286,14 +286,14 @@ const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticSh
  */
 export const MATERIAL_SPEC_FIELDS = [
   // Base PBR
-  'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
+  'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity', 'shadingModel',
   // Alpha / coverage
   'alphaMode', 'alphaCutoff', 'opacity',
   // Transmission / refraction
   'transmission', 'ior', 'attenuationColor', 'attenuationDistance', 'thickness',
   // Texture maps + their scalars
   'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap',
-  'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap', 'aoMapIntensity',
+  'transmissionMap', 'thicknessMap', 'emissiveMap', 'alphaMap', 'aoMap', 'aoMapIntensity',
   'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
   'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap', 'iridescenceThicknessMap',
   'anisotropyMap', 'specularColorMap', 'specularIntensityMap',
@@ -351,6 +351,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   emissive: 'native',
   // Folded into emitter Le at classification (emitterClassify.ts Le = emissive·ei).
   emissiveIntensity: 'native',
+  shadingModel: 'approximate',
   alphaMode: 'unsupported',
   alphaCutoff: 'unsupported',
   opacity: 'unsupported',
@@ -369,6 +370,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   roughnessMap: 'unsupported',
   metallicMap: 'unsupported',
   transmissionMap: 'unsupported',
+  thicknessMap: 'unsupported',
   emissiveMap: 'unsupported',
   alphaMap: 'unsupported',
   aoMap: 'unsupported',
@@ -430,6 +432,9 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   metallic: 'native',
   emissive: 'native',
   emissiveIntensity: 'native',
+  // Terminal base-color visibility branch in pt-webgl2 (`material.unlit`).
+  // Approximate because it is not sampled as an emissive light source.
+  shadingModel: 'approximate',
   alphaMode: 'native',
   alphaCutoff: 'native',
   opacity: 'native',
@@ -447,6 +452,7 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   roughnessMap: 'native',  // glTF G channel
   metallicMap: 'native',   // glTF B channel
   transmissionMap: 'native',
+  thicknessMap: 'unsupported',
   emissiveMap: 'native',
   // Sampled (bit 6) with uv-set selection but NO KHR_texture_transform slot —
   // an authored alphaMap.transform is ignored (get_surface_record: raw MAP_UV).
@@ -517,6 +523,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   metallic: 'native',
   emissive: 'native',
   emissiveIntensity: 'native',
+  // Terminal base-color visibility branch in pt-webgpu (`mat.isUnlit`).
+  // Approximate because it is not sampled as an emissive light source.
+  shadingModel: 'approximate',
   alphaMode: 'native',
   alphaCutoff: 'native',
   opacity: 'native',
@@ -540,6 +549,7 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // (H51-B once-warn in materialTextures.ts).
   metallicMap: 'approximate',
   transmissionMap: 'unsupported',
+  thicknessMap: 'unsupported',
   emissiveMap: 'approximate', // shared baseColor UV transform
   alphaMap: 'unsupported',
   aoMap: 'approximate',       // shared baseColor UV transform
@@ -608,7 +618,7 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
 //                (occlusion) traversal (both tiers); emitterPacking.ts per-light
 //                castShadowDisabled lanes consumed by the kernel/kernelLite NEE loops
 //                + connect.wgsl BSDF-MIS area connections.
-//   walkaround — packingHelpers.ts bvh_material bit 0 (reserved byte) consumed by the
+//   walkaround — packingHelpers.ts bvh_material flag bit 0 consumed by the
 //                shared-bvh cast-shadow-masked any-hit variants in the ReSTIR DI
 //                shadow predicates (ris.wgsl candidate visibility + shadingTerms.wgsl
 //                shading/analytic/sun visibility).
@@ -854,7 +864,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
-    supportsAuxBuffers: false,
+    // Full-tier WebGL2 exposes normalDepth + albedo MRT aux textures. Lite-tier
+    // WebGL2 reports `supportsAuxBuffers:false` at runtime when MRT limits force
+    // auxiliary attachments off; the ledger row records the default/full promise.
+    supportsAuxBuffers: true,
     accumulates: true,
     // The native WebGL2 packer ingests mesh / skinned-mesh / instanced-mesh.
     // `analytic` is NOT in the runtime set (PT_WEBGL2_SUPPORT.supportedAnalyticShapes
@@ -906,7 +919,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // for 'linear'; present FBO for 'output'. ✓ via spread.
       setSize: false,
       updateLighting: false,
-      debug: false,
+      // T3.G #30 — pt-webgl2 exposes debug.pickPrimitive and advertises
+      // capabilities.debugSurface=true.
+      debug: true,
       // pt-webgl2 does not implement any of the following optional methods:
       // inverse rendering, ReSTIR-PT buffer, progressive seed, or GI persistence.
       createInverseSession: false,

@@ -284,6 +284,17 @@ fn evaluateBdptConnection(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   eyeDepth: u32,
   lightVtxIdx: i32,
 ) -> vec3f {
@@ -315,7 +326,12 @@ fn evaluateBdptConnection(
   if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
     return vec3f(0.0);
   }
-  let eyeBrdf = evaluateBrdf(baseColor, roughness, metallic, eyeNormal, eyeWo, connDir);
+  let eyeBrdf = evaluateBrdfFull(
+    baseColor, roughness, metallic, eyeNormal, eyeWo, connDir,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   let cosEye = max(dot(eyeNormal, connDir), 0.0);
   if (cosEye <= 0.0) {
     return vec3f(0.0);
@@ -346,8 +362,13 @@ fn evaluateBdptConnection(
   }
   if (lvMatId >= 0.0) {
     let lvMat = decodeMaterial(u32(lvMatId));
-    let lvBrdf = evaluateBrdf(lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
-                              lightNormal, -connDir, lvWoPrev);
+    let lvBrdf = evaluateBrdfFull(
+      lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
+      lightNormal, -connDir, lvWoPrev,
+      lvMat.clearcoat, lvMat.clearcoatRoughness, lvMat.sheen, lvMat.sheenRoughness, lvMat.sheenColor,
+      lvMat.iridescence, lvMat.iridescenceIor, lvMat.iridescenceThicknessMin, lvMat.iridescenceThicknessMax,
+      0.0, 0.0,
+    );
     // bdptGeometricTerm already contributes the light-vertex cosine.
     lightBsdfCosTheta = lvBrdf;
   }
@@ -372,8 +393,13 @@ fn evaluateBdptConnection(
   var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
   if (lvMatId >= 0.0) {
     let lvMatF = decodeMaterial(u32(lvMatId));
-    fwdEe = brdfDirectionalPdf(lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
-                               0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE);
+    fwdEe = brdfDirectionalPdfFull(
+      lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
+      0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE,
+      lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,
+      lvMatF.iridescence, lvMatF.iridescenceIor, lvMatF.iridescenceThicknessMin, lvMatF.iridescenceThicknessMax,
+      0.0, 0.0,
+    );
   }
   // E_{e-1} position from scratch (if e>=1); else camera endpoint.
   var eeMinusPos = camPos;
@@ -382,10 +408,20 @@ fn evaluateBdptConnection(
     eeMinusPos = prevEye.pos;
   }
   let eeToPrev = normalize(eeMinusPos - eyePos);  // E_e → E_{e-1} (or → camera at e=0)
-  let revLc = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, eyeNormal, eeToPrev, connDir);
+  let revLc = brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, eyeNormal, eeToPrev, connDir,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   var fwdEeMinus = 0.0;
   if (e >= 1u) {
-    fwdEeMinus = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev);
+    fwdEeMinus = brdfDirectionalPdfFull(
+      baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev,
+      clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      anisotropy, anisotropyRotation,
+    );
   }
   // L_{c-1} override: reverse density at L_c toward L_{c-1}. REAL BSDF pdf (outgoing
   // = lcToE toward E_e, incoming = direction to L_{c-1}) for a surface vertex;
@@ -396,8 +432,13 @@ fn evaluateBdptConnection(
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
     if (lvMatId >= 0.0) {
       let lvMatR = decodeMaterial(u32(lvMatId));
-      revLcMinus = brdfDirectionalPdf(lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
-                                      0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus);
+      revLcMinus = brdfDirectionalPdfFull(
+        lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
+        0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus,
+        lvMatR.clearcoat, lvMatR.clearcoatRoughness, lvMatR.sheen, lvMatR.sheenRoughness,
+        lvMatR.iridescence, lvMatR.iridescenceIor, lvMatR.iridescenceThicknessMin, lvMatR.iridescenceThicknessMax,
+        0.0, 0.0,
+      );
     } else {
       revLcMinus = bdptLambertDirPdf(lightNormal, lcToLcMinus);
     }

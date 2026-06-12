@@ -181,7 +181,10 @@ function packBVHIndexWTri(
 //                 Decode: ior = 1 + (byte / 255) * 2.  Quantization step = 2/255 ≈ 0.0078.
 //                 IOR_GLASS = 1.5 encodes to byte 63.75 → rounds to 64 → decodes to
 //                 1 + 64/255 * 2 ≈ 1.502 (error < 0.003 — within glass dispersion spread).
-//   bits[7:0]   = reserved (zero).
+//   bits[7:0]   = material flags:
+//                 bit 0 = castShadowDisabled
+//                 bit 1 = unlit shading model
+//                 bits 2-7 reserved (zero).
 //
 // DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
 // ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
@@ -214,6 +217,9 @@ export function quantizeIor(ior: number): number {
 export function dequantizeIor(byte: number): number {
   return IOR_RANGE_MIN + (byte / 255) * (IOR_RANGE_MAX - IOR_RANGE_MIN);
 }
+
+const BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT = 1 << 0;
+const BVH_MATERIAL_UNLIT_BIT = 1 << 1;
 
 function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
   const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
@@ -514,7 +520,7 @@ export function packBVHIndexWFromCore(
  * (0.85, 0, opaque-1.0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so
  * the core and structural paths produce identical per-triangle output.
  *
- * SHADOW-01 (2026-06-11) — bit 0 of the formerly-reserved low byte carries the
+ * SHADOW-01 (2026-06-11) — material-flag bit 0 carries the
  * source PRIMITIVE's castShadow flag (1 ⟺ castShadow:false — "does NOT cast
  * shadows"). The flag rides the material slot because both walkaround BVH paths
  * give castShadow:false primitives distinct slots (the TLAS path's
@@ -522,6 +528,10 @@ export function packBVHIndexWFromCore(
  * `splitMaterialsByCastShadow`). Default (true/undefined) packs 0 —
  * byte-identical to the pre-SHADOW-01 lane. Consumed by the shared-bvh
  * cast-shadow-masked any-hit traversal in the ReSTIR DI shadow predicates.
+ *
+ * GLTF-unlit (2026-06-11) — bit 1 carries `MaterialSpec.shadingModel ===
+ * 'unlit'`. Shade consumes it as a lighting-independent base-color output.
+ * Default PBR materials keep bit 1 clear, preserving the pre-unlit lane.
  */
 export function packBVHRoughMetalFromCore(
   triMaterialId: Uint32Array,
@@ -535,15 +545,19 @@ export function packBVHRoughMetalFromCore(
     let metal = 0;
     let ior = IOR_RANGE_MIN;
     let castShadowDisabled = 0;
+    let unlit = 0;
     if (mat) {
       const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission, mat.ior);
       rough = rm.rough;
       metal = rm.metal;
       ior = rm.ior;
       castShadowDisabled =
-        (mat as MaterialSpec & { castShadow?: boolean }).castShadow === false ? 1 : 0;
+        (mat as MaterialSpec & { castShadow?: boolean }).castShadow === false
+          ? BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT
+          : 0;
+      unlit = mat.shadingModel === 'unlit' ? BVH_MATERIAL_UNLIT_BIT : 0;
     }
-    rmBuf[t] = (packRoughMetalIorBytes(rough, metal, ior) | castShadowDisabled) >>> 0;
+    rmBuf[t] = (packRoughMetalIorBytes(rough, metal, ior) | castShadowDisabled | unlit) >>> 0;
   }
   return rmBuf;
 }

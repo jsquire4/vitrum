@@ -25,16 +25,17 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   24 sheenColor.rgb, iridescence                                       ← H52
  *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
  *      castShadowDisabled (1.0 ⇔ source primitive set castShadow:false; 0.0 default)  ← H52 / SHADOW-01
- *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm), hasSpectralReflectance flag  ← A3
+ *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm),
+ *      materialFlags: bit0 hasSpectralReflectance, bit1 unlit shadingModel  ← A3 / GLTF-unlit
  *
  * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
  * Hanika 2019 RGB→spectrum upsampling coefficients for the material's baseColor,
  * solved ONCE at pack time. In spectral mode the GPU evaluates the sigmoid
  * reflectance S(λ) = sigmoid(c0 + c1·λ + c2·λ²) at the hero wavelength to carry a
  * genuine SCALAR spectral reflectance through the path (replacing the RGB→
- * luminance tint). The .w flag is 1 when the coefficients are valid (always, for
- * every material — black collapses to S≈0 via the solver's pure-black shortcut).
- * spectralEnabled=false ignores this vec4 entirely (RGB path byte-identical).
+ * luminance tint). The .w flag's bit0 is set when the coefficients are valid
+ * (always, for every material — black collapses to S≈0 via the solver's
+ * pure-black shortcut). bit1 carries `MaterialSpec.shadingModel === 'unlit'`.
  * Ref: Jakob & Hanika 2019 (shared-samplers/jakobHanika.ts).
  *
  * WS4: vec4 #22 (`MATERIAL_VEC4_STRIDE` bumped 22 → 23) carries the RGB
@@ -262,9 +263,9 @@ export function materialToPackedVec4s(
   // solved ONCE here at pack time. In spectral mode the GPU evaluates
   //   S(λ) = sigmoid(c0 + c1·λ + c2·λ²)
   // at the hero wavelength to get a genuine scalar spectral reflectance, carried
-  // through the path instead of an RGB→luminance tint. .w = 1 (coefficients
-  // always valid; pure black resolves to S≈0 via the solver's shortcut). The RGB
-  // path never reads this vec4, so spectralEnabled=false stays byte-identical.
+  // through the path instead of an RGB→luminance tint. .w bit0 = coefficients
+  // valid (always; pure black resolves to S≈0 via the solver's shortcut), bit1 =
+  // MaterialSpec.shadingModel === 'unlit'.
   // Ref: Jakob & Hanika 2019, "A Low-Dimensional Function Space for Efficient
   //      Spectral Upsampling" (shared-samplers/jakobHanika.ts).
   const [specC0, specC1, specC2] = rgbToSpectralCoefficients(
@@ -272,7 +273,8 @@ export function materialToPackedVec4s(
     finite(base[1] ?? 0),
     finite(base[2] ?? 0),
   );
-  packed.push(finite(specC0), finite(specC1), finite(specC2), 1);
+  const materialFlags = 1 + (material.shadingModel === 'unlit' ? 2 : 0);
+  packed.push(finite(specC0), finite(specC1), finite(specC2), materialFlags);
 
   return packed;
 }

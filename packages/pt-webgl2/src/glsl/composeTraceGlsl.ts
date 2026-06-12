@@ -887,6 +887,13 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 								gbufWritten = true;
 							}
 
+							if ( material.unlit ) {
+
+								pc_fragColor.rgb += surf.color * throughputRgb;
+								break;
+
+							}
+
 							// D3 — record this surface's env scale for the forward env pickup
 							// (the NO_HIT MIS branch above) on the NEXT iteration.
 							state.envMapIntensity = surf.envMapIntensity;

@@ -5,8 +5,8 @@
  * (occlusion) rays while staying visible to camera/radiance rays. walkaround's
  * per-triangle material lane (`bvh_material`, r32uint texture — see
  * walkaround-hybrid/shaders/materialDecode.wgsl.ts + restir/packingHelpers.ts
- * `packBVHRoughMetalFromCore`) carries the flag in BIT 0 of the formerly
- * reserved low byte: `(word & 1u) != 0u` ⟺ "does NOT cast shadows".
+ * `packBVHRoughMetalFromCore`) carries the flag in material-flag BIT 0:
+ * `(word & 1u) != 0u` ⟺ "does NOT cast shadows".
  *
  * These variants are DERIVED from the canonical traversal strings
  * (`BVH_INTERSECT_WGSL` / `TLAS_TRAVERSAL_WGSL`) by anchored string surgery —

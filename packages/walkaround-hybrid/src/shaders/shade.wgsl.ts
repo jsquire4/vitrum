@@ -293,9 +293,23 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // so a default-diffuse scene is numerically unchanged; authored glossy/metal
   // surfaces now drive the GGX direct lobe + the specular-indirect term below.
   let rmCoord  = vec2u(primaryHit.indices.w % BVH_MATERIAL_TEX_WIDTH, primaryHit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-  let rm       = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
+  let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
+  let rm       = decodeRoughMetal(materialWord);
   let rough    = rm.x;
   let metal    = rm.y;
+
+  // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
+  // output the authored base color directly, bypassing all lighting and GI.
+  // This keeps the field consumed and deterministic while the realtime GI
+  // backend remains an approximate material renderer rather than a full glTF
+  // rasterization pipeline.
+  if (decodeIsUnlitMaterial(materialWord)) {
+    textureStore(hdrColorOut,    pix, vec4f(albedo,      1.0));
+    textureStore(hdrIndirectOut, pix, vec4f(vec3f(0.0), 1.0));
+    textureStore(hdrAlbedoOut,   pix, vec4f(albedo,      1.0));
+    textureStore(hdrTotalOut,    pix, vec4f(albedo,      1.0));
+    return;
+  }
 
   // ── Per-term lighting composition ────────────────────────────────────────
   //

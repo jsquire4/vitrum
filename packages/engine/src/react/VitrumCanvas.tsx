@@ -83,11 +83,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
     const onEngineErrorRef = React.useRef<VitrumCanvasProps['onEngineError']>(props.onEngineError);
-    // H31 — ref-stabilize `advanced` and `onAttachError` so inline-object props
-    // do not cause full engine teardown+recreate on every parent render. The
-    // effect dep array only observes the ref (stable identity), not the prop value
-    // (new object each render). The latest value is read inside the effect.
-    const advancedRef = React.useRef<VitrumCanvasProps['advanced']>(props.advanced);
+    // H31 — ref-stabilize `onAttachError` so inline callbacks do not cause full
+    // engine teardown+recreate on every parent render. `advanced` is a creation-time
+    // backend option, so identity changes intentionally recreate the engine.
     const onAttachErrorRef = React.useRef<VitrumCanvasProps['onAttachError']>(props.onAttachError);
 
     // Keep the latest dynamic props in refs so the engine sees them
@@ -97,7 +95,6 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     React.useEffect(() => { onProgressRef.current = props.onProgress; },   [props.onProgress]);
     React.useEffect(() => { onErrorRef.current = props.onError; },         [props.onError]);
     React.useEffect(() => { onEngineErrorRef.current = props.onEngineError; }, [props.onEngineError]);
-    React.useEffect(() => { advancedRef.current = props.advanced; },       [props.advanced]);
     React.useEffect(() => { onAttachErrorRef.current = props.onAttachError; }, [props.onAttachError]);
 
     // Effect dependency captures the structural inputs only. Mutable refs
@@ -114,10 +111,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         camera: props.camera,
         ...(props.prefer ? { prefer: props.prefer } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
-        // H31 — read advanced from the ref at construction time so inline objects
-        // captured in the effect closure don't force engine teardown+recreate on
-        // each parent render. advancedRef.current is always the latest value.
-        ...(advancedRef.current != null ? { advanced: advancedRef.current } : {}),
+        ...(props.advanced != null ? { advanced: props.advanced } : {}),
         ...(props.debug != null ? { debug: props.debug } : {}),
         ...(props.autoRecreateOnDeviceLoss != null
           ? { autoRecreateOnDeviceLoss: props.autoRecreateOnDeviceLoss }
@@ -151,11 +145,12 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         attached?.dispose();
         handleRef.current = null;
       };
-    // H31 — `advanced` and `onAttachError` are intentionally NOT in the dep
-    // array; they are accessed via stable refs (advancedRef / onAttachErrorRef)
-    // to prevent inline-object props from tearing down the engine per render.
+    // H31 — `onAttachError` is intentionally NOT in the dep array; it is accessed
+    // via a stable ref to prevent inline callbacks from tearing down the engine.
+    // `advanced` stays in the dep array because backend options are construction
+    // inputs and prop identity changes must apply.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.debug]);
+    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.advanced, props.debug]);
 
     // forwardRef plumbing.
     React.useImperativeHandle(externalRef, () => canvasRef.current as HTMLCanvasElement, []);

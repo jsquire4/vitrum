@@ -20,7 +20,12 @@ export interface GltfJson {
   skins?: GltfSkin[];
   animations?: GltfAnimation[];
   cameras?: unknown[];
-  extensions?: Record<string, unknown>;
+  extensions?: {
+    KHR_materials_variants?: {
+      variants?: Array<{ name?: string }>;
+    };
+    [key: string]: unknown;
+  };
   extensionsUsed?: string[];
   extensionsRequired?: string[];
 }
@@ -74,7 +79,16 @@ export interface GltfPrimitive {
    *  5=TRIANGLE_STRIP, 6=TRIANGLE_FAN */
   mode?: number;
   targets?: Array<Record<string, number>>;
-  extensions?: Record<string, unknown>;
+  extensions?: {
+    KHR_draco_mesh_compression?: unknown;
+    KHR_materials_variants?: {
+      mappings?: Array<{
+        material: number;
+        variants: number[];
+      }>;
+    };
+    [key: string]: unknown;
+  };
 }
 
 export interface GltfAccessor {
@@ -128,7 +142,12 @@ export interface GltfBuffer {
 export interface GltfTexture {
   sampler?: number;
   source?: number;
-  extensions?: Record<string, unknown>;
+  extensions?: {
+    KHR_texture_basisu?: { source: number };
+    EXT_texture_webp?: { source: number };
+    MSFT_texture_dds?: { source: number };
+    [key: string]: unknown;
+  };
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
@@ -227,6 +246,7 @@ export interface GltfMaterial {
   alphaCutoff?: number;
   doubleSided?: boolean;
   extensions?: {
+    KHR_materials_unlit?: Record<string, never>;
     KHR_materials_transmission?: { transmissionFactor?: number; transmissionTexture?: GltfTextureInfo };
     KHR_materials_ior?: { ior?: number };
     KHR_materials_volume?: {
@@ -267,7 +287,15 @@ export interface GltfMaterial {
       anisotropyRotation?: number;
       anisotropyTexture?: GltfTextureInfo;
     };
+    KHR_materials_dispersion?: { dispersion?: number };
     KHR_materials_emissive_strength?: { emissiveStrength?: number };
+    KHR_materials_pbrSpecularGlossiness?: {
+      diffuseFactor?: [number, number, number, number];
+      diffuseTexture?: GltfTextureInfo;
+      specularFactor?: [number, number, number];
+      glossinessFactor?: number;
+      specularGlossinessTexture?: GltfTextureInfo;
+    };
     KHR_lights_punctual?: unknown;
     [key: string]: unknown;
   };

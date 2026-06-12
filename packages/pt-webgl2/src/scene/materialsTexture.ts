@@ -32,6 +32,8 @@ type PackedMaterialSpec = MaterialSpec & {
 
 /** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
 const TRANSLUCENT_BIT = 1 << 4;
+/** UNLIT_BIT — flag (s14.a) bit set for terminal base-color unlit shading. */
+const UNLIT_BIT = 1 << 5;
 
 // Dispersion: Abbe → strength, evaluated at the Fraunhofer C/F lines.
 const FRAUNHOFER_C_NM = 656.3;
@@ -337,6 +339,7 @@ function packScalarSlots(
     let flags = Number(transparent);
     const scatteringCoeff = m.scatteringCoefficient ?? 0.0;
     if (scatteringCoeff > 0.0) flags |= TRANSLUCENT_BIT;
+    if (m.shadingModel === 'unlit') flags |= UNLIT_BIT;
     data[index++] = flags;
   }
 

@@ -192,4 +192,43 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
 
     expect(disposeSpy).toHaveBeenCalled();
   });
+
+  it('recreates the engine when advanced backend options change identity', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum')
+      .mockResolvedValueOnce(makeMockHandle(firstDispose))
+      .mockResolvedValueOnce(makeMockHandle(secondDispose));
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    const advancedA = { denoiser: 'atrous-variance' as const };
+    const advancedB = { denoiser: 'svgf-real' as const };
+
+    root.render(React.createElement(VitrumCanvas, { scene: SCENE, camera: CAMERA, advanced: advancedA }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    expect(attachSpy.mock.calls[0]![0].advanced).toBe(advancedA);
+
+    root.render(React.createElement(VitrumCanvas, { scene: SCENE, camera: CAMERA, advanced: advancedB }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(firstDispose).toHaveBeenCalled();
+    expect(attachSpy).toHaveBeenCalledTimes(2);
+    expect(attachSpy.mock.calls[1]![0].advanced).toBe(advancedB);
+
+    root.unmount();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(secondDispose).toHaveBeenCalled();
+  });
 });

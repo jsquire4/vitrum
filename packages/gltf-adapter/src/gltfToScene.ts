@@ -32,7 +32,6 @@
 //     extensionsRequired without a hook or fallback throws. See compression.ts.
 //
 // Out of scope: cameras, morph TANGENT deltas,
-//   KHR_materials_volume.thicknessTexture (no core field).
 //
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
@@ -48,13 +47,18 @@
 import type {
   Scene, ScenePrimitive, SceneEmitter, MaterialSpec, Mat4, AnimationClip,
 } from '@vitrum/core';
-import type { GltfJson, KhrLightsPunctualRoot } from './gltfTypes.js';
+import type { GltfJson, GltfPrimitive, KhrLightsPunctualRoot } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
-import type { DecodeImageFn } from './textures.js';
+import {
+  buildTextureHandleMap,
+  GLTF_TEXTURE_SOURCE_EXTENSIONS,
+  type DecodeImageFn,
+  type GltfImageBytesMap,
+  type GltfTextureSourceExtension,
+} from './textures.js';
 import { parseGlb } from './glbParser.js';
 import { unpackAccessorFloat, unpackAccessorUint32 } from './accessors.js';
 import { buildWorldTransforms } from './transforms.js';
-import { buildTextureHandleMap } from './textures.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
 import { animationNodeId, convertAnimations } from './animations.js';
@@ -68,6 +72,26 @@ import {
 } from './triangulation.js';
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
+
+const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
+  'KHR_draco_mesh_compression',
+  'EXT_meshopt_compression',
+  'KHR_lights_punctual',
+  'KHR_materials_unlit',
+  'KHR_materials_transmission',
+  'KHR_materials_ior',
+  'KHR_materials_volume',
+  'KHR_materials_specular',
+  'KHR_materials_sheen',
+  'KHR_materials_clearcoat',
+  'KHR_materials_iridescence',
+  'KHR_materials_anisotropy',
+  'KHR_materials_dispersion',
+  'KHR_materials_emissive_strength',
+  'KHR_materials_variants',
+  'KHR_materials_pbrSpecularGlossiness',
+  'KHR_texture_transform',
+]);
 
 export interface GltfToSceneOptions {
   /**
@@ -101,6 +125,34 @@ export interface GltfToSceneOptions {
    * linear for normal/ORM/ao/lightMap/bumpMap). See README for details.
    */
   readonly decodeImage?: DecodeImageFn;
+
+  /**
+   * Pre-loaded image bytes for .gltf files with external image URIs.
+   * Key = glTF image index. `loadGltfAsset()` fills this map automatically
+   * for URL/base-URI inputs; low-level `gltfToScene()` callers can provide it
+   * directly when they own resource resolution.
+   */
+  readonly imageBytes?: GltfImageBytesMap;
+
+  /**
+   * Texture-source extensions the host can decode and wants the adapter to
+   * select over a texture's base `source`.
+   *
+   * glTF texture-source extensions (`KHR_texture_basisu`, `EXT_texture_webp`,
+   * `MSFT_texture_dds`) point a texture at an alternate image index. The adapter
+   * can fetch/read those bytes, but the host is responsible for decode support
+   * through `decodeImage` or browser-native image decoding. When omitted, the
+   * adapter uses the base `texture.source` fallback and treats required
+   * texture-source extensions as unsupported.
+   */
+  readonly textureSourceExtensions?: readonly GltfTextureSourceExtension[];
+
+  /**
+   * Active `KHR_materials_variants` selection. Pass a root variant name or
+   * variant index. When omitted, the adapter uses each primitive's vanilla
+   * glTF `material` fallback.
+   */
+  readonly materialVariant?: string | number;
 
   /**
    * Index of the glTF scene to import (0-based). Defaults to gltf.scene or 0.
@@ -245,6 +297,15 @@ export async function gltfToScene(
     );
   }
 
+  for (const ext of gltf.extensionsRequired ?? []) {
+    if (!isRequiredExtensionSupported(ext, opts.textureSourceExtensions)) {
+      throw new Error(
+        `[vitrum/gltf-adapter] extensionsRequired includes unsupported extension "${ext}". ` +
+          'Required glTF extensions cannot be safely ignored.',
+      );
+    }
+  }
+
   // ── 3. Warn on out-of-scope top-level features ─────────────────────────────
   if (gltf.cameras && (gltf.cameras).length > 0) {
     warnings.push(
@@ -283,11 +344,18 @@ export async function gltfToScene(
     buffers,
     opts.decodeImage,
     warnings,
+    opts.imageBytes,
+    opts.textureSourceExtensions,
   );
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
   const coreMaterials = (gltf.materials ?? []).map((m) =>
     convertMaterial(m, handleMap, warnings),
+  );
+  const selectedMaterialVariant = _resolveMaterialVariantSelection(
+    gltf,
+    opts.materialVariant,
+    warnings,
   );
 
   // ── 6. Pick the target scene ───────────────────────────────────────────────
@@ -510,9 +578,17 @@ export async function gltfToScene(
       );
 
       // Material.
+      const materialIndex = _resolvePrimitiveMaterialIndex(
+        gltf,
+        prim,
+        prim.material,
+        selectedMaterialVariant,
+        warnings,
+        `${mesh.name ?? node.mesh}`,
+      );
       const material =
-        prim.material !== undefined && prim.material < coreMaterials.length
-          ? (coreMaterials[prim.material] ?? GLTF_DEFAULT_MATERIAL)
+        materialIndex !== undefined && materialIndex < coreMaterials.length
+          ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
           : GLTF_DEFAULT_MATERIAL;
 
       const id = `gltf-prim-${primIdCounter++}`;
@@ -637,6 +713,62 @@ export async function gltfToScene(
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
+
+function isRequiredExtensionSupported(
+  ext: string,
+  textureSourceExtensions: readonly GltfTextureSourceExtension[] | undefined,
+): boolean {
+  if (SUPPORTED_REQUIRED_EXTENSIONS.has(ext)) return true;
+  if (!GLTF_TEXTURE_SOURCE_EXTENSIONS.includes(ext as GltfTextureSourceExtension)) return false;
+  return textureSourceExtensions?.includes(ext as GltfTextureSourceExtension) ?? false;
+}
+
+function _resolveMaterialVariantSelection(
+  gltf: GltfJson,
+  selector: string | number | undefined,
+  warnings: string[],
+): number | undefined {
+  if (selector === undefined) return undefined;
+  const variants = gltf.extensions?.KHR_materials_variants?.variants ?? [];
+  if (typeof selector === 'number') {
+    if (Number.isInteger(selector) && selector >= 0 && selector < variants.length) return selector;
+    warnings.push(
+      `[vitrum/gltf-adapter] materialVariant index ${selector} was requested, ` +
+        `but this asset declares ${variants.length} variant(s). Base materials are used.`,
+    );
+    return undefined;
+  }
+  const index = variants.findIndex((variant) => variant.name === selector);
+  if (index >= 0) return index;
+  warnings.push(
+    `[vitrum/gltf-adapter] materialVariant "${selector}" was requested, but no ` +
+      'KHR_materials_variants entry with that name exists. Base materials are used.',
+  );
+  return undefined;
+}
+
+function _resolvePrimitiveMaterialIndex(
+  gltf: GltfJson,
+  primitive: GltfPrimitive,
+  baseMaterialIndex: number | undefined,
+  selectedVariantIndex: number | undefined,
+  warnings: string[],
+  meshLabel: string,
+): number | undefined {
+  if (selectedVariantIndex === undefined) return baseMaterialIndex;
+  const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
+  const mapping = mappings.find((candidate) => candidate.variants.includes(selectedVariantIndex));
+  if (!mapping) return baseMaterialIndex;
+  if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" KHR_materials_variants mapping for ` +
+        `variant ${selectedVariantIndex} references missing material ${mapping.material}. ` +
+        'Base material is used.',
+    );
+    return baseMaterialIndex;
+  }
+  return mapping.material;
+}
 
 /**
  * Attempt to unpack a float accessor, returning `undefined` and appending a

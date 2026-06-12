@@ -49,6 +49,7 @@ import { describe, expect, it } from 'vitest';
 
 const f32 = Math.fround;
 const BVH_INTERSECT_INFINITY = 1e20; // shared-bvh bvhIntersect.wgsl.ts:192
+const DDGI_VISIBILITY_OPEN_SKY_MOMENT = 65504;
 
 // IEEE-754 binary16 round-trip (rgba16float storage). Round-to-nearest-even,
 // overflow → ±Infinity. Only magnitude behavior matters for this oracle.
@@ -110,6 +111,9 @@ function blendVisibilityTexel(
   if (totalWeight > 1e-5) {
     newDepth = f32(newDepth / totalWeight); // L238
     newDepthSq = f32(newDepthSq / totalWeight); // L239
+  } else {
+    newDepth = f32(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
+    newDepthSq = f32(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
   }
   // Steady-state hysteresis (header note) + rgba16float storage (L247).
   return { mean: f16(newDepth), meanSq: f16(newDepthSq) };
@@ -143,6 +147,17 @@ function coneRays(includeMiss: boolean): ProbeRay[] {
   if (includeMiss) {
     // One ray just past the wall edge → sky miss (probeUpdateRays.wgsl.ts:644).
     rays[0] = { direction: norm([0.3, 0, 1]), hitDistance: BVH_INTERSECT_INFINITY };
+  }
+  return rays;
+}
+
+function openSkyRays(): ProbeRay[] {
+  const rays: ProbeRay[] = [];
+  const n = 32;
+  for (let k = 0; k < n; k++) {
+    const phi = (2 * Math.PI * k) / n;
+    const dir = norm([0.35 * Math.cos(phi), 0.35 * Math.sin(phi), 1]);
+    rays.push({ direction: dir, hitDistance: BVH_INTERSECT_INFINITY });
   }
   return rays;
 }
@@ -204,5 +219,13 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
     const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true));
     const cheb = chebyshevVisibility(mean, meanSq, probeDist);
     expect(cheb).toBeLessThan(0.05);
+  });
+
+  it('REGRESSION HYB-DDGI-01: an all-sky visibility texel stays open instead of becoming a zero-depth occluder', () => {
+    const { mean, meanSq } = blendVisibilityTexel(texelDir, openSkyRays());
+    expect(mean).toBe(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
+    expect(meanSq).toBe(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
+    const cheb = chebyshevVisibility(mean, meanSq, probeDist);
+    expect(cheb).toBe(1.0);
   });
 });

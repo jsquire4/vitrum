@@ -272,10 +272,9 @@ export function composePathTraceKernelWgsl(opts: {
   // so there is no double-count risk. OFF = the verbatim original.
   const sampleAllowsAreaMisCond = 'sampleAllowsAreaMis';
   const bsdfAreaConnect = /* wgsl */ `    if (${sampleAllowsAreaMisCond}) {
-      // H52: bsdfAreaLightConnectionContribution / bsdfEnvironmentConnectionContribution use
-      // the base evaluateBrdf/brdfDirectionalPdf (connect.wgsl.ts has no mat in scope).
-      // Add the extension lobe contribution here, on top, using the same nDotL/shadow logic.
-      // When all extension scalars are 0 the extra terms are 0 → zero-default invariant.
+      // H52/PTWG-MAT: BSDF-side area/env connections receive the decoded
+      // extension lobe scalars so connect.wgsl can use evaluateBrdfFull and
+      // brdfDirectionalPdfFull. Zero-default materials stay byte-equivalent.
       radiance = radiance + bsdfAreaLightConnectionContribution(
         hitPos,
         normal,
@@ -286,6 +285,17 @@ export function composePathTraceKernelWgsl(opts: {
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
+        anisoStrength,
+        anisoRotation,
         throughputAtVertex,
         heroLambda,
       );
@@ -299,6 +309,17 @@ export function composePathTraceKernelWgsl(opts: {
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
+        anisoStrength,
+        anisoRotation,
         throughputAtVertex,
         heroLambda,
         matId,
@@ -863,6 +884,17 @@ ${transmissiveBlock}
             metallic,
             transmission,
             ior,
+            mat.clearcoat,
+            mat.clearcoatRoughness,
+            mat.sheen,
+            mat.sheenRoughness,
+            mat.sheenColor,
+            mat.iridescence,
+            mat.iridescenceIor,
+            mat.iridescenceThicknessMin,
+            mat.iridescenceThicknessMax,
+            anisoStrength,
+            anisoRotation,
             bounce,
             i32(lvi),
           );
@@ -882,6 +914,17 @@ ${transmissiveBlock}
         metallic,
         transmission,
         ior,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
+        anisoStrength,
+        anisoRotation,
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
@@ -902,6 +945,17 @@ ${transmissiveBlock}
           roughness,
           metallic,
           transmission,
+          mat.clearcoat,
+          mat.clearcoatRoughness,
+          mat.sheen,
+          mat.sheenRoughness,
+          mat.sheenColor,
+          mat.iridescence,
+          mat.iridescenceIor,
+          mat.iridescenceThicknessMin,
+          mat.iridescenceThicknessMax,
+          anisoStrength,
+          anisoRotation,
           throughputAtVertex,
           heroLambda,
         );

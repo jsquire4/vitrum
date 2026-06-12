@@ -5,7 +5,7 @@
  *   (a) A scene supplying baseColorMap + normalMap + clearcoat warns, naming
  *       those fields by name.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
- *       emissive, emissiveIntensity, transmission, attenuationColor,
+ *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
  */
 
@@ -45,6 +45,7 @@ describe('collectUnconsumedMaterialFields', () => {
       metallic: 0,
       emissive: [1, 0, 0],
       emissiveIntensity: 2,
+      shadingModel: 'unlit',
       transmission: 0.9,
       attenuationColor: [0.8, 0.9, 1],
       attenuationDistance: 1,
@@ -152,8 +153,8 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
     for (const field of [
       'baseColor', 'roughness', 'metallic',
       'emissive', 'emissiveIntensity',
-      'transmission', 'attenuationColor', 'attenuationDistance', 'thickness',
-      'ior', 'extensions',
+      'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
+      'thickness', 'ior', 'extensions',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -162,7 +163,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
   it('does NOT include any texture-map fields', () => {
     const textureMaps = [
       'baseColorMap', 'normalMap', 'roughnessMap', 'metallicMap',
-      'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap',
+      'transmissionMap', 'emissiveMap', 'thicknessMap', 'alphaMap', 'aoMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
       'iridescenceThicknessMap', 'anisotropyMap', 'specularColorMap',

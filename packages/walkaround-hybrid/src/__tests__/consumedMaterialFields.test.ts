@@ -101,8 +101,8 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
   it('contains the documented scalar fields', () => {
     for (const f of [
       'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
-      'transmission', 'attenuationColor', 'attenuationDistance', 'thickness',
-      'ior', 'extensions',
+      'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
+      'thickness', 'ior', 'extensions',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -128,11 +128,24 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
     for (const f of [
       'baseColorMap',
       'normalMap',
+      'normalScale',
       'roughnessMap',
-      'metalnessMap',
+      'metallicMap',
+      'thicknessMap',
+      'alphaMap',
+      'aoMap',
       'displacementMap',
       'displacementScale',
       'displacementBias',
+      'specularColor',
+      'specularIntensity',
+      'specularColorMap',
+      'specularIntensityMap',
+      'frontLayer',
+      'backLayer',
+      'thinFilmStack',
+      'anisotropy',
+      'anisotropyMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(false);
     }
@@ -170,6 +183,37 @@ describe('collectUnconsumedMaterialFields', () => {
       { kind: 'mesh', material: { baseColor: [0, 1, 0], sheenColor: [0.2, 0.2, 0.2], anisotropy: 0.5 } },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'sheenColor']);
+  });
+
+  it('surfaces representative alpha, specular, layered, thin-film, and anisotropy drops', () => {
+    const prims: ReadonlyArray<PrimLike> = [
+      {
+        kind: 'mesh',
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          alphaMap: { handle: 'alpha' },
+          normalScale: 0.5,
+          specularColor: [0.8, 0.7, 0.6],
+          specularIntensity: 0.4,
+          frontLayer: { transmission: [1, 0.5, 0.25] },
+          backLayer: { transmission: [0.25, 0.5, 1] },
+          thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
+          anisotropyMap: { handle: 'aniso' },
+        },
+      },
+    ];
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([
+      'alphaMap',
+      'anisotropyMap',
+      'backLayer',
+      'frontLayer',
+      'normalScale',
+      'specularColor',
+      'specularIntensity',
+      'thinFilmStack',
+    ]);
   });
 
   it('ignores null/undefined field values', () => {

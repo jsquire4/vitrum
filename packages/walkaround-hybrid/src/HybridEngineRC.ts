@@ -401,6 +401,7 @@ export class RCSubsystem implements PipelineSubsystem {
     }
     // Count only fixture / teaLight entries (same filter as packRCLights).
     this._lightsCount = Math.min(active.length, 16);
+    this.invalidateBindings();
     if (this._lightsCount === 0) return;  // keep _lightsGpuBuf null; dispatcher uses placeholder
     const buf = this._device.createBuffer({
       label: 'rc-lights',
@@ -411,7 +412,6 @@ export class RCSubsystem implements PipelineSubsystem {
     new Uint8Array(buf.getMappedRange()).set(new Uint8Array(packed));
     buf.unmap();
     this._lightsGpuBuf = buf;
-    this.invalidateBindings();
   }
 
   dispatchFrame(inputs: RCFrameInputs): void {

@@ -155,6 +155,11 @@ export interface MaterialSpec {
   readonly metallic: number;             // 0 = dielectric, 1 = pure metal
   readonly emissive?: Vec3;
   readonly emissiveIntensity?: number;
+  /** Material lighting model. Default `'pbr'`.
+   *  `'unlit'` represents glTF `KHR_materials_unlit`: base color/texture should
+   *  be shown independent of scene lighting. Backends that do not implement an
+   *  unlit shading branch must report this field as unsupported and warn. */
+  readonly shadingModel?: 'pbr' | 'unlit';
 
   // ── Alpha / coverage (glTF alphaMode; distinct from physical transmission) ─
   /** glTF alpha mode. 'opaque' (default) ignores alpha; 'mask' = alpha-test
@@ -181,6 +186,9 @@ export interface MaterialSpec {
   readonly roughnessMap?: TextureRef;
   readonly metallicMap?: TextureRef;
   readonly transmissionMap?: TextureRef;
+  /** glTF KHR_materials_volume.thicknessTexture.
+   *  @reserved Accepted; not yet consumed by any backend. */
+  readonly thicknessMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;
   /** Ambient occlusion map (glTF occlusionTexture).

@@ -44,7 +44,8 @@ describe('B1 — real per-tri roughness/metalness decode', () => {
 
   it('ris / cast / shade no longer hardcode roughness/metalness', () => {
     for (const src of [RIS_WGSL, RESTIR_CAST_PRIMARY_WGSL, SHADE_WGSL]) {
-      expect(src).toContain('decodeRoughMetal(textureLoad(bvh_material');
+      expect(src).toContain('textureLoad(bvh_material');
+      expect(src).toContain('decodeRoughMetal(');
       // The old hardcoded forms must be gone.
       expect(src).not.toContain('select(0.85, 0.05, isGlass)');
     }

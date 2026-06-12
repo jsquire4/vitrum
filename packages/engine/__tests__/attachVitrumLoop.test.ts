@@ -142,6 +142,7 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     (globalThis as Record<string, unknown>).cancelAnimationFrame = savedCancelAnimationFrame;
     (globalThis as Record<string, unknown>).ResizeObserver = savedResizeObserver;
     happyWindow.close();
+    vi.restoreAllMocks();
   });
 
   it('H30 — initial canvas.width/height is set before the first frame', async () => {
@@ -192,6 +193,75 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     vi.restoreAllMocks();
     // Restore for next test
     vi.spyOn(createEngineModule, 'createEngine').mockImplementation(originalCreateEngine);
+  });
+
+  it('H30 — CSS size × DPR backing store is applied before createEngine runs', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    Object.defineProperty(happyWindow, 'devicePixelRatio', { value: 2, configurable: true });
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    Object.defineProperty(canvas, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(canvas, 'clientHeight', { value: 360, configurable: true });
+
+    const engine = makeMockEngine();
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+
+    const createSpy = vi.spyOn(createEngineModule, 'createEngine').mockImplementation(async (opts) => {
+      expect(opts.canvas.width).toBe(1280);
+      expect(opts.canvas.height).toBe(720);
+      return engine as ReturnType<typeof createEngineModule.createEngine> extends Promise<infer T> ? T : never;
+    });
+
+    const handle = await attachVitrum({ canvas, scene, camera });
+
+    expect(createSpy).toHaveBeenCalledOnce();
+    expect(canvas.width).toBe(1280);
+    expect(canvas.height).toBe(720);
+    handle.dispose();
+  });
+
+  it('forwards onWarning into createEngine options', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const engine = makeMockEngine();
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const onWarning = vi.fn();
+
+    const createSpy = vi.spyOn(createEngineModule, 'createEngine').mockResolvedValue(
+      engine as ReturnType<typeof createEngineModule.createEngine> extends Promise<infer T> ? T : never,
+    );
+
+    const handle = await attachVitrum({ canvas, scene, camera, onWarning });
+
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ onWarning }));
+    handle.dispose();
   });
 
   it('H30 — ResizeObserver is wired to the canvas after attach', async () => {

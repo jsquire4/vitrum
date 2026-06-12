@@ -14,7 +14,7 @@ import { asMat4 } from '@vitrum/core';
 import type { Mat4 } from '@vitrum/core';
 
 /** Identity 4×4 column-major matrix. */
-const IDENTITY_16 = new Float32Array([
+export const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 1, 0,
@@ -22,7 +22,7 @@ const IDENTITY_16 = new Float32Array([
 ]);
 
 /** Multiply two column-major 4×4 matrices: result = a * b. */
-function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
+export function mat4Mul(a: ArrayLike<number>, b: ArrayLike<number>): Float32Array {
   const out = new Float32Array(16);
   for (let col = 0; col < 4; col++) {
     for (let row = 0; row < 4; row++) {
@@ -71,20 +71,20 @@ function quatToMat4(qIn: [number, number, number, number]): Float32Array {
 }
 
 /** Build a column-major 4×4 matrix from TRS. */
-function trsToMat4(
+export function composeTrsMat4(
   t: [number, number, number],
   r: [number, number, number, number],
   s: [number, number, number],
 ): Float32Array {
   // Scale matrix
-  const S = new Float32Array(IDENTITY_16);
+  const S = new Float32Array(IDENTITY_MAT4);
   S[0] = s[0]; S[5] = s[1]; S[10] = s[2];
 
   // Rotation matrix
   const R = quatToMat4(r);
 
   // Translation matrix
-  const T = new Float32Array(IDENTITY_16);
+  const T = new Float32Array(IDENTITY_MAT4);
   T[12] = t[0]; T[13] = t[1]; T[14] = t[2];
 
   // M = T * R * S
@@ -92,7 +92,7 @@ function trsToMat4(
 }
 
 /** Extract the local matrix from a glTF node (matrix || TRS || identity). */
-function nodeLocalMatrix(node: GltfNode): Float32Array {
+export function nodeLocalMatrix(node: GltfNode): Float32Array {
   if (node.matrix) {
     if (node.matrix.length !== 16) {
       throw new Error('[vitrum/gltf-adapter] Node matrix must have 16 elements');
@@ -103,7 +103,7 @@ function nodeLocalMatrix(node: GltfNode): Float32Array {
   const t: [number, number, number] = node.translation ?? [0, 0, 0];
   const r: [number, number, number, number] = node.rotation ?? [0, 0, 0, 1];
   const s: [number, number, number] = node.scale ?? [1, 1, 1];
-  return trsToMat4(t, r, s);
+  return composeTrsMat4(t, r, s);
 }
 
 /**
@@ -121,7 +121,7 @@ export function buildWorldTransforms(
 
   // Iterative DFS to avoid stack overflow on deep hierarchies.
   const stack: Array<{ nodeIdx: number; parentWorld: Float32Array }> = rootNodeIndices.map(
-    (idx) => ({ nodeIdx: idx, parentWorld: new Float32Array(IDENTITY_16) }),
+    (idx) => ({ nodeIdx: idx, parentWorld: new Float32Array(IDENTITY_MAT4) }),
   );
 
   while (stack.length > 0) {

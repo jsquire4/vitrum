@@ -81,6 +81,26 @@ ${emissiveComment}
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
     var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
+    if (mat.isUnlit) {
+      if (!firstHitValid) {
+        firstHitValid = true;
+        firstHitPos = hitPos;
+        firstHitNormal = normal;
+        firstHitAlbedo = baseColor;
+        firstHitDepth = hit.dist;
+      }
+      var unlitColor = baseColor;
+      if (params.spectralEnabled != 0u) {
+        let unlitScalar = select(
+          max(luminance(baseColor), 0.0),
+          evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda),
+          mat.hasSpectralReflectance,
+        );
+        unlitColor = vec3f(unlitScalar);
+      }
+      radiance = radiance + throughput * unlitColor;
+      break;
+    }
     let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
     let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
     if (layerRoughness >= 0.0) {

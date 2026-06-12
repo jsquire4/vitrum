@@ -226,6 +226,17 @@ fn bsdfAreaLightConnectionContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughputAtVertex: vec3f,
   heroLambda: f32,
 ) -> vec3f {
@@ -233,7 +244,12 @@ fn bsdfAreaLightConnectionContribution(
   if (nDotL <= 1e-5) {
     return vec3f(0.0);
   }
-  let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  let bsdfPdf = brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   if (bsdfPdf <= 1e-6) {
     return vec3f(0.0);
   }
@@ -284,7 +300,12 @@ fn bsdfAreaLightConnectionContribution(
   // matching the NEE half (kernel.wgsl.ts §631/676) so both halves of the MIS pair
   // use the same emission model for chromatic emitters. RGB mode: byte-identical.
   let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
-  let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+  let brdf = evaluateBrdfFull(
+    baseColor, roughness, metallic, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
   return throughputAtVertex * brdf * nDotL * emitOut * misWeight / max(bsdfPdf, 1e-6);
 }
@@ -299,19 +320,40 @@ fn bsdfEnvironmentConnectionContribution(
   metallic: f32,
   transmission: f32,
   ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   throughputAtVertex: vec3f,
   heroLambda: f32,
   matId: u32,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return vec3f(0.0); }
-  let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+  let bsdfPdf = brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
   let shadowRay = Ray(hitPos + normal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
   let env = environmentLookup(wi);
   let misWeight = powerHeuristic(bsdfPdf, env.pdf);
-  let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+  let brdf = evaluateBrdfFull(
+    baseColor, roughness, metallic, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
+  );
   // A3 — spectralize the env connection at the hero λ in spectral mode, matching the
   // NEE miss-shader path (kernel.wgsl.ts §431) and the NEE env branch (§724).
   // D3 — apply per-material envMapIntensity to the BSDF-connection env term, matching

@@ -224,6 +224,17 @@ fn sppmGatherProgressive(
   baseColor  : vec3f,
   roughness  : f32,
   metallic   : f32,
+  clearcoat  : f32,
+  clearcoatRoughness : f32,
+  sheen      : f32,
+  sheenRoughness : f32,
+  sheenColor : vec3f,
+  iridescence: f32,
+  iridescenceIor : f32,
+  iridescenceThicknessMin : f32,
+  iridescenceThicknessMax : f32,
+  anisotropy : f32,
+  anisotropyRotation : f32,
   throughput : vec3f,
   heroLambda : f32,
 ) -> vec3f {
@@ -261,7 +272,12 @@ fn sppmGatherProgressive(
           if (dist2 > r2) { continue; }
           let nDotL = max(dot(normal, -ph.incidentDir.xyz), 0.0);
           if (nDotL <= 1e-6) { continue; }
-          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz);
+          let brdf = evaluateBrdfFull(
+            baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz,
+            clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+            iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            anisotropy, anisotropyRotation,
+          );
           let fluxRgb = ph.flux.rgb;
           // Item 21 — spectral mode flux resolution (mirrors NEE half).
           let fluxOut = select(fluxRgb, spectralEmissionAtHero(fluxRgb, heroLambda), params.spectralEnabled != 0u);

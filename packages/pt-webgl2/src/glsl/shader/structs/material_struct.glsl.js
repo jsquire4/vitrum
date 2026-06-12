@@ -67,6 +67,7 @@ export const material_struct = /* glsl */ `
 		bool vertexColors;
 		bool flatShading;
 		bool transparent;
+		bool unlit;
 		bool fogVolume;
 		uint flags;
 		float sssSigmaT;
@@ -233,6 +234,7 @@ export const material_struct = /* glsl */ `
 		m.fogVolume = bool( int( s14.b ) & 4 );
 		uint packedFlags = uint( round( s14.a ) );
 		m.transparent = bool( packedFlags & 1u );
+		m.unlit = bool( packedFlags & 0x20u );
 		m.flags = packedFlags;
 		m.sssSigmaT = s15.r;
 		m.sssAnisotropyG = s15.g;

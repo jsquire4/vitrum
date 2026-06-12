@@ -21,6 +21,7 @@
 // real-time→1-sample 'pop') is a documented follow-on; it would render both
 // engines during the transition window.
 
+import { patchPrimitiveInScene } from '@vitrum/core';
 import type { Engine, FrameInput, FrameOutput, Scene, ScenePrimitive } from '@vitrum/core';
 
 export interface ProgressiveHandoffOptions {
@@ -28,6 +29,10 @@ export interface ProgressiveHandoffOptions {
   readonly realtime: Engine;
   /** Converged path-tracing engine — driven (accumulating) while the camera is still. */
   readonly converged: Engine;
+  /** Optional authoritative scene snapshot. When supplied, scene mutations can
+   *  fall back to `setScene()` on both engines if an incremental method is absent
+   *  or rejects, keeping the two-engine pair synchronized. */
+  readonly scene?: Scene;
   /** Consecutive still frames before handing off to the converged engine. The
    *  intervening frames keep showing the real-time engine ("settling"), so a
    *  brief pause doesn't thrash the handoff. Default 6; clamped to >= 1. */
@@ -147,6 +152,7 @@ export class ProgressiveHandoffCoordinator {
   /** The converged accumulator holds a DIFFERENT camera's samples (or none);
    *  reset it before the first converged frame of a settle. */
   #convergedStale = true;
+  #scene: Scene | null;
 
   constructor(opts: ProgressiveHandoffOptions) {
     this.#realtime = opts.realtime;
@@ -157,6 +163,7 @@ export class ProgressiveHandoffCoordinator {
     this.#displaySamples = Math.max(1, Math.floor(opts.convergedDisplaySamples ?? 64));
     this.#seedFromRealtime = opts.seedFromRealtime ?? false;
     this.#seedWeight = Math.max(0, opts.seedWeight ?? 4);
+    this.#scene = opts.scene ?? null;
   }
 
   /** The phase presented by the most recent {@link frame} call. */
@@ -193,27 +200,98 @@ export class ProgressiveHandoffCoordinator {
   setScene(scene: Scene): void {
     this.#realtime.setScene(scene);
     this.#converged.setScene(scene);
+    this.#scene = scene;
     this.reset();
   }
 
   /** Patch a primitive on both engines (where supported) and restart at real-time. */
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
-    this.#realtime.updatePrimitive?.(id, patch);
-    this.#converged.updatePrimitive?.(id, patch);
+    const nextScene = this.#scene != null ? patchPrimitiveInScene(this.#scene, id, patch) : null;
+    const rtUpdate = this.#realtime.updatePrimitive;
+    const cvUpdate = this.#converged.updatePrimitive;
+    if (rtUpdate == null || cvUpdate == null) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw new Error(
+        'ProgressiveHandoffCoordinator.updatePrimitive: both engines must implement updatePrimitive ' +
+          'unless the coordinator was constructed with an authoritative scene fallback.',
+      );
+    }
+    try {
+      rtUpdate.call(this.#realtime, id, patch);
+      cvUpdate.call(this.#converged, id, patch);
+      if (nextScene != null) this.#scene = nextScene;
+    } catch (err) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw err;
+    }
     this.reset();
   }
 
   /** Add a primitive to both engines (where supported) and restart at real-time. */
   addPrimitive(primitive: ScenePrimitive): void {
-    this.#realtime.addPrimitive?.(primitive);
-    this.#converged.addPrimitive?.(primitive);
+    const nextScene = this.#scene != null
+      ? { ...this.#scene, primitives: [...this.#scene.primitives, primitive] }
+      : null;
+    const rtAdd = this.#realtime.addPrimitive;
+    const cvAdd = this.#converged.addPrimitive;
+    if (rtAdd == null || cvAdd == null) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw new Error(
+        'ProgressiveHandoffCoordinator.addPrimitive: both engines must implement addPrimitive ' +
+          'unless the coordinator was constructed with an authoritative scene fallback.',
+      );
+    }
+    try {
+      rtAdd.call(this.#realtime, primitive);
+      cvAdd.call(this.#converged, primitive);
+      if (nextScene != null) this.#scene = nextScene;
+    } catch (err) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw err;
+    }
     this.reset();
   }
 
   /** Remove a primitive from both engines (where supported) and restart at real-time. */
   removePrimitive(id: ScenePrimitive['id']): void {
-    this.#realtime.removePrimitive?.(id);
-    this.#converged.removePrimitive?.(id);
+    const nextScene = this.#scene != null
+      ? { ...this.#scene, primitives: this.#scene.primitives.filter((p) => p.id !== id) }
+      : null;
+    const rtRemove = this.#realtime.removePrimitive;
+    const cvRemove = this.#converged.removePrimitive;
+    if (rtRemove == null || cvRemove == null) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw new Error(
+        'ProgressiveHandoffCoordinator.removePrimitive: both engines must implement removePrimitive ' +
+          'unless the coordinator was constructed with an authoritative scene fallback.',
+      );
+    }
+    try {
+      rtRemove.call(this.#realtime, id);
+      cvRemove.call(this.#converged, id);
+      if (nextScene != null) this.#scene = nextScene;
+    } catch (err) {
+      if (nextScene != null) {
+        this.setScene(nextScene);
+        return;
+      }
+      throw err;
+    }
     this.reset();
   }
 
@@ -299,4 +377,3 @@ export class ProgressiveHandoffCoordinator {
     });
   }
 }
-

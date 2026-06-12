@@ -88,9 +88,11 @@ describe('MNEE refraction caustic — kernel wiring (Phase I.1 sibling)', () => 
   it('manifoldNeeContribution sums the refraction caustic for ANY receiver', () => {
     // It runs after the reflection caustic, independent of the legacy transmissive
     // cone-search gate — so a diffuse floor catches a water-surface caustic.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('total = total + pointLightRefractionCaustic(');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
-      'total = total + pointLightRefractionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);',
+      'clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,',
     );
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('anisotropy, anisotropyRotation,');
   });
 });
 

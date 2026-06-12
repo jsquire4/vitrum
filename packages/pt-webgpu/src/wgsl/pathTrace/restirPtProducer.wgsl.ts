@@ -125,6 +125,15 @@ fn rptDirectAtVertex(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
   suffixThroughput: vec3f,
 ) -> vec3f {
   var contrib = vec3f(0.0);
@@ -135,7 +144,12 @@ fn rptDirectAtVertex(
     if (nDotL > 0.0) {
       let shadowRay = Ray(pos + normal * 1e-3, lightDir);
       if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-        let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, lightDir);
+        let brdf = evaluateBrdfFull(
+          baseColor, roughness, metallic, normal, wo, lightDir,
+          clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+          iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          0.0, 0.0,
+        );
         contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;
       }
     }
@@ -185,7 +199,12 @@ fn rptDirectAtVertex(
         let lightPdf = dist2 / max(cosLight * area, 1e-6);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
         if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+          let brdf = evaluateBrdfFull(
+            baseColor, roughness, metallic, normal, wo, wi,
+            clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+            iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            0.0, 0.0,
+          );
           contrib = contrib + suffixThroughput * brdf * nDotL * rr / max(lightPdf, 1e-6);
         }
       }
@@ -210,7 +229,12 @@ fn rptDirectAtVertex(
       let shadowRay = Ray(pos + normal * 1e-3, wi);
       if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
         let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
-        let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+        let brdf = evaluateBrdfFull(
+          baseColor, roughness, metallic, normal, wo, wi,
+          clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+          iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          0.0, 0.0,
+        );
         contrib = contrib + suffixThroughput * brdf * nDotL * rad * attenuation;
       }
     }
@@ -242,7 +266,12 @@ fn rptDirectAtVertex(
         if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
           let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
           let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
-          let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+          let brdf = evaluateBrdfFull(
+            baseColor, roughness, metallic, normal, wo, wi,
+            clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+            iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            0.0, 0.0,
+          );
           contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
         }
       }
@@ -268,8 +297,18 @@ fn rptDirectAtVertex(
     if (nDotL > 1e-6) {
       let shadowRay = Ray(pos + normal * 1e-3, envDir);
       if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-        let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
-        let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir);
+        let brdf = evaluateBrdfFull(
+          baseColor, roughness, metallic, normal, wo, envDir,
+          clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+          iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          0.0, 0.0,
+        );
+        let brdfPdf = brdfDirectionalPdfFull(
+          baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir,
+          clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+          iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          0.0, 0.0,
+        );
         let misWeight = powerHeuristic(envPdf, brdfPdf);
         contrib = contrib + suffixThroughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
       }
@@ -321,7 +360,12 @@ fn rptComputeLoAtReconnection(
       Lo = Lo + suffixThroughput * emissive;
     }
     // Direct lighting (NEE) at this suffix vertex.
-    Lo = Lo + rptDirectAtVertex(rng, pos, normal, wo, baseColor, roughness, metallic, suffixThroughput);
+    Lo = Lo + rptDirectAtVertex(
+      rng, pos, normal, wo, baseColor, roughness, metallic,
+      mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+      mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+      suffixThroughput,
+    );
 
     // Sample the next onward direction with the cosine (diffuse) lobe — the robust
     // default that keeps Lo well-defined for any onward surface; the reconnection
@@ -345,7 +389,12 @@ fn rptComputeLoAtReconnection(
     // (ratio 1.000 ∀ wo angle) vs dense-quadrature in wsl-gpu/scripts/
     // restir-pt-onward-jsmodel.ts. evaluateBrdf also folds the small onward
     // specular response in, matching the megakernel's onward transport.
-    let fOnward = evaluateBrdf(baseColor, roughness, metallic, normal, wo, nextDir);
+    let fOnward = evaluateBrdfFull(
+      baseColor, roughness, metallic, normal, wo, nextDir,
+      mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+      mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+      0.0, 0.0,
+    );
     suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
     prevAllowsAreaMis = true; // diffuse onward bounce: next emission handled by NEE/MIS.
 

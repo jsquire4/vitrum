@@ -244,7 +244,7 @@ describe('B1-ior-per-tri — IOR lane in packBVHRoughMetal (structural packer)',
   });
 });
 
-// ── SHADOW-01 (2026-06-11) — castShadowDisabled bit 0 of the reserved byte ──
+// ── SHADOW-01 / GLTF-unlit — low-byte material flags ───────────────────────
 
 describe('SHADOW-01 — castShadowDisabled bit 0 in packBVHRoughMetalFromCore', () => {
   it('castShadow:false on the material entry sets bit 0; default leaves it 0', () => {
@@ -267,7 +267,7 @@ describe('SHADOW-01 — castShadowDisabled bit 0 in packBVHRoughMetalFromCore', 
     expect(decodeRoughMetal(buf[0]!).rough).toBeCloseTo(0.5, 2);
     expect(decodeRoughMetal(buf[0]!).metal).toBeCloseTo(0.5, 2);
     expect(Math.abs(decodeIor(buf[0]!) - 2.0)).toBeLessThan(0.01);
-    expect(buf[0]! & 0xff).toBe(1); // bit 0 set, bits 1-7 still reserved zero
+    expect(buf[0]! & 0xff).toBe(1); // bit 0 set, bits 1-7 still zero
   });
 
   it('DEFAULT-PATH INVARIANT: a flag-less scene packs byte-identically to the pre-SHADOW-01 lane', () => {
@@ -283,5 +283,38 @@ describe('SHADOW-01 — castShadowDisabled bit 0 in packBVHRoughMetalFromCore', 
       { roughness: 0.7, metalness: 0.0, transmission: 0 },
     ], 2);
     expect(Array.from(core)).toEqual(Array.from(pbr));
+  });
+});
+
+describe('GLTF-unlit — shadingModel flag bit 1 in packBVHRoughMetalFromCore', () => {
+  it('shadingModel:unlit sets bit 1; default/PBR leaves it clear', () => {
+    const coreMats = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, shadingModel: 'pbr' },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, shadingModel: 'unlit' },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0, 1, 2]), coreMats, 3);
+    expect(buf[0]! & 0x2).toBe(0);
+    expect(buf[1]! & 0x2).toBe(0);
+    expect(buf[2]! & 0x2).toBe(0x2);
+  });
+
+  it('bit 1 coexists with castShadow bit 0 and does not perturb rough/metal/IOR lanes', () => {
+    const coreMats = [
+      {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0.5,
+        ior: 2.0,
+        transmission: 1.0,
+        castShadow: false,
+        shadingModel: 'unlit',
+      },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0]), coreMats, 1);
+    expect(decodeRoughMetal(buf[0]!).rough).toBeCloseTo(0.5, 2);
+    expect(decodeRoughMetal(buf[0]!).metal).toBeCloseTo(0.5, 2);
+    expect(Math.abs(decodeIor(buf[0]!) - 2.0)).toBeLessThan(0.01);
+    expect(buf[0]! & 0xff).toBe(0x3);
   });
 });

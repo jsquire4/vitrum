@@ -1780,6 +1780,25 @@ export class GpuResources {
     this.pathTraceBindGroup3 = null;
   }
 
+  #ensureSppmPixelStatsPlaceholder(): void {
+    if (
+      this.sppmPixelStatsBuffer != null &&
+      this.sppmPixelStatsWidth === 0 &&
+      this.sppmPixelStatsHeight === 0
+    ) {
+      return;
+    }
+    this.sppmPixelStatsBuffer?.destroy();
+    this.sppmPixelStatsBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
+      size: 64,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.sppmPixelStatsWidth = 0;
+    this.sppmPixelStatsHeight = 0;
+    this.invalidateGroup3BindGroup();
+  }
+
   /** Write the SppmStats UBO per-frame. No-op if the buffer is not allocated. */
   writeSppmStats(
     currentRadius: number,
@@ -1833,6 +1852,7 @@ export class GpuResources {
             '(This warning fires once per engine instance.)',
         );
       }
+      this.#ensureSppmPixelStatsPlaceholder();
       return false;
     }
     // Cache hit — buffer already at the right size.

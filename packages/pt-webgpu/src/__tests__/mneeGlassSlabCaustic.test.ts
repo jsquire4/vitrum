@@ -100,9 +100,11 @@ describe('MNEE glass-slab caustic — kernel wiring (Phase I.1 sibling)', () => 
   it('manifoldNeeContribution sums the glass-slab caustic for ANY receiver', () => {
     // It runs after the reflection + refraction caustics, independent of the legacy
     // transmissive cone-search gate — so a diffuse floor catches a glass-slab caustic.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('total = total + pointLightGlassSlabCaustic(');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
-      'total = total + pointLightGlassSlabCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);',
+      'clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,',
     );
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('anisotropy, anisotropyRotation,');
   });
 
   it('the single-interface refraction caustic GUARDS against the chain double-count', () => {

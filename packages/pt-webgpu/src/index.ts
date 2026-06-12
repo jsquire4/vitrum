@@ -1342,7 +1342,7 @@ class PTEngineWebGPU implements Engine {
       // invalidates group-3.  A 64-byte placeholder is already created by
       // ensureSppmBuffers(false) above when SPPM is off, so the else branch below
       // doesn't need to call it separately.
-      gpu.ensureSppmPixelStatsBuffer(width, height);
+      const sppmPixelStatsOk = gpu.ensureSppmPixelStatsBuffer(width, height);
       // A4-progressive: `frameAccumulated` counts completed frames so WGSL can
       // compute Ne = frameAccumulated × photonCount.  This frame's photons are
       // emitted NOW (pre-megakernel), so the completed count INCLUDING this frame
@@ -1351,15 +1351,18 @@ class PTEngineWebGPU implements Engine {
       // radius stored in sppmPixelStats shrinks progressively — the UBO field is
       // kept for the photon-insertion pass which still needs the global grid cell
       // size (tied to r₀, not the shrinking per-pixel radius).
-      gpu.writeSppmStats(
-        this.#sppmR0,
-        this.#sppmR0,
-        this.#samplesAccumulated + 1,
-        SPPM_PHOTON_COUNT,
-        this.#sppmSceneExtent,
-      );
+      if (sppmBuffersOk && sppmPixelStatsOk) {
+        gpu.writeSppmStats(
+          this.#sppmR0,
+          this.#sppmR0,
+          this.#samplesAccumulated + 1,
+          SPPM_PHOTON_COUNT,
+          this.#sppmSceneExtent,
+        );
+      }
       sppmReady =
         sppmBuffersOk &&
+        sppmPixelStatsOk &&
         gpu.sppmPhotonPipeline != null &&
         gpu.sppmPixelStatsBuffer != null;
     } else if (this.#traceTier === 'full') {

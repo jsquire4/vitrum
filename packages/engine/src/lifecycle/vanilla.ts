@@ -300,6 +300,7 @@ function buildEngineFromOpts(opts: AttachVitrumOptions): Promise<EngineWithBacke
     ...(opts.debug != null ? { debug: opts.debug } : {}),
     ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
     ...(opts.onError != null ? { onError: opts.onError } : {}),
+    ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
   });
 }
 
@@ -310,19 +311,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     } catch { /* host error callback must not propagate — ignore */ }
   };
 
-  // ── Initial engine construction ─────────────────────────────────────────
-  // `engine` is mutable so the auto-recreate path can swap it in place while
-  // the stable handle facade (returned to the host) continues to work.
-  let engine = await buildEngineFromOpts(opts);
-
   // ── Resize state ─────────────────────────────────────────────────────────
   //
   // H30 — synchronous initial sizing: set canvas.width/height from CSS client
-  // size × DPR so the backing store matches the visible area before the first
-  // frame. Without this the default 300×150 backing store is used as the
-  // initial viewport while ResizeObserver uses contentRect×DPR — two different
-  // coordinate systems. We unify them here so the initial seed matches the
-  // resize math exactly.
+  // size × DPR BEFORE engine construction so WebGPU walkaround can allocate its
+  // swapchain/history resources at the real visible size. Without this, the
+  // constructor sees the browser's default 300×150 backing store and only catches
+  // up after a later ResizeObserver tick.
   //
   // A4 — generic PT engines honour viewport-per-frame, but HybridEngine
   // (WebGPU walkaround) does not — its DDGI atlas / ReSTIR reservoirs /
@@ -344,6 +339,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   opts.canvas.height = initH;
   let viewportW = initW;
   let viewportH = initH;
+
+  // ── Initial engine construction ─────────────────────────────────────────
+  // `engine` is mutable so the auto-recreate path can swap it in place while
+  // the stable handle facade (returned to the host) continues to work.
+  let engine = await buildEngineFromOpts(opts);
 
   // ── ResizeObserver ───────────────────────────────────────────────────────
   let resizeObserver: ResizeObserver | undefined;
