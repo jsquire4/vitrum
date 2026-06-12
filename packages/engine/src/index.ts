@@ -8,6 +8,7 @@ export {
   pickBackend,
   deriveScaleDefaults,
   mergeWalkaroundTlasExtension,
+  type CreateEngineAdvancedByBackend,
   type CreateEngineBackendId,
   type CreateEngineErrorEvent,
   type CreateEngineErrorPhase,

@@ -34,6 +34,12 @@ export type WebGL2PathTracerAdvancedOptions = Partial<Omit<PTEngineWebGL2Options
 
 export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
 
+export interface CreateEngineAdvancedByBackend {
+  readonly 'walkaround-hybrid'?: Partial<HybridEngineOptions>;
+  readonly 'pt-webgpu'?: Partial<PTEngineWebGPUOptions>;
+  readonly 'pt-webgl2'?: WebGL2PathTracerAdvancedOptions;
+}
+
 /** Engine returned by {@link createEngine} with its chosen backendId attached.
  *  Hosts that need to know which backend was selected (e.g. to type-narrow
  *  `opts.advanced` for backend-specific API calls) read this field.
@@ -74,9 +80,23 @@ export interface CreateEngineOptions {
    *                 else a path-tracer backend. Default. */
   readonly prefer?: EnginePreference;
 
-  /** Backend-specific overrides. Merged on top of the createEngine()-
-   *  derived defaults; user-supplied keys win. Most users leave empty. */
+  /** Legacy backend-specific overrides. Merged on top of the createEngine()-
+   *  derived defaults; user-supplied keys win. Most users leave empty.
+   *
+   *  For auto backend selection, prefer `advancedByBackend` so overrides are
+   *  consumed only by the backend they were authored for. If using this legacy
+   *  field with auto selection, set `advancedBackend` to make the target
+   *  explicit and receive a structured warning if a different backend is chosen. */
   readonly advanced?: Partial<HybridEngineOptions> | WebGL2PathTracerAdvancedOptions | Partial<PTEngineWebGPUOptions>;
+
+  /** Explicit target for legacy `advanced`. When the selected backend differs,
+   *  the legacy bag is ignored and a structured warning is emitted instead of
+   *  applying keys to the wrong backend. */
+  readonly advancedBackend?: CreateEngineBackendId;
+
+  /** Backend-keyed override bags for predictable auto selection and fallback.
+   *  When present, the selected backend consumes only its own entry. */
+  readonly advancedByBackend?: CreateEngineAdvancedByBackend;
 
   /** Debug overlay opt-in. Forwarded to backend as `debug: true`. */
   readonly debug?: boolean;
@@ -263,6 +283,90 @@ export function warnCrossBackendAdvanced(
       details: { preferredBackend, resolvedBackend, keys },
     },
   );
+}
+
+function advancedKeys(advanced: unknown): string[] {
+  if (advanced == null || typeof advanced !== 'object') return [];
+  return Object.keys(advanced as Record<string, unknown>).filter(
+    (k) => (advanced as Record<string, unknown>)[k] !== undefined,
+  );
+}
+
+function backendAdvancedKeys(advancedByBackend: CreateEngineAdvancedByBackend | undefined): string[] {
+  if (advancedByBackend == null) return [];
+  const keys: string[] = [];
+  for (const backend of Object.keys(advancedByBackend) as CreateEngineBackendId[]) {
+    if (advancedKeys(advancedByBackend[backend]).length > 0) keys.push(backend);
+  }
+  return keys;
+}
+
+/**
+ * Resolve the backend-specific options bag that should be merged into a
+ * constructor. This is the guardrail for `createEngine({ prefer:'auto' })`:
+ * backend-keyed options are selected precisely, while legacy untagged
+ * `advanced` remains compatible but emits diagnostics when its target is
+ * ambiguous or mismatched.
+ *
+ * @internal Exported for unit-test access. Not part of the public API.
+ */
+export function resolveAdvancedForBackend(
+  opts: Pick<CreateEngineOptions, 'advanced' | 'advancedBackend' | 'advancedByBackend' | 'prefer' | 'onWarning'>,
+  backend: CreateEngineBackendId,
+): CreateEngineOptions['advanced'] | undefined {
+  const legacyKeys = advancedKeys(opts.advanced);
+  const keyedBackends = backendAdvancedKeys(opts.advancedByBackend);
+
+  if (opts.advancedByBackend != null) {
+    if (legacyKeys.length > 0) {
+      emitCreateEngineWarning(opts.onWarning, {
+        code: 'createEngine.advanced-legacy-ignored',
+        backend: 'createEngine',
+        phase: 'construction',
+        method: 'createEngine',
+        message:
+          `[vitrum/createEngine] advancedByBackend was supplied, so legacy advanced ` +
+          `keys (${legacyKeys.join(', ')}) are ignored. Put backend-specific keys under ` +
+          `advancedByBackend['${backend}'] to make auto selection deterministic.`,
+        details: { selectedBackend: backend, legacyKeys, advancedByBackend: keyedBackends },
+      });
+    }
+    return opts.advancedByBackend[backend];
+  }
+
+  if (legacyKeys.length === 0) return undefined;
+
+  if (opts.advancedBackend != null && opts.advancedBackend !== backend) {
+    emitCreateEngineWarning(opts.onWarning, {
+      code: 'createEngine.advanced-target-backend-mismatch',
+      backend: 'createEngine',
+      phase: 'construction',
+      method: 'createEngine',
+      message:
+        `[vitrum/createEngine] legacy advanced keys (${legacyKeys.join(', ')}) were tagged ` +
+        `for '${opts.advancedBackend}', but createEngine selected '${backend}'. The legacy ` +
+        `advanced bag was ignored for '${backend}'. Use advancedByBackend for fallback-safe ` +
+        `per-backend overrides.`,
+      details: { advancedBackend: opts.advancedBackend, selectedBackend: backend, keys: legacyKeys },
+    });
+    return undefined;
+  }
+
+  if ((opts.prefer == null || opts.prefer === 'auto') && opts.advancedBackend == null) {
+    emitCreateEngineWarning(opts.onWarning, {
+      code: 'createEngine.advanced-auto-backend-ambiguous',
+      backend: 'createEngine',
+      phase: 'construction',
+      method: 'createEngine',
+      message:
+        `[vitrum/createEngine] legacy advanced keys (${legacyKeys.join(', ')}) are being ` +
+        `applied to auto-selected backend '${backend}'. Pass advancedBackend or ` +
+        `advancedByBackend to make this deterministic across machines and scene changes.`,
+      details: { selectedBackend: backend, keys: legacyKeys },
+    });
+  }
+
+  return opts.advanced;
 }
 
 /** @internal */

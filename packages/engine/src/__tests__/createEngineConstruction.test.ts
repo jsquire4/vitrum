@@ -39,6 +39,7 @@ vi.mock('@vitrum/pt-webgpu', () => ({
 import {
   constructPathTracerWebGPU,
   constructWalkaround,
+  resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   warnCrossBackendAdvanced,
   type CreateEngineOptions,
@@ -94,11 +95,15 @@ function makeAdapter(device: GPUDevice): GPUAdapter {
   } as unknown as GPUAdapter;
 }
 
-function makeOptions(advanced?: CreateEngineOptions['advanced']): CreateEngineOptions {
+function makeOptions(
+  advanced?: CreateEngineOptions['advanced'],
+  advancedBackend?: CreateEngineOptions['advancedBackend'],
+): CreateEngineOptions {
   return {
     canvas: makeCanvas(),
     scene,
     ...(advanced != null ? { advanced } : {}),
+    ...(advancedBackend != null ? { advancedBackend } : {}),
   };
 }
 
@@ -141,7 +146,7 @@ describe('createEngine backend construction safety', () => {
     hybridFactory.mockResolvedValue(makeEngine());
 
     await constructWalkaround(
-      makeOptions({ tier: 'lite' } as unknown as CreateEngineOptions['advanced']),
+      makeOptions({ tier: 'lite' } as unknown as CreateEngineOptions['advanced'], 'walkaround-hybrid'),
       scene,
       aabb,
       false,
@@ -162,7 +167,7 @@ describe('createEngine backend construction safety', () => {
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ restirPtReuse: true }),
+      makeOptions({ restirPtReuse: true }, 'pt-webgpu'),
       scene,
     );
 
@@ -179,7 +184,7 @@ describe('createEngine backend construction safety', () => {
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ traceTier: 'lite' } as unknown as CreateEngineOptions['advanced']),
+      makeOptions({ traceTier: 'lite' } as unknown as CreateEngineOptions['advanced'], 'pt-webgpu'),
       scene,
       shared,
     );
@@ -272,7 +277,7 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
     hybridFactory.mockResolvedValue(makeEngine());
 
     await constructWalkaround(
-      makeOptions({ device: impostor }),
+      makeOptions({ device: impostor }, 'walkaround-hybrid'),
       scene,
       aabb,
       false,
@@ -300,7 +305,7 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ device: impostor }),
+      makeOptions({ device: impostor }, 'pt-webgpu'),
       scene,
     );
 
@@ -356,5 +361,113 @@ describe('Bug4 fix — cross-backend advanced fallback warning (warnCrossBackend
     warnCrossBackendAdvanced({ maxBounces: undefined } as unknown as CreateEngineOptions['advanced'], 'pt-webgpu', 'pt-webgl2');
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe('H31 fix — backend-scoped advanced resolution', () => {
+  it('selects the matching advancedByBackend bag for the resolved backend', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const advanced = resolveAdvancedForBackend(
+      {
+        prefer: 'auto',
+        advancedByBackend: {
+          'walkaround-hybrid': { qualityTier: 'medium' },
+          'pt-webgpu': { restirPtReuse: true },
+          'pt-webgl2': { maxBounces: 12 },
+        },
+      },
+      'pt-webgpu',
+    );
+    expect(advanced).toEqual({ restirPtReuse: true });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('ignores legacy advanced when it is tagged for a different backend', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const advanced = resolveAdvancedForBackend(
+      {
+        advanced: { maxBounces: 8 },
+        advancedBackend: 'pt-webgl2',
+        onWarning: (w) => structured.push(w),
+      },
+      'walkaround-hybrid',
+    );
+    expect(advanced).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(structured.some((w) =>
+      w.code === 'createEngine.advanced-target-backend-mismatch' &&
+      w.details?.advancedBackend === 'pt-webgl2' &&
+      w.details?.selectedBackend === 'walkaround-hybrid',
+    )).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('warns when legacy advanced is applied under auto selection without a target', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const advanced = { maxBounces: 8 };
+    const resolved = resolveAdvancedForBackend(
+      {
+        prefer: 'auto',
+        advanced,
+        onWarning: (w) => structured.push(w),
+      },
+      'pt-webgl2',
+    );
+    expect(resolved).toBe(advanced);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(structured.some((w) =>
+      w.code === 'createEngine.advanced-auto-backend-ambiguous' &&
+      w.details?.selectedBackend === 'pt-webgl2',
+    )).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('lets advancedByBackend override legacy advanced with a warning', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const resolved = resolveAdvancedForBackend(
+      {
+        advanced: { maxBounces: 8 },
+        advancedByBackend: {
+          'walkaround-hybrid': { qualityTier: 'low' },
+        },
+        onWarning: (w) => structured.push(w),
+      },
+      'walkaround-hybrid',
+    );
+    expect(resolved).toEqual({ qualityTier: 'low' });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(structured.some((w) => w.code === 'createEngine.advanced-legacy-ignored')).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('uses backend-scoped advanced options in pt-webgpu device-limit negotiation', async () => {
+    ptFactory.mockReset();
+    ptRequiredLimits.mockClear();
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter: vi.fn(async () => adapter) } },
+      configurable: true,
+    });
+    ptFactory.mockResolvedValue(makeEngine());
+
+    await constructPathTracerWebGPU(
+      {
+        ...makeOptions(),
+        advancedByBackend: {
+          'walkaround-hybrid': { qualityTier: 'medium' },
+          'pt-webgpu': { restirPtReuse: true },
+        },
+      },
+      scene,
+    );
+
+    expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
+    expect(ptFactory.mock.calls[0]?.[0]?.restirPtReuse).toBe(true);
+    Object.defineProperty(globalThis, 'navigator', { value: ORIG_NAVIGATOR, configurable: true });
   });
 });

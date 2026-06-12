@@ -34,6 +34,7 @@ import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 // Shared types & utilities (no circular imports: internals ← backends ← this file)
 export type {
   CreateEngineBackendId,
+  CreateEngineAdvancedByBackend,
   CreateEngineErrorPhase,
   CreateEngineErrorEvent,
   CreateEngineOptions,
@@ -42,6 +43,7 @@ export type {
 } from './createEngineInternals.js';
 export {
   mergeWalkaroundTlasExtension,
+  resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   warnCrossBackendAdvanced,
 } from './createEngineInternals.js';

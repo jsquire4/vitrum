@@ -14,6 +14,7 @@ import type { EngineFactory } from '@vitrum/core';
 import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 import {
   attachBackendId,
+  resolveAdvancedForBackend,
   wrapWithIdempotentDispose,
   type CreateEngineOptions,
   type EngineWithBackendId,
@@ -52,7 +53,10 @@ export async function constructPathTracer(
 
   let engine: Engine | null = null;
   try {
-    const advancedWebGL2 = opts.advanced as WebGL2PathTracerAdvancedOptions | undefined;
+    const advancedWebGL2 = resolveAdvancedForBackend(
+      opts,
+      'pt-webgl2',
+    ) as WebGL2PathTracerAdvancedOptions | undefined;
     const merged: PTEngineWebGL2Options = {
       device: gl,
       ...(advancedWebGL2 ?? {}),

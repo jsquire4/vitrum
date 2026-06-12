@@ -22,6 +22,7 @@ import {
 } from '../createEngineScale.js';
 import {
   mergeWalkaroundTlasExtension,
+  resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   reportCreateEngineError,
   attachBackendId,
@@ -122,7 +123,10 @@ export async function constructWalkaround(
 
   let engine: (Engine & Partial<GIStatePersistable>) | null = null;
   try {
-    const advancedHybridRaw = opts.advanced as Partial<HybridEngineOptions> | undefined;
+    const advancedHybridRaw = resolveAdvancedForBackend(
+      opts,
+      'walkaround-hybrid',
+    ) as Partial<HybridEngineOptions> | undefined;
     const advancedHybrid = stripOwnershipCriticalKeys(
       advancedHybridRaw,
       'walkaround-hybrid',

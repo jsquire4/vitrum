@@ -12,6 +12,7 @@ import {
 } from '@vitrum/pt-webgpu';
 import { configureWebGpuCanvas } from '../configureWebGpuCanvas.js';
 import {
+  resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   reportCreateEngineError,
   attachBackendId,
@@ -38,7 +39,10 @@ export async function constructPathTracerWebGPU(
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const advancedWebGPURaw = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
+  const advancedWebGPURaw = resolveAdvancedForBackend(
+    opts,
+    'pt-webgpu',
+  ) as Partial<PTEngineWebGPUOptions> | undefined;
   const advancedWebGPU = stripOwnershipCriticalKeys(
     advancedWebGPURaw,
     'pt-webgpu',
