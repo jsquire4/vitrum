@@ -625,7 +625,7 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 | H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
 | Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
 | GRIS dead alloc H24 | `resourceManager.ts` | Gate on `regir.enabled` |
-| DDGI error swallow | `DDGI.ts:303-346` | Propagate to `onError` |
+| DDGI error swallow | `DDGI.ts:303-346` | ✅ CODE CLOSED: DDGI init/BVH/probe-frame failures now emit non-fatal `EngineError` diagnostics through `HybridEngine.onError`; failed probe frames do not advance the grid to `ready`. Focused tests pin direct DDGI reporting plus HybridEngine forwarding. |
 
 ---
 

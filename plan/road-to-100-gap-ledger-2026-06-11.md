@@ -94,6 +94,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   Its facade-owned best-effort canvas configure now reports the canonical
   `canvas-configure` event, and focused engine tests pin sub-build plus
   facade-configure forwarding.
+- DDGI runtime failures now propagate through the engine error surface:
+  `DDGI` accepts a structured non-fatal `EngineError` sink, reports GPU-init,
+  BVH-update, and probe `runFrame` failures, and `HybridEngine` wires that sink
+  to `onError`; focused tests pin both direct DDGI diagnostics and engine
+  forwarding.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative
@@ -308,6 +313,10 @@ Closure:
 
 ### W-HYB-03 - Hybrid async init/DDGI runtime failures bypass `onError`
 
+Status: CODE CLOSED for the cited async-init and DDGI runtime error-routing
+paths. Keep this section as historical evidence; do not re-open without a new
+source-backed failure mode.
+
 Evidence:
 - `HybridEngineLifecycle.startInit()` is fire-and-forget and its catch path sets
   state plus `console.error`.
@@ -315,10 +324,13 @@ Evidence:
 - DDGI frame errors are console-only or detached.
 
 Closure:
-- Thread an error reporter through lifecycle and frame/DDGI dependencies.
+- Thread an error reporter through lifecycle and frame/DDGI dependencies. Done:
+  async init reports fatal `EngineError`; DDGI init/BVH/runFrame failures report
+  non-fatal `EngineError`.
 - Emit fatal and nonfatal `EngineError` records through the same engine error
-  channel.
-- Test fake async init failure and fake DDGI run-frame failure.
+  channel. Done via `HybridEngine.onError`.
+- Test fake async init failure and fake DDGI run-frame failure. Done in focused
+  engine/DDGI suites.
 
 ### PTWG-01 - pt-webgpu device-lost/error state is reported but not enforced
 

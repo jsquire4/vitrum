@@ -27,7 +27,7 @@
  */
 
 import { SceneBvh } from '@vitrum/shared-bvh';
-import type { Scene } from '@vitrum/core';
+import type { EngineError, Scene } from '@vitrum/core';
 import { ProbeGrid } from './probeGrid.js';
 import type { ProbeGridParams } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
@@ -68,6 +68,11 @@ export interface DDGIOptions {
    * @since Sprint 16 (M11 audit remediation)
    */
   maxProbesPerAxis?: number;
+  /**
+   * Optional structured error sink. HybridEngine wires this to Engine.onError;
+   * standalone DDGI consumers may use it for the same non-fatal diagnostics.
+   */
+  onError?: (error: EngineError) => void;
 }
 
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
@@ -102,6 +107,8 @@ export class DDGI {
   private _gpuOk:       boolean  = false;
   private _lastFrameTs: number   = 0;
   private _debug:       boolean;
+  private readonly _onError: ((error: EngineError) => void) | undefined;
+  private _reportedMissingDevice: boolean = false;
   // M11: probe grid parameters forwarded to computeFromBounds each frame.
   private _probeSpacing:      number | undefined;
   private _maxProbesPerAxis:  number;
@@ -116,6 +123,7 @@ export class DDGI {
 
   constructor(opts: DDGIOptions = {}) {
     this._debug = opts.debug ?? false;
+    this._onError = opts.onError;
     this._probeSpacing     = opts.probeSpacing;
     this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
     this._bvh   = new SceneBvh();
@@ -124,6 +132,19 @@ export class DDGI {
       debug: this._debug,
       ...(opts.maxMaterials !== undefined ? { maxMaterials: opts.maxMaterials } : {}),
     });
+  }
+
+  private _reportError(message: string, raw?: unknown): void {
+    try {
+      this._onError?.({
+        kind: 'render',
+        message,
+        fatal: false,
+        ...(raw !== undefined ? { raw } : {}),
+      });
+    } catch {
+      // Host error callbacks must not break the DDGI frame loop.
+    }
   }
 
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
@@ -411,21 +432,38 @@ export class DDGI {
       : undefined;
     if (!rendererAdapter) {
       console.warn('[DDGI] updateFrame called without device; skipping.');
+      if (!this._reportedMissingDevice) {
+        this._reportedMissingDevice = true;
+        this._reportError('[DDGI] updateFrame called without device; skipping.');
+      }
       return;
     }
+    this._reportedMissingDevice = false;
 
     // Initialize GPU on first enabled frame (only try once).
     if (!this._inited) {
       this._inited = true;
-      const ok = await this._pass.init(rendererAdapter);
+      let ok = false;
+      let initErrorReported = false;
+      try {
+        ok = await this._pass.init(rendererAdapter);
+      } catch (e) {
+        console.error('[DDGI] GPU init threw:', e);
+        this._reportError(`[DDGI] GPU init threw: ${ddgiErrorMessage(e)}`, e);
+        initErrorReported = true;
+      }
       this._gpuOk = ok;
       if (!ok) {
         console.warn('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
-        // Don't return — still update BVH + mark ready so waitForFunction
-        // gates in tests don't hang.
+        if (!initErrorReported) {
+          this._reportError('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
+        }
+        // Don't return — still update BVH and frame timing so standalone
+        // hosts can observe the failed state without hanging their loop.
       }
     }
 
+    let bvhOk = true;
     if (this._restirSnapshot == null) {
       try {
         if (inputs.coreScene != null) {
@@ -435,7 +473,15 @@ export class DDGI {
         }
       } catch (e) {
         console.error('[DDGI] BVH update failed:', e);
+        bvhOk = false;
+        this._ready = false;
+        this._reportError(`[DDGI] BVH update failed: ${ddgiErrorMessage(e)}`, e);
       }
+    }
+
+    if (!bvhOk) {
+      this._lastFrameMs = performance.now() - t0;
+      return;
     }
 
     const boundsBox = this._restirSnapshot?.boundingBox ?? this._bvh.buffers?.boundingBox;
@@ -449,13 +495,17 @@ export class DDGI {
     // Round-robin: update 1/_stride of probes this frame. `_stride` is the
     // probe-update divisor set via setProbeUpdateDivisor (default 8).
     const stride = this._stride;
+    let probeFrameOk = false;
     if (this._gpuOk) {
       const offset = this._frame % stride;
       this._frame++;
       try {
         await this._pass.runFrame(rendererAdapter, offset, stride);
+        probeFrameOk = true;
       } catch (e) {
         console.error('[DDGI] runFrame error:', e);
+        this._ready = false;
+        this._reportError(`[DDGI] runFrame error: ${ddgiErrorMessage(e)}`, e);
       }
     } else {
       this._frame++;
@@ -464,7 +514,7 @@ export class DDGI {
     // Mark ready after the first full cycle (`_stride` frames).
     // H24-B — only flip _ready when _gpuOk so a failed GPU init cannot silently
     // advertise convergence (the state() accessor returns 'failed' in that case).
-    if (this._gpuOk && this._frame >= stride) {
+    if (this._gpuOk && probeFrameOk && this._frame >= stride) {
       this._ready = true;
     }
 
@@ -490,5 +540,15 @@ export class DDGI {
     this._ready   = false;
     this._inited  = false;
     this._gpuOk   = false;
+  }
+}
+
+function ddgiErrorMessage(error: unknown): string {
+  if (error instanceof Error && typeof error.message === 'string') return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return String(error);
+  } catch {
+    return 'unknown error';
   }
 }

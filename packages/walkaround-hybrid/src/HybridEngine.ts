@@ -582,7 +582,10 @@ export class HybridEngine implements Engine {
     // on `_cfg` (immutable).
     this._rebuildKeyFingerprintSeen = cfg.rebuildKeyFingerprintSeen;
 
-    this._ddgi = new DDGI({ debug: this._cfg.debug });
+    this._ddgi = new DDGI({
+      debug: this._cfg.debug,
+      onError: (error) => this._emitError(error),
+    });
     this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
     this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);

@@ -17,9 +17,10 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { EngineError } from '@vitrum/core';
+import type { EngineError, Scene } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
+import type { DDGI } from '../ddgi/DDGI.js';
 
 // ── Mock device builder ───────────────────────────────────────────────────────
 
@@ -88,6 +89,35 @@ function fakeErrorEvent(message: string, className: 'GPUValidationError' | 'GPUI
       constructor: { name: className },
     },
   } as unknown as Event;
+}
+
+function makeDdgiScene(): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'box',
+      positions: new Float32Array([
+        -1, -1, -1,
+         1, -1, -1,
+        -1,  1, -1,
+         1,  1,  1,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+function getDdgi(engine: HybridEngine): DDGI {
+  return (engine as unknown as { _ddgi: DDGI })._ddgi;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -235,5 +265,39 @@ describe('walkaround-hybrid EngineError surface — device.lost', () => {
     await Promise.resolve();
 
     expect(engine.state).toBe('disposed');
+  });
+});
+
+describe('walkaround-hybrid EngineError surface — DDGI diagnostics', () => {
+  it('routes DDGI probe-frame failures through engine.onError', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const ctrl = makeControlledDevice();
+    const engine = new HybridEngine(makeBaseOpts(ctrl.device));
+    const received: EngineError[] = [];
+    engine.onError((err) => received.push(err));
+
+    const ddgi = getDdgi(engine);
+    ddgi.setProbeUpdateDivisor(1);
+    vi.spyOn(ddgi.pass, 'init').mockResolvedValue(true);
+    const thrown = new Error('probe dispatch failed');
+    vi.spyOn(ddgi.pass, 'runFrame').mockRejectedValue(thrown);
+
+    await ddgi.updateFrame({
+      coreScene: makeDdgiScene(),
+      device: ctrl.device,
+      enabled: true,
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      kind: 'render',
+      message: '[DDGI] runFrame error: probe dispatch failed',
+      fatal: false,
+      raw: thrown,
+    });
+    expect(ddgi.state()).toBe('initializing');
+
+    engine.dispose();
+    errorSpy.mockRestore();
   });
 });
