@@ -105,7 +105,7 @@ asset's feature report.
 | GLB binary container | Supported |
 | .gltf JSON + pre-fetched buffers | Supported |
 | POSITION / NORMAL / TEXCOORD_0 / TEXCOORD_1 | Supported |
-| TANGENT / COLOR_0 | Supported (imported; backends may or may not consume) |
+| TANGENT / COLOR_0 | Supported. Authored TANGENT is preserved; tangent-space mapped primitives without TANGENT synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0. COLOR_0 is imported; backend consumption varies. |
 | Indices (UINT16 / UINT32 / UINT8) | Supported |
 | Flat normal generation (NORMAL absent) | Supported |
 | Sparse accessors | Supported (all component types) |

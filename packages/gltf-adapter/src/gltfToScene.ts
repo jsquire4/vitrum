@@ -61,6 +61,7 @@ import { unpackAccessorFloat, unpackAccessorUint32 } from './accessors.js';
 import { buildWorldTransforms } from './transforms.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
+import { generateTangents } from './tangents.js';
 import { animationNodeId, convertAnimations } from './animations.js';
 import { resolveCompression } from './compression.js';
 import type { DracoDecodeFn, MeshoptDecodeFn } from './compression.js';
@@ -590,6 +591,9 @@ export async function gltfToScene(
         materialIndex !== undefined && materialIndex < coreMaterials.length
           ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
           : GLTF_DEFAULT_MATERIAL;
+      const finalTangents = tangents ?? _maybeGenerateTangents(
+        positions, normals, uvs, indices, material, `${mesh.name ?? node.mesh}`, warnings,
+      );
 
       const id = `gltf-prim-${primIdCounter++}`;
       (animationTargets[animationNodeId(nodeIdx)] ??= []).push(id);
@@ -647,7 +651,7 @@ export async function gltfToScene(
 
       primitives.push(_buildPrimitive(
         id, worldMat, positions, normals, indices,
-        uvs, uv1, tangents, colors, material, skinArg, morph,
+        uvs, uv1, finalTangents, colors, material, skinArg, morph,
       ));
     }
   }
@@ -768,6 +772,44 @@ function _resolvePrimitiveMaterialIndex(
     return baseMaterialIndex;
   }
   return mapping.material;
+}
+
+function _maybeGenerateTangents(
+  positions: Float32Array,
+  normals: Float32Array,
+  uvs: Float32Array | undefined,
+  indices: Uint32Array | undefined,
+  material: MaterialSpec,
+  meshLabel: string,
+  warnings: string[],
+): Float32Array | undefined {
+  if (!materialNeedsTangentFrame(material)) return undefined;
+  if (!uvs) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+        'but has no TEXCOORD_0. Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
+    );
+    return undefined;
+  }
+  const generated = generateTangents(positions, normals, uvs, indices);
+  if (!generated) {
+    warnings.push(
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+        'but tangents could not be generated from POSITION/NORMAL/TEXCOORD_0.',
+    );
+    return undefined;
+  }
+  warnings.push(
+    `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map without ` +
+      'TANGENT; generated per-vertex tangents from POSITION/NORMAL/TEXCOORD_0.',
+  );
+  return generated;
+}
+
+function materialNeedsTangentFrame(material: MaterialSpec): boolean {
+  return material.normalMap !== undefined ||
+    material.clearcoatNormalMap !== undefined ||
+    material.bumpMap !== undefined;
 }
 
 /**

@@ -81,6 +81,9 @@ function concatBuffers(...bufs: ArrayBuffer[]): ArrayBuffer {
 const TRIANGLE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
 // 3 flat normals: cross((1,0,0)-(0,0,0), (0,1,0)-(0,0,0)) = (0,0,1)
 const _TRIANGLE_FLAT_NORMAL = [0, 0, 1];
+const TRIANGLE_NORMALS = [0, 0, 1, 0, 0, 1, 0, 0, 1];
+const TRIANGLE_UVS = [0, 0, 1, 0, 0, 1];
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
 
 function makeMinimalTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
@@ -102,6 +105,60 @@ function makeMinimalTriangleGltf(): { gltf: GltfJson; buffers: Map<number, Array
     buffers: [{ byteLength: posBuf.byteLength }],
   };
   return { gltf, buffers: new Map([[0, posBuf]]) };
+}
+
+function makeNormalMappedTriangleGltf(
+  authoredTangents?: number[],
+): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+  const normalBuf = f32Buffer(TRIANGLE_NORMALS);
+  const uvBuf = f32Buffer(TRIANGLE_UVS);
+  const tangentBuf = authoredTangents ? f32Buffer(authoredTangents) : undefined;
+  const imageBuf = u8Buffer(PNG_MAGIC);
+  const packed = concatBuffers(
+    posBuf,
+    normalBuf,
+    uvBuf,
+    ...(tangentBuf ? [tangentBuf] : []),
+    imageBuf,
+  );
+
+  const bufferViews: NonNullable<GltfJson['bufferViews']> = [];
+  let offset = 0;
+  for (const buf of [posBuf, normalBuf, uvBuf, ...(tangentBuf ? [tangentBuf] : []), imageBuf]) {
+    bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: buf.byteLength });
+    offset += buf.byteLength;
+  }
+  const imageBufferView = bufferViews.length - 1;
+
+  const attributes: Record<string, number> = {
+    POSITION: 0,
+    NORMAL: 1,
+    TEXCOORD_0: 2,
+  };
+  if (authoredTangents) attributes.TANGENT = 3;
+
+  const gltf: GltfJson = {
+    asset: { version: '2.0' },
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes, material: 0 }] }],
+    materials: [{ normalTexture: { index: 0 } }],
+    textures: [{ source: 0 }],
+    images: [{ bufferView: imageBufferView, mimeType: 'image/png' }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      ...(authoredTangents
+        ? [{ bufferView: 3, componentType: 5126, count: 3, type: 'VEC4' } as const]
+        : []),
+    ],
+    bufferViews,
+    buffers: [{ byteLength: packed.byteLength }],
+  };
+  return { gltf, buffers: new Map([[0, packed]]) };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -147,6 +204,42 @@ describe('minimal triangle', () => {
     const { scene } = await gltfToScene(gltf, { buffers });
     expect(scene.emitters).toHaveLength(0);
     expect(scene.environment.kind).toBe('none');
+  });
+
+  it('generates tangents for a normal-mapped primitive that omits TANGENT', async () => {
+    const handle = { kind: 'decoded-normal' };
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    const { scene, warnings } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => handle,
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect((prim.material.normalMap as TextureRef).handle).toBe(handle);
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(Array.from(prim.tangents!)).toEqual([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
+    expect(warnings.some((w) => w.includes('generated per-vertex tangents'))).toBe(true);
+  });
+
+  it('preserves authored tangents instead of regenerating them', async () => {
+    const authored = [
+      0, 1, 0, -1,
+      0, 1, 0, -1,
+      0, 1, 0, -1,
+    ];
+    const { gltf, buffers } = makeNormalMappedTriangleGltf(authored);
+    const { scene, warnings } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-normal' }),
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(Array.from(prim.tangents!)).toEqual(authored);
+    expect(warnings.some((w) => w.includes('generated per-vertex tangents'))).toBe(false);
   });
 });
 

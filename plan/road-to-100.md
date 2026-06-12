@@ -389,7 +389,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 |------|------|---------|
 | ~~**GLTF-01** bind matrices~~ ✅ LANDED | `gltfToScene.ts:402-419` emits `bindMatrix`/`bindMatrixInverse` (warn fallback when uncomputable) | — |
 | ~~**CORE-01** CUBICSPLINE quats~~ ✅ LANDED | `sampleAnimationClip` normalizes LINEAR/STEP/clamped/CUBICSPLINE rotations | — |
-| Generate tangents when missing | After unpack POSITION/NORMAL/uvs, call `generateTangents()` (new in `gltf-adapter` or reuse logic from pt-webgl2) | glTF often omits TANGENT; normal maps break without (WEBGL2-01) |
+| ~~Generate tangents when missing~~ ✅ DONE | `gltfToScene.ts`, `tangents.ts`, `gltfAdapter.test.ts` | Normal/bump/clearcoat-normal mapped primitives now synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0 when authored TANGENT is absent, and preserve authored tangents unchanged. |
 | `COLOR_0` vertex colors | Already unpacked — add to `GltfFeatureReport` + multiply in backends or `baseColor` bake at import | glTF vertex color × baseColor |
 | Sparse accessors | More fixtures in `accessors.ts` tests | Production glTF uses sparse heavily |
 | ~~Point/line modes~~ ✅ DONE | Product decision: keep unsupported; `gltfPointLinePrimitivePolicy.test.ts` pins structured compatibility issues + warn-skip import | Don't "half support" — either add `ScenePrimitive` kind later or keep rejecting |
