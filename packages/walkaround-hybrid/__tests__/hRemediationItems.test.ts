@@ -1,5 +1,5 @@
 /**
- * Unit tests for H-remediation items H15, H16, H22, H24-A/B/C, H46/H47.
+ * Unit tests for H-remediation items H15, H16, H22, H24-A/B/C, H25-H29, H46/H47.
  *
  * Items covered:
  *  H15  — UV plumb-through: bvhCore passes real UVs into packUVIntoPositionW
@@ -8,10 +8,12 @@
  *  H24-A — materialResolver warns on unknown primitive id
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
+ *  H25-H28 — Road/items ledger does not re-open already-closed PPG/NRC/ReLU defects
  *  H46  — HybridEngine warns on maxBounces ≠ 4 and on causticStrategy ≠ 'none'
  *  H47/H29 — PPG spatial-cell and dTree-node caps thread to PPGCoordinator.initialize
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
@@ -64,6 +66,37 @@ function singleTriScene(opts: {
 function zeroEmitterScene(): Scene {
   return singleTriScene();
 }
+
+// ---------------------------------------------------------------------------
+// H25-H28 — ledger reconciliation guard
+// ---------------------------------------------------------------------------
+
+describe('H25-H28 — Road/items ledger reconciliation guard', () => {
+  it('keeps stale open PPG/NRC/ReLU prose out of the active ledgers', () => {
+    const items = readFileSync(new URL('../../../items_to_fix.md', import.meta.url), 'utf8');
+    const road = readFileSync(new URL('../../../plan/road-to-100.md', import.meta.url), 'utf8');
+    const combined = `${items}\n${road}`;
+
+    expect(items).toContain('**H25 ✅ CLOSED');
+    expect(items).toContain('**H26/H27 ✅ CLOSED');
+    expect(items).toContain('**H28 ✅ CLOSED');
+    expect(road).toContain('| H25 | ✅ CLOSED');
+    expect(road).toContain('| H26-H27 | ✅ CLOSED');
+    expect(road).toContain('| H28 | ✅ CLOSED');
+
+    expect(combined).not.toContain('H25 ◻');
+    expect(combined).not.toContain('H26 ◻');
+    expect(combined).not.toContain('H27 ◻');
+    expect(combined).not.toContain('H28 ✅(static)');
+    expect(combined).not.toContain('camera-pdf half still open');
+    expect(combined).not.toContain('primary edge pdf stays 1.0');
+    expect(combined).not.toContain('dTree interior nodes never carry flux');
+    expect(combined).not.toContain('bind one buffer as read + read_write');
+    expect(combined).not.toContain('Needs a one-shot real-adapter repro before the fix lands');
+    expect(combined).not.toContain('ppgMaxSpatialCells` is a documented knob with zero reads');
+    expect(combined).not.toContain('spreadTermination.test.ts` exercises only c ∈ {1e-9(1-seg), mid, 1.2, 8.0}');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // H15 — UV plumb-through
