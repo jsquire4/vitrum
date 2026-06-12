@@ -20,6 +20,12 @@
  * `ceil(triCount / width)` rows; triangle index → texel `vec2u(tri % W, tri / W)`.
  */
 
+import {
+  assertBvhTextureFitsDevice,
+  assertBvhTextureRefreshCapacity,
+  normalizeBvhTextureTriangleCount,
+} from './bvhTextureLimits.js';
+
 /** Fixed texture width (power-of-two ≤ 8192 WebGPU floor). Shader uses the SAME. */
 const BVH_EMISSIVE_TEX_WIDTH = 4096;
 
@@ -35,7 +41,7 @@ export interface EmissiveTexture {
 
 /** Compute the rgba32float emissive-texture dimensions for `triCount` triangles. */
 function emissiveTextureSize(triCount: number): { width: number; height: number } {
-  const count = Math.max(1, triCount | 0);
+  const count = normalizeBvhTextureTriangleCount(triCount);
   const width = Math.min(BVH_EMISSIVE_TEX_WIDTH, count);
   const height = Math.ceil(count / width);
   return { width, height };
@@ -52,6 +58,7 @@ export function uploadEmissiveTexture(
   triCount: number,
 ): EmissiveTexture {
   const { width, height } = emissiveTextureSize(triCount);
+  assertBvhTextureFitsDevice('bvhEmissive', device, width, height, triCount);
   const texture = device.createTexture({
     label: 'vitrum.bvhEmissive.rgba32float',
     size: { width, height, depthOrArrayLayers: 1 },
@@ -69,6 +76,7 @@ export function refreshEmissiveTexture(
   emissiveData: Float32Array,
   triCount: number,
 ): void {
+  assertBvhTextureRefreshCapacity('bvhEmissive', tex.width, tex.height, triCount);
   writeEmissiveTexture(device, tex.texture, emissiveData, triCount, tex.width, tex.height);
 }
 

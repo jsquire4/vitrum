@@ -99,6 +99,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   BVH-update, and probe `runFrame` failures, and `HybridEngine` wires that sink
   to `onError`; focused tests pin both direct DDGI diagnostics and engine
   forwarding.
+- BVH per-triangle Beer/rough-metal/emissive textures now guard
+  `device.limits.maxTextureDimension2D` and in-place refresh capacity before
+  `createTexture()`/padding allocation, with tests covering width overflow,
+  height overflow, stale refreshes, and large triangle counts that previously
+  could be truncated by 32-bit coercion.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative

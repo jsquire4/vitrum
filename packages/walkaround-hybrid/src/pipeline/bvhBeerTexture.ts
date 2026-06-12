@@ -19,6 +19,12 @@
  * shader address identically (single source of truth).
  */
 
+import {
+  assertBvhTextureFitsDevice,
+  assertBvhTextureRefreshCapacity,
+  normalizeBvhTextureTriangleCount,
+} from './bvhTextureLimits.js';
+
 /** Fixed texture width for the beer texture. Power-of-two ≤ 8192 (the WebGPU
  *  `maxTextureDimension2D` guaranteed floor). The shader uses the SAME value. */
 const BVH_BEER_TEX_WIDTH = 4096;
@@ -36,7 +42,7 @@ export interface BeerTexture {
 
 /** Compute the r32uint beer-texture dimensions for `triCount` triangles. */
 function beerTextureSize(triCount: number): { width: number; height: number } {
-  const count = Math.max(1, triCount | 0);
+  const count = normalizeBvhTextureTriangleCount(triCount);
   const width = Math.min(BVH_BEER_TEX_WIDTH, count);
   const height = Math.ceil(count / width);
   return { width, height };
@@ -54,6 +60,7 @@ export function uploadBeerTexture(
   triCount: number,
 ): BeerTexture {
   const { width, height } = beerTextureSize(triCount);
+  assertBvhTextureFitsDevice('bvhBeer', device, width, height, triCount);
   const texture = device.createTexture({
     label: 'vitrum.bvhBeer.r32uint',
     size: { width, height, depthOrArrayLayers: 1 },
@@ -77,6 +84,7 @@ export function refreshBeerTexture(
   beerData: ArrayBuffer,
   triCount: number,
 ): void {
+  assertBvhTextureRefreshCapacity('bvhBeer', tex.width, tex.height, triCount);
   writeBeerTexture(device, tex.texture, beerData, triCount, tex.width, tex.height);
 }
 
