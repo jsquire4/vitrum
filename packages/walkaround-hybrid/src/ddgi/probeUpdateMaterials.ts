@@ -62,15 +62,11 @@ export function packDDGIMaterialsN(mats: readonly PbrScalarSource[], maxMaterial
  * Force `ei = 1` whenever `emissive` is PRESENT. A material with no `emissive`
  * is returned unchanged.
  *
- * NOTE on relevance: the DDGI PROBE-RAY kernel (`probeUpdateRays.wgsl`) does NOT
- * currently read `mat.emissive` (probe radiance is sun + sky + glass-tint, not
- * surface emission), so this convention is presently invisible to rendered DDGI
- * output. It is applied anyway so (a) the packed MaterialEntry bytes are
- * stable with the production material bytes, and (b) the path stays correct if
- * a future probe-shading revision starts reading the emissive slot. The
- * non-emissive fields the kernel DOES read — `flags`
- * (glass bit), `transmission`, `attenuationColor`, `baseColor` — pass through
- * `coreMaterialToMaterialEntry` identically to `extractPbrScalars`.
+ * The DDGI probe-ray kernel (`probeUpdateRays.wgsl`) reads `mat.emissive` for
+ * direct probe hits on plain material-emissive surfaces. Keep the packed bytes
+ * on the same production convention as the ReSTIR/RC material paths: the core
+ * material's `emissive` field is already the radiance-space colour, so do not
+ * multiply it again by `emissiveIntensity`.
  */
 function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;

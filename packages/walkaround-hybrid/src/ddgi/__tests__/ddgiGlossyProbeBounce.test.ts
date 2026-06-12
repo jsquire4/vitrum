@@ -41,7 +41,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
-import { packDDGIMaterialsN } from '../probeUpdateMaterials.js';
+import { packDDGIMaterialsFromCoreN, packDDGIMaterialsN } from '../probeUpdateMaterials.js';
 
 // ── helper ──────────────────────────────────────────────────────────────────
 
@@ -204,5 +204,39 @@ describe('B2 — WGSL gate: specular complement is disabled when indirectFeedbac
     // atlas lookup would return stale/zero data — correctly skipped.
     const src = wgsl();
     expect(src).toContain('specularWeight > 1e-4 && frameParams.indirectFeedback != 0u');
+  });
+});
+
+// ── H18. Material-emissive direct probe hits ────────────────────────────────
+
+describe('H18 — material-emissive direct probe hits', () => {
+  it('adds packed surface emission after glass mix and before writing hit radiance', () => {
+    const src = wgsl();
+    expect(src).toContain('let surfaceEmission = vec3f(');
+    expect(src).toContain('radiance = radiance + surfaceEmission;');
+
+    const glassMix = src.indexOf('radiance = mix(radiance, transmitted');
+    const emissionAdd = src.indexOf('radiance = radiance + surfaceEmission;');
+    const writeOut = src.indexOf('out.hitRadiance  = radiance;');
+    expect(glassMix).toBeGreaterThanOrEqual(0);
+    expect(emissionAdd).toBeGreaterThan(glassMix);
+    expect(writeOut).toBeGreaterThan(emissionAdd);
+  });
+
+  it('core-material DDGI packing preserves emissive as final radiance, not emissive × intensity', () => {
+    const buf = packDDGIMaterialsFromCoreN([
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        emissive: [2, 0.5, 0.25],
+        emissiveIntensity: 4,
+      },
+    ], 1);
+    const f32 = new Float32Array(buf);
+
+    expect(f32[4]).toBeCloseTo(2, 5);
+    expect(f32[5]).toBeCloseTo(0.5, 5);
+    expect(f32[6]).toBeCloseTo(0.25, 5);
   });
 });

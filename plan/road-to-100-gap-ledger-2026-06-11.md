@@ -984,12 +984,18 @@ Status:
 - POSITION and NORMAL morph target deltas and node/mesh weights import into the
   core primitive shape; unskinned morphed meshes are promoted through an identity
   skeleton path.
-- TANGENT morph deltas are still skipped because core has no morph-tangent
-  field.
+- TANGENT morph deltas are deliberately skipped because core has no
+  morph-tangent field, and this is now a structured compatibility downgrade:
+  `analyzeGltfAsset()` reports `hasMorphTargetTangents`,
+  `evaluateGltfBackendCompatibility()` emits a `morphTargetTangents`
+  unsupported primitive issue with the source path, and
+  `gltfAssetApi.test.ts` pins that public API behavior.
 
 Closure:
-- Decide whether morph tangents need a core field or an explicit structured
-  unsupported diagnostic.
+- Treat morph tangents as closed for the current professional contract:
+  unsupported, deterministic, source-pathed, and test-covered. Optional future
+  promotion would add a core `morphTargetTangents` field plus solver/backend
+  consumption.
 - Controller-side morph playback is closed under `GLTF-API-04`.
 
 ### GLTF-05 - glTF primitive modes

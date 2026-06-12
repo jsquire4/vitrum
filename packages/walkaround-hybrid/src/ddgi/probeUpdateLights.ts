@@ -8,6 +8,10 @@ const LIGHT_STRIDE_FLOATS = 16;
 export const DDGI_PROBE_LIGHTS_BUFFER_BYTES =
   (4 + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS) * Float32Array.BYTES_PER_ELEMENT;
 
+function isPackableDDGILight(l: DDGILight): boolean {
+  return l.kind === 'sun' || l.kind === 'fixture' || l.kind === 'teaLight';
+}
+
 export function packDDGIProbeLights(
   lights: readonly DDGILight[],
   sunIntensityMul: number,
@@ -16,17 +20,27 @@ export function packDDGIProbeLights(
   const data = new Float32Array(headerSize + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS);
   const udata = new Uint32Array(data.buffer);
   const active = lights.filter((l) => l.on);
-  // H18 Stage 1 — warn on truncation so hosts know lights beyond the cap are dropped.
-  if (active.length > MAX_DDGI_PROBE_LIGHTS) {
+  const unsupportedKinds = [...new Set(active
+    .filter((l) => !isPackableDDGILight(l))
+    .map((l) => l.kind))];
+  if (unsupportedKinds.length > 0) {
     console.warn(
-      `[DDGI] packDDGIProbeLights: scene has ${active.length} active lights but the DDGI probe ` +
+      `[DDGI] packDDGIProbeLights: unsupported DDGI light kind(s) ${unsupportedKinds.join(', ')} ` +
+      'were ignored for probe-update GI.',
+    );
+  }
+  const packable = active.filter(isPackableDDGILight);
+  // H18 Stage 1 — warn on truncation so hosts know lights beyond the cap are dropped.
+  if (packable.length > MAX_DDGI_PROBE_LIGHTS) {
+    console.warn(
+      `[DDGI] packDDGIProbeLights: scene has ${packable.length} active packable lights but the DDGI probe ` +
       `shader supports at most ${MAX_DDGI_PROBE_LIGHTS}. Lights beyond this cap are silently ` +
       `ignored for probe-update GI. Reduce your light count or raise MAX_DDGI_PROBE_LIGHTS.`,
     );
   }
-  udata[0] = Math.min(active.length, MAX_DDGI_PROBE_LIGHTS);
+  udata[0] = Math.min(packable.length, MAX_DDGI_PROBE_LIGHTS);
 
-  active.slice(0, MAX_DDGI_PROBE_LIGHTS).forEach((l, i) => {
+  packable.slice(0, MAX_DDGI_PROBE_LIGHTS).forEach((l, i) => {
     const base = headerSize + i * LIGHT_STRIDE_FLOATS;
     const ubase = base;
     if (l.kind === 'sun') {

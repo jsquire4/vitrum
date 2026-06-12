@@ -273,6 +273,24 @@ describe('packDDGIProbeLights — inactive lights', () => {
     // Its intensity should be 5 (NOT 100 from the sun).
     expect(f32[lightBase(0) + 7]).toBeCloseTo(5, 5);
   });
+
+  it('unknown active light kinds warn and do not consume GPU light slots', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const buf = packDDGIProbeLights([
+      { kind: 'future-kind', on: true, intensity: 99 },
+      { kind: 'fixture', on: true, intensity: 5, position: { x: 1, y: 2, z: 3 } },
+    ], 1);
+    const { u32, f32 } = decode(buf);
+
+    expect(u32[0]).toBe(1);
+    expect(u32[lightBase(0)]).toBe(1);
+    expect(f32[lightBase(0) + 7]).toBeCloseTo(5, 5);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]![0]).toMatch(/future-kind/);
+
+    warnSpy.mockRestore();
+  });
 });
 
 // ── truncation cap ────────────────────────────────────────────────────────────

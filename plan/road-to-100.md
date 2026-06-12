@@ -759,7 +759,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 
 | Category | Fields | Walkaround work |
 |----------|--------|-----------------|
-| Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; fix H23 emissive |
+| Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override and DDGI material-emissive direct probe hits closed; remaining scalar work belongs to atlas/lobe parity rows |
 | Alpha | alphaMode, alphaCutoff, opacity, alphaMap | 3C + 3D |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
 | Disney scalars | sheen*, clearcoat*, iridescence*, specular*, anisotropy* | 3E |

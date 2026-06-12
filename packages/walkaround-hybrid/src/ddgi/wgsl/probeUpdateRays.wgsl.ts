@@ -857,6 +857,18 @@ fn probeUpdateRays(
           radiance = mix(radiance, transmitted, mat.transmission * frameParams.glassMixScale);
         }
 
+        // H18 — direct probe hits on plain emissive materials carry their
+        // packed surface emission. Explicit rect/disc/mesh-area emitters are
+        // handled by ddgiEmitterNEE above; this closes the non-emitter
+        // material-emissive path without requiring hosts to author duplicate
+        // mesh-area emitters for camera-visible glowing surfaces.
+        let surfaceEmission = vec3f(
+          max(mat.emissive.r, 0.0),
+          max(mat.emissive.g, 0.0),
+          max(mat.emissive.b, 0.0),
+        );
+        radiance = radiance + surfaceEmission;
+
         out.hitRadiance  = radiance;
         out.hitDistance  = hit.dist;
         out.hitNormal    = smoothNormal;
