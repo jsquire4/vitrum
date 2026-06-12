@@ -196,6 +196,40 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(positions+normals) uses TLAS refit and uploads normals without full rebuild', () => {
+    const { engine, pipeline } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const scene = storedScene(engine);
+      const prim = scene.primitives[0];
+      if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+      const primNormals = prim.normals;
+      if (primNormals == null) throw new Error('expected mesh normals');
+      const positions = prim.positions.slice();
+      for (let i = 0; i < positions.length; i += 3) positions[i] = (positions[i] ?? 0) + 0.125;
+      const normals = new Float32Array(primNormals.length);
+      for (let i = 0; i < normals.length; i += 3) normals[i] = 1;
+
+      engine.updatePrimitive('mesh-a', { positions, normals });
+
+      expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshTlasRefit).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+
+      const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [
+        { byteOffset: number; data: ArrayBuffer },
+      ];
+      expect(normalsSlice.byteOffset).toBe(0);
+      const f32 = new Float32Array(normalsSlice.data);
+      expect(f32[0]).toBeCloseTo(1, 5);
+      expect(f32[1]).toBeCloseTo(0, 5);
+      expect(f32[2]).toBeCloseTo(0, 5);
+      expect(f32[3]).toBeCloseTo(0, 5);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) uploads material resources, refreshes RC materials, and skips geometry GI propagation', () => {
     const { engine, pipeline, ddgi, rc } = seedEngine(baseScene(), { bvhMode: 'tlas', rc: true });
     try {

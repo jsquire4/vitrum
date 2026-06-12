@@ -16,11 +16,13 @@
  *    no pipeline recompile, no DDGI atlas invalidation), rewrite the
  *    affected primitive's vertex slice in `bvhPositions`, reset the
  *    accumulator.
- *  - any topology field present (`positions` / `normals` / `uvs` /
- *    `tangents` / `indices` / `instances` / `params` / `shape` /
- *    `fallbackMesh` / `kind`) → call {@link topologyRebuild}: re-run
- *    `buildReSTIRSceneBVH`, destroy + re-upload the four BVH GPU buffers,
- *    reset the accumulator.
+ *  - structural topology fields present (`uvs` / `tangents` / `indices` /
+ *    `instances` / `params` / `shape` / `fallbackMesh` / `kind`) → call
+ *    {@link topologyRebuild}: re-run `buildReSTIRSceneBVH`, destroy +
+ *    re-upload the four BVH GPU buffers, reset the accumulator.
+ *  - `patch.positions` present, with optional same-count `normals` → call
+ *    {@link positionsRefit}: update packed vertex data, refit bounds, and
+ *    upload normals when provided.
  *  - material-only patches → {@link materialPatch}: re-pack bvhIndex and
  *    bvhBeerColors slices and partial GPU upload (no setScene).
  *
@@ -631,6 +633,22 @@ export function positionsRefit(
     );
 
     refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
+
+    // H19 — TLAS BLAS slices store local-space normals. When a count-preserving
+    // positions patch also supplies replacement normals, upload the matching
+    // bvhNormals slice so smooth-shading reads the new deformed normals instead
+    // of the build-time data.
+    const meshPosPatch0 = patch as Partial<MeshPrimitive>;
+    if (meshPosPatch0.normals !== undefined && meshPosPatch0.normals.length === sliceVerts * 3) {
+      applyNormalTransformAndUpload(
+        bvh,
+        IDENTITY_MAT4,
+        baseVertex,
+        sliceVerts,
+        ctx.pipeline,
+        meshPosPatch0.normals,
+      );
+    }
 
     const meshPosPatch = patch as Partial<MeshPrimitive>;
     const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined

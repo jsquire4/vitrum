@@ -1028,11 +1028,13 @@ export class HybridEngine implements Engine {
   /**
    * Select the fast/full path for an `updatePrimitive` patch and run it.
    * Returns `null` for an unrecognised patch (no-op). Branch order is
-   * load-bearing — topology beats positions beats transform beats material:
-   *  - any topology field present → full SAH `topologyRebuild` (Option (a)),
-   *    even if `positions` is also in the patch (the index buffer / vertex
-   *    layout changed, so the count-preserving refit can't apply).
-   *  - `positions` only → A3 `positionsRefit` (same topology, new verts).
+   * load-bearing — structural topology beats positions beats transform beats material:
+   *  - structural topology fields (`indices` / UVs / tangents / instances /
+   *    analytic shape data / kind) → full SAH `topologyRebuild` (Option (a)).
+   *  - `positions` with optional same-count `normals` → A3/H19
+   *    `positionsRefit` (same topology, new verts/normals).
+   *  - `normals` without `positions` → full rebuild until a normals-only
+   *    upload path exists.
    *  - `transform` only → `transformRefit` (refit AABB bounds in place).
    *  - `material` only → `materialPatch` (re-pack slices, NO GI propagation;
    *    the result carries `applySubsystems: false`).
@@ -1043,8 +1045,10 @@ export class HybridEngine implements Engine {
   ): PrimitiveUpdateResult | null {
     const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
     const ctx = this._buildPrimitiveUpdateContext();
-    if (TOPOLOGY_PATCH_FIELDS.some((f) => has(f))) return topologyRebuild(id, patch, ctx);
+    const hasStructuralTopology = TOPOLOGY_PATCH_FIELDS.some((f) => f !== 'normals' && has(f));
+    if (hasStructuralTopology) return topologyRebuild(id, patch, ctx);
     if (has('positions')) return positionsRefit(id, patch, ctx);
+    if (has('normals')) return topologyRebuild(id, patch, ctx);
     if (has('transform')) return transformRefit(id, patch, ctx);
     if (has('material')) return materialPatch(id, patch, ctx);
     return null;
