@@ -103,6 +103,44 @@ describe('packAttributesArray — 5-layer normal/tangent/uv0/color/uv1 array', (
     }
   });
 
+  it('layer 3 (color) packs RGB and RGBA vertex-color streams with opaque alpha fallback', () => {
+    const rgb = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+      0.25, 0.5, 0.75,
+    ]);
+    const rgbGrid = packAttributesArray({ ...merged, colors: rgb });
+    const rgbFpl = rgbGrid.dim * rgbGrid.dim * 4;
+    const rgbBase = ATTR_LAYER_COLOR * rgbFpl;
+    expect(Array.from(rgbGrid.data.slice(rgbBase, rgbBase + 16))).toEqual([
+      1, 0, 0, 1,
+      0, 1, 0, 1,
+      0, 0, 1, 1,
+      0.25, 0.5, 0.75, 1,
+    ]);
+
+    const rgba = new Float32Array([
+      1, 0, 0, 0.2,
+      0, 1, 0, 0.4,
+      0, 0, 1, 0.6,
+      0.25, 0.5, 0.75, 0.8,
+    ]);
+    const rgbaGrid = packAttributesArray({ ...merged, colors: rgba });
+    const rgbaFpl = rgbaGrid.dim * rgbaGrid.dim * 4;
+    const rgbaBase = ATTR_LAYER_COLOR * rgbaFpl;
+    const expectedRgba = [
+      1, 0, 0, 0.2,
+      0, 1, 0, 0.4,
+      0, 0, 1, 0.6,
+      0.25, 0.5, 0.75, 0.8,
+    ];
+    const actualRgba = Array.from(rgbaGrid.data.slice(rgbaBase, rgbaBase + 16));
+    for (let i = 0; i < expectedRgba.length; i += 1) {
+      expect(actualRgba[i]).toBeCloseTo(expectedRgba[i]!, 6);
+    }
+  });
+
   it('layer 4 (uv1) falls back to uv0 when no uv1 supplied', () => {
     // No uv1 on the quad scene — layer 4 must match layer 2 (uv0) per vertex.
     const uv0Base = ATTR_LAYER_UV * floatsPerLayer;

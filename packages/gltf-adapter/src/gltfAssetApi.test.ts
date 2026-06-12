@@ -385,6 +385,33 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
+  it('reports COLOR_0 vertex-color compatibility by backend instead of silently recommending unsupported paths', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0, COLOR_0: 1 },
+        }],
+      }],
+    });
+
+    expect(report.primitives.hasVertexColors).toBe(true);
+    expect(report.primitives.issuePaths.vertexColors).toEqual(['meshes[0].primitives[0].attributes.COLOR_0']);
+
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(webgl2.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
+
+    for (const backend of ['pt-webgpu', 'walkaround-hybrid'] as const) {
+      const compatibility = evaluateGltfBackendCompatibility(report, backend);
+      expect(compatibility.issues).toContainEqual(expect.objectContaining({
+        category: 'primitive',
+        name: 'vertexColors',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].attributes.COLOR_0',
+      }));
+    }
+  });
+
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },

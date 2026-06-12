@@ -124,7 +124,11 @@ Three textures: `map` (equirect, HalfFloat RGBA, Repeat-S/ClampEdge-T after prep
 - **normal** ← shared-bvh `normals` (stride-4, already RGBA-ready).
 - **uv** ← shared-bvh `uvs` (stride-4, .xy=uv0; the fork uses 2-component uv → put uv0 in .xy).
 - **tangent** — shared-bvh does NOT emit tangents. Derive them CPU-side from positions+uvs (standard per-triangle tangent accumulation) at pack time, OR mark `ATTR_TANGENT` unused and have the GLSL fall back to a screen-space/geometric tangent (normal-mapping degrades gracefully). Decision: derive tangents (needed for normal/clearcoat-normal maps).
-- **color** — shared-bvh does NOT emit vertex colors. If the core mesh carries `colors`, thread them through `packSceneFromCore`'s reorder (a small shared-bvh addition) OR pack a parallel reordered color array using `primitiveTlasBindings` vertex ranges. If absent, layer 3 stays default (1,1,1,1) and `material.vertexColors=0`.
+- **color** — closed in the native pt-webgl2 path (2026-06-12). Core mesh `colors`
+  are merged into the 5-layer attribute array using `mergeWorldSpaceFromCore`
+  vertex ranges; absent colors stay default `(1,1,1,1)`, and material slots used
+  by colored primitives set `material.vertexColors=1` so GLSL multiplies
+  `COLOR_0 × baseColor`.
 
 ## 8. `UploadedSceneTextures` bundle + `uploadSceneTextures.ts`
 ```ts

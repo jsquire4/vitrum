@@ -91,7 +91,8 @@ export function buildSceneTextures(
   //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
   //      IS the unique-material list the materials texture packs. The atlas layer
   //      map turns each material's `<map>` ref into the GLSL's layer index.
-  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOf);
+  const vertexColorMaterialIds = collectVertexColorMaterialIds(skinnedScene, merged);
+  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOf, { vertexColorMaterialIds });
   const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
 
   // (5) lights (6px/light) — driven from the original scene's emitters.
@@ -121,8 +122,14 @@ export function buildSceneTextures(
   // D10.7: uses mergeUv1FromCore from @vitrum/shared-bvh, colocated with worldSpaceMerge.ts.
   const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const mergedColors = mergeColorsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const attrData = packAttributesArray(
-    { ...merged, ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}), ...(mergedTangents != null ? { tangents: mergedTangents } : {}) },
+    {
+      ...merged,
+      ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
+      ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
+      ...(mergedColors != null ? { colors: mergedColors } : {}),
+    },
   );
   const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes');
 
@@ -266,6 +273,78 @@ function mergeTangentsFromCore(
   }
 
   return out;
+}
+
+function mergeColorsFromCore(
+  scene: Scene,
+  ranges: WorldSpaceMergeResult['meshVertexRanges'],
+  totalVertexCount: number,
+): Float32Array | undefined {
+  const meshLike = scene.primitives.filter(isMeshLikePrimitive);
+  if (!meshLike.some((p) => p.colors != null && p.colors.length > 0)) return undefined;
+
+  const out = new Float32Array(totalVertexCount * 4);
+  for (let i = 0; i < totalVertexCount; i += 1) {
+    const o = i * 4;
+    out[o] = 1;
+    out[o + 1] = 1;
+    out[o + 2] = 1;
+    out[o + 3] = 1;
+  }
+
+  let rangeIdx = 0;
+  for (const prim of meshLike) {
+    const localVertexCount = Math.floor(prim.positions.length / 3);
+    if (localVertexCount < 1) continue;
+    const src = prim.colors;
+    const colorStride = src == null || src.length === 0
+      ? 4
+      : Math.max(3, Math.min(4, Math.floor(src.length / Math.max(1, localVertexCount))));
+
+    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
+    for (let inst = 0; inst < instanceCount; inst += 1) {
+      const range = ranges[rangeIdx];
+      if (range == null) break;
+      rangeIdx += 1;
+      if (src == null || src.length === 0) continue;
+
+      for (let v = 0; v < range.vertexCount; v += 1) {
+        const local = Math.min(v, localVertexCount - 1);
+        const so = local * colorStride;
+        const o = (range.vertexStart + v) * 4;
+        out[o] = src[so] ?? 1;
+        out[o + 1] = src[so + 1] ?? 1;
+        out[o + 2] = src[so + 2] ?? 1;
+        out[o + 3] = colorStride >= 4 ? (src[so + 3] ?? 1) : 1;
+      }
+    }
+  }
+
+  return out;
+}
+
+function collectVertexColorMaterialIds(
+  scene: Scene,
+  merged: WorldSpaceMergeResult,
+): ReadonlySet<number> {
+  const ids = new Set<number>();
+  const meshLike = scene.primitives.filter(isMeshLikePrimitive);
+  let rangeIdx = 0;
+  for (const prim of meshLike) {
+    const hasColors = prim.colors != null && prim.colors.length > 0;
+    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
+    for (let inst = 0; inst < instanceCount; inst += 1) {
+      const range = merged.meshVertexRanges[rangeIdx];
+      if (range == null) break;
+      rangeIdx += 1;
+      if (!hasColors) continue;
+      for (let t = range.triStart; t < range.triStart + range.triCount; t += 1) {
+        const materialId = merged.mergedTriMaterialId[t];
+        if (materialId !== undefined) ids.add(materialId);
+      }
+    }
+  }
+  return ids;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

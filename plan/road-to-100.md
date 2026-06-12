@@ -390,7 +390,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 | ~~**GLTF-01** bind matrices~~ ✅ LANDED | `gltfToScene.ts:402-419` emits `bindMatrix`/`bindMatrixInverse` (warn fallback when uncomputable) | — |
 | ~~**CORE-01** CUBICSPLINE quats~~ ✅ LANDED | `sampleAnimationClip` normalizes LINEAR/STEP/clamped/CUBICSPLINE rotations | — |
 | ~~Generate tangents when missing~~ ✅ DONE | `gltfToScene.ts`, `tangents.ts`, `gltfAdapter.test.ts` | Normal/bump/clearcoat-normal mapped primitives now synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0 when authored TANGENT is absent, and preserve authored tangents unchanged. |
-| `COLOR_0` vertex colors | Already unpacked — add to `GltfFeatureReport` + multiply in backends or `baseColor` bake at import | glTF vertex color × baseColor |
+| ~~`COLOR_0` vertex colors~~ ✅ DONE for adapter + planner + pt-webgl2 | `gltfToScene.ts` imports `COLOR_0`; `featureReport.ts` records source paths and compatibility; pt-webgl2 now threads merged vertex colors into `attributesArray` layer 3 and enables the GLSL `material.vertexColors` multiply for affected material slots. pt-webgpu + walkaround-hybrid are structured `unsupported` compatibility issues until their attribute/material tiers consume colors. | glTF vertex color × baseColor is native on pt-webgl2; unsupported paths reject/degrade explicitly |
 | Sparse accessors | More fixtures in `accessors.ts` tests | Production glTF uses sparse heavily |
 | ~~Point/line modes~~ ✅ DONE | Product decision: keep unsupported; `gltfPointLinePrimitivePolicy.test.ts` pins structured compatibility issues + warn-skip import | Don't "half support" — either add `ScenePrimitive` kind later or keep rejecting |
 

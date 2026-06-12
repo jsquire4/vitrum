@@ -123,6 +123,19 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(1, 14, 1)]).toBe(0);
   });
 
+  it('packs the vertex-color enable flag in s14.b for materials used by colored primitives', () => {
+    const plain: MaterialSpec = { baseColor: [1, 1, 1], roughness: 1.0, metallic: 0.0 };
+    const colored: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 0.5, metallic: 0.0 };
+    const d = packMaterialsTexture(
+      [plain, colored],
+      undefined,
+      { vertexColorMaterialIds: new Set([1]) },
+    ).data;
+
+    expect(d[texel(0, 14, 2)]).toBe(0);
+    expect(d[texel(1, 14, 2)]).toBe(1);
+  });
+
   // Contract-honesty: emissiveIntensity default must be 1.0, not 0.0.
   // pt-webgpu (materialTextures.ts) and walkaround-hybrid both default to 1.0;
   // a host that sets emissive:[r,g,b] without emissiveIntensity expects a visible

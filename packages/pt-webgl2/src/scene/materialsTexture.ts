@@ -28,6 +28,7 @@ const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
 type PackedMaterialSpec = MaterialSpec & {
   readonly castShadow?: boolean;
+  readonly vertexColors?: boolean;
 };
 
 /** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
@@ -334,7 +335,7 @@ function packScalarSlots(
   // sample 14 — matte / castShadow / vertexColors|(flat<<1) / flags
   data[index++] = 0; // matte (core has no matte field)
   data[index++] = m.castShadow === false ? 0 : 1;
-  data[index++] = 0; // vertexColors | (flatShading<<1) — core meshes carry neither here
+  data[index++] = m.vertexColors === true ? 1 : 0;
   {
     let flags = Number(transparent);
     const scatteringCoeff = m.scatteringCoefficient ?? 0.0;
@@ -521,6 +522,7 @@ function packTextureTransforms(
 export function packMaterialsTexture(
   materials: readonly MaterialSpec[],
   layerOf?: Map<unknown, number>,
+  options: { readonly vertexColorMaterialIds?: ReadonlySet<number> } = {},
 ): MaterialsTextureData {
   const materialCount = materials.length;
   const pixelCount = materialCount * MATERIAL_PIXELS;
@@ -529,7 +531,10 @@ export function packMaterialsTexture(
 
   let index = 0;
   for (let i = 0; i < materialCount; i += 1) {
-    const m = materials[i]!;
+    const source = materials[i]!;
+    const m = (options.vertexColorMaterialIds?.has(i) === true
+      ? { ...source, vertexColors: true }
+      : source) as PackedMaterialSpec;
     const base = index; // first float of this material's block
 
     const ids = packLayerIds(m, layerOf);

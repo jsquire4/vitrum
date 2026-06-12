@@ -199,6 +199,41 @@ describe('minimal triangle', () => {
     expect(prim.material.roughness).toBe(1);
   });
 
+  it('imports COLOR_0 vertex colors onto the core mesh primitive', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const colorBuf = f32Buffer([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const packed = concatBuffers(posBuf, colorBuf);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, COLOR_0: 1 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: colorBuf.byteLength },
+      ],
+      buffers: [{ byteLength: packed.byteLength }],
+    };
+
+    const { scene } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(Array.from(prim.colors ?? [])).toEqual([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+  });
+
   it('scene has empty emitters and none environment', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     const { scene } = await gltfToScene(gltf, { buffers });

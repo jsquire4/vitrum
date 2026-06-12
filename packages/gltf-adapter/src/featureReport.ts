@@ -159,6 +159,11 @@ const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const UNSUPPORTED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
+const VERTEX_COLOR_SUPPORT: Readonly<Record<BackendId, BackendSupportMode>> = Object.freeze({
+  'pt-webgl2': 'native',
+  'pt-webgpu': 'unsupported',
+  'walkaround-hybrid': 'unsupported',
+});
 
 type SourcePathMap = Map<string, string[]>;
 
@@ -297,6 +302,21 @@ export function evaluateGltfBackendCompatibility(
       path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTangents', 'meshes'),
       message: 'glTF morph-target TANGENT deltas have no core primitive field and are ignored by the adapter.',
     });
+  }
+
+  if (report.primitives.hasVertexColors) {
+    const support = VERTEX_COLOR_SUPPORT[backend];
+    if (support === 'native') {
+      nativeCount += 1;
+    } else {
+      addIssue({
+        category: 'primitive',
+        name: 'vertexColors',
+        support,
+        path: firstSourcePath(report.primitives.issuePaths, 'vertexColors', 'meshes'),
+        message: `Backend ${backend} reports glTF COLOR_0 vertex colors as ${support}.`,
+      });
+    }
   }
 
   if (report.sceneGraph.cameras > 0) {
@@ -496,7 +516,10 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
       for (const semantic of Object.keys(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
         if (semantic === 'TANGENT') hasTangents = true;
-        if (semantic === 'COLOR_0') hasVertexColors = true;
+        if (semantic === 'COLOR_0') {
+          hasVertexColors = true;
+          addSourcePath(issuePaths, 'vertexColors', `${primitivePath}.attributes.COLOR_0`);
+        }
         if (semantic === 'TEXCOORD_1') hasUv1 = true;
         if (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0') {
           hasJointAttrs = true;

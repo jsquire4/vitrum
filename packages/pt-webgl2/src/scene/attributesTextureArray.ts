@@ -101,6 +101,9 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const uvs = merged.uvs;
   const uv1 = merged.uv1; // optional — stride 2, same vertex order as uvs
   const colors = merged.colors;
+  const colorStride = colors === undefined
+    ? 4
+    : Math.max(3, Math.min(4, Math.floor(colors.length / Math.max(1, vertexCount))));
   const authoredTangents = merged.tangents;
 
   // BVH-reordered triangle indices are stride-3 (`indices` / `bvhIndexStride`),
@@ -134,10 +137,10 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     data[uvBase + o + 2] = 0;
     data[uvBase + o + 3] = 0;
 
-    data[colorBase + o] = vComp(colors, v, 0, stride, 1);
-    data[colorBase + o + 1] = vComp(colors, v, 1, stride, 1);
-    data[colorBase + o + 2] = vComp(colors, v, 2, stride, 1);
-    data[colorBase + o + 3] = colors === undefined ? 1 : vComp(colors, v, 3, stride, 1);
+    data[colorBase + o] = vComp(colors, v, 0, colorStride, 1);
+    data[colorBase + o + 1] = vComp(colors, v, 1, colorStride, 1);
+    data[colorBase + o + 2] = vComp(colors, v, 2, colorStride, 1);
+    data[colorBase + o + 3] = colors === undefined || colorStride < 4 ? 1 : vComp(colors, v, 3, colorStride, 1);
 
     // layer 4: uv1 — use the caller-supplied uv1 stream; fall back to uv0 per vertex
     // when absent so the layer is always fully populated and the GLSL select is safe.

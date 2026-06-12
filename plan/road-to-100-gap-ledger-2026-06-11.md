@@ -1040,8 +1040,13 @@ Do not carry these as open gaps unless the code regresses again.
   importance-sampled HDRI path.
 - shared-bvh attenuation/thickness fingerprint omission: stale. Current
   world-space merge material signatures include those fields.
-- pt-webgl2 vertex color / secondary UV blanket gaps: stale. Current shader and
-  attribute paths consume them.
+- pt-webgl2 vertex color / secondary UV blanket gaps: stale after the
+  2026-06-12 vertex-color wave. Current shader and attribute paths consume
+  secondary UVs, and `COLOR_0` now threads from glTF/core primitives into
+  `attributesArray` layer 3 with the material `vertexColors` flag enabled for
+  affected material slots. pt-webgpu and walkaround-hybrid remain honest
+  structured-unsupported paths for glTF vertex colors until their attribute
+  tiers consume them.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial
