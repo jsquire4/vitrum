@@ -625,6 +625,7 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 | H34 BVH degenerates | `buildArrayBvh.ts`, `tlas.ts` | Filter NaN tris |
 | Phantom emitter H22 | `emitterList.ts:395-405` | Remove or gate |
 | H24 material resolver | `restir/bvhCore.ts`; `restir/__tests__/bvhCoreMaterialResolver.test.ts` | ✅ CODE CLOSED: duplicate mesh-like primitive ids now throw before TLAS packing can reuse the first material slot, and unknown resolver calls throw instead of falling back to material 0. |
+| H24 GPU skinning host-resource skip | `skin/GpuSkinningSubsystem.ts`; `gpuSkinningBindRouting.test.ts` | ✅ CODE CLOSED: missing GPU skinning position/normal buffers or mesh ranges now CPU-skin every skinned mesh instead of silently skipping. Count-only-cache risk is source-verified stale because cached bind groups key on live shared buffer identity. |
 | GRIS dead alloc H24 | `resourceManager.ts` | Gate on `regir.enabled` |
 | DDGI error swallow | `DDGI.ts:303-346` | ✅ CODE CLOSED: DDGI init/BVH/probe-frame failures now emit non-fatal `EngineError` diagnostics through `HybridEngine.onError`; failed probe frames do not advance the grid to `ready`. Focused tests pin direct DDGI reporting plus HybridEngine forwarding. |
 

@@ -114,6 +114,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   resolver calls throw instead of silently shading with the first material.
   `bvhCoreMaterialResolver.test.ts` pins unique-id material packing and the
   duplicate-id rejection.
+- GPU skinning no longer drops skinned meshes when host BVH GPU resources are
+  temporarily unavailable: absent position/normal buffers or mesh ranges now
+  route every skinned mesh through the CPU `solveSkin()` fallback. The older
+  count-only-cache concern is source-verified stale: cached bind groups are
+  already invalidated by live shared position/normal buffer identity.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative

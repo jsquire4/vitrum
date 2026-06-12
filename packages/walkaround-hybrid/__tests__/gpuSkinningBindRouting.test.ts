@@ -112,6 +112,44 @@ function makeHost(meshIds: string[]): {
 }
 
 describe('GpuSkinningSubsystem — bindMatrix routing', () => {
+  it.each([
+    ['position buffer', { getGpuSkinningBvhBuffer: () => null }],
+    ['normal buffer', { getGpuSkinningNormalBuffer: () => null }],
+    ['mesh vertex ranges', { getMeshVertexRanges: () => null }],
+  ] satisfies ReadonlyArray<readonly [string, Partial<GpuSkinningHost>]>)(
+    'falls back to CPU skinning when the host %s is unavailable',
+    (_label, overrides) => {
+      const first = makeSkinnedMesh('skin-a');
+      const second = makeSkinnedMesh('skin-b');
+      const { host, updatePrimitive, applyGpuSkinnedRefit } = makeHost(['skin-a', 'skin-b']);
+      const device = makeFakeDevice();
+      const patchedHost = { ...host, ...overrides } as GpuSkinningHost;
+
+      new GpuSkinningSubsystem(device, /* preferGpu */ true).run(patchedHost, sceneOf(first, second));
+
+      expect(updatePrimitive).toHaveBeenCalledTimes(2);
+      expect(updatePrimitive).toHaveBeenNthCalledWith(
+        1,
+        'skin-a',
+        expect.objectContaining({
+          positions: expect.any(Float32Array),
+          normals: expect.any(Float32Array),
+        }),
+      );
+      expect(updatePrimitive).toHaveBeenNthCalledWith(
+        2,
+        'skin-b',
+        expect.objectContaining({
+          positions: expect.any(Float32Array),
+          normals: expect.any(Float32Array),
+        }),
+      );
+      expect(applyGpuSkinnedRefit).not.toHaveBeenCalled();
+      expect((device.createComputePipeline as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect((device.queue.submit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    },
+  );
+
   it('routes a NON-identity-bind, morph-free mesh to the CPU solver', () => {
     const id = 'bound-mesh';
     // bindMatrix with a translation → non-identity. bindMatrixInverse is its

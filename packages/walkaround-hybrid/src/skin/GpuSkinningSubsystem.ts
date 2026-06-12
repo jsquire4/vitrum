@@ -161,6 +161,13 @@ export class GpuSkinningSubsystem {
     host.updatePrimitive(id, { positions, normals });
   }
 
+  #cpuFallbackAll(host: GpuSkinningHost, scene: Scene): void {
+    for (const prim of scene.primitives) {
+      if (prim.kind !== 'skinned-mesh') continue;
+      this.#cpuFallback(host, prim, String(prim.id));
+    }
+  }
+
   dispose(): void {
     for (const state of this.#meshes.values()) {
       destroyMeshState(state);
@@ -174,6 +181,7 @@ export class GpuSkinningSubsystem {
     const bvhNormals = host.getGpuSkinningNormalBuffer();
     const meshVertexRanges = host.getMeshVertexRanges();
     if (bvhPositions == null || bvhNormals == null || meshVertexRanges == null) {
+      this.#cpuFallbackAll(host, scene);
       return;
     }
 
