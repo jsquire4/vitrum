@@ -103,11 +103,13 @@ export interface CreateProgressiveEngineOptions {
    *  built. Lets a host read the tier verdict for a HUD / CI artifact. */
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
 
-  /** H31-b — host-visible error callback for canvas-configure failures.
-   *  Mirrors the `onError` parameter on {@link CreateEngineOptions}. Called for
-   *  the belt-and-braces `configureWebGpuCanvas` at line ~307; the error is
-   *  non-fatal (the sub-engines already configured the context). */
-  readonly onError?: (error: unknown) => void;
+  /** Host-visible construction/plumbing error callback.
+   *
+   * Mirrors the `onError` parameter on {@link CreateEngineOptions}: the second
+   * argument carries the phase/backend/recoverability record for sub-engine
+   * construction errors and the progressive facade's final best-effort canvas
+   * configure. One-argument callbacks remain source-compatible in TypeScript. */
+  readonly onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
 }
 
 export interface ProgressiveEngineHandle {
@@ -251,14 +253,12 @@ export async function createProgressiveEngine(
 
     const shared: SharedDeviceCtx = { adapter, device, ownsDeviceLifecycle: false };
 
-    // I1.5 — adapt the progressive onError (error: unknown) to the sub-build
-    // CreateEngineOptions.onError (error: unknown, event: CreateEngineErrorEvent)
-    // signature by discarding the event parameter.  Both sub-builds receive
-    // the wrapper so construction-phase errors (canvas-configure, adapter/device
-    // failures) surface through the host's single callback rather than being
-    // silently swallowed.
+    // Both sub-builds receive the progressive callback so construction-phase
+    // errors (canvas-configure, adapter/device failures) surface through the
+    // host's single callback with the same phase/backend/recoverability event
+    // shape as createEngine().
     const subBuildOnError = opts.onError != null
-      ? (err: unknown, _ev: CreateEngineErrorEvent): void => opts.onError!(err)
+      ? (err: unknown, ev: CreateEngineErrorEvent): void => reportProgressiveEngineError(opts, err, ev)
       : undefined;
 
     // The two sub-builds reuse createEngine's OWN scene-handling / options-merging
@@ -324,8 +324,14 @@ export async function createProgressiveEngine(
     // did this, but it is idempotent + best-effort, so a host that swapped the
     // canvas is still covered).
     // H31-b — thread the host onError callback so canvas-configure failures are
-    // surfaced rather than silently swallowed.
-    configureWebGpuCanvas(opts.canvas, device, opts.onError);
+    // surfaced with the same structured event shape as createEngine().
+    configureWebGpuCanvas(opts.canvas, device, (err) => {
+      reportProgressiveEngineError(opts, err, {
+        phase: 'canvas-configure',
+        backend: 'walkaround-hybrid',
+        recoverable: true,
+      });
+    });
 
     const coordinatorOpts: ProgressiveHandoffOptions = {
       realtime,
@@ -370,4 +376,14 @@ export async function createProgressiveEngine(
     try { device.destroy(); } catch { /* best-effort device destroy — ignore */ }
     throw err;
   }
+}
+
+function reportProgressiveEngineError(
+  opts: CreateProgressiveEngineOptions,
+  error: unknown,
+  event: CreateEngineErrorEvent,
+): void {
+  try {
+    opts.onError?.(error, event);
+  } catch { /* host error callback must not propagate — ignore */ }
 }

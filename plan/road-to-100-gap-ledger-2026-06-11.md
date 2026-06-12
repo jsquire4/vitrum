@@ -88,6 +88,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
 
 - `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
   `createEngine()` runs and forwards `onWarning` through the facade.
+- `createProgressiveEngine.onError` now mirrors the same
+  `(error, CreateEngineErrorEvent)` construction/plumbing callback shape as
+  `createEngine()` instead of dropping phase/backend/recoverability metadata.
+  Its facade-owned best-effort canvas configure now reports the canonical
+  `canvas-configure` event, and focused engine tests pin sub-build plus
+  facade-configure forwarding.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative
