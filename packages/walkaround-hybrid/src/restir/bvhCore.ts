@@ -87,9 +87,15 @@ function materialResolver(scene: Scene): {
 } {
   const coreMaterials: MaterialSpec[] = [];
   const byKey = new Map<string, number>();
+  const duplicateIds = new Set<string>();
   for (const p of scene.primitives) {
     if (p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh') {
-      if (!byKey.has(String(p.id))) byKey.set(String(p.id), coreMaterials.length);
+      const id = String(p.id);
+      if (byKey.has(id)) {
+        duplicateIds.add(id);
+      } else {
+        byKey.set(id, coreMaterials.length);
+      }
       // SHADOW-01 — slots are per-primitive here, so the primitive's castShadow
       // flag rides the material entry (consumed by packBVHRoughMetalFromCore's
       // bit-0 lane). Default (true/undefined) keeps the original object —
@@ -101,20 +107,22 @@ function materialResolver(scene: Scene): {
       );
     }
   }
+  if (duplicateIds.size > 0) {
+    throw new Error(
+      `[ReSTIR bvhCore] duplicate mesh-like primitive id(s): ${[...duplicateIds].join(', ')}. ` +
+      `Primitive ids must be unique so per-triangle material slots, TLAS bindings, ` +
+      `mesh-area emitters, and incremental updates resolve the same primitive.`,
+    );
+  }
   return {
     coreMaterials,
     resolveMaterialId: (id) => {
       const idx = byKey.get(id);
       if (idx === undefined) {
-        // H24-A — warn on unknown primitive id so material-0 fallbacks are visible
-        // in the console rather than silently producing incorrect shading. Duplicate
-        // ids (two primitives share the same id) would also land here for the second
-        // occurrence; both cases warrant investigation.
-        console.warn(
-          `[ReSTIR bvhCore] unknown primitive id "${id}" — falling back to material 0. ` +
-          `This may produce incorrect shading. Check scene.primitives for duplicate or missing ids.`,
+        throw new Error(
+          `[ReSTIR bvhCore] could not resolve material slot for primitive id "${id}". ` +
+          `The scene packer passed an id that was not present in the validated mesh-like primitive set.`,
         );
-        return 0;
       }
       return idx;
     },
@@ -530,4 +538,3 @@ export function rebuildEmitterBuffersFromCoreScene(
 export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
   buffers.mergedGeometry.dispose();
 }
-

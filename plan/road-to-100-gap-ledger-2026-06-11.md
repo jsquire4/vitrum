@@ -109,6 +109,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   emitter packer, `uploadInitial`/`updateEmitters` validate byte alignment and
   declared count before upload, and tests pin the update path plus malformed
   payload rejection.
+- ReSTIR BVH material resolution no longer falls back to material slot 0:
+  duplicate mesh-like primitive ids now throw before TLAS packing, and unknown
+  resolver calls throw instead of silently shading with the first material.
+  `bvhCoreMaterialResolver.test.ts` pins unique-id material packing and the
+  duplicate-id rejection.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative
