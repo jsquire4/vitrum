@@ -11,8 +11,9 @@
  * UNsampled interior offset (gap between two stride-aligned samples) will be
  * missed with probability `(stride - 1) / stride ≈ 1 - 65536/len`. For a 1 MiB
  * buffer (stride = 16) this is ~93.75% miss probability for a single interior
- * byte. Use this fingerprint only as a "definitely unchanged" fast path; a miss
- * causes an unnecessary GPU re-upload, not a correctness failure.
+ * byte. Use this fingerprint only where a missed interior byte cannot skip
+ * required correctness work. For rebuild-skip gates, use
+ * {@link fingerprintBufferExact}.
  */
 
 const FNV_OFFSET = 2166136261;
@@ -23,6 +24,12 @@ function mixHash(h: number, value: number): number {
   return Math.imul(h ^ value, FNV_PRIME) >>> 0;
 }
 
+function byteView(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+  return data instanceof ArrayBuffer || data instanceof SharedArrayBuffer
+    ? new Uint8Array(data)
+    : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
 /** FNV-1a over buffer bytes (evenly-spaced sampled path for large buffers).
  *
  * Small buffers (≤ {@link MAX_SAMPLE_POINTS} bytes): exact — every byte is hashed.
@@ -30,9 +37,7 @@ function mixHash(h: number, value: number): number {
  * First and last bytes are always included.
  */
 export function fingerprintBuffer(data: ArrayBuffer | ArrayBufferView): number {
-  const view = data instanceof ArrayBuffer || data instanceof SharedArrayBuffer
-    ? new Uint8Array(data)
-    : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const view = byteView(data);
   const len = view.byteLength;
   let h = mixHash(FNV_OFFSET, len);
   if (len === 0) {
@@ -55,11 +60,35 @@ export function fingerprintBuffer(data: ArrayBuffer | ArrayBufferView): number {
   return h;
 }
 
+/** Exact FNV-1a over every byte.
+ *
+ * This is the correct helper for rebuild-skip / stale-geometry correctness
+ * gates. It is intentionally separate from {@link fingerprintBuffer}, whose
+ * sampled large-buffer path is retained for versioning and upload heuristics.
+ */
+export function fingerprintBufferExact(data: ArrayBuffer | ArrayBufferView): number {
+  const view = byteView(data);
+  let h = mixHash(FNV_OFFSET, view.byteLength);
+  for (let i = 0; i < view.byteLength; i += 1) {
+    h = mixHash(h, view[i]!);
+  }
+  return h;
+}
+
 /** Combine per-buffer fingerprints into one version tag. */
 export function fingerprintBuffers(...parts: Array<ArrayBuffer | ArrayBufferView>): number {
   let h = FNV_OFFSET;
   for (const part of parts) {
     h = mixHash(h, fingerprintBuffer(part));
+  }
+  return h >>> 0;
+}
+
+/** Combine exact per-buffer fingerprints into one correctness-safe version tag. */
+export function fingerprintBuffersExact(...parts: Array<ArrayBuffer | ArrayBufferView>): number {
+  let h = FNV_OFFSET;
+  for (const part of parts) {
+    h = mixHash(h, fingerprintBufferExact(part));
   }
   return h >>> 0;
 }

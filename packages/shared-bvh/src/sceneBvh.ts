@@ -6,7 +6,7 @@
  */
 
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
-import { fingerprintBuffers } from './bufferFingerprint.js';
+import { fingerprintBuffersExact } from './bufferFingerprint.js';
 import { clonePlainAabb, type PlainAabb } from './aabb.js';
 import { mergeWorldSpaceFromCore } from './worldSpaceMerge.js';
 import { MATERIAL_ATTEN_DIST_INFINITE } from './materialEntry.js';
@@ -123,7 +123,7 @@ export class SceneBvh {
       return;
     }
 
-    const fingerprint = fingerprintBuffers(
+    const fingerprint = fingerprintBuffersExact(
       merged.positions.buffer as ArrayBuffer,
       merged.mergedIndices.buffer as ArrayBuffer,
       merged.mergedTriMaterialId.buffer as ArrayBuffer,

@@ -1044,6 +1044,10 @@ Do not carry these as open gaps unless the code regresses again.
   importance-sampled HDRI path.
 - shared-bvh attenuation/thickness fingerprint omission: stale. Current
   world-space merge material signatures include those fields.
+- shared-bvh sampled fingerprint in the `SceneBvh` rebuild-skip path: stale after
+  the 2026-06-12 Wave 3 fix. `SceneBvh.updateFromCore()` now uses
+  `fingerprintBuffersExact()` for correctness-sensitive rebuild skips, while the
+  sampled helper remains available only for versioning/upload heuristics.
 - pt-webgl2 vertex color / secondary UV blanket gaps: stale after the
   2026-06-12 vertex-color wave. Current shader and attribute paths consume
   secondary UVs, and `COLOR_0` now threads from glTF/core primitives into

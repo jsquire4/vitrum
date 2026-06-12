@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   fingerprintBuffer,
+  fingerprintBufferExact,
   fingerprintBuffers,
+  fingerprintBuffersExact,
   isTlasOnlyVersionBump,
 } from '../bufferFingerprint.js';
 
@@ -20,6 +22,24 @@ describe('bufferFingerprint', () => {
     const combined = fingerprintBuffers(x.buffer, y.buffer);
     expect(combined).not.toBe(fingerprintBuffer(x.buffer));
     expect(combined).not.toBe(fingerprintBuffer(y.buffer));
+  });
+
+  it('exact fingerprint catches an unsampled interior byte in a large buffer', () => {
+    const a = new Uint8Array(1024 * 1024);
+    const b = new Uint8Array(1024 * 1024);
+    b[1] = 1;
+
+    expect(fingerprintBuffer(a.buffer)).toBe(fingerprintBuffer(b.buffer));
+    expect(fingerprintBufferExact(a.buffer)).not.toBe(fingerprintBufferExact(b.buffer));
+  });
+
+  it('fingerprintBuffersExact combines exact per-buffer fingerprints', () => {
+    const a = new Uint8Array(1024 * 1024);
+    const b = new Uint8Array(1024 * 1024);
+    b[1] = 1;
+
+    expect(fingerprintBuffers(a.buffer)).toBe(fingerprintBuffers(b.buffer));
+    expect(fingerprintBuffersExact(a.buffer)).not.toBe(fingerprintBuffersExact(b.buffer));
   });
 
   it('isTlasOnlyVersionBump detects transform-only TLAS bumps', () => {

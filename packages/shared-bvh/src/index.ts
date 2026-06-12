@@ -50,7 +50,9 @@ export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
 export * from './wgsl/bvhCastShadowMask.wgsl.js';
 export {
   fingerprintBuffer,
+  fingerprintBufferExact,
   fingerprintBuffers,
+  fingerprintBuffersExact,
   fingerprintTlasBuffers,
   isTlasOnlyVersionBump,
 } from './bufferFingerprint.js';

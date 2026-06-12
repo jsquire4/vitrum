@@ -35,6 +35,48 @@ function minimalScene(material: number | Partial<MaterialSpec> = 0.5): Scene {
   };
 }
 
+function f32FromBits(bits: number): number {
+  const raw = new Uint32Array([bits >>> 0]);
+  return new Float32Array(raw.buffer)[0] ?? 0;
+}
+
+function largeSceneWithUnsampledYByte(yValue: number = 0): Scene {
+  const triangleCount = 2731;
+  const vertexCount = triangleCount * 3;
+  const positions = new Float32Array(vertexCount * 3);
+  const normals = new Float32Array(vertexCount * 3);
+
+  for (let t = 0; t < triangleCount; t += 1) {
+    const v = t * 9;
+    positions[v] = 0; positions[v + 1] = 0; positions[v + 2] = t;
+    positions[v + 3] = 1; positions[v + 4] = 0; positions[v + 5] = t;
+    positions[v + 6] = 0; positions[v + 7] = 1; positions[v + 8] = t;
+
+    normals[v + 2] = 1;
+    normals[v + 5] = 1;
+    normals[v + 8] = 1;
+  }
+
+  // With positionStride:4, this lands in byte offset vertex*16+4. The chosen
+  // subnormal f32 has byte pattern 00 01 00 00, so only the odd byte changes.
+  // The old sampled fingerprint path (stride=2 for this buffer size) missed it.
+  positions[9 * 3 + 1] = yValue;
+
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'large-unsampled-byte',
+        positions,
+        normals,
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 /**
  * Instrumented subclass: counts how many times the expensive work (the merge)
  * was actually invoked by tracking `_lastCoreFingerprint` transitions.
@@ -107,6 +149,17 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
 
     bvh.updateFromCore(minimalScene(0.9));
     // Fingerprint differs → rebuild.
+    expect(bvh.buffers).not.toBe(first);
+  });
+
+  it('no tag → large unsampled-byte geometry edit triggers rebuild', () => {
+    const bvh = new SceneBvh({ onSlowRebuild: () => undefined });
+    bvh.updateFromCore(largeSceneWithUnsampledYByte(0));
+    const first = bvh.buffers;
+    expect(first).not.toBeNull();
+
+    bvh.updateFromCore(largeSceneWithUnsampledYByte(f32FromBits(0x00000100)));
+
     expect(bvh.buffers).not.toBe(first);
   });
 
