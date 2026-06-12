@@ -415,14 +415,12 @@ function dispatchRcAndSetInputs(
       deps.subsystems.rc.updateLights(ddgiLights);
     }
 
-    // A7 (2026-06-10): chromatic sun color from the scene directional emitter.
-    // The prior code packed [I, I, I] (scalar intensity → achromatic grey),
-    // losing the emitter's real RGB. Mirror DDGI's path (packDDGIProbeLights
-    // packs col.r/g/b from the scene directional, defaulting to warm-white
-    // (1, 0.95, 0.85) when absent). Extract from the core scene's first
-    // `directional` emitter when available; fall back to the scalar tint.
+    // A7/H24: chromatic sun from the scene directional emitter. Scene
+    // directional emitters are the physical source of truth for GI suns (same
+    // single-count convention as DDGI): use emitter color * emitter intensity.
+    // If no scene directional exists, keep the legacy host config fallback.
     const dirEmitter = scene?.emitters.find((e) => e.kind === 'directional');
-    const I = deps.lighting.primaryLightIntensity;
+    const I = dirEmitter?.intensity ?? deps.lighting.primaryLightIntensity;
     const sunColor: [number, number, number] = dirEmitter != null
       ? [
           dirEmitter.color[0] * I,

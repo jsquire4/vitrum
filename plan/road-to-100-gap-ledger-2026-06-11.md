@@ -1111,6 +1111,14 @@ Do not carry these as open gaps unless the code regresses again.
   square/2x ray-grid contract before allocation/dispatch, and
   `RCSubsystem.refitCascadeBounds()` invalidates dispatcher bindings when bounds
   change so merge uniforms rebuild with fresh cascade geometry.
+- walkaround denoiser `state()` has no consumers: stale. The active denoiser
+  state flows through `WalkaroundGPUPipeline.getActiveDenoiserState()` into
+  `FrameStats.denoiserState`; `frameStatsDenoiserState.test.ts` covers failed,
+  retryable, in-flight, fallback, and null states.
+- RC per-frame sun is monochrome: stale after the 2026-06-12 RC sun wave. The
+  frame orchestrator passes scene directional `color * intensity` into
+  `RCSubsystem.dispatchFrame()`, and falls back to grey
+  `primaryLightIntensity` only when no scene directional exists.
 - pt-webgl2 vertex color / secondary UV blanket gaps: stale after the
   2026-06-12 vertex-color wave. Current shader and attribute paths consume
   secondary UVs, and `COLOR_0` now threads from glTF/core primitives into

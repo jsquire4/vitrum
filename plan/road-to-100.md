@@ -565,7 +565,7 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 | `primitiveCastShadow` GI-side | DDGI, ReSTIR-GI, RC | approximate | Extend `bvhCastShadowMask` to GI rays (`shared-bvh`, `probeUpdateRays.wgsl.ts`, `risGi.wgsl.ts`) |
 | `updateLighting` sun | `HybridEngine.ts:1524+` | DDGI sun not re-synced (items_to_fix) | Call `_ddgi.setLights(orientDdgiSunLights(...))` on `updateLighting` |
 | `procedural-sky` | `resolveHybridEnvironment.ts` | Scalar approx | Either bake Preetham to probe rays or keep `approximate` + planner never recommends WA for procedural-sky assets |
-| RC sun RGB | `HybridEngineFrameOrchestrator.ts:363-368` | Monochrome (H24) | Pass color |
+| RC sun RGB | `HybridEngineFrameOrchestrator.ts`; `hybridEngineFrameOrchestrator.test.ts` | ✅ CODE CLOSED: RC uses the scene directional emitter's RGB × intensity when present, with the legacy grey `primaryLightIntensity` fallback only when no scene directional exists. | Keep regression test with RC enabled |
 
 #### 3C — Alpha & blending (glTF `alphaMode`)
 
@@ -627,6 +627,8 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 | H24 material resolver | `restir/bvhCore.ts`; `restir/__tests__/bvhCoreMaterialResolver.test.ts` | ✅ CODE CLOSED: duplicate mesh-like primitive ids now throw before TLAS packing can reuse the first material slot, and unknown resolver calls throw instead of falling back to material 0. |
 | H24 GPU skinning host-resource skip | `skin/GpuSkinningSubsystem.ts`; `gpuSkinningBindRouting.test.ts` | ✅ CODE CLOSED: missing GPU skinning position/normal buffers or mesh ranges now CPU-skin every skinned mesh instead of silently skipping. Count-only-cache risk is source-verified stale because cached bind groups key on live shared buffer identity. |
 | H24 NRC training diagnostics | `pipeline/WalkaroundGPUPipeline.ts`; `pipeline/__tests__/nrcTrainingDiagnostics.test.ts` | ✅ CODE CLOSED: `trainFromRecords()` rejections emit deduped non-fatal `EngineError`s through the engine error channel while live, and remain suppressed after dispose. |
+| H24 denoiser state consumers | `WalkaroundGPUPipeline.getActiveDenoiserState`; `HybridEngineFrameOrchestrator.ts`; `frameStatsDenoiserState.test.ts` | ✅ SOURCE-VERIFIED STALE: active denoiser state, including OIDN failed/retryable states, is emitted through `FrameStats.denoiserState`. |
+| H24 RC sun RGB | `HybridEngineFrameOrchestrator.ts`; `hybridEngineFrameOrchestrator.test.ts` | ✅ CODE CLOSED: RC sun dispatch now preserves scene directional chroma and intensity; scalar grey is only the no-scene-directional fallback. |
 | GRIS dead alloc H24 | `resourceManager.ts` | Gate on `regir.enabled` |
 | DDGI error swallow | `DDGI.ts:303-346` | ✅ CODE CLOSED: DDGI init/BVH/probe-frame failures now emit non-fatal `EngineError` diagnostics through `HybridEngine.onError`; failed probe frames do not advance the grid to `ready`. Focused tests pin direct DDGI reporting plus HybridEngine forwarding. |
 

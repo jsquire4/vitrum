@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import type { FrameInput, Scene } from '@vitrum/core';
 import {
   fingerprintHybridPipelineRebuildKey,
   HYBRID_FRAME_SKIP_OUTPUT,
   RESOLUTION_FACTOR_DEBOUNCE_MS,
+  runHybridEngineFrame,
   resolveInternalRenderSize,
+  type HybridEngineFrameDeps,
 } from '../HybridEngineFrameOrchestrator.js';
 
 describe('HybridEngineFrameOrchestrator', () => {
@@ -112,5 +115,174 @@ describe('resolveInternalRenderSize — §5.1 resolutionFactor wiring', () => {
     });
     expect(r.targetW).toBeGreaterThanOrEqual(1);
     expect(r.targetH).toBeGreaterThanOrEqual(1);
+  });
+});
+
+function identityMat4(): Float32Array {
+  const m = new Float32Array(16);
+  m[0] = 1;
+  m[5] = 1;
+  m[10] = 1;
+  m[15] = 1;
+  return m;
+}
+
+const FRAME_INPUT = {
+  viewMatrix: identityMat4(),
+  projMatrix: identityMat4(),
+  cameraPosition: [0, 0, 0],
+  frameSeed: 17,
+  swapChainView: {} as GPUTextureView,
+  swapChainFormat: 'bgra8unorm',
+} as unknown as FrameInput;
+
+function makeRcFrameDeps(args: {
+  scene: Scene | null;
+  primaryLightIntensity: number;
+  capture: { sunColor: readonly [number, number, number] | null };
+}): HybridEngineFrameDeps {
+  let lastTs = 0;
+  const pipeline = {
+    accumFrameIndex: 200,
+    temporalAccumAlpha: 0.01,
+    lastGpuTimings: {},
+    renderFrame: () => undefined,
+    setDDGIInputs: () => undefined,
+    setRCInputs: () => undefined,
+    getAuxBufferTextures: () => null,
+    getEmitterBufferAndCount: () => null,
+    getEnvBindings: () => null,
+  };
+  const ddgi = {
+    warmupFrame: 0,
+    warmupStride: 1,
+    ready: false,
+    syncRestirBvhBuffers: () => undefined,
+    updateFrame: () => Promise.resolve(),
+    setSkyParams: () => undefined,
+    setGlassMixScale: () => undefined,
+    getReadAtlasGPUTextures: () => null,
+    gridParams: {},
+  };
+  const rc = {
+    syncRestirBvhBuffers: () => undefined,
+    updateLights: () => undefined,
+    dispatchFrame: (inputs: { sunColor: readonly [number, number, number] }) => {
+      args.capture.sunColor = inputs.sunColor;
+    },
+    buildRCInputs: () => null,
+  };
+
+  return {
+    subsystems: {
+      pipeline: pipeline as unknown as HybridEngineFrameDeps['subsystems']['pipeline'],
+      bvhBuffers: {
+        totalEmissivePower: 1,
+        emitters: { count: 0 },
+        bvhMode: 'merged',
+      } as unknown as HybridEngineFrameDeps['subsystems']['bvhBuffers'],
+      ddgi: ddgi as unknown as HybridEngineFrameDeps['subsystems']['ddgi'],
+      rc: rc as unknown as HybridEngineFrameDeps['subsystems']['rc'],
+      skinning: null,
+      lastScene: args.scene,
+    },
+    lighting: {
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: args.primaryLightIntensity,
+      skyTint: [1, 1, 1],
+      skyIrradiance: 1,
+    },
+    filter: {
+      indirectFireflyClamp: [1, 1, 1],
+      atrousDirectSigmas: [128, 5, 0.05],
+      atrousIndirectSigmas: [32, 20, 0.5],
+      stainedGlassFlags: 0,
+      restirPtReuse: 0,
+      nrcEnabled: 0,
+    },
+    telemetry: {
+      frameSubs: [],
+      progressSubs: [],
+      verbose: false,
+      debugTimings: [],
+      debugSurface: { estimatedGpuMemoryBytes: () => undefined } as unknown as HybridEngineFrameDeps['telemetry']['debugSurface'],
+      dbg: null,
+      getDenoiserState: () => null,
+    },
+    dims: { width: 64, height: 64, internalWidth: 64, internalHeight: 64 },
+    control: {
+      targetFrameIntervalMs: null,
+      getLastFrameTs: () => lastTs,
+      setLastFrameTs: (t: number) => { lastTs = t; },
+      applyResolutionFactor: () => ({ width: 64, height: 64 }),
+      runSkinning: () => undefined,
+      presentLastFrame: () => undefined,
+    },
+    flags: {
+      state: 'ready',
+      debug: false,
+      ddgiOn: false,
+      isLayerEnabled: () => false,
+      device: {} as GPUDevice,
+      tunables: {
+        emitterDist2Floor: 0.01,
+        directFireflyClamp: 4,
+        causticBoost: 1,
+        causticVisClamp: 1,
+        temporalMClampDI: 20,
+        spatialReuseRadiusPx: 30,
+        spatialDepthTolFloor: 0.05,
+        restirGiWCap: 16,
+        restirGiIrrClamp: 5,
+        restirGiMClamp: 50,
+        restirGiSpatialRadiusPx: 12,
+        restirGiSpatialNormalDotMin: 0.9,
+        restirGiSpatialCoplanarTol: 0.05,
+        gtaoRadiusPx: 32,
+        gtaoIntensity: 2,
+        gtaoDepthThreshold: 2,
+        gtaoBilateralDepthSigma: 0.25,
+        adaptiveSamplingThresholdLow: 0.01,
+        adaptiveSamplingThresholdHigh: 0.1,
+        triIntersectEpsilon: 1e-5,
+        glassMixScale: 0.7,
+      },
+      rcWeight: 0.5,
+    },
+  };
+}
+
+describe('HybridEngineFrameOrchestrator — RC sun input', () => {
+  it('uses scene directional emitter RGB and intensity for RC sun color', () => {
+    const capture = { sunColor: null as readonly [number, number, number] | null };
+    const scene: Scene = {
+      primitives: [],
+      emitters: [{
+        kind: 'directional',
+        id: 'warm-blue-sun',
+        direction: [0, -1, 0],
+        color: [0.25, 0.5, 1],
+        intensity: 4,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene, primaryLightIntensity: 10, capture }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.sunColor).toEqual([1, 2, 4]);
+  });
+
+  it('keeps the legacy grey primaryLightIntensity fallback when no scene directional exists', () => {
+    const capture = { sunColor: null as readonly [number, number, number] | null };
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene: null, primaryLightIntensity: 3.5, capture }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.sunColor).toEqual([3.5, 3.5, 3.5]);
   });
 });
