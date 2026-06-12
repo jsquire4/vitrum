@@ -635,17 +635,21 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
   const oomErr = await device.popErrorScope();
   const valErr = await device.popErrorScope();
+  const gpuErrorMsg = [
+    ...(oomErr ? [`oom: ${oomErr.message}`] : []),
+    ...(valErr ? [`validation: ${valErr.message}`] : []),
+  ].join(" | ");
   if (oomErr) errCount++;
   if (valErr) errCount++;
   device.destroy();
 
-  if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg };
-  if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels" };
+  if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg, gpuErrorMsg };
+  if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels", gpuErrorMsg };
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
   const rawStatus = nans ? "NaN" : (errCount > 0 ? "GPU-ERROR" : (lum < LUM_THRESHOLD ? "BLACK" : "OK"));
-  return { label, rawStatus, lum, errCount, nans };
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -727,17 +731,21 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
 
   const oomErr = await device.popErrorScope();
   const valErr = await device.popErrorScope();
+  const gpuErrorMsg = [
+    ...(oomErr ? [`oom: ${oomErr.message}`] : []),
+    ...(valErr ? [`validation: ${valErr.message}`] : []),
+  ].join(" | ");
   if (oomErr) errCount++;
   if (valErr) errCount++;
   device.destroy();
 
-  if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg };
-  if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels" };
+  if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg, gpuErrorMsg };
+  if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels", gpuErrorMsg };
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
   const rawStatus = nans ? "NaN" : (errCount > 0 ? "GPU-ERROR" : (lum < LUM_THRESHOLD ? "BLACK" : "OK"));
-  return { label, rawStatus, lum, errCount, nans };
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg };
 }
 
 // ── Self-test config (injected when --self-test) ───────────────────────────────
@@ -770,6 +778,8 @@ for (const cfg of PT_CONFIGS) {
   const marker = pass ? "PASS" : "FAIL";
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
+    : r.gpuErrorMsg
+      ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detail}${note ? " | " + note : ""}`);
 }
@@ -783,6 +793,8 @@ for (const cfg of WH_CONFIGS) {
   const marker = pass ? "PASS" : "FAIL";
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
+    : r.gpuErrorMsg
+      ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detail}${note ? " | " + note : ""}`);
 }
