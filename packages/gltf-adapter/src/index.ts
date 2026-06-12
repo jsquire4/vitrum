@@ -7,7 +7,11 @@
 // RawImageHandle is exported so hosts can type-narrow in non-browser environments.
 
 export { gltfToScene } from './gltfToScene.js';
-export type { GltfToSceneOptions, GltfToSceneResult } from './gltfToScene.js';
+export type {
+  GltfMaterialVariantBinding,
+  GltfToSceneOptions,
+  GltfToSceneResult,
+} from './gltfToScene.js';
 export { loadGltfAndDecodeTextures, loadGltfAsset } from './assetLoader.js';
 export type {
   GltfAssetCache,
@@ -39,11 +43,13 @@ export { GltfSceneController, createGltfSceneController } from './sceneControlle
 export type {
   GltfAnimationApplyResult,
   GltfApplyAnimationOptions,
+  GltfApplyVariantOptions,
   GltfClipSelector,
   GltfPrimitivePatchRecord,
   GltfSceneControllerInput,
   GltfSceneControllerOptions,
   GltfScenePatchTarget,
+  GltfVariantApplyResult,
 } from './sceneController.js';
 export { loadGltfForEngine } from './engineBridge.js';
 export type {

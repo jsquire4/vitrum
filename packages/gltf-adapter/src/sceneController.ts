@@ -11,14 +11,16 @@ import {
   sampleAnimationClip,
   solveSkin,
   type AnimationClip,
+  type MaterialSpec,
   type Mat4,
   type SampledChannel,
   type Scene,
   type ScenePrimitive,
   type SkinnedMeshPrimitive,
 } from '@vitrum/core';
-import type { GltfJson, GltfNode } from './gltfTypes.js';
-import type { GltfToSceneResult } from './gltfToScene.js';
+import type { GltfJson, GltfNode, GltfPrimitive } from './gltfTypes.js';
+import type { GltfMaterialVariantBinding, GltfToSceneResult } from './gltfToScene.js';
+import { GLTF_DEFAULT_MATERIAL } from './materials.js';
 import {
   IDENTITY_MAT4,
   composeTrsMat4,
@@ -49,6 +51,11 @@ export interface GltfApplyAnimationOptions {
   readonly forceSetScene?: boolean;
 }
 
+export interface GltfApplyVariantOptions {
+  readonly engine?: GltfScenePatchTarget;
+  readonly forceSetScene?: boolean;
+}
+
 export interface GltfPrimitivePatchRecord {
   readonly id: string;
   readonly patch: Partial<ScenePrimitive>;
@@ -58,6 +65,15 @@ export interface GltfAnimationApplyResult {
   readonly clip: AnimationClip;
   readonly requestedTime: number;
   readonly localTime: number;
+  readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly scene: Scene;
+  readonly warnings: readonly string[];
+  readonly usedSetScene: boolean;
+}
+
+export interface GltfVariantApplyResult {
+  readonly requestedVariant: string | number | undefined;
+  readonly variantIndex?: number;
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
@@ -102,7 +118,9 @@ export class GltfSceneController {
   readonly #sceneIndex: number;
   readonly #baseLocals: readonly NodeLocalState[];
   readonly #nodeToPrimitiveIds: ReadonlyMap<number, readonly string[]>;
-  readonly #basePrimitiveById: ReadonlyMap<string, ScenePrimitive>;
+  readonly #basePrimitiveById: Map<string, ScenePrimitive>;
+  readonly #convertedMaterials: readonly MaterialSpec[];
+  readonly #materialVariantBindings: readonly GltfMaterialVariantBinding[];
   readonly #skinBindingsByPrimitiveId: ReadonlyMap<string, SkinBinding>;
   readonly #warnings: string[] = [];
   readonly #warnedMatrixOverrideNodes = new Set<number>();
@@ -116,6 +134,8 @@ export class GltfSceneController {
     this.#baseLocals = (input.gltf.nodes ?? []).map(baseLocalState);
     this.#nodeToPrimitiveIds = parseAnimationTargets(input.animationTargets);
     this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
+    this.#convertedMaterials = input.convertedMaterials ?? [];
+    this.#materialVariantBindings = input.materialVariantBindings ?? [];
     this.#skinBindingsByPrimitiveId = buildSkinBindings(input.gltf, this.#nodeToPrimitiveIds);
     this.#engine = options.engine;
     if (options.engine && (options.setSceneOnAttach ?? true)) {
@@ -240,6 +260,105 @@ export class GltfSceneController {
       clip,
       requestedTime: time,
       localTime,
+      primitivePatches,
+      scene: this.#scene,
+      warnings: frameWarnings,
+      usedSetScene,
+    };
+  }
+
+  setVariant(
+    selector: string | number | undefined = undefined,
+    options: GltfApplyVariantOptions = {},
+  ): GltfVariantApplyResult {
+    const frameWarnings: string[] = [];
+    const selectedVariantIndex = resolveMaterialVariantSelection(this.gltf, selector, frameWarnings);
+    const patchMap = new Map<string, Partial<ScenePrimitive>>();
+
+    if (this.#materialVariantBindings.length === 0) {
+      if ((this.gltf.extensions?.KHR_materials_variants?.variants?.length ?? 0) > 0) {
+        frameWarnings.push(
+          '[vitrum/gltf-adapter] GltfSceneController.setVariant: this controller input has no ' +
+            'materialVariantBindings metadata. Recreate it from gltfToScene() before switching variants.',
+        );
+      }
+    } else if (this.#convertedMaterials.length === 0 && (this.gltf.materials?.length ?? 0) > 0) {
+      frameWarnings.push(
+        '[vitrum/gltf-adapter] GltfSceneController.setVariant: this controller input has no ' +
+          'convertedMaterials metadata. Recreate it from gltfToScene() before switching variants.',
+      );
+    } else {
+      for (const binding of this.#materialVariantBindings) {
+        const mesh = this.gltf.meshes?.[binding.meshIndex];
+        const primitive = mesh?.primitives?.[binding.primitiveIndex];
+        if (!primitive) {
+          frameWarnings.push(
+            `[vitrum/gltf-adapter] GltfSceneController.setVariant: primitive provenance for ` +
+              `"${binding.primitiveId}" points at missing meshes[${binding.meshIndex}].primitives[` +
+              `${binding.primitiveIndex}]; patch skipped.`,
+          );
+          continue;
+        }
+        if (!findPrimitive(this.#scene, binding.primitiveId)) {
+          frameWarnings.push(
+            `[vitrum/gltf-adapter] GltfSceneController.setVariant: primitive "${binding.primitiveId}" ` +
+              'is no longer present in the controller scene; patch skipped.',
+          );
+          continue;
+        }
+
+        const materialIndex = resolvePrimitiveMaterialIndex(
+          this.gltf,
+          primitive,
+          binding.baseMaterialIndex,
+          selectedVariantIndex,
+          frameWarnings,
+          `${mesh?.name ?? binding.meshIndex}`,
+        );
+        const material = materialForIndex(this.#convertedMaterials, materialIndex, frameWarnings);
+        mergePrimitivePatch(patchMap, binding.primitiveId, { material } as Partial<ScenePrimitive>);
+      }
+    }
+
+    const primitivePatches = Array.from(patchMap, ([id, patch]) => ({ id, patch }));
+    const target = options.engine ?? this.#engine;
+    let nextScene = this.#scene;
+    for (const { id, patch } of primitivePatches) {
+      nextScene = patchPrimitiveInScene(nextScene, id, patch);
+    }
+
+    let usedSetScene = false;
+    if (target && primitivePatches.length > 0) {
+      if (!options.forceSetScene && target.updatePrimitive) {
+        try {
+          for (const { id, patch } of primitivePatches) {
+            target.updatePrimitive(id, patch);
+          }
+        } catch (err) {
+          const message = errorMessage(err);
+          frameWarnings.push(
+            `[vitrum/gltf-adapter] GltfSceneController.setVariant: ` +
+              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+          );
+          target.setScene(nextScene);
+          usedSetScene = true;
+        }
+      } else {
+        target.setScene(nextScene);
+        usedSetScene = true;
+      }
+    }
+
+    this.#scene = nextScene;
+    for (const { id, patch } of primitivePatches) {
+      const base = this.#basePrimitiveById.get(id);
+      if (base) this.#basePrimitiveById.set(id, { ...base, ...patch } as ScenePrimitive);
+    }
+    if (frameWarnings.length > 0) this.#warnings.push(...frameWarnings);
+
+    return {
+      requestedVariant: selector,
+      ...(selectedVariantIndex !== undefined ? { variantIndex: selectedVariantIndex } : {}),
       primitivePatches,
       scene: this.#scene,
       warnings: frameWarnings,
@@ -470,6 +589,68 @@ function parseAnimationNodeIndex(nodeId: string): number | undefined {
   const raw = nodeId.slice(NODE_ID_PREFIX.length);
   if (!/^\d+$/.test(raw)) return undefined;
   return Number(raw);
+}
+
+function resolveMaterialVariantSelection(
+  gltf: GltfJson,
+  selector: string | number | undefined,
+  warnings: string[],
+): number | undefined {
+  if (selector === undefined) return undefined;
+  const variants = gltf.extensions?.KHR_materials_variants?.variants ?? [];
+  if (typeof selector === 'number') {
+    if (Number.isInteger(selector) && selector >= 0 && selector < variants.length) return selector;
+    warnings.push(
+      `[vitrum/gltf-adapter] GltfSceneController.setVariant: materialVariant index ${selector} ` +
+        `was requested, but this asset declares ${variants.length} variant(s). Base materials are used.`,
+    );
+    return undefined;
+  }
+  const index = variants.findIndex((variant) => variant.name === selector);
+  if (index >= 0) return index;
+  warnings.push(
+    `[vitrum/gltf-adapter] GltfSceneController.setVariant: materialVariant "${selector}" was ` +
+      'requested, but no KHR_materials_variants entry with that name exists. Base materials are used.',
+  );
+  return undefined;
+}
+
+function resolvePrimitiveMaterialIndex(
+  gltf: GltfJson,
+  primitive: GltfPrimitive,
+  baseMaterialIndex: number | undefined,
+  selectedVariantIndex: number | undefined,
+  warnings: string[],
+  meshLabel: string,
+): number | undefined {
+  if (selectedVariantIndex === undefined) return baseMaterialIndex;
+  const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
+  const mapping = mappings.find((candidate) => candidate.variants.includes(selectedVariantIndex));
+  if (!mapping) return baseMaterialIndex;
+  if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
+    warnings.push(
+      `[vitrum/gltf-adapter] GltfSceneController.setVariant: mesh "${meshLabel}" ` +
+        `KHR_materials_variants mapping for variant ${selectedVariantIndex} references missing ` +
+        `material ${mapping.material}. Base material is used.`,
+    );
+    return baseMaterialIndex;
+  }
+  return mapping.material;
+}
+
+function materialForIndex(
+  materials: readonly MaterialSpec[],
+  materialIndex: number | undefined,
+  warnings: string[],
+): MaterialSpec {
+  if (materialIndex === undefined) return GLTF_DEFAULT_MATERIAL;
+  const material = materials[materialIndex];
+  if (material) return material;
+  warnings.push(
+    `[vitrum/gltf-adapter] GltfSceneController.setVariant: converted material ${materialIndex} ` +
+      'is missing. The glTF default material is used.',
+  );
+  return GLTF_DEFAULT_MATERIAL;
 }
 
 function normalizeClipTime(clip: AnimationClip, time: number, loop: boolean): number {

@@ -5,7 +5,14 @@ import {
   type GltfJson,
   type GltfScenePatchTarget,
 } from './index.js';
-import { asMat4, type AnimationClip, type MaterialSpec, type Scene, type SkinnedMeshPrimitive } from '@vitrum/core';
+import {
+  asMat4,
+  type AnimationClip,
+  type MaterialSpec,
+  type MeshPrimitive,
+  type Scene,
+  type SkinnedMeshPrimitive,
+} from '@vitrum/core';
 
 const MATERIAL: MaterialSpec = {
   baseColor: [1, 1, 1],
@@ -94,6 +101,48 @@ function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
         samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
         channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
       }],
+    },
+  };
+}
+
+function materialVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'blue' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        { name: 'variant blue', pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] } },
+      ],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
     },
   };
 }
@@ -215,6 +264,63 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
     expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
     expect(frame.warnings.some((w) => w.includes('geometry patch rejected'))).toBe(true);
+  });
+
+  it('switches KHR_materials_variants via material-only primitive patches', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+
+    const frame = controller.setVariant('blue', {
+      engine: { setScene, updatePrimitive },
+    });
+
+    expect(frame.variantIndex).toBe(0);
+    expect(frame.usedSetScene).toBe(false);
+    expect(frame.primitivePatches).toHaveLength(1);
+    expect(updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        material: expect.objectContaining({ baseColor: [0, 0, 1] }),
+      }),
+    );
+    expect(setScene).not.toHaveBeenCalled();
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+
+    controller.resetPose();
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+
+    const reset = controller.setVariant(undefined);
+    expect((reset.primitivePatches[0]!.patch as { material: MaterialSpec }).material.baseColor)
+      .toEqual([1, 0, 0]);
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+  });
+
+  it('falls back to setScene when a variant material patch is rejected', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn(() => {
+      throw new Error('material fast path unavailable');
+    });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.setVariant(0, {
+      engine: { setScene, updatePrimitive },
+    });
+
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(frame.usedSetScene).toBe(true);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    const scene = setScene.mock.calls[0]![0] as Scene;
+    expect((scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+    expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
+    expect(frame.warnings.some((w) => w.includes('material fast path unavailable'))).toBe(true);
   });
 
   it('samples morph-weight channels, solves the promoted skinned primitive, and patches deformed geometry', async () => {

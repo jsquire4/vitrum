@@ -403,7 +403,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 | Task | Code | Plug-in | Footgun |
 |------|------|---------|---------|
 | Multi-clip blend | `GltfSceneController.blend(clips, weights)` | Sample each clip, accumulate TRS/morph | Order matters: morph before `solveSkin` (same as static import) |
-| `KHR_materials_variants` at runtime | `controller.setVariant(name)` → re-run `convertMaterial` for affected primitives → `materialPatch` or `setScene` | Variant switch must invalidate material fast-path caches on walkaround |
+| ~~`KHR_materials_variants` at runtime~~ ✅ DONE | `GltfSceneController.setVariant(name/index/undefined)` uses importer-emitted `materialVariantBindings` + `convertedMaterials` to patch only affected primitive materials; `updatePrimitive` fast path falls back to `setScene(nextScene)` on rejection; `resetPose()` preserves the active material variant. Tests: `sceneController.test.ts` runtime switch + fallback; `gltfExtensionPolicy.test.ts` import-time selection still green. | Variant switch now invalidates material fast-path caches by issuing material patches through the same engine patch channel as animation updates. |
 | ~~Engine attach API~~ ✅ DONE | `controller.attachEngine(engine, { setScene })` exists and `loadGltfForEngine` attaches after load | Use `attachScene:false` / `setScene:false` when the host already set the scene |
 | ~~Patch routing per backend~~ ✅ DONE | `sceneController.ts` applies `patchPrimitiveInScene` first, tries `updatePrimitive`, and falls back to one `setScene(nextScene)` with a controller warning if an incremental patch throws; `sceneController.test.ts` pins the throw→fallback path. | — | Partial patch desync is closed for the glTF controller path |
 

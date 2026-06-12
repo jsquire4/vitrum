@@ -232,9 +232,27 @@ export interface GltfToSceneResult {
    * primitives (joints, empties, camera/light nodes) are absent.
    */
   readonly animationTargets: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
+   * Materials converted during import, indexed by the original glTF material
+   * index. `gltfToScene()` always provides this; it is optional on the public
+   * type so tests/hosts can still construct controller input manually.
+   */
+  readonly convertedMaterials?: ReadonlyArray<MaterialSpec>;
+  /**
+   * Primitive provenance needed by `GltfSceneController.setVariant()` to patch
+   * only primitives affected by KHR_materials_variants.
+   */
+  readonly materialVariantBindings?: ReadonlyArray<GltfMaterialVariantBinding>;
   /** Non-fatal issues encountered during conversion. Inspect these for skipped
    *  primitives, unsupported extensions, missing buffers, sparse patches, etc. */
   readonly warnings: string[];
+}
+
+export interface GltfMaterialVariantBinding {
+  readonly primitiveId: string;
+  readonly meshIndex: number;
+  readonly primitiveIndex: number;
+  readonly baseMaterialIndex?: number;
 }
 
 /**
@@ -377,6 +395,7 @@ export async function gltfToScene(
   // ── 8. Flatten node → mesh → primitives ───────────────────────────────────
   const primitives: ScenePrimitive[] = [];
   const animationTargets: Record<string, string[]> = {};
+  const materialVariantBindings: GltfMaterialVariantBinding[] = [];
   let primIdCounter = 0;
 
   const gltfNodes = gltf.nodes ?? [];
@@ -405,7 +424,7 @@ export async function gltfToScene(
     );
     const { bones, boneInverses } = skinData ?? {};
 
-    for (const prim of mesh.primitives) {
+    for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
       // Mode check — TRIANGLES (4, default), TRIANGLE_STRIP (5) and
       // TRIANGLE_FAN (6) are supported (strip/fan are triangulated into an
       // indexed triangle list below). Point/line modes are skipped: the core
@@ -604,6 +623,14 @@ export async function gltfToScene(
 
       const id = `gltf-prim-${primIdCounter++}`;
       (animationTargets[animationNodeId(nodeIdx)] ??= []).push(id);
+      if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) > 0) {
+        materialVariantBindings.push({
+          primitiveId: id,
+          meshIndex: node.mesh,
+          primitiveIndex,
+          ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
+        });
+      }
 
       // glTF §3.8: the skinned mesh node transform is the mesh bind matrix for
       // the imported rest pose. Preserve it so the core skin solver can return
@@ -720,7 +747,14 @@ export async function gltfToScene(
     environment: { kind: 'none' },
   };
 
-  return { scene, animations, animationTargets, warnings };
+  return {
+    scene,
+    animations,
+    animationTargets,
+    convertedMaterials: coreMaterials,
+    materialVariantBindings,
+    warnings,
+  };
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
