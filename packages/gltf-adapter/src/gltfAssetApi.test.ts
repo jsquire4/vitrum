@@ -490,7 +490,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
-      extensionsUsed: ['EXT_unknown_feature', 'KHR_texture_basisu'],
+      extensionsUsed: ['EXT_unknown_feature', 'KHR_draco_mesh_compression'],
       cameras: [{ type: 'perspective' }],
       meshes: [{
         primitives: [{
@@ -523,7 +523,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }),
       expect.objectContaining({
         category: 'extension',
-        name: 'KHR_texture_basisu',
+        name: 'KHR_draco_mesh_compression',
         support: 'requires-hook',
         path: 'extensionsUsed[1]',
       }),
@@ -660,6 +660,26 @@ describe('loadGltfForEngine', () => {
       createEngine,
     })).rejects.toThrow('primitive:mode:1=unsupported at meshes[0].primitives[0].mode');
     expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows reject-degraded to use an optional texture-source extension fallback without a hook', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.extensionsUsed = ['KHR_texture_basisu'];
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { KHR_texture_basisu: { source: 0 } },
+    };
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      createEngine: async () => ({ setScene: vi.fn() }),
+    })).resolves.toMatchObject({
+      backend: 'pt-webgl2',
+      attached: true,
+    });
   });
 
   it('does not treat an explicitly enabled texture-source extension as a missing host hook', async () => {

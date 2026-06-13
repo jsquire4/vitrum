@@ -297,7 +297,31 @@ describe('glTF common extension policy', () => {
 
     expect(seen).toEqual([fallbackBytes, extensionBytes]);
     const report = analyzeGltfAsset(gltf);
+    expect(report.extensions.supported).toContain('EXT_texture_webp');
+    expect(report.extensions.requiresHook).not.toContain('EXT_texture_webp');
+    expect(report.extensions.unsupportedOptional).not.toContain('EXT_texture_webp');
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).not.toContainEqual(expect.objectContaining({
+      category: 'extension',
+      name: 'EXT_texture_webp',
+    }));
+  });
+
+  it('requires a hook for an optional texture-source extension when no base source fallback exists', () => {
+    const { gltf } = textureSourceGltf('EXT_texture_webp');
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    delete gltf.textures![0]!.source;
+
+    const report = analyzeGltfAsset(gltf);
     expect(report.extensions.requiresHook).toContain('EXT_texture_webp');
     expect(report.extensions.unsupportedOptional).not.toContain('EXT_texture_webp');
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'extension',
+      name: 'EXT_texture_webp',
+      support: 'requires-hook',
+      path: 'textures[0].extensions.EXT_texture_webp',
+    }));
   });
 });

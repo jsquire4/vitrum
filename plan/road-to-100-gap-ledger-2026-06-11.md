@@ -166,15 +166,17 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   solve morph weights through `solveSkin()`, and dispatch primitive patches via
   `updatePrimitive()` with `setScene()` fallback. The controller fixtures cover
   ancestor-node animation, mutation fallback, morph-weight playback, and skeletal
-  joint playback. The glTF adapter suite is now 126 tests.
+  joint playback. The glTF adapter suite is now 163 tests.
 - The third arbitrary-glTF extension-policy slice landed in `@vitrum/gltf-adapter`:
   `KHR_materials_dispersion` now imports to `MaterialSpec.dispersionAbbeNumber`
   (`dispersion = 20 / Abbe`), texture-source extensions
   (`KHR_texture_basisu`, `EXT_texture_webp`, `MSFT_texture_dds`) are opt-in via
   `textureSourceExtensions` and route alternate image sources through the host
-  image decoder, required texture-source extensions fail deterministically unless
-  enabled, and `KHR_materials_variants` now selects primitive material mappings
-  by variant name or index.
+  image decoder, required/no-base-fallback texture-source extensions fail
+  deterministically unless enabled, optional alternates with a base
+  `texture.source` fallback do not create degraded-compatibility issues, and
+  `KHR_materials_variants` now selects primitive material mappings by variant
+  name or index.
 - The fourth arbitrary-glTF material-mapping slice landed in
   `@vitrum/gltf-adapter`: `gltfTextureSweep.test.ts` now pins every imported
   base/KHR material texture map through `TextureRef.handle`,
@@ -213,7 +215,8 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   unsupported issues instead of passive inventory counts, while
   `loadGltfForEngine(..., compatibilityMode: 'reject-degraded')` discounts
   host hooks that were actually supplied for Draco, meshopt, and texture-source
-  extensions.
+  extensions, plus optional texture-source alternates that have a deterministic
+  base `texture.source` fallback.
 - The sixth arbitrary-glTF extension-policy slice landed in
   `@vitrum/gltf-adapter`: archived
   `KHR_materials_pbrSpecularGlossiness` scalar `diffuseFactor`,
@@ -960,7 +963,10 @@ Evidence:
   opt-in texture-source extensions.
 - `KHR_materials_dispersion` now maps to the core dispersion field.
 - `KHR_texture_basisu`, `EXT_texture_webp`, and `MSFT_texture_dds` are
-  represented as host-decode-required alternate texture-source paths.
+  represented as host-decode-required alternate texture-source paths when the
+  extension is required, selected, or the texture has no base `texture.source`
+  fallback. Optional alternates with a base fallback remain compatibility-clean
+  until the host opts in.
 - `KHR_materials_variants` now supports a `materialVariant` selection option and
   falls back to base materials when no active variant is selected.
 - `KHR_materials_unlit` now maps to the core `MaterialSpec.shadingModel`

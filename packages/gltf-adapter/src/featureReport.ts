@@ -156,6 +156,12 @@ const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
   'MSFT_texture_dds',
 ]);
 
+const TEXTURE_SOURCE_EXTENSIONS = new Set([
+  'KHR_texture_basisu',
+  'EXT_texture_webp',
+  'MSFT_texture_dds',
+]);
+
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const UNSUPPORTED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
@@ -190,6 +196,14 @@ function firstSourcePath(
   fallback: string,
 ): string {
   return paths[key]?.[0] ?? fallback;
+}
+
+function requiresHookIssuePath(report: GltfFeatureReport, ext: string): string {
+  const fallback = firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsUsed');
+  if (report.extensions.required.includes(ext) || !TEXTURE_SOURCE_EXTENSIONS.has(ext)) return fallback;
+  return report.extensions.sourcePaths[ext]?.find((path) =>
+    path.startsWith('textures[') && path.endsWith(`extensions.${ext}`),
+  ) ?? fallback;
 }
 
 export function analyzeGltfAsset(gltf: GltfJson): GltfFeatureReport {
@@ -255,7 +269,7 @@ export function evaluateGltfBackendCompatibility(
       category: 'extension',
       name: ext,
       support: 'requires-hook',
-      path: firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsUsed'),
+      path: requiresHookIssuePath(report, ext),
       message: `glTF extension "${ext}" requires host-supplied decode support.`,
     });
   }
@@ -440,7 +454,7 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
   const unsupportedRequired: string[] = [];
 
   for (const ext of sorted(all)) {
-    if (EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) requiresHook.push(ext);
+    if (extensionRequiresHostHook(gltf, ext, required)) requiresHook.push(ext);
     if (REQUIRED_EXTENSION_SUPPORT.has(ext)) {
       supported.push(ext);
       continue;
@@ -460,6 +474,30 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
     unsupportedRequired: sorted(unsupportedRequired),
     sourcePaths: sourcePathRecord(sourcePaths),
   };
+}
+
+function extensionRequiresHostHook(
+  gltf: GltfJson,
+  ext: string,
+  required: readonly string[],
+): boolean {
+  if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
+  if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
+
+  // Required texture-source extensions cannot be safely ignored. Optional
+  // texture-source extensions only need a host hook when they are the sole
+  // available image source for at least one texture; otherwise the loader uses
+  // the base `texture.source` fallback until the host opts into the extension.
+  if (required.includes(ext)) return true;
+  return (gltf.textures ?? []).some((texture) =>
+    texture.source === undefined &&
+    textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
+  );
+}
+
+function textureSourceExtensionHasImageSource(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  return typeof (value as { readonly source?: unknown }).source === 'number';
 }
 
 function analyzeResources(gltf: GltfJson): GltfResourceFeatureReport {
