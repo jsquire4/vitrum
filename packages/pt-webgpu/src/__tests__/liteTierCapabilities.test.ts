@@ -115,6 +115,16 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.primitives['instanced-mesh']).toBe('unsupported');
     expect(sd.mutations.transform).toBe('unsupported');
     expect(sd.mutations.topology).toBe('unsupported');
+    expect(sd.materials.baseColor).toBe('native');
+    expect(sd.materials.clearcoat).toBe('native');
+    expect(sd.materials.baseColorMap).toBe('unsupported');
+    expect(sd.materials.normalMap).toBe('unsupported');
+    expect(sd.materials.normalScale).toBe('unsupported');
+    expect(sd.materials.alphaMode).toBe('unsupported');
+    expect(sd.materials.opacity).toBe('unsupported');
+    expect(sd.materials.envMapIntensity).toBe('unsupported');
+    expect(sd.materials.anisotropy).toBe('unsupported');
+    expect(sd.materials.anisotropyRotation).toBe('unsupported');
     expect(sd.materials.displacementMap).toBe('unsupported');
     expect(sd.materials.displacementScale).toBe('unsupported');
     expect(sd.materials.displacementBias).toBe('unsupported');
@@ -400,6 +410,63 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  it('lite tier: setScene warns when full-tier material texture and alpha fields are supplied', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.8, 0.2, 0.1],
+            roughness: 0.3,
+            metallic: 0,
+            baseColorMap: { handle: { id: 'albedo' } },
+            normalMap: { handle: { id: 'normal' } },
+            normalScale: 0.5,
+            alphaMode: 'blend',
+            opacity: 0.5,
+            envMapIntensity: 0.25,
+            anisotropy: 0.5,
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.unsupported-material-fields',
+        details: expect.objectContaining({
+          fields: expect.arrayContaining([
+            'baseColorMap',
+            'normalMap',
+            'normalScale',
+            'alphaMode',
+            'opacity',
+            'envMapIntensity',
+            'anisotropy',
+          ]),
+        }),
+      }),
+    ]));
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('setScene does NOT emit unsupported-material-fields for a fully supported material (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
@@ -415,7 +482,13 @@ describe('H12: lite-tier capabilities truth', () => {
           id: 'm',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0, anisotropy: 0.5 },
+          material: {
+            baseColor: [0.8, 0.2, 0.1],
+            roughness: 0.3,
+            metallic: 0,
+            clearcoat: 0.25,
+            specularIntensity: 0.5,
+          },
         },
       ],
       emitters: [],

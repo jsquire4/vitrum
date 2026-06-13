@@ -519,7 +519,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | Task | File | Behavior |
 |------|------|----------|
 | ~~`loadGltfWithEngine` rejects lite for `reject-degraded`~~ ✅ DONE (2026-06-13) | `packages/engine/src/gltf.ts`, `gltfStrictPtWebgpuTier.test.ts` | The `@vitrum/engine/gltf` one-call wrapper probes the adapter profile before construction and rejects strict pt-webgpu loads unless the selected tier is `full`. The generic `@vitrum/gltf-adapter` bridge remains engine-agnostic and cannot inspect `createEngine()`'s runtime tier. |
-| `rankGltfBackends` lite row | `featureReport.ts` | Score lite separately or mark `pt-webgpu-lite` pseudo-backend |
+| ~~`rankGltfBackends` lite row~~ ✅ DONE (2026-06-13) | `packages/gltf-adapter/src/featureReport.ts`, `packages/pt-webgpu/src/index.ts` | `rankGltfBackends()` now emits separate `pt-webgpu` full and `pt-webgpu-lite` profile rows (`profileId`, `traceTier`) while preserving `.backend: 'pt-webgpu'` for existing callers. Lite profile scores full-tier-only material texture/alpha/env/aniso fields as unsupported; runtime lite `supportDetails.materials` and structured `setScene()` warnings now match the shader's no-group-3 material path. Tests: `gltfAssetApi.test.ts`, `liteTierCapabilities.test.ts`. |
 | ~~PTWG-07 verify~~ ✅ DONE (source-verified 2026-06-13) | `sceneMutationRouter.ts`, lite texture refresh tests | Emitter/env mutation refreshes `liteLightTex` / `liteEnvTex`; remaining lite work is ranking/policy, not stale sampled textures. |
 
 **Footgun:** `connectLite.wgsl.ts` `bsdfAreaLightConnectionContribution` returns zero **by design** — lite uses one-sided area NEE (`kernelLite.wgsl.ts` after PTWG-LITE-01 fix). Don't "implement stub" without fixing estimator.

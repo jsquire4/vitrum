@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeGltfAsset,
   evaluateGltfBackendCompatibility,
+  evaluateGltfBackendProfileCompatibility,
   GltfFetchFailed,
   GltfResourceNotFound,
   loadGltfAndDecodeTextures,
@@ -403,11 +404,71 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const walkaround = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
 
     expect(ranked[0]!.backend).toBe('pt-webgl2');
+    expect(ranked.map((entry) => entry.profileId)).toEqual([
+      'pt-webgl2',
+      'pt-webgpu',
+      'pt-webgpu-lite',
+      'walkaround-hybrid',
+    ]);
     expect(walkaround.issues.some((issue) =>
       issue.category === 'material' &&
       issue.name === 'baseColorMap' &&
       issue.support === 'unsupported',
     )).toBe(true);
+  });
+
+  it('scores pt-webgpu full and lite as distinct planner profiles', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      ...gltf.materials![0]!,
+      alphaMode: 'BLEND',
+      normalTexture: { index: 0, scale: 0.5 },
+    };
+    const report = analyzeGltfAsset(gltf);
+    const full = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
+    const lite = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu-lite');
+
+    expect(full.profileId).toBe('pt-webgpu');
+    expect(full.traceTier).toBe('full');
+    expect(lite.backend).toBe('pt-webgpu');
+    expect(lite.profileId).toBe('pt-webgpu-lite');
+    expect(lite.traceTier).toBe('lite');
+    expect(full.issues.some((issue) =>
+      issue.category === 'material' &&
+      issue.name === 'baseColorMap' &&
+      issue.support === 'unsupported',
+    )).toBe(false);
+    expect(lite.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap',
+        support: 'unsupported',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'normalMap',
+        support: 'unsupported',
+        path: 'materials[0].normalTexture',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'alphaMode',
+        support: 'unsupported',
+        path: 'materials[0].alphaMode',
+      }),
+    ]));
+    expect(lite.unsupportedCount).toBeGreaterThan(full.unsupportedCount);
+  });
+
+  it('keeps the full pt-webgpu profile ahead of lite for scalar-only assets', () => {
+    const report = analyzeGltfAsset(makeInlineTriangleGltf().gltf);
+    const ranked = rankGltfBackends(report, 'realtime');
+    const webgpuRows = ranked.filter((entry) => entry.backend === 'pt-webgpu');
+
+    expect(webgpuRows.map((entry) => entry.profileId)).toEqual(['pt-webgpu', 'pt-webgpu-lite']);
+    expect(webgpuRows[0]!.unsupportedCount).toBe(0);
+    expect(webgpuRows[1]!.unsupportedCount).toBe(0);
   });
 
   it('reports morph tangent deltas as an unsupported primitive compatibility issue', () => {

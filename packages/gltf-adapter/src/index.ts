@@ -65,13 +65,16 @@ export type {
 export {
   analyzeGltfAsset,
   evaluateGltfBackendCompatibility,
+  evaluateGltfBackendProfileCompatibility,
   rankGltfBackends,
   recommendGltfBackend,
 } from './featureReport.js';
 export type {
   GltfAnimationFeatureReport,
   GltfBackendCompatibility,
+  GltfBackendProfileId,
   GltfBackendPolicy,
+  GltfBackendTraceTier,
   GltfCompatibilityIssue,
   GltfExtensionReport,
   GltfFeatureReport,

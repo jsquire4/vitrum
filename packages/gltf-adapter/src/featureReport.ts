@@ -115,6 +115,13 @@ export interface GltfCompatibilityIssue {
 
 export interface GltfBackendCompatibility {
   readonly backend: BackendId;
+  /**
+   * Concrete planner profile. Most rows are one-to-one with `backend`; pt-webgpu
+   * has both a full profile and a constrained lite profile selected at engine
+   * creation from adapter limits.
+   */
+  readonly profileId: GltfBackendProfileId;
+  readonly traceTier?: GltfBackendTraceTier;
   readonly unsupportedCount: number;
   readonly approximateCount: number;
   readonly nativeCount: number;
@@ -123,6 +130,8 @@ export interface GltfBackendCompatibility {
   readonly isCompatible: boolean;
 }
 
+export type GltfBackendProfileId = BackendId | 'pt-webgpu-lite';
+export type GltfBackendTraceTier = 'full' | 'lite';
 export type GltfBackendPolicy = 'fidelity' | 'realtime' | 'strict' | 'best-effort';
 
 const REQUIRED_EXTENSION_SUPPORT = new Set([
@@ -169,6 +178,74 @@ const VERTEX_COLOR_SUPPORT: Readonly<Record<BackendId, BackendSupportMode>> = Ob
   'pt-webgl2': 'native',
   'pt-webgpu': 'unsupported',
   'walkaround-hybrid': 'unsupported',
+});
+
+const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = [
+  // Lite composes no full-tier group-3 material texture bindings; every
+  // texture-backed MaterialSpec field is therefore unsupported on that profile.
+  'baseColorMap',
+  'normalMap',
+  'normalScale',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'aoMapIntensity',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatNormalScale',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'bumpScale',
+  'lightMap',
+  'lightMapIntensity',
+  // Lite also omits the full-tier alpha-test and per-material env/aniso paths.
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'envMapIntensity',
+  'anisotropy',
+  'anisotropyRotation',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+interface GltfBackendProfile {
+  readonly id: GltfBackendProfileId;
+  readonly backend: BackendId;
+  readonly traceTier?: GltfBackendTraceTier;
+  readonly materialOverrides?: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
+}
+
+const PT_WEBGPU_LITE_MATERIAL_OVERRIDES: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>> =
+  Object.freeze(Object.fromEntries(
+    PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS.map((field) => [field, 'unsupported' as const]),
+  ));
+
+const BACKEND_PROFILES: Readonly<Record<GltfBackendProfileId, GltfBackendProfile>> = Object.freeze({
+  'pt-webgl2': Object.freeze({ id: 'pt-webgl2', backend: 'pt-webgl2' }),
+  'pt-webgpu': Object.freeze({
+    id: 'pt-webgpu',
+    backend: 'pt-webgpu',
+    traceTier: 'full',
+  }),
+  'pt-webgpu-lite': Object.freeze({
+    id: 'pt-webgpu-lite',
+    backend: 'pt-webgpu',
+    traceTier: 'lite',
+    materialOverrides: PT_WEBGPU_LITE_MATERIAL_OVERRIDES,
+  }),
+  'walkaround-hybrid': Object.freeze({
+    id: 'walkaround-hybrid',
+    backend: 'walkaround-hybrid',
+  }),
 });
 
 type SourcePathMap = Map<string, string[]>;
@@ -236,6 +313,15 @@ export function evaluateGltfBackendCompatibility(
   report: GltfFeatureReport,
   backend: BackendId,
 ): GltfBackendCompatibility {
+  return evaluateGltfBackendProfileCompatibility(report, backend);
+}
+
+export function evaluateGltfBackendProfileCompatibility(
+  report: GltfFeatureReport,
+  profileId: GltfBackendProfileId,
+): GltfBackendCompatibility {
+  const profile = BACKEND_PROFILES[profileId];
+  const { backend } = profile;
   const ledger = BACKEND_PROMISE_LEDGER[backend];
   const issues: GltfCompatibilityIssue[] = [];
   let unsupportedCount = 0;
@@ -383,7 +469,7 @@ export function evaluateGltfBackendCompatibility(
   }
 
   for (const field of report.materials.materialFields) {
-    const support = ledger.supportDetails.materials[field] ?? 'unknown';
+    const support = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
     if (support === 'native') {
       nativeCount += 1;
     } else {
@@ -392,13 +478,15 @@ export function evaluateGltfBackendCompatibility(
         name: String(field),
         support,
         path: firstSourcePath(report.materials.issuePaths, `field:${String(field)}`, 'materials'),
-        message: `Backend ${backend} reports material field "${String(field)}" as ${support}.`,
+        message: `Backend profile ${profile.id} reports material field "${String(field)}" as ${support}.`,
       });
     }
   }
 
   return {
     backend,
+    profileId: profile.id,
+    ...(profile.traceTier !== undefined ? { traceTier: profile.traceTier } : {}),
     unsupportedCount,
     approximateCount,
     nativeCount,
@@ -412,12 +500,12 @@ export function rankGltfBackends(
   report: GltfFeatureReport,
   policy: GltfBackendPolicy = 'fidelity',
 ): readonly GltfBackendCompatibility[] {
-  const preferred: readonly BackendId[] = policy === 'realtime'
-    ? ['walkaround-hybrid', 'pt-webgpu', 'pt-webgl2']
-    : ['pt-webgl2', 'pt-webgpu', 'walkaround-hybrid'];
+  const preferred: readonly GltfBackendProfileId[] = policy === 'realtime'
+    ? ['walkaround-hybrid', 'pt-webgpu', 'pt-webgpu-lite', 'pt-webgl2']
+    : ['pt-webgl2', 'pt-webgpu', 'pt-webgpu-lite', 'walkaround-hybrid'];
   const order = new Map(preferred.map((b, i) => [b, i]));
   return preferred
-    .map((backend) => evaluateGltfBackendCompatibility(report, backend))
+    .map((profileId) => evaluateGltfBackendProfileCompatibility(report, profileId))
     .sort((a, b) => {
       if (policy === 'strict') {
         const aBad = a.unsupportedCount + a.approximateCount + a.requiresHookCount;
@@ -428,7 +516,7 @@ export function rankGltfBackends(
         if (a.requiresHookCount !== b.requiresHookCount) return a.requiresHookCount - b.requiresHookCount;
         if (a.approximateCount !== b.approximateCount) return a.approximateCount - b.approximateCount;
       }
-      return (order.get(a.backend) ?? 99) - (order.get(b.backend) ?? 99);
+      return (order.get(a.profileId) ?? 99) - (order.get(b.profileId) ?? 99);
     });
 }
 

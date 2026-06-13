@@ -1,5 +1,6 @@
 import type {
   BackendTexture,
+  BackendSupportMode,
   CapturedFrame,
   CaptureFrameOptions,
   Engine,
@@ -150,12 +151,70 @@ const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SP
     field !== 'extensions',
 );
 
-function collectUnsupportedMaterialFields(scene: Scene): string[] {
+const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = [
+  // The lite trace shader composes no full-tier group-3 material texture
+  // bindings. These fields are therefore unrendered on lite even when the full
+  // pt-webgpu tier supports them.
+  'baseColorMap',
+  'normalMap',
+  'normalScale',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'aoMapIntensity',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatNormalScale',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'bumpScale',
+  'lightMap',
+  'lightMapIntensity',
+  // Lite also omits the full-tier alpha-test, per-material environment scale,
+  // and anisotropic-BSDF routes.
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'envMapIntensity',
+  'anisotropy',
+  'anisotropyRotation',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze([
+  ...new Set([
+    ...UNSUPPORTED_MATERIAL_FIELDS,
+    ...PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS,
+  ]),
+]);
+
+const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
+  ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
+  ...Object.fromEntries(
+    PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS.map((field) =>
+      [field, 'unsupported' as BackendSupportMode],
+    ),
+  ),
+});
+
+function collectUnsupportedMaterialFields(scene: Scene, traceTier: PtWebgpuTraceTier): string[] {
+  const unsupportedFields = traceTier === 'lite'
+    ? PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS
+    : UNSUPPORTED_MATERIAL_FIELDS;
   const fields = new Set<string>();
   for (const primitive of scene.primitives) {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
-    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
+    for (const field of unsupportedFields) {
       if (material[field] != null) fields.add(field);
     }
   }
@@ -698,7 +757,7 @@ class PTEngineWebGPU implements Engine {
                 cylinder: 'unsupported',
                 'h-channel-came': 'unsupported',
               },
-              materials: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
+              materials: PT_WEBGPU_LITE_MATERIALS,
               // SHADOW-01 — same rows as the full tier: primitive castShadow is
               // enforced in the SHARED traceMeshBvh any-hit path; the lite NEE
               // loops gate point/spot/rect emitter flags (directional rides the
@@ -1151,7 +1210,7 @@ class PTEngineWebGPU implements Engine {
     // driven: every 'unsupported' row in the ledger's pt-webgpu material support
     // matrix except displacement, which has its own warning above). Once per
     // setScene/repack, mirroring the displacement warning.
-    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene);
+    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene, this.#traceTier);
     if (unsupportedMaterialFields.length > 0) {
       this.#warn({
         code: 'pt-webgpu.unsupported-material-fields',

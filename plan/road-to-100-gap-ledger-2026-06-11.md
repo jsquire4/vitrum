@@ -67,8 +67,11 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
 - PTWG-06 pt-webgpu lite capabilities are now tier-specific: lite no longer
   advertises native instanced-mesh support or transform/topology incremental
   mutation support, `setScene()` warns for instanced/non-identity-transform
-  inputs, and lite transform/instanced-topology patches throw before mutating
-  TLAS-only buffers.
+  inputs, lite transform/instanced-topology patches throw before mutating
+  TLAS-only buffers, and lite material support no longer inherits the full-tier
+  group-3 texture/alpha/env/aniso rows. `supportDetails.materials` plus
+  `pt-webgpu.unsupported-material-fields` now report the material maps and
+  scalar fields that the lite shader cannot render.
 - PTWG-07 pt-webgpu lite sampled light/environment textures refresh after
   emitter/environment mutations.
 - ENGINE-01 structured nonfatal warning channel is now part of the core engine
@@ -976,10 +979,12 @@ Closure:
   `reject-degraded` guard that refuses `pt-webgpu` when `probeAdapterProfile()`
   reports a non-full trace tier. This closes the one-call strict-mode lite
   downgrade path.
-- Remaining: if glTF planning should distinguish full and lite before engine
-  construction, add a `pt-webgpu-lite` pseudo-row (or equivalent tier metadata)
-  to `rankGltfBackends()`. The current generic adapter remains backend-id
-  based and intentionally engine-agnostic.
+- The generic adapter now distinguishes pt-webgpu full and lite before engine
+  construction: compatibility rows carry `profileId` and `traceTier`, and
+  `rankGltfBackends()` emits both `pt-webgpu` and `pt-webgpu-lite` rows while
+  preserving `.backend: 'pt-webgpu'` for existing engine selection. The lite
+  row downgrades full-tier-only material texture/alpha/env/aniso fields to
+  unsupported, matching runtime lite capabilities and warnings.
 
 ### GLTF-API-04 - animation playback/update orchestration
 

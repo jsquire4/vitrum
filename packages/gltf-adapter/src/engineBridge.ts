@@ -146,7 +146,9 @@ function enforceCompatibility<
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
 ): void {
   if (mode === 'best-effort') return;
-  const selected = asset.backendCompatibility.find((entry) => entry.backend === backend);
+  const selected = asset.backendCompatibility.find((entry) =>
+    entry.backend === backend && entry.profileId === backend,
+  ) ?? asset.backendCompatibility.find((entry) => entry.backend === backend);
   if (!selected) {
     throw new Error(`[vitrum/gltf-adapter] No compatibility entry found for backend "${backend}".`);
   }
