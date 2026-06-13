@@ -226,8 +226,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: KHR_materials_specular scalar factors now flow
     // through full-tier MNEE/SPPM receiver BRDF/PDF paths instead of defaulting
     // those caustic receivers to dielectric F0.
-    expect(digest).toBe('d223aad0f271d646c349875de7654bd6e40101d8a07f4fd2805a0c723ac7d4e0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(335315);
+    // Re-pinned 2026-06-12: full-tier material texture descriptors now append
+    // extension-lobe maps (clearcoat/sheen/iridescence/specular) and the prologue
+    // modulates decoded lobe parameters before downstream BSDF/PDF calls.
+    expect(digest).toBe('d8e7cf3417a57e3bed78426607346cacf2154de983e89bdf7e13063437f7b7ee');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(341394);
   });
 });
 

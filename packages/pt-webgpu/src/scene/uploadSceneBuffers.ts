@@ -44,11 +44,13 @@ interface PackedSceneData {
   /** Per-material texture descriptor floats (MATERIAL_TEX_FLOAT_STRIDE each):
    *  texture indices + alpha-mode + KHR UV transform. Indexed by matId. */
   readonly materialTexDescriptors: Float32Array;
-  /** Dedup'd, upload-ordered sRGB texture handles (baseColor + emissive; layer
-   *  i = sources[i]); the GPU upload turns these into a texture_2d_array. */
+  /** Dedup'd, upload-ordered sRGB texture handles (baseColor, emissive, and
+   *  extension color-tint maps; layer i = sources[i]); the GPU upload turns
+   *  these into a texture_2d_array. */
   readonly materialTextureSources: readonly unknown[];
-  /** Dedup'd, upload-ordered LINEAR texture handles (normal + ORM) → a second
-   *  texture_2d_array sampled without sRGB decode. */
+  /** Dedup'd, upload-ordered LINEAR texture handles (normal, ORM, scalar maps,
+   *  height/coverage/radiance data) → a second texture_2d_array sampled without
+   *  sRGB decode. */
   readonly materialTextureLinearSources: readonly unknown[];
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`

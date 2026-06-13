@@ -34,14 +34,16 @@ export function composeShadePrologueWgsl(
   lightMapApply = '',
   bumpMapApply = '',
   transmissionMapApply = '',
+  extensionLobeTexApply = '',
 ): string {
+  const materialDecl = extensionLobeTexApply === '' ? 'let' : 'var';
   return /* wgsl */ `    let matId = hitMaterialId(hit);
-    let mat = decodeMaterial(matId);
+    ${materialDecl} mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}${aoApply}
     var roughness = mat.roughness;
     var emissive = mat.emissive;${emissiveTexApply}${lightMapApply}
     var metallic = mat.metallic;${ormTexApply}
-    var transmission = mat.transmission;${transmissionMapApply}
+    var transmission = mat.transmission;${transmissionMapApply}${extensionLobeTexApply}
     var ior = mat.ior;
     if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
       ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
@@ -237,3 +239,22 @@ export const SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL =
  *  so scalar-only transmission stays byte-identical. */
 export const SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL =
   `\n    transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);`;
+
+/** Extension-lobe texture maps: full-tier only. These mutate the decoded material
+ *  local so every existing downstream BSDF/PDF/NEE call observes the same lobe
+ *  parameters without duplicating call-site arguments. */
+export const SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL =
+  `\n    mat.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);` +
+  `\n    mat.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);` +
+  `\n    mat.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));` +
+  `\n    mat.sheenRoughness = clamp(mat.sheenRoughness * sampleSheenRoughnessTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);` +
+  `\n    mat.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);` +
+  `\n    let iridescenceThicknessSample = sampleIridescenceThicknessTexture(matId, hit.triIndex, hit.baryVW);` +
+  `\n    if (iridescenceThicknessSample >= 0.0) {` +
+  `\n      let iridescenceThickness = mix(mat.iridescenceThicknessMin, mat.iridescenceThicknessMax, iridescenceThicknessSample);` +
+  `\n      mat.iridescenceThicknessMin = iridescenceThickness;` +
+  `\n      mat.iridescenceThicknessMax = iridescenceThickness;` +
+  `\n      if (iridescenceThickness <= 0.0) { mat.iridescence = 0.0; }` +
+  `\n    }` +
+  `\n    mat.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));` +
+  `\n    mat.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);`;

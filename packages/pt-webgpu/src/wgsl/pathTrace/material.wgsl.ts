@@ -331,10 +331,14 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  14: {aoWrap.xy, lightMapWrap.xy}
 //  15: {bumpWrap.xy, anisotropyWrap.xy}
 //  16: {alphaWrap.xy, transmissionWrap.xy}
-//  17-36: per-map UV metadata, two vec4s per consumed map:
+//  17-36: per-map UV metadata, two vec4s per consumed base map:
 //     A = {texCoord, offsetX, offsetY, rotation}
 //     B = {scaleX, scaleY, 0, 0}
-const MATERIAL_TEX_VEC4_STRIDE = 37u;
+//  37-38: extension-lobe texture indices
+//  39-42: extension-lobe UV-fit scale pairs
+//  43-46: extension-lobe wrap pairs
+//  47-62: extension-lobe UV metadata, two vec4s per extension map
+const MATERIAL_TEX_VEC4_STRIDE = 63u;
 const MATERIAL_TEX_UV_BASE_COLOR = 17u;
 const MATERIAL_TEX_UV_EMISSIVE = 19u;
 const MATERIAL_TEX_UV_NORMAL = 21u;
@@ -345,6 +349,14 @@ const MATERIAL_TEX_UV_BUMP = 29u;
 const MATERIAL_TEX_UV_ANISOTROPY = 31u;
 const MATERIAL_TEX_UV_ALPHA = 33u;
 const MATERIAL_TEX_UV_TRANSMISSION = 35u;
+const MATERIAL_TEX_UV_CLEARCOAT = 47u;
+const MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = 49u;
+const MATERIAL_TEX_UV_SHEEN_COLOR = 51u;
+const MATERIAL_TEX_UV_SHEEN_ROUGHNESS = 53u;
+const MATERIAL_TEX_UV_IRIDESCENCE = 55u;
+const MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS = 57u;
+const MATERIAL_TEX_UV_SPECULAR_COLOR = 59u;
+const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -613,6 +625,73 @@ fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   let transmissionIdx = i32(materialTexDescriptors[base + 6u].y);
   if (transmissionIdx < 0) { return 1.0; }
   return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 16u].zw).r, 0.0, 1.0);
+}
+
+// Extension-lobe map samplers. Mirrors pt-webgl2/glTF channel conventions:
+// clearcoat R, clearcoatRoughness G, sheenColor RGB, sheenRoughness A,
+// iridescence R, iridescenceThickness G, specularColor RGB, specularIntensity A.
+fn sampleClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 37u].x);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT, materialTexDescriptors[base + 39u].xy, materialTexDescriptors[base + 43u].xy).r, 0.0, 1.0);
+}
+
+fn sampleClearcoatRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 37u].y);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS, materialTexDescriptors[base + 39u].zw, materialTexDescriptors[base + 43u].zw).g, 0.0, 1.0);
+}
+
+fn sampleSheenColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
+  let idx = i32(materialTexDescriptors[base + 37u].z);
+  if (idx < 0) { return vec3f(1.0); }
+  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR, materialTexDescriptors[base + 40u].xy, materialTexDescriptors[base + 44u].xy).rgb, vec3f(0.0), vec3f(1.0));
+}
+
+fn sampleSheenRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 37u].w);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_ROUGHNESS, materialTexDescriptors[base + 40u].zw, materialTexDescriptors[base + 44u].zw).a, 0.0, 1.0);
+}
+
+fn sampleIridescenceTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 38u].x);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE, materialTexDescriptors[base + 41u].xy, materialTexDescriptors[base + 45u].xy).r, 0.0, 1.0);
+}
+
+fn sampleIridescenceThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return -1.0; }
+  let idx = i32(materialTexDescriptors[base + 38u].y);
+  if (idx < 0) { return -1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS, materialTexDescriptors[base + 41u].zw, materialTexDescriptors[base + 45u].zw).g, 0.0, 1.0);
+}
+
+fn sampleSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
+  let idx = i32(materialTexDescriptors[base + 38u].z);
+  if (idx < 0) { return vec3f(1.0); }
+  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR, materialTexDescriptors[base + 42u].xy, materialTexDescriptors[base + 46u].xy).rgb, vec3f(0.0), vec3f(1.0));
+}
+
+fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 62u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 38u].w);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY, materialTexDescriptors[base + 42u].zw, materialTexDescriptors[base + 46u].zw).a, 0.0, 1.0);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

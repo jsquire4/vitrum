@@ -300,6 +300,19 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   ReSTIR-PT contract tests pin the 192-byte layout, field serialization,
   domain-copy helper, full-lobe target/resolve, and anisotropic producer path;
   the WGSL shader gate compiles all four ReSTIR-PT passes.
+- The nineteenth pt-webgpu material-texture slice landed: full-tier material
+  descriptors now extend to 63 vec4s and pack clearcoat factor/roughness,
+  sheen color/roughness, iridescence factor/thickness, and specular
+  color/intensity maps. `material.wgsl.ts` samples the glTF channel conventions
+  from the correct sRGB/linear texture arrays with per-map texCoord,
+  KHR_texture_transform, wrap, and UV-fit metadata, and the shade prologue
+  modulates decoded lobe parameters before downstream BSDF/PDF/NEE calls.
+  The promise ledger promotes those map rows to `approximate`, not `native`,
+  because ReSTIR-PT visible-vertex texture-map parity, clearcoat/sheen
+  source-lobe sampling/PDF schemas, and BDPT light-subpath scatter PDFs remain
+  dedicated sampler/payload work. `clearcoatNormalMap` stays unsupported.
+  Verification: focused pt-webgpu material/WGSL/reuse/lite suites, full
+  typecheck, shader gate, and WSL GPU T1 smoke.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
   `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` pins
   transform refit, material refresh, emitter repack/GI invalidation,
@@ -796,20 +809,21 @@ Evidence:
   `ReservoirPTHero` stores scalar clearcoat/sheen/iridescence fields and
   anisotropy state, temporal/spatial copy the full visible-domain payload, p-hat
   uses `evaluateBrdfFull`, and resolve reconstructs with `evaluateBrdfFull`.
-- Remaining base-helper or approximate sites are not simple omissions: ReSTIR-PT
-  visible-vertex texture-map parity still needs the same baseColor/ORM/normal/
-  bump/layer treatment as the main shade prologue; clearcoat/sheen are evaluated
-  but not sampled as producer source lobes, so `pdfSrc` intentionally remains the
-  actual anisotropic base sampling density; BDPT light-subpath scatter PDFs are
-  tied to the light-subpath sampler; inverse adjoints use a separate derivative
-  model.
+- Extension-lobe texture maps now reach the full-tier megakernel shade
+  prologue, but remaining approximate/schema sites are not simple omissions:
+  ReSTIR-PT visible-vertex texture-map parity still needs the same
+  baseColor/ORM/normal/bump/layer treatment as the main shade prologue;
+  clearcoat/sheen are evaluated but not sampled as producer source lobes, so
+  `pdfSrc` intentionally remains the actual anisotropic base sampling density;
+  BDPT light-subpath scatter PDFs are tied to the light-subpath sampler; inverse
+  adjoints use a separate derivative model.
 
 Closure:
 - Redesign sampler/PDF coherence: extend `sampleNextBounceDirection`, the
   ReSTIR-PT producer source sampler, and associated source/reverse PDFs for
   clearcoat/sheen sampling rather than only changing evaluation.
 - Add visible-vertex material-map parity to the ReSTIR-PT producer/payload path
-  or mark the map subset approximate with structured capability detail.
+  before promoting the extension-map subset beyond approximate.
 - Extend BDPT light-subpath sampling/PDF bookkeeping before marking light-path
   extension-lobe parity closed.
 - Add material-furnace and lobe-specific tests plus reference A/B before
@@ -969,12 +983,13 @@ Evidence:
   target today.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
   rows and needs tests for the high-value rows it claims.
-- pt-webgpu has substantial material support but still needs extension-lobe
-  parity across the remaining sampler/schema paths (`PTWG-MAT-01`). The local
-  non-schema paths now use the full helpers: full/lite direct and env lighting,
-  full BSDF-side area/env connections, lite BSDF-env connection, SPPM receiver
-  gather, MNEE receiver caustics, BDPT connection endpoints, and ReSTIR-PT
-  producer suffix Lo.
+- pt-webgpu has substantial material support, and full-tier megakernel
+  extension-lobe maps now modulate the decoded material before ordinary
+  BSDF/PDF/NEE calls. It still needs extension-lobe parity across the remaining
+  sampler/schema paths (`PTWG-MAT-01`). The local non-schema paths now use the
+  full helpers: full/lite direct and env lighting, full BSDF-side area/env
+  connections, lite BSDF-env connection, SPPM receiver gather, MNEE receiver
+  caustics, BDPT connection endpoints, and ReSTIR-PT producer suffix Lo.
 
 Closure:
 - Complete `CAP-01` / `GATE-02` before calling arbitrary glTF closed.
@@ -984,9 +999,9 @@ Closure:
 - Add a glTF material sweep that feeds each imported material feature through
   all shipping backends and asserts native/approximate/unsupported diagnostics.
 - Remaining pt-webgpu material-lobe work must be scheduled as schema/sampler
-  work, not helper plumbing: ReSTIR-PT visible-vertex reservoir payload/resolve,
-  `sampleNextBounceDirection` lobe sampling/PDF, BDPT light-subpath scatter PDFs,
-  and inverse/adjoint gradients.
+  work, not helper plumbing: ReSTIR-PT visible-vertex texture-map sampling and
+  payload/resolve parity, `sampleNextBounceDirection` lobe sampling/PDF, BDPT
+  light-subpath scatter PDFs, and inverse/adjoint gradients.
 
 ### GLTF-02 - Draco and meshopt compressed primitives
 
@@ -1117,8 +1132,8 @@ Add independent oracles for:
 - DI ReSTIR candidate accounting and selected-point shading.
 - DDGI miss visibility semantics.
 - Extension-lobe contribution/PDF parity for the remaining schema paths:
-  ReSTIR-PT reservoir/resolve, source sampler/PDF coherence, BDPT light-subpath
-  sampler PDFs, and inverse adjoints.
+  ReSTIR-PT visible-vertex texture-map payload/resolve, source sampler/PDF
+  coherence, BDPT light-subpath sampler PDFs, and inverse adjoints.
 
 ### GATE-05 - Reference-render A/B suite
 

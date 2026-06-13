@@ -6,6 +6,7 @@ import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
   MATERIAL_TEX_FLOAT_STRIDE,
+  MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
@@ -172,6 +173,122 @@ describe('collectMaterialTextures (P2 host)', () => {
     for (let i = 28; i < 48; i += 1) {
       expect(descriptors[i]).toBe(1);
     }
+    for (let i = 156; i < 172; i += 1) {
+      expect(descriptors[i]).toBe(1);
+    }
+  });
+
+  it('collects extension-lobe maps into the correct color-space source arrays', () => {
+    const clearcoat = { id: 'clearcoat' };
+    const clearcoatRoughness = { id: 'clearcoat-roughness' };
+    const sheenColor = { id: 'sheen-color' };
+    const sheenRoughness = { id: 'sheen-roughness' };
+    const iridescence = { id: 'iridescence' };
+    const iridescenceThickness = { id: 'iridescence-thickness' };
+    const specularColor = { id: 'specular-color' };
+    const specularIntensity = { id: 'specular-intensity' };
+    const { sources, linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        clearcoatMap: { handle: clearcoat },
+        clearcoatRoughnessMap: { handle: clearcoatRoughness },
+        sheenColorMap: { handle: sheenColor },
+        sheenRoughnessMap: { handle: sheenRoughness },
+        iridescenceMap: { handle: iridescence },
+        iridescenceThicknessMap: { handle: iridescenceThickness },
+        specularColorMap: { handle: specularColor },
+        specularIntensityMap: { handle: specularIntensity },
+      }),
+    ]);
+
+    expect(sources).toEqual([sheenColor, specularColor]);
+    expect(linearSources).toEqual([
+      clearcoat,
+      clearcoatRoughness,
+      sheenRoughness,
+      iridescence,
+      iridescenceThickness,
+      specularIntensity,
+    ]);
+    expect(Array.from(descriptors.slice(148, 156))).toEqual([0, 1, 0, 2, 3, 4, 1, 5]);
+  });
+
+  it('applies extension-lobe UV-fit scales from the right texture arrays', () => {
+    const clearcoat = { id: 'clearcoat-fit' };
+    const clearcoatRoughness = { id: 'clearcoat-roughness-fit' };
+    const sheenColor = { id: 'sheen-color-fit' };
+    const sheenRoughness = { id: 'sheen-roughness-fit' };
+    const iridescence = { id: 'iridescence-fit' };
+    const iridescenceThickness = { id: 'iridescence-thickness-fit' };
+    const specularColor = { id: 'specular-color-fit' };
+    const specularIntensity = { id: 'specular-intensity-fit' };
+    const { descriptors } = collectMaterialTextures([
+      mat({
+        clearcoatMap: { handle: clearcoat },
+        clearcoatRoughnessMap: { handle: clearcoatRoughness },
+        sheenColorMap: { handle: sheenColor },
+        sheenRoughnessMap: { handle: sheenRoughness },
+        iridescenceMap: { handle: iridescence },
+        iridescenceThicknessMap: { handle: iridescenceThickness },
+        specularColorMap: { handle: specularColor },
+        specularIntensityMap: { handle: specularIntensity },
+      }),
+    ]);
+
+    applyMaterialTextureUvFitScales(
+      descriptors,
+      [[0.11, 0.12], [0.21, 0.22]],
+      [
+        [0.31, 0.32],
+        [0.41, 0.42],
+        [0.51, 0.52],
+        [0.61, 0.62],
+        [0.71, 0.72],
+        [0.81, 0.82],
+      ],
+    );
+
+    expectCloseArray(descriptors.slice(156, 172), [
+      0.31, 0.32,
+      0.41, 0.42,
+      0.11, 0.12,
+      0.51, 0.52,
+      0.61, 0.62,
+      0.71, 0.72,
+      0.21, 0.22,
+      0.81, 0.82,
+    ]);
+  });
+
+  it('packs extension-lobe wrap modes and UV metadata', () => {
+    const { descriptors } = collectMaterialTextures([
+      mat({
+        clearcoatMap: {
+          handle: {},
+          texCoord: 1,
+          wrapS: 'clamp-to-edge',
+          wrapT: 'mirrored-repeat',
+          transform: { offset: [0.1, 0.2], scale: [1.1, 1.2], rotation: 0.3 },
+        },
+        specularIntensityMap: {
+          handle: {},
+          texCoord: 0,
+          wrapS: 'mirrored-repeat',
+          wrapT: 'clamp-to-edge',
+          transform: { offset: [0.4, 0.5], scale: [1.4, 1.5], rotation: 0.6 },
+        },
+      }),
+    ]);
+
+    expect(Array.from(descriptors.slice(172, 176))).toEqual([1, 2, 0, 0]);
+    expect(Array.from(descriptors.slice(184, 188))).toEqual([0, 0, 2, 1]);
+
+    const uvMeta = (slot: number): number[] => {
+      const start = (MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
+      return Array.from(descriptors.slice(start, start + 8));
+    };
+
+    expectCloseArray(uvMeta(0), [1, 0.1, 0.2, 0.3, 1.1, 1.2, 0, 0]);
+    expectCloseArray(uvMeta(7), [0, 0.4, 0.5, 0.6, 1.4, 1.5, 0, 0]);
   });
 
   it('applies per-map UV-fit scales from the uploaded sRGB and linear texture arrays', () => {
@@ -345,6 +462,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleAlphaTexture(');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
+    expect(wgsl).toContain('fn sampleClearcoatTexture(');
+    expect(wgsl).toContain('fn sampleSpecularIntensityTexture(');
     expect(wgsl).toContain('wrappedUv * uvFitScale');
     expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
@@ -353,6 +472,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
+    expect(wgsl).toContain('materialTexDescriptors[base + 37u].x');
+    expect(wgsl).toContain('materialTexDescriptors[base + 38u].w');
   });
 
   it('normal maps transform derived tangents through the hit TLAS instance', () => {
@@ -372,6 +493,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
     expect(wgsl).toContain('const MATERIAL_TEX_UV_BASE_COLOR = 17u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_TRANSMISSION = 35u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 47u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
@@ -383,6 +506,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_BUMP');
     expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA');
     expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT');
+    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR');
+    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY');
     expect(wgsl).not.toContain('All maps of a material share its baseColor UV transform');
   });
 });

@@ -363,9 +363,9 @@ describe('H12: lite-tier capabilities truth', () => {
             roughness: 0.3,
             metallic: 0,
             // Unsupported on pt-webgpu per the CAP-01 matrix:
-            clearcoatMap: { handle: { id: 'cc' } },
+            clearcoatNormalMap: { handle: { id: 'cc-normal' } },
             thicknessMap: { handle: { id: 'thickness' } },
-            specularColorMap: { handle: { id: 'spec-color' } },
+            displacementMap: { handle: { id: 'displacement' } },
           },
         },
       ],
@@ -379,16 +379,14 @@ describe('H12: lite-tier capabilities truth', () => {
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) =>
-      c.includes('clearcoatMap') &&
-      c.includes('thicknessMap') &&
-      c.includes('specularColorMap'),
+      c.includes('clearcoatNormalMap') &&
+      c.includes('thicknessMap'),
     )).toBe(true);
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.unsupported-material-fields' &&
       Array.isArray(w.details?.fields) &&
-      w.details.fields.includes('clearcoatMap') &&
-      w.details.fields.includes('thicknessMap') &&
-      w.details.fields.includes('specularColorMap'),
+      w.details.fields.includes('clearcoatNormalMap') &&
+      w.details.fields.includes('thicknessMap'),
     )).toBe(true);
     // Consumed fields must NOT appear in the warning.
     expect(structured.some((w) =>

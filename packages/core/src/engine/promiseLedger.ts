@@ -510,7 +510,7 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
 });
 
 /**
- * pt-webgpu — the 27-vec4 material buffer (materialPacking.ts) + the 37-vec4
+ * pt-webgpu — the 28-vec4 material buffer (materialPacking.ts) + the 63-vec4
  * texture-descriptor buffer (materialTextures.ts) feed material.wgsl /
  * bsdf.wgsl / kernel.wgsl. Full-tier material samplers now consume
  * TextureRef.texCoord, KHR_texture_transform, wrapS/T, and heterogeneous-layer
@@ -554,17 +554,20 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMap: 'native',
   aoMap: 'native',
   aoMapIntensity: 'native',
-  clearcoatMap: 'unsupported',
-  clearcoatRoughnessMap: 'unsupported',
+  // Full-tier megakernel samples these extension-lobe maps. Approximate until
+  // ReSTIR-PT/reuse payloads and source-lobe sampler schemas carry the same
+  // texture-modulated parameters end-to-end.
+  clearcoatMap: 'approximate',
+  clearcoatRoughnessMap: 'approximate',
   clearcoatNormalMap: 'unsupported',
   clearcoatNormalScale: 'unsupported',
-  sheenColorMap: 'unsupported',
-  sheenRoughnessMap: 'unsupported',
-  iridescenceMap: 'unsupported',
-  iridescenceThicknessMap: 'unsupported',
+  sheenColorMap: 'approximate',
+  sheenRoughnessMap: 'approximate',
+  iridescenceMap: 'approximate',
+  iridescenceThicknessMap: 'approximate',
   anisotropyMap: 'native',
-  specularColorMap: 'unsupported',
-  specularIntensityMap: 'unsupported',
+  specularColorMap: 'approximate',
+  specularIntensityMap: 'approximate',
   bumpMap: 'native',
   bumpScale: 'native',
   displacementMap: 'unsupported',
