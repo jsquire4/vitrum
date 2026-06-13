@@ -275,7 +275,7 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   };
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
-    /** Max light-subpath bounces, clamped 1–3. Default 3. */
+    /** Max light-subpath bounces, clamped 1–8 with a construction warning. Default 3. */
     readonly maxLightBounces?: number;
   };
   /**
@@ -336,6 +336,7 @@ export type {
 } from './denoise/oidnFinalDispatcher.js';
 
 const EXPERIMENTAL_MAX_BOUNCES = 8;
+const BDPT_MAX_LIGHT_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
 /** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
@@ -386,6 +387,11 @@ function emitPteWarning(
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function resolveBdptMaxLightBounces(requested: number | undefined): number {
+  if (requested === undefined) return 3;
+  return Math.min(BDPT_MAX_LIGHT_BOUNCES, Math.floor(requested));
 }
 
 class PTEngineWebGPU implements Engine {
@@ -514,11 +520,7 @@ class PTEngineWebGPU implements Engine {
     // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
     // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default stays 3 (the
     // validated baseline); hosts may opt up to 8 for deeper caustic/SDS transport.
-    const requestedBdptBounces = opts.bdptOptions?.maxLightBounces;
-    this.#bdptMaxLightBounces =
-      typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
-        ? Math.min(8, Math.floor(requestedBdptBounces))
-        : 3;
+    this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
     // gates the full-tier requirement internally; mirror the resolved value here so
     // the capability + renderFrame sequencing agree with what GpuResources will run.
@@ -2193,6 +2195,46 @@ export const createPTEngine_WebGPU: EngineFactory<
       method: 'createPTEngine_WebGPU',
       message: `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
       details: { requested: maxBounces, clampedTo: EXPERIMENTAL_MAX_BOUNCES },
+    });
+  }
+  const bdptMaxLightBounces = opts.bdptOptions?.maxLightBounces;
+  if (
+    bdptMaxLightBounces !== undefined &&
+    (!Number.isFinite(bdptMaxLightBounces) || bdptMaxLightBounces < 1)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGPU: bdptOptions.maxLightBounces must be a finite number >= 1 (got ${bdptMaxLightBounces})`,
+    );
+  }
+  if (bdptMaxLightBounces !== undefined && bdptMaxLightBounces > BDPT_MAX_LIGHT_BOUNCES) {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.bdpt-max-light-bounces-clamped',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
+        `clamping to supported BDPT light-subpath limit ${BDPT_MAX_LIGHT_BOUNCES}.`,
+      details: { requested: bdptMaxLightBounces, clampedTo: BDPT_MAX_LIGHT_BOUNCES },
+    });
+  }
+  if (
+    bdptMaxLightBounces !== undefined &&
+    bdptMaxLightBounces <= BDPT_MAX_LIGHT_BOUNCES &&
+    !Number.isInteger(bdptMaxLightBounces)
+  ) {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.bdpt-max-light-bounces-rounded',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
+        `rounding down to integer ${resolveBdptMaxLightBounces(bdptMaxLightBounces)}.`,
+      details: {
+        requested: bdptMaxLightBounces,
+        roundedTo: resolveBdptMaxLightBounces(bdptMaxLightBounces),
+      },
     });
   }
   if (

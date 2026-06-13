@@ -4,6 +4,7 @@
  *   B: warn when a material has distinct roughnessMap + metallicMap handles
  *      (ORM single-slot drops metallicMap).
  *   C: warn once listing unknown opts.extensions keys.
+ *   D: validate/warn bdptOptions.maxLightBounces rather than silently coercing.
  * H48: warn when opts.denoiser is neither 'none' nor 'oidn-final'.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -65,6 +66,63 @@ describe('H51-A: maxBounces clamp warns', () => {
     expect(
       warn.mock.calls.some((c) => String(c[0]).includes('maxBounces=')),
     ).toBe(false);
+    engine.dispose();
+    warn.mockRestore();
+  });
+});
+
+// ── H51-D ─────────────────────────────────────────────────────────────────────
+describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', () => {
+  it('throws when maxLightBounces is below the structural minimum', async () => {
+    await expect(
+      createPTEngine_WebGPU({
+        device: makeStubDevice(),
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 0 },
+      }),
+    ).rejects.toThrow('bdptOptions.maxLightBounces must be a finite number >= 1');
+  });
+
+  it('warns when maxLightBounces exceeds the supported cap (8)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onWarning = vi.fn();
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 20 },
+      onWarning,
+    });
+
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('bdptOptions.maxLightBounces=20')),
+    ).toBe(true);
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgpu.bdpt-max-light-bounces-clamped',
+      details: { requested: 20, clampedTo: 8 },
+    }));
+
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('warns when maxLightBounces is fractional and rounds down', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onWarning = vi.fn();
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 2.75 },
+      onWarning,
+    });
+
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('rounding down to integer 2')),
+    ).toBe(true);
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgpu.bdpt-max-light-bounces-rounded',
+      details: { requested: 2.75, roundedTo: 2 },
+    }));
+
     engine.dispose();
     warn.mockRestore();
   });
