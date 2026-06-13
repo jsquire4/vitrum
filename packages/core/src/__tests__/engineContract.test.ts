@@ -125,10 +125,10 @@ describe('backend promise ledger', () => {
     expect(wa.sheen).toBe('unsupported');
     expect(wa.extensions).toBe('native');
 
-    // pt-webgl2: scalar anisotropy is packed; anisotropyMap remains un-atlased.
+    // pt-webgl2: scalar anisotropy plus KHR_materials_anisotropy map are packed/sampled.
     expect(gl2.anisotropy).toBe('native');
     expect(gl2.anisotropyRotation).toBe('native');
-    expect(gl2.anisotropyMap).toBe('unsupported');
+    expect(gl2.anisotropyMap).toBe('native');
     expect(gl2.scatteringCoefficientRGB).toBe('approximate');
     expect(gl2.shadingModel).toBe('approximate');
     expect(gl2.thickness).toBe('approximate');

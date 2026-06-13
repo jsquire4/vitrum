@@ -47,6 +47,7 @@ export const material_struct = /* glsl */ `
 		bool thinFilm;
 		float anisotropy;
 		float anisotropyRotation;
+		int anisotropyMap;
 
 		vec3 attenuationColor;
 		float attenuationDistance;
@@ -123,6 +124,7 @@ export const material_struct = /* glsl */ `
 		mat3 specularColorMapTransform;
 		mat3 specularIntensityMapTransform;
 		mat3 alphaMapTransform;
+		mat3 anisotropyMapTransform;
 
 		vec2 mapWrap;
 		vec2 metalnessMapWrap;
@@ -143,6 +145,7 @@ export const material_struct = /* glsl */ `
 		vec2 aoMapWrap;
 		vec2 lightMapWrap;
 		vec2 bumpMapWrap;
+		vec2 anisotropyMapWrap;
 
 		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
 		// see readMaterialInfo). Identity when the corresponding map id == -1.
@@ -205,10 +208,11 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		// D3 — stride bumped 85 → 105 (single-sourced from materialStride.js; the
+		// D3 — stride bumped 85 → 107 (single-sourced from materialStride.js; the
 		// packer imports the same constant): texels 85/86 carry ao/light/bump map
 		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
-		// texels 93/94 carry alphaMapTransform; texels 95..104 carry per-map wrap.
+		// texels 93/94 carry alphaMapTransform; texels 95/96 carry anisotropyMapTransform;
+		// texels 97..106 carry per-map wrap.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
@@ -258,6 +262,7 @@ export const material_struct = /* glsl */ `
 		m.clearcoatRoughnessMap = int( round( s5.b ) );
 		m.clearcoatNormalMap = int( round( s5.a ) );
 		m.clearcoatNormalScale = s6.rg;
+		m.anisotropyMap = int( round( s6.b ) );
 
 		m.sheen = s6.a;
 		m.sheenColor = s7.rgb;
@@ -348,6 +353,7 @@ export const material_struct = /* glsl */ `
 		m.specularColorMapTransform = m.specularColorMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 26u );
 		m.specularIntensityMapTransform = m.specularIntensityMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 28u );
 		m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u );
+		m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );
 
 		// D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
 		m.aoMapTransform = m.aoMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 87u );
@@ -355,16 +361,16 @@ export const material_struct = /* glsl */ `
 		m.bumpMapTransform = m.bumpMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 91u );
 
 		// TextureRef.wrapS/wrapT: 0 repeat, 1 clamp-to-edge, 2 mirrored-repeat.
-		vec4 w0 = texelFetch1D( tex, i + 95u );
-		vec4 w1 = texelFetch1D( tex, i + 96u );
-		vec4 w2 = texelFetch1D( tex, i + 97u );
-		vec4 w3 = texelFetch1D( tex, i + 98u );
-		vec4 w4 = texelFetch1D( tex, i + 99u );
-		vec4 w5 = texelFetch1D( tex, i + 100u );
-		vec4 w6 = texelFetch1D( tex, i + 101u );
-		vec4 w7 = texelFetch1D( tex, i + 102u );
-		vec4 w8 = texelFetch1D( tex, i + 103u );
-		vec4 w9 = texelFetch1D( tex, i + 104u );
+		vec4 w0 = texelFetch1D( tex, i + 97u );
+		vec4 w1 = texelFetch1D( tex, i + 98u );
+		vec4 w2 = texelFetch1D( tex, i + 99u );
+		vec4 w3 = texelFetch1D( tex, i + 100u );
+		vec4 w4 = texelFetch1D( tex, i + 101u );
+		vec4 w5 = texelFetch1D( tex, i + 102u );
+		vec4 w6 = texelFetch1D( tex, i + 103u );
+		vec4 w7 = texelFetch1D( tex, i + 104u );
+		vec4 w8 = texelFetch1D( tex, i + 105u );
+		vec4 w9 = texelFetch1D( tex, i + 106u );
 		m.mapWrap = w0.rg;
 		m.metalnessMapWrap = w0.ba;
 		m.roughnessMapWrap = w1.rg;
@@ -384,6 +390,7 @@ export const material_struct = /* glsl */ `
 		m.aoMapWrap = w8.rg;
 		m.lightMapWrap = w8.ba;
 		m.bumpMapWrap = w9.rg;
+		m.anisotropyMapWrap = w9.ba;
 
 		return m;
 

@@ -744,10 +744,12 @@ Evidence:
   `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
   `materialStrideParity.test.ts`.
 - glTF sampler wrap parity is now code-closed for pt-webgl2: the material
-  record packs per-map `wrapS`/`wrapT` at texels 95..104, `material_struct`
-  decodes repeat/clamp/mirrored-repeat pairs, and both surface and attenuation
-  paths call `sampleMaterialTexture(...)` so every material texture fetch applies
-  manual per-layer wrapping instead of relying on one global WebGL array sampler.
+  record packs per-map `wrapS`/`wrapT` at texels 97..106 (after
+  alphaMapTransform at 93/94 and anisotropyMapTransform at 95/96),
+  `material_struct` decodes repeat/clamp/mirrored-repeat pairs, and both
+  surface and attenuation paths call `sampleMaterialTexture(...)` so every
+  material texture fetch applies manual per-layer wrapping instead of relying
+  on one global WebGL array sampler.
   `untestedMaterialMaps.test.ts`, `materialsTexture.test.ts`, and
   `shader-gate` pin the path.
 - Layered front/back material fields are honestly approximate for pt-webgl2:
@@ -757,15 +759,15 @@ Evidence:
   subfields (`frontLayer.normalMap`, `frontLayer.normalScale`,
   `backLayer.normalMap`, `backLayer.normalScale`). `engineContract.test.ts`
   pins that path-level diagnostic.
-- Surface anisotropy scalar support is now source-verified for pt-webgl2:
-  `promiseLedger.ts` marks `anisotropy` and `anisotropyRotation` native after
-  the reserved-lane pack/decode + anisotropic GGX sampling/eval/PDF wiring.
-  `anisotropyMap` remains unsupported and keeps the structured warning.
+- Surface anisotropy support is now source-verified for pt-webgl2:
+  `promiseLedger.ts` marks `anisotropy`, `anisotropyRotation`, and
+  `anisotropyMap` native after reserved-lane pack/decode, atlas/UV/wrap
+  payload wiring, KHR RG/B map sampling, and anisotropic GGX sampling/eval/PDF
+  consumption.
 
 Closure:
-- WEBGL2-04 is closed as an honesty row. Future `anisotropyMap` support or
-  layered face-normal support would be a fidelity promotion, not a current
-  silent contract gap.
+- WEBGL2-04 is closed as an honesty row. Future layered face-normal support
+  would be a fidelity promotion, not a current silent contract gap.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
 

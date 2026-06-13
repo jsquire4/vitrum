@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (pt-webgl2 anisotropy map, 2026-06-13)
+
+- **KHR_materials_anisotropy map on `@vitrum/pt-webgl2`:** `anisotropyMap` now packs into the material atlas/stride, preserves per-map UV channel, `KHR_texture_transform`, and wrap modes, and the GLSL surface path samples B-channel strength plus RG rotation offset before feeding anisotropic GGX sampling/eval/PDF. The promise ledger now marks pt-webgl2 `anisotropyMap` native; displacement and `thicknessMap` remain explicit unsupported material rows.
+
 ### Added (SHADOW-01 shadow flags, 2026-06-11)
 
 - **Primitive `castShadow` backend-wide:** pt-webgpu now skips `castShadow:false` geometry in every any-hit (occlusion) traversal on BOTH tiers (material vec4 #25 .w lane + `triShadowCastDisabled` in the shared `traceMeshBvh` any-hit path) while camera/radiance rays still hit it; walkaround-hybrid honors it on the ReSTIR **DI** shadow predicates (RIS candidate + shading visibility, analytic point/spot NEE, direct-sun NEE) via a new bvh_material bit-0 lane + shared-bvh cast-shadow-masked traversal variants (`BVH_CAST_SHADOW_MASK_WGSL`, derived from the canonical traversal strings with anchored-surgery guards) — GI-side occlusion (ReSTIR-GI/GRIS/DDGI/RC) intentionally still occludes ('approximate'). pt-webgl2 was already native.

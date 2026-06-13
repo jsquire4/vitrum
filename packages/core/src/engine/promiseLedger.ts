@@ -471,7 +471,7 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheenRoughnessMap: 'native',
   iridescenceMap: 'native',
   iridescenceThicknessMap: 'native',
-  anisotropyMap: 'unsupported',
+  anisotropyMap: 'native',
   specularColorMap: 'native',
   specularIntensityMap: 'native',
   bumpMap: 'native',

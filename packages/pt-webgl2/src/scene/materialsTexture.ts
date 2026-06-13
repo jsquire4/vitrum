@@ -25,8 +25,8 @@ import {
 
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
- *  texels 85..92 + alphaMap transform texels 93..94 + wrap texels 95..104).
- *  Re-exported for tests and parity guards. */
+ *  texels 85..92 + alphaMap transform texels 93..94 + anisotropyMap transform
+ *  texels 95..96 + wrap texels 97..106). Re-exported for tests and parity guards. */
 export { MATERIAL_MAP_FIELD_ORDER, MATERIAL_PIXELS, MATERIAL_WRAP_TEXEL_OFFSET };
 /** Floats per material (MATERIAL_PIXELS px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
@@ -191,6 +191,7 @@ interface LayerIds {
   ao: number;
   lightMap: number;
   bump: number;
+  anisotropy: number;
 }
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
@@ -215,6 +216,7 @@ function packLayerIds(m: MaterialSpec, layerOf: Map<unknown, number> | undefined
     ao: mapLayer(m.aoMap, layerOf),
     lightMap: mapLayer(m.lightMap, layerOf),
     bump: mapLayer(m.bumpMap, layerOf),
+    anisotropy: mapLayer(m.anisotropyMap, layerOf),
   };
 }
 
@@ -299,10 +301,10 @@ function packScalarSlots(
   data[index++] = ids.clearcoatRoughness;
   data[index++] = ids.clearcoatNormal;
 
-  // sample 6 — clearcoatNormalScale.xy / pad / sheen
+  // sample 6 — clearcoatNormalScale.xy / anisotropyMap / sheen
   data[index++] = clearcoatNormalScale;
   data[index++] = clearcoatNormalScale;
-  index++; // pad (fork does `index ++` here)
+  data[index++] = ids.anisotropy;
   data[index++] = sheen;
 
   // sample 7 — sheenColor.rgb / sheenColorMap
@@ -478,7 +480,8 @@ function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): numbe
 
 /**
  * D10.8: Write texture-transform mat3s at samples 55..84, the D3 auxiliary block
- * at texels 85..92, alphaMapTransform at 93..94, and per-map wrap modes at
+ * at texels 85..92, alphaMapTransform at 93..94, anisotropyMapTransform at
+ * 95..96, and per-map wrap modes at
  * MATERIAL_WRAP_TEXEL_OFFSET.. Uses absolute texel offsets from `base` (not
  * `index`) — these writes are non-sequential (the transform slots are at fixed
  * positions).
@@ -517,6 +520,7 @@ function packTextureTransforms(
   if (ids.specularColor >= 0) writeTransform(data, base, 81, m.specularColorMap);
   if (ids.specularIntensity >= 0) writeTransform(data, base, 83, m.specularIntensityMap);
   if (ids.alpha >= 0) writeTransform(data, base, 93, m.alphaMap);
+  if (ids.anisotropy >= 0) writeTransform(data, base, 95, m.anisotropyMap);
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).

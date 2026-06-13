@@ -176,7 +176,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('warns only for anisotropyMap; scalar anisotropy is rendered (CAP-01)', async () => {
+  it('accepts scalar and mapped anisotropy without unsupported-field warnings (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -202,13 +202,15 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(structured.some((w) =>
         w.code === 'pt-webgl2.unsupported-material-fields' &&
         Array.isArray(w.details?.fields) &&
-        !w.details.fields.includes('anisotropy') &&
-        !w.details.fields.includes('anisotropyRotation') &&
-        w.details.fields.includes('anisotropyMap'),
-      )).toBe(true);
+        (
+          w.details.fields.includes('anisotropy') ||
+          w.details.fields.includes('anisotropyRotation') ||
+          w.details.fields.includes('anisotropyMap')
+        ),
+      )).toBe(false);
       expect(warn.mock.calls.flat().map(String).some((m) =>
-        m.includes('anisotropyMap') && m.includes('not rendered'),
-      )).toBe(true);
+        m.includes('anisotropy') && m.includes('not rendered'),
+      )).toBe(false);
     } finally {
       warn.mockRestore();
     }

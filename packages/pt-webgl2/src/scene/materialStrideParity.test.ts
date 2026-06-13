@@ -83,9 +83,15 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
 
   it('GLSL decodes scalar anisotropy and routes GGX through anisotropic helpers', () => {
     const shader = composedShader();
+    expect(shader).toContain('m.anisotropyMap = int( round( s6.b ) );');
     expect(shader).toContain('m.anisotropy = clamp( s11.a, 0.0, 1.0 );');
     expect(shader).toContain('m.anisotropyRotation = s17.b;');
-    expect(shader).toContain('surf.anisotropy = clamp( material.anisotropy, 0.0, 1.0 );');
+    expect(shader).toContain('m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );');
+    expect(shader).toContain('m.anisotropyMapWrap = w9.ba;');
+    expect(shader).toContain('vec3 uvPrime = material.anisotropyMapTransform * vec3( MAP_UV( 19u ), 1 );');
+    expect(shader).toContain('anisotropy *= anisotropyTexel.b;');
+    expect(shader).toContain('anisotropyRotation += atan( rg.y, rg.x );');
+    expect(shader).toContain('surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );');
     expect(shader).toContain('vec2 anisotropicRoughnessAxes( SurfaceRecord surf )');
     expect(shader).toContain('ggxDirectionForSurface( wo, surf, rand2( 12 ) )');
     expect(shader).toContain('ggxDistributionForSurface( wh, surf )');

@@ -30,6 +30,8 @@ const SAMPLED_MAP_KEYS = [
   'specularColorMap', 'specularIntensityMap',
   // D3 — aoMap / lightMap / bumpMap (new GLSL consumption sites).
   'aoMap', 'lightMap', 'bumpMap',
+  // KHR_materials_anisotropy: RG = tangent direction, B = strength.
+  'anisotropyMap',
 ] as const satisfies ReadonlyArray<keyof MaterialSpec>;
 
 // ── D10.12: TextureHandleHint ─────────────────────────────────────────────────

@@ -13,14 +13,14 @@ function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — 107px RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
-    // at 93/94 + per-map wrap modes at 95..104. Single-sourced with every GLSL fetch site via
-    // glsl/shader/structs/materialStride.js — see materialStrideParity.test.ts for
-    // the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(105);
+    // at 93/94 + anisotropyMap transform at 95/96 + per-map wrap modes at 97..106.
+    // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
+    // — see materialStrideParity.test.ts for the packer↔shader guard.
+    expect(MATERIAL_PIXELS).toBe(107);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -42,7 +42,7 @@ describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(105)) = 11 → backing data is 11*11*4 = 484 floats.
+    // dim = ceil(sqrt(107)) = 11 → backing data is 11*11*4 = 484 floats.
     expect(out.dim).toBe(11);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
@@ -282,7 +282,7 @@ describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
     expect(d[texel(0, 11, 0)]).toBe(1.0);
   });
 
-  it('packs per-map wrap modes at texels 95..104', () => {
+  it('packs per-map wrap modes at texels 97..106', () => {
     const baseHandle = {};
     const metalHandle = {};
     const bumpHandle = {};
@@ -302,14 +302,54 @@ describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
     const d = packMaterialsTexture([m], layerOf).data;
 
     // Map order is shared with UV_SET_BIT:
-    //   0 baseColorMap -> texel 95.rg, 1 metallicMap -> texel 95.ba,
-    //   18 bumpMap -> texel 104.rg. Encodings: 0 repeat, 1 clamp, 2 mirror.
+    //   0 baseColorMap -> first wrap texel.rg, 1 metallicMap -> first wrap texel.ba,
+    //   18 bumpMap -> final wrap texel.rg. Encodings: 0 repeat, 1 clamp, 2 mirror.
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 0)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 1)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 2)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 3)]).toBe(0);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 0)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 1)]).toBe(0);
+  });
+
+  it('packs anisotropyMap layer, UV1 bit, transform, and wrap mode', () => {
+    const anisoHandle = {};
+    const layerOf = new Map<unknown, number>([[anisoHandle, 5]]);
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      anisotropy: 0.7,
+      anisotropyRotation: 0.25,
+      anisotropyMap: {
+        handle: anisoHandle,
+        texCoord: 1,
+        wrapS: 'mirrored-repeat',
+        wrapT: 'clamp-to-edge',
+        transform: { scale: [2, 3], offset: [0.125, 0.25] },
+      },
+    };
+    const d = packMaterialsTexture([m], layerOf).data;
+
+    // s6.b is the anisotropyMap atlas layer id; s11.a/s17.b remain scalar strength/rotation.
+    expect(d[texel(0, 6, 2)]).toBe(5);
+    expect(d[texel(0, 11, 3)]).toBeCloseTo(0.7, 6);
+    expect(d[texel(0, 17, 2)]).toBeCloseTo(0.25, 6);
+
+    // Bit 19 in texel 86.a selects ATTR_UV1 for anisotropyMap.
+    expect(d[texel(0, 86, 3)]).toBe(1 << 19);
+
+    // Texels 95/96 encode the anisotropyMap UV transform.
+    expect(d[texel(0, 95, 0)]).toBeCloseTo(2, 6);
+    expect(d[texel(0, 95, 1)]).toBeCloseTo(0, 6);
+    expect(d[texel(0, 95, 2)]).toBeCloseTo(0.125, 6);
+    expect(d[texel(0, 96, 0)]).toBeCloseTo(0, 6);
+    expect(d[texel(0, 96, 1)]).toBeCloseTo(3, 6);
+    expect(d[texel(0, 96, 2)]).toBeCloseTo(0.25, 6);
+
+    // Bit 19 shares the final wrap texel with bumpMap: .ba are anisotropyMap's wrapS/T.
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 2)]).toBe(2);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 3)]).toBe(1);
   });
 
   // D3 — ao/lightMap/bumpMap transforms at texels 87/89/91 (item 26).

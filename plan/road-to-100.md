@@ -363,7 +363,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 | sRGB → linear | In decode helper | glTF baseColor textures are sRGB (`KHR_materials_unlit` too) | Double-linear if backend also decodes sRGB |
 | NPOT / max dim | In atlas builders (PT + WA) | Nearest resize to `max(dim)` like `texturesArray.ts:12-13` | `sampler2DArray` requires uniform layer size |
 | Basis/WebP/DDS source policy | ✅ CODE CLOSED (`featureReport.ts`, `textures.ts`, `gltfExtensionPolicy.test.ts`, `gltfAssetApi.test.ts`): required/no-base-fallback texture-source extensions report `requires-hook`; optional alternates with a base `texture.source` fallback are compatibility-clean until the host opts into `textureSourceExtensions`. | `reject-degraded` no longer rejects deterministic PNG/JPEG fallback assets just because they also advertise KTX2/WebP/DDS alternates. | Default browser transcoder/decode path remains a future 4F polish item. |
-| **Texture wrap modes (ADDED 2026-06-12 — verified hole)** | ~~`TextureRef.wrapS/wrapT` in core (`repeat`/`clamp`/`mirror`) + adapter reads `gltf.samplers`~~ ✅ API DONE (`material.ts`, `textures.ts`, `gltfTextureSweep.test.ts`, `gltfAssetApi.test.ts`, `texturePipeline.ts`). ✅ pt-webgpu full-tier material textures now pack per-map wrap pairs (`materialTextures.ts`) and WGSL applies repeat/clamp/mirrored-repeat before UV-fit scaling (`material.wgsl.ts`). ✅ pt-webgl2 now packs per-map wrap pairs at material texels 95..104 and routes every material texture sample in surface + attenuation shaders through manual repeat/clamp/mirror wrapping (`materialsTexture.ts`, `material_struct.glsl.js`, `get_surface_record_function.glsl.js`, `attenuate_hit_function.glsl.js`). Still open: walkaround sampler/wrap via the Phase 3D atlas. | API no longer drops sampler semantics and `textureDecodeReport` exposes wrap modes. Runtime parity for clamp/mirror/repeat is closed on pt-webgpu and pt-webgl2; walkaround remains blocked on its material atlas. |
+| **Texture wrap modes (ADDED 2026-06-12 — verified hole)** | ~~`TextureRef.wrapS/wrapT` in core (`repeat`/`clamp`/`mirror`) + adapter reads `gltf.samplers`~~ ✅ API DONE (`material.ts`, `textures.ts`, `gltfTextureSweep.test.ts`, `gltfAssetApi.test.ts`, `texturePipeline.ts`). ✅ pt-webgpu full-tier material textures now pack per-map wrap pairs (`materialTextures.ts`) and WGSL applies repeat/clamp/mirrored-repeat before UV-fit scaling (`material.wgsl.ts`). ✅ pt-webgl2 now packs per-map wrap pairs at material texels 97..106 (after alphaMap transform at 93/94 and anisotropyMap transform at 95/96) and routes every material texture sample in surface + attenuation shaders through manual repeat/clamp/mirror wrapping (`materialsTexture.ts`, `material_struct.glsl.js`, `get_surface_record_function.glsl.js`, `attenuate_hit_function.glsl.js`). Still open: walkaround sampler/wrap via the Phase 3D atlas. | API no longer drops sampler semantics and `textureDecodeReport` exposes wrap modes. Runtime parity for clamp/mirror/repeat is closed on pt-webgpu and pt-webgl2; walkaround remains blocked on its material atlas. |
 | ~~Mipmaps (ADDED 2026-06-12 — verified hole)~~ ✅ pt-webgpu CLOSED (2026-06-13) | pt-webgpu raw-data upload normalizes 1/2/3/4-channel 8-bit `{data,width,height}` payloads to explicit RGBA8 rows and warns/leaves the layer black for unsupported typed-array layouts. Full-tier material texture arrays now allocate a complete mip chain, generate lower levels with a WebGPU render pass for every sRGB/linear array layer, and the WGSL material sampler uses an explicit geometric LOD estimate (`textureNumLevels`, triangle UV density, projected world area, camera distance) instead of hard-coding `textureSampleLevel(..., 0.0)`. Tests: `materialTextureArray.test.ts`, `materialTextures.test.ts`, `wgslContract.test.ts`; shader-gate compiles `pt-webgpu/trace-full-*`. | pt-webgpu minification no longer has the level-0-only hole. Remaining texture sampler parity belongs to walkaround's atlas path and renderer-specific A/B validation. |
 
 #### 1B — Feature report & planner (`featureReport.ts`)
@@ -444,12 +444,12 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 #### 2B — Material packing gaps → ledger `native`
 
-**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` are now native; `anisotropyMap`, `displacement*`, and `thicknessMap` remain unsupported.
+**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` plus `anisotropyMap` are now native; `displacement*` and `thicknessMap` remain unsupported.
 
 | Field | Work |
 |-------|------|
 | `thicknessMap` | Sample in volume path or stay unsupported with compatibility reject |
-| ~~`anisotropy` / `anisotropyRotation`~~ ✅ DONE (2026-06-13) | Packed into reserved lanes `s11.a` / `s17.b`, decoded into `Material`/`SurfaceRecord`, and consumed by anisotropic GGX sampling/eval/PDF in `bsdf_functions.glsl.js`. `anisotropyMap` remains unsupported until its RG/B channel convention is atlas-wired. Tests: `materialsTexture.test.ts`, `materialStrideParity.test.ts`, `engineContract.test.ts`, core ledger contract. |
+| ~~`anisotropy` / `anisotropyRotation` / `anisotropyMap`~~ ✅ DONE (2026-06-13) | Scalar strength/rotation pack into reserved lanes `s11.a` / `s17.b`; `anisotropyMap` packs into `s6.b`, transform texels `95..96`, UV bit 19, and the final wrap-mode pair. GLSL decodes the map and samples RG/B according to KHR_materials_anisotropy (`B` strength, `RG` rotation offset), feeding anisotropic GGX sampling/eval/PDF in `bsdf_functions.glsl.js`. Tests: `materialsTexture.test.ts`, `materialStrideParity.test.ts`, `engineContract.test.ts`, core ledger contract. |
 
 **pt-webgpu** (`materialPacking.ts`, `materialTextures.ts`, `material.wgsl.ts`):
 
@@ -776,7 +776,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends |
 
-**pt-webgl2:** 9 unsupported → 0–3 unsupported (`anisotropyMap`, displacement, thicknessMap decision).
+**pt-webgl2:** 9 unsupported → 0–2 unsupported (displacement, thicknessMap decision).
 
 **pt-webgpu:** 22 unsupported → 0–5 (thickness, displacement, some maps if bind limits force tier split).
 

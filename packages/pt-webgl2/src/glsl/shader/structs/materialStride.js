@@ -6,11 +6,12 @@
 // interpolate `${MATERIAL_PIXELS}u`.
 //
 // Layout: texels 0..54 = fork data layout with reserved lanes now consumed by
-// scalar anisotropy (s11.a = strength, s17.b = rotation), 55..84 = 15 texture
-// transforms (2 texels each), 85/86 = D3 ao/light/bump map ids + scalars +
-// envMapIntensity, 87..92 = D3 ao/light/bump transforms (2 texels each),
-// 93..94 = alphaMap transform, 95..104 = per-map wrap modes (two maps per RGBA texel).
-export const MATERIAL_WRAP_TEXEL_OFFSET = 95;
+// scalar anisotropy (s6.b = anisotropyMap, s11.a = strength, s17.b = rotation),
+// 55..84 = 15 texture transforms (2 texels each), 85/86 = D3 ao/light/bump map
+// ids + scalars + envMapIntensity, 87..92 = D3 ao/light/bump transforms
+// (2 texels each), 93..94 = alphaMap transform, 95..96 = anisotropyMap transform,
+// 97..106 = per-map wrap modes (two maps per RGBA texel).
+export const MATERIAL_WRAP_TEXEL_OFFSET = 97;
 
 // Map order shared by the UV-set bitmask and the wrap-mode payload. Bit k in
 // UV_SET_BIT and pair k in the wrap texels describe the same MaterialSpec map.
@@ -34,6 +35,7 @@ export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([
   'aoMap',
   'lightMap',
   'bumpMap',
+  'anisotropyMap',
 ]);
 
 export const MATERIAL_WRAP_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 2);
@@ -52,7 +54,7 @@ export const MATERIAL_PIXELS = MATERIAL_WRAP_TEXEL_OFFSET + MATERIAL_WRAP_TEXELS
 //   bit 6  = alphaMap              bit 16 = aoMap
 //   bit 7  = clearcoatMap          bit 17 = lightMap
 //   bit 8  = clearcoatRoughnessMap bit 18 = bumpMap
-//   bit 9  = clearcoatNormalMap
+//   bit 9  = clearcoatNormalMap    bit 19 = anisotropyMap
 export const UV_SET_BIT = /** @type {Record<string, number>} */ (
   Object.fromEntries(MATERIAL_MAP_FIELD_ORDER.map((field, i) => [field, 1 << i]))
 );
