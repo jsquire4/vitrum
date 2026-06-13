@@ -27,6 +27,19 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 />
 ```
 
+For glTF/GLB hosts, pass `gltf` instead of a prebuilt core scene. The component
+loads through `@vitrum/gltf-adapter`, forwards the imported scene to the same
+`attachVitrum` lifecycle, and passes the asset recommendation into
+`createEngine` so `prefer="auto"` follows the compatibility planner.
+
+```tsx
+<VitrumCanvas
+  gltf="/models/hero.glb"
+  camera={camera}
+  prefer="auto"
+/>
+```
+
 ## Scene layout helpers
 
 `auditSceneNeedsTlas(scene)` (from `@vitrum/core`, re-exported here) classifies multi-mesh / instanced layouts. `createEngine()` uses it for backend pick + walkaround `bvhMode: 'tlas'` defaults.

@@ -299,6 +299,7 @@ function buildEngineFromOpts(
     canvas: opts.canvas,
     scene,
     ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
+    ...(opts.gltfAsset != null ? { gltfAsset: opts.gltfAsset } : {}),
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.advancedBackend != null ? { advancedBackend: opts.advancedBackend } : {}),
     ...(opts.advancedByBackend != null ? { advancedByBackend: opts.advancedByBackend } : {}),

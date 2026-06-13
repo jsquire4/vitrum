@@ -126,6 +126,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   tests pin report, dedupe, success reset, and post-dispose suppression.
 - `<VitrumCanvas>` now applies creation-time `advanced` prop identity changes by
   recreating the engine; `onAttachError` remains ref-stabilized.
+- `<VitrumCanvas>` now accepts a creation-time `gltf` prop plus
+  `gltfOptions`, loads through `loadGltfAsset`, forwards the imported scene to
+  `attachVitrum`, and passes the `gltfAsset` recommendation through the
+  lifecycle into `createEngine` so `prefer:"auto"` follows the compatibility
+  planner. Focused React/lifecycle tests pin both wrapper and forwarding seams.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative
   `scene` snapshot and falls back to `setScene()` on both engines when either
   incremental primitive path is missing or rejects; fallback patching uses the

@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
 import type { Scene } from '@vitrum/core';
+import type { GltfAssetResult, GltfJson } from '@vitrum/gltf-adapter';
 import type { CameraLike } from '../src/lifecycle/vanilla.js';
 import type { AttachVitrumHandle } from '../src/lifecycle/vanilla.js';
 
@@ -88,6 +89,30 @@ const CAMERA: CameraLike = {
   projectionMatrix: { elements: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]) },
   position: { x: 0, y: 0, z: 0 },
 };
+
+function f32Buffer(values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(values.length * 4);
+  const view = new DataView(buf);
+  values.forEach((v, i) => view.setFloat32(i * 4, v, true));
+  return buf;
+}
+
+function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
+      buffers: [{ byteLength: positions.byteLength }],
+    },
+    buffers: new Map([[0, positions]]),
+  };
+}
 
 // ── Helper: build a mock AttachVitrumHandle ───────────────────────────────────
 
@@ -230,5 +255,44 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     root.unmount();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(secondDispose).toHaveBeenCalled();
+  });
+
+  it('loads the gltf prop and forwards the imported asset hint to attachVitrum', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    let loadedAsset: GltfAssetResult | undefined;
+    const onGltfLoaded = vi.fn((asset: GltfAssetResult) => {
+      loadedAsset = asset;
+    });
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      gltf,
+      gltfOptions: { buffers },
+      camera: CAMERA,
+      onGltfLoaded,
+    }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await happyWindow.happyDOM.waitUntilComplete();
+
+    expect(onGltfLoaded).toHaveBeenCalledTimes(1);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    const opts = attachSpy.mock.calls[0]![0];
+    expect(loadedAsset).toBeDefined();
+    expect(opts.scene).toBe(loadedAsset!.scene);
+    expect(opts.gltfAsset).toBe(loadedAsset);
+    expect(opts.gltfAsset?.recommendedBackend?.backend).toBe('pt-webgl2');
+
+    root.unmount();
   });
 });

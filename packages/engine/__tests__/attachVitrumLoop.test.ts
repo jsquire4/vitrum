@@ -264,6 +264,37 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     handle.dispose();
   });
 
+  it('forwards gltfAsset into createEngine options', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const engine = makeMockEngine();
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const gltfAsset = { recommendedBackend: { backend: 'pt-webgl2' as const } };
+
+    const createSpy = vi.spyOn(createEngineModule, 'createEngine').mockResolvedValue(
+      engine as ReturnType<typeof createEngineModule.createEngine> extends Promise<infer T> ? T : never,
+    );
+
+    const handle = await attachVitrum({ canvas, scene, camera, gltfAsset });
+
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ gltfAsset }));
+    handle.dispose();
+  });
+
   it('H30 — ResizeObserver is wired to the canvas after attach', async () => {
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
     const createEngineModule = await import('../src/createEngine.js');

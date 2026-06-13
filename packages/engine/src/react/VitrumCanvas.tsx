@@ -21,6 +21,12 @@
 
 import * as React from 'react';
 import type { EngineError, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
+import {
+  loadGltfAsset,
+  type GltfAssetInput,
+  type GltfAssetResult,
+  type LoadGltfAssetOptions,
+} from '@vitrum/gltf-adapter';
 import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
@@ -30,8 +36,21 @@ import type {
 } from '../createEngine.js';
 
 export interface VitrumCanvasProps {
-  /** Scene description in the host-agnostic @vitrum/core contract. */
-  scene: Scene;
+  /** Scene description in the host-agnostic @vitrum/core contract. Required
+   *  unless `gltf` is supplied. */
+  scene?: Scene;
+  /** glTF/GLB input accepted by `@vitrum/gltf-adapter`. When supplied,
+   *  VitrumCanvas loads it on mount / prop identity change, passes the imported
+   *  scene to attachVitrum, and forwards the asset recommendation to
+   *  createEngine so `prefer:"auto"` is feature-aware instead of triangle-only. */
+  gltf?: GltfAssetInput;
+  /** Adapter options for `gltf`: buffers, decoder hooks, texture decode hooks,
+   *  baseUri, fetch, compatibility policy inputs, etc. Identity changes recreate
+   *  the engine, matching `scene` creation-time semantics. */
+  gltfOptions?: LoadGltfAssetOptions;
+  /** Called after a glTF asset loads successfully and before attachVitrum
+   *  resolves. Callback updates do not recreate the engine. */
+  onGltfLoaded?: (asset: GltfAssetResult) => void;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
    *  renderFrame on every RAF tick. */
@@ -83,6 +102,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
     const onEngineErrorRef = React.useRef<VitrumCanvasProps['onEngineError']>(props.onEngineError);
+    const onGltfLoadedRef = React.useRef<VitrumCanvasProps['onGltfLoaded']>(props.onGltfLoaded);
     // H31 — ref-stabilize `onAttachError` so inline callbacks do not cause full
     // engine teardown+recreate on every parent render. `advanced` is a creation-time
     // backend option, so identity changes intentionally recreate the engine.
@@ -95,6 +115,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     React.useEffect(() => { onProgressRef.current = props.onProgress; },   [props.onProgress]);
     React.useEffect(() => { onErrorRef.current = props.onError; },         [props.onError]);
     React.useEffect(() => { onEngineErrorRef.current = props.onEngineError; }, [props.onEngineError]);
+    React.useEffect(() => { onGltfLoadedRef.current = props.onGltfLoaded; }, [props.onGltfLoaded]);
     React.useEffect(() => { onAttachErrorRef.current = props.onAttachError; }, [props.onAttachError]);
 
     // Effect dependency captures the structural inputs only. Mutable refs
@@ -104,36 +125,58 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       if (!canvas) return;
       let cancelled = false;
       let attached: AttachVitrumHandle | null = null;
+      const abortController = typeof AbortController !== 'undefined'
+        ? new AbortController()
+        : null;
 
-      attachVitrum({
-        canvas,
-        scene: props.scene,
-        camera: props.camera,
-        ...(props.prefer ? { prefer: props.prefer } : {}),
-        ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
-        ...(props.advanced != null ? { advanced: props.advanced } : {}),
-        ...(props.debug != null ? { debug: props.debug } : {}),
-        ...(props.autoRecreateOnDeviceLoss != null
-          ? { autoRecreateOnDeviceLoss: props.autoRecreateOnDeviceLoss }
-          : {}),
-        // Live-propagation: pass a getter so the rAF tick reads the latest
-        // `props.quality` each frame (qualityRef.current is updated by the
-        // useEffect at line 67 whenever props.quality changes).
-        quality: () => qualityRef.current,
-        onFrame: (stats) => { onFrameRef.current?.(stats); },
-        onProgress: (progress) => { onProgressRef.current?.(progress); },
-        onError: (error, event) => { onErrorRef.current?.(error, event); },
-        onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ } },
-      })
-        .then((h) => {
-          if (cancelled) {
-            h.dispose();
-            return;
-          }
-          handleRef.current = h;
-          attached = h;
-        })
+      const attach = async (): Promise<void> => {
+        const gltfSignal = composeAbortSignal(props.gltfOptions?.signal, abortController?.signal);
+        const gltfAsset = props.gltf !== undefined
+          ? await loadGltfAsset(props.gltf, {
+              ...(props.gltfOptions ?? {}),
+              ...(gltfSignal != null ? { signal: gltfSignal } : {}),
+            })
+          : undefined;
+        if (cancelled) return;
+        if (gltfAsset !== undefined) {
+          try { onGltfLoadedRef.current?.(gltfAsset); } catch { /* host callback must not propagate — ignore */ }
+        }
+        const scene = gltfAsset?.scene ?? props.scene;
+        if (scene == null) {
+          throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
+        }
+        const h = await attachVitrum({
+          canvas,
+          scene,
+          ...(gltfAsset !== undefined ? { gltfAsset } : {}),
+          camera: props.camera,
+          ...(props.prefer ? { prefer: props.prefer } : {}),
+          ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
+          ...(props.advanced != null ? { advanced: props.advanced } : {}),
+          ...(props.debug != null ? { debug: props.debug } : {}),
+          ...(props.autoRecreateOnDeviceLoss != null
+            ? { autoRecreateOnDeviceLoss: props.autoRecreateOnDeviceLoss }
+            : {}),
+          // Live-propagation: pass a getter so the rAF tick reads the latest
+          // `props.quality` each frame (qualityRef.current is updated by the
+          // useEffect above whenever props.quality changes).
+          quality: () => qualityRef.current,
+          onFrame: (stats) => { onFrameRef.current?.(stats); },
+          onProgress: (progress) => { onProgressRef.current?.(progress); },
+          onError: (error, event) => { onErrorRef.current?.(error, event); },
+          onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ } },
+        });
+        if (cancelled) {
+          h.dispose();
+          return;
+        }
+        handleRef.current = h;
+        attached = h;
+      };
+
+      void attach()
         .catch((err) => {
+          if (cancelled) return;
           // H31 — call via ref so inline onAttachError props don't appear in
           // the effect dep array (which would cause teardown per parent render).
           onAttachErrorRef.current?.(err);
@@ -142,6 +185,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
 
       return () => {
         cancelled = true;
+        try { abortController?.abort(); } catch { /* best-effort cancel — ignore */ }
         attached?.dispose();
         handleRef.current = null;
       };
@@ -150,7 +194,17 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     // `advanced` stays in the dep array because backend options are construction
     // inputs and prop identity changes must apply.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.advanced, props.debug]);
+    }, [
+      props.scene,
+      props.gltf,
+      props.gltfOptions,
+      props.camera,
+      props.prefer,
+      props.pauseOnHidden,
+      props.advanced,
+      props.debug,
+      props.autoRecreateOnDeviceLoss,
+    ]);
 
     // forwardRef plumbing.
     React.useImperativeHandle(externalRef, () => canvasRef.current as HTMLCanvasElement, []);
@@ -164,3 +218,16 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     );
   },
 );
+
+function composeAbortSignal(
+  external: AbortSignal | undefined,
+  internal: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (external != null && internal != null) {
+    const abortSignalCtor = globalThis.AbortSignal as
+      | (typeof AbortSignal & { any?: (signals: AbortSignal[]) => AbortSignal })
+      | undefined;
+    return abortSignalCtor?.any?.([external, internal]) ?? external;
+  }
+  return external ?? internal;
+}
