@@ -655,6 +655,50 @@ fn brdfDirectionalPdfFull(
   return total;
 }
 
+fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
+  return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1.0);
+}
+
+fn brdfDirectionalPdfFullSampled(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> f32 {
+  // The transmissive dielectric branch in sampleNextBounceDirection is still the
+  // delta reflection/refraction sampler. Keep its density base-only until the
+  // layered glass sampler grows a real clearcoat/sheen/refraction mixture.
+  if (transmission > 0.0 && metallic == 0.0) {
+    return brdfDirectionalPdf(
+      baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+      specularColor, specularIntensity,
+    );
+  }
+  return brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    anisotropy, anisotropyRotation,
+  ) / brdfExtensionLobeWeightSum(clearcoat, sheen);
+}
+
 fn evaluateBrdf(
   baseColor: vec3f,
   roughness: f32,
@@ -896,6 +940,11 @@ fn sampleNextBounceDirection(
   fresnel: vec3f,
   thinFilmTransmitTint: vec3f,
   isTranslucent: bool,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> BounceSample {
@@ -1024,8 +1073,16 @@ fn sampleNextBounceDirection(
   let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
   let specProb = baseSpecProb / sumProb;
   let diffProb = baseDiffProb / sumProb;
-  let xi2 = rand_f32(rng);
-  if (xi2 < specProb) {
+  let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
+  let clearcoatWeight = max(clearcoat, 0.0);
+  let sheenWeight = max(sheen, 0.0);
+  // Draw once from the normalized source-lobe mixture:
+  //   p = (p_base + clearcoat*p_clearcoat + sheen*p_sheen)/(1+clearcoat+sheen).
+  // When both extension weights are zero this is exactly the historical xi2.
+  let xiLobe = rand_f32(rng) * lobeWeightSum;
+  if (xiLobe < 1.0) {
+    let xiBase = xiLobe;
+    if (xiBase < specProb) {
     // Glossy specular reflection — Heitz 2018 VNDF.
     // Item 7 — use anisotropic sampler when anisotropy > 0; isotropic otherwise.
     // The tangent frame (tanT, tanB) is already rotated by anisotropyRotation above.
@@ -1052,15 +1109,39 @@ fn sampleNextBounceDirection(
     // dielectric-reflection branch above).
     let nDotVcc = max(dot(normal, wo), 0.0);
     let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
-    result.throughputMul = fresnel * g1Wi2 * msBoost / max(specProb, 1e-4);
+      result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);
+    } else {
+      result.newRayOrigin = hitPos + normal * 1e-3;
+      let bs = cosineHemisphereSample(rng, normal);
+      result.sampledDir = bs.wi;
+      result.newRayDir = bs.wi;
+      result.sampleAllowsAreaMis = true;
+      let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
+      result.throughputMul = (kd * baseColor) * lobeWeightSum / max(diffProb, 1e-4);
+    }
+  } else if (xiLobe < 1.0 + clearcoatWeight) {
+    let wo = -incomingDir;
+    result.newRayOrigin = hitPos + normal * 1e-3;
+    let bsCc = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);
+    result.sampledDir = bsCc.wi;
+    result.newRayDir = bsCc.wi;
+    result.sampleAllowsAreaMis = true;
+    let nDotCc = max(dot(normal, result.sampledDir), 0.0);
+    let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, result.sampledDir);
+    let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;
+    let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, result.sampledDir);
+    result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
     let bs = cosineHemisphereSample(rng, normal);
     result.sampledDir = bs.wi;
     result.newRayDir = bs.wi;
     result.sampleAllowsAreaMis = true;
-    let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
-    result.throughputMul = (kd * baseColor) / max(diffProb, 1e-4);
+    let nDotSh = max(dot(normal, result.sampledDir), 0.0);
+    let shPdf = bs.pdf;
+    let shDensity = (sheenWeight / lobeWeightSum) * shPdf;
+    let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);
+    result.throughputMul = shBrdf * nDotSh / max(shDensity, 1e-8);
   }
   return result;
 }

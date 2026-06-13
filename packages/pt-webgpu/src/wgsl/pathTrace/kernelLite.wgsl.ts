@@ -339,7 +339,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
-            let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
+            let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -407,6 +407,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       fresnel,
       thinFilmTransmitTint,
       isTranslucent,
+      mat.clearcoat,
+      mat.clearcoatRoughness,
+      mat.sheen,
+      mat.sheenRoughness,
+      mat.sheenColor,
       0.0, // anisotropy — lite tier has no aniso texture bindings; always isotropic
       0.0, // anisotropyRotation
     );

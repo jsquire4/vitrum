@@ -973,7 +973,7 @@ fn manifoldNeeContribution(
       specularColor, specularIntensity,
       anisotropy, anisotropyRotation,
     );
-    let brdfPdf = brdfDirectionalPdfFull(
+    let brdfPdf = brdfDirectionalPdfFullSampled(
       baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,

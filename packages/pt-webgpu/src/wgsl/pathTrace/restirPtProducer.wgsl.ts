@@ -453,7 +453,7 @@ fn rptDirectAtVertex(
           specularColor, specularIntensity,
           anisotropy, anisotropyRotation,
         );
-        let brdfPdf = brdfDirectionalPdfFull(
+        let brdfPdf = brdfDirectionalPdfFullSampled(
           baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -648,13 +648,13 @@ fn rptSourceDirectionalPdfFull(
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> f32 {
-  return brdfDirectionalPdfFull(
+  return brdfDirectionalPdfFullSampled(
     baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
-  ) / rptSourceLobeWeightSum(clearcoat, sheen);
+  );
 }
 
 @compute @workgroup_size(8, 8, 1)

@@ -198,7 +198,7 @@ fn bsdfEnvironmentConnectionContribution(
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return vec3f(0.0); }
-  let bsdfPdf = brdfDirectionalPdfFull(
+  let bsdfPdf = brdfDirectionalPdfFullSampled(
     baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,

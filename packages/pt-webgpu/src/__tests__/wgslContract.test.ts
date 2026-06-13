@@ -229,8 +229,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: full-tier material texture descriptors now append
     // extension-lobe maps (clearcoat/sheen/iridescence/specular) and the prologue
     // modulates decoded lobe parameters before downstream BSDF/PDF calls.
-    expect(digest).toBe('d8e7cf3417a57e3bed78426607346cacf2154de983e89bdf7e13063437f7b7ee');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(341394);
+    // Re-pinned 2026-06-13: MNEE cone-vs-BSDF MIS now uses the sampled-density
+    // BRDF PDF helper to match the base/clearcoat/sheen source sampler.
+    expect(digest).toBe('59b9c3a7a6b35504c73229670f9fc27c6e5eb0816ffd7bc552b3eddc3ed6958d');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(346449);
   });
 });
 
@@ -252,10 +254,23 @@ describe('pt-webgpu WGSL material contract', () => {
   it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bsdfAreaLightConnectionContribution(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoat: f32,');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFull(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.clearcoatRoughness,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('anisoRotation,');
+  });
+
+  it('samples clearcoat and sheen in the main eye-path with a matching sampled pdf', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsCc = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampled(');
   });
 
   it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {
@@ -269,7 +284,7 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn pointLightReflectionCaustic(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
   });
 
   it('keeps lite-tier MNEE stub signature aligned with the lite kernel call', () => {
@@ -298,8 +313,8 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn evaluateBdptConnection(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFull(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampled(');
   });
 
   it('includes hero-wavelength MIS helpers when spectral mode is enabled', () => {

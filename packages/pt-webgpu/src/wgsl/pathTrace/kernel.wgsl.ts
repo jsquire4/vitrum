@@ -742,7 +742,7 @@ ${transmissiveBlock}
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+              let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
@@ -799,7 +799,7 @@ ${transmissiveBlock}
             if (cosLight > 0.0) {
               let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+              let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
@@ -844,7 +844,7 @@ ${transmissiveBlock}
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
-            let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
+            let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -996,6 +996,11 @@ ${transmissiveBlock}
       fresnel,
       thinFilmTransmitTint,
       isTranslucent,
+      mat.clearcoat,
+      mat.clearcoatRoughness,
+      mat.sheen,
+      mat.sheenRoughness,
+      mat.sheenColor,
       anisoStrength,
       anisoRotation,
     );
@@ -1015,18 +1020,24 @@ ${mediumStateUpdate}
       // The forward scatter pdf of the chosen next direction at E_bounce — fed
       // to the next iteration as E_{bounce+1}'s reverse density. (eyePdfFwd is
       // now this real value, not the old hardcoded 1.0.)
-      let scatterPdfFwd = brdfDirectionalPdf(
+      let scatterPdfFwd = brdfDirectionalPdfFullSampled(
         baseColor, roughness, metallic, transmission, ior, normal, wo, sampledDir,
-        mat.specularColor, mat.specularIntensity);
+        mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+        mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+        mat.specularColor, mat.specularIntensity,
+        anisoStrength, anisoRotation);
       // Merged pdfFwd(E_{bounce-1}): swapped-direction reverse density at the
       // PREVIOUS eye vertex toward E_bounce, using the natural next eye direction
       // as wo (PBRT camera[d-1].pdfRev set while at camera[d]). Write into the
       // previous scratch slot (D1 — non-symmetric reverse density).
       if (bounce >= 1u) {
         let toPrev = safe_normalize(bdptPrevPos - hitPos);
-        let swappedRev = brdfDirectionalPdf(
+        let swappedRev = brdfDirectionalPdfFullSampled(
           baseColor, roughness, metallic, transmission, ior, normal, sampledDir, toPrev,
-          mat.specularColor, mat.specularIntensity);
+          mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+          mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+          mat.specularColor, mat.specularIntensity,
+          anisoStrength, anisoRotation);
         bdptEyeStackSetFwd(bounce - 1u, swappedRev);
       }
       bdptPrevScatterPdf = scatterPdfFwd;

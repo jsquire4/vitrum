@@ -395,7 +395,7 @@ fn evaluateBdptConnection(
   var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
   if (lvMatId >= 0.0) {
     let lvMatF = decodeMaterial(u32(lvMatId));
-    fwdEe = brdfDirectionalPdfFull(
+    fwdEe = brdfDirectionalPdfFullSampled(
       lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
       0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE,
       lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,
@@ -411,7 +411,7 @@ fn evaluateBdptConnection(
     eeMinusPos = prevEye.pos;
   }
   let eeToPrev = normalize(eeMinusPos - eyePos);  // E_e → E_{e-1} (or → camera at e=0)
-  let revLc = brdfDirectionalPdfFull(
+  let revLc = brdfDirectionalPdfFullSampled(
     baseColor, roughness, metallic, transmission, ior, eyeNormal, eeToPrev, connDir,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -420,7 +420,7 @@ fn evaluateBdptConnection(
   );
   var fwdEeMinus = 0.0;
   if (e >= 1u) {
-    fwdEeMinus = brdfDirectionalPdfFull(
+    fwdEeMinus = brdfDirectionalPdfFullSampled(
       baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -437,7 +437,7 @@ fn evaluateBdptConnection(
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
     if (lvMatId >= 0.0) {
       let lvMatR = decodeMaterial(u32(lvMatId));
-      revLcMinus = brdfDirectionalPdfFull(
+      revLcMinus = brdfDirectionalPdfFullSampled(
         lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
         0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus,
         lvMatR.clearcoat, lvMatR.clearcoatRoughness, lvMatR.sheen, lvMatR.sheenRoughness,

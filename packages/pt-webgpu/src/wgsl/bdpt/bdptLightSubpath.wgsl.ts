@@ -464,29 +464,49 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       let prevBc = prevMat.baseColor;
       let prevRough = max(prevMat.roughness, 0.02);
       let prevMetal = prevMat.metallic;
-      var prevTanT: vec3f;
-      var prevTanB: vec3f;
-      buildOnb(prevNormal, &prevTanT, &prevTanB);
       let cosOPrev = max(dot(prevNormal, woAtPrev), 0.0);
-      let f0Prev = mix(vec3f(0.04), prevBc, prevMetal);
+      let f0Prev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);
       let fresPrev = fresnelSchlick(cosOPrev, f0Prev);
-      let specProbPrev = clamp(mix(0.04, 0.96, max(luminance(fresPrev), prevMetal)), 0.04, 0.96);
-      var sampledDir = vec3f(0.0);
-      if (rand_f32(&rng) < specProbPrev) {
-        let gs = glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough);
-        sampledDir = gs.wi;
-      } else {
-        let cs = cosineHemisphereSample(&rng, prevNormal);
-        sampledDir = cs.wi;
-      }
-      scatterDir = sampledDir;
-      pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
+      let bsPrev = sampleNextBounceDirection(
+        &rng,
+        -woAtPrev,
+        prevPos,
+        prevNormal,
+        prevNormal,
+        prevBc,
+        prevRough,
+        prevMetal,
+        0.0,
+        prevMat.ior,
+        fresPrev,
+        vec3f(1.0),
+        false,
+        prevMat.clearcoat,
+        prevMat.clearcoatRoughness,
+        prevMat.sheen,
+        prevMat.sheenRoughness,
+        prevMat.sheenColor,
+        0.0,
+        0.0,
+      );
+      scatterDir = bsPrev.sampledDir;
+      pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
                                       prevNormal, woAtPrev, scatterDir,
-                                      prevMat.specularColor, prevMat.specularIntensity);
+                                      prevMat.clearcoat, prevMat.clearcoatRoughness,
+                                      prevMat.sheen, prevMat.sheenRoughness,
+                                      prevMat.iridescence, prevMat.iridescenceIor,
+                                      prevMat.iridescenceThicknessMin, prevMat.iridescenceThicknessMax,
+                                      prevMat.specularColor, prevMat.specularIntensity,
+                                      0.0, 0.0);
       cosPrev = max(dot(prevNormal, scatterDir), 0.0);
-      fPrev = evaluateBrdf(
+      fPrev = evaluateBrdfFull(
         prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir,
+        prevMat.clearcoat, prevMat.clearcoatRoughness,
+        prevMat.sheen, prevMat.sheenRoughness, prevMat.sheenColor,
+        prevMat.iridescence, prevMat.iridescenceIor,
+        prevMat.iridescenceThicknessMin, prevMat.iridescenceThicknessMax,
         prevMat.specularColor, prevMat.specularIntensity,
+        0.0, 0.0,
       );
     }
   
@@ -544,9 +564,9 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     // symmetric w.r.t. the Lambertian BSDF), so pdfFwd is the correct patch value.
     //
     // For GLOSSY / VNDF vertices: the VNDF pdf is NOT symmetric.  The forward pdf
-    // was brdfDirectionalPdf(prevNormal, woAtPrev, scatterDir); the reverse pdf is
-    // brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) — outgoing and incoming
-    // swapped.  Using pdfFwd as pdfRev for VNDF lobes biases the MIS weights but
+    // was brdfDirectionalPdfFullSampled(prevNormal, woAtPrev, scatterDir); the reverse pdf is
+    // brdfDirectionalPdfFullSampled(prevNormal, scatterDir, woAtPrev) — outgoing
+    // and incoming swapped.  Using pdfFwd as pdfRev for VNDF lobes biases the MIS weights but
     // NOT the contribution value (the MIS sum still integrates to an unbiased
     // estimator — incorrect pdfRev inflates or deflates strategy weights without
     // introducing energy).  The PBRT §16.3 analysis bounds the variance penalty to
@@ -555,7 +575,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     //
     // We compute the true pdfRev for both cases:
     //   - emitter (prevMatId < 0): pdfRev = pdfFwd (Lambertian symmetric)
-    //   - surface (prevMatId >= 0): pdfRev = brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev)
+    //   - surface (prevMatId >= 0): pdfRev = brdfDirectionalPdfFullSampled(prevNormal, scatterDir, woAtPrev)
     var pdfRevAtPrev = pdfFwd; // correct default for emitter + Lambertian vertices
     if (prevMatId >= 0.0) {
       // Surface vertex: compute the reverse pdf by swapping wo/wi in the BSDF pdf.
@@ -566,9 +586,14 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       let prevRoughRev = max(prevMatForRev.roughness, 0.02);
       let prevMetalRev = prevMatForRev.metallic;
       // Reverse: incoming = scatterDir, outgoing (toward prevCol's predecessor) = woAtPrev.
-      pdfRevAtPrev = brdfDirectionalPdf(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
+      pdfRevAtPrev = brdfDirectionalPdfFullSampled(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
                                         prevMatForRev.ior, prevNormal, scatterDir, woAtPrev,
-                                        prevMatForRev.specularColor, prevMatForRev.specularIntensity);
+                                        prevMatForRev.clearcoat, prevMatForRev.clearcoatRoughness,
+                                        prevMatForRev.sheen, prevMatForRev.sheenRoughness,
+                                        prevMatForRev.iridescence, prevMatForRev.iridescenceIor,
+                                        prevMatForRev.iridescenceThicknessMin, prevMatForRev.iridescenceThicknessMax,
+                                        prevMatForRev.specularColor, prevMatForRev.specularIntensity,
+                                        0.0, 0.0);
     }
     let old_r2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
     bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);

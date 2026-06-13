@@ -21,19 +21,21 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // (woAtPrev), and that SAME direction is used to extend the path (trace) AND
     // to compute the stored throughput / pdfFwd. The old two-step
     // (cosine-hemisphere trace + discard + real-BSDF sample at newPos) is gone.
-    // The BSDF is sampled at prevPos: glossy lobe via glossyReflectionSample,
-    // diffuse lobe via cosineHemisphereSample.
+    // The BSDF is sampled at prevPos through the shared main-path sampler so the
+    // scalar clearcoat/sheen source-lobe mixture and sampled PDF stay coherent.
     //
     // Item-3 fix (2026-06-10): emitter vertex sets fPrev = INV_PI (the Lambertian
     // BSDF value f = 1/π) so fPrev·cos/pdf = (1/π)·cos/(cos/π) = 1. The prior
     // fPrev = 1.0 gave 1.0·cos/(cos/π) = π — a spurious ×π on every emitter bounce.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough)');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirection(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoat,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.sheenRoughness,');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFull(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;');
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter;');
     // pdfRev(prevCol) is patched to the TRUE reverse density (Item-3 fix 2026-06-10):
     // for surface vertices, brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) —
@@ -41,6 +43,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // For emitter vertices (prevMatId < 0), Lambertian cosine hemisphere IS symmetric
     // so pdfFwd == pdfRev; the emitter branch correctly falls back to pdfFwd.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfRevAtPrev = brdfDirectionalPdfFullSampled(prevBcRev, prevRoughRev, prevMetalRev, 0.0,');
   });
 
   it('emitter-vertex extension uses fPrev = INV_PI (Lambertian f = 1/π, not 1.0)', () => {
@@ -48,9 +51,9 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // fPrev * cosPrev / pdfFwd = (1/π) * cos / (cos/π) = 1.0 exactly.
     // Prior fPrev = vec3f(1.0) gave (1.0) * cos / (cos/π) = π — a spurious ×π.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(INV_PI);');
-    // Surface vertices still use the real evaluateBrdf (unchanged).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity');
+    // Surface vertices still use the real extension-aware BRDF.
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFull(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
   });
 
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {
@@ -66,6 +69,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
     // The MIS pdf bookkeeping (fwdEe + revLcMinus) also uses the real BSDF pdf.
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvWoPrev, lcToE,');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,',
     );

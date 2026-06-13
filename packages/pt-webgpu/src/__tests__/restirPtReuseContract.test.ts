@@ -59,6 +59,7 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
       'fn evaluateBrdfFull(',
       'fn brdfDirectionalPdf(',
       'fn brdfDirectionalPdfFull(',
+      'fn brdfDirectionalPdfFullSampled(',
       'fn cosineHemisphereSample(',
       'fn glossyReflectionSample(',
       'fn glossyReflectionSampleAnisotropic(',
@@ -191,8 +192,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'let xiSource = rand_f32(rng) * lobeWeightSum;',
       'if (xiSource < 1.0 + max(clearcoat, 0.0)) {',
       'let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);',
-      'return brdfDirectionalPdfFull(',
-      ') / rptSourceLobeWeightSum(clearcoat, sheen);',
+      'return brdfDirectionalPdfFullSampled(',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -202,7 +202,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptDirectAtVertex(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatRoughness: f32,');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateBrdfFull(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFull(');
   });
 

@@ -97,8 +97,8 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: lite MNEE/env reconnection call sites accept the
     // decoded KHR_materials_specular scalar factors to keep the scalar material
     // contract interface-aligned with full-tier shaders.
-    expect(digest).toBe('d82deb97ea1598f145e3cdae032c72c15f3295d0c35dcae576a52f71b26a9536');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(140941);
+    expect(digest).toBe('3f9596abd07230055e998a819c2890ea48922368d0229156816dfac344cca987');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(144297);
   });
 });
 
@@ -115,9 +115,21 @@ describe('pt-webgpu lite WGSL contract', () => {
 
   it('routes lite scalar extension lobes through full BRDF helpers with zero anisotropy', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdf = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFull(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.clearcoatRoughness,');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('0.0, 0.0);');
+  });
+
+  it('passes scalar clearcoat and sheen into the lite main bounce sampler', () => {
+    const callIndex = PT_WEBGPU_TRACE_LITE_WGSL.lastIndexOf('let bs = sampleNextBounceDirection(');
+    expect(callIndex).toBeGreaterThan(-1);
+    const call = PT_WEBGPU_TRACE_LITE_WGSL.slice(callIndex, callIndex + 700);
+    expect(call).toContain('mat.clearcoat,');
+    expect(call).toContain('mat.clearcoatRoughness,');
+    expect(call).toContain('mat.sheen,');
+    expect(call).toContain('mat.sheenRoughness,');
+    expect(call).toContain('mat.sheenColor,');
+    expect(call).toContain('0.0, // anisotropy');
   });
 
   it('keeps mesh BVH trace and directional direct lighting', () => {
