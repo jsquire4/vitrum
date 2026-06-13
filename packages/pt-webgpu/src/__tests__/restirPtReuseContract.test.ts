@@ -269,6 +269,79 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(f0Idx).toBeGreaterThan(prologueIdx);
   });
 
+  it('mirrors the material-map prologue for suffix/reconnection vertices too', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('struct RptSuffixMaterial {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial');
+    for (const line of [
+      'out.baseColor = mat.baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;',
+      'out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);',
+      'let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);',
+      'out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;',
+      'out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
+      'out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
+      'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));',
+      'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));',
+      'out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW);',
+      'out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+  });
+
+  it('applies layer, thin-film, spectral albedo, and spectral emission in suffix Lo', () => {
+    for (const line of [
+      'out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);',
+      'let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));',
+      'activeLayerWeightRgb(layerTx, heroLambda, true)',
+      'let rt = thinFilmTmmRt(',
+      'out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);',
+      'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
+      'out.baseColor = vec3f(reflScalar);',
+      'let emissive = select(sm.emissive, spectralEmissionAtHero(sm.emissive, heroLambda), params.spectralEnabled != 0u);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+  });
+
+  it('consumes suffix anisotropy in direct lighting and onward BRDF evaluation', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropy: f32,');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyRotation: f32,');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropy, anisotropyRotation,');
+
+    const directCallIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = Lo + rptDirectAtVertex(');
+    const directAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', directCallIdx);
+    const onwardIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fOnward = evaluateBrdfFull(');
+    const onwardAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', onwardIdx);
+    expect(directCallIdx).toBeGreaterThanOrEqual(0);
+    expect(directAnisoIdx).toBeGreaterThan(directCallIdx);
+    expect(onwardIdx).toBeGreaterThan(directAnisoIdx);
+    expect(onwardAnisoIdx).toBeGreaterThan(onwardIdx);
+  });
+
+  it('alpha-skips reconnection and onward suffix hits before decoding their material', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, u32>) -> RptAlphaTraceHit');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, rng)');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);');
+
+    const reconTraceIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
+    const suffixLoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = rptComputeLoAtReconnection(&rng, xs, sHit, reconRay.direction, reconDirToXv, heroLambda, suffixBounces);');
+    expect(suffixLoIdx).toBeGreaterThan(reconTraceIdx);
+  });
+
+  it('uses the mapped suffix normal as the reservoir reconnection normal', () => {
+    const matIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);');
+    const normalIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('ns = sReservoirMat.normal;');
+    const updateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('updateReservoirPT(&r, xs, ns, Lo, pdfSrc, wCandidate, &rng);');
+    expect(matIdx).toBeGreaterThanOrEqual(0);
+    expect(normalIdx).toBeGreaterThan(matIdx);
+    expect(updateIdx).toBeGreaterThan(normalIdx);
+  });
+
   it('gates specular / transmissive visible vertices to an EMPTY reservoir (no reuse)', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptIsReusableVisibleVertex(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.01) { return false; }');

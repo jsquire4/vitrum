@@ -107,6 +107,147 @@ fn rptIsReusableVisibleVertex(roughness: f32, metallic: f32, transmission: f32) 
   return roughness >= 0.08;
 }
 
+struct RptAlphaTraceHit {
+  hit: SceneHit,
+  rayOrigin: vec3f,
+}
+
+struct RptSuffixMaterial {
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  emissive: vec3f,
+  normal: vec3f,
+  transmission: f32,
+  ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  isUnlit: bool,
+}
+
+// Trace a suffix segment through stochastic/masked alpha the same way the main
+// kernel and visible-vertex producer do. The returned origin is the post-skip ray
+// origin, so callers reconstruct hit positions against the ray that actually hit.
+fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, u32>) -> RptAlphaTraceHit {
+  var ray = rayIn;
+  var hit = traceClosest(ray, 1e-4, INFINITY);
+  for (var aSkip = 0u; aSkip < 8u; aSkip = aSkip + 1u) {
+    if (!hit.didHit || !alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, rng)) {
+      break;
+    }
+    ray.origin = ray.origin + ray.direction * (hit.dist + 1e-4);
+    hit = traceClosest(ray, 1e-4, INFINITY);
+  }
+  var out: RptAlphaTraceHit;
+  out.hit = hit;
+  out.rayOrigin = ray.origin;
+  return out;
+}
+
+// Full-tier suffix material decode for the reconnection vertex and its onward
+// hits. This mirrors the main shade prologue's hit-local material stack: maps,
+// normal/bump perturbation, layer tint, thin-film reflect tint, spectral albedo,
+// and KHR_materials_specular. The remaining ReSTIR-PT source-lobe sampler/PDF
+// gap is separate: this helper makes the suffix Lo material domain truthful.
+fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial {
+  let matId = hitMaterialId(hit);
+  let mat = decodeMaterial(matId);
+  let isFrontFace = dot(hit.normal, incomingDir) < 0.0;
+  var out: RptSuffixMaterial;
+  out.baseColor = mat.baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;
+  out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);
+  let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);
+  out.roughness = clamp(mat.roughness * ormSample.g, 0.02, 1.0);
+  out.metallic = clamp(mat.metallic * ormSample.b, 0.0, 1.0);
+  out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;
+  out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  out.ior = mat.ior;
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+    out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
+  }
+  out.normal = select(-hit.normal, hit.normal, isFrontFace);
+  out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
+  out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
+
+  out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  out.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  out.sheen = mat.sheen;
+  out.sheenRoughness = clamp(mat.sheenRoughness * sampleSheenRoughnessTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));
+  out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  let iridescenceThicknessSample = sampleIridescenceThicknessTexture(matId, hit.triIndex, hit.baryVW);
+  out.iridescenceThicknessMin = mat.iridescenceThicknessMin;
+  out.iridescenceThicknessMax = mat.iridescenceThicknessMax;
+  if (iridescenceThicknessSample >= 0.0) {
+    let iridescenceThickness = mix(mat.iridescenceThicknessMin, mat.iridescenceThicknessMax, iridescenceThicknessSample);
+    out.iridescenceThicknessMin = iridescenceThickness;
+    out.iridescenceThicknessMax = iridescenceThickness;
+    if (iridescenceThickness <= 0.0) { out.iridescence = 0.0; }
+  }
+  out.iridescenceIor = mat.iridescenceIor;
+  out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));
+  out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
+  out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW);
+  out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);
+  out.isUnlit = mat.isUnlit;
+
+  let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
+  let layerRoughness = select(mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace);
+  if (layerRoughness >= 0.0) {
+    out.roughness = clamp(layerRoughness, 0.02, 1.0);
+  }
+  let layerWeight = select(
+    layerTx,
+    activeLayerWeightRgb(layerTx, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+  );
+  out.baseColor = out.baseColor * layerWeight;
+  if (mat.thinFilmEnabled) {
+    let viewCos = clamp(dot(out.normal, wo), 0.0, 1.0);
+    var thinFilmReflectTint = vec3f(1.0);
+    if (params.spectralEnabled != 0u) {
+      let rt = thinFilmTmmRt(
+        matId,
+        mat.thinFilmLayerCountU,
+        heroLambda,
+        out.ior,
+        mat.thinFilmIncidentIor,
+        mat.thinFilmAngleDependent,
+        viewCos,
+      );
+      thinFilmReflectTint = vec3f(clamp(rt.x, 0.0, 1.0));
+    } else {
+      let rtR = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 630.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      let rtG = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 540.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      let rtB = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 460.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
+    }
+    let layerStrength = clamp(0.12 + 0.06 * f32(mat.thinFilmLayerCountU), 0.0, 0.55);
+    let filmStrength = clamp(layerStrength * (1.0 - out.roughness), 0.0, 0.6);
+    out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);
+  }
+  if (params.spectralEnabled != 0u) {
+    let reflScalar = select(
+      max(luminance(out.baseColor), 0.0),
+      evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda),
+      mat.hasSpectralReflectance,
+    );
+    out.baseColor = vec3f(reflScalar);
+  }
+  return out;
+}
+
 // Direct-lighting NEE at the RECONNECTION vertex xs (visible-vertex independent).
 // Adds the rect-/disc-area + directional + point + environment connections with
 // the SAME analytic estimators the megakernel uses, at the suffix throughput
@@ -136,6 +277,8 @@ fn rptDirectAtVertex(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   suffixThroughput: vec3f,
 ) -> vec3f {
   var contrib = vec3f(0.0);
@@ -151,7 +294,7 @@ fn rptDirectAtVertex(
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          0.0, 0.0,
+          anisotropy, anisotropyRotation,
         );
         contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;
       }
@@ -207,7 +350,7 @@ fn rptDirectAtVertex(
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            0.0, 0.0,
+            anisotropy, anisotropyRotation,
           );
           contrib = contrib + suffixThroughput * brdf * nDotL * rr / max(lightPdf, 1e-6);
         }
@@ -238,7 +381,7 @@ fn rptDirectAtVertex(
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          0.0, 0.0,
+          anisotropy, anisotropyRotation,
         );
         contrib = contrib + suffixThroughput * brdf * nDotL * rad * attenuation;
       }
@@ -276,7 +419,7 @@ fn rptDirectAtVertex(
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            0.0, 0.0,
+            anisotropy, anisotropyRotation,
           );
           contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
         }
@@ -308,14 +451,14 @@ fn rptDirectAtVertex(
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          0.0, 0.0,
+          anisotropy, anisotropyRotation,
         );
         let brdfPdf = brdfDirectionalPdfFull(
           baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          0.0, 0.0,
+          anisotropy, anisotropyRotation,
         );
         let misWeight = powerHeuristic(envPdf, brdfPdf);
         contrib = contrib + suffixThroughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
@@ -334,33 +477,41 @@ fn rptDirectAtVertex(
 // throughput 1. The reconnection vertex's material is passed in DIRECTLY (the
 // caller already has the SceneHit at xs) so b==0 needs no re-trace; onward
 // bounces decode the new hit's material in the loop.
-//   - xsMatId / nsShade: the reconnection vertex's material id + front-face
-//     shading normal (toward xv).
+//   - xsHit / incomingDir: the reconnection hit plus the ray direction that
+//     reached it, so material maps and normal/bump perturbation use the real
+//     barycentric/instance payload.
 //   - reconDir: the direction xs → xv (wo at xs; the outgoing direction Lo is on).
 fn rptComputeLoAtReconnection(
   rng: ptr<function, u32>,
   xs: vec3f,
-  xsMatId: u32,
-  nsShade: vec3f,
+  xsHit: SceneHit,
+  incomingDir: vec3f,
   reconDir: vec3f,
+  heroLambda: f32,
   suffixBounces: u32,
 ) -> vec3f {
   var Lo = vec3f(0.0);
   var suffixThroughput = vec3f(1.0);
   var wo = reconDir;          // wo at the current suffix vertex (toward xv at b==0)
   var pos = xs;
-  var normal = nsShade;       // front-face shading normal at the current vertex
-  var matId = xsMatId;
+  var hit = xsHit;
+  var rayDir = incomingDir;
   // xs's emission seen from xv is a directly-viewed term (no prior diffuse bounce
   // MIS-accounts for it), so the first iteration adds it ungated.
   var prevAllowsAreaMis = false;
 
   for (var b = 0u; b < suffixBounces; b = b + 1u) {
-    let mat = decodeMaterial(matId);
-    let baseColor = mat.baseColor;
-    let roughness = max(mat.roughness, 0.02);
-    let metallic = mat.metallic;
-    let emissive = mat.emissive;
+    let sm = rptSuffixMaterialAtHit(hit, rayDir, wo, heroLambda);
+    let normal = sm.normal;
+    let baseColor = sm.baseColor;
+    let roughness = max(sm.roughness, 0.02);
+    let metallic = sm.metallic;
+    let emissive = select(sm.emissive, spectralEmissionAtHero(sm.emissive, heroLambda), params.spectralEnabled != 0u);
+
+    if (sm.isUnlit) {
+      Lo = Lo + suffixThroughput * baseColor;
+      break;
+    }
 
     // Emission of this suffix vertex along wo (toward xv at b==0). Gated so an
     // onward diffuse bounce's NEE does not double-count the next hit's emission.
@@ -370,9 +521,10 @@ fn rptComputeLoAtReconnection(
     // Direct lighting (NEE) at this suffix vertex.
     Lo = Lo + rptDirectAtVertex(
       rng, pos, normal, wo, baseColor, roughness, metallic,
-      mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-      mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
-      mat.specularColor, mat.specularIntensity,
+      sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
+      sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
+      sm.specularColor, sm.specularIntensity,
+      sm.anisotropy, sm.anisotropyRotation,
       suffixThroughput,
     );
 
@@ -400,23 +552,23 @@ fn rptComputeLoAtReconnection(
     // specular response in, matching the megakernel's onward transport.
     let fOnward = evaluateBrdfFull(
       baseColor, roughness, metallic, normal, wo, nextDir,
-      mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-      mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
-      mat.specularColor, mat.specularIntensity,
-      0.0, 0.0,
+      sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
+      sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
+      sm.specularColor, sm.specularIntensity,
+      sm.anisotropy, sm.anisotropyRotation,
     );
     suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
     prevAllowsAreaMis = true; // diffuse onward bounce: next emission handled by NEE/MIS.
 
-    let nextHit = traceClosest(Ray(pos + normal * 1e-3, nextDir), 1e-4, INFINITY);
+    let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);
+    let nextHit = nextTrace.hit;
     if (!nextHit.didHit) {
       Lo = Lo + suffixThroughput * sampleEnvironmentColor(nextDir);
       break;
     }
-    pos = (pos + normal * 1e-3) + nextDir * nextHit.dist;
-    matId = hitMaterialId(nextHit);
-    let nextFront = dot(nextHit.normal, nextDir) < 0.0;
-    normal = select(-nextHit.normal, nextHit.normal, nextFront);
+    pos = nextTrace.rayOrigin + nextDir * nextHit.dist;
+    hit = nextHit;
+    rayDir = nextDir;
     wo = -nextDir;
 
     // Russian roulette on the suffix throughput.
@@ -610,7 +762,8 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let reconRay = Ray(xv + nv * 1e-3, wiRecon);
-  let sHit = traceClosest(reconRay, 1e-4, INFINITY);
+  let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);
+  let sHit = sTrace.hit;
   var xs: vec3f;
   var ns: vec3f;
   var Lo: vec3f;
@@ -631,22 +784,17 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     ns = -wiRecon;
     Lo = sampleEnvironmentColor(wiRecon);
   } else {
-    xs = reconRay.origin + reconRay.direction * sHit.dist;
-    let sIsFront = dot(sHit.normal, reconRay.direction) < 0.0;
-    ns = select(-sHit.normal, sHit.normal, sIsFront);
-    let xsMatId = hitMaterialId(sHit);
+    xs = sTrace.rayOrigin + reconRay.direction * sHit.dist;
 
     // ── 3. Suffix radiance Lo leaving xs toward xv ──
     let reconDirToXv = safe_normalize(xv - xs); // wo at xs (Lo is measured here)
-    // The reconnection-vertex shading normal must face xv (so NEE/emission at xs
-    // use the front side seen from the prefix). ns is already front-relative to
-    // the reconnection ray; re-orient toward xv for the suffix's wo.
-    let nsTowardXv = select(-ns, ns, dot(ns, reconDirToXv) > 0.0);
+    let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);
+    ns = sReservoirMat.normal;
     // Suffix bounce budget: bounded short walk (the reconnection-vertex tail). Kept
     // modest; the wiring step can align it with the megakernel bounce budget for
     // A/B parity. maxBounces is the host's path budget; the suffix is at most that.
     let suffixBounces = max(1u, min(params.maxBounces, 4u));
-    Lo = rptComputeLoAtReconnection(&rng, xs, xsMatId, nsTowardXv, reconDirToXv, suffixBounces);
+    Lo = rptComputeLoAtReconnection(&rng, xs, sHit, reconRay.direction, reconDirToXv, heroLambda, suffixBounces);
   }
 
   // ── Seed a 1-sample RIS reservoir, finalise, store ──
