@@ -517,9 +517,9 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 
 | Task | File | Behavior |
 |------|------|----------|
-| `loadGltfForEngine` rejects lite for `reject-degraded` | `engineBridge.ts` | If `recommendedBackend` is pt-webgpu but device selects lite, throw or fall back to pt-webgl2 |
+| ~~`loadGltfWithEngine` rejects lite for `reject-degraded`~~ ✅ DONE (2026-06-13) | `packages/engine/src/gltf.ts`, `gltfStrictPtWebgpuTier.test.ts` | The `@vitrum/engine/gltf` one-call wrapper probes the adapter profile before construction and rejects strict pt-webgpu loads unless the selected tier is `full`. The generic `@vitrum/gltf-adapter` bridge remains engine-agnostic and cannot inspect `createEngine()`'s runtime tier. |
 | `rankGltfBackends` lite row | `featureReport.ts` | Score lite separately or mark `pt-webgpu-lite` pseudo-backend |
-| PTWG-07 verify | `sceneMutationRouter.ts`, lite texture refresh | Emitter/env mutation must refresh `liteLightTex` / `liteEnvTex` |
+| ~~PTWG-07 verify~~ ✅ DONE (source-verified 2026-06-13) | `sceneMutationRouter.ts`, lite texture refresh tests | Emitter/env mutation refreshes `liteLightTex` / `liteEnvTex`; remaining lite work is ranking/policy, not stale sampled textures. |
 
 **Footgun:** `connectLite.wgsl.ts` `bsdfAreaLightConnectionContribution` returns zero **by design** — lite uses one-sided area NEE (`kernelLite.wgsl.ts` after PTWG-LITE-01 fix). Don't "implement stub" without fixing estimator.
 

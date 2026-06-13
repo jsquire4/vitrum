@@ -8,9 +8,11 @@
 import { loadGltfForEngine } from '@vitrum/gltf-adapter';
 import type {
   GltfEngineSelection,
+  GltfCompatibilityMode,
   GltfForEngineResult,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
+import { probeAdapterProfile } from './adapterProfile.js';
 import { createEngine } from './createEngine.js';
 import type {
   CreateEngineBackendId,
@@ -49,6 +51,7 @@ export async function loadGltfWithEngine(
     ...adapterOptions,
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     createEngine: async ({ scene, backend, asset, options: createOptions }) => {
+      await assertStrictPtWebgpuTier(backend, adapterOptions.compatibilityMode ?? 'best-effort');
       return await createEngine({
         ...createOptions,
         scene,
@@ -57,6 +60,23 @@ export async function loadGltfWithEngine(
       });
     },
   });
+}
+
+async function assertStrictPtWebgpuTier(
+  backend: CreateEngineBackendId | GltfEngineSelection,
+  compatibilityMode: GltfCompatibilityMode,
+): Promise<void> {
+  if (compatibilityMode !== 'reject-degraded') return;
+  if (backend !== 'pt-webgpu') return;
+
+  const profile = await probeAdapterProfile();
+  if (profile.ptWebgpuTier === 'full') return;
+
+  throw new Error(
+    `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
+      `"${profile.ptWebgpuTier}" trace tier, which is degraded for glTF strict mode. ` +
+      `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
+  );
 }
 
 function preferForSelectedBackend(

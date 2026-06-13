@@ -550,9 +550,10 @@ Evidence:
   and light tree, while lite shaders read the texture path.
 
 Closure:
-- Regenerate/upload lite textures on lite emitter and environment mutations, or
-  route those mutations through full repack.
-- Add lite `updateEmitter()` and `updateEnvironment()` tests.
+- Closed in the 2026-06-12/13 implementation wave: lite emitter and
+  environment mutations now regenerate/upload the sampled light/environment
+  textures that `kernelLite.wgsl` reads, with focused tests covering the refresh
+  path.
 
 ### ENGINE-01 - Nonfatal diagnostics are not consistently programmatic
 
@@ -964,9 +965,14 @@ Closure:
   `loadGltfForEngine()` selects or overrides a backend, applies compatibility
   gates, creates/attaches an engine through a host-injected factory or existing
   engine, and returns a `GltfSceneController`.
-- Optional future product shape: expose an `@vitrum/engine/gltf` subpath that
-  adapts `loadGltfForEngine()` to `createEngine()`'s concrete canvas/preference
-  options. This is not required for the host-agnostic adapter API.
+- The `@vitrum/engine/gltf` subpath is now implemented, including a
+  `reject-degraded` guard that refuses `pt-webgpu` when `probeAdapterProfile()`
+  reports a non-full trace tier. This closes the one-call strict-mode lite
+  downgrade path.
+- Remaining: if glTF planning should distinguish full and lite before engine
+  construction, add a `pt-webgpu-lite` pseudo-row (or equivalent tier metadata)
+  to `rankGltfBackends()`. The current generic adapter remains backend-id
+  based and intentionally engine-agnostic.
 
 ### GLTF-API-04 - animation playback/update orchestration
 
