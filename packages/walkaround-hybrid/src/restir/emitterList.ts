@@ -38,7 +38,7 @@ interface Vector3Like {
  *   16..31 : vertexB.xyz + pad
  *   32..47 : vertexC.xyz + pad
  *   48..63 : normal.xyz + area
- *   64..79 : Le.rgb + intensity
+ *   64..79 : Le.rgb + castShadowDisabled
  * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
  */
 // Canonical byte stride for the shared EmitterTri storage layout. Import this
@@ -58,9 +58,9 @@ interface EmitterListOptions {
    * and suppress the synthetic-placeholder fallback when present.
    *
    * The caller is responsible for folding any per-light intensity into
-   * `Le` (the WGSL `EmitterTri.Le` field is the only radiance source the
-   * shade kernel reads — the `intensity` field is legacy and ignored by
-   * WGSL).
+   * `Le`. `castShadow:false` is packed into the legacy `.w` lane of the
+   * fifth vec4 so direct-light shadow rays can skip the occlusion test for
+   * author-opted emitters without changing the 80-byte stride.
    */
   extraEmitters?: ReadonlyArray<{
     vA: [number, number, number];
@@ -69,6 +69,7 @@ interface EmitterListOptions {
     normal: [number, number, number];
     area: number;
     Le: [number, number, number];
+    castShadow?: boolean;
   }>;
 }
 
@@ -220,6 +221,7 @@ function buildEmitterListCore(
     area: number;
     color: [number, number, number];
     intensity: number;
+    castShadowDisabled: boolean;
     power: number;
   }[] = [];
 
@@ -273,6 +275,7 @@ function buildEmitterListCore(
       area,
       color: [cr, cg, cb],
       intensity,
+      castShadowDisabled: false,
       power,
     });
   }
@@ -289,6 +292,7 @@ function buildEmitterListCore(
         area: ex.area,
         color: ex.Le,
         intensity: 1,
+        castShadowDisabled: ex.castShadow === false,
         power,
       });
     }
@@ -312,6 +316,7 @@ function buildEmitterListCore(
       area: 0.5,
       color: [0, 0, 0],  // zero Le → pHat = 0 → inert (H22)
       intensity: 0,
+      castShadowDisabled: false,
       power: 0,          // power = 0 → excluded from CDF (totalEmissivePower = 0)
     });
   }
@@ -333,7 +338,7 @@ function buildEmitterListCore(
     emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = 0;
     emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = 0;
     emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;
-    emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2]; emitterFloats[base + 19] = e.intensity;
+    emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2]; emitterFloats[base + 19] = e.castShadowDisabled ? 1 : 0;
     totalEmissivePower += e.power;
 
     treeInput.powers.push(e.power);

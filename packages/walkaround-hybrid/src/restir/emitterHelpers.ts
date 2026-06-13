@@ -37,6 +37,7 @@ export interface ExtraEmitterTri {
   normal: [number, number, number];
   area: number;
   Le: [number, number, number];
+  castShadow?: boolean;
 }
 
 /**
@@ -49,7 +50,7 @@ export interface ExtraEmitterTri {
  *   [4..6]  vB.xyz + pad(0)
  *   [8..10] vC.xyz + pad(0)
  *   [12..14] normal.xyz + area
- *   [16..18] Le.rgb + pad(0)
+ *   [16..18] Le.rgb + castShadowDisabled
  *
  * Returns a zero-count dummy (empty Float32Array) when `tris` is empty so
  * callers can safely pass `data` to a placeholder GPU buffer.
@@ -69,7 +70,7 @@ export function packEmitterTrisForDDGI(tris: readonly ExtraEmitterTri[]): {
     data[base + 4]  = t.vB[0]!; data[base + 5]  = t.vB[1]!; data[base + 6]  = t.vB[2]!; data[base + 7]  = 0;
     data[base + 8]  = t.vC[0]!; data[base + 9]  = t.vC[1]!; data[base + 10] = t.vC[2]!; data[base + 11] = 0;
     data[base + 12] = t.normal[0]!; data[base + 13] = t.normal[1]!; data[base + 14] = t.normal[2]!; data[base + 15] = t.area;
-    data[base + 16] = t.Le[0]!; data[base + 17] = t.Le[1]!; data[base + 18] = t.Le[2]!; data[base + 19] = 0;
+    data[base + 16] = t.Le[0]!; data[base + 17] = t.Le[1]!; data[base + 18] = t.Le[2]!; data[base + 19] = t.castShadow === false ? 1 : 0;
   }
   return { data, count };
 }
@@ -164,6 +165,7 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
           normal: N,
           area: triArea,
           Le,
+          ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
         });
       }
       continue;
@@ -202,8 +204,24 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     const Le = emitterLe(e.color, e.intensity);
 
     // Two tris (LL,LR,UR) + (LL,UR,UL) — identical winding to the THREE path.
-    out.push({ vA: ll, vB: lr, vC: ur, normal: N, area: triArea, Le });
-    out.push({ vA: ll, vB: ur, vC: ul, normal: N, area: triArea, Le });
+    out.push({
+      vA: ll,
+      vB: lr,
+      vC: ur,
+      normal: N,
+      area: triArea,
+      Le,
+      ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+    });
+    out.push({
+      vA: ll,
+      vB: ur,
+      vC: ul,
+      normal: N,
+      area: triArea,
+      Le,
+      ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+    });
   }
   return out;
 }
@@ -271,6 +289,7 @@ export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
         normal: [nx * invLen, ny * invLen, nz * invLen],
         area,
         Le,
+        ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       });
     }
   }
@@ -286,7 +305,8 @@ export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
  *   [8..10] direction.xyz (toward-light; (0,0,0) for omnidirectional point)
  *          + cosInner (cosine of inner cone half-angle; 1.0 for point = no cone)
  *   [12]   cosOuter (cosine of outer cone half-angle; 0.0 for point = no cone)
- *           pad×3
+ *   [13]   castShadowDisabled (1.0 when emitter.castShadow === false)
+ *           pad×2
  *
  * Point emitters: direction=(0,0,0), cosInner=1, cosOuter=0.
  * Spot emitters: direction=normalize(axis), cosInner=cos(innerHalfAngle),
@@ -326,7 +346,7 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
       data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
       data[out * S + 8]  = 0;  data[out * S + 9]  = 0;  data[out * S + 10] = 0;  data[out * S + 11] = 1;
-      data[out * S + 12] = 0;  data[out * S + 13] = 0;  data[out * S + 14] = 0;  data[out * S + 15] = 0;
+      data[out * S + 12] = 0;  data[out * S + 13] = e.castShadow === false ? 1 : 0;  data[out * S + 14] = 0;  data[out * S + 15] = 0;
       out++;
     } else if (e.kind === 'spot') {
       const [r, g, b] = e.color;
@@ -346,7 +366,7 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
       data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
       data[out * S + 8]  = nx;  data[out * S + 9]  = ny;  data[out * S + 10] = nz;  data[out * S + 11] = cosInner;
-      data[out * S + 12] = cosOuter; data[out * S + 13] = 0; data[out * S + 14] = 0; data[out * S + 15] = 0;
+      data[out * S + 12] = cosOuter; data[out * S + 13] = e.castShadow === false ? 1 : 0; data[out * S + 14] = 0; data[out * S + 15] = 0;
       out++;
     }
   }

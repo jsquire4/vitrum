@@ -24,8 +24,9 @@ describe('RC light-eval WGSL contract', () => {
   it('uses glass-skip visibility for rect emitter and point/spot direct-light shadows', () => {
     const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
     expect(emitterNee).toContain(
-      'rcTraceAny(hitPos + n * normalBias, wi, shadowTMax, triEps, true)',
+      'e.castShadowDisabled < 0.5 && shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, wi, shadowTMax, triEps, true)',
     );
+    expect(emitterNee).toContain('Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.');
     expect(emitterNee).not.toContain('let sHit = rcTraceFirstHit');
     expect(emitterNee).not.toContain('sHit.didHit && sHit.dist < dist - normalBias');
 

@@ -174,6 +174,7 @@ fn lo_analyticNEE(
     let lightDir  = light2.xyz;
     let cosInner  = light2.w;
     let cosOuter  = light3.x;
+    let castShadowDisabled = light3.y > 0.5;
 
     let toL  = lightPos - pos;
     let dist = length(toL);
@@ -193,16 +194,18 @@ fn lo_analyticNEE(
       cone = smoothstep(cosOuter, cosInner, cosTheta);
     }
 
-    // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
-    // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
-    let occ = traceSceneAnyCastMask(
-      ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH);
-    if (occ) { continue; }
+    if (!castShadowDisabled) {
+      // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
+      // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+      let occ = traceSceneAnyCastMask(
+        ubo.bvhMode, ubo.tlasNodeCount,
+        &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+        pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH);
+      if (occ) { continue; }
+    }
 
     // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
@@ -273,19 +276,21 @@ fn lo_direct(
   let nDotL = max(0.0, dot(normal, wi));
   let nlDotL = max(0.0, dot(-e.normal, wi));
   if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
-  // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
-  // (light passes through glass; per-channel tinted-visibility handles tint).
-  // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
-  // shading normal can dip below the surface near silhouettes → self-hit).
-  // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
-  let occ = traceSceneAnyCastMask(
-    ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
-  if (occ) { return vec3f(0.0); }
+  if (e.castShadowDisabled < 0.5) {
+    // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
+    // (light passes through glass; per-channel tinted-visibility handles tint).
+    // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
+    // shading normal can dip below the surface near silhouettes → self-hit).
+    // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+    let occ = traceSceneAnyCastMask(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    if (occ) { return vec3f(0.0); }
+  }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
   return e.Le * brdf * G * r.W;

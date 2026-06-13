@@ -30,9 +30,11 @@ export interface EmitterBase {
    *      emitter kinds; off-default integrators (BDPT, ReSTIR-PT, MNEE/SPPM
    *      caustics) and in-medium directional NEE still shadow-test. Lite-tier
    *      directional NEE (UBO mirror) carries no flag.
-   *    - `@vitrum/walkaround-hybrid` — unsupported (structured
-   *      `walkaround-hybrid.unsupported-emitter-cast-shadow` warning when a
-   *      scene sets it false). */
+   *    - `@vitrum/walkaround-hybrid` — approximate: honored by analytic direct
+   *      NEE plus ReSTIR-DI/DDGI/RC area-emitter NEE; DDGI/RC point/spot fixture
+   *      lights and directional sun paths may still shadow-test. Emits
+   *      `walkaround-hybrid.approximate-emitter-cast-shadow` when a scene sets it
+   *      false. */
   readonly castShadow?: boolean;
 }
 

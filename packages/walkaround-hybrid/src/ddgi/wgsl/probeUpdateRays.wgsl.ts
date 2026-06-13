@@ -241,7 +241,7 @@ struct DdgiTraceParams {
 // H18 Stage 2 — packed area-emitter triangles for per-probe NEE (same layout as
 // the RC probeRayCast rc_emitters). Stride: 80 bytes / 20 f32 per tri.
 //   [0..2]  vA.xyz + pad    [4..6]  vB.xyz + pad    [8..10] vC.xyz + pad
-//   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + pad
+//   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + castShadowDisabled
 // emitterCount (uniform in lights) is reused for the area-emitter count. A
 // dedicated u32 is cheaper than a second UBO; it lives in DdgiTraceParams.
 @group(1) @binding(2) var<storage, read> ddgiEmitterTris: array<vec4f>;
@@ -495,6 +495,7 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     let nrm = ddgiEmitterTris[base + 3u].xyz;
     let area = ddgiEmitterTris[base + 3u].w;
     let Le   = ddgiEmitterTris[base + 4u].xyz;
+    let castShadowDisabled = ddgiEmitterTris[base + 4u].w > 0.5;
 
     // Jittered uniform area sample (deterministic per emitter index).
     let s0 = pcgHashToF32Ddgi(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
@@ -510,12 +511,14 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     let cosLight = dot(nrm, -wi);   // front-face only (one-sided emitter)
     if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
 
-    // Opaque shadow test — stop just short of the light sample.
-    var sRay: Ray;
-    sRay.origin    = hitPos + n * normalBias;
-    sRay.direction = wi;
-    let sHit = bvhTraceFirstHit(sRay);
-    if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }
+    if (!castShadowDisabled) {
+      // Opaque shadow test — stop just short of the light sample.
+      var sRay: Ray;
+      sRay.origin    = hitPos + n * normalBias;
+      sRay.direction = wi;
+      let sHit = bvhTraceFirstHit(sRay);
+      if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }
+    }
 
     let G = (cosSurf * cosLight) / dist2;
     Lo = Lo + albedo * 0.31831 * Le * G * area;   // 0.31831 = 1/π

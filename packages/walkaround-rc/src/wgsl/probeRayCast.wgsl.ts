@@ -161,7 +161,7 @@ struct EmitterTri {
   normal:    vec3f,
   area:      f32,
   Le:        vec3f,
-  intensity: f32,
+  castShadowDisabled: f32,
 };
 
 // ─── MaterialEntry struct ─────────────────────────────────────────────────────

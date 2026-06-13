@@ -626,7 +626,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
 //   walkaround — packingHelpers.ts bvh_material flag bit 0 consumed by the
 //                shared-bvh cast-shadow-masked any-hit variants in the ReSTIR DI
 //                shadow predicates (ris.wgsl candidate visibility + shadingTerms.wgsl
-//                shading/analytic/sun visibility).
+//                shading/analytic/sun visibility). Emitter castShadow:false now
+//                rides the analytic-lights + shared EmitterTri .w lanes for
+//                direct/area NEE; fixture DDGI/RC point/spot/sun paths remain
+//                approximated.
 
 type ShadowSupportMatrix = Readonly<
   Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>
@@ -637,12 +640,14 @@ type ShadowSupportMatrix = Readonly<
  *  point/spot NEE, direct-sun NEE — ris.wgsl + shadingTerms.wgsl). The GI-side
  *  occlusion tests (ReSTIR-GI reservoir visibility, DDGI probe rays, RC probe
  *  casts, GRIS reuse) still treat castShadow:false geometry as an occluder →
- *  'approximate'. Emitter castShadow is not represented in the DDGI/ReSTIR light
- *  paths → 'unsupported' (structured warning when set). receiveShadow: see
- *  BackendSupportDetails.shadows JSDoc — non-physical for GI, warned. */
+ *  'approximate'. Emitter castShadow is honored by analytic direct NEE plus
+ *  ReSTIR-DI/DDGI/RC area-emitter NEE, while DDGI/RC point/spot fixture lights
+ *  and directional sun paths still shadow-test → 'approximate' with a structured
+ *  warning when set. receiveShadow: see BackendSupportDetails.shadows JSDoc —
+ *  non-physical for GI, warned. */
 const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'approximate',
-  emitterCastShadow: 'unsupported',
+  emitterCastShadow: 'approximate',
   receiveShadow: 'unsupported',
 });
 

@@ -7,7 +7,11 @@ import type {
 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { buildReSTIRSceneBVHForCoreScene } from '../bvhCore.js';
-import { collectRectAreaEmitterTrisFromCore } from '../bvhSceneHelpers.js';
+import {
+  collectMeshAreaEmitterTrisFromCore,
+  collectRectAreaEmitterTrisFromCore,
+  packEmitterTrisForDDGI,
+} from '../bvhSceneHelpers.js';
 
 const EMITTER_FLOATS = 20;
 
@@ -18,7 +22,7 @@ interface DecodedEmitter {
   normal: [number, number, number];
   area: number;
   color: [number, number, number];
-  intensity: number;
+  castShadowDisabled: number;
   centroid: [number, number, number];
 }
 
@@ -58,7 +62,7 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       emitterFloats[b + 17]!,
       emitterFloats[b + 18]!,
     ];
-    const intensity = emitterFloats[b + 19]!;
+    const castShadowDisabled = emitterFloats[b + 19]!;
     out.push({
       vA,
       vB,
@@ -66,7 +70,7 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       normal,
       area,
       color,
-      intensity,
+      castShadowDisabled,
       centroid: [
         (vA[0] + vB[0] + vC[0]) / 3,
         (vA[1] + vB[1] + vC[1]) / 3,
@@ -189,7 +193,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     for (const e of emitters) {
       expect(e.area).toBeCloseTo(0.5, 5);
       expect(e.color).toEqual([0.25, 0.5, 1]);
-      expect(e.intensity).toBeCloseTo(1, 5);
+      expect(e.castShadowDisabled).toBe(0);
     }
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
   });
@@ -223,5 +227,62 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(emitters[0]!.color[1]).toBeCloseTo(expectedLe[1], 3);
     expect(emitters[0]!.color[2]).toBeCloseTo(expectedLe[2], 3);
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(expectedLe[0], expectedLe[1], expectedLe[2]) * 0.5, 5);
+  });
+
+  it('packs castShadow:false on core area emitters into the shared emitter-triangle lane', () => {
+    const scene: Scene = {
+      primitives: [supportTriangle()],
+      emitters: [{
+        kind: 'rect-area',
+        id: 'rect',
+        position: [0, 2, 0],
+        uAxis: [1, 0, 0],
+        vAxis: [0, 0, 1],
+        color: [1, 2, 3],
+        intensity: 4,
+        castShadow: false,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const extra = collectRectAreaEmitterTrisFromCore(scene);
+    expect(extra).toHaveLength(2);
+    expect(extra.every((e) => e.castShadow === false)).toBe(true);
+
+    const ddgiPacked = packEmitterTrisForDDGI(extra);
+    expect(ddgiPacked.count).toBe(2);
+    expect(ddgiPacked.data[19]).toBe(1);
+    expect(ddgiPacked.data[39]).toBe(1);
+
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
+    const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+    expect(emitters).toHaveLength(2);
+    expect(emitters[0]!.castShadowDisabled).toBe(1);
+    expect(emitters[1]!.castShadowDisabled).toBe(1);
+  });
+
+  it('packs mesh-area castShadow:false into the DDGI/RC emitter-triangle lane', () => {
+    const panel: MeshPrimitive = supportTriangle('panel');
+    const scene: Scene = {
+      primitives: [panel],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'panel-emitter',
+        meshId: 'panel',
+        color: [0.5, 0.25, 0.125],
+        intensity: 8,
+        castShadow: false,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const extra = collectMeshAreaEmitterTrisFromCore(scene);
+    expect(extra).toHaveLength(1);
+    expect(extra[0]!.Le).toEqual([4, 2, 1]);
+    expect(extra[0]!.castShadow).toBe(false);
+
+    const ddgiPacked = packEmitterTrisForDDGI(extra);
+    expect(ddgiPacked.count).toBe(1);
+    expect(ddgiPacked.data[19]).toBe(1);
   });
 });

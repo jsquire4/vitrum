@@ -138,6 +138,7 @@ describe('BvhBufferHost', () => {
           position: [1, 2, 3],
           color: [0.25, 0.5, 0.75],
           intensity: 4,
+          castShadow: false,
         },
         {
           kind: 'spot',
@@ -164,6 +165,7 @@ describe('BvhBufferHost', () => {
     expect(data.length).toBe(32);
     expect(Array.from(data.slice(0, 7))).toEqual([1, 2, 3, 0, 1, 2, 3]);
     expect(Array.from(data.slice(8, 13))).toEqual([0, 0, 0, 1, 0]);
+    expect(data[13]).toBe(1);
 
     const spot = 16;
     expect(Array.from(data.slice(spot, spot + 7))).toEqual([-1, 3, 2, 0, 1, 2, 3]);
@@ -172,6 +174,7 @@ describe('BvhBufferHost', () => {
     expect(data[spot + 10]).toBeCloseTo(0, 6);
     expect(data[spot + 11]).toBeCloseTo(Math.cos(Math.PI / 4), 6);
     expect(data[spot + 12]).toBeCloseTo(Math.cos(Math.PI / 3), 6);
+    expect(data[spot + 13]).toBe(0);
 
     host.dispose();
   });

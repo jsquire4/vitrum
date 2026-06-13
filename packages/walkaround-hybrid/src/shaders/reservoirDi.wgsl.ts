@@ -28,7 +28,7 @@ struct EmitterTri {
   normal:    vec3f,   // bytes 48-59
   area:      f32,     // bytes 60-63
   Le:        vec3f,   // bytes 64-75
-  intensity: f32,     // bytes 76-79
+  castShadowDisabled: f32, // bytes 76-79 (1.0 when source emitter castShadow:false)
 };
 
 // ============================================================

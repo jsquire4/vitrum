@@ -85,7 +85,8 @@ export const RC_NEE_POINTSPOT_WGSL = /* wgsl */`// ─── Rect-area emitter N
 // rect-area emitter list — so a rect-area-only scene produced all-zero cascades
 // (the 2026-06-07 "RC cascade-zero" regime gap). This adds one-sample-per-
 // emitter next-event estimation at the probe-ray hit: for each emitter triangle
-// sample a point, shadow-test through RC's own BVH, and add the Lambertian
+// sample a point, shadow-test through RC's own BVH unless the source emitter
+// set castShadow:false, and add the Lambertian
 // diffuse-reflected contribution. Summing one sample per emitter (rather than
 // CDF-importance-sampling a single emitter) is unbiased and lower-variance for
 // the handful of emitters a walkaround scene carries, and needs no CDF buffer.
@@ -123,8 +124,9 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     // Opaque shadow test toward the light sample (stop just short of it).
     // H37: skip transmissive geometry so emitters behind stained glass still
     // contribute to the coarse RC cache. Glass tint is intentionally ignored.
+    // Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.
     let shadowTMax = max(0.0, dist - normalBias);
-    if (shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, wi, shadowTMax, triEps, true)) {
+    if (e.castShadowDisabled < 0.5 && shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, wi, shadowTMax, triEps, true)) {
       continue;
     }
 

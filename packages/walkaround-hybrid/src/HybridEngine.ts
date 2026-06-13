@@ -875,24 +875,30 @@ export class HybridEngine implements Engine {
       }
     }
 
-    // SHADOW-01 — structured signals for the shadow flags this backend does NOT
-    // honor (ledger: emitterCastShadow 'unsupported'; receiveShadow 'unsupported'
-    // on every backend — non-physical for GI). Primitive castShadow IS honored
-    // (DI shadow rays; 'approximate' — GI-side occlusion ignores it) → no warning.
+    // SHADOW-01 — structured signals for the shadow flags this backend only
+    // partially honors. Primitive castShadow IS honored by DI shadow rays
+    // ('approximate' — GI-side occlusion ignores it) → no warning. Emitter
+    // castShadow is honored by direct/area NEE paths but not all DDGI/RC
+    // point/spot/sun fixture paths yet, so keep a compatibility warning.
     const emitterCastShadowIds = scene.emitters
       .filter((e) => e.castShadow === false)
       .map((e) => e.id);
     if (emitterCastShadowIds.length > 0) {
       this._warn({
-        code: 'walkaround-hybrid.unsupported-emitter-cast-shadow',
+        code: 'walkaround-hybrid.approximate-emitter-cast-shadow',
         backend: 'walkaround-hybrid',
         phase: 'setScene',
         method: 'setScene',
         message:
-          `[vitrum/walkaround-hybrid] setScene: emitter castShadow:false is not ` +
-          `consumed by this backend (DDGI/ReSTIR light paths always shadow-test); ` +
-          `emitters: ${emitterCastShadowIds.join(', ')}.`,
-        details: { emitterIds: emitterCastShadowIds },
+          `[vitrum/walkaround-hybrid] setScene: emitter castShadow:false is partially ` +
+          `consumed by this backend (direct analytic/area NEE skips emitter occlusion; ` +
+          `DDGI/RC point/spot/sun fixture paths may still shadow-test); emitters: ` +
+          `${emitterCastShadowIds.join(', ')}.`,
+        details: {
+          emitterIds: emitterCastShadowIds,
+          supportedPaths: ['analytic direct NEE', 'ReSTIR-DI area NEE', 'DDGI area NEE', 'RC area NEE'],
+          residualPaths: ['DDGI point/spot fixture lights', 'RC point/spot fixture lights', 'directional sun paths'],
+        },
       });
     }
     const receiveShadowIds = scene.primitives
