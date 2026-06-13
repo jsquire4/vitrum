@@ -62,6 +62,48 @@ function payloadOf(source: unknown): ImagePayload | null {
   return { width, height, external: img as unknown as GPUCopyExternalImageSource };
 }
 
+interface NormalizedRgba8Upload {
+  readonly data: Uint8Array<ArrayBuffer>;
+  readonly bytesPerRow: number;
+  readonly rowsPerImage: number;
+}
+
+function byteViewOf(data: ArrayBufferView): Uint8Array<ArrayBuffer> | null {
+  const bytesPerElement = (data as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT;
+  if (!(data instanceof DataView) && bytesPerElement !== 1) return null;
+  return new Uint8Array(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+}
+
+function normalizeRawRgba8(
+  data: ArrayBufferView,
+  width: number,
+  height: number,
+): NormalizedRgba8Upload | null {
+  const bytes = byteViewOf(data);
+  if (bytes == null) return null;
+  const pixelCount = width * height;
+  if (pixelCount <= 0) return null;
+  const channels = bytes.byteLength / pixelCount;
+  if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
+  if (channels === 4) {
+    return { data: bytes, bytesPerRow: width * 4, rowsPerImage: height };
+  }
+  const rgba = new Uint8Array(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channels;
+    const dst = i * 4;
+    const r = bytes[src] ?? 0;
+    const g = channels >= 2 ? bytes[src + 1] ?? 0 : r;
+    const b = channels >= 3 ? bytes[src + 2] ?? 0 : r;
+    const a = channels >= 4 ? bytes[src + 3] ?? 255 : 255;
+    rgba[dst] = r;
+    rgba[dst + 1] = g;
+    rgba[dst + 2] = b;
+    rgba[dst + 3] = a;
+  }
+  return { data: rgba, bytesPerRow: width * 4, rowsPerImage: height };
+}
+
 const DUMMY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures.dummy';
 const ARRAY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures';
 
@@ -157,10 +199,19 @@ export function createMaterialTextureArray(
         { width: copyW, height: copyH },
       );
     } else if (p.data != null) {
+      const upload = normalizeRawRgba8(p.data, p.width, p.height);
+      if (upload == null) {
+        warnings.push(
+          `[materialTextureArray] source ${layer} has raw data with unsupported byte layout ` +
+            `(${p.data.byteLength} bytes for ${p.width}×${p.height}); expected 1, 2, 3, or 4 ` +
+            `8-bit channel(s) per pixel. Layer left black.`,
+        );
+        continue;
+      }
       device.queue.writeTexture(
         { texture, origin: { x: 0, y: 0, z: layer } },
-        p.data as GPUAllowSharedBufferSource,
-        { bytesPerRow: p.width * 4, rowsPerImage: p.height },
+        upload.data,
+        { bytesPerRow: upload.bytesPerRow, rowsPerImage: upload.rowsPerImage },
         { width: copyW, height: copyH },
       );
     }
