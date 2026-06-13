@@ -167,6 +167,14 @@ interface SparseViews {
   count: number;
 }
 
+function _isSparseIndexComponentType(ct: GltfComponentType): boolean {
+  return (
+    ct === GltfComponentType.UNSIGNED_BYTE ||
+    ct === GltfComponentType.UNSIGNED_SHORT ||
+    ct === GltfComponentType.UNSIGNED_INT
+  );
+}
+
 /**
  * Resolve the DataViews and component metadata for an accessor's sparse patch.
  * Returns `null` (with a warning) if the required bufferViews or buffers are
@@ -207,6 +215,14 @@ function _resolveSparseViews(
   }
 
   const idxCt = sparse.indices.componentType;
+  if (!_isSparseIndexComponentType(idxCt)) {
+    const message =
+      `[vitrum/gltf-adapter] Sparse indices componentType ${idxCt} is invalid; ` +
+      'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT.';
+    if (warnings) warnings.push(`${message} Patch skipped.`);
+    else throw new Error(message);
+    return null;
+  }
   const idxCompSize = componentByteSize(idxCt);
   const valCt = accessor.componentType;
   const valCompSize = componentByteSize(valCt);
@@ -240,6 +256,12 @@ function _applySparsePatch(
   const normalized = accessor.normalized ?? false;
   for (let s = 0; s < sv.count; s++) {
     const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
+    if (idx < 0 || idx >= accessor.count) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}; patch entry skipped.`,
+      );
+      continue;
+    }
     for (let c = 0; c < componentCount; c++) {
       result[idx * componentCount + c] = readScalar(
         sv.valView,
@@ -310,6 +332,11 @@ export function unpackAccessorUint32(
     if (sv) {
       for (let s = 0; s < sv.count; s++) {
         const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
+        if (idx < 0 || idx >= accessor.count) {
+          throw new Error(
+            `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
+          );
+        }
         result[idx] = Math.round(readScalar(sv.valView, s * sv.valCompSize, sv.valCt, false));
       }
     }
