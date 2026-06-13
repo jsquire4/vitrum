@@ -225,15 +225,17 @@ export interface SVGFFrameResources {
   /** Conservative prev-object-id fallback placeholder (value 1). */
   svgfPrevObjIdPlaceholderTexture: GPUTexture;
   /**
-   * Current-frame stable object/primitive/triangle ID (r32uint, full-res).
-   * Written by shade for the primary visible surface and read by SVGF
-   * reprojection as currObjId. 0 is reserved for sky/miss pixels.
+   * Current-frame stable object/primitive/triangle ID (r32uint).
+   * Full-res only when `svgf-real` is active; otherwise a 1×1 frame-layout
+   * placeholder guarded by shade's object-id store. Read by SVGF reprojection as
+   * currObjId. 0 is reserved for sky/miss pixels.
    */
   svgfCurrentObjectIdTexture: GPUTexture;
   /**
-   * Previous-frame stable object/primitive/triangle ID (r32uint, full-res).
-   * Read by SVGF reprojection as prevObjId, then refreshed from
-   * svgfCurrentObjectIdTexture at the end of SVGF dispatch.
+   * Previous-frame stable object/primitive/triangle ID (r32uint).
+   * Full-res only when `svgf-real` is active. Read by SVGF reprojection as
+   * prevObjId, then refreshed from svgfCurrentObjectIdTexture at the end of SVGF
+   * dispatch.
    */
   svgfPreviousObjectIdTexture: GPUTexture;
   /**

@@ -9,7 +9,10 @@ describe('shade SVGF object IDs', () => {
     );
     expect(SHADE_WGSL).toMatch(/let\s+inst\s*=\s*hit\.instanceIndex\s*\+\s*1u/);
     expect(SHADE_WGSL).toMatch(/let\s+tri\s*=\s*hit\.indices\.w\s*\+\s*1u/);
-    expect(SHADE_WGSL).toMatch(/textureStore\(svgfObjectIdOut,\s*pix,\s*vec4u\(0u\)\)/);
-    expect(SHADE_WGSL).toMatch(/textureStore\(svgfObjectIdOut,\s*pix,\s*vec4u\(stableSvgfObjectId\(primaryHit\)\)\)/);
+    expect(SHADE_WGSL).toMatch(/fn\s+storeSvgfObjectId\(pix:\s*vec2u,\s*id:\s*u32\)/);
+    expect(SHADE_WGSL).toMatch(/let\s+dims\s*=\s*textureDimensions\(svgfObjectIdOut\)/);
+    expect(SHADE_WGSL).toMatch(/pix\.x\s*<\s*dims\.x\s*&&\s*pix\.y\s*<\s*dims\.y/);
+    expect(SHADE_WGSL).toMatch(/storeSvgfObjectId\(pix,\s*0u\)/);
+    expect(SHADE_WGSL).toMatch(/storeSvgfObjectId\(pix,\s*stableSvgfObjectId\(primaryHit\)\)/);
   });
 });

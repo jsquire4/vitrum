@@ -13,10 +13,10 @@
  * frameResourcesShape.test.ts) but every full-res texture collapses to a 1×1
  * placeholder of the SAME format/usage. The render is byte-identical because
  * nothing reads these fields off the svgf-real dispatch path; only the GPU
- * memory footprint drops. The real object-id textures stay full-resolution even
- * when SVGF-real is not active because shade writes the current ID through the
- * shared frame bind group layout. The old 1×1 object-id placeholders are kept
- * as fallback-only resources.
+ * memory footprint drops. Object-id textures follow the same size gate; shade
+ * writes them through a dimension-guarded helper so the inactive 1×1 storage
+ * texture remains a legal frame-layout placeholder. The old 1×1 object-id
+ * placeholders are kept as fallback-only resources.
  */
 
 import type { SVGFFrameResources } from '../resourceManager.js';
@@ -88,7 +88,7 @@ export function createSvgfFrameResources(
   );
   const svgfCurrentObjectIdTexture = device.createTexture({
     label: 'svgf-real-current-object-id',
-    size: [width, height],
+    size: [w, h],
     format: 'r32uint',
     usage:
       GPUTextureUsage.STORAGE_BINDING |
@@ -98,12 +98,12 @@ export function createSvgfFrameResources(
   });
   const svgfPreviousObjectIdTexture = device.createTexture({
     label: 'svgf-real-previous-object-id',
-    size: [width, height],
+    size: [w, h],
     format: 'r32uint',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  writeR32UintFill(device, svgfCurrentObjectIdTexture, width, height, 0);
-  writeR32UintFill(device, svgfPreviousObjectIdTexture, width, height, 1);
+  writeR32UintFill(device, svgfCurrentObjectIdTexture, w, h, 0);
+  writeR32UintFill(device, svgfPreviousObjectIdTexture, w, h, 1);
   const svgfPrevNormalDepthTexture = device.createTexture({
     label: 'svgf-real-prev-normal-depth',
     size: [w, h],

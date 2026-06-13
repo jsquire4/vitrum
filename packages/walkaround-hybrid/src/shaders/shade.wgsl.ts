@@ -154,6 +154,13 @@ fn stableSvgfObjectId(hit: IntersectionResult) -> u32 {
   return select(h, 1u, h == 0u);
 }
 
+fn storeSvgfObjectId(pix: vec2u, id: u32) {
+  let dims = textureDimensions(svgfObjectIdOut);
+  if (pix.x < dims.x && pix.y < dims.y) {
+    textureStore(svgfObjectIdOut, pix, vec4u(id));
+  }
+}
+
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
 // injected via common.wgsl (W1-R6 wgslComposer requires chain).
 
@@ -234,7 +241,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(hdrAlbedoOut,   pix, vec4f(1.0, 1.0, 1.0, 1.0));
     textureStore(hdrIndirectOut, pix, vec4f(0.0, 0.0, 0.0, 1.0));
     textureStore(hdrTotalOut,    pix, vec4f(skyMiss, 1.0));
-    textureStore(svgfObjectIdOut, pix, vec4u(0u));
+    storeSvgfObjectId(pix, 0u);
     return;
   }
 
@@ -275,7 +282,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // panel-wall boundary.
   let depthSigned = primaryHit.dist * select(1.0, -1.0, isGlass);
   textureStore(gNormalDepthOut, pix, vec4f(normal * 0.5 + 0.5, depthSigned));
-  textureStore(svgfObjectIdOut, pix, vec4u(stableSvgfObjectId(primaryHit)));
+  storeSvgfObjectId(pix, stableSvgfObjectId(primaryHit));
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let albedo   = matColor.rgb;

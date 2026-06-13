@@ -58,17 +58,17 @@ function u32At(data: BufferSource | SharedArrayBuffer, byteOffset: number): numb
 }
 
 describe('SVGF object-id frame resources', () => {
-  it('allocates real current/previous object-id textures at full resolution', () => {
+  it('collapses current/previous object-id textures when svgf-real is inactive', () => {
     const { device, textures, writes } = makeDevice();
 
     const resources = createSvgfFrameResources(device, 4, 2, false);
 
     expect(resources.svgfObjIdPlaceholderTexture.width).toBe(1);
     expect(resources.svgfPrevObjIdPlaceholderTexture.width).toBe(1);
-    expect(resources.svgfCurrentObjectIdTexture.width).toBe(4);
-    expect(resources.svgfCurrentObjectIdTexture.height).toBe(2);
-    expect(resources.svgfPreviousObjectIdTexture.width).toBe(4);
-    expect(resources.svgfPreviousObjectIdTexture.height).toBe(2);
+    expect(resources.svgfCurrentObjectIdTexture.width).toBe(1);
+    expect(resources.svgfCurrentObjectIdTexture.height).toBe(1);
+    expect(resources.svgfPreviousObjectIdTexture.width).toBe(1);
+    expect(resources.svgfPreviousObjectIdTexture.height).toBe(1);
 
     const current = textures.find((r) => r.texture === resources.svgfCurrentObjectIdTexture)!;
     const previous = textures.find((r) => r.texture === resources.svgfPreviousObjectIdTexture)!;
@@ -86,6 +86,19 @@ describe('SVGF object-id frame resources', () => {
     expect(previousWrite.layout.bytesPerRow).toBe(256);
     expect(u32At(currentWrite.data, 0)).toBe(0);
     expect(u32At(previousWrite.data, 0)).toBe(1);
+  });
+
+  it('keeps object-id textures full resolution when svgf-real is active', () => {
+    const { device, writes } = makeDevice();
+
+    const resources = createSvgfFrameResources(device, 4, 2, true);
+
+    expect(resources.svgfCurrentObjectIdTexture.width).toBe(4);
+    expect(resources.svgfCurrentObjectIdTexture.height).toBe(2);
+    expect(resources.svgfPreviousObjectIdTexture.width).toBe(4);
+    expect(resources.svgfPreviousObjectIdTexture.height).toBe(2);
+
+    const previousWrite = writes.find((w) => w.texture === resources.svgfPreviousObjectIdTexture)!;
     expect(u32At(previousWrite.data, 256 + 4)).toBe(1);
   });
 });
