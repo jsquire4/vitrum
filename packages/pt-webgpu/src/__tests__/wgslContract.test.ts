@@ -219,8 +219,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // data and multiplies MaterialSpec.transmission in the full-tier prologue.
     // Re-pinned 2026-06-12: heterogeneous material texture-array layers now
     // carry per-map UV-fit scales; material samplers use fract(uv) * scale.
-    expect(digest).toBe('2cc17589ec15644253551bcbd8bd1f48b7d3c1036ac7a5d472b9514d2d20191b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(328842);
+    // Re-pinned 2026-06-12: material samplers now consume TextureRef.wrapS/T
+    // per map (repeat / clamp-to-edge / mirrored-repeat).
+    expect(digest).toBe('e58c4b988411bfee828f7c51c4acd1fc76a2cf4806312e4cca4b0c03096efc8b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(330159);
   });
 });
 

@@ -8,7 +8,7 @@
 // index + UVs. Materials with no maps get index -1 → the sampler skips them, so
 // a textureless scene stays byte-identical to the pre-P2 parametric path.
 
-import type { MaterialSpec, TextureRef } from '@vitrum/core';
+import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
 
 /**
@@ -26,6 +26,11 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *   9: {aoUvScale.xy, lightMapUvScale.xy}
  *  10: {bumpUvScale.xy, anisotropyUvScale.xy}
  *  11: {alphaUvScale.xy, transmissionUvScale.xy}
+ *  12: {baseColorWrap.xy, emissiveWrap.xy}                (0 repeat / 1 clamp / 2 mirror)
+ *  13: {normalWrap.xy, ormWrap.xy}
+ *  14: {aoWrap.xy, lightMapWrap.xy}
+ *  15: {bumpWrap.xy, anisotropyWrap.xy}
+ *  16: {alphaWrap.xy, transmissionWrap.xy}
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -49,14 +54,22 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *   - vec4 #7–#11: per-map UV-fit scales. Heterogeneous texture arrays copy each
  *     source into a max-sized layer; these scales remap repeat-wrapped UVs into
  *     the copied source rectangle instead of sampling padded black texels.
+ *   - vec4 #12–#16: per-map wrap modes from TextureRef.wrapS/wrapT. Defaults are
+ *     repeat/repeat, matching glTF. Encoded as 0 repeat, 1 clamp, 2 mirrored.
  */
-export const MATERIAL_TEX_VEC4_STRIDE = 12;
+export const MATERIAL_TEX_VEC4_STRIDE = 17;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
   opaque: 0,
   mask: 1,
   blend: 2,
+};
+
+const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
+  repeat: 0,
+  'clamp-to-edge': 1,
+  'mirrored-repeat': 2,
 };
 
 export interface CollectedTextures {
@@ -91,6 +104,15 @@ function writeDefaultUvFitPairs(descriptors: Float32Array, b: number): void {
     descriptors[offset] = 1;
     descriptors[offset + 1] = 1;
   }
+}
+
+function writeWrapPair(
+  descriptors: Float32Array,
+  offset: number,
+  ref: TextureRef | undefined,
+): void {
+  descriptors[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
+  descriptors[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
 }
 
 /** Fill per-map UV-fit descriptor lanes after the texture arrays reveal their
@@ -169,9 +191,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     }
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
     const bc = m.baseColorMap;
+    const orm = m.roughnessMap ?? m.metallicMap;
     descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)
     descriptors[b + 1] = indexOfLinear(m.normalMap);                 // normalIdx (linear array)
-    descriptors[b + 2] = indexOfLinear(m.roughnessMap ?? m.metallicMap); // ormIdx (linear; glTF MR texture: G=rough, B=metal)
+    descriptors[b + 2] = indexOfLinear(orm); // ormIdx (linear; glTF MR texture: G=rough, B=metal)
     descriptors[b + 3] = indexOf(m.emissiveMap); // emissiveIdx (sRGB array — same layers as baseColor)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
@@ -205,6 +228,16 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 26] = 0;
     descriptors[b + 27] = 0;
     writeDefaultUvFitPairs(descriptors, b);
+    writeWrapPair(descriptors, b + 48, bc);
+    writeWrapPair(descriptors, b + 50, m.emissiveMap);
+    writeWrapPair(descriptors, b + 52, m.normalMap);
+    writeWrapPair(descriptors, b + 54, orm);
+    writeWrapPair(descriptors, b + 56, m.aoMap);
+    writeWrapPair(descriptors, b + 58, m.lightMap);
+    writeWrapPair(descriptors, b + 60, m.bumpMap);
+    writeWrapPair(descriptors, b + 62, m.anisotropyMap);
+    writeWrapPair(descriptors, b + 64, m.alphaMap);
+    writeWrapPair(descriptors, b + 66, m.transmissionMap);
   });
 
   return { sources, linearSources, descriptors };

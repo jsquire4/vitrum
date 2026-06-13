@@ -219,6 +219,29 @@ describe('collectMaterialTextures (P2 host)', () => {
     expectCloseArray(descriptors.slice(40, 44), [0.4, 0.3, 0.9, 0.7]);
     expectCloseArray(descriptors.slice(44, 48), [0.2, 0.1, 0.6, 0.4]);
   });
+
+  it('packs per-map TextureRef wrap modes for the WGSL sampler', () => {
+    const { descriptors } = collectMaterialTextures([
+      mat({
+        baseColorMap: { handle: {}, wrapS: 'clamp-to-edge', wrapT: 'mirrored-repeat' },
+        emissiveMap: { handle: {}, wrapS: 'mirrored-repeat', wrapT: 'clamp-to-edge' },
+        normalMap: { handle: {}, wrapS: 'clamp-to-edge', wrapT: 'clamp-to-edge' },
+        metallicMap: { handle: {}, wrapS: 'mirrored-repeat', wrapT: 'repeat' },
+        aoMap: { handle: {}, wrapS: 'repeat', wrapT: 'clamp-to-edge' },
+        lightMap: { handle: {}, wrapS: 'mirrored-repeat', wrapT: 'mirrored-repeat' },
+        bumpMap: { handle: {}, wrapS: 'clamp-to-edge', wrapT: 'repeat' },
+        anisotropyMap: { handle: {}, wrapS: 'repeat', wrapT: 'mirrored-repeat' },
+        alphaMap: { handle: {}, wrapS: 'clamp-to-edge', wrapT: 'mirrored-repeat' },
+        transmissionMap: { handle: {}, wrapS: 'repeat', wrapT: 'clamp-to-edge' },
+      }),
+    ]);
+
+    expect(Array.from(descriptors.slice(48, 52))).toEqual([1, 2, 2, 1]);
+    expect(Array.from(descriptors.slice(52, 56))).toEqual([1, 1, 2, 0]);
+    expect(Array.from(descriptors.slice(56, 60))).toEqual([0, 1, 2, 2]);
+    expect(Array.from(descriptors.slice(60, 64))).toEqual([1, 0, 0, 2]);
+    expect(Array.from(descriptors.slice(64, 68))).toEqual([1, 2, 0, 1]);
+  });
 });
 
 describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
@@ -241,10 +264,14 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleAlphaTexture(');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
-    expect(wgsl).toContain('fract(uv) * uvFitScale');
+    expect(wgsl).toContain('wrappedUv * uvFitScale');
     expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 11u].zw');
+    expect(wgsl).toContain('fn wrapTextureCoord(coord: f32, mode: f32) -> f32');
+    expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
+    expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
+    expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
   });
 
   it('normal maps transform derived tangents through the hit TLAS instance', () => {

@@ -124,7 +124,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].x');
       // Map modulates strength via the B channel (KHR_materials_anisotropy spec).
       expect(wgsl).toContain(
-        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, materialTexDescriptors[base + 10u].zw).b',
+        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).b',
       );
     });
 
