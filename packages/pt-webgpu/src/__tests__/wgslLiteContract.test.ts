@@ -91,7 +91,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
     // analytic sampleSky gradient. Missing/invalid env maps now return black
     // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
-    expect(digest).toBe('3ba1fdd25e2619cfb7077e8d6364da51c0331cca194ba67071594ebe3db3cf32');
+    // Re-pinned 2026-06-12: shared prologue changed `transmission` from let to
+    // var so the full tier can modulate it by transmissionMap; lite still has
+    // no material texture bindings and remains scalar-only.
+    expect(digest).toBe('04c13f3dfeba678320dff87ea6722379914120010d8d3c6876c86a1c0d037b92');
     expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138427);
   });
 });

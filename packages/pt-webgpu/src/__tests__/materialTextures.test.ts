@@ -118,6 +118,31 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[24]).toBe(0); // alphaMapIdx -> same linear layer
   });
 
+  it('collects transmissionMap as LINEAR scalar data and packs its descriptor lane', () => {
+    const transmissionTex = { id: 'transmission' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        transmission: 0.75,
+        transmissionMap: { handle: transmissionTex },
+      }),
+    ]);
+    expect(linearSources).toEqual([transmissionTex]);
+    expect(descriptors[25]).toBe(0); // transmissionMapIdx -> linear 0
+  });
+
+  it('dedups transmissionMap with other linear material maps', () => {
+    const sharedLinearTex = { id: 'shared-linear-transmission' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        transmissionMap: { handle: sharedLinearTex },
+        normalMap: { handle: sharedLinearTex },
+      }),
+    ]);
+    expect(linearSources).toEqual([sharedLinearTex]);
+    expect(descriptors[1]).toBe(0);  // normalIdx -> linear 0
+    expect(descriptors[25]).toBe(0); // transmissionMapIdx -> same linear layer
+  });
+
   it('falls back to metallicMap for ORM when roughnessMap is absent', () => {
     const mrTex = { id: 'mr' };
     const { linearSources, descriptors } = collectMaterialTextures([
@@ -156,6 +181,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleBaseColorTexture(');
     expect(wgsl).toContain('fn sampleAlphaTexture(');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
+    expect(wgsl).toContain('fn sampleTransmissionTexture(');
   });
 
   it('normal maps transform derived tangents through the hit TLAS instance', () => {

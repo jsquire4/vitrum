@@ -19,7 +19,7 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}     ← D3 (-1 = no map)
  *   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
  *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
- *   6: {alphaMapIdx, _, _, _}                            (-1 = no map)
+ *   6: {alphaMapIdx, transmissionMapIdx, _, _}            (-1 = no map)
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -38,6 +38,8 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *     asks to dampen or amplify the tangent-space xy perturbation.
  *   - vec4 #6.x: standalone alphaMap layer in the LINEAR array (coverage data,
  *     not color). It multiplies baseColor alpha and opacity in alphaMode mask/blend.
+ *   - vec4 #6.y: transmissionMap layer in the LINEAR array. It multiplies the
+ *     scalar `MaterialSpec.transmission` (glTF KHR_materials_transmission R channel).
  */
 export const MATERIAL_TEX_VEC4_STRIDE = 7;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
@@ -141,7 +143,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // Standalone alphaMap is coverage data (linear), sampled with the shared v1
     // material texture UV transform. BaseColor alpha still participates too.
     descriptors[b + 24] = indexOfLinear(m.alphaMap);
-    descriptors[b + 25] = 0;
+    descriptors[b + 25] = indexOfLinear(m.transmissionMap);
     descriptors[b + 26] = 0;
     descriptors[b + 27] = 0;
   });

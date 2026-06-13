@@ -369,7 +369,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   normalScale: 'unsupported',
   roughnessMap: 'unsupported',
   metallicMap: 'unsupported',
-  transmissionMap: 'unsupported',
+  transmissionMap: 'approximate', // shared baseColor UV transform
   thicknessMap: 'unsupported',
   emissiveMap: 'unsupported',
   alphaMap: 'unsupported',

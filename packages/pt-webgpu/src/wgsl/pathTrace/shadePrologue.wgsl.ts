@@ -33,6 +33,7 @@ export function composeShadePrologueWgsl(
   aoApply = '',
   lightMapApply = '',
   bumpMapApply = '',
+  transmissionMapApply = '',
 ): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
@@ -40,7 +41,7 @@ export function composeShadePrologueWgsl(
     var roughness = mat.roughness;
     var emissive = mat.emissive;${emissiveTexApply}${lightMapApply}
     var metallic = mat.metallic;${ormTexApply}
-    let transmission = mat.transmission;
+    var transmission = mat.transmission;${transmissionMapApply}
     var ior = mat.ior;
     if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
       ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
@@ -230,3 +231,9 @@ export const SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL =
  *  when no bumpMap → byte-identical. */
 export const SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL =
   `\n    normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;
+
+/** KHR_materials_transmission map: multiply the scalar transmission factor by
+ *  the texture's R channel. sampleTransmissionTexture returns 1 when absent,
+ *  so scalar-only transmission stays byte-identical. */
+export const SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL =
+  `\n    transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);`;

@@ -316,7 +316,7 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}      ← D3 (-1 = no map)
 //   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
 //   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
-//   6: {alphaMapIdx, _, _, _}                             (-1 = no map)
+//   6: {alphaMapIdx, transmissionMapIdx, _, _}             (-1 = no map)
 const MATERIAL_TEX_VEC4_STRIDE = 7u;
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
@@ -560,6 +560,17 @@ fn sampleAlphaTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   let alphaIdx = i32(materialTexDescriptors[base + 6u].x);
   if (alphaIdx < 0) { return 1.0; }
   return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW).r, 0.0, 1.0);
+}
+
+// Transmission map (LINEAR scalar data) — descriptor vec4[6].y.
+// Multiplies MaterialSpec.transmission using glTF KHR_materials_transmission's
+// R channel. Returns 1 when absent, so scalar-only transmission is unchanged.
+fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 6u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let transmissionIdx = i32(materialTexDescriptors[base + 6u].y);
+  if (transmissionIdx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW).r, 0.0, 1.0);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

@@ -215,8 +215,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
     // Re-pinned 2026-06-12: standalone alphaMap is now sampled as LINEAR
     // coverage data and multiplies baseColor alpha + opacity in alphaMode paths.
-    expect(digest).toBe('86dbb1d2648bcd8e6333e96862baacd92a32d43a4e009d533465c09019b8e00e');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(327234);
+    // Re-pinned 2026-06-12: transmissionMap is now sampled as LINEAR scalar
+    // data and multiplies MaterialSpec.transmission in the full-tier prologue.
+    expect(digest).toBe('40f28e10ccefecc6d157aae4346da8f6f169e5e38df66c103fcb25f092113521');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(327978);
   });
 });
 
@@ -228,6 +230,9 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.isUnlit');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+    );
   });
 
   it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {
