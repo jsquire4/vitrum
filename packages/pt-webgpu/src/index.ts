@@ -1606,7 +1606,7 @@ class PTEngineWebGPU implements Engine {
 
     const gpu = this.#gpu;
 
-    if (this.#slot.get() === 'paused') {
+    if (this.#slot.get() === 'paused' && !this.#inInverseRender) {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
       const accumTexture = gpu.accumTexture;
