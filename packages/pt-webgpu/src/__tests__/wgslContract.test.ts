@@ -217,8 +217,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // coverage data and multiplies baseColor alpha + opacity in alphaMode paths.
     // Re-pinned 2026-06-12: transmissionMap is now sampled as LINEAR scalar
     // data and multiplies MaterialSpec.transmission in the full-tier prologue.
-    expect(digest).toBe('40f28e10ccefecc6d157aae4346da8f6f169e5e38df66c103fcb25f092113521');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(327978);
+    // Re-pinned 2026-06-12: heterogeneous material texture-array layers now
+    // carry per-map UV-fit scales; material samplers use fract(uv) * scale.
+    expect(digest).toBe('2cc17589ec15644253551bcbd8bd1f48b7d3c1036ac7a5d472b9514d2d20191b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(328842);
   });
 });
 

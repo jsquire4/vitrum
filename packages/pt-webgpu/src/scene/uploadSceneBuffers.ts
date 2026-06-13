@@ -19,7 +19,7 @@ import {
 import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
 import { invertMat4 } from '../math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
-import { collectMaterialTextures } from './materialTextures.js';
+import { applyMaterialTextureUvFitScales, collectMaterialTextures } from './materialTextures.js';
 import { createMaterialTextureArray } from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
 import {
@@ -1288,17 +1288,22 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   // white dummy so the binding is always satisfied; descriptors all hold -1 so
   // the kernel never samples it (textureless render stays byte-identical).
   const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
-  const materialTexDescriptorsBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.materialTexDescriptors',
-    packed.materialTexDescriptors,
-  );
   const materialTextureArray = createMaterialTextureArray(device, packed.materialTextureSources);
   // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
   const materialLinearArray = createMaterialTextureArray(
     device,
     packed.materialTextureLinearSources,
     'rgba8unorm',
+  );
+  applyMaterialTextureUvFitScales(
+    packed.materialTexDescriptors,
+    materialTextureArray.layerUvScales,
+    materialLinearArray.layerUvScales,
+  );
+  const materialTexDescriptorsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.materialTexDescriptors',
+    packed.materialTexDescriptors,
   );
   // Surface texture-array warnings (heterogeneous source sizes → wrong UVs, or an
   // unusable image). Accumulate them onto UploadedSceneBuffers.warnings so the

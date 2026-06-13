@@ -9,6 +9,7 @@
 // a textureless scene stays byte-identical to the pre-P2 parametric path.
 
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
+import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
 
 /**
  * vec4s per material in the descriptor buffer (MUST match the WGSL
@@ -20,6 +21,11 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
  *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
  *   6: {alphaMapIdx, transmissionMapIdx, _, _}            (-1 = no map)
+ *   7: {baseColorUvScale.xy, emissiveUvScale.xy}           (per-layer UV-fit)
+ *   8: {normalUvScale.xy, ormUvScale.xy}
+ *   9: {aoUvScale.xy, lightMapUvScale.xy}
+ *  10: {bumpUvScale.xy, anisotropyUvScale.xy}
+ *  11: {alphaUvScale.xy, transmissionUvScale.xy}
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -40,8 +46,11 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *     not color). It multiplies baseColor alpha and opacity in alphaMode mask/blend.
  *   - vec4 #6.y: transmissionMap layer in the LINEAR array. It multiplies the
  *     scalar `MaterialSpec.transmission` (glTF KHR_materials_transmission R channel).
+ *   - vec4 #7–#11: per-map UV-fit scales. Heterogeneous texture arrays copy each
+ *     source into a max-sized layer; these scales remap repeat-wrapped UVs into
+ *     the copied source rectangle instead of sampling padded black texels.
  */
-export const MATERIAL_TEX_VEC4_STRIDE = 7;
+export const MATERIAL_TEX_VEC4_STRIDE = 12;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -58,6 +67,55 @@ export interface CollectedTextures {
   readonly linearSources: unknown[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
+}
+
+function uvFitScaleFor(
+  scales: readonly MaterialTextureLayerUvScale[],
+  layerIdx: number,
+): MaterialTextureLayerUvScale {
+  if (layerIdx < 0 || layerIdx >= scales.length) return [1, 1];
+  return scales[layerIdx] ?? [1, 1];
+}
+
+function writeUvFitPair(
+  descriptors: Float32Array,
+  offset: number,
+  scale: MaterialTextureLayerUvScale,
+): void {
+  descriptors[offset] = scale[0];
+  descriptors[offset + 1] = scale[1];
+}
+
+function writeDefaultUvFitPairs(descriptors: Float32Array, b: number): void {
+  for (let offset = b + 28; offset < b + 48; offset += 2) {
+    descriptors[offset] = 1;
+    descriptors[offset + 1] = 1;
+  }
+}
+
+/** Fill per-map UV-fit descriptor lanes after the texture arrays reveal their
+ *  actual per-layer source rects. Same-size layers remain [1,1]. */
+export function applyMaterialTextureUvFitScales(
+  descriptors: Float32Array,
+  sRgbLayerScales: readonly MaterialTextureLayerUvScale[],
+  linearLayerScales: readonly MaterialTextureLayerUvScale[],
+): void {
+  const materialCount = Math.floor(descriptors.length / MATERIAL_TEX_FLOAT_STRIDE);
+  for (let mi = 0; mi < materialCount; mi += 1) {
+    const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
+    // sRGB array maps: baseColor and emissive.
+    writeUvFitPair(descriptors, b + 28, uvFitScaleFor(sRgbLayerScales, descriptors[b + 0] ?? -1));
+    writeUvFitPair(descriptors, b + 30, uvFitScaleFor(sRgbLayerScales, descriptors[b + 3] ?? -1));
+    // Linear array maps: normal, ORM, AO, light, bump, anisotropy, alpha, transmission.
+    writeUvFitPair(descriptors, b + 32, uvFitScaleFor(linearLayerScales, descriptors[b + 1] ?? -1));
+    writeUvFitPair(descriptors, b + 34, uvFitScaleFor(linearLayerScales, descriptors[b + 2] ?? -1));
+    writeUvFitPair(descriptors, b + 36, uvFitScaleFor(linearLayerScales, descriptors[b + 13] ?? -1));
+    writeUvFitPair(descriptors, b + 38, uvFitScaleFor(linearLayerScales, descriptors[b + 14] ?? -1));
+    writeUvFitPair(descriptors, b + 40, uvFitScaleFor(linearLayerScales, descriptors[b + 15] ?? -1));
+    writeUvFitPair(descriptors, b + 42, uvFitScaleFor(linearLayerScales, descriptors[b + 22] ?? -1));
+    writeUvFitPair(descriptors, b + 44, uvFitScaleFor(linearLayerScales, descriptors[b + 24] ?? -1));
+    writeUvFitPair(descriptors, b + 46, uvFitScaleFor(linearLayerScales, descriptors[b + 25] ?? -1));
+  }
 }
 
 /** Collect + dedup material texture sources and pack the per-material descriptors.
@@ -146,6 +204,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 25] = indexOfLinear(m.transmissionMap);
     descriptors[b + 26] = 0;
     descriptors[b + 27] = 0;
+    writeDefaultUvFitPairs(descriptors, b);
   });
 
   return { sources, linearSources, descriptors };

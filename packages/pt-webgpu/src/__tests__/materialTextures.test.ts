@@ -3,6 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  applyMaterialTextureUvFitScales,
   collectMaterialTextures,
   MATERIAL_TEX_FLOAT_STRIDE,
   MATERIAL_TEX_VEC4_STRIDE,
@@ -12,6 +13,13 @@ import type { MaterialSpec } from '@vitrum/core';
 
 function mat(over: Partial<MaterialSpec>): MaterialSpec {
   return { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, ...over };
+}
+
+function expectCloseArray(actual: ArrayLike<number>, expected: readonly number[]): void {
+  expect(actual.length).toBe(expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    expect(actual[i] ?? Number.NaN).toBeCloseTo(expected[i] ?? Number.NaN);
+  }
 }
 
 describe('collectMaterialTextures (P2 host)', () => {
@@ -159,6 +167,57 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[6]).toBe(1);
     expect(descriptors[10]).toBe(1);
     expect(descriptors[11]).toBe(1);
+    for (let i = 28; i < 48; i += 1) {
+      expect(descriptors[i]).toBe(1);
+    }
+  });
+
+  it('applies per-map UV-fit scales from the uploaded sRGB and linear texture arrays', () => {
+    const base = { id: 'base' };
+    const emissive = { id: 'emissive' };
+    const normal = { id: 'normal' };
+    const orm = { id: 'orm' };
+    const ao = { id: 'ao' };
+    const light = { id: 'light' };
+    const bump = { id: 'bump' };
+    const aniso = { id: 'aniso' };
+    const alpha = { id: 'alpha' };
+    const transmission = { id: 'transmission' };
+    const { descriptors } = collectMaterialTextures([
+      mat({
+        baseColorMap: { handle: base },
+        emissiveMap: { handle: emissive },
+        normalMap: { handle: normal },
+        roughnessMap: { handle: orm },
+        aoMap: { handle: ao },
+        lightMap: { handle: light },
+        bumpMap: { handle: bump },
+        anisotropyMap: { handle: aniso },
+        alphaMap: { handle: alpha },
+        transmissionMap: { handle: transmission },
+      }),
+    ]);
+
+    applyMaterialTextureUvFitScales(
+      descriptors,
+      [[0.5, 1], [1, 0.25]],
+      [
+        [0.75, 1],
+        [1, 0.5],
+        [0.25, 0.5],
+        [0.8, 0.6],
+        [0.4, 0.3],
+        [0.9, 0.7],
+        [0.2, 0.1],
+        [0.6, 0.4],
+      ],
+    );
+
+    expectCloseArray(descriptors.slice(28, 32), [0.5, 1, 1, 0.25]);
+    expectCloseArray(descriptors.slice(32, 36), [0.75, 1, 1, 0.5]);
+    expectCloseArray(descriptors.slice(36, 40), [0.25, 0.5, 0.8, 0.6]);
+    expectCloseArray(descriptors.slice(40, 44), [0.4, 0.3, 0.9, 0.7]);
+    expectCloseArray(descriptors.slice(44, 48), [0.2, 0.1, 0.6, 0.4]);
   });
 });
 
@@ -182,6 +241,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleAlphaTexture(');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
+    expect(wgsl).toContain('fract(uv) * uvFitScale');
+    expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
+    expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
+    expect(wgsl).toContain('materialTexDescriptors[base + 11u].zw');
   });
 
   it('normal maps transform derived tangents through the hit TLAS instance', () => {

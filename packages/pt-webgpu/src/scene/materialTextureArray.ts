@@ -12,13 +12,13 @@
 // DataTexture's `{ data, width, height }`), or one of those payloads directly.
 // No `import 'three'` — pt-webgpu stays host-agnostic.
 //
-// v1 scope: baseColor only; all layers share the array's dimensions (the max
-// across sources). Same-size texture sets (the common case — one texture, or a
-// uniform set) are exact; genuinely heterogeneous sizes are copied at native
-// size into the max-sized layer and a warning is logged (a per-layer UV-fit /
-// true atlas is the documented follow-on). A textureless scene gets a 1×1 white
-// dummy layer so the binding is always satisfied (the descriptors are all -1, so
-// the kernel never samples it and the render stays byte-identical to pre-P2).
+// Layers share the array's dimensions (the max across sources), but each layer
+// also exposes a UV-fit scale so the descriptor packer can remap samples into the
+// copied source rectangle. A textureless scene gets a 1×1 white dummy layer so
+// the binding is always satisfied (the descriptors are all -1, so the kernel
+// never samples it and the render stays byte-identical to pre-P2).
+
+export type MaterialTextureLayerUvScale = readonly [number, number];
 
 export interface MaterialTextureArray {
   readonly texture: GPUTexture;
@@ -26,6 +26,8 @@ export interface MaterialTextureArray {
   readonly sampler: GPUSampler;
   /** Array layer count (≥ 1; 1 = the white dummy when there are no sources). */
   readonly layerCount: number;
+  /** Per-layer source-rect UV scale: [copyWidth / arrayWidth, copyHeight / arrayHeight]. */
+  readonly layerUvScales: readonly MaterialTextureLayerUvScale[];
   readonly warnings: readonly string[];
 }
 
@@ -94,6 +96,7 @@ function createDummyArray(device: GPUDevice, format: GPUTextureFormat): Material
     view: texture.createView({ dimension: '2d-array' }),
     sampler: makeSampler(device),
     layerCount: 1,
+    layerUvScales: [[1, 1]],
     warnings: [],
   };
 }
@@ -141,8 +144,8 @@ export function createMaterialTextureArray(
     if (p.width !== width || p.height !== height) {
       warnings.push(
         `[materialTextureArray] source ${layer} is ${p.width}×${p.height} but the array is ` +
-          `${width}×${height}; copied at native size (UVs for this layer may be off until ` +
-          `per-layer UV-fit lands). Use same-size baseColor textures for exact v1 results.`,
+          `${width}×${height}; copied at native size and sampled through a per-layer UV-fit scale. ` +
+          `Use same-size textures when exact mip/border filtering parity is required.`,
       );
     }
     const copyW = Math.min(p.width, width);
@@ -168,6 +171,12 @@ export function createMaterialTextureArray(
     view: texture.createView({ dimension: '2d-array' }),
     sampler: makeSampler(device),
     layerCount: sources.length,
+    layerUvScales: payloads.map((p): MaterialTextureLayerUvScale => {
+      if (p == null) return [1, 1];
+      const copyW = Math.min(p.width, width);
+      const copyH = Math.min(p.height, height);
+      return [copyW / width, copyH / height];
+    }),
     warnings,
   };
 }
