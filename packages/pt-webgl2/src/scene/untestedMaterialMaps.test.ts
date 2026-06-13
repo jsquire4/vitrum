@@ -269,9 +269,10 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
   // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
   // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
 
-  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform texels', () => {
-    // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform.
-    expect(MATERIAL_PIXELS).toBe(95);
+  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform and wrap-mode texels', () => {
+    // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
+    // texels 95..104 carry per-map wrap modes.
+    expect(MATERIAL_PIXELS).toBe(105);
   });
 
   it('packer writes non-zero bitmask when any map has texCoord:1', () => {
@@ -336,14 +337,41 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
     expect(material_struct).toContain('mat3 alphaMapTransform');
     expect(material_struct).toContain('m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u )');
     expect(sr).toContain('material.alphaMapTransform * vec3( MAP_UV( 6u ), 1 )');
-    expect(sr).toContain('texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x');
-    expect(attenuate_hit_function).toContain('material.alphaMapTransform * vec3( uv, 1 )');
-    expect(attenuate_hit_function).toContain('texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x');
+    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x');
+    expect(attenuate_hit_function).toContain('material.alphaMapTransform * vec3( ATTENUATE_MAP_UV( 6u ), 1 )');
+    expect(attenuate_hit_function).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x');
   });
 
   it('material_struct carries uvTexCoordMask field decoded from s21.a', () => {
     const ms = material_struct;
     expect(ms).toContain('uvTexCoordMask');
     expect(ms).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
+  });
+
+  it('material_struct decodes per-map wrap modes and exposes the wrap-aware sample helper', () => {
+    expect(material_struct).toContain('sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec2 wrapMode )');
+    expect(material_struct).toContain('m.mapWrap = w0.rg');
+    expect(material_struct).toContain('m.metalnessMapWrap = w0.ba');
+    expect(material_struct).toContain('m.bumpMapWrap = w9.rg');
+  });
+
+  it('GLSL material fetches use wrap-aware sampling instead of raw texture2D calls', () => {
+    const sr = get_surface_record_function;
+    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap )');
+    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap )');
+    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap )');
+    expect(sr).toContain('material.specularIntensityMapWrap');
+    expect(sr).not.toContain('texture2D( textures');
+  });
+
+  it('attenuation path uses uv1 selection and wrap-aware material sampling', () => {
+    const ah = attenuate_hit_function;
+    expect(ah).toContain('ATTR_UV1');
+    expect(ah).toContain('ATTENUATE_MAP_UV( 0u )');
+    expect(ah).toContain('ATTENUATE_MAP_UV( 6u )');
+    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap )');
+    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap )');
+    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.transmissionMap, material.transmissionMapWrap )');
+    expect(ah).not.toContain('texture2D( textures');
   });
 });

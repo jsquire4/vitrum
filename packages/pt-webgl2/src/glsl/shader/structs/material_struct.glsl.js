@@ -122,6 +122,26 @@ export const material_struct = /* glsl */ `
 		mat3 specularIntensityMapTransform;
 		mat3 alphaMapTransform;
 
+		vec2 mapWrap;
+		vec2 metalnessMapWrap;
+		vec2 roughnessMapWrap;
+		vec2 transmissionMapWrap;
+		vec2 emissiveMapWrap;
+		vec2 normalMapWrap;
+		vec2 alphaMapWrap;
+		vec2 clearcoatMapWrap;
+		vec2 clearcoatRoughnessMapWrap;
+		vec2 clearcoatNormalMapWrap;
+		vec2 sheenColorMapWrap;
+		vec2 sheenRoughnessMapWrap;
+		vec2 iridescenceMapWrap;
+		vec2 iridescenceThicknessMapWrap;
+		vec2 specularColorMapWrap;
+		vec2 specularIntensityMapWrap;
+		vec2 aoMapWrap;
+		vec2 lightMapWrap;
+		vec2 bumpMapWrap;
+
 		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
 		// see readMaterialInfo). Identity when the corresponding map id == -1.
 		mat3 aoMapTransform;
@@ -129,6 +149,42 @@ export const material_struct = /* glsl */ `
 		mat3 bumpMapTransform;
 
 	};
+
+	float wrapMaterialTextureCoord( float coord, float mode ) {
+
+		int m = int( round( mode ) );
+		if ( m == 1 ) {
+
+			return min( clamp( coord, 0.0, 1.0 ), 0.999999 );
+
+		}
+
+		if ( m == 2 ) {
+
+			float period = coord - 2.0 * floor( coord * 0.5 );
+			float mirrored = period <= 1.0 ? period : 2.0 - period;
+			return min( max( mirrored, 0.0 ), 0.999999 );
+
+		}
+
+		return fract( coord );
+
+	}
+
+	vec2 wrapMaterialTextureUv( vec2 uv, vec2 wrapMode ) {
+
+		return vec2(
+			wrapMaterialTextureCoord( uv.x, wrapMode.x ),
+			wrapMaterialTextureCoord( uv.y, wrapMode.y )
+		);
+
+	}
+
+	vec4 sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec2 wrapMode ) {
+
+		return texture2D( tex, vec3( wrapMaterialTextureUv( uv, wrapMode ), float( layer ) ) );
+
+	}
 
 	mat3 readTextureTransform( sampler2D tex, uint index ) {
 
@@ -147,10 +203,10 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		// D3 — stride bumped 85 → 95 (single-sourced from materialStride.js; the
+		// D3 — stride bumped 85 → 105 (single-sourced from materialStride.js; the
 		// packer imports the same constant): texels 85/86 carry ao/light/bump map
 		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
-		// texels 93/94 carry alphaMapTransform.
+		// texels 93/94 carry alphaMapTransform; texels 95..104 carry per-map wrap.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
@@ -293,6 +349,37 @@ export const material_struct = /* glsl */ `
 		m.aoMapTransform = m.aoMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 87u );
 		m.lightMapTransform = m.lightMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 89u );
 		m.bumpMapTransform = m.bumpMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 91u );
+
+		// TextureRef.wrapS/wrapT: 0 repeat, 1 clamp-to-edge, 2 mirrored-repeat.
+		vec4 w0 = texelFetch1D( tex, i + 95u );
+		vec4 w1 = texelFetch1D( tex, i + 96u );
+		vec4 w2 = texelFetch1D( tex, i + 97u );
+		vec4 w3 = texelFetch1D( tex, i + 98u );
+		vec4 w4 = texelFetch1D( tex, i + 99u );
+		vec4 w5 = texelFetch1D( tex, i + 100u );
+		vec4 w6 = texelFetch1D( tex, i + 101u );
+		vec4 w7 = texelFetch1D( tex, i + 102u );
+		vec4 w8 = texelFetch1D( tex, i + 103u );
+		vec4 w9 = texelFetch1D( tex, i + 104u );
+		m.mapWrap = w0.rg;
+		m.metalnessMapWrap = w0.ba;
+		m.roughnessMapWrap = w1.rg;
+		m.transmissionMapWrap = w1.ba;
+		m.emissiveMapWrap = w2.rg;
+		m.normalMapWrap = w2.ba;
+		m.alphaMapWrap = w3.rg;
+		m.clearcoatMapWrap = w3.ba;
+		m.clearcoatRoughnessMapWrap = w4.rg;
+		m.clearcoatNormalMapWrap = w4.ba;
+		m.sheenColorMapWrap = w5.rg;
+		m.sheenRoughnessMapWrap = w5.ba;
+		m.iridescenceMapWrap = w6.rg;
+		m.iridescenceThicknessMapWrap = w6.ba;
+		m.specularColorMapWrap = w7.rg;
+		m.specularIntensityMapWrap = w7.ba;
+		m.aoMapWrap = w8.rg;
+		m.lightMapWrap = w8.ba;
+		m.bumpMapWrap = w9.rg;
 
 		return m;
 

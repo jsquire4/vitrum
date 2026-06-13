@@ -8,8 +8,35 @@
 // Layout: texels 0..54 = fork data layout, 55..84 = 15 texture transforms
 // (2 texels each), 85/86 = D3 ao/light/bump map ids + scalars + envMapIntensity,
 // 87..92 = D3 ao/light/bump transforms (2 texels each), 93..94 = alphaMap
-// transform.
-export const MATERIAL_PIXELS = 95;
+// transform, 95..104 = per-map wrap modes (two maps per RGBA texel).
+export const MATERIAL_WRAP_TEXEL_OFFSET = 95;
+
+// Map order shared by the UV-set bitmask and the wrap-mode payload. Bit k in
+// UV_SET_BIT and pair k in the wrap texels describe the same MaterialSpec map.
+export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([
+  'baseColorMap',
+  'metallicMap',
+  'roughnessMap',
+  'transmissionMap',
+  'emissiveMap',
+  'normalMap',
+  'alphaMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'aoMap',
+  'lightMap',
+  'bumpMap',
+]);
+
+export const MATERIAL_WRAP_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 2);
+export const MATERIAL_PIXELS = MATERIAL_WRAP_TEXEL_OFFSET + MATERIAL_WRAP_TEXELS;
 
 // UV-set bitmask — packed at texel 86.a (the former pad lane).
 // Bit k set = the k-th map samples uv1 (ATTR_UV1) instead of uv0 (ATTR_UV).
@@ -25,24 +52,6 @@ export const MATERIAL_PIXELS = 95;
 //   bit 7  = clearcoatMap          bit 17 = lightMap
 //   bit 8  = clearcoatRoughnessMap bit 18 = bumpMap
 //   bit 9  = clearcoatNormalMap
-export const UV_SET_BIT = /** @type {Record<string, number>} */ ({
-  baseColorMap:              1 << 0,
-  metallicMap:               1 << 1,
-  roughnessMap:              1 << 2,
-  transmissionMap:           1 << 3,
-  emissiveMap:               1 << 4,
-  normalMap:                 1 << 5,
-  alphaMap:                  1 << 6,
-  clearcoatMap:              1 << 7,
-  clearcoatRoughnessMap:     1 << 8,
-  clearcoatNormalMap:        1 << 9,
-  sheenColorMap:             1 << 10,
-  sheenRoughnessMap:         1 << 11,
-  iridescenceMap:            1 << 12,
-  iridescenceThicknessMap:   1 << 13,
-  specularColorMap:          1 << 14,
-  specularIntensityMap:      1 << 15,
-  aoMap:                     1 << 16,
-  lightMap:                  1 << 17,
-  bumpMap:                   1 << 18,
-});
+export const UV_SET_BIT = /** @type {Record<string, number>} */ (
+  Object.fromEntries(MATERIAL_MAP_FIELD_ORDER.map((field, i) => [field, 1 << i]))
+);

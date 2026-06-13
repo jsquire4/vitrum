@@ -77,14 +77,17 @@ export const attenuate_hit_function = /* glsl */`
 				}
 
 				vec2 uv = textureSampleBarycoord( attributesArray, ATTR_UV, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
+				vec2 uv1 = textureSampleBarycoord( attributesArray, ATTR_UV1, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 				vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz );
+
+				#define ATTENUATE_MAP_UV(bit) ( ( ( material.uvTexCoordMask >> (bit) ) & 1u ) != 0u ? uv1 : uv )
 
 				// albedo
 				vec4 albedo = vec4( material.color, material.opacity );
 				if ( material.map != - 1 ) {
 
-					vec3 uvPrime = material.mapTransform * vec3( uv, 1 );
-					albedo *= texture2D( textures, vec3( uvPrime.xy, material.map ) );
+					vec3 uvPrime = material.mapTransform * vec3( ATTENUATE_MAP_UV( 0u ), 1 );
+					albedo *= sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap );
 
 				}
 
@@ -97,8 +100,8 @@ export const attenuate_hit_function = /* glsl */`
 				// alphaMap
 				if ( material.alphaMap != - 1 ) {
 
-					vec3 uvPrime = material.alphaMapTransform * vec3( uv, 1 );
-					albedo.a *= texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x;
+					vec3 uvPrime = material.alphaMapTransform * vec3( ATTENUATE_MAP_UV( 6u ), 1 );
+					albedo.a *= sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x;
 
 				}
 
@@ -106,8 +109,8 @@ export const attenuate_hit_function = /* glsl */`
 				float transmission = material.transmission;
 				if ( material.transmissionMap != - 1 ) {
 
-					vec3 uvPrime = material.transmissionMapTransform * vec3( uv, 1 );
-					transmission *= texture2D( textures, vec3( uvPrime.xy, material.transmissionMap ) ).r;
+					vec3 uvPrime = material.transmissionMapTransform * vec3( ATTENUATE_MAP_UV( 3u ), 1 );
+					transmission *= sampleMaterialTexture( textures, uvPrime.xy, material.transmissionMap, material.transmissionMapWrap ).r;
 
 				}
 
@@ -115,8 +118,8 @@ export const attenuate_hit_function = /* glsl */`
 				float metalness = material.metalness;
 				if ( material.metalnessMap != - 1 ) {
 
-					vec3 uvPrime = material.metalnessMapTransform * vec3( uv, 1 );
-					metalness *= texture2D( textures, vec3( uvPrime.xy, material.metalnessMap ) ).b;
+					vec3 uvPrime = material.metalnessMapTransform * vec3( ATTENUATE_MAP_UV( 1u ), 1 );
+					metalness *= sampleMaterialTexture( textures, uvPrime.xy, material.metalnessMap, material.metalnessMapWrap ).b;
 
 				}
 
@@ -189,8 +192,9 @@ export const attenuate_hit_function = /* glsl */`
 						vec3 tangent = normalize( tangentSample.xyz );
 						float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
 						vec3 bitangent = normalize( cross( faceN, tangent ) * tangentHandedness );
-						vec3 nuvPrime = material.normalMapTransform * vec3( uv, 1 );
-						vec3 texNormal = texture2D( textures, vec3( nuvPrime.xy, material.normalMap ) ).xyz * 2.0 - 1.0;
+						vec3 nuvPrime = material.normalMapTransform * vec3( ATTENUATE_MAP_UV( 5u ), 1 );
+						vec3 texNormal =
+							sampleMaterialTexture( textures, nuvPrime.xy, material.normalMap, material.normalMapWrap ).xyz * 2.0 - 1.0;
 						texNormal.xy *= material.normalScale;
 						// World-space perturbation vector in the tangent plane.
 						vec3 dN = tangent * texNormal.x + bitangent * texNormal.y;
@@ -202,6 +206,8 @@ export const attenuate_hit_function = /* glsl */`
 				}
 
 				#endif
+
+				#undef ATTENUATE_MAP_UV
 
 				bool isTransmissiveRay = dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;
 				if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {

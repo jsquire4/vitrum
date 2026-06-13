@@ -57,7 +57,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.map != - 1 ) {
 
 			vec3 uvPrime = material.mapTransform * vec3( MAP_UV( 0u ), 1 );
-			albedo *= texture2D( textures, vec3( uvPrime.xy, material.map ) );
+			albedo *= sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap );
 
 		}
 
@@ -71,7 +71,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.alphaMap != - 1 ) {
 
 			vec3 uvPrime = material.alphaMapTransform * vec3( MAP_UV( 6u ), 1 );
-			albedo.a *= texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x;
+			albedo.a *= sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x;
 
 		}
 
@@ -83,7 +83,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.aoMap != - 1 ) {
 
 			vec3 uvPrime = material.aoMapTransform * vec3( MAP_UV( 16u ), 1 );
-			float ao = texture2D( textures, vec3( uvPrime.xy, material.aoMap ) ).r;
+			float ao = sampleMaterialTexture( textures, uvPrime.xy, material.aoMap, material.aoMapWrap ).r;
 			albedo.rgb *= clamp( mix( 1.0, ao, material.aoMapIntensity ), 0.0, 1.0 );
 
 		}
@@ -124,7 +124,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.roughnessMap != - 1 ) {
 
 			vec3 uvPrime = material.roughnessMapTransform * vec3( MAP_UV( 2u ), 1 );
-			roughness *= texture2D( textures, vec3( uvPrime.xy, material.roughnessMap ) ).g;
+			roughness *= sampleMaterialTexture( textures, uvPrime.xy, material.roughnessMap, material.roughnessMapWrap ).g;
 
 		}
 
@@ -133,7 +133,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.metalnessMap != - 1 ) {
 
 			vec3 uvPrime = material.metalnessMapTransform * vec3( MAP_UV( 1u ), 1 );
-			metalness *= texture2D( textures, vec3( uvPrime.xy, material.metalnessMap ) ).b;
+			metalness *= sampleMaterialTexture( textures, uvPrime.xy, material.metalnessMap, material.metalnessMapWrap ).b;
 
 		}
 
@@ -142,7 +142,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.emissiveMap != - 1 ) {
 
 			vec3 uvPrime = material.emissiveMapTransform * vec3( MAP_UV( 4u ), 1 );
-			emission *= texture2D( textures, vec3( uvPrime.xy, material.emissiveMap ) ).xyz;
+			emission *= sampleMaterialTexture( textures, uvPrime.xy, material.emissiveMap, material.emissiveMapWrap ).xyz;
 
 		}
 
@@ -153,7 +153,8 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.lightMap != - 1 && pathDepth == 0 ) {
 
 			vec3 uvPrime = material.lightMapTransform * vec3( MAP_UV( 17u ), 1 );
-			emission += material.lightMapIntensity * texture2D( textures, vec3( uvPrime.xy, material.lightMap ) ).rgb;
+			emission += material.lightMapIntensity *
+				sampleMaterialTexture( textures, uvPrime.xy, material.lightMap, material.lightMapWrap ).rgb;
 
 		}
 
@@ -162,7 +163,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.transmissionMap != - 1 ) {
 
 			vec3 uvPrime = material.transmissionMapTransform * vec3( MAP_UV( 3u ), 1 );
-			transmission *= texture2D( textures, vec3( uvPrime.xy, material.transmissionMap ) ).r;
+			transmission *= sampleMaterialTexture( textures, uvPrime.xy, material.transmissionMap, material.transmissionMapWrap ).r;
 
 		}
 
@@ -199,7 +200,8 @@ export const get_surface_record_function = /* glsl */`
 				mat3 vTBN = mat3( tangent, bitangent, normal );
 
 				vec3 uvPrime = material.normalMapTransform * vec3( MAP_UV( 5u ), 1 );
-				vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.normalMap ) ).xyz * 2.0 - 1.0;
+				vec3 texNormal =
+					sampleMaterialTexture( textures, uvPrime.xy, material.normalMap, material.normalMapWrap ).xyz * 2.0 - 1.0;
 				texNormal.xy *= material.normalScale;
 				normal = vTBN * texNormal;
 
@@ -224,9 +226,19 @@ export const get_surface_record_function = /* glsl */`
 
 				vec3 uvPrime = material.bumpMapTransform * vec3( MAP_UV( 18u ), 1 );
 				float du = 1.0 / 512.0;
-				float hC = texture2D( textures, vec3( uvPrime.xy, material.bumpMap ) ).r;
-				float hU = texture2D( textures, vec3( uvPrime.xy + vec2( du, 0.0 ), material.bumpMap ) ).r;
-				float hV = texture2D( textures, vec3( uvPrime.xy + vec2( 0.0, du ), material.bumpMap ) ).r;
+				float hC = sampleMaterialTexture( textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap ).r;
+				float hU = sampleMaterialTexture(
+					textures,
+					uvPrime.xy + vec2( du, 0.0 ),
+					material.bumpMap,
+					material.bumpMapWrap
+				).r;
+				float hV = sampleMaterialTexture(
+					textures,
+					uvPrime.xy + vec2( 0.0, du ),
+					material.bumpMap,
+					material.bumpMapWrap
+				).r;
 				float dhdu = ( hU - hC ) / du;
 				float dhdv = ( hV - hC ) / du;
 				vec3 tangent = normalize( tangentSample.xyz );
@@ -250,7 +262,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.clearcoatMap != - 1 ) {
 
 			vec3 uvPrime = material.clearcoatMapTransform * vec3( MAP_UV( 7u ), 1 );
-			clearcoat *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatMap ) ).r;
+			clearcoat *= sampleMaterialTexture( textures, uvPrime.xy, material.clearcoatMap, material.clearcoatMapWrap ).r;
 
 		}
 
@@ -259,7 +271,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.clearcoatRoughnessMap != - 1 ) {
 
 			vec3 uvPrime = material.clearcoatRoughnessMapTransform * vec3( MAP_UV( 8u ), 1 );
-			clearcoatRoughness *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatRoughnessMap ) ).g;
+			clearcoatRoughness *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.clearcoatRoughnessMap,
+				material.clearcoatRoughnessMapWrap
+			).g;
 
 		}
 
@@ -284,7 +301,12 @@ export const get_surface_record_function = /* glsl */`
 				mat3 vTBN = mat3( tangent, bitangent, clearcoatNormal );
 
 				vec3 uvPrime = material.clearcoatNormalMapTransform * vec3( MAP_UV( 9u ), 1 );
-				vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.clearcoatNormalMap ) ).xyz * 2.0 - 1.0;
+				vec3 texNormal = sampleMaterialTexture(
+					textures,
+					uvPrime.xy,
+					material.clearcoatNormalMap,
+					material.clearcoatNormalMapWrap
+				).xyz * 2.0 - 1.0;
 				texNormal.xy *= material.clearcoatNormalScale;
 				clearcoatNormal = vTBN * texNormal;
 
@@ -299,7 +321,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.sheenColorMap != - 1 ) {
 
 			vec3 uvPrime = material.sheenColorMapTransform * vec3( MAP_UV( 10u ), 1 );
-			sheenColor *= texture2D( textures, vec3( uvPrime.xy, material.sheenColorMap ) ).rgb;
+			sheenColor *= sampleMaterialTexture( textures, uvPrime.xy, material.sheenColorMap, material.sheenColorMapWrap ).rgb;
 
 		}
 
@@ -308,7 +330,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.sheenRoughnessMap != - 1 ) {
 
 			vec3 uvPrime = material.sheenRoughnessMapTransform * vec3( MAP_UV( 11u ), 1 );
-			sheenRoughness *= texture2D( textures, vec3( uvPrime.xy, material.sheenRoughnessMap ) ).a;
+			sheenRoughness *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.sheenRoughnessMap,
+				material.sheenRoughnessMapWrap
+			).a;
 
 		}
 
@@ -317,7 +344,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.iridescenceMap != - 1 ) {
 
 			vec3 uvPrime = material.iridescenceMapTransform * vec3( MAP_UV( 12u ), 1 );
-			iridescence *= texture2D( textures, vec3( uvPrime.xy, material.iridescenceMap ) ).r;
+			iridescence *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.iridescenceMap,
+				material.iridescenceMapWrap
+			).r;
 
 		}
 
@@ -326,7 +358,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.iridescenceThicknessMap != - 1 ) {
 
 			vec3 uvPrime = material.iridescenceThicknessMapTransform * vec3( MAP_UV( 13u ), 1 );
-			float iridescenceThicknessSampled = texture2D( textures, vec3( uvPrime.xy, material.iridescenceThicknessMap ) ).g;
+			float iridescenceThicknessSampled = sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.iridescenceThicknessMap,
+				material.iridescenceThicknessMapWrap
+			).g;
 			iridescenceThickness = mix( material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum, iridescenceThicknessSampled );
 
 		}
@@ -338,7 +375,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.specularColorMap != - 1 ) {
 
 			vec3 uvPrime = material.specularColorMapTransform * vec3( MAP_UV( 14u ), 1 );
-			specularColor *= texture2D( textures, vec3( uvPrime.xy, material.specularColorMap ) ).rgb;
+			specularColor *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.specularColorMap,
+				material.specularColorMapWrap
+			).rgb;
 
 		}
 
@@ -347,7 +389,12 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.specularIntensityMap != - 1 ) {
 
 			vec3 uvPrime = material.specularIntensityMapTransform * vec3( MAP_UV( 15u ), 1 );
-			specularIntensity *= texture2D( textures, vec3( uvPrime.xy, material.specularIntensityMap ) ).a;
+			specularIntensity *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.specularIntensityMap,
+				material.specularIntensityMapWrap
+			).a;
 
 		}
 

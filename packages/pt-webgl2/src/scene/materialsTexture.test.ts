@@ -6,21 +6,21 @@
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
-import { packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
+import { MATERIAL_WRAP_TEXEL_OFFSET, packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
 
 /** Float offset of pixel `s`, channel `c` (0=r,1=g,2=b,3=a) within material `mi`. */
 function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 95px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
-    // at 93/94. Single-sourced with every GLSL fetch site via
+    // at 93/94 + per-map wrap modes at 95..104. Single-sourced with every GLSL fetch site via
     // glsl/shader/structs/materialStride.js — see materialStrideParity.test.ts for
     // the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(95);
+    expect(MATERIAL_PIXELS).toBe(105);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -40,8 +40,8 @@ describe('packMaterialsTexture — 95px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(95)) = 10 → backing data is 10*10*4 = 400 floats.
-    expect(out.dim).toBe(10);
+    // dim = ceil(sqrt(105)) = 11 → backing data is 11*11*4 = 484 floats.
+    expect(out.dim).toBe(11);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
     const d = out.data;
@@ -275,6 +275,36 @@ describe('packMaterialsTexture — 95px RGBA32F byte layout', () => {
     expect(d[texel(0, 11, 0)]).toBe(1.0);
   });
 
+  it('packs per-map wrap modes at texels 95..104', () => {
+    const baseHandle = {};
+    const metalHandle = {};
+    const bumpHandle = {};
+    const layerOf = new Map<unknown, number>([
+      [baseHandle, 0],
+      [metalHandle, 1],
+      [bumpHandle, 2],
+    ]);
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle: baseHandle, wrapS: 'clamp-to-edge', wrapT: 'mirrored-repeat' },
+      metallicMap: { handle: metalHandle, wrapS: 'mirrored-repeat', wrapT: 'repeat' },
+      bumpMap: { handle: bumpHandle, wrapS: 'clamp-to-edge', wrapT: 'repeat' },
+    };
+    const d = packMaterialsTexture([m], layerOf).data;
+
+    // Map order is shared with UV_SET_BIT:
+    //   0 baseColorMap -> texel 95.rg, 1 metallicMap -> texel 95.ba,
+    //   18 bumpMap -> texel 104.rg. Encodings: 0 repeat, 1 clamp, 2 mirror.
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 0)]).toBe(1);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 1)]).toBe(2);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 2)]).toBe(2);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 3)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 0)]).toBe(1);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 1)]).toBe(0);
+  });
+
   // D3 — ao/lightMap/bumpMap transforms at texels 87/89/91 (item 26).
   //
   // The packer writes ao/lightMap/bumpMap id + scalars at texels 85/86, and their
@@ -428,8 +458,8 @@ describe('packMaterialsTexture — 95px RGBA32F byte layout', () => {
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };
     const out = packMaterialsTexture([a, b]);
     expect(out.materialCount).toBe(2);
-    // dim = ceil(sqrt(190)) = 14 → 14*14*4 = 784 floats.
-    expect(out.dim).toBe(14);
+    // dim = ceil(sqrt(210)) = 15 → 15*15*4 = 900 floats.
+    expect(out.dim).toBe(15);
     // material 0 color.
     expect(out.data[texel(0, 0, 0)]).toBe(1);
     expect(out.data[texel(0, 0, 1)]).toBe(0);

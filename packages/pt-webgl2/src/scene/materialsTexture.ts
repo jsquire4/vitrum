@@ -13,17 +13,22 @@
 // Provenance: gkjohnson/three-gpu-pathtracer (MIT) — `MaterialsTexture.js`.
 // CREDITS.md attributes the absorbed fork.
 
-import type { MaterialSpec, Vec3 } from '@vitrum/core';
+import type { MaterialSpec, TextureWrapMode, Vec3 } from '@vitrum/core';
 import type { MaterialsTextureData } from './sceneTextures.js';
 
-import { MATERIAL_PIXELS, UV_SET_BIT } from '../glsl/shader/structs/materialStride.js';
+import {
+  MATERIAL_MAP_FIELD_ORDER,
+  MATERIAL_PIXELS,
+  MATERIAL_WRAP_TEXEL_OFFSET,
+  UV_SET_BIT,
+} from '../glsl/shader/structs/materialStride.js';
 
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
- *  texels 85..92 + alphaMap transform texels 93..94 = 95). Re-exported for
- *  tests and parity guards. */
-export { MATERIAL_PIXELS };
-/** Floats per material (95 px × 4 channels). */
+ *  texels 85..92 + alphaMap transform texels 93..94 + wrap texels 95..104).
+ *  Re-exported for tests and parity guards. */
+export { MATERIAL_MAP_FIELD_ORDER, MATERIAL_PIXELS, MATERIAL_WRAP_TEXEL_OFFSET };
+/** Floats per material (MATERIAL_PIXELS px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
 type PackedMaterialSpec = MaterialSpec & {
@@ -103,6 +108,12 @@ const DEFAULT_ATTENUATION_COLOR: Vec3 = [1.0, 1.0, 1.0];
 /** Default specular color — fork default (1,1,1). */
 const DEFAULT_SPECULAR_COLOR: Vec3 = [1.0, 1.0, 1.0];
 
+const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
+  repeat: 0,
+  'clamp-to-edge': 1,
+  'mirrored-repeat': 2,
+};
+
 /**
  * Pack a list of core `MaterialSpec`s into the RGBA32F material square the
  * GLSL `readMaterialInfo` reads. Returns a CPU `MaterialsTextureData` grid
@@ -143,6 +154,15 @@ function writeTransform(
   const o = base + texelIdx * 4;
   data[o] = sx * c; data[o + 1] = sx * s; data[o + 2] = ox; data[o + 3] = 0;
   data[o + 4] = -sy * s; data[o + 5] = sy * c; data[o + 6] = oy; data[o + 7] = 0;
+}
+
+function writeWrapPair(
+  data: Float32Array,
+  offset: number,
+  ref: { wrapS?: TextureWrapMode; wrapT?: TextureWrapMode } | undefined,
+): void {
+  data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
+  data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
 }
 
 // ── D10.8: per-section packer helpers ────────────────────────────────────
@@ -456,9 +476,10 @@ function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): numbe
 
 /**
  * D10.8: Write texture-transform mat3s at samples 55..84, the D3 auxiliary block
- * at texels 85..92, and alphaMapTransform at 93..94. Uses absolute texel offsets
- * from `base` (not `index`) — these writes are non-sequential (the transform
- * slots are at fixed positions).
+ * at texels 85..92, alphaMapTransform at 93..94, and per-map wrap modes at
+ * MATERIAL_WRAP_TEXEL_OFFSET.. Uses absolute texel offsets from `base` (not
+ * `index`) — these writes are non-sequential (the transform slots are at fixed
+ * positions).
  */
 function packTextureTransforms(
   data: Float32Array,
@@ -518,6 +539,17 @@ function packTextureTransforms(
   if (ids.ao >= 0) writeTransform(data, base, 87, m.aoMap);
   if (ids.lightMap >= 0) writeTransform(data, base, 89, m.lightMap);
   if (ids.bump >= 0) writeTransform(data, base, 91, m.bumpMap);
+
+  for (let mapIdx = 0; mapIdx < MATERIAL_MAP_FIELD_ORDER.length; mapIdx += 1) {
+    const texel = MATERIAL_WRAP_TEXEL_OFFSET + Math.floor(mapIdx / 2);
+    const pairOffset = base + texel * 4 + (mapIdx % 2) * 2;
+    const field = MATERIAL_MAP_FIELD_ORDER[mapIdx] as keyof MaterialSpec;
+    writeWrapPair(
+      data,
+      pairOffset,
+      m[field] as { wrapS?: TextureWrapMode; wrapT?: TextureWrapMode } | undefined,
+    );
+  }
 }
 
 export function packMaterialsTexture(

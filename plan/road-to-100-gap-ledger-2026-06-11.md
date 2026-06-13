@@ -724,13 +724,20 @@ Evidence:
   `metallicRoughnessTexture`, and pt-webgl2 samples G for roughness / B for
   metallic in `get_surface_record_function.glsl.js`. Tests:
   `gltfTextureSweep.test.ts` and `untestedMaterialMaps.test.ts`.
-- `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 95,
+- `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 105,
   `materialsTexture.ts` packs `alphaMapTransform` at texels 93/94,
   `material_struct.glsl.js` decodes it, and both
   `get_surface_record_function.glsl.js` and `attenuate_hit_function.glsl.js`
   sample alpha maps through the transform. Tests:
   `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
   `materialStrideParity.test.ts`.
+- glTF sampler wrap parity is now code-closed for pt-webgl2: the material
+  record packs per-map `wrapS`/`wrapT` at texels 95..104, `material_struct`
+  decodes repeat/clamp/mirrored-repeat pairs, and both surface and attenuation
+  paths call `sampleMaterialTexture(...)` so every material texture fetch applies
+  manual per-layer wrapping instead of relying on one global WebGL array sampler.
+  `untestedMaterialMaps.test.ts`, `materialsTexture.test.ts`, and
+  `shader-gate` pin the path.
 - Layered front/back material fields are honestly approximate for pt-webgl2:
   `promiseLedger.ts` marks `frontLayer` / `backLayer` approximate for scalar
   transmission/roughness, while `index.ts` emits structured
