@@ -17,16 +17,11 @@
 //   (b) DECODER structural test — the composed GLSL contains the sampling site for that
 //       field (e.g. 'material.clearcoatMap != - 1') confirming the consumption is wired.
 //
-// texCoord finding (documented, not faked):
-//   pt-webgl2 does NOT implement texCoord selection. The packer (materialsTexture.ts)
-//   has no texCoord field in the material layout; the GLSL
-//   get_surface_record_function.glsl.js reads a single `uv` from ATTR_UV throughout
-//   and never branches on a texCoord selector. TextureRef.texCoord is accepted by the
-//   contract (core/frame.ts:43) but is silently ignored in pt-webgl2. This is an
-//   unkept promise; there is no per-map uv-set selector lane in the packer or shader.
-//   Evidence: grep texCoord in packages/pt-webgl2/src/ returns zero hits.
-//   Test below asserts the ABSENCE of texCoord handling in the decoder so a future
-//   implementation must update this test when wiring it.
+// texCoord finding (closed):
+//   pt-webgl2 now packs a per-map uv-set bitmask in texel 86.a and the GLSL
+//   MAP_UV(bit) selector chooses ATTR_UV1 for maps whose TextureRef.texCoord is 1.
+//   The tests below pin that behavior so future material-layout work cannot
+//   silently regress back to uv0-only sampling.
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
@@ -38,9 +33,11 @@ import { packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
 // used in src/glsl/bvh/index.ts.
 import * as MaterialStructNS from '../glsl/shader/structs/material_struct.glsl.js';
 import * as GetSurfaceNS from '../glsl/render/get_surface_record_function.glsl.js';
+import * as AttenuateHitNS from '../glsl/render/attenuate_hit_function.glsl.js';
 
 const material_struct: string = (MaterialStructNS as Record<string, string>)['material_struct'] ?? '';
 const get_surface_record_function: string = (GetSurfaceNS as Record<string, string>)['get_surface_record_function'] ?? '';
+const attenuate_hit_function: string = (AttenuateHitNS as Record<string, string>)['attenuate_hit_function'] ?? '';
 
 // Helper: float offset of pixel `s`, channel `c` (0=r,1=g,2=b,3=a) for material 0.
 function f(s: number, c: number): number {
@@ -272,9 +269,9 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
   // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
   // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
 
-  it('pt-webgl2 MATERIAL_PIXELS stride is unchanged (93) — bitmask reuses the pad lane', () => {
-    // The bitmask lives at texel 86.a (was pad=0); no stride increase needed.
-    expect(MATERIAL_PIXELS).toBe(93);
+  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform texels', () => {
+    // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform.
+    expect(MATERIAL_PIXELS).toBe(95);
   });
 
   it('packer writes non-zero bitmask when any map has texCoord:1', () => {
@@ -332,6 +329,16 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
     // For bit 0 (baseColorMap) the albedo sampling uses MAP_UV(0u).
     const sr = get_surface_record_function;
     expect(sr).toContain('MAP_UV( 0u )');
+  });
+
+  it('GLSL alphaMap sampling consumes its transform in surface and attenuation paths', () => {
+    const sr = get_surface_record_function;
+    expect(material_struct).toContain('mat3 alphaMapTransform');
+    expect(material_struct).toContain('m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u )');
+    expect(sr).toContain('material.alphaMapTransform * vec3( MAP_UV( 6u ), 1 )');
+    expect(sr).toContain('texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x');
+    expect(attenuate_hit_function).toContain('material.alphaMapTransform * vec3( uv, 1 )');
+    expect(attenuate_hit_function).toContain('texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x');
   });
 
   it('material_struct carries uvTexCoordMask field decoded from s21.a', () => {

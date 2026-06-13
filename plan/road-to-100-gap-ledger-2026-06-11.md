@@ -720,14 +720,19 @@ Closure:
 Evidence:
 - glTF combined metallic-roughness texture maps only to roughness in
   `gltf-adapter`, while pt-webgl2 reads metalness from `metallicMap`.
-- `alphaMap` has no transform slot and samples raw UVs.
+- `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 95,
+  `materialsTexture.ts` packs `alphaMapTransform` at texels 93/94,
+  `material_struct.glsl.js` decodes it, and both
+  `get_surface_record_function.glsl.js` and `attenuate_hit_function.glsl.js`
+  sample alpha maps through the transform. Tests:
+  `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
+  `materialStrideParity.test.ts`.
 - Layered front/back normal maps are not packed.
 - Surface anisotropy is not consumed by pt-webgl2.
 
 Closure:
 - Map combined metallic-roughness to both roughness and metalness channels or add
   an explicit combined ORM convention.
-- Add alpha-map transform packing or diagnose it unsupported.
 - Implement or explicitly downgrade layered normal maps and anisotropy.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial

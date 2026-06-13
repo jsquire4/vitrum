@@ -7,8 +7,9 @@
 //
 // Layout: texels 0..54 = fork data layout, 55..84 = 15 texture transforms
 // (2 texels each), 85/86 = D3 ao/light/bump map ids + scalars + envMapIntensity,
-// 87..92 = D3 ao/light/bump transforms (2 texels each).
-export const MATERIAL_PIXELS = 93;
+// 87..92 = D3 ao/light/bump transforms (2 texels each), 93..94 = alphaMap
+// transform.
+export const MATERIAL_PIXELS = 95;
 
 // UV-set bitmask — packed at texel 86.a (the former pad lane).
 // Bit k set = the k-th map samples uv1 (ATTR_UV1) instead of uv0 (ATTR_UV).

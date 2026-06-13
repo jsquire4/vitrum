@@ -67,10 +67,11 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// alphaMap (bit 6) — no transform slot; uses raw MAP_UV selection
+		// alphaMap (bit 6)
 		if ( useTextures && material.alphaMap != - 1 ) {
 
-			albedo.a *= texture2D( textures, vec3( MAP_UV( 6u ), material.alphaMap ) ).x;
+			vec3 uvPrime = material.alphaMapTransform * vec3( MAP_UV( 6u ), 1 );
+			albedo.a *= texture2D( textures, vec3( uvPrime.xy, material.alphaMap ) ).x;
 
 		}
 

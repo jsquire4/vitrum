@@ -1,15 +1,14 @@
 // materialsTexture — THREE-free port of three-gpu-pathtracer's `MaterialsTexture.js`,
 // driven from a `@vitrum/core` `MaterialSpec` (NOT a THREE material).
 //
-// Reproduces the EXACT 85-pixel (340-float) RGBA32F-per-material byte layout the
-// fork's GLSL `material_struct` decoder reads texel-for-texel (verified against
-// `uniforms/MaterialsTexture.js` + `shader/structs/material_struct.glsl.js`, and
-// the §4 layout table in `plan/three-removal/03-scene-bvh-packers.md`).
+// Reproduces the absorbed fork's material texture layout plus Vitrum's extended
+// material-map slots as an RGBA32F-per-material record that the GLSL
+// `material_struct` decoder reads texel-for-texel.
 //
-// The GLSL decoder is KEPT UNCHANGED, so this packer is the byte-exact authority:
-// any divergence here is a render bug. The packer is intentionally GPU-free and
-// pure (Float32Array in → Float32Array out) so it can be golden-tested CPU-side
-// like pt-webgpu's `materialPackingCoreEquivalence`.
+// The GLSL decoder and this packer must move together: any stride or offset
+// divergence is a render bug. The packer is intentionally GPU-free and pure
+// (Float32Array in → Float32Array out) so it can be golden-tested CPU-side like
+// pt-webgpu's `materialPackingCoreEquivalence`.
 //
 // Provenance: gkjohnson/three-gpu-pathtracer (MIT) — `MaterialsTexture.js`.
 // CREDITS.md attributes the absorbed fork.
@@ -21,9 +20,10 @@ import { MATERIAL_PIXELS, UV_SET_BIT } from '../glsl/shader/structs/materialStri
 
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
- *  texels 85..92 = 93). Re-exported for tests and parity guards. */
+ *  texels 85..92 + alphaMap transform texels 93..94 = 95). Re-exported for
+ *  tests and parity guards. */
 export { MATERIAL_PIXELS };
-/** Floats per material (93 px × 4 channels). */
+/** Floats per material (95 px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
 type PackedMaterialSpec = MaterialSpec & {
@@ -104,11 +104,11 @@ const DEFAULT_ATTENUATION_COLOR: Vec3 = [1.0, 1.0, 1.0];
 const DEFAULT_SPECULAR_COLOR: Vec3 = [1.0, 1.0, 1.0];
 
 /**
- * Pack a list of core `MaterialSpec`s into the 85-px/material RGBA32F square the
- * fork's GLSL `readMaterialInfo` reads. Returns a CPU `MaterialsTextureData` grid
+ * Pack a list of core `MaterialSpec`s into the RGBA32F material square the
+ * GLSL `readMaterialInfo` reads. Returns a CPU `MaterialsTextureData` grid
  * (`{ data, dim, kind:'rgba32f', materialCount }`) ready for `gl.texImage2D`.
  *
- * Square sizing: `dim = ceil(sqrt(materials.length * 85))` (matches the fork).
+ * Square sizing: `dim = ceil(sqrt(materials.length * MATERIAL_PIXELS))`.
  */
 /** Resolve a TextureRef → its atlas layer index (-1 = none / unmapped). */
 function mapLayer(
@@ -455,9 +455,10 @@ function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): numbe
 }
 
 /**
- * D10.8: Write texture-transform mat3s at samples 55..84 and the D3 auxiliary block
- * at texels 85..92. Uses absolute texel offsets from `base` (not `index`) — these
- * writes are non-sequential (the transform slots are at fixed positions).
+ * D10.8: Write texture-transform mat3s at samples 55..84, the D3 auxiliary block
+ * at texels 85..92, and alphaMapTransform at 93..94. Uses absolute texel offsets
+ * from `base` (not `index`) — these writes are non-sequential (the transform
+ * slots are at fixed positions).
  */
 function packTextureTransforms(
   data: Float32Array,
@@ -468,9 +469,8 @@ function packTextureTransforms(
   // samples 55..84 (30 texels): 15 texture-transform mat3s, 2 texels each, at
   // `texel 55 + 2k` (k per the GLSL `readTextureTransform` order in material_struct).
   // The GLSL only READS a transform when the map id != -1, so write one per mapped
-  // texture (others stay zero / unread → identity). Maps without a transform slot
-  // (alphaMap) sample with raw uv. The fork's `writeTextureMatrixToArray` is the
-  // analogue.
+  // texture (others stay zero / unread → identity). The fork's
+  // `writeTextureMatrixToArray` is the analogue.
   // Transform-slot order matches the GLSL `readTextureTransform` calls in
   // material_struct.glsl.js (firstTextureTransformIdx + 2k): map(0), metalness(2),
   // roughness(4), transmission(6), emissive(8), normal(10), clearcoat(12),
@@ -493,6 +493,7 @@ function packTextureTransforms(
   if (ids.iridescenceThickness >= 0) writeTransform(data, base, 79, m.iridescenceThicknessMap);
   if (ids.specularColor >= 0) writeTransform(data, base, 81, m.specularColorMap);
   if (ids.specularIntensity >= 0) writeTransform(data, base, 83, m.specularIntensityMap);
+  if (ids.alpha >= 0) writeTransform(data, base, 93, m.alphaMap);
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).

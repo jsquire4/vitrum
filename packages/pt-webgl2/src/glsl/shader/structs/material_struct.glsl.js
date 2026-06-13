@@ -88,7 +88,8 @@ export const material_struct = /* glsl */ `
 
 		// D3 — reserved-field consumption: ambient-occlusion / baked light / bump maps
 		// + per-material env-IBL scale. Layout: texels 85..92 (after the 30 transform
-		// texels 55..84). aoMap modulates albedo (with the geometry-occlusion caveat),
+		// texels 55..84), plus alphaMapTransform at 93..94. aoMap modulates albedo
+		// (with the geometry-occlusion caveat),
 		// lightMap adds baked irradiance at camera hits, bumpMap perturbs the normal by
 		// its height gradient, envMapIntensity scales this material's IBL contribution.
 		int aoMap;
@@ -119,6 +120,7 @@ export const material_struct = /* glsl */ `
 		mat3 iridescenceThicknessMapTransform;
 		mat3 specularColorMapTransform;
 		mat3 specularIntensityMapTransform;
+		mat3 alphaMapTransform;
 
 		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
 		// see readMaterialInfo). Identity when the corresponding map id == -1.
@@ -145,9 +147,10 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		// D3 — stride bumped 85 → 93 (single-sourced from materialStride.js; the
+		// D3 — stride bumped 85 → 95 (single-sourced from materialStride.js; the
 		// packer imports the same constant): texels 85/86 carry ao/light/bump map
-		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms.
+		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
+		// texels 93/94 carry alphaMapTransform.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
@@ -284,6 +287,7 @@ export const material_struct = /* glsl */ `
 		m.iridescenceThicknessMapTransform = m.iridescenceThicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 24u );
 		m.specularColorMapTransform = m.specularColorMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 26u );
 		m.specularIntensityMapTransform = m.specularIntensityMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 28u );
+		m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u );
 
 		// D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
 		m.aoMapTransform = m.aoMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 87u );

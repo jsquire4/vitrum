@@ -13,13 +13,14 @@ function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — 95px RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
-    // + envMapIntensity at 85/86, their transforms at 87..92). Single-sourced with
-    // every GLSL fetch site via glsl/shader/structs/materialStride.js — see
-    // materialStrideParity.test.ts for the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(93);
+    // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
+    // at 93/94. Single-sourced with every GLSL fetch site via
+    // glsl/shader/structs/materialStride.js — see materialStrideParity.test.ts for
+    // the packer↔shader guard.
+    expect(MATERIAL_PIXELS).toBe(95);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -39,7 +40,7 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(85)) = 10 → backing data is 10*10*4 = 400 floats.
+    // dim = ceil(sqrt(95)) = 10 → backing data is 10*10*4 = 400 floats.
     expect(out.dim).toBe(10);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
@@ -371,6 +372,31 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 92, 2)]).toBeCloseTo(0.75, 6); // offsetY
   });
 
+  it('packs alphaMapTransform at texels 93/94 when alphaMap resolves to an atlas layer', () => {
+    const alphaHandle = {};
+    const layerOf = new Map<unknown, number>([[alphaHandle, 6]]);
+    const m: MaterialSpec = {
+      baseColor: [0.5, 0.5, 0.5],
+      roughness: 0.5,
+      metallic: 0.0,
+      alphaMap: {
+        handle: alphaHandle,
+        transform: { scale: [2, 3], offset: [0.1, 0.2] },
+      },
+    };
+
+    const d = packMaterialsTexture([m], layerOf).data;
+    expect(d[texel(0, 13, 0)]).toBe(6); // alphaMap layer id
+    expect(d[texel(0, 93, 0)]).toBeCloseTo(2, 6);
+    expect(d[texel(0, 93, 1)]).toBeCloseTo(0, 6);
+    expect(d[texel(0, 93, 2)]).toBeCloseTo(0.1, 6);
+    expect(d[texel(0, 93, 3)]).toBe(0);
+    expect(d[texel(0, 94, 0)]).toBeCloseTo(0, 6);
+    expect(d[texel(0, 94, 1)]).toBeCloseTo(3, 6);
+    expect(d[texel(0, 94, 2)]).toBeCloseTo(0.2, 6);
+    expect(d[texel(0, 94, 3)]).toBe(0);
+  });
+
   it('D3 item26: ao/lightMap/bumpMap transforms stay zero when layerOf is undefined (no atlas)', () => {
     // This is the guard for the existing behavior: without a layerOf map, all three
     // map ids are -1, writeTransform is never called, and texels 87..92 remain 0
@@ -382,6 +408,7 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
       aoMap:    { handle: {}, transform: { scale: [2, 3] } },
       lightMap: { handle: {}, transform: { scale: [4, 5] } },
       bumpMap:  { handle: {}, transform: { scale: [6, 7] } },
+      alphaMap: { handle: {}, transform: { scale: [8, 9] } },
     };
     // No layerOf → all layers resolve to -1 → writeTransform not called.
     const d = packMaterialsTexture([m]).data;
@@ -393,6 +420,7 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     expect(d[texel(0, 87, 0)]).toBe(0); // aoMapTransform row1.r
     expect(d[texel(0, 89, 0)]).toBe(0); // lightMapTransform row1.r
     expect(d[texel(0, 91, 0)]).toBe(0); // bumpMapTransform row1.r
+    expect(d[texel(0, 93, 0)]).toBe(0); // alphaMapTransform row1.r
   });
 
   it('multiple materials are packed at their MATERIAL_PIXELS-strided offsets', () => {
@@ -400,12 +428,12 @@ describe('packMaterialsTexture — 93px RGBA32F byte layout', () => {
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };
     const out = packMaterialsTexture([a, b]);
     expect(out.materialCount).toBe(2);
-    // dim = ceil(sqrt(170)) = 14 → 14*14*4 = 784 floats.
+    // dim = ceil(sqrt(190)) = 14 → 14*14*4 = 784 floats.
     expect(out.dim).toBe(14);
     // material 0 color.
     expect(out.data[texel(0, 0, 0)]).toBe(1);
     expect(out.data[texel(0, 0, 1)]).toBe(0);
-    // material 1 color, at the second 340-float block.
+    // material 1 color, at the second MATERIAL_PIXELS-strided block.
     expect(out.data[texel(1, 0, 0)]).toBe(0);
     expect(out.data[texel(1, 0, 1)]).toBe(1);
   });
