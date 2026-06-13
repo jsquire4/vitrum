@@ -650,8 +650,8 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 
 | Task | File | Footgun |
 |------|------|---------|
-| `createEngine` accepts `gltfAsset?: GltfAssetResult` | `createEngine.ts`, `createEngineInternals.ts` | When present, `pickBackend` defers to `recommendedBackend.backend` |
-| Replace triangle-only auto | `createEngineScale.ts` `pickBackend` | 500k tri budget ignores material richness |
+| ~~`createEngine` accepts `gltfAsset?: GltfAssetResult`~~ ✅ DONE | `createEngineInternals.ts` exposes a structural `gltfAsset` hint; `createEngine.ts` passes `gltfAsset.recommendedBackend.backend` into `pickBackend`; `@vitrum/engine/gltf` supplies the loaded asset automatically. | Structural type avoids importing adapter runtime code into the core create path |
+| ~~Replace triangle-only auto~~ ✅ DONE for glTF assets | `createEngineScale.ts` `pickBackend` uses the glTF recommendation when `prefer:'auto'`; explicit `prefer` still wins, and WebGL-only hosts fall back to `pt-webgl2` for WebGPU recommendations. Test: `createEngineScale.test.ts`. | Non-glTF scenes still use the 500k-triangle heuristic |
 | `VitrumCanvas` `gltf` prop | `VitrumCanvas.tsx` | Load on mount, recreate engine on url change |
 | `ProgressiveHandoffCoordinator` + glTF | `progressiveHandoff.ts` | Already has scene fallback; add `controller` reference for animated handoff |
 | Shared-device handoff | `createProgressiveEngine.ts` | Textures must be `GPUTexture` compatible — decode to GPU on WebGPU path, not CPU-only handles |

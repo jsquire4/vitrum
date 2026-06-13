@@ -3,6 +3,7 @@
 import type { Vec3 } from '@vitrum/core';
 
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
+export type EngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
 
 /** Threshold above which 'auto' falls back from walkaround-hybrid to a PT backend. */
 const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
@@ -33,7 +34,11 @@ export function pickBackend(
   hasWebGPU: boolean,
   triangleCount: number,
   needsTlas = false,
-): 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu' {
+  gltfRecommendedBackend?: EngineBackendId,
+): EngineBackendId {
+  if (prefer === 'auto' && gltfRecommendedBackend !== undefined) {
+    return resolveGltfRecommendedBackend(gltfRecommendedBackend, hasWebGPU);
+  }
   if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl2';
   if (prefer === 'quality') {
     if (needsTlas && hasWebGPU) return 'pt-webgpu';
@@ -51,5 +56,14 @@ export function pickBackend(
   }
   // WebGL-only host: merged BVH is the only pt-webgl2 path; caller should warn
   // when needsTlas is true (handled at the createEngine call site).
+  return 'pt-webgl2';
+}
+
+function resolveGltfRecommendedBackend(
+  backend: EngineBackendId,
+  hasWebGPU: boolean,
+): EngineBackendId {
+  if (backend === 'pt-webgl2') return 'pt-webgl2';
+  if (hasWebGPU) return backend;
   return 'pt-webgl2';
 }

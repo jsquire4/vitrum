@@ -29,7 +29,7 @@ export type {
 } from '@vitrum/gltf-adapter';
 
 export type GltfCreateEngineOptions =
-  Omit<CreateEngineOptions, 'scene' | 'prefer'> & {
+  Omit<CreateEngineOptions, 'scene' | 'prefer' | 'gltfAsset'> & {
     readonly prefer?: EnginePreference;
   };
 
@@ -48,10 +48,11 @@ export async function loadGltfWithEngine(
   return loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
     ...adapterOptions,
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
-    createEngine: async ({ scene, backend, options: createOptions }) => {
+    createEngine: async ({ scene, backend, asset, options: createOptions }) => {
       return await createEngine({
         ...createOptions,
         scene,
+        gltfAsset: asset,
         prefer: preferForSelectedBackend(backend, createOptions.prefer),
       });
     },

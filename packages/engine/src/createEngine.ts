@@ -35,6 +35,7 @@ import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 export type {
   CreateEngineBackendId,
   CreateEngineAdvancedByBackend,
+  CreateEngineGltfAssetHint,
   CreateEngineErrorPhase,
   CreateEngineErrorEvent,
   CreateEngineOptions,
@@ -110,6 +111,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
     gpu.isWebGPU,
     aabb.triangleCount,
     tlasAudit.needsTlas,
+    opts.gltfAsset?.recommendedBackend?.backend,
   );
   // When the audit recommends a TLAS-capable backend but we resolved to pt-webgl2
   // (the only merged-BVH backend), surface the recommendation + detail so the host

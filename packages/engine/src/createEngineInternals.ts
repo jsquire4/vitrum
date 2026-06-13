@@ -20,7 +20,7 @@ import { wrapWithIdempotentDispose } from './idempotentDispose.js';
 import type { GIStatePersistable } from './idempotentDispose.js';
 import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 import type { PTEngineWebGPUOptions } from '@vitrum/pt-webgpu';
-import type { EnginePreference } from './createEngineScale.js';
+import type { EngineBackendId, EnginePreference } from './createEngineScale.js';
 
 // Re-export wrapWithIdempotentDispose here so backends don't need to import
 // idempotentDispose.ts directly (reduces backend import surface).
@@ -32,7 +32,13 @@ export { wrapWithIdempotentDispose };
 
 export type WebGL2PathTracerAdvancedOptions = Partial<Omit<PTEngineWebGL2Options, 'device'>>;
 
-export type CreateEngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
+export type CreateEngineBackendId = EngineBackendId;
+
+export interface CreateEngineGltfAssetHint {
+  readonly recommendedBackend?: {
+    readonly backend: CreateEngineBackendId;
+  };
+}
 
 export interface CreateEngineAdvancedByBackend {
   readonly 'walkaround-hybrid'?: Partial<HybridEngineOptions>;
@@ -79,6 +85,13 @@ export interface CreateEngineOptions {
    *    'auto'     — pick walkaround-hybrid if WebGPU + tris < 500k,
    *                 else a path-tracer backend. Default. */
   readonly prefer?: EnginePreference;
+
+  /** Optional glTF planning result. When `prefer` is left as `'auto'`, the
+   *  createEngine backend picker follows `gltfAsset.recommendedBackend.backend`
+   *  instead of falling back to the generic triangle-count heuristic. This is
+   *  structural on purpose: @vitrum/engine does not need to import adapter
+   *  runtime code to consume the adapter's recommendation. */
+  readonly gltfAsset?: CreateEngineGltfAssetHint;
 
   /** Legacy backend-specific overrides. Merged on top of the createEngine()-
    *  derived defaults; user-supplied keys win. Most users leave empty.
