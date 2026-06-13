@@ -581,6 +581,82 @@ fn rptComputeLoAtReconnection(
   return Lo;
 }
 
+fn rptSourceLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
+  return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1e-4);
+}
+
+fn rptSampleSourceReconnectionDirection(
+  rng: ptr<function, u32>,
+  wo: vec3f,
+  normal: vec3f,
+  tanT: vec3f,
+  tanB: vec3f,
+  roughness: f32,
+  metallic: f32,
+  fresnel: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  anisotropy: f32,
+) -> vec3f {
+  let lobeWeightSum = rptSourceLobeWeightSum(clearcoat, sheen);
+  let xiSource = rand_f32(rng) * lobeWeightSum;
+  if (xiSource < 1.0) {
+    let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+    let baseDiffProb = max(0.0, 1.0 - baseSpecProb);
+    let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
+    let specProb = baseSpecProb / sumProb;
+    if (rand_f32(rng) < specProb) {
+      var bs: BsdfSample;
+      if (anisotropy > 1e-4) {
+        bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+      } else {
+        bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      }
+      return bs.wi;
+    }
+    let bs = cosineHemisphereSample(rng, normal);
+    return bs.wi;
+  }
+  if (xiSource < 1.0 + max(clearcoat, 0.0)) {
+    let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);
+    return bs.wi;
+  }
+  let bs = cosineHemisphereSample(rng, normal);
+  return bs.wi;
+}
+
+fn rptSourceDirectionalPdfFull(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> f32 {
+  return brdfDirectionalPdfFull(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    anisotropy, anisotropyRotation,
+  ) / rptSourceLobeWeightSum(clearcoat, sheen);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) {
@@ -715,26 +791,26 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let cosO = max(dot(nv, woV), 0.0);
   let f0V = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);
   let fresV = fresnelSchlick(cosO, f0V);
-  // Partition specular vs diffuse exactly as sampleNextBounceDirection's
-  // non-transmissive branch, so wi_recon's pdf matches brdfDirectionalPdf.
-  let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresV), metallicV)), 0.04, 0.96);
-  let baseDiffProb = max(0.0, 1.0 - baseSpecProb);
-  let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
-  let specProb = baseSpecProb / sumProb;
-  var wiRecon = vec3f(0.0);
-  let xiLobe = rand_f32(&rng);
-  if (xiLobe < specProb) {
-    var bs: BsdfSample;
-    if (anisotropyV > 1e-4) {
-      bs = glossyReflectionSampleAnisotropic(&rng, woV, nv, tanT, tanB, roughnessV, anisotropyV);
-    } else {
-      bs = glossyReflectionSample(&rng, woV, nv, tanT, tanB, roughnessV);
-    }
-    wiRecon = bs.wi;
-  } else {
-    let bs = cosineHemisphereSample(&rng, nv);
-    wiRecon = bs.wi;
-  }
+  // Sample from the normalized source-lobe mixture used by pdfSrc below:
+  //   p_src = (p_base + clearcoat*p_clearcoat + sheen*p_sheen) /
+  //           (1 + clearcoat + sheen)
+  // where p_base preserves the base specular/diffuse split, p_clearcoat is a
+  // clearcoat-roughness VNDF reflection, and p_sheen uses the same cosine proxy
+  // as brdfDirectionalPdfFull. This keeps the reservoir source density honest.
+  let wiRecon = rptSampleSourceReconnectionDirection(
+    &rng,
+    woV,
+    nv,
+    tanT,
+    tanB,
+    roughnessV,
+    metallicV,
+    fresV,
+    clearcoatV,
+    clearcoatRoughnessV,
+    sheenV,
+    anisotropyV,
+  );
   let nDotRecon = dot(nv, wiRecon);
   if (nDotRecon <= 1e-5) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
@@ -749,9 +825,9 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // the f·cos·Lo/p_src estimator. p_src ≤ 0 is rare (and its f·cos contribution is
   // ~0 anyway), so dropping the single frame's sample is the correct, unbiased
   // choice; the temporal history is re-seeded the next non-degenerate frame.
-  let pdfSrc = brdfDirectionalPdfFull(
+  let pdfSrc = rptSourceDirectionalPdfFull(
     baseColorV, roughnessV, metallicV, 0.0, iorV, nv, woV, wiRecon,
-    0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,
+    clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
     specularColorV, specularIntensityV,
     anisotropyV, anisotropyRotationV,

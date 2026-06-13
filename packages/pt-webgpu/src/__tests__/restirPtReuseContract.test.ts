@@ -176,12 +176,26 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
 
 describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () => {
   it('stores the REAL source BSDF pdf (pdfSrc) for unbiased glossy reconstruction', () => {
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let pdfSrc = brdfDirectionalPdfFull(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let pdfSrc = rptSourceDirectionalPdfFull(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      '0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,',
+      'clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV,',
     );
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('specularColorV, specularIntensityV,');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyV, anisotropyRotationV,');
+  });
+
+  it('samples clearcoat and sheen source lobes with a matching normalized pdf', () => {
+    for (const line of [
+      'fn rptSourceLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {',
+      'fn rptSampleSourceReconnectionDirection(',
+      'let xiSource = rand_f32(rng) * lobeWeightSum;',
+      'if (xiSource < 1.0 + max(clearcoat, 0.0)) {',
+      'let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);',
+      'return brdfDirectionalPdfFull(',
+      ') / rptSourceLobeWeightSum(clearcoat, sheen);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
   });
 
   it('evaluates suffix Lo direct lighting and onward throughput with extension-aware BRDF helpers', () => {
@@ -199,7 +213,9 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('stores the visible-vertex extension payload and uses anisotropic producer sampling', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('bs = glossyReflectionSampleAnisotropic(&rng, woV, nv, tanT, tanB, roughnessV, anisotropyV);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptSampleSourceReconnectionDirection(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyV,');
     for (const field of [
       'r.clearcoatV = clearcoatV;',
       'r.clearcoatRoughnessV = clearcoatRoughnessV;',

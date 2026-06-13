@@ -869,19 +869,20 @@ Evidence:
   reservoir-visible domain. ReSTIR-PT suffix/reconnection vertices now also
   alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral
   domain before Lo evaluation, including mapped normals for reservoir geometry.
-  Remaining approximate/schema sites are not simple omissions: clearcoat/sheen
-  are evaluated but not sampled as producer source lobes, so `pdfSrc`
-  intentionally remains the actual anisotropic base sampling density; BDPT
-  light-subpath scatter PDFs are tied to the light-subpath sampler; inverse
+  ReSTIR-PT producer source sampling now uses a normalized base/clearcoat/sheen
+  lobe mixture and stores the matching `pdfSrc` rather than the old base-only
+  density. Remaining approximate/schema sites are not simple omissions: the main
+  eye-path sampler is still tied to `sampleNextBounceDirection`, BDPT
+  light-subpath scatter PDFs are tied to the light-subpath sampler, and inverse
   adjoints use a separate derivative model.
 
 Closure:
-- Redesign sampler/PDF coherence: extend `sampleNextBounceDirection`, the
-  ReSTIR-PT producer source sampler, and associated source/reverse PDFs for
+- Redesign sampler/PDF coherence for the main eye-path
+  `sampleNextBounceDirection` and associated forward/reverse PDFs for
   clearcoat/sheen sampling rather than only changing evaluation.
 - Keep the ReSTIR-PT suffix material-map parity regression pins green; the
   suffix cached-Lo path is code-complete for hit-local maps/layers/thin-film/
-  spectral emission, but still shares the producer's source-sampler/PDF limits.
+  spectral emission, and the producer source-sampler/PDF limit is closed.
 - Extend BDPT light-subpath sampling/PDF bookkeeping before marking light-path
   extension-lobe parity closed.
 - Add material-furnace and lobe-specific tests plus reference A/B before
