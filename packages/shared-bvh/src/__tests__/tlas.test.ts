@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildTlas, refitTlas, tlasIntersect, type TlasInstance } from '../tlas.js';
 
 const IDENT16 = (): Float32Array => new Float32Array([
@@ -77,6 +77,55 @@ describe('buildTlas', () => {
       { blasId: 0, aabbMin: [0,0,0], aabbMax: [1,1,1], worldToLocal: new Float32Array(12) },
     ])).toThrow(/length 12/);
   });
+
+  it('filters non-finite instances instead of poisoning the root AABB', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const tlas = buildTlas([
+        makeInstance(0, [0, 0, 0], [1, 1, 1]),
+        makeInstance(1, [Number.NaN, 5, 5], [6, 6, 6]),
+      ]);
+
+      expect(tlas.nodeCount).toBe(1);
+      expect(Array.from(tlas.instanceIndices)).toEqual([0]);
+      expect(Array.from(tlas.blasRoots)).toEqual([0, 1]);
+      const f32 = new Float32Array(tlas.nodes.buffer);
+      for (let i = 0; i < 6; i += 1) {
+        expect(Number.isFinite(f32[i]!)).toBe(true);
+      }
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Instance 1 has non-finite'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('filters instances with non-finite worldToLocal transforms', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const badTransform = IDENT16();
+      badTransform[12] = Infinity;
+      const tlas = buildTlas([
+        makeInstance(0, [0, 0, 0], [1, 1, 1]),
+        { blasId: 1, aabbMin: [5, 5, 5], aabbMax: [6, 6, 6], worldToLocal: badTransform },
+      ]);
+
+      expect(Array.from(tlas.instanceIndices)).toEqual([0]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Instance 1 has non-finite'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('throws clearly when every TLAS instance is non-finite', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(() => buildTlas([
+        makeInstance(0, [Number.NaN, 0, 0], [1, 1, 1]),
+      ])).toThrow(/no valid finite instances/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe('tlasIntersect', () => {
@@ -150,6 +199,36 @@ describe('refitTlas', () => {
     expect(() => refitTlas(tlas, [
       { min: [0, 0, 0], max: [1, 1, 1] },
     ])).toThrow(/expected 2 AABBs/);
+  });
+
+  it('rejects non-finite refit AABBs before mutating node bounds', () => {
+    const tlas = buildTlas([
+      makeInstance(0, [0, 0, 0], [1, 1, 1]),
+      makeInstance(1, [5, 0, 0], [6, 1, 1]),
+    ]);
+    const before = Array.from(new Float32Array(tlas.nodes.buffer).slice(0, 6));
+
+    expect(() => refitTlas(tlas, [
+      { min: [0, 0, 0], max: [1, 1, 1] },
+      { min: [Number.NaN, 0, 0], max: [6, 1, 1] },
+    ])).toThrow(/non-finite AABB/);
+
+    expect(Array.from(new Float32Array(tlas.nodes.buffer).slice(0, 6))).toEqual(before);
+  });
+
+  it('rejects inverted refit AABBs before mutating node bounds', () => {
+    const tlas = buildTlas([
+      makeInstance(0, [0, 0, 0], [1, 1, 1]),
+      makeInstance(1, [5, 0, 0], [6, 1, 1]),
+    ]);
+    const before = Array.from(new Float32Array(tlas.nodes.buffer).slice(0, 6));
+
+    expect(() => refitTlas(tlas, [
+      { min: [0, 0, 0], max: [1, 1, 1] },
+      { min: [7, 0, 0], max: [6, 1, 1] },
+    ])).toThrow(/inverted AABB/);
+
+    expect(Array.from(new Float32Array(tlas.nodes.buffer).slice(0, 6))).toEqual(before);
   });
 
   it('refit preserves traversal correctness with many instances', () => {

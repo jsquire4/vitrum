@@ -121,6 +121,24 @@ function aabbCentroid(min: readonly [number, number, number], max: readonly [num
   ];
 }
 
+function isFiniteVec3(v: readonly [number, number, number]): boolean {
+  return Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
+}
+
+function isFiniteMat4(m: Float32Array): boolean {
+  for (let i = 0; i < m.length; i += 1) {
+    if (!Number.isFinite(m[i])) return false;
+  }
+  return true;
+}
+
+function isInvertedAabb(
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): boolean {
+  return max[0] < min[0] || max[1] < min[1] || max[2] < min[2];
+}
+
 function aabbSurfaceArea(
   min: readonly [number, number, number],
   max: readonly [number, number, number],
@@ -393,22 +411,45 @@ export function buildTlas(
   const maxLeaf = Math.max(1, opts.maxLeafInstances ?? TLAS_DEFAULT_MAX_LEAF_INSTANCES);
   const numBins = Math.max(2, opts.numBins ?? TLAS_DEFAULT_NUM_BINS);
 
-  const records: InstanceRecord[] = instances.map((inst, i) => {
+  const records: InstanceRecord[] = [];
+  const MAX_INVALID_WARNS = 10;
+  let invalidWarnCount = 0;
+  let invalidFilteredCount = 0;
+  for (let i = 0; i < instances.length; i += 1) {
+    const inst = instances[i]!;
     if (inst.worldToLocal.length !== 16) {
       throw new Error(`buildTlas: instance ${i} worldToLocal length ${inst.worldToLocal.length} != 16.`);
     }
-    if (inst.aabbMax[0] < inst.aabbMin[0]
-     || inst.aabbMax[1] < inst.aabbMin[1]
-     || inst.aabbMax[2] < inst.aabbMin[2]) {
+    if (isInvertedAabb(inst.aabbMin, inst.aabbMax)) {
       throw new Error(`buildTlas: instance ${i} has inverted AABB.`);
     }
-    return {
+    if (!isFiniteVec3(inst.aabbMin) || !isFiniteVec3(inst.aabbMax) || !isFiniteMat4(inst.worldToLocal)) {
+      invalidFilteredCount += 1;
+      if (invalidWarnCount < MAX_INVALID_WARNS) {
+        console.warn(
+          `[@vitrum/shared-bvh/tlas] Instance ${i} has non-finite AABB or worldToLocal data; ` +
+          'filtering it from the TLAS build. Check the instance transform/bounds source.',
+        );
+        invalidWarnCount += 1;
+      }
+      continue;
+    }
+    records.push({
       origIndex: i,
       centroid: aabbCentroid(inst.aabbMin, inst.aabbMax),
       min: inst.aabbMin,
       max: inst.aabbMax,
-    };
-  });
+    });
+  }
+  if (invalidFilteredCount > MAX_INVALID_WARNS) {
+    console.warn(
+      `[@vitrum/shared-bvh/tlas] ${invalidFilteredCount} non-finite TLAS instance(s) filtered ` +
+      `(${MAX_INVALID_WARNS} individual warnings shown above).`,
+    );
+  }
+  if (records.length === 0) {
+    throw new Error('buildTlas: no valid finite instances remain after filtering.');
+  }
 
   const nodes: TlasNodeBuild[] = [];
   const permutation: number[] = [];
@@ -450,6 +491,15 @@ export function refitTlas(
     throw new Error(
       `refitTlas: expected ${data.blasRoots.length} AABBs, got ${newAabbs.length}.`,
     );
+  }
+  for (let i = 0; i < newAabbs.length; i += 1) {
+    const aabb = newAabbs[i]!;
+    if (isInvertedAabb(aabb.min, aabb.max)) {
+      throw new Error(`refitTlas: instance ${i} has inverted AABB.`);
+    }
+    if (!isFiniteVec3(aabb.min) || !isFiniteVec3(aabb.max)) {
+      throw new Error(`refitTlas: instance ${i} has non-finite AABB.`);
+    }
   }
   const f32 = new Float32Array(data.nodes.buffer);
 
