@@ -539,10 +539,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // slab-thickness approximation knob has no consumption site.
   thickness: 'unsupported',
   baseColorMap: 'native',
-  // Sampled + TBN-applied, but `normalScale` is never applied and the map
-  // shares baseColor's UV transform.
+  // Sampled + TBN-applied with glTF normalTexture.scale. Still approximate
+  // because the map shares baseColor's UV transform.
   normalMap: 'approximate',
-  normalScale: 'unsupported',
+  normalScale: 'native',
   // Single ORM slot (glTF combined: G=roughness, B=metallic); shared UV transform.
   roughnessMap: 'approximate',
   // Same ORM slot — silently dropped when its handle differs from roughnessMap

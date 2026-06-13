@@ -18,7 +18,7 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *   2: {offsetX, offsetY, scaleX, scaleY}                (baseColor UV transform)
  *   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}     ← D3 (-1 = no map)
  *   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
- *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, _pad}         ← D3
+ *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -32,6 +32,9 @@ import type { MaterialSpec, TextureRef } from '@vitrum/core';
  *     anisotropyMap layer index (KHR_materials_anisotropy: RG = tangent rotation
  *     direction, B = strength), also in the LINEAR array. anisotropy == 0 (default)
  *     means the anisotropic GGX path is never taken → byte-identical.
+ *   - vec4 #5.w: glTF normalTexture.scale / MaterialSpec.normalScale. Default 1,
+ *     so legacy normal-mapped scenes remain byte-identical unless authored scale
+ *     asks to dampen or amplify the tangent-space xy perturbation.
  */
 export const MATERIAL_TEX_VEC4_STRIDE = 6;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
@@ -131,7 +134,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 20] = m.anisotropy ?? 0;
     descriptors[b + 21] = m.anisotropyRotation ?? 0;
     descriptors[b + 22] = indexOfLinear(m.anisotropyMap);
-    descriptors[b + 23] = 0; // pad
+    descriptors[b + 23] = m.normalScale ?? 1;
   });
 
   return { sources, linearSources, descriptors };

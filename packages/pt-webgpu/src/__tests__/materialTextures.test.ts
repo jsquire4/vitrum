@@ -76,6 +76,19 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[2]).toBe(1);  // ormIdx → linear 1
   });
 
+  it('packs normalScale in the normal-map descriptor lane', () => {
+    const normTex = { id: 'norm' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({ normalMap: { handle: normTex }, normalScale: 0.35 }),
+      mat({ normalMap: { handle: normTex } }),
+    ]);
+    expect(linearSources).toEqual([normTex]);
+    expect(descriptors[1]).toBe(0);  // mat0 normalIdx → linear 0
+    expect(descriptors[23]).toBeCloseTo(0.35);
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 1]).toBe(0); // deduped normal handle
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 23]).toBe(1); // glTF default scale
+  });
+
   it('falls back to metallicMap for ORM when roughnessMap is absent', () => {
     const mrTex = { id: 'mr' };
     const { linearSources, descriptors } = collectMaterialTextures([
@@ -122,5 +135,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u)');
     expect(wgsl).toContain('let l2w0 = tlasInstanceLocalToWorld[m];');
     expect(wgsl).toContain('tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);');
+    expect(wgsl).toContain('let normalScale = materialTexDescriptors[base + 5u].w;');
+    expect(wgsl).toContain('tn.x = tn.x * normalScale;');
+    expect(wgsl).toContain('tn.y = tn.y * normalScale;');
   });
 });

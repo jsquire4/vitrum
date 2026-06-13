@@ -141,6 +141,7 @@ describe('backend promise ledger', () => {
     expect(gpu.clearcoatMap).toBe('unsupported');
     expect(gpu.sheenColorMap).toBe('unsupported');
     expect(gpu.thickness).toBe('unsupported');
+    expect(gpu.normalScale).toBe('native');
     expect(gpu.anisotropy).toBe('native');
     expect(gpu.scatteringCoefficientRGB).toBe('native');
     expect(gpu.metallicMap).toBe('approximate');

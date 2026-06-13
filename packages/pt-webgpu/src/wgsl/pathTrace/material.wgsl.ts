@@ -315,7 +315,7 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //   2: {offset.xy, scale.xy}
 //   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}      ← D3 (-1 = no map)
 //   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
-//   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, _pad}         ← D3
+//   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
 const MATERIAL_TEX_VEC4_STRIDE = 6u;
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
@@ -405,8 +405,10 @@ fn buildShadingTangentFrame(triIndex: u32, normal: vec3f, instanceIndex: u32) ->
 // from the triangle's positions + UVs (Lengyel) — no precomputed tangents needed
 // — then transformed through the hit TLAS instance and Gram-Schmidt-
 // orthonormalized against geomNormal. Returns geomNormal unchanged when there's
-// no normal map (→ byte-identical). Merged-BLAS / lite / analytic paths pass the
-// invalid instance sentinel and keep the historical local-space tangent.
+// no normal map (→ byte-identical). normalScale follows glTF normalTexture.scale:
+// scale tangent-space xy before combining with the derived frame, leaving z as
+// authored. Merged-BLAS / lite / analytic paths pass the invalid instance
+// sentinel and keep the historical local-space tangent.
 // Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
 fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32) -> vec3f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
@@ -421,7 +423,10 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   let frame = buildShadingTangentFrame(triIndex, geomNormal, instanceIndex);
   if (!frame.valid) { return geomNormal; }
   let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW).xyz;
-  let tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
+  var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
+  let normalScale = materialTexDescriptors[base + 5u].w;
+  tn.x = tn.x * normalScale;
+  tn.y = tn.y * normalScale;
   let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + geomNormal * tn.z;
   let plen = length(perturbed);
   return select(geomNormal, perturbed / plen, plen > 1e-6);

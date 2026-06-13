@@ -453,7 +453,7 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 | Field | Work | Footgun |
 |-------|------|---------|
-| `normalScale` | Multiply in `applyNormalMap` | Ledger says approximate for `normalMap` partly because of this |
+| ~~`normalScale`~~ ✅ DONE | Packed in the group-3 material texture descriptor and applied in `applyNormalMap` by scaling tangent-space xy before normalization; ledger row promoted to `native`. Tests: `materialTextures.test.ts`, `engineContract.test.ts`. | `normalMap` itself remains `approximate` because per-map UV transform is still shared with baseColor |
 | `transmissionMap`, `alphaMap` | Add descriptor slots in `materialTextures.ts` `DESCRIPTOR_FIELDS` | Group 3 binding count — check `maxStorageTexturesPerShaderStage` |
 | `clearcoat*Map`, `sheen*Map`, `iridescence*Map`, `specular*Map` | Extend descriptor list (pt-webgl2 has 17 maps; pt-webgpu has 6) | **H52:** pt-webgpu packs scalars but not maps for extensions |
 | `specularIntensity`, `specularColor` | New vec4 lane in `materialPacking.ts` | glTF KHR_materials_specular |

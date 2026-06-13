@@ -208,8 +208,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // RENDER-CHANGING for clearcoat/sheen/iridescence/aniso materials hit by
     // BSDF-sampled area/env connections or SPPM caustics; zero-extension
     // materials remain behaviorally unchanged.
-    expect(digest).toBe('f2765947ab0b69f9e203816d7c6614a907d9f507a8e9fc066e8a14a5906b73be');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326192);
+    // Re-pinned 2026-06-12: normalScale is now consumed by applyNormalMap,
+    // scaling tangent-space xy before reconstructing the perturbed normal.
+    expect(digest).toBe('1108a11b462672919a59baeae3c2c2fd0d1153265a1c62ccaad95337be224bc2');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326455);
   });
 });
 
