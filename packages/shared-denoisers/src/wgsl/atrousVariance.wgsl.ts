@@ -11,7 +11,8 @@
  * edge-stop form) are absent. à-trous + variance denoiser; not Schied SVGF —
  * see svgfRealWebGPU.ts for real SVGF.
  *
- * Two compute entry points:
+ * Two legacy-named compute entry points (the exported names are retained for
+ * compatibility; they do not mean this module is a Schied-SVGF implementation):
  *
  *   svgfVarianceMain — Variance estimation pass.
  *     When temporal history is scarce (frame count below ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT), estimates variance

@@ -7,8 +7,8 @@ import { RESERVOIR_GI_STRIDE } from '../../ppg/ppgConstants.js';
 
 // GRIS Phase-0: widened ReservoirGI → ReservoirPT (30 × u32 = 120 bytes).
 // The [0..19] / 80-byte prefix is byte-identical to the Sprint-16/17 layout;
-// indices [20..29] cache the reconnection-shift data the Phase-1/2 GRIS reuse
-// will read (Lin 2022). RESERVOIR_GI_STRIDE is the single TS source of truth;
+// indices [20..29] cache the reconnection-shift data read by the GRIS reuse
+// variants of the temporal/spatial GI passes (Lin 2022). RESERVOIR_GI_STRIDE is the single TS source of truth;
 // the WGSL-side const in reservoirGi.wgsl.ts must stay in lockstep with it.
 const RESERVOIR_GI_STRIDE_BYTES = RESERVOIR_GI_STRIDE * 4; // 4 bytes per u32
 
