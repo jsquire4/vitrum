@@ -1301,13 +1301,12 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     'rgba8unorm',
   );
   // Surface texture-array warnings (heterogeneous source sizes → wrong UVs, or an
-  // unusable image) instead of dropping them — these were silently discarded.
-  for (const w of materialTextureArray.warnings) {
-    console.warn(`[vitrum/pt-webgpu] material texture array (sRGB): ${w}`);
-  }
-  for (const w of materialLinearArray.warnings) {
-    console.warn(`[vitrum/pt-webgpu] material texture array (linear): ${w}`);
-  }
+  // unusable image). Accumulate them onto UploadedSceneBuffers.warnings so the
+  // engine drains them through its structured warning/onWarning path.
+  const materialTextureWarnings = [
+    ...materialTextureArray.warnings.map((w) => `material texture array (sRGB): ${w}`),
+    ...materialLinearArray.warnings.map((w) => `material texture array (linear): ${w}`),
+  ];
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
@@ -1324,6 +1323,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
 
   const uploaded: UploadedSceneBuffers = {
     ...packed,
+    warnings: [...packed.warnings, ...materialTextureWarnings],
     bvhNodeCount: Math.floor(packed.bvhNodes.length / BVH_NODE_FLOATS),
     tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
