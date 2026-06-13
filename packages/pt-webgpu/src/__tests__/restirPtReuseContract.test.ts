@@ -112,9 +112,10 @@ describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finaliz
     // for a glossy visible vertex whose BRDF the old cosine proxy mis-weighted.
     const targetBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn restirPtTargetAt('),
-    ).split('\n').slice(0, 36).join('\n');
+    ).split('\n').slice(0, 42).join('\n');
     expect(targetBody).toContain('evaluateBrdfFull(');
     expect(targetBody).toContain('clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,');
+    expect(targetBody).toContain('specularColorV, specularIntensityV,');
     expect(targetBody).toContain('anisotropyV, anisotropyRotationV,');
     expect(targetBody).toContain('luminance(f * cosTheta * Lo)');
     expect(targetBody).not.toContain('INV_PI'); // the old diffuse-cosine proxy is gone
@@ -228,6 +229,7 @@ describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy t
   it('evaluates the full visible-vertex BRDF and forms f·cos·Lo·W', () => {
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('let fBsdf = evaluateBrdfFull(');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.specularColorV, r.specularIntensityV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.anisotropyV, r.anisotropyRotationV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('let indirect = fBsdf * cosTheta * r.Lo * r.W;');
   });
@@ -239,8 +241,8 @@ describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy t
 
 describe('ReSTIR-PT reservoir — visible-material payload is serialized with the reservoir', () => {
   it('bumps the reservoir stride and stores scalar extension-lobe fields', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 192 bytes = 48 × u32');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 48u;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 208 bytes = 52 × u32');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 52u;');
     for (const line of [
       'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
       'buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);',
@@ -250,7 +252,9 @@ describe('ReSTIR-PT reservoir — visible-material payload is serialized with th
       'buf[b + 38u] = bitcast<u32>(r.iridescenceV);',
       'buf[b + 42u] = bitcast<u32>(r.anisotropyV);',
       'buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);',
-      'buf[b + 47u] = r._padHybrid;',
+      'buf[b + 44u] = bitcast<u32>(r.specularColorV.x);',
+      'buf[b + 47u] = bitcast<u32>(r.specularIntensityV);',
+      'buf[b + 51u] = r._padHybrid;',
     ]) {
       expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
     }
@@ -259,6 +263,8 @@ describe('ReSTIR-PT reservoir — visible-material payload is serialized with th
   it('copies the full visible-material domain into temporal/spatial output reservoirs', () => {
     expect(RESERVOIR_PT_HERO_WGSL).toContain('fn copyReservoirPTVisibleDomain(');
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).clearcoatV = src.clearcoatV;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).specularColorV = src.specularColorV;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).specularIntensityV = src.specularIntensityV;');
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).anisotropyRotationV = src.anisotropyRotationV;');
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rGris, rCur);');
     expect(RESTIR_PT_SPATIAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rOut, rCenter);');

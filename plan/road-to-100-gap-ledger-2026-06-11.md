@@ -858,9 +858,10 @@ Evidence:
   ReSTIR-PT producer suffix Lo now use full BRDF/PDF helpers where the needed
   material fields are locally available.
 - ReSTIR-PT reservoir payload/target/resolve scalar-lobe parity is now closed:
-  `ReservoirPTHero` stores scalar clearcoat/sheen/iridescence fields and
-  anisotropy state, temporal/spatial copy the full visible-domain payload, p-hat
-  uses `evaluateBrdfFull`, and resolve reconstructs with `evaluateBrdfFull`.
+  `ReservoirPTHero` stores scalar clearcoat/sheen/iridescence/specular fields
+  and anisotropy state, temporal/spatial copy the full visible-domain payload,
+  p-hat uses `evaluateBrdfFull`, and resolve reconstructs with
+  `evaluateBrdfFull`.
 - Extension-lobe texture maps now reach the full-tier megakernel shade
   prologue, but remaining approximate/schema sites are not simple omissions:
   ReSTIR-PT visible-vertex texture-map parity still needs the same

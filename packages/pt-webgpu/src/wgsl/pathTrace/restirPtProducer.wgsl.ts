@@ -590,6 +590,8 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   r.iridescenceIorV = iridescenceIorV;
   r.iridescenceThicknessMinV = iridescenceThicknessMinV;
   r.iridescenceThicknessMaxV = iridescenceThicknessMaxV;
+  r.specularColorV = vMat.specularColor;
+  r.specularIntensityV = vMat.specularIntensity;
   r.anisotropyV = anisotropyV;
   r.anisotropyRotationV = anisotropyRotationV;
   r.prefixVertexCount = 1u;
