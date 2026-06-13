@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   selectWebGl2TraceTier,
@@ -103,5 +104,28 @@ describe('resolveWebGl2TraceTier', () => {
     expect(() => resolveWebGl2TraceTier(stubGl({ floatColor: false }), 'lite')).toThrow(
       /EXT_color_buffer_float required/,
     );
+  });
+});
+
+describe('Road D9 trace-tier contract', () => {
+  it('keeps WebGl2TraceTier owned by traceTier.ts and re-exported from options.ts', () => {
+    const traceTierSource = readFileSync(new URL('./traceTier.ts', import.meta.url), 'utf8');
+    const optionsSource = readFileSync(new URL('./options.ts', import.meta.url), 'utf8');
+
+    expect(traceTierSource).toContain("export type WebGl2TraceTier = 'full' | 'lite'");
+    expect(optionsSource).toContain("import type { WebGl2TraceTier } from './traceTier.js'");
+    expect(optionsSource).toContain('export type { WebGl2TraceTier }');
+    expect(optionsSource).not.toContain("type WebGl2TraceTier = 'full' | 'lite'");
+  });
+
+  it('documents lite tier as aux-buffer-only degradation, not a hidden trace-kernel cap', () => {
+    const traceTierSource = readFileSync(new URL('./traceTier.ts', import.meta.url), 'utf8');
+    const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+
+    expect(traceTierSource).toContain('The path-tracing kernel itself');
+    expect(traceTierSource).toContain('runs');
+    expect(traceTierSource).toContain('UNCHANGED in lite tier');
+    expect(readme).toContain('The path-tracing kernel');
+    expect(readme).toContain('runs **unchanged**');
   });
 });
