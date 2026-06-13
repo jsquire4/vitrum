@@ -114,12 +114,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(
     fullPx.x, fullPx.y, fullDims.x, fullDims.y, ubo.cameraPos, invVP,
   );
-  let hit = traceSceneFirstHit(
+  let hit = traceSceneFirstHitAlphaMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    primaryRay, ubo.triIntersectEpsilon);
+    primaryRay, ubo.triIntersectEpsilon,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
   if (!hit.didHit) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
     return;
@@ -248,12 +249,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
       let walkRay = Ray(walkOrigin, refractDir);
-      walkHit = traceSceneFirstHit(
+      walkHit = traceSceneFirstHitAlphaMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         walkRay, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
       if (!walkHit.didHit) { break; }
 
@@ -313,12 +315,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (cosTheta < 1e-4) { continue; }
 
       let bounceRay = Ray(walkHitPos + walkHit.normal * NORMAL_BIAS_GI, wi);
-      let bounceHit = traceSceneFirstHit(
+      let bounceHit = traceSceneFirstHitAlphaMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         bounceRay, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
 
       var xs_g: vec3f;
@@ -430,12 +433,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
     let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
-    let bounceHit = traceSceneFirstHit(
+    let bounceHit = traceSceneFirstHitAlphaMask(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
       &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
       bounceRay, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH,
     );
 
     var xs:  vec3f;

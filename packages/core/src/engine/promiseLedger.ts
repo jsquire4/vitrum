@@ -333,9 +333,10 @@ type MaterialSupportMatrix = Readonly<
 /**
  * walkaround-hybrid — the realtime GI stack's material model is QUANTIZED
  * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
- * 4-bit transmission, pre-baked Beer-Lambert tint) + f32 HDR emissive Le.
- * Image TextureRefs are never sampled in the GI path. Everything not consumed
- * is warned once per setScene via `walkaround-hybrid.unconsumed-material-fields`
+ * 4-bit transmission, scalar-alpha cutout bit, pre-baked Beer-Lambert tint) +
+ * f32 HDR emissive Le. Image TextureRefs are never sampled in the GI path.
+ * Everything not consumed is warned once per setScene via
+ * `walkaround-hybrid.unconsumed-material-fields`
  * (restir/consumedMaterialFields.ts allowlist — this matrix mirrors it exactly:
  * row !== 'unsupported' ⇔ field ∈ CONSUMED_MATERIAL_FIELDS).
  */
@@ -353,9 +354,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Folded into emitter Le at classification (emitterClassify.ts Le = emissive·ei).
   emissiveIntensity: 'native',
   shadingModel: 'approximate',
-  alphaMode: 'unsupported',
-  alphaCutoff: 'unsupported',
-  opacity: 'unsupported',
+  // Scalar-only cutout: mask uses opacity < alphaCutoff; blend supports only
+  // the fully-transparent endpoint and warns for fractional coverage.
+  alphaMode: 'approximate',
+  alphaCutoff: 'approximate',
+  opacity: 'approximate',
   // 4-bit trans4 lane in bvhIndex.w (16 steps).
   transmission: 'approximate',
   // u8-quantized [1,3] lane (B1-ior-per-tri) + DDGI material entry.

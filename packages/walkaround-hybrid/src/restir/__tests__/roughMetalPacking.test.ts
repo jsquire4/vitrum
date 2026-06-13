@@ -318,3 +318,49 @@ describe('GLTF-unlit — shadingModel flag bit 1 in packBVHRoughMetalFromCore', 
     expect(buf[0]! & 0xff).toBe(0x3);
   });
 });
+
+describe('Scalar alpha cutout — material flag bit 2 in packBVHRoughMetalFromCore', () => {
+  it('alphaMode:mask sets bit 2 when opacity falls below alphaCutoff', () => {
+    const coreMats = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, alphaMode: 'mask', opacity: 0.25, alphaCutoff: 0.5 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, alphaMode: 'mask', opacity: 0.75, alphaCutoff: 0.5 },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0, 1]), coreMats, 2);
+    expect(buf[0]! & 0x4).toBe(0x4);
+    expect(buf[1]! & 0x4).toBe(0);
+  });
+
+  it('alphaMode:blend sets bit 2 only for the fully transparent endpoint', () => {
+    const coreMats = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, alphaMode: 'blend', opacity: 0 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, alphaMode: 'blend', opacity: 0.5 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, alphaMode: 'blend', opacity: 1 },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0, 1, 2]), coreMats, 3);
+    expect(buf[0]! & 0x4).toBe(0x4);
+    expect(buf[1]! & 0x4).toBe(0);
+    expect(buf[2]! & 0x4).toBe(0);
+  });
+
+  it('bit 2 coexists with castShadow/unlit and does not perturb rough/metal/IOR lanes', () => {
+    const coreMats = [
+      {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0.5,
+        ior: 2.0,
+        transmission: 1.0,
+        castShadow: false,
+        shadingModel: 'unlit',
+        alphaMode: 'mask',
+        opacity: 0.1,
+        alphaCutoff: 0.5,
+      },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0]), coreMats, 1);
+    expect(decodeRoughMetal(buf[0]!).rough).toBeCloseTo(0.5, 2);
+    expect(decodeRoughMetal(buf[0]!).metal).toBeCloseTo(0.5, 2);
+    expect(Math.abs(decodeIor(buf[0]!) - 2.0)).toBeLessThan(0.01);
+    expect(buf[0]! & 0xff).toBe(0x7);
+  });
+});

@@ -72,6 +72,75 @@ fn traceSceneFirstHit(
   return bvhIntersectFirstHit(bvh_index, bvh_position, bvh, ray, triEps);
 }
 
+fn materialScalarAlphaDiscardedForTri(
+  triIdx: u32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+) -> bool {
+  let word = textureLoad(
+    materialMask,
+    vec2i(i32(triIdx % materialMaskWidth), i32(triIdx / materialMaskWidth)),
+    0,
+  ).r;
+  return (word & 4u) != 0u;
+}
+
+fn traceSceneFirstHitAlphaMask(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  ray: Ray,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+) -> IntersectionResult {
+  var walkRay = ray;
+  var traveled = 0.0;
+  let step = max(1e-4, triEps * 4.0);
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    var hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      bvh_index, bvh_position, bvh,
+      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+      walkRay, triEps,
+    );
+    if (!hit.didHit) {
+      return hit;
+    }
+    if (!materialScalarAlphaDiscardedForTri(hit.indices.w, materialMask, materialMaskWidth)) {
+      hit.dist = hit.dist + traveled;
+      return hit;
+    }
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = ray.origin + ray.direction * traveled;
+  }
+  var exhausted = traceSceneFirstHit(
+    bvhMode, tlasNodeCount,
+    bvh_index, bvh_position, bvh,
+    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+    walkRay, triEps,
+  );
+  if (
+    exhausted.didHit &&
+    materialScalarAlphaDiscardedForTri(exhausted.indices.w, materialMask, materialMaskWidth)
+  ) {
+    exhausted.didHit = false;
+  }
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  return exhausted;
+}
+
 fn traceSceneAny(
   bvhMode: u32,
   tlasNodeCount: u32,
@@ -117,7 +186,8 @@ ${BVH_CAST_SHADOW_MASK_WGSL}
 // reconnection visibility, and shadingTerms.wgsl shading / analytic / sun
 // visibility). Identical dispatch to traceSceneAny, but the
 // leaf loops skip triangles whose bvh_material word has bit 0 set
-// (castShadow:false — packBVHRoughMetalFromCore). Callers pass the
+// (castShadow:false — packBVHRoughMetalFromCore) or bit 2 set
+// (scalar alpha discarded). Callers pass the
 // module-scope bvh_material texture + BVH_MATERIAL_TEX_WIDTH so this module
 // stays binding-free. DDGI / RC use the sibling predicate-backed shared-bvh
 // traversal because those passes carry material flags through MaterialEntry

@@ -20,6 +20,7 @@ import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
   CONSUMED_MATERIAL_FIELDS,
+  collectApproximateAlphaBlendPrimitiveIds,
   collectUnconsumedMaterialFields,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
@@ -53,7 +54,7 @@ function makeOpts(): HybridEngineOptions {
 }
 
 /** Convenience alias for the parameter type of collectUnconsumedMaterialFields. */
-type PrimLike = { readonly kind: string; readonly material?: Record<string, unknown> };
+type PrimLike = { readonly id?: string; readonly kind: string; readonly material?: Record<string, unknown> };
 
 /** A scene with only consumed fields in its material. */
 function consumedOnlyScene(): Scene {
@@ -101,8 +102,8 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
   it('contains the documented scalar fields', () => {
     for (const f of [
       'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
-      'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
-      'thickness', 'ior', 'extensions',
+      'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
+      'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -185,7 +186,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'sheenColor']);
   });
 
-  it('surfaces representative alpha, specular, layered, thin-film, and anisotropy drops', () => {
+  it('surfaces representative alpha-map, specular, layered, thin-film, and anisotropy drops', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         kind: 'mesh',
@@ -208,18 +209,26 @@ describe('collectUnconsumedMaterialFields', () => {
       },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual([
-      'alphaCutoff',
       'alphaMap',
-      'alphaMode',
       'anisotropyMap',
       'backLayer',
       'frontLayer',
       'normalScale',
-      'opacity',
       'specularColor',
       'specularIntensity',
       'thinFilmStack',
     ]);
+  });
+
+  it('reports only fractional blend primitives for the alpha approximation warning', () => {
+    const prims: ReadonlyArray<PrimLike> = [
+      { id: 'opaque', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'opaque', opacity: 0.5 } },
+      { id: 'mask', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'mask', opacity: 0.25, alphaCutoff: 0.5 } },
+      { id: 'transparent', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0 } },
+      { id: 'fractional', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0.5 } },
+      { id: 'solid', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 } },
+    ];
+    expect(collectApproximateAlphaBlendPrimitiveIds(prims)).toEqual(['fractional']);
   });
 
   it('ignores null/undefined field values', () => {
@@ -294,6 +303,39 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       engine.setScene(unconsumedFieldsScene()); // same field set — should NOT warn again
       const materialWarns = warnSpy.mock.calls.flat().map(String).filter((m) => m.includes('not consumed'));
       expect(materialWarns).toHaveLength(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured warning for fractional alpha blend approximation', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const fractionalBlendScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'blend-pane',
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              alphaMode: 'blend',
+              opacity: 0.5,
+            },
+          },
+        ],
+      };
+      engine.setScene(fractionalBlendScene);
+      engine.setScene(fractionalBlendScene);
+      const alphaWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation',
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('blend-pane');
     } finally {
       engine.dispose();
     }

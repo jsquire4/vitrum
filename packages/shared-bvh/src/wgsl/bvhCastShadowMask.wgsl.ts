@@ -6,7 +6,9 @@
  * per-triangle material lane (`bvh_material`, r32uint texture — see
  * walkaround-hybrid/shaders/materialDecode.wgsl.ts + restir/packingHelpers.ts
  * `packBVHRoughMetalFromCore`) carries the flag in material-flag BIT 0:
- * `(word & 1u) != 0u` ⟺ "does NOT cast shadows".
+ * `(word & 1u) != 0u` ⟺ "does NOT cast shadows". Walkaround also uses BIT 2
+ * for scalar alpha cutouts, so the texture-mask variants skip either bit in
+ * occlusion rays: a cutout triangle cannot cast a shadow either.
  *
  * These variants are DERIVED from the canonical traversal strings
  * (`BVH_INTERSECT_WGSL` / `TLAS_TRAVERSAL_WGSL`) by anchored string surgery —
@@ -84,10 +86,10 @@ function extractFn(source: string, header: string): string {
   return source.slice(start, end + 2);
 }
 
-/** The bit-0 skip inserted into every masked leaf loop. */
+/** The bit-0/bit-2 skip inserted into every masked leaf loop. */
 const CAST_MASK_SKIP_LINE =
-  `        // SHADOW-01 — skip castShadow:false triangles (bvh_material bit 0).\n` +
-  `        if ((textureLoad(castMask, vec2i(i32(triIdx % castMaskWidth), i32(triIdx / castMaskWidth)), 0).r & 1u) != 0u) { continue; }\n`;
+  `        // SHADOW-01 / ALPHA-01 — skip castShadow:false (bit 0) and scalar-alpha-discarded (bit 2) triangles.\n` +
+  `        if ((textureLoad(castMask, vec2i(i32(triIdx % castMaskWidth), i32(triIdx / castMaskWidth)), 0).r & 5u) != 0u) { continue; }\n`;
 
 const CAST_PREDICATE_SKIP_LINE =
   `        // SHADOW-01 — skip castShadow:false triangles via includer predicate.\n` +

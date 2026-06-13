@@ -162,6 +162,7 @@ function removeBvhFunctionsIfNoBindings(wgsl) {
     wgsl.includes("fn traceTlasFirstHit(") ||
     wgsl.includes("fn traceTlasAny(") ||
     wgsl.includes("fn traceSceneFirstHit(") ||
+    wgsl.includes("fn traceSceneFirstHitAlphaMask(") ||
     wgsl.includes("fn traceSceneAny(");
   if (!hasBvhFunctions) return { result: wgsl, count: 0 };
 
@@ -176,6 +177,8 @@ function removeBvhFunctionsIfNoBindings(wgsl) {
     "traceTlasFirstHit",
     "traceTlasAny",
     "traceSceneFirstHit",
+    "materialScalarAlphaDiscardedForTri",
+    "traceSceneFirstHitAlphaMask",
     "traceSceneAny",
     "bvhTraceTintedVisibility",
     // SHADOW-01 (2026-06-11) — cast-shadow-masked clones (shared-bvh

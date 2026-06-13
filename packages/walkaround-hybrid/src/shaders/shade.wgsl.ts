@@ -218,12 +218,13 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let primaryHit = traceSceneFirstHit(
+  let primaryHit = traceSceneFirstHitAlphaMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    primaryRay, ubo.triIntersectEpsilon);
+    primaryRay, ubo.triIntersectEpsilon,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
 
   if (!primaryHit.didHit) {
     // Sky pixel: output sky color (already written by RIS pass, but keep consistent).

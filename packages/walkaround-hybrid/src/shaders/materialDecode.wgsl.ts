@@ -73,8 +73,7 @@ fn decodeIor(packed: u32) -> f32 {
 // SHADOW-01 (2026-06-11) — bvh_material bits[7:0] (formerly reserved): bit 0 =
 // castShadowDisabled (1 ⟺ the source primitive set castShadow:false). The DI
 // shadow predicates consume it via the shared-bvh cast-shadow-masked any-hit
-// traversal (traceSceneAnyCastMask), which reads the raw word directly —
-// no decode helper needed here.
+// traversal (traceSceneAnyCastMask), which reads the raw word directly.
 //
 // GLTF-unlit (2026-06-11) — bit 1 = unlit shading model. Shade consumes it as
 // an approximate glTF KHR_materials_unlit path: lighting-independent base color
@@ -82,7 +81,12 @@ fn decodeIor(packed: u32) -> f32 {
 fn decodeIsUnlitMaterial(packed: u32) -> bool {
   return (packed & 0x2u) != 0u;
 }
-// Bits 2-7 remain reserved (zero).
+
+// ALPHA-01 (2026-06-13) — bit 2 = scalar alpha discarded. The closest-hit
+// wrapper traceSceneFirstHitAlphaMask skips those triangles globally, while the
+// cast-shadow-masked any-hit path skips them for occlusion rays too. No decode
+// helper is needed by shade because the discarded triangle is never returned.
+// Bits 3-7 remain reserved (zero).
 
 `;
 

@@ -20,6 +20,13 @@
  *  shadingModel           packingHelpers.ts – packBVHRoughMetalFromCore
  *                           encodes unlit as a material flag; shade.wgsl
  *                           emits base color directly for unlit surfaces
+ *  alphaMode              packingHelpers.ts – packBVHRoughMetalFromCore
+ *                           encodes scalar mask / fully-transparent blend
+ *                           discard into bvh_material bit 2; sceneTraversal
+ *                           skips those triangles for first-hit traversal
+ *  alphaCutoff            same scalar cutout path (`mask` cutoff default 0.5)
+ *  opacity                same scalar cutout path; fractional `blend` remains
+ *                           approximate and is diagnosed by HybridEngine
  *  emissive               packingHelpers.ts – packBVHEmissiveLeFromCore via
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
@@ -35,9 +42,9 @@
  *                           → texType3 lane in bvhIndex.w) +
  *                           materialSpecSkipEmitter (extensions.skipEmitter)
  *
- * Everything else — ALL TextureRef maps, Disney BSDF scalars, spectral curves,
- * volume scattering, thin-film stacks, layered BSDF, anisotropy, alpha/coverage,
- * and specular extension scalars — is IGNORED.
+ * Everything else — ALL TextureRef maps (including alphaMap), Disney BSDF
+ * scalars, spectral curves, volume scattering, thin-film stacks, layered BSDF,
+ * anisotropy, and specular extension scalars — is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -48,6 +55,9 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'shadingModel',
   'emissive',
   'emissiveIntensity',
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
   'transmission',
   'attenuationColor',
   'attenuationDistance',
@@ -90,4 +100,40 @@ export function collectUnconsumedMaterialFields(
     }
   }
   return Array.from(supplied).sort();
+}
+
+/**
+ * Return primitive ids whose material asks for fractional `alphaMode:'blend'`.
+ * The scalar alpha traversal path can faithfully discard fully-transparent
+ * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
+ * but it does not implement order-independent alpha composition for partial
+ * coverage. HybridEngine turns this into a structured warning.
+ */
+export function collectApproximateAlphaBlendPrimitiveIds(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): string[] {
+  const ids: string[] = [];
+  for (const prim of primitives) {
+    if (
+      prim.kind !== 'mesh' &&
+      prim.kind !== 'skinned-mesh' &&
+      prim.kind !== 'instanced-mesh'
+    ) {
+      continue;
+    }
+    const mat = prim.material;
+    if (!mat || mat.alphaMode !== 'blend') continue;
+    const rawOpacity = mat.opacity;
+    const opacity = typeof rawOpacity === 'number' && Number.isFinite(rawOpacity)
+      ? Math.min(1, Math.max(0, rawOpacity))
+      : 1;
+    if (opacity > 0 && opacity < 1) {
+      ids.push(prim.id ?? '(unnamed)');
+    }
+  }
+  return ids.sort();
 }

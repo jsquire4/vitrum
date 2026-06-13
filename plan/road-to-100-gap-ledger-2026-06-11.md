@@ -1065,6 +1065,14 @@ Closure:
 Evidence:
 - The verified support counts above show walkaround-hybrid is not a general PBR
   target today.
+- walkaround-hybrid scalar alpha cutout is code-closed as an approximate tier:
+  `packBVHRoughMetalFromCore` encodes `alphaMode` / `alphaCutoff` / `opacity`
+  into `bvh_material` bit 2 for mask discard and fully-transparent blend
+  endpoints; `traceSceneFirstHitAlphaMask` is used by RIS, shade, ReSTIR-GI,
+  and NRC first-hit paths; the shared cast-shadow mask skips bit 2 for
+  occlusion rays; fractional blend emits
+  `walkaround-hybrid.alpha-blend-approximation`. `alphaMap` and real blend
+  composition remain open.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
   rows and needs tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel
@@ -1168,10 +1176,11 @@ Closure:
   `resolveTextureRef()` consumer in `materials.ts` and proves the decoded handle,
   UV-set override, and KHR texture transform survive `gltfToScene()` for each
   imported base/KHR material map.
-- Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`: add walkaround
-  unlit parity, texture-bake handling for specular-glossiness texture
-  alpha if exact legacy parity is required, real backend consumption for
-  thicknessMap, and backend material-consumption parity.
+- Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
+  texture-bake handling for specular-glossiness texture alpha if exact legacy
+  parity is required, walkaround `alphaMap`/fractional blend + atlas material
+  maps, real backend consumption for `thicknessMap`, and backend
+  material-consumption parity.
 
 ## P5 validation and promotion gates
 

@@ -184,7 +184,8 @@ function packBVHIndexWTri(
 //   bits[7:0]   = material flags:
 //                 bit 0 = castShadowDisabled
 //                 bit 1 = unlit shading model
-//                 bits 2-7 reserved (zero).
+//                 bit 2 = scalarAlphaDiscarded
+//                 bits 3-7 reserved (zero).
 //
 // DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
 // ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
@@ -220,12 +221,26 @@ export function dequantizeIor(byte: number): number {
 
 const BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT = 1 << 0;
 const BVH_MATERIAL_UNLIT_BIT = 1 << 1;
+const BVH_MATERIAL_SCALAR_ALPHA_DISCARDED_BIT = 1 << 2;
 
 function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
   const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
   const m8 = Math.min(255, Math.max(0, Math.round(metalness * 255))) & 0xFF;
   const i8 = quantizeIor(ior);
   return ((r8 << 24) | (m8 << 16) | (i8 << 8)) >>> 0;
+}
+
+function scalarAlphaDiscarded(mat: MaterialSpec): boolean {
+  const mode = mat.alphaMode ?? 'opaque';
+  if (mode === 'opaque') return false;
+  const opacity = Number.isFinite(mat.opacity) ? Math.min(1, Math.max(0, mat.opacity ?? 1)) : 1;
+  if (mode === 'mask') {
+    const cutoff = Number.isFinite(mat.alphaCutoff) ? Math.min(1, Math.max(0, mat.alphaCutoff ?? 0.5)) : 0.5;
+    return opacity < cutoff;
+  }
+  // Fractional blend is a composition problem, not a traversal problem. The
+  // realtime backend approximates only the fully-transparent endpoint here.
+  return opacity <= 0;
 }
 
 /** Resolve a triangle's (roughness, metalness, ior) for packing, applying the
@@ -532,6 +547,13 @@ export function packBVHIndexWFromCore(
  * GLTF-unlit (2026-06-11) — bit 1 carries `MaterialSpec.shadingModel ===
  * 'unlit'`. Shade consumes it as a lighting-independent base-color output.
  * Default PBR materials keep bit 1 clear, preserving the pre-unlit lane.
+ *
+ * Scalar alpha cutout (2026-06-13) — bit 2 carries the backend's scalar-only
+ * coverage decision: `alphaMode:'mask'` discards when `opacity < alphaCutoff`;
+ * `alphaMode:'blend'` discards only the fully transparent endpoint
+ * (`opacity <= 0`). Texture alpha (`alphaMap`) remains unsupported until the
+ * walkaround atlas exists, and fractional blend is warned as approximate by
+ * HybridEngine.setScene.
  */
 export function packBVHRoughMetalFromCore(
   triMaterialId: Uint32Array,
@@ -546,6 +568,7 @@ export function packBVHRoughMetalFromCore(
     let ior = IOR_RANGE_MIN;
     let castShadowDisabled = 0;
     let unlit = 0;
+    let scalarAlphaDiscardedFlag = 0;
     if (mat) {
       const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission, mat.ior);
       rough = rm.rough;
@@ -556,8 +579,16 @@ export function packBVHRoughMetalFromCore(
           ? BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT
           : 0;
       unlit = mat.shadingModel === 'unlit' ? BVH_MATERIAL_UNLIT_BIT : 0;
+      scalarAlphaDiscardedFlag = scalarAlphaDiscarded(mat)
+        ? BVH_MATERIAL_SCALAR_ALPHA_DISCARDED_BIT
+        : 0;
     }
-    rmBuf[t] = (packRoughMetalIorBytes(rough, metal, ior) | castShadowDisabled | unlit) >>> 0;
+    rmBuf[t] = (
+      packRoughMetalIorBytes(rough, metal, ior) |
+      castShadowDisabled |
+      unlit |
+      scalarAlphaDiscardedFlag
+    ) >>> 0;
   }
   return rmBuf;
 }

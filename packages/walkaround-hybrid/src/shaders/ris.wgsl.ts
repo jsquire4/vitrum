@@ -134,12 +134,13 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let invVP = invertMat4_common(vp);
 
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = traceSceneFirstHit(
+  let hit = traceSceneFirstHitAlphaMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    primaryRay, ubo.triIntersectEpsilon);
+    primaryRay, ubo.triIntersectEpsilon,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
 
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.

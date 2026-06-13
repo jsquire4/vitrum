@@ -110,7 +110,10 @@ import { FrameBudgetController } from './FrameBudgetController.js';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
-import { collectUnconsumedMaterialFields } from './restir/consumedMaterialFields.js';
+import {
+  collectApproximateAlphaBlendPrimitiveIds,
+  collectUnconsumedMaterialFields,
+} from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import {
@@ -205,6 +208,8 @@ export class HybridEngine implements Engine {
    *  (keyed by sorted join of the field names). Prevents duplicate console.warn
    *  calls across incremental `setScene` calls with the same ignored fields. */
   private _warnedMaterialFields = new Set<string>();
+  /** Tracks which fractional alpha-blend primitive sets have already warned. */
+  private _warnedAlphaBlendApproximationIds = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -872,6 +877,31 @@ export class HybridEngine implements Engine {
           `supplied but not consumed by this backend: ${unconsumed.join(', ')}. ` +
           `See consumedMaterialFields.ts for the full allowlist.`,
           details: { fields: unconsumed },
+        });
+      }
+    }
+
+    const alphaBlendApproxIds = collectApproximateAlphaBlendPrimitiveIds(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
+    if (alphaBlendApproxIds.length > 0) {
+      const key = alphaBlendApproxIds.join(',');
+      if (!this._warnedAlphaBlendApproximationIds.has(key)) {
+        this._warnedAlphaBlendApproximationIds.add(key);
+        this._warn({
+          code: 'walkaround-hybrid.alpha-blend-approximation',
+          backend: 'walkaround-hybrid',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/walkaround-hybrid] setScene: fractional alphaMode:'blend' ` +
+            `is approximated as opaque scalar coverage until the texture-atlas / ` +
+            `order-independent composite path lands; primitives: ${alphaBlendApproxIds.join(', ')}.`,
+          details: { primitiveIds: alphaBlendApproxIds },
         });
       }
     }

@@ -572,12 +572,19 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 
 #### 3C — Alpha & blending (glTF `alphaMode`)
 
-Walkaround has **no** alpha today (`alphaMode/opacity/alphaMap` unsupported).
+Walkaround now has **scalar cutout alpha** (`alphaMode` / `alphaCutoff` /
+`opacity`) as an approximate material tier: `packBVHRoughMetalFromCore` encodes
+mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
+`traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
+rays; the cast-shadow mask skips bit 2 in occlusion rays; and
+`HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
+fractional `alphaMode:'blend'`. `alphaMap` and real fractional blend
+composition remain open.
 
 | Step | Code | Footgun |
 |------|------|---------|
-| Pack alphaMode + cutoff | `packingHelpers.ts` new bits in `bvhIndex.w` or `bvh_material` | 4-bit transmission lane already crowded |
-| Shade discard | `shade.wgsl.ts` | Must happen before ReSTIR writes reservoirs |
+| Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout: `packingHelpers.ts` bit 2 in `bvh_material`; tests in `roughMetalPacking.test.ts` | `alphaMap` remains blocked on atlas |
+| Shade discard | ✅ CODE CLOSED as traversal discard: `sceneTraversal.wgsl.ts` `traceSceneFirstHitAlphaMask`; RIS/shade/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
 | Composite blend | `composite.wgsl.ts` | Swapchain `rgba8unorm` blend state — walkaround writes swapchain via composite |
 | `alphaMap` | Requires Phase 3D texture atlas | |
 
@@ -763,7 +770,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Category | Fields | Walkaround work |
 |----------|--------|-----------------|
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override and DDGI material-emissive direct probe hits closed; remaining scalar work belongs to atlas/lobe parity rows |
-| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | 3C + 3D |
+| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar cutout code-closed in 3C; fractional blend composite + `alphaMap` remain 3C/3D |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
 | Disney scalars | sheen*, clearcoat*, iridescence*, specular*, anisotropy* | 3E |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |

@@ -7,7 +7,7 @@
  *   1. module evaluation itself is the anchor guard (a changed anchor throws at
  *      import time — the import at the top of this file IS the assertion);
  *   2. the three masked entry points exist with the mask parameters;
- *   3. the bit-0 skip is present in BOTH BLAS leaf loops (any + first-hit);
+ *   3. the bit-0/bit-2 skip is present in BOTH BLAS leaf loops (any + first-hit);
  *   4. the TLAS clone is rewired onto the masked BLAS variants;
  *   5. the CANONICAL strings remain mask-free (no accidental in-place edit).
  */
@@ -20,7 +20,7 @@ import {
 } from '../index.js';
 
 const SKIP =
-  'if ((textureLoad(castMask, vec2i(i32(triIdx % castMaskWidth), i32(triIdx / castMaskWidth)), 0).r & 1u) != 0u) { continue; }';
+  'if ((textureLoad(castMask, vec2i(i32(triIdx % castMaskWidth), i32(triIdx / castMaskWidth)), 0).r & 5u) != 0u) { continue; }';
 
 describe('BVH_CAST_SHADOW_MASK_WGSL (SHADOW-01)', () => {
   it('exposes the three masked entry points with mask parameters', () => {
@@ -31,7 +31,7 @@ describe('BVH_CAST_SHADOW_MASK_WGSL (SHADOW-01)', () => {
     expect(BVH_CAST_SHADOW_MASK_WGSL).toContain('castMaskWidth: u32');
   });
 
-  it('inserts the bit-0 skip into BOTH BLAS leaf loops (any-hit + glass-aware first-hit)', () => {
+  it('inserts the cast-shadow/scalar-alpha skip into BOTH BLAS leaf loops (any-hit + glass-aware first-hit)', () => {
     const occurrences = BVH_CAST_SHADOW_MASK_WGSL.split(SKIP).length - 1;
     expect(occurrences).toBe(2);
   });
