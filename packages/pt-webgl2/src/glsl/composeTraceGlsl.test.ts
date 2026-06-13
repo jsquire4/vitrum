@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { composeTraceGlsl, RENDER_MAIN_SECTIONS, buildUniformDecls, UNIFORM_MANIFEST } from './composeTraceGlsl.js';
-import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
+import { DEFAULT_TRACE_FEATURES, featureDefines } from '../featureTypes.js';
 
 describe('composeTraceGlsl', () => {
   const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
@@ -38,6 +38,13 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('Ray ray = getCameraRay();');
     expect(src).toContain('if ( material.unlit )');
     expect(src).toContain('pc_fragColor.rgb += surf.color * throughputRgb;');
+  });
+
+  it('does not emit the removed additive accumulation regime', () => {
+    expect(featureDefines(DEFAULT_TRACE_FEATURES)).not.toHaveProperty('FEATURE_ADDITIVE_ACCUM');
+    expect(src).not.toContain('FEATURE_ADDITIVE_ACCUM');
+    expect(src).toContain('pc_fragColor.a = backgroundAlpha;');
+    expect(src).toContain('pc_fragColor.a *= opacity;');
   });
 
   it('inlines the <common> shim symbols the kernels reference', () => {
@@ -203,9 +210,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32411', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32051', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32411);
+    expect(assembled).toHaveLength(32051);
     // All 9 sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(9);
     expect(assembled).toContain('void main() {');

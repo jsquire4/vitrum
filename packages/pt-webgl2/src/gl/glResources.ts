@@ -4,11 +4,10 @@
 //   - the Regime-2 ping-pong blend pair (allocated lazily only when needed),
 //   - the PT GlProgram (built from composeTraceGlsl + FULLSCREEN_VERT),
 //   - the Regime-2 BlendMaterial composite quad program,
-//   - the std140 FrameParams UBO (WS5 frameParamsPacker target),
 //   - a FullscreenQuad.
 //
 // The per-sample draw (drawAccumStep) replaces the fork's renderTask generator: bind the
-// accum FBO + MRT draw buffers, set the blend regime, bind scene textures + params UBO, and
+// accum FBO + MRT draw buffers, set the blend regime, bind scene textures + uniforms, and
 // draw the fullscreen triangle (fork PathTracingRenderer.js:144-167, §6 of plan 02).
 //
 // D10.1 (2026-06-10): BDPT light-subpath machinery extracted to BdptSubpathBuilder.ts;

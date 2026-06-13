@@ -1,5 +1,5 @@
-// Shared feature/compile-flag contract — imported by the GL framework (src/gl/),
-// the GLSL composer (src/glsl/), and the frame-params packer. Single source so the
+// Shared feature/compile-flag contract — imported by the GL framework (src/gl/)
+// and the GLSL composer (src/glsl/). Single source so the
 // parallel modules can't disagree on the #define schema.
 //
 // Mirrors the fork's PhysicalPathTracingMaterial defines (plan/three-removal/
@@ -39,11 +39,6 @@ export interface TraceFeatures {
   readonly backgroundMap: boolean;  // FEATURE_BACKGROUND_MAP (pinned false)
   readonly randomType: RandomType;  // RANDOM_TYPE (pinned PCG=0)
   readonly debugMode: number;       // DEBUG_MODE (pinned 0)
-  // D3 investigation (2026-06-09): FEATURE_ADDITIVE_ACCUM / 'additive' regime was
-  // dead code — the engine never assigned AccumRegime='additive' (only 'normal' or
-  // 'alpha-composite'). 'normal' IS the float-blend running-average path. The
-  // 'additive' union member, blend branch, and shader blocks have been deleted;
-  // behavior is byte-identical for 'normal' and 'alpha-composite'.
 }
 
 export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
@@ -75,9 +70,6 @@ export function featureDefines(f: TraceFeatures): Record<string, number> {
     FEATURE_FOG: f.fog ? 1 : 0,
     FEATURE_BDPT: f.bdpt ? 1 : 0,
     FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION: f.stainedGlassPerturbation ? 1 : 0,
-    // FEATURE_ADDITIVE_ACCUM is always 0: the 'additive' regime was dead code (D3).
-    // The GLSL #if blocks remain for readability but always compile the else-branch.
-    FEATURE_ADDITIVE_ACCUM: 0,
     RANDOM_TYPE: f.randomType,
     CAMERA_TYPE: f.cameraType,
     DEBUG_MODE: f.debugMode,
@@ -94,8 +86,6 @@ export function featureDefines(f: TraceFeatures): Record<string, number> {
  * never assigned it (index.ts only used 'normal' or 'alpha-composite'). 'normal' IS
  * the EXT_float_blend running-average path that 'additive' was originally intended to
  * be; enabling 'additive' would have changed default accumulation on float-blend
- * devices without any host opt-in. The FEATURE_ADDITIVE_ACCUM GLSL blocks remain in
- * the shader source (always-false) for provenance; they will be pruned in a follow-up
- * GLSL cleanup.
+ * devices without any host opt-in.
  */
 export type AccumRegime = 'alpha-composite' | 'normal';

@@ -4,15 +4,15 @@
 //   - EXT_color_buffer_float — makes RGBA32F render targets color-renderable (the
 //     fork's FloatType accumulation FBOs). Without it we cannot accumulate in float.
 //   - EXT_float_blend        — allows GL blending into a 32-bit-float draw buffer
-//     (the running-average Regime 3 + the additive Regime 1). Absent → Regime 2
-//     (BlendMaterial ping-pong) is selected automatically (02 §3, WebGLPathTracer.js:470-473).
+//     (the running-average Regime 3). Absent → Regime 2 (BlendMaterial ping-pong)
+//     is selected automatically (02 §3, WebGLPathTracer.js:470-473).
 // The MAX_* limits feed sampler-unit / MRT / data-texture sizing decisions in
 // GlResources + the scene packers.
 
 export interface GlCaps {
   /** EXT_color_buffer_float present — RGBA32F targets are color-renderable. */
   readonly floatColorRenderable: boolean;
-  /** EXT_float_blend present — GL blend works on float draw buffers (enables Regime 1/3). */
+  /** EXT_float_blend present — GL blend works on float draw buffers (enables Regime 3). */
   readonly floatBlend: boolean;
   /** gl.MAX_DRAW_BUFFERS — MRT attachment budget (need ≥3 for gNormalDepth/gAlbedo). */
   readonly maxDrawBuffers: number;

@@ -753,15 +753,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								if ( state.firstRay || state.transmissiveRay ) {
 
 									pc_fragColor.rgb += sampleBackground( ray.direction, rand2( 2 ) ) * throughputRgb;
-									#if FEATURE_ADDITIVE_ACCUM
-
-									pc_fragColor.a = 1.0;
-
-									#else
-
 									pc_fragColor.a = backgroundAlpha;
-
-									#endif
 
 								} else {
 
@@ -820,12 +812,6 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 							#endif
 
-							#if FEATURE_ADDITIVE_ACCUM
-
-							// Sum/count mode: matte fast-path would skip radiance while final α still becomes 1 — skip it.
-
-							#else
-
 							// early out if this is a matte material
 							if ( material.matte && state.firstRay ) {
 
@@ -833,8 +819,6 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								break;
 
 							}
-
-							#endif
 
 							// if we've determined that this is a shadow ray and we've hit an item with no shadow casting
 							// then skip it
@@ -1232,15 +1216,7 @@ const RENDER_MAIN_POST_LOOP = /* glsl */ `
 							}
 						}
 
-						#if FEATURE_ADDITIVE_ACCUM
-
-						pc_fragColor.a = 1.0;
-
-						#else
-
 						pc_fragColor.a *= opacity;
-
-						#endif
 
 						#if DEBUG_MODE == 1
 

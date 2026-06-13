@@ -709,7 +709,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    * D10.13: Determine the accumulation regime from the device capabilities and
    * the configured background alpha.
    *
-   * Additive HDR accumulation (`'normal'`) requires `EXT_float_blend`; otherwise the
+   * Running-average HDR accumulation (`'normal'`) requires `EXT_float_blend`; otherwise the
    * alpha-composite ping-pong regime is the unbiased fallback (plan 02 §3). A
    * transparent background (`backgroundAlpha < 1`) ALSO forces `'alpha-composite'` —
    * the `SRC_ALPHA` running-average blend cannot composite partial background coverage
