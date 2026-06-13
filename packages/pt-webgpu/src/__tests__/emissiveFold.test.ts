@@ -53,8 +53,34 @@ function meshEmitterScene(
   };
 }
 
+function implicitEmissiveScene(
+  emissive: [number, number, number],
+  emissiveIntensity: number,
+): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'panel',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [0.5, 0.5, 0.5],
+          roughness: 0.8,
+          metallic: 0,
+          emissive,
+          emissiveIntensity,
+        },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 /** Float offset of emissive.rgb in a packed material. */
 const EMISSIVE_OFFSET = 4; // vec4 #1: emissive.rgb + metallic
+const MESH_AREA_RADIANCE_OFFSET = 12; // first packed mesh-area triangle, vec4 #3
 
 function emissiveFromMaterials(materials: Float32Array): [number, number, number] {
   return [materials[EMISSIVE_OFFSET]!, materials[EMISSIVE_OFFSET + 1]!, materials[EMISSIVE_OFFSET + 2]!];
@@ -124,16 +150,19 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
   host: MutationHost;
   sceneRef: { current: Scene };
   materialsBuffer: Float32Array;
+  meshAreaLightsData: Float32Array;
   writeCalls: Array<{ byteOffset: number; data: Float32Array }>;
 } {
   const packed = buildPackedScene(scene, { cameraVisibleEmitters: cameraVisible });
   const materialsBuffer = new Float32Array(packed.materials);
+  const meshAreaLightsData = new Float32Array(packed.meshAreaLightsData);
   const writeCalls: Array<{ byteOffset: number; data: Float32Array }> = [];
 
   // Stub UploadedSceneBuffers — only the materials fields matter for H10 tests.
   const sceneBuffers = {
     ...packed,
     materials: materialsBuffer,
+    meshAreaLightsData,
     materialsBuffer: {
       // Capture writes so we can assert the correct bytes were uploaded.
       destroy: vi.fn(),
@@ -203,7 +232,7 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, materialsBuffer, writeCalls };
+  return { host, sceneRef, materialsBuffer, meshAreaLightsData, writeCalls };
 }
 
 describe('SceneMutationRouter fold-preservation (H10)', () => {
@@ -237,6 +266,35 @@ describe('SceneMutationRouter fold-preservation (H10)', () => {
     expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(4, 5);
     expect(materialsBuffer[EMISSIVE_OFFSET + 1]).toBeCloseTo(2, 5);
     expect(materialsBuffer[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
+  });
+
+  it('emissive material patch re-packs the implicit mesh-area emitter', () => {
+    const scene = implicitEmissiveScene([1, 0, 0], 2);
+    const { host, materialsBuffer, meshAreaLightsData } = makeHostWithScene(scene, true);
+    // Initial implicit NEE emitter radiance = emissive * intensity = [2, 0, 0].
+    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(2, 5);
+    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(0, 5);
+
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('panel', {
+      material: {
+        baseColor: [0.5, 0.5, 0.5],
+        roughness: 0.8,
+        metallic: 0,
+        emissive: [0, 1, 0],
+        emissiveIntensity: 3,
+      },
+    });
+
+    // Material camera-hit emission and the synthesized mesh-area NEE emitter
+    // both move to the new green radiance (material packing stores
+    // emissive * emissiveIntensity).
+    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+    expect(materialsBuffer[EMISSIVE_OFFSET + 1]).toBeCloseTo(3, 5);
+    expect(materialsBuffer[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
+    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(0, 5);
+    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(3, 5);
+    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 2]).toBeCloseTo(0, 5);
   });
 
   it('fold NOT applied when cameraVisibleEmitters=false (control case)', () => {

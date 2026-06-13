@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import { asMat4, type Scene } from '@vitrum/core';
 import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
@@ -208,6 +208,25 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
     // vertex A.z is at float index 2.
     const vertAz = written[2];
     expect(vertAz).toBeCloseTo(5, 4);
+  });
+
+  it('transform patch on emitter-backed mesh → meshAreaLightsBuffer carries transformed world-space triangles', () => {
+    const scene = emitterScene(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]));
+    const { host, meshAreaLightsWriteCalls } = makeHostWithEmitterScene(scene);
+
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('emitter-panel', {
+      transform: asMat4(new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 7, 1,
+      ])),
+    });
+
+    expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
+    const written = meshAreaLightsWriteCalls[meshAreaLightsWriteCalls.length - 1]!;
+    expect(written[2]).toBeCloseTo(7, 4);
   });
 
   it('non-emitter-backed mesh position patch does NOT trigger emitter re-upload', () => {
