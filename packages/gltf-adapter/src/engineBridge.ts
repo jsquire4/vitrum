@@ -99,6 +99,8 @@ export async function loadGltfForEngine<
     warnings: asset.warnings,
     animations: asset.animations,
     animationTargets: asset.animationTargets,
+    ...(asset.convertedMaterials !== undefined ? { convertedMaterials: asset.convertedMaterials } : {}),
+    ...(asset.materialVariantBindings !== undefined ? { materialVariantBindings: asset.materialVariantBindings } : {}),
   });
 
   let engine = options.engine;

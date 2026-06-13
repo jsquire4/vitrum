@@ -89,6 +89,44 @@ function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function makeInlineMaterialVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'blue' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        { name: 'variant blue', pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] } },
+      ],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
+      buffers: [{ byteLength: positions.byteLength }],
+    },
+    buffers: new Map([[0, positions]]),
+  };
+}
+
 function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
@@ -569,6 +607,30 @@ describe('loadGltfForEngine', () => {
     expect(result.attached).toBe(true);
     expect(createEngine).not.toHaveBeenCalled();
     expect(engine.setScene).not.toHaveBeenCalled();
+  });
+
+  it('preserves KHR_materials_variants metadata on bridge-created controllers', async () => {
+    const { gltf, buffers } = makeInlineMaterialVariantGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn() };
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+    });
+
+    expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+    const frame = result.controller.setVariant('blue');
+
+    expect(frame.variantIndex).toBe(0);
+    expect(frame.usedSetScene).toBe(false);
+    expect(engine.updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        material: expect.objectContaining({ baseColor: [0, 0, 1] }),
+      }),
+    );
+    expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
   });
 
   it('can reject a selected backend before construction when compatibility would drop material fidelity', async () => {
