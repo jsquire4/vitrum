@@ -172,6 +172,53 @@ describe('glTF common extension policy', () => {
     );
   });
 
+  it('reports spec-gloss texture alpha as an approximate compatibility issue', async () => {
+    const { gltf, buffers } = minimalMaterialGltf({
+      name: 'legacy textured material',
+      extensions: {
+        KHR_materials_pbrSpecularGlossiness: {
+          diffuseFactor: [0.8, 0.7, 0.6, 1],
+          specularFactor: [0.2, 0.3, 0.4],
+          glossinessFactor: 0.75,
+          specularGlossinessTexture: { index: 0 },
+        },
+      },
+    });
+    gltf.extensionsUsed = ['KHR_materials_pbrSpecularGlossiness'];
+    gltf.extensionsRequired = ['KHR_materials_pbrSpecularGlossiness'];
+    gltf.textures = [{ source: 0 }];
+    gltf.images = [{ uri: 'spec-gloss.png', mimeType: 'image/png' }];
+    const decodedHandle = { kind: 'decoded-spec-gloss' };
+
+    const { scene, warnings } = await gltfToScene(gltf, {
+      buffers,
+      imageBytes: {
+        0: { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mimeType: 'image/png' },
+      },
+      decodeImage: vi.fn(async () => decodedHandle),
+    });
+    const material = (scene.primitives[0] as MeshPrimitive).material;
+
+    expect((material.specularColorMap as TextureRef).handle).toBe(decodedHandle);
+    expect(material.roughness).toBeCloseTo(0.25);
+    expect(material.roughnessMap).toBeUndefined();
+    expect(warnings.some((w) => w.includes('glossiness-in-alpha'))).toBe(true);
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.specularGlossinessTextureCount).toBe(1);
+    expect(report.materials.issuePaths.specGlossGlossinessAlpha).toEqual([
+      'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    ]);
+    const issue = evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.find(
+      (candidate) => candidate.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
+    );
+    expect(issue).toMatchObject({
+      category: 'material',
+      support: 'approximate',
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    });
+  });
+
   it('selects KHR_materials_variants mappings by name or index and otherwise falls back to base material', async () => {
     const { gltf, buffers } = minimalMaterialGltf({
       name: 'base red',
