@@ -21,6 +21,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
+import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { REGIR_WGSL, REGIR_BUILD_WGSL } from '../src/shaders/regir.wgsl.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
@@ -29,8 +30,11 @@ import {
   ReGIRCoordinator,
   resolveReGIRConfig,
 } from '../src/pipeline/ReGIRCoordinator.js';
+import { uploadBufferPadded } from '../src/pipeline/resourceManager.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
+
+installWebGPUPolyfills();
 
 // ── Minimal frame inputs (only the fields updateUBO reads) ────────────────────
 function fakeInputs(): PipelineFrameInputs {
@@ -250,5 +254,51 @@ describe('ReGIRCoordinator', () => {
     // Tree went degenerate → ReGIR drops to the tree/flat path.
     c.refreshAfterEmitterRebuild({ lightTreeNodeCount: 0, lightTreeEnabled: false });
     expect(c.live).toBe(false);
+  });
+});
+
+describe('ReGIR grid allocation gate', () => {
+  function recordingDevice(sizes: number[]): GPUDevice {
+    return {
+      createBuffer: (desc: GPUBufferDescriptor) => {
+        sizes.push(desc.size);
+        const mapped = new ArrayBuffer(desc.size);
+        return {
+          getMappedRange: () => mapped,
+          unmap: () => undefined,
+        };
+      },
+    } as unknown as GPUDevice;
+  }
+
+  it('disabled ReGIR keeps the combined light-tree buffer unpadded', () => {
+    const coord = new ReGIRCoordinator(resolveReGIRConfig({ enabled: false }));
+    const sizes: number[] = [];
+    uploadBufferPadded(
+      recordingDevice(sizes),
+      new ArrayBuffer(64),
+      coord.gridRegionBytes(),
+      GPUBufferUsage.STORAGE,
+    );
+    expect(coord.gridRegionBytes()).toBe(0);
+    expect(sizes).toEqual([64]);
+  });
+
+  it('enabled ReGIR appends exactly the configured grid region', () => {
+    const coord = new ReGIRCoordinator(resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 2,
+      survivorsPerCell: 3,
+    }));
+    const gridBytes = coord.gridRegionBytes();
+    const sizes: number[] = [];
+    uploadBufferPadded(
+      recordingDevice(sizes),
+      new ArrayBuffer(64),
+      gridBytes,
+      GPUBufferUsage.STORAGE,
+    );
+    expect(gridBytes).toBe(2 ** 3 * 3 * REGIR_FLOATS_PER_SURVIVOR * 4);
+    expect(sizes).toEqual([64 + gridBytes]);
   });
 });
