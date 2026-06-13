@@ -214,6 +214,56 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('warns when unsupported layered front/back normal fields are supplied (CAP-01)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const base = triScene();
+      const prim = base.primitives[0] as MeshPrimitive;
+      const scene: Scene = {
+        ...base,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            frontLayer: {
+              transmission: [0.8, 0.9, 1.0],
+              roughness: 0.2,
+              normalMap: { handle: { id: 'front-normal' } },
+              normalScale: 0.75,
+            },
+            backLayer: {
+              transmission: [1.0, 0.9, 0.8],
+              roughness: 0.3,
+              normalMap: { handle: { id: 'back-normal' } },
+              normalScale: 0.5,
+            },
+          },
+        }],
+      };
+      e.setScene(scene);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.unsupported-material-fields' &&
+        Array.isArray(w.details?.fields) &&
+        w.details.fields.includes('frontLayer.normalMap') &&
+        w.details.fields.includes('frontLayer.normalScale') &&
+        w.details.fields.includes('backLayer.normalMap') &&
+        w.details.fields.includes('backLayer.normalScale'),
+      )).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('frontLayer.normalMap') &&
+        m.includes('backLayer.normalMap') &&
+        m.includes('not rendered'),
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('does NOT emit the unsupported-material-fields warning for a plain supported material (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

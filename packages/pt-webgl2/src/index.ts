@@ -107,8 +107,19 @@ function collectUnsupportedMaterialFields(scene: Scene): string[] {
     for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
       if (material[field] != null) fields.add(field);
     }
+    collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
+    collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
   }
   return Array.from(fields).sort();
+}
+
+function collectUnsupportedLayerNormalFields(
+  fields: Set<string>,
+  prefix: 'frontLayer' | 'backLayer',
+  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+): void {
+  if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
+  if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
 }
 
 const DEFAULT_MAX_SPP = 4096;
@@ -309,9 +320,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         details: { fields: unsupportedDisplacementFields },
       });
     }
-    // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
-    // driven; currently the KHR_materials_anisotropy trio). Once per setScene,
-    // mirroring the displacement warning above.
+    // CAP-01 — warn on remaining unsupported material fields (matrix-driven).
+    // Once per setScene, mirroring the displacement warning above.
     const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene);
     if (unsupportedMaterialFields.length > 0) {
       this.#warn({

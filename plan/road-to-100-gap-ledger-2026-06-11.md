@@ -731,11 +731,22 @@ Evidence:
   sample alpha maps through the transform. Tests:
   `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
   `materialStrideParity.test.ts`.
-- Layered front/back normal maps are not packed.
-- Surface anisotropy is not consumed by pt-webgl2.
+- Layered front/back material fields are honestly approximate for pt-webgl2:
+  `promiseLedger.ts` marks `frontLayer` / `backLayer` approximate for scalar
+  transmission/roughness, while `index.ts` emits structured
+  `pt-webgl2.unsupported-material-fields` warnings for the nested normal-map
+  subfields (`frontLayer.normalMap`, `frontLayer.normalScale`,
+  `backLayer.normalMap`, `backLayer.normalScale`). `engineContract.test.ts`
+  pins that path-level diagnostic.
+- Surface anisotropy is explicitly downgraded for pt-webgl2:
+  `promiseLedger.ts` marks `anisotropy`, `anisotropyRotation`, and
+  `anisotropyMap` unsupported; `engineContract.test.ts` pins the structured
+  warning.
 
 Closure:
-- Implement or explicitly downgrade layered normal maps and anisotropy.
+- WEBGL2-04 is closed as an honesty row. Future native anisotropy or layered
+  face-normal support would be a fidelity promotion, not a current silent
+  contract gap.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
 
