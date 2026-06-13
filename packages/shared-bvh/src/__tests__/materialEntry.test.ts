@@ -17,6 +17,7 @@ import {
   MATERIAL_DEFAULT_ROUGHNESS,
   MATERIAL_ENTRY_FLOATS,
   MATERIAL_ENTRY_STRIDE_BYTES,
+  MATERIAL_FLAG_CAST_SHADOW_DISABLED,
   MATERIAL_FLAG_IS_GLASS,
   coreMaterialToMaterialEntry,
   packMaterials,
@@ -134,6 +135,16 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
       { transmission: 0, flags: 0xFEEDFACE },
     ]);
     expect(u32(out)[15]).toBe(0xFEEDFACE);
+  });
+
+  it('coreMaterialToMaterialEntry preserves primitive castShadow:false in flag bit 1', () => {
+    const out = packMaterials([
+      coreMaterialToMaterialEntry(spec({ castShadow: false } as Partial<MaterialSpec>)),
+      coreMaterialToMaterialEntry(spec({ transmission: 0.7, castShadow: false } as Partial<MaterialSpec>)),
+    ]);
+    const U = u32(out);
+    expect(U[15]).toBe(MATERIAL_FLAG_CAST_SHADOW_DISABLED);
+    expect(U[ENTRY + 15]).toBe(MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_CAST_SHADOW_DISABLED);
   });
 
   it('flags is written as a real u32 not the IEEE-754 bit pattern of 1.0', () => {

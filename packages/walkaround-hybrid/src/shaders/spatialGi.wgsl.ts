@@ -188,6 +188,7 @@ export const SPATIAL_GI_GRIS_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> sgi_tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> sgi_tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> sgi_tlasInstanceLocalToWorld: array<vec4f>;
+@group(1) @binding(14) var sgi_bvh_material: texture_2d<u32>;
 
 // Normal bias for the GRIS reconnection-visibility ray origin (lift off the
 // surface so the ray does not self-intersect the visible point's triangle).
@@ -205,12 +206,13 @@ fn grisReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * GRIS_NORMAL_BIAS;
-  let occ = traceSceneAny(
+  let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &sgi_bvh_index, &sgi_bvh_position, &sgi_bvh,
     &sgi_tlasNodes, &sgi_tlasInstanceIndices, &sgi_tlasBlasRoots,
     &sgi_tlasInstanceWorldToLocal, &sgi_tlasInstanceLocalToWorld,
-    orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+    sgi_bvh_material, BVH_MATERIAL_TEX_WIDTH);
   return !occ;
 }
 
@@ -401,5 +403,5 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SPATIAL_GI_GRIS_MODULE: WgslModule = {
   name: 'spatialGiGris',
   source: SPATIAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse', 'materialDecode'],
 };

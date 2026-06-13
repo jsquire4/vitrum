@@ -171,10 +171,10 @@ describe('backend promise ledger', () => {
     const wa = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.shadows;
     const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.shadows;
     const gpu = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows;
-    // walkaround: primitive flag honored by the DI shadow predicates only
-    // (GI/DDGI/RC occlusion ignores it); emitter flag is honored by direct,
-    // area-emitter, DDGI fixture/sun, RC fixture/sun, and direct-sun paths.
-    expect(wa.primitiveCastShadow).toBe('approximate');
+    // walkaround: primitive flag honored by DI, ReSTIR-GI, DDGI, GRIS, and RC
+    // shadow visibility; emitter flag is honored by direct, area-emitter,
+    // DDGI fixture/sun, RC fixture/sun, and direct-sun paths.
+    expect(wa.primitiveCastShadow).toBe('native');
     expect(wa.emitterCastShadow).toBe('native');
     // pt-webgl2: material-lane shadow-ray gate (native); emitter flag honored
     // for analytic NEE lights only (mesh-area + forward/BDPT do not consume it).

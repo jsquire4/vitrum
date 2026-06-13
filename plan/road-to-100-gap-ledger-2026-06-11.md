@@ -641,13 +641,12 @@ engineContract.test.ts):
     reconnection, MNEE legs); closest-hit camera/radiance rays unaffected.
     Contract `AnalyticPrimitive` has no castShadow field → analytic shapes
     always occlude.
-  - walkaround-hybrid `approximate`: honored ONLY by the ReSTIR **DI** shadow
-    predicates (ris.wgsl candidate + shading visibility, shadingTerms.wgsl
-    analytic point/spot NEE + direct-sun NEE) via bvh_material bit 0
-    (packBVHRoughMetalFromCore) + the shared-bvh cast-shadow-masked traversal
-    (bvhCastShadowMask.wgsl.ts → traceSceneAnyCastMask). GI-side occlusion
-    (ReSTIR-GI reservoir visibility, GRIS reuse, DDGI probe rays, RC probe
-    casts) still treats castShadow:false geometry as an occluder.
+  - walkaround-hybrid `native` (2026-06-13 follow-up): DI visibility,
+    ReSTIR-GI reservoir visibility, GRIS reconnection visibility, DDGI probe
+    direct-light visibility, and RC probe direct-light visibility all skip
+    `castShadow:false` geometry. Main DI/GRIS/ReSTIR-GI paths read
+    `bvh_material` bit 0 through `traceSceneAnyCastMask`; DDGI/RC read shared
+    `MaterialEntry.flags` bit 1 through predicate-backed shared-BVH traversal.
 - **Emitter castShadow** —
   - pt-webgl2 `approximate`: lights-texture s5.g lane consumed by
     directLightContribution for all analytic NEE lights

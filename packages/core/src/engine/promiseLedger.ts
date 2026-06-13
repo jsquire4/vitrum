@@ -623,10 +623,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
 //                (occlusion) traversal (both tiers); emitterPacking.ts per-light
 //                castShadowDisabled lanes consumed by the kernel/kernelLite NEE loops
 //                + connect.wgsl BSDF-MIS area connections.
-  //   walkaround — packingHelpers.ts bvh_material flag bit 0 consumed by the
-  //                shared-bvh cast-shadow-masked any-hit variants in the ReSTIR DI
-  //                shadow predicates (ris.wgsl candidate visibility + shadingTerms.wgsl
-  //                shading/analytic/sun visibility). Emitter castShadow:false rides
+  //   walkaround — packingHelpers.ts bvh_material flag bit 0 + shared MaterialEntry
+  //                flag bit 1 are consumed by cast-shadow-masked any-hit variants
+  //                in DI, ReSTIR-GI, DDGI, GRIS reuse, and RC shadow visibility.
+  //                Emitter castShadow:false rides
   //                analytic-lights, shared EmitterTri .w, DDGI/RC high-bit light
   //                kind flags, RC sunCastShadowDisabled, and the main direct-sun
   //                shade flag.
@@ -635,17 +635,17 @@ type ShadowSupportMatrix = Readonly<
   Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>
 >;
 
-/** walkaround-hybrid — primitive castShadow is honored by the ReSTIR **DI** shadow
- *  predicates only (RIS candidate visibility, DI shading visibility, analytic
- *  point/spot NEE, direct-sun NEE — ris.wgsl + shadingTerms.wgsl). The GI-side
- *  occlusion tests (ReSTIR-GI reservoir visibility, DDGI probe rays, RC probe
- *  casts, GRIS reuse) still treat castShadow:false geometry as an occluder →
- *  'approximate'. Emitter castShadow is honored across direct analytic/area NEE,
+/** walkaround-hybrid — primitive castShadow is honored by DI shadow predicates,
+ *  ReSTIR-GI reservoir visibility, DDGI probe direct-light visibility, RC probe
+ *  direct-light visibility, and GRIS reconnection visibility. The main pipeline
+ *  reads bvh_material bit 0 via traceSceneAnyCastMask; DDGI/RC read shared
+ *  MaterialEntry flag bit 1 through predicate-backed shared-BVH traversal.
+ *  Emitter castShadow is honored across direct analytic/area NEE,
  *  DDGI fixture/sun probe lights, RC fixture/sun probe lights, and the main
  *  direct-sun shade path → 'native'. receiveShadow: see
  *  BackendSupportDetails.shadows JSDoc — non-physical for GI, warned. */
 const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
-  primitiveCastShadow: 'approximate',
+  primitiveCastShadow: 'native',
   emitterCastShadow: 'native',
   receiveShadow: 'unsupported',
 });

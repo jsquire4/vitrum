@@ -52,6 +52,7 @@
  *   13    52      attenuationCol.g  f32
  *   14    56      attenuationCol.b  f32
  *   15    60      flags             u32    bit 0 = isGlass (transmission > 0)
+ *                                          bit 1 = castShadow disabled
  *
  * Defaults (when a field is absent on the input):
  *   baseColor = (1,1,1), emissive = (0,0,0), roughness = 1.0, metalness = 0,
@@ -105,6 +106,9 @@ export const MATERIAL_ENTRY_STRIDE_BYTES = MATERIAL_ENTRY_FLOATS * 4;
 /** Flag bit: surface is transmissive (transmission > 0). */
 export const MATERIAL_FLAG_IS_GLASS = 0x1;
 
+/** Flag bit: source primitive explicitly set `castShadow:false`. */
+export const MATERIAL_FLAG_CAST_SHADOW_DISABLED = 0x2;
+
 /** Library-canonical default roughness — used when an input lacks one.
  *  See module docstring for the choice rationale. */
 export const MATERIAL_DEFAULT_ROUGHNESS = 1.0;
@@ -145,7 +149,7 @@ export interface MaterialEntryInput {
    * Explicit flag override. When omitted, {@link packMaterials} derives
    * `flags = (transmission > 0) ? MATERIAL_FLAG_IS_GLASS : 0`.
    * Pass an explicit value if the caller needs additional bits (e.g.
-   * future `isLight` bit at position 1).
+   * `castShadow:false` at position 1).
    */
   flags?: number;
 }
@@ -208,6 +212,12 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
     out.attenuationDistance = material.attenuationDistance;
   }
   if (material.thickness !== undefined) out.thickness = material.thickness;
+  const flags =
+    (material.transmission !== undefined && material.transmission > 0 ? MATERIAL_FLAG_IS_GLASS : 0) |
+    ((material as MaterialSpec & { castShadow?: boolean }).castShadow === false
+      ? MATERIAL_FLAG_CAST_SHADOW_DISABLED
+      : 0);
+  if (flags !== 0) out.flags = flags;
   return out;
 }
 

@@ -352,12 +352,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (distS_g > 1e-4) {
         let wiZ_g = toS_g / distS_g;
         let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
-        let occ_g = traceSceneAny(
+        let occ_g = traceSceneAnyCastMask(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
           &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
           shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon, true,
+          bvh_material, BVH_MATERIAL_TEX_WIDTH,
         );
         if (occ_g) {
           rGlass.w_sum = 0.0;
@@ -516,12 +517,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let occ = traceSceneAny(
+      let occ = traceSceneAnyCastMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
       if (occ) {
         r.w_sum = 0.0;

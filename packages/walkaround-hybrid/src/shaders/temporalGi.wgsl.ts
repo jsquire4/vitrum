@@ -210,6 +210,7 @@ export const TEMPORAL_GI_GRIS_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tgi_tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tgi_tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tgi_tlasInstanceLocalToWorld: array<vec4f>;
+@group(1) @binding(14) var tgi_bvh_material: texture_2d<u32>;
 
 const TGI_GRIS_NORMAL_BIAS: f32 = 1e-3;
 
@@ -220,12 +221,13 @@ fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * TGI_GRIS_NORMAL_BIAS;
-  let occ = traceSceneAny(
+  let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
     &tgi_bvh_index, &tgi_bvh_position, &tgi_bvh,
     &tgi_tlasNodes, &tgi_tlasInstanceIndices, &tgi_tlasBlasRoots,
     &tgi_tlasInstanceWorldToLocal, &tgi_tlasInstanceLocalToWorld,
-    orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
+    tgi_bvh_material, BVH_MATERIAL_TEX_WIDTH);
   return !occ;
 }
 
@@ -408,5 +410,5 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TEMPORAL_GI_GRIS_MODULE: WgslModule = {
   name: 'temporalGiGris',
   source: TEMPORAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse', 'materialDecode'],
 };

@@ -32,10 +32,9 @@ export interface MeshPrimitive {
    *    - `@vitrum/pt-webgpu` — native (any-hit/occlusion traversals skip
    *      castShadow:false triangles on both tiers; closest-hit radiance rays
    *      still hit them).
-   *    - `@vitrum/walkaround-hybrid` — approximate: honored by the ReSTIR DI
-   *      shadow predicates (RIS candidate + shading visibility, analytic
-   *      point/spot NEE, direct-sun NEE); GI-side occlusion (ReSTIR-GI, DDGI
-   *      probe rays, RC) still treats the geometry as an occluder. */
+   *    - `@vitrum/walkaround-hybrid` — native: honored by DI, ReSTIR-GI,
+   *      DDGI probe direct-light visibility, GRIS reuse visibility, and RC
+   *      probe direct-light visibility. */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
    *  @reserved Accepted; consumed by NO backend ('unsupported' in

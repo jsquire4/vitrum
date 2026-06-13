@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, Scene } from '@vitrum/core';
+import { SceneBvh } from '../sceneBvh.js';
 import { materialSig, mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
 const BASE: MaterialSpec = {
@@ -124,5 +125,14 @@ describe('mergeWorldSpaceFromCore material slots', () => {
     expect(Array.from(merged.mergedTriMaterialId)).toEqual([0, 1]);
     expect((merged.materials[0] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(true);
     expect((merged.materials[1] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(false);
+  });
+
+  it('SceneBvh preserves primitive castShadow slots for standalone DDGI material packing', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(sceneWithMixedCastShadow());
+    expect(bvh.buffers?.materials.length).toBe(2);
+    expect(Array.from(bvh.buffers?.triMaterialId ?? [])).toEqual([0, 1]);
+    expect((bvh.buffers?.materials[0] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(true);
+    expect((bvh.buffers?.materials[1] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(false);
   });
 });

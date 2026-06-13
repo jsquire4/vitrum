@@ -30,7 +30,12 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-import { BVH_INTERSECT_WGSL, MATERIAL_ENTRY_WGSL, TLAS_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
+import {
+  BVH_CAST_SHADOW_PREDICATE_WGSL,
+  BVH_INTERSECT_WGSL,
+  MATERIAL_ENTRY_WGSL,
+  TLAS_TRAVERSAL_WGSL,
+} from '@vitrum/shared-bvh';
 import { OCTAHEDRAL_CORE_WGSL, PCG_HASH_TO_F32_WGSL } from '@vitrum/shared-samplers';
 import { RC_SUN_VISIBILITY_WGSL, RC_NEE_POINTSPOT_WGSL } from './rcLightEval.wgsl.js';
 
@@ -55,6 +60,13 @@ fn safe_normalize(v: vec3f) -> vec3f {
   if (len2 < 1e-20) { return vec3f(0.0, 1.0, 0.0); }
   return v * inverseSqrt(len2);
 }
+
+fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool {
+  let matId = rc_triMatId[triIdx];
+  return (rc_materials[matId].flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u;
+}
+
+${BVH_CAST_SHADOW_PREDICATE_WGSL}
 
 // C2 — merged world BVH vs TLAS+local BLAS (same traversal as ReSTIR / DDGI).
 fn rcTraceFirstHit(ray: Ray, triEps: f32) -> IntersectionResult {
@@ -99,6 +111,31 @@ fn rcTraceAny(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32, skipGlass: bool
   }
   return bvhIntersectAny(
     &rc_geom_index, &rc_geom_position, &rc_bvh, origin, dir, tMax, triEps, skipGlass,
+  );
+}
+
+fn rcTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32, skipGlass: bool) -> bool {
+  let u = rc_u_arr[0];
+  if (u.bvhMode == 1u && u.tlasNodeCount > 0u) {
+    return traceTlasAnyCastPredicate(
+      &rc_tlas_nodes,
+      &rc_tlas_instance_indices,
+      &rc_tlas_blas_roots,
+      &rc_tlas_w2l,
+      &rc_tlas_l2w,
+      u.tlasNodeCount,
+      &rc_geom_index,
+      &rc_geom_position,
+      &rc_bvh,
+      origin,
+      dir,
+      tMax,
+      triEps,
+      skipGlass,
+    );
+  }
+  return bvhIntersectAnyAtRootCastPredicate(
+    &rc_geom_index, &rc_geom_position, &rc_bvh, origin, dir, tMax, triEps, skipGlass, 0u,
   );
 }
 

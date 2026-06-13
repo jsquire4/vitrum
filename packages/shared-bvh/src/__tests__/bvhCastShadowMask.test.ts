@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BVH_CAST_SHADOW_MASK_WGSL,
+  BVH_CAST_SHADOW_PREDICATE_WGSL,
   BVH_INTERSECT_WGSL,
   TLAS_TRAVERSAL_WGSL,
 } from '../index.js';
@@ -58,5 +59,14 @@ describe('BVH_CAST_SHADOW_MASK_WGSL (SHADOW-01)', () => {
     expect(BVH_CAST_SHADOW_MASK_WGSL).not.toContain('fn bvhIntersectAnyAtRoot(');
     expect(BVH_CAST_SHADOW_MASK_WGSL).not.toContain('fn bvhIntersectFirstHitAtRoot(');
     expect(BVH_CAST_SHADOW_MASK_WGSL).not.toContain('fn traceTlasAny(');
+  });
+});
+
+describe('BVH_CAST_SHADOW_PREDICATE_WGSL (SHADOW-01)', () => {
+  it('exposes predicate-backed any-hit variants for DDGI/RC material-entry buffers', () => {
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn bvhIntersectAnyAtRootCastPredicate(');
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn bvhIntersectFirstHitAtRootCastPredicate(');
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn traceTlasAnyCastPredicate(');
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('if (bvhCastShadowDisabledForTri(triIdx)) { continue; }');
   });
 });

@@ -113,15 +113,15 @@ fn traceSceneAny(
 ${BVH_CAST_SHADOW_MASK_WGSL}
 
 // SHADOW-01 — castShadow-aware occlusion wrapper for the ReSTIR **DI** shadow
-// predicates (ris.wgsl candidate visibility + shadingTerms.wgsl shading /
-// analytic / sun visibility). Identical dispatch to traceSceneAny, but the
+// predicates (ris.wgsl candidate visibility, ReSTIR-GI visibility, GRIS
+// reconnection visibility, and shadingTerms.wgsl shading / analytic / sun
+// visibility). Identical dispatch to traceSceneAny, but the
 // leaf loops skip triangles whose bvh_material word has bit 0 set
 // (castShadow:false — packBVHRoughMetalFromCore). Callers pass the
 // module-scope bvh_material texture + BVH_MATERIAL_TEX_WIDTH so this module
-// stays binding-free. GI-side occlusion (risGi / temporalGi / spatialGi /
-// grisReuse / DDGI / RC) intentionally keeps the unmasked traceSceneAny —
-// the ledger grades walkaround primitiveCastShadow 'approximate' for exactly
-// this split.
+// stays binding-free. DDGI / RC use the sibling predicate-backed shared-bvh
+// traversal because those passes carry material flags through MaterialEntry
+// buffers rather than this texture.
 fn traceSceneAnyCastMask(
   bvhMode: u32,
   tlasNodeCount: u32,

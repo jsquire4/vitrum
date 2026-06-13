@@ -112,6 +112,7 @@ export class SceneBvh {
     const merged = mergeWorldSpaceFromCore(scene, {
       positionStride: 4,
       filter: DDGI_CORE_MESH_FILTER,
+      splitMaterialsByCastShadow: true,
     });
 
     if (merged.triangleCount === 0) {

@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js';
 import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
+import { RIS_GI_WGSL } from '../risGi.wgsl.js';
+import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
+import { TEMPORAL_GI_GRIS_WGSL } from '../temporalGi.wgsl.js';
+import { SPATIAL_GI_GRIS_WGSL } from '../spatialGi.wgsl.js';
 
 describe('emitter castShadow:false shader gates', () => {
   it('threads the shared EmitterTri castShadowDisabled lane through ReSTIR-DI visibility', () => {
@@ -24,5 +28,18 @@ describe('emitter castShadow:false shader gates', () => {
     expect(ddgi).toContain('Le.rgb + castShadowDisabled');
     expect(ddgi).toContain('let castShadowDisabled = ddgiEmitterTris[base + 4u].w > 0.5;');
     expect(ddgi).toContain('if (!castShadowDisabled)');
+  });
+
+  it('threads primitive castShadow:false into DDGI and ReSTIR-GI shadow visibility', () => {
+    const ddgi = makeProbeUpdateRaysWGSL(4);
+    expect(ddgi).toContain('fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool');
+    expect(ddgi).toContain('MATERIAL_FLAG_CAST_SHADOW_DISABLED');
+    expect(ddgi).toContain('fn bvhTraceAnyCastShadow(');
+    expect(ddgi).toContain('bvhTraceAnyCastShadow(shadowOrig, lightDir, dist - normalBias_p, false)');
+
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY, TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_GRIS_WGSL]) {
+      expect(src).toContain('traceSceneAnyCastMask(');
+      expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
+    }
   });
 });

@@ -395,12 +395,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (distS > 1e-4) {
       let wiZ = toS / distS;
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
-      let occ = traceSceneAny(
+      let occ = traceSceneAnyCastMask(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
       if (occ) {
         r.w_sum = 0.0;

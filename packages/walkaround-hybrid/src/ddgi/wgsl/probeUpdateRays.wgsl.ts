@@ -17,6 +17,7 @@ import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
 import {
   OCTAHEDRAL_WGSL,
   MATERIAL_ENTRY_WGSL,
+  BVH_CAST_SHADOW_PREDICATE_WGSL,
   BVH_INTERSECT_WGSL,
   TLAS_TRAVERSAL_WGSL,
 } from '@vitrum/shared-bvh';
@@ -285,6 +286,13 @@ fn safe_normalize(v: vec3f) -> vec3f {
   return v * inverseSqrt(len2);
 }
 
+fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool {
+  let matId = bvh_materialId[triIdx];
+  return (materials[matId].flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u;
+}
+
+${BVH_CAST_SHADOW_PREDICATE_WGSL}
+
 fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
     return traceTlasFirstHit(
@@ -306,6 +314,30 @@ fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
 
 fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
   return traceSceneFirstHitDdgi(ray);
+}
+
+fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> bool {
+  if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
+    return traceTlasAnyCastPredicate(
+      &tlasNodes,
+      &tlasInstanceIndices,
+      &tlasBlasRoots,
+      &tlasInstanceWorldToLocal,
+      &tlasInstanceLocalToWorld,
+      ddgiTrace.tlasNodeCount,
+      &bvh_index,
+      &bvh_position,
+      &bvh,
+      origin,
+      dir,
+      tMax,
+      DDGI_TRI_EPSILON,
+      skipGlass,
+    );
+  }
+  return bvhIntersectAnyAtRootCastPredicate(
+    &bvh_index, &bvh_position, &bvh, origin, dir, tMax, DDGI_TRI_EPSILON, skipGlass, 0u,
+  );
 }
 `; }
 
@@ -363,9 +395,15 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
       // Reached sky — sun is unobstructed (modulo accumulated glass tint).
       return visibility;
     }
+    let entryPos  = rayOrigin + sunDir * sHit.dist;
     let sMatId = bvh_materialId[sHit.indices.w];
     let sMat   = materials[sMatId];
-    if ((sMat.flags & 1u) == 0u) {
+    if ((sMat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u) {
+      // Primitive castShadow:false: transparent to DDGI shadow/visibility rays.
+      rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
+      continue;
+    }
+    if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
       // Opaque occluder — sun is fully blocked.
       return vec3f(0.0);
     }
@@ -374,7 +412,6 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
     // entry face; distToExit is the in-medium path length. Clamp to thickness
     // (upper bound — guards open/non-watertight glass where the ray would exit
     // far away or miss the far face entirely).
-    let entryPos  = rayOrigin + sunDir * sHit.dist;
     var exitRay: Ray;
     exitRay.origin    = entryPos + sunDir * (gridParams.spacing * 1e-4);
     exitRay.direction = sunDir;
@@ -446,11 +483,8 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   // M13: normal bias proportional to probe spacing (scene-scale-agnostic).
   let normalBias_p = gridParams.spacing * 0.001;
   if (!ddgiLightCastShadowDisabled(light)) {
-    var shadowRay: Ray;
-    shadowRay.origin    = hitPos + hitNormal * normalBias_p;
-    shadowRay.direction = lightDir;
-    let shadow = bvhTraceFirstHit(shadowRay);
-    if (shadow.didHit && shadow.dist < dist - normalBias_p) {
+    let shadowOrig = hitPos + hitNormal * normalBias_p;
+    if (bvhTraceAnyCastShadow(shadowOrig, lightDir, dist - normalBias_p, false)) {
       return vec3f(0.0);
     }
   }
@@ -679,7 +713,7 @@ fn probeUpdateRays(
         out.hitNormal    = hit.normal;
         out.hitPosition  = probeOrigin + dir * hit.dist;
         out.hitMaterialId = matId;
-        out.isGlass       = (mat.flags & 1u);
+        out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       } else {
         let hitWorldPos = probeOrigin + dir * hit.dist;
 
@@ -872,7 +906,7 @@ fn probeUpdateRays(
         let directRadiance = direct * mat.baseColor * (1.0 / PI);
         var radiance = directRadiance + indirectRadiance;
 
-        if ((mat.flags & 1u) != 0u) {
+        if ((mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
           // Glass: add transmitted environment contribution.
           let transmitted = sampleSkyColor(dir) * mat.attenuationColor;
           radiance = mix(radiance, transmitted, mat.transmission * frameParams.glassMixScale);
@@ -895,7 +929,7 @@ fn probeUpdateRays(
         out.hitNormal    = smoothNormal;
         out.hitPosition  = hitWorldPos;
         out.hitMaterialId = matId;
-        out.isGlass       = (mat.flags & 1u);
+        out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       }
     }
 

@@ -69,6 +69,7 @@ export function buildRCSceneBVHFromCore(
   const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
     filter: opts.filter ?? RC_CORE_MESH_FILTER,
+    splitMaterialsByCastShadow: true,
   });
   const materialFloats = packCascadeMaterialsFromCore(merged.materials);
   return {

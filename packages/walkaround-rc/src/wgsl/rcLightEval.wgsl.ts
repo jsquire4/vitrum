@@ -55,8 +55,13 @@ fn traceSunVisibility(
     if (!sHit.didHit) {
       return visibility;
     }
+    let hitPos = rayOrigin + sunDir * sHit.dist;
     let sMatId = rc_triMatId[sHit.indices.w];
     let sMat   = rc_materials[sMatId];
+    if ((sMat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u) {
+      rayOrigin = hitPos + sunDir * slabStepSize;
+      continue;
+    }
     if (sMat.transmission <= 0.5) {
       return vec3f(0.0);
     }
@@ -65,7 +70,6 @@ fn traceSunVisibility(
     let gColor    = sMat.baseColor;
     let beerAtten = exp(-gAttenCol * (gThick / max(0.001, sMat.attenuationDistance)));
     visibility = visibility * gColor * beerAtten;
-    let hitPos = rayOrigin + sunDir * sHit.dist;
     rayOrigin  = hitPos + sunDir * slabStepSize;
   }
   return vec3f(0.0);
@@ -126,7 +130,7 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     // contribute to the coarse RC cache. Glass tint is intentionally ignored.
     // Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.
     let shadowTMax = max(0.0, dist - normalBias);
-    if (e.castShadowDisabled < 0.5 && shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, wi, shadowTMax, triEps, true)) {
+    if (e.castShadowDisabled < 0.5 && shadowTMax > 0.0 && rcTraceAnyCastShadow(hitPos + n * normalBias, wi, shadowTMax, triEps, true)) {
       continue;
     }
 
@@ -171,7 +175,7 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
     // Shadow test — stop just short of the light position. H37 mirrors emitter
     // NEE: transmissive geometry does not fully occlude coarse RC direct light.
     let shadowTMax = max(0.0, dist - normalBias);
-    if (!castShadowDisabled && shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)) {
+    if (!castShadowDisabled && shadowTMax > 0.0 && rcTraceAnyCastShadow(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)) {
       continue;
     }
 

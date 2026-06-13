@@ -356,7 +356,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('temporalGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + cameraRays + grisReuse + TEMPORAL_GI_GRIS', () => {
+  it('temporalGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + cameraRays + grisReuse + materialDecode + TEMPORAL_GI_GRIS', () => {
     // GRIS variant adds `grisReuse` (shift + pairwise-MIS math) and uses
     // `sceneTraversal` (the reconnection-visibility ray's traceSceneAny);
     // `sceneTraversal`/`cameraRays` were already in the closure. It DROPS
@@ -369,6 +369,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       CAMERA_RAYS_WGSL +
       GRIS_REUSE_WGSL +
+      MATERIAL_DECODE_WGSL +
       TEMPORAL_GI_GRIS_WGSL,
     );
   });
@@ -388,7 +389,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + SPATIAL_GI_GRIS', () => {
+  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + materialDecode + SPATIAL_GI_GRIS', () => {
     // GRIS variant adds `sceneTraversal` (the reconnection-visibility ray's
     // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math),
     // and DROPS `jacobianShift` (grisShiftJacobian replaces the legacy reuse).
@@ -401,6 +402,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       GRIS_REUSE_WGSL +
+      MATERIAL_DECODE_WGSL +
       SPATIAL_GI_GRIS_WGSL,
     );
   });

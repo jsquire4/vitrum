@@ -30,10 +30,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   packDDGIMaterials,
+  packDDGIMaterialsFromCoreN,
   DDGI_MAX_MATERIALS,
   DDGI_MATERIAL_STRIDE_BYTES,
   DDGI_MATERIAL_ENTRY_FLOATS,
 } from '../src/ddgi/probeUpdateMaterials.js';
+import {
+  MATERIAL_FLAG_CAST_SHADOW_DISABLED,
+  MATERIAL_FLAG_IS_GLASS,
+} from '@vitrum/shared-bvh';
+import type { MaterialSpec } from '@vitrum/core';
 import type { PbrScalarSource } from '../src/pbrScalars.js';
 
 const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
@@ -121,6 +127,17 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
     // Float 1.0 in IEEE-754 is 0x3F800000. We must write integer 1.
     expect(U[15]).toBe(1);
     expect(U[15]).not.toBe(0x3F800000);
+  });
+
+  it('core material packing preserves primitive castShadow:false in flags bit 1', () => {
+    const mats: MaterialSpec[] = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, castShadow: false } as MaterialSpec,
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, transmission: 0.75, castShadow: false } as MaterialSpec,
+    ];
+    const buf = packDDGIMaterialsFromCoreN(mats, 4);
+    const U = u32(buf);
+    expect(U[15]).toBe(MATERIAL_FLAG_CAST_SHADOW_DISABLED);
+    expect(U[ENTRY + 15]).toBe(MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_CAST_SHADOW_DISABLED);
   });
 
   it('packs multiple materials at consecutive slots without bleeding', () => {
