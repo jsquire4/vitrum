@@ -63,6 +63,107 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
+	vec3 rotateAnisotropyFrame( vec3 v, float angle ) {
+
+		float c = cos( angle );
+		float s = sin( angle );
+		return vec3( c * v.x + s * v.y, - s * v.x + c * v.y, v.z );
+
+	}
+
+	vec3 unrotateAnisotropyFrame( vec3 v, float angle ) {
+
+		float c = cos( angle );
+		float s = sin( angle );
+		return vec3( c * v.x - s * v.y, s * v.x + c * v.y, v.z );
+
+	}
+
+	vec2 anisotropicRoughnessAxes( SurfaceRecord surf ) {
+
+		float roughness = clamp( surf.filteredRoughness, 0.001, 1.0 );
+		float aspect = sqrt( max( 1.0 - 0.9 * clamp( surf.anisotropy, 0.0, 1.0 ), 0.1 ) );
+		return clamp( vec2( roughness / aspect, roughness * aspect ), vec2( 0.001 ), vec2( 1.0 ) );
+
+	}
+
+	float ggxDistributionAnisotropic( vec3 halfVector, vec2 roughness ) {
+
+		if ( halfVector.z <= 0.0 ) return 0.0;
+		float ax = max( roughness.x, 0.001 );
+		float ay = max( roughness.y, 0.001 );
+		float hx = halfVector.x / ax;
+		float hy = halfVector.y / ay;
+		float denom = hx * hx + hy * hy + halfVector.z * halfVector.z;
+		return 1.0 / max( PI * ax * ay * denom * denom, EPSILON );
+
+	}
+
+	float ggxLambdaAnisotropic( vec3 w, vec2 roughness ) {
+
+		float z2 = max( w.z * w.z, 1e-6 );
+		float ax = max( roughness.x, 0.001 );
+		float ay = max( roughness.y, 0.001 );
+		float a2tan2 = ( ax * ax * w.x * w.x + ay * ay * w.y * w.y ) / z2;
+		return ( - 1.0 + sqrt( 1.0 + a2tan2 ) ) * 0.5;
+
+	}
+
+	float ggxShadowMaskG1Anisotropic( vec3 w, vec2 roughness ) {
+
+		return 1.0 / ( 1.0 + ggxLambdaAnisotropic( w, roughness ) );
+
+	}
+
+	float ggxShadowMaskG2Anisotropic( vec3 wi, vec3 wo, vec2 roughness ) {
+
+		return 1.0 / ( 1.0 + ggxLambdaAnisotropic( wi, roughness ) + ggxLambdaAnisotropic( wo, roughness ) );
+
+	}
+
+	float ggxDistributionForSurface( vec3 halfVector, SurfaceRecord surf ) {
+
+		if ( surf.anisotropy <= 1e-4 ) return ggxDistribution( halfVector, surf.filteredRoughness );
+		vec3 h = rotateAnisotropyFrame( halfVector, surf.anisotropyRotation );
+		return ggxDistributionAnisotropic( h, anisotropicRoughnessAxes( surf ) );
+
+	}
+
+	float ggxShadowMaskG1ForSurface( vec3 w, SurfaceRecord surf ) {
+
+		if ( surf.anisotropy <= 1e-4 ) return ggxShadowMaskG1( acos( w.z ), surf.filteredRoughness );
+		vec3 wa = rotateAnisotropyFrame( w, surf.anisotropyRotation );
+		return ggxShadowMaskG1Anisotropic( wa, anisotropicRoughnessAxes( surf ) );
+
+	}
+
+	float ggxShadowMaskG2ForSurface( vec3 wi, vec3 wo, SurfaceRecord surf ) {
+
+		if ( surf.anisotropy <= 1e-4 ) return ggxShadowMaskG2( wi, wo, surf.filteredRoughness );
+		vec3 wia = rotateAnisotropyFrame( wi, surf.anisotropyRotation );
+		vec3 woa = rotateAnisotropyFrame( wo, surf.anisotropyRotation );
+		return ggxShadowMaskG2Anisotropic( wia, woa, anisotropicRoughnessAxes( surf ) );
+
+	}
+
+	float ggxPdfForSurface( vec3 wi, vec3 halfVector, SurfaceRecord surf ) {
+
+		if ( surf.anisotropy <= 1e-4 ) return ggxPDF( wi, halfVector, surf.filteredRoughness );
+		float D = ggxDistributionForSurface( halfVector, surf );
+		float G1 = ggxShadowMaskG1ForSurface( wi, surf );
+		return D * G1 * max( 0.0, abs( dot( wi, halfVector ) ) ) / max( abs( wi.z ), EPSILON );
+
+	}
+
+	vec3 ggxDirectionForSurface( vec3 wo, SurfaceRecord surf, vec2 uv ) {
+
+		if ( surf.anisotropy <= 1e-4 ) return ggxDirection( wo, vec2( surf.filteredRoughness ), uv );
+		vec3 woAniso = rotateAnisotropyFrame( wo, surf.anisotropyRotation );
+		vec3 hAniso = ggxDirection( woAniso, anisotropicRoughnessAxes( surf ), uv );
+		return normalize( unrotateAnisotropyFrame( hAniso, surf.anisotropyRotation ) );
+
+	}
+
 	// specular
 	float specularEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
 
@@ -99,11 +200,9 @@ export const bsdf_functions = /* glsl */`
 
 		// PDF
 		// See 14.1.1 Microfacet BxDFs in https://www.pbr-book.org/
-		float incidentTheta = acos( wo.z );
-		float G = ggxShadowMaskG2( wi, wo, roughness );
-		float D = ggxDistribution( wh, roughness );
-		float G1 = ggxShadowMaskG1( incidentTheta, roughness );
-		float ggxPdf = D * G1 * max( 0.0, abs( dot( wo, wh ) ) ) / abs ( wo.z );
+		float G = ggxShadowMaskG2ForSurface( wi, wo, surf );
+		float D = ggxDistributionForSurface( wh, surf );
+		float ggxPdf = ggxPdfForSurface( wo, wh, surf );
 
 		color = wi.z * F * G * D / ( 4.0 * abs( wi.z * wo.z ) );
 
@@ -125,12 +224,7 @@ export const bsdf_functions = /* glsl */`
 	vec3 specularDirection( vec3 wo, SurfaceRecord surf ) {
 
 		// sample ggx vndf distribution which gives a new normal
-		float roughness = surf.filteredRoughness;
-		vec3 halfVector = ggxDirection(
-			wo,
-			vec2( roughness ),
-			rand2( 12 )
-		);
+		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 12 ) );
 
 		// apply to new ray by reflecting off the new normal
 		return - reflect( wo, halfVector );
@@ -176,7 +270,7 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		return ggxPDF( wo, wh, filteredRoughness ) / denom;
+		return ggxPdfForSurface( wo, wh, surf ) / denom;
 
 	}
 
@@ -216,13 +310,8 @@ export const bsdf_functions = /* glsl */`
 
 	vec3 transmissionDirection( vec3 wo, SurfaceRecord surf ) {
 
-		float filteredRoughness = surf.filteredRoughness;
 		float eta = surf.eta;
-		vec3 halfVector = ggxDirection(
-			wo,
-			vec2( filteredRoughness ),
-			rand2( 13 )
-		);
+		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
 		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
 		if ( surf.thinFilm ) {
@@ -235,7 +324,7 @@ export const bsdf_functions = /* glsl */`
 		// Phase 4 modifies surf.normalBasis before this call; Sprint 6 perturbs
 		// the refracted direction after — they compose correctly in order.
 		vec2 roughRand = rand2( 47 );
-		lightDirection = perturbDirectionByGGX( normalize( lightDirection ), filteredRoughness, roughRand.x, roughRand.y );
+		lightDirection = perturbDirectionByGGX( normalize( lightDirection ), surf.filteredRoughness, roughRand.x, roughRand.y );
 
 		return normalize( lightDirection );
 

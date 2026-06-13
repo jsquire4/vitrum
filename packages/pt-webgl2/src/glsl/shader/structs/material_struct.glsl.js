@@ -45,6 +45,8 @@ export const material_struct = /* glsl */ `
 		float specularIntensity;
 		int specularIntensityMap;
 		bool thinFilm;
+		float anisotropy;
+		float anisotropyRotation;
 
 		vec3 attenuationColor;
 		float attenuationDistance;
@@ -276,6 +278,7 @@ export const material_struct = /* glsl */ `
 		m.specularIntensity = s11.r;
 		m.specularIntensityMap = int( round( s11.g ) );
 		m.thinFilm = bool( s11.b );
+		m.anisotropy = clamp( s11.a, 0.0, 1.0 );
 
 		m.attenuationColor = s12.rgb;
 		m.attenuationDistance = s12.a;
@@ -303,6 +306,7 @@ export const material_struct = /* glsl */ `
 		m.thinFilmLayerCount = s16.a;
 		m.thinFilmIncidentIor = max( s17.r, 1.0 );
 		m.thinFilmAngleDependent = s17.g > 0.5;
+		m.anisotropyRotation = s17.b;
 		uint featureFlags = uint( round( s17.a ) );
 		m.hasSpectralAttenuation = bool( featureFlags & 1u );
 		m.hasFrontLayer = bool( featureFlags & 2u );

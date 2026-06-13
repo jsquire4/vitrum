@@ -251,6 +251,8 @@ function packScalarSlots(
   const iridThicknessRange = m.iridescenceThicknessRange ?? [100, 400];
   const specularColor: Vec3 = m.specularColor ?? DEFAULT_SPECULAR_COLOR;
   const specularIntensity = m.specularIntensity ?? 1.0;
+  const anisotropy = Math.max(0.0, Math.min(1.0, m.anisotropy ?? 0.0));
+  const anisotropyRotation = m.anisotropyRotation ?? 0.0;
   const attenuationColor: Vec3 = m.attenuationColor ?? DEFAULT_ATTENUATION_COLOR;
   const attenuationDistance = m.attenuationDistance ?? Infinity;
   const thickness = m.thickness ?? 0.0;
@@ -327,11 +329,11 @@ function packScalarSlots(
   data[index++] = specularColor[2];
   data[index++] = ids.specularColor;
 
-  // sample 11 — specularIntensity / specularIntensityMap / isThinFilm / —
+  // sample 11 — specularIntensity / specularIntensityMap / isThinFilm / anisotropy
   data[index++] = specularIntensity;
   data[index++] = ids.specularIntensity;
   data[index++] = Number(isThinFilm);
-  index++; // pad (fork does `index ++`)
+  data[index++] = anisotropy;
 
   // sample 12 — attenuationColor.rgb / attenuationDistance
   data[index++] = attenuationColor[0];
@@ -390,7 +392,7 @@ function packScalarSlots(
   }
   data[index++] = thinFilmLayerCount;
 
-  // sample 17 — thinFilmIncidentIor / angleDependent / 0 / packedFeatureFlags
+  // sample 17 — thinFilmIncidentIor / angleDependent / anisotropyRotation / packedFeatureFlags
   const spectralCurve = m.spectralAttenuation ?? null;
   const frontLayer = m.frontLayer ?? null;
   const backLayer = m.backLayer ?? null;
@@ -403,7 +405,7 @@ function packScalarSlots(
     (hasSpectral ? 1 : 0) | (hasFrontLayer ? 2 : 0) | (hasBackLayer ? 4 : 0);
   data[index++] = thinFilmIncidentIor;
   data[index++] = thinFilmAngleDependent ? 1.0 : 0.0;
-  data[index++] = 0.0;
+  data[index++] = anisotropyRotation;
   data[index++] = packedFeatureFlags;
 
   // sample 18 — frontLayerTransmission.rgb / frontLayerRoughness

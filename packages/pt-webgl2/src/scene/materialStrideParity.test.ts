@@ -80,4 +80,15 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
     expect(shader).toContain('uvTexCoordMask');
   });
+
+  it('GLSL decodes scalar anisotropy and routes GGX through anisotropic helpers', () => {
+    const shader = composedShader();
+    expect(shader).toContain('m.anisotropy = clamp( s11.a, 0.0, 1.0 );');
+    expect(shader).toContain('m.anisotropyRotation = s17.b;');
+    expect(shader).toContain('surf.anisotropy = clamp( material.anisotropy, 0.0, 1.0 );');
+    expect(shader).toContain('vec2 anisotropicRoughnessAxes( SurfaceRecord surf )');
+    expect(shader).toContain('ggxDirectionForSurface( wo, surf, rand2( 12 ) )');
+    expect(shader).toContain('ggxDistributionForSurface( wh, surf )');
+    expect(shader).toContain('ggxPdfForSurface( wo, wh, surf )');
+  });
 });

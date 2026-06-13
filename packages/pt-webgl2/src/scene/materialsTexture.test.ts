@@ -35,6 +35,8 @@ describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
       opacity: 0.8,
       alphaMode: 'mask',
       alphaCutoff: 0.33,
+      anisotropy: 0.75,
+      anisotropyRotation: 0.25,
     };
 
     const out = packMaterialsTexture([m]);
@@ -69,6 +71,11 @@ describe('packMaterialsTexture — 105px RGBA32F byte layout', () => {
     expect(d[texel(0, 3, 1)]).toBeCloseTo(0.2, 6);
     expect(d[texel(0, 3, 2)]).toBeCloseTo(0.3, 6);
     expect(d[texel(0, 3, 3)]).toBe(-1);
+
+    // s11.a = scalar KHR_materials_anisotropy strength.
+    expect(d[texel(0, 11, 3)]).toBeCloseTo(0.75, 6);
+    // s17.b = scalar KHR_materials_anisotropy rotation.
+    expect(d[texel(0, 17, 2)]).toBeCloseTo(0.25, 6);
 
     // s13 = (alphaMap=-1, opacity, alphaTest, side).
     expect(d[texel(0, 13, 0)]).toBe(-1);

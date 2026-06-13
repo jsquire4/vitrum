@@ -444,12 +444,12 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 #### 2B — Material packing gaps → ledger `native`
 
-**pt-webgl2** (`materialsTexture.ts` + GLSL): only `anisotropy*`, `displacement*`, `thicknessMap` remain unsupported.
+**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` are now native; `anisotropyMap`, `displacement*`, and `thicknessMap` remain unsupported.
 
 | Field | Work |
 |-------|------|
 | `thicknessMap` | Sample in volume path or stay unsupported with compatibility reject |
-| `anisotropy*` | Port pt-webgpu `bsdf.wgsl.ts` aniso or keep unsupported + planner rejects |
+| ~~`anisotropy` / `anisotropyRotation`~~ ✅ DONE (2026-06-13) | Packed into reserved lanes `s11.a` / `s17.b`, decoded into `Material`/`SurfaceRecord`, and consumed by anisotropic GGX sampling/eval/PDF in `bsdf_functions.glsl.js`. `anisotropyMap` remains unsupported until its RG/B channel convention is atlas-wired. Tests: `materialsTexture.test.ts`, `materialStrideParity.test.ts`, `engineContract.test.ts`, core ledger contract. |
 
 **pt-webgpu** (`materialPacking.ts`, `materialTextures.ts`, `material.wgsl.ts`):
 
@@ -776,7 +776,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends |
 
-**pt-webgl2:** 9 unsupported → 0–3 unsupported (anisotropy, displacement, thicknessMap decision).
+**pt-webgl2:** 9 unsupported → 0–3 unsupported (`anisotropyMap`, displacement, thicknessMap decision).
 
 **pt-webgpu:** 22 unsupported → 0–5 (thickness, displacement, some maps if bind limits force tier split).
 

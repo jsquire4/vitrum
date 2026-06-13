@@ -506,8 +506,11 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   backLayer: 'approximate',
   // Full TMM evaluation; 35-layer cap (contract sanctions backend caps).
   thinFilmStack: 'native',
-  anisotropy: 'unsupported',
-  anisotropyRotation: 'unsupported',
+  // Scalar KHR_materials_anisotropy is packed into reserved material lanes and
+  // drives anisotropic GGX sampling/eval/PDF in the pt-webgl2 BSDF. The texture
+  // map remains unsupported until its RG/B channel convention is atlas-wired.
+  anisotropy: 'native',
+  anisotropyRotation: 'native',
   // Contract-sanctioned escape hatch this backend deliberately does not read
   // (no warning — `extensions` is host-discretionary by design).
   extensions: 'unsupported',

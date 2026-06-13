@@ -757,15 +757,15 @@ Evidence:
   subfields (`frontLayer.normalMap`, `frontLayer.normalScale`,
   `backLayer.normalMap`, `backLayer.normalScale`). `engineContract.test.ts`
   pins that path-level diagnostic.
-- Surface anisotropy is explicitly downgraded for pt-webgl2:
-  `promiseLedger.ts` marks `anisotropy`, `anisotropyRotation`, and
-  `anisotropyMap` unsupported; `engineContract.test.ts` pins the structured
-  warning.
+- Surface anisotropy scalar support is now source-verified for pt-webgl2:
+  `promiseLedger.ts` marks `anisotropy` and `anisotropyRotation` native after
+  the reserved-lane pack/decode + anisotropic GGX sampling/eval/PDF wiring.
+  `anisotropyMap` remains unsupported and keeps the structured warning.
 
 Closure:
-- WEBGL2-04 is closed as an honesty row. Future native anisotropy or layered
-  face-normal support would be a fidelity promotion, not a current silent
-  contract gap.
+- WEBGL2-04 is closed as an honesty row. Future `anisotropyMap` support or
+  layered face-normal support would be a fidelity promotion, not a current
+  silent contract gap.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
 

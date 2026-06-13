@@ -447,6 +447,8 @@ export const get_surface_record_function = /* glsl */`
 
 		surf.specularColor = specularColor;
 		surf.specularIntensity = specularIntensity;
+		surf.anisotropy = clamp( material.anisotropy, 0.0, 1.0 );
+		surf.anisotropyRotation = material.anisotropyRotation;
 		surf.envMapIntensity = max( material.envMapIntensity, 0.0 );
 
 		// apply perceptual roughness factor from gltf. sheen perceptual roughness is

@@ -5,10 +5,11 @@
 // working-tree break) — never hardcode this number inside a shader string again;
 // interpolate `${MATERIAL_PIXELS}u`.
 //
-// Layout: texels 0..54 = fork data layout, 55..84 = 15 texture transforms
-// (2 texels each), 85/86 = D3 ao/light/bump map ids + scalars + envMapIntensity,
-// 87..92 = D3 ao/light/bump transforms (2 texels each), 93..94 = alphaMap
-// transform, 95..104 = per-map wrap modes (two maps per RGBA texel).
+// Layout: texels 0..54 = fork data layout with reserved lanes now consumed by
+// scalar anisotropy (s11.a = strength, s17.b = rotation), 55..84 = 15 texture
+// transforms (2 texels each), 85/86 = D3 ao/light/bump map ids + scalars +
+// envMapIntensity, 87..92 = D3 ao/light/bump transforms (2 texels each),
+// 93..94 = alphaMap transform, 95..104 = per-map wrap modes (two maps per RGBA texel).
 export const MATERIAL_WRAP_TEXEL_OFFSET = 95;
 
 // Map order shared by the UV-set bitmask and the wrap-mode payload. Bit k in

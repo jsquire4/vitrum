@@ -125,9 +125,9 @@ describe('backend promise ledger', () => {
     expect(wa.sheen).toBe('unsupported');
     expect(wa.extensions).toBe('native');
 
-    // pt-webgl2: anisotropy trio is the un-packed gap; SSS RGB is reinterpreted.
-    expect(gl2.anisotropy).toBe('unsupported');
-    expect(gl2.anisotropyRotation).toBe('unsupported');
+    // pt-webgl2: scalar anisotropy is packed; anisotropyMap remains un-atlased.
+    expect(gl2.anisotropy).toBe('native');
+    expect(gl2.anisotropyRotation).toBe('native');
     expect(gl2.anisotropyMap).toBe('unsupported');
     expect(gl2.scatteringCoefficientRGB).toBe('approximate');
     expect(gl2.shadingModel).toBe('approximate');
