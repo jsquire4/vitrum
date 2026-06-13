@@ -12,23 +12,26 @@
  * eye-stack scratch buffer); the light-path was an `rgba32float` read_write
  * storage TEXTURE but core WebGPU rejects that format for read_write storage
  * (gpuweb #4651), so it is a storage buffer — one fewer storage texture, one more
- * storage buffer. Group 3 carries three read-only storage buffers (the WS2
- * many-light importance-sampling tree, mesh UVs, and material texture
- * descriptors) + two read_write storage buffers (A4 SPPM: sppmPhotonCells at
- * binding 6, sppmCellCounters at binding 7) + one uniform (sppmStats at binding 8,
- * does NOT count against the storage-buffer limit). The WebGPU device-request
- * contract is per-STAGE, so the exported full-tier request uses the aggregate
- * storage-buffer count below; this per-group peak remains useful for layout audits.
+ * storage buffer. Group 3 carries four read-only storage buffers (the WS2
+ * many-light importance-sampling tree, mesh UVs, material texture descriptors,
+ * and mesh tangents) + three read_write storage buffers (A4 SPPM:
+ * sppmPhotonCells at binding 6, sppmCellCounters at binding 7, sppmPixelStats at
+ * binding 9) + one uniform (sppmStats at binding 8, does NOT count against the
+ * storage-buffer limit). The WebGPU device-request contract is per-STAGE, so the
+ * exported full-tier request uses the aggregate storage-buffer count below; this
+ * per-group peak remains useful for layout audits.
  */
 export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
 
 /**
  * Full-tier storage-buffer bindings visible to the compute stage.
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
- * Total: g0(8) + g1(11) + g2(7) + g3(5) = 31.
+ * D10 (2026-06-13): group 3 is 7, not 5: lightTree, meshUvs,
+ * materialTexDescriptors, sppmPhotonCells, sppmCellCounters, sppmPixelStats,
+ * meshTangents. Total: g0(8) + g1(11) + g2(7) + g3(7) = 33.
  * @public — public device-limit constant; consumed by host device-acquisition code and tests.
  */
-export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 31;
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 33;
 
 /** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =

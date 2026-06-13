@@ -10,6 +10,7 @@ import {
   refitTlasTransforms,
 } from '../scenePack.js';
 import { tlasIntersect } from '../tlas.js';
+import { mergeUv1FromCore, mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
 function instancedMesh(id: string, instances: Mat4[]): Scene['primitives'][number] {
   return {
@@ -888,6 +889,39 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     );
     expect(pack.uvs.length).toBe(pack.positions.length);
     expect(pack.uvs.every((v) => v === 0)).toBe(true);
+  });
+
+  it('D12: world-space uv1 merge skips zero-triangle primitives in range order', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'zero-tri-with-uv1',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          indices: new Uint32Array(0),
+          uv1: new Float32Array([9, 9, 9, 9, 9, 9]),
+          material: { baseColor: [1, 0, 0], roughness: 0.5, metallic: 0 },
+        },
+        {
+          kind: 'mesh',
+          id: 'valid-uv1',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uv1: new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+          material: { baseColor: [0, 1, 0], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const merged = mergeWorldSpaceFromCore(scene);
+    expect(merged.meshVertexRanges).toHaveLength(1);
+    expect(merged.vertexCount).toBe(3);
+
+    const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+    expect(uv1).toBeDefined();
+    expect(Array.from(uv1!)).toEqual([0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((v) => expect.closeTo(v)));
   });
 });
 

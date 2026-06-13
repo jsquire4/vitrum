@@ -654,6 +654,8 @@ export function mergeUv1FromCore(
   for (const prim of meshLike) {
     const localVertexCount = Math.floor(prim.positions.length / 3);
     if (localVertexCount < 3) continue;
+    const localTriCount = Math.floor((prim.indices?.length ?? localVertexCount) / 3);
+    if (localTriCount === 0) continue;
 
     const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
 

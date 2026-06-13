@@ -7,11 +7,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
 
 function makeDevice(): GPUDevice {
   return {
     limits: {
-      maxStorageBuffersPerShaderStage: 32,
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),

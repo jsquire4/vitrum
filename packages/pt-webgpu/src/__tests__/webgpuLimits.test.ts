@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -13,7 +14,16 @@ import {
   mergeAdapterRequiredLimits,
   ptWebgpuRequiredLimitsForAdapter,
 } from '../webgpuLimits.js';
+import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
+
+function countDistinctStorageBufferBindings(wgsl: string): number {
+  const bindings = new Set<string>();
+  for (const match of wgsl.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var<storage/g)) {
+    bindings.add(`${match[1]}:${match[2]}`);
+  }
+  return bindings.size;
+}
 
 describe('webgpuLimits', () => {
   it('PT full limits request the stage-level buffer and texture floors', () => {
@@ -23,6 +33,13 @@ describe('webgpuLimits', () => {
     expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage).toBe(
       PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
+  });
+
+  it('PT full storage-buffer floor matches the composed full-tier WGSL layout', () => {
+    expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+    expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(33);
   });
 
   it('mergeAdapterRequiredLimits clamps to adapter caps', () => {

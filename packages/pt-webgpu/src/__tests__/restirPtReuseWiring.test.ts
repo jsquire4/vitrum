@@ -18,6 +18,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from '../webgpuLimits.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import {
   composeRestirPtProducerWgsl,
@@ -296,18 +300,24 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
 
   it('ON: full-tier request throws if the device was not acquired with the reuse buffer floor', async () => {
     const rec = emptyRecorder();
-    // 31 = PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE (N-directional +1: was 30, now 31).
-    // 35 = PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE (31 + 4 RPT).
-    // Use 31 so the device is full-tier (31 ≥ 31) but below the restirPtReuse floor (31 < 35),
-    // ensuring the thrown error is the buffer-floor error, not the lite-tier error.
+    // Use the full-tier floor so the device is full-tier but below the
+    // restirPtReuse floor, ensuring the thrown error is the buffer-floor error,
+    // not the lite-tier error.
     const device = {
       ...makeFullTierDevice(rec),
-      limits: { maxStorageBuffersPerShaderStage: 31, maxStorageTexturesPerShaderStage: 8 },
+      limits: {
+        maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+        maxStorageTexturesPerShaderStage: 8,
+      },
     } as unknown as GPUDevice;
     await expect(createPTEngine_WebGPU({
       device,
       restirPtReuse: true,
-    })).rejects.toThrow(/restirPtReuse requires maxStorageBuffersPerShaderStage >= 35/);
+    })).rejects.toThrow(
+      new RegExp(
+        `restirPtReuse requires maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
+      ),
+    );
   });
 });
 

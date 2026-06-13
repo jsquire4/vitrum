@@ -69,7 +69,10 @@ import {
   OCTAHEDRAL_CORE_WGSL,
   TONEMAP_MODE_INDEX,
 } from '@vitrum/shared-samplers';
-import { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
+import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from './webgpuLimits.js';
 import {
   sppmInitialRadius,
 } from './sppmParams.js';
@@ -2324,7 +2327,7 @@ export const createPTEngine_WebGPU: EngineFactory<
       message:
         '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
         'Disabled on lite: analytic shapes, TLAS, disc-area/mesh-area emitters, caustics, BDPT, multi-directional lights, and motion/variance aux buffers. ' +
-        'On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= 28 and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.',
+        `On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE} and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.`,
       details: { traceTier },
     });
   }

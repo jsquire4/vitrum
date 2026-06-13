@@ -212,7 +212,7 @@ export type { PrimitiveTlasBinding };
  *     `#buildSharedPipelineLayout()` → `bindGroupLayout1`
  *   - Group 2 (bindings 0–4): TLAS table in `#buildSharedPipelineLayout()` →
  *     `bindGroupLayout2`
- *   - Group 3 (bindings 0–9): light-tree + P2 textures/descriptors + SPPM in
+ *   - Group 3 (bindings 0–10): light-tree + P2 textures/descriptors + SPPM in
  *     `#buildSharedPipelineLayout()` → `bindGroupLayout3`
  *   - `buildBindGroups` and `buildReservoirBindGroups` in `gpuResources.ts` must bind
  *     ALL buffers listed here.

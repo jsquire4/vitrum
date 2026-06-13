@@ -12,6 +12,10 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
 import { readOidnInputsFromTextures } from '../denoise/rgba16fReadback.js';
 import { GpuResources } from '../gpuResources.js';
+import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from '../webgpuLimits.js';
 import { installGpuConstStubs } from './gpuStub.js';
 
 /** Install all WebGPU constant globals needed for these tests. */
@@ -54,8 +58,8 @@ describe('H14-C: getRestirPtResultBuffer on the Engine contract', () => {
   it('returns null before the first successful frame even when restirPtReuse:true on a full-tier device', async () => {
     const fullDevice = {
       limits: {
-        // N-directional (2026-06-10): full tier needs 31 storage buffers (was 30); restirPtReuse adds 4 → 35.
-        maxStorageBuffersPerShaderStage: 35,
+        // Full tier plus ReSTIR-PT reuse reservoirs.
+        maxStorageBuffersPerShaderStage: PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
         maxStorageTexturesPerShaderStage: 8,
       },
       createCommandEncoder: vi.fn(),
@@ -65,6 +69,9 @@ describe('H14-C: getRestirPtResultBuffer on the Engine contract', () => {
     } as unknown as GPUDevice;
     // restirPtReuse requires full tier; the buffer is null until a frame runs.
     const engine = await createPTEngine_WebGPU({ device: fullDevice, restirPtReuse: true });
+    expect(PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4,
+    );
     expect(engine.getRestirPtResultBuffer!()).toBeNull();
     engine.dispose();
   });

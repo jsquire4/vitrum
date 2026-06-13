@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asMat4, type EngineWarning, type Scene } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function makeLiteDevice(): GPUDevice {
@@ -32,7 +33,7 @@ function makeLiteDevice(): GPUDevice {
 function makeFullDevice(): GPUDevice {
   return {
     limits: {
-      maxStorageBuffersPerShaderStage: 32,
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
