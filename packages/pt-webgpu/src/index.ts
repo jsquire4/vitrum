@@ -704,6 +704,7 @@ class PTEngineWebGPU implements Engine {
               // loops gate point/spot/rect emitter flags (directional rides the
               // UBO mirror and carries no flag — already 'approximate').
               shadows: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows,
+              denoisers: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers,
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'unsupported',

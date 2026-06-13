@@ -10,6 +10,25 @@ import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
 import type { MaterialSpec } from '../scene/material.js';
 
+export type EngineDenoiserMode =
+  | 'none'
+  | 'atrous'
+  | 'atrous-variance'
+  | 'svgf-real'
+  | 'bmfr'
+  | 'oidn-final'
+  | 'neural';
+
+export const ENGINE_DENOISER_MODES = Object.freeze([
+  'none',
+  'atrous',
+  'atrous-variance',
+  'svgf-real',
+  'bmfr',
+  'oidn-final',
+  'neural',
+] as const satisfies readonly EngineDenoiserMode[]);
+
 export interface IncrementalPatchSupport {
   /** Primitive transform-only patch path (no full scene rebuild). */
   readonly transform: boolean;
@@ -72,6 +91,10 @@ export interface BackendSupportDetails {
   readonly shadows: Readonly<
     Partial<Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>>
   >;
+  /** Creation-time denoiser support rows. `none` means a first-class no-denoise
+   *  mode; every other row says whether selecting that `EngineOptions.denoiser`
+   *  value is implemented by this backend or will be rejected/degraded. */
+  readonly denoisers: Readonly<Record<EngineDenoiserMode, BackendSupportMode>>;
   readonly mutations: BackendMutationSupportDetails;
 }
 

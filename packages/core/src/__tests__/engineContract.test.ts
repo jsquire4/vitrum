@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKEND_PROMISE_LEDGER,
+  ENGINE_DENOISER_MODES,
   MATERIAL_SPEC_FIELDS,
   asBackendTexture,
   asBackendTextureFormat,
@@ -184,6 +185,35 @@ describe('backend promise ledger', () => {
     // emitter flag honored by default-kernel NEE + BSDF-MIS connections only.
     expect(gpu.primitiveCastShadow).toBe('native');
     expect(gpu.emitterCastShadow).toBe('approximate');
+  });
+
+  it('keeps denoiser support rows exhaustive and host-readable', () => {
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(
+        Object.keys(rec.supportDetails.denoisers).sort(),
+        `denoisers matrix keys for ${id}`,
+      ).toEqual([...ENGINE_DENOISER_MODES].sort());
+      for (const mode of ENGINE_DENOISER_MODES) {
+        expect(
+          ['native', 'approximate', 'unsupported'],
+          `denoisers.${mode} for ${id}`,
+        ).toContain(rec.supportDetails.denoisers[mode]);
+      }
+    }
+
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.denoisers).toEqual({
+      none: 'native',
+      atrous: 'unsupported',
+      'atrous-variance': 'unsupported',
+      'svgf-real': 'unsupported',
+      bmfr: 'unsupported',
+      'oidn-final': 'unsupported',
+      neural: 'unsupported',
+    });
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['oidn-final']).toBe('native');
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['svgf-real']).toBe('unsupported');
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers['svgf-real']).toBe('native');
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers.bmfr).toBe('native');
   });
 
   it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {

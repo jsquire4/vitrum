@@ -8,6 +8,7 @@
 
 import type { Engine } from './index.js';
 import type { EngineWarning } from './telemetry.js';
+import type { EngineDenoiserMode } from './capabilities.js';
 
 /** All engine-creation factories follow this shape. The `device` is opaque at
  *  the core level; each backend narrows `device` to its own concrete type.
@@ -78,7 +79,7 @@ export interface EngineOptions {
    *  provisioning (e.g. `HybridEngineOptions.neuralWeights` in
    *  `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
    */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
+  readonly denoiser?: EngineDenoiserMode;
 
   /**
    * Optional construction-time warning sink. Backends call this for warnings

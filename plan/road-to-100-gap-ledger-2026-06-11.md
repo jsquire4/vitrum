@@ -689,16 +689,28 @@ Closure:
 - Implement procedural sky sampling or bake procedural sky to an env map.
 - Advertise support only after reference renders pass.
 
-### WEBGL2-03 - pt-webgl2 denoiser option degrades to no denoise
+### WEBGL2-03 - pt-webgl2 denoiser option degrades to no denoise — CODE CLOSED
 
 Evidence:
-- pt-webgl2 reports denoiser requests through a warning and always returns
-  `denoiserState: disabled`.
+- pt-webgl2 has no denoiser pipeline and still intentionally degrades denoiser
+  requests to no-denoise, but this is no longer discoverable only through
+  console text.
+- `BackendSupportDetails.denoisers` is now first-class and exhaustive over
+  every `EngineOptions.denoiser` mode. The pt-webgl2 ledger/capability row
+  reports `none:native` and every real denoiser mode (`atrous`,
+  `atrous-variance`, `svgf-real`, `bmfr`, `oidn-final`, `neural`) as
+  `unsupported`.
+- `createPTEngine_WebGL2` still emits the structured
+  `pt-webgl2.unsupported-denoiser` warning and per-frame telemetry still reports
+  `denoiserState: disabled`, matching the new capability row.
 
 Closure:
-- Either implement the intended denoiser pipeline for pt-webgl2, or make the
-  unsupported status first-class in capability details so hosts do not discover it
-  through console text.
+- Closed by first-class capability/ledger reporting rather than by implementing a
+  WebGL2 denoiser pipeline.
+- Tests: `packages/core/src/__tests__/engineContract.test.ts` pins exhaustive
+  denoiser rows across backends; `packages/pt-webgl2/src/__tests__/engineContract.test.ts`
+  pins the runtime pt-webgl2 capability matrix and existing structured warning
+  behavior.
 
 ### WEBGL2-04 - pt-webgl2 material texture edge cases remain
 

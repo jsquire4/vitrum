@@ -5,6 +5,7 @@ import type { MaterialSpec } from '../scene/material.js';
 import type {
   BackendSupportDetails,
   BackendSupportMode,
+  EngineDenoiserMode,
   EngineCapabilities,
   FramePresentationMode,
   IncrementalPatchSupport,
@@ -679,6 +680,38 @@ const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
   receiveShadow: 'unsupported',
 });
 
+type DenoiserSupportMatrix = Readonly<Record<EngineDenoiserMode, BackendSupportMode>>;
+
+const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
+  none: 'native',
+  atrous: 'native',
+  'atrous-variance': 'native',
+  'svgf-real': 'native',
+  bmfr: 'native',
+  'oidn-final': 'native',
+  neural: 'native',
+});
+
+const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
+  none: 'native',
+  atrous: 'unsupported',
+  'atrous-variance': 'unsupported',
+  'svgf-real': 'unsupported',
+  bmfr: 'unsupported',
+  'oidn-final': 'unsupported',
+  neural: 'unsupported',
+});
+
+const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
+  none: 'native',
+  atrous: 'unsupported',
+  'atrous-variance': 'unsupported',
+  'svgf-real': 'unsupported',
+  bmfr: 'unsupported',
+  'oidn-final': 'native',
+  neural: 'unsupported',
+});
+
 // ── Shared mutation/method constants (D1.4) ──────────────────────────────────
 //
 // Extracted to eliminate copy-paste drift between the three backend records.
@@ -818,6 +851,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       materials: WALKAROUND_MATERIALS,
       shadows: WALKAROUND_SHADOWS,
+      denoisers: WALKAROUND_DENOISERS,
       mutations: {
         transform: 'native',
         positions: 'native',
@@ -914,6 +948,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       analyticShapes: NO_ANALYTIC_SHAPES,
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
+      denoisers: PT_WEBGL2_DENOISERS,
       // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
       // (a full scene-texture/BVH repack, not a targeted in-place edit).
       // The incrementalPatchSupport flags above reflect the OUTCOME (patches
@@ -982,6 +1017,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       analyticShapes: PT_WEBGPU_ANALYTIC_SHAPES_NATIVE,
       materials: PT_WEBGPU_MATERIALS,
       shadows: PT_WEBGPU_SHADOWS,
+      denoisers: PT_WEBGPU_DENOISERS,
       mutations: PT_WEBGPU_MUTATIONS,
     },
     methodPromises: {

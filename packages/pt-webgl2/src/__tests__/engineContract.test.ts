@@ -109,6 +109,15 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.supportsAddRemovePrimitive).toBe(true);
     expect(c.supportDetails?.mutations.material).toBe('fallback-rebuild');
     expect(c.supportDetails?.mutations.environment).toBe('fallback-rebuild');
+    expect(c.supportDetails?.denoisers).toEqual({
+      none: 'native',
+      atrous: 'unsupported',
+      'atrous-variance': 'unsupported',
+      'svgf-real': 'unsupported',
+      bmfr: 'unsupported',
+      'oidn-final': 'unsupported',
+      neural: 'unsupported',
+    });
   });
 
   it('exposes fallback-rebuild scene mutation methods', async () => {
