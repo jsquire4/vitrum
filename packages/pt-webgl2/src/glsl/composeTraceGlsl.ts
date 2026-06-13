@@ -56,7 +56,6 @@ import * as BsdfGgx from './shader/bsdf/ggx_functions.glsl.js';
 import * as BsdfSheen from './shader/bsdf/sheen_functions.glsl.js';
 import * as BsdfIridescence from './shader/bsdf/iridescence_functions.glsl.js';
 import * as BsdfFog from './shader/bsdf/fog_functions.glsl.js';
-import * as BsdfVolumeMarch from './shader/bsdf/volume_march.glsl.js';
 import * as BsdfSpectral from './shader/bsdf/spectral_accumulator.glsl.js';
 import * as BsdfThinFilm from './shader/bsdf/thin_film_tmm.glsl.js';
 import * as BsdfFunctions from './shader/bsdf/bsdf_functions.glsl.js';
@@ -119,7 +118,6 @@ const BSDF = {
   sheen_functions: pick(BsdfSheen, 'sheen_functions'),
   iridescence_functions: pick(BsdfIridescence, 'iridescence_functions'),
   fog_functions: pick(BsdfFog, 'fog_functions'),
-  volume_march: pick(BsdfVolumeMarch, 'volume_march'),
   spectral_accumulator: pick(BsdfSpectral, 'spectral_accumulator'),
   thin_film_tmm: pick(BsdfThinFilm, 'thin_film_tmm'),
   bsdf_functions: pick(BsdfFunctions, 'bsdf_functions'),
@@ -270,6 +268,8 @@ export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
 //   mneeMaxChainLength   — declared as uMneeMaxChainLength in spectralCausticBdptUniformDecls()
 //   bdpt                 — drives pass-selection (uBdptLightSubpathPass); not a simple scalar
 //   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in spectralCausticBdptUniformDecls()
+//   materialLodDepth     — declared in get_surface_record_function.glsl.js; uploaded from FrameUniforms
+//                          but not part of this module's UNIFORM_DECLS block.
 //   iorCauchy            — split into iorCauchyA/B/C in spectralCausticBdptUniformDecls()
 //   jakobCoeffs          — declared as u_jakobCoeffs in spectralCausticBdptUniformDecls()
 //   dof                  — drives gated PhysicalCamera struct (FEATURE_DOF)
@@ -286,6 +286,7 @@ type _HandledSeparately =
   | 'mneeMaxChainLength'
   | 'bdpt'
   | 'bdptMaxLightBounces'
+  | 'materialLodDepth'
   | 'iorCauchy'
   | 'jakobCoeffs'
   | 'dof'
@@ -390,18 +391,13 @@ const UNIFORM_DECLS = /* glsl */ `
 `;
 
 /**
- * The volume / spectral / Cauchy / caustic uniform decls and (gated) BDPT uniform decls
+ * The spectral / Cauchy / caustic uniform decls and (gated) BDPT uniform decls
  * (PhysicalPathTracingMaterial.js:358-384). Inline in the fork (not a chunk). The
  * FEATURE_BDPT gate resolves from the preamble define; we emit it unconditionally and let
  * the preprocessor strip it when FEATURE_BDPT == 0.
  */
 function spectralCausticBdptUniformDecls(): string {
   return /* glsl */ `
-					// Sprint 7: global volume-scatter uniforms (per-material SSS reads surf.* in sssSample)
-					uniform float u_volumeDensity;
-					uniform vec3 u_scatterAlbedo;
-					uniform float u_anisotropyG;
-
 					uniform vec3 u_jakobCoeffs;
 					uniform float iorCauchyA;
 					uniform float iorCauchyB;
@@ -659,46 +655,7 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 							vec3 throughputRgb = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
 `;
 
-// ── Section 3: volume scatter event (Sprint 7) ────────────────────────────
-const RENDER_MAIN_VOLUME_SCATTER = /* glsl */ `
-							// Sprint 7: Volume scatter event — homogeneous medium march.
-							// If u_volumeDensity > 0, sample a potential scatter distance.
-							// If tScatter < tSurface, a scatter event occurs before the surface hit.
-							// Fast path: skipped entirely when u_volumeDensity == 0 (no medium).
-							if ( u_volumeDensity > 0.0 ) {
-								float tSurface7 = hitType == NO_HIT ? 1e20 : surfaceHit.dist;
-								float tScatter = volumeMarch( tSurface7, rand( 20 ) );
-								if ( tScatter < tSurface7 ) {
-									// Scatter event before the surface — evaluate HG phase,
-									// sample new direction, apply transmittance weight.
-									vec3 scatterPos = ray.origin + tScatter * ray.direction;
-
-									// Choose new scattered direction via HG sampling.
-									vec3 scatterDir = sampleHG_glsl( rand( 21 ), rand( 22 ), u_anisotropyG, ray.direction );
-									// Beer-Lambert transmittance to scatter point.
-									float transmittance = exp( - u_volumeDensity * tScatter );
-
-									// Throughput update: albedo × phase / (pdf × transmittance normalisation).
-									// For single-scatter: throughput *= σ_s × phase(cosθ) / (σ_t × phase(cosθ))
-									//                               = σ_s / σ_t = scatterAlbedo
-									// The phase function cancels since we importance-sample from HG (pdf = phase).
-									// Medium single-scatter albedo (σ_s/σ_t) at the hero wavelength.
-									// Under the Jakob & Hanika 2019 gate (spectralUpsamplingActive) this is
-									// the paper-accurate sigmoid reflectance of the representative medium
-									// albedo; otherwise the legacy RGB→hero smoothstep projection. Both
-									// return a unit-less albedo in [0,1], so energy is preserved.
-									state.throughput *= mediumAlbedoThroughput( u_scatterAlbedo, state.wavelength ) * transmittance;
-
-									// Advance ray from scatter position with new direction.
-									ray.origin = scatterPos;
-									ray.direction = scatterDir;
-									state.transmissiveRay = false;
-									continue;
-								}
-							}
-`;
-
-// ── Section 4: forward analytic-light hit + NO_HIT/env + surface setup ────
+// ── Section 3: forward analytic-light hit + NO_HIT/env + surface setup ────
 const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							// check if we intersect any lights and accumulate the light contribution
 							// TODO: we can add support for light surface rendering in the else condition if we
@@ -1254,7 +1211,6 @@ const RENDER_MAIN_POST_LOOP = /* glsl */ `
 export const RENDER_MAIN_SECTIONS = [
   RENDER_MAIN_BDPT_SUBPATH,
   RENDER_MAIN_GBUFFER,
-  RENDER_MAIN_VOLUME_SCATTER,
   RENDER_MAIN_BDPT_EYE,
   RENDER_MAIN_SURFACE_BDPT_EYE,
   RENDER_MAIN_CAUSTIC_MANIFOLD,
@@ -1334,7 +1290,6 @@ export function composeTraceGlsl(features: TraceFeatures): string {
 					${BSDF.sheen_functions}
 					${BSDF.iridescence_functions}
 					${BSDF.fog_functions}
-					${BSDF.volume_march}
 					${BSDF.spectral_accumulator}
 					${BSDF.thin_film_tmm}
 					${BSDF.bsdf_functions}

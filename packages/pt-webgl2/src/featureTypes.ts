@@ -22,10 +22,12 @@ export interface TraceFeatures {
   // but have no real host pathway, so they are deliberately pinned and NOT exposed as
   // options — leaving them switchable would be a silent dead claim. Each kept here
   // only so featureDefines() can emit the GLSL macro at its safe default:
-  //   • fog            — FEATURE_FOG: the volume integrator needs per-scene fog-volume
-  //                      materials + u_volumeDensity uploads; the @vitrum/core contract
-  //                      carries no fog-volume primitive, so there is nothing to drive
-  //                      it. Pinned false. (Re-expose once core gains a fog-volume node.)
+  //   • fog            — FEATURE_FOG: the retained fog-volume material path needs a
+  //                      core fog-volume primitive; @vitrum/core carries no such node,
+  //                      so there is nothing honest to drive. The old global
+  //                      homogeneous-medium uniforms/branch were removed from the
+  //                      active shader because they had no host setter. Pinned false
+  //                      until core gains a fog-volume node.
   //   • backgroundMap  — FEATURE_BACKGROUND_MAP: a SEPARATE background texture distinct
   //                      from the environment map; the core contract has no such field
   //                      (env IS the background). Pinned false.

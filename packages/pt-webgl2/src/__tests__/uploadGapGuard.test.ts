@@ -131,6 +131,18 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.get('uTotalEmissiveArea')).toBe(0);
   });
 
+  it('D11: materialLodDepth is explicitly uploaded as 0 by default (texture LOD disabled)', async () => {
+    const rec = await renderAndRecord(sceneNoEmitters());
+    expect(rec.has('materialLodDepth')).toBe(true);
+    expect(rec.get('materialLodDepth')).toBe(0);
+  });
+
+  it('D11: materialLodDepth option is uploaded when the host opts into texture LOD', async () => {
+    const rec = await renderAndRecord(sceneNoEmitters(), { materialLodDepth: 2 });
+    expect(rec.has('materialLodDepth')).toBe(true);
+    expect(rec.get('materialLodDepth')).toBe(2);
+  });
+
   it('A5: BDPT host-driver uniforms are uploaded when bdpt:true', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight(), { bdpt: true });
     // The eye pass sets the light-subpath pass flag to 0 and uploads the bounce count.

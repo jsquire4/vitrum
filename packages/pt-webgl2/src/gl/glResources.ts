@@ -125,6 +125,7 @@ export interface FrameUniforms {
   readonly bounces: number;
   readonly transmissiveBounces: number;
   readonly filterGlossyFactor: number;
+  readonly materialLodDepth: number;
   readonly radianceClamp: number;
   readonly cameraWorldMatrix: Float32Array; // inverse(viewMatrix)
   readonly invProjectionMatrix: Float32Array; // inverse(projMatrix)
@@ -359,6 +360,7 @@ export class GlResources {
     prog.setInt('bounces', frame.bounces);
     prog.setInt('transmissiveBounces', frame.transmissiveBounces);
     prog.setFloat('filterGlossyFactor', frame.filterGlossyFactor);
+    prog.setInt('materialLodDepth', frame.materialLodDepth);
     prog.setFloat('uRadianceClamp', frame.radianceClamp);
     prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
     prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);

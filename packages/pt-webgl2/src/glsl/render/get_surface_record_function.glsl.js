@@ -4,10 +4,10 @@ export const get_surface_record_function = /* glsl */`
 
 	#define SKIP_SURFACE 0
 	#define HIT_SURFACE 1
-	// Sprint 4: P3 — materialLodDepth controls the bounce depth threshold beyond
-	// which texture fetches are replaced by flat material constants.
-	// Default 2: textures sampled on primary hit and first indirect bounce only.
-	// Set to 0 to disable LOD (textures at every depth — regression-guard mode).
+	// materialLodDepth controls the optional bounce-depth threshold beyond which
+	// texture fetches are replaced by flat material constants. The host default is
+	// 0, which disables LOD and preserves highest-fidelity texture sampling at every
+	// bounce; positive values opt into the performance approximation.
 	uniform int materialLodDepth;
 
 	int getSurfaceRecord(
@@ -45,11 +45,9 @@ export const get_surface_record_function = /* glsl */`
 		// Returns uv1 when bit k is set in material.uvTexCoordMask, else uv.
 		#define MAP_UV(bit) ( ( ( material.uvTexCoordMask >> (bit) ) & 1u ) != 0u ? uv1 : uv )
 
-		// Sprint 4: P3 — Material LOD by depth.
-		// When pathDepth > materialLodDepth, skip all texture fetches and use
-		// flat material constants. At depth ≥ 3 (default), texture bandwidth is
-		// near-zero while throughput contribution is < 5% of total pixel energy.
-		// materialLodDepth == 0 disables LOD (textures at all depths).
+		// Optional material LOD by depth. When pathDepth > materialLodDepth, skip
+		// texture fetches and use flat material constants. materialLodDepth == 0
+		// disables LOD (textures at all depths), which is the host default.
 		bool useTextures = ( materialLodDepth == 0 ) || ( pathDepth <= materialLodDepth );
 
 		// albedo (baseColorMap = bit 0)

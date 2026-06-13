@@ -22,6 +22,13 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   /** Bidirectional path tracing (S3). Default false. */
   readonly bdpt?: boolean;
   /**
+   * Optional texture-fetch LOD by bounce depth. `0` (default) disables the optimization
+   * and samples material textures at every bounce, preserving the historical highest-
+   * fidelity behavior. A positive value samples textures only while
+   * `pathDepth <= materialLodDepth`; deeper bounces use flat material constants.
+   */
+  readonly materialLodDepth?: number;
+  /**
    * Naming note for `causticStrategy: 'manifold-nee'`:
    *
    * pt-webgl2's `'manifold-nee'` is a **deterministic refraction-walk heuristic**,

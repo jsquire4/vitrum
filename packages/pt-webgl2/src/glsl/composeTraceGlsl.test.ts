@@ -157,6 +157,17 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('uMeshLightCount != 0u');
   });
 
+  it('D11: global homogeneous-medium uniforms and march branch are not in the active shader', () => {
+    // FEATURE_FOG remains pinned false for future fog-volume materials, but the old
+    // scene-global homogeneous medium path had no host API or uniform upload. Keep it
+    // out of the composed shader until a real core contract exists.
+    expect(src).not.toContain('u_volumeDensity');
+    expect(src).not.toContain('u_scatterAlbedo');
+    expect(src).not.toContain('u_anisotropyG');
+    expect(src).not.toContain('volumeMarch(');
+    expect(src).not.toContain('Volume scatter event');
+  });
+
   it('Phase 6: pt-webgl2 NEE strategy uses one selector variate for analytic/mesh/env slots', () => {
     const directLightSource = readFileSync(
       fileURLToPath(new URL('./render/direct_light_contribution_function.glsl.js', import.meta.url)),
@@ -210,14 +221,14 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32246', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 30220', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32246);
-    // All 9 sections must be non-empty and together contain the key anchor points.
-    expect(RENDER_MAIN_SECTIONS).toHaveLength(9);
+    expect(assembled).toHaveLength(30220);
+    // All sections must be non-empty and together contain the key anchor points.
+    expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');
     expect(assembled).toContain('// get camera ray');
-    expect(assembled).toContain('// Sprint 7: Volume scatter event');
+    expect(assembled).not.toContain('// Sprint 7: Volume scatter event');
     expect(assembled).toContain('if ( uRadianceClamp > 0.0 )');
     expect(assembled).toContain('gNormalDepth = vec4( gbufNormalEnc, gbufLinearDepth );');
   });

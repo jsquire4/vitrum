@@ -165,6 +165,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #bdpt: boolean;
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
+  readonly #materialLodDepth: number;
   readonly #backgroundAlpha: number;
   readonly #regime: AccumRegime;
   // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
@@ -217,6 +218,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // unidirectional render); see capabilities.experimentalFeatures (pt-webgl2-bdpt).
     this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
     this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
+    this.#materialLodDepth = Math.max(0, Math.floor(opts.materialLodDepth ?? 0));
     this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));
     // Flag-plumbing audit (2026-06-10): cameraType + dof are now real options.
     this.#cameraType =
@@ -646,6 +648,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       bounces,
       transmissiveBounces: bounces,
       filterGlossyFactor: input.quality?.filteredGlossyFactor ?? 0,
+      materialLodDepth: this.#materialLodDepth,
       radianceClamp: 0,
       cameraWorldMatrix,
       invProjectionMatrix,
@@ -751,6 +754,14 @@ export const createPTEngine_WebGL2: EngineFactory<
   if (opts.maxSamplesPerPixel !== undefined && opts.maxSamplesPerPixel < 1) {
     throw new RangeError(
       `createPTEngine_WebGL2: maxSamplesPerPixel must be >= 1 (got ${opts.maxSamplesPerPixel})`,
+    );
+  }
+  if (
+    opts.materialLodDepth !== undefined &&
+    (!Number.isFinite(opts.materialLodDepth) || opts.materialLodDepth < 0)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: materialLodDepth must be a finite number >= 0 (got ${opts.materialLodDepth})`,
     );
   }
   // H-denoiser: pt-webgl2 has no denoiser pipeline (no OIDN/SVGF passes wired).
