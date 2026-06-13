@@ -584,6 +584,7 @@ export class HybridEngine implements Engine {
 
     this._ddgi = new DDGI({
       debug: this._cfg.debug,
+      ...(opts.ddgiMaxMaterials !== undefined ? { maxMaterials: opts.ddgiMaxMaterials } : {}),
       onError: (error) => this._emitError(error),
     });
     this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);

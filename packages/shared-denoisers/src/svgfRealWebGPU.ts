@@ -7,9 +7,9 @@
  *   3. svgf7x7FallbackMain      — 7×7 spatial fallback for history < 4 pixels
  *   4. svgfAtrousMain (×5)      — variance-guided à-trous chain (reuses ATROUS_VARIANCE_WGSL)
  *
- * GPU memory budget (see svgfRealConstants.ts for full breakdown):
- *   New persistent textures: historyLength (r16uint) + momentsHistory (rg32float)
- *   + prevRadiance (rgba16float) + motionVec (rg32float) ≈ 52 MB at 1080p.
+ * GPU memory budget (see svgfRealConstants.ts for the compact input side):
+ *   persistent inputs remain compact where portable; storage-write outputs use
+ *   rgba32float where WebGPU storage-format support requires it.
  *
  * This one-shot path allocates and destroys all textures per call. In the
  * WalkaroundGPUPipeline (persistent mode), textures are allocated once in
@@ -186,12 +186,12 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   // Reprojection outputs
   const colorOutTex  = device.createTexture({ label: 'svgf-color-out', size: [w,h], format: 'rgba16float', usage: texS|texB|texC });
   const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r32uint',     usage: texS|texB|texC });
-  const momOutTex    = device.createTexture({ label: 'svgf-mom-out',   size: [w,h], format: 'rg32float',   usage: texS|texB|texC });
+  const momOutTex    = device.createTexture({ label: 'svgf-mom-out',   size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
 
   // Variance from moments output
-  const varMomOutTex  = device.createTexture({ label: 'svgf-var-mom',  size: [w,h], format: 'rg32float', usage: texS|texB|texC });
+  const varMomOutTex  = device.createTexture({ label: 'svgf-var-mom',  size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
   // Merged variance (after 7×7 fallback)
-  const varFinalTex   = device.createTexture({ label: 'svgf-var-final',size: [w,h], format: 'rg32float', usage: texS|texB|texC });
+  const varFinalTex   = device.createTexture({ label: 'svgf-var-final',size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
 
   // The atrous-variance pass computes spatial variance from moments, but for the
   // svgf-real standalone path we already have a per-pixel variance estimate from

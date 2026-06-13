@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../bindGroupBuilders.js', () => ({
   buildFrameBindGroup: vi.fn(() => ({ label: 'frame' })),
+  buildRisGiFrameBindGroup: vi.fn(() => ({ label: 'ris-gi-frame' })),
   buildSceneBindGroup: vi.fn(() => ({ label: 'scene' })),
   buildUboBindGroup: vi.fn(() => ({ label: 'ubo' })),
   buildCompositeBindGroup: vi.fn(() => ({ label: 'composite' })),
@@ -15,6 +16,7 @@ import { PipelineResourceCache } from '../PipelineResourceCache.js';
 import {
   buildCompositeBindGroup,
   buildFrameBindGroup,
+  buildRisGiFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
 } from '../bindGroupBuilders.js';
@@ -43,7 +45,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsBuffer: {} as GPUBuffer,
+      analyticLightsTextureView: {} as GPUTextureView,
       envMapTextureView: {} as GPUTextureView,
       envMarginalTextureView: {} as GPUTextureView,
       envConditionalTextureView: {} as GPUTextureView,
@@ -52,6 +54,7 @@ describe('pipelineBindGroupFactory', () => {
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+      buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
     };
     const resources = {
       common: {
@@ -108,7 +111,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsBuffer: {} as GPUBuffer,
+      analyticLightsTextureView: {} as GPUTextureView,
       envMapTextureView: {} as GPUTextureView,
       envMarginalTextureView: {} as GPUTextureView,
       envConditionalTextureView: {} as GPUTextureView,
@@ -117,6 +120,7 @@ describe('pipelineBindGroupFactory', () => {
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+      buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
     };
     const textureView = {} as GPUTextureView;
     const resources = {
@@ -191,7 +195,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsBuffer: {} as GPUBuffer,
+      analyticLightsTextureView: {} as GPUTextureView,
       envMapTextureView: {} as GPUTextureView,
       envMarginalTextureView: {} as GPUTextureView,
       envConditionalTextureView: {} as GPUTextureView,
@@ -200,6 +204,7 @@ describe('pipelineBindGroupFactory', () => {
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+      buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
     };
     const base = {
       common: {
@@ -261,7 +266,7 @@ describe('pipelineBindGroupFactory', () => {
       tlasBlasRootsBuffer: {} as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsBuffer: {} as GPUBuffer,
+      analyticLightsTextureView: {} as GPUTextureView,
       envMapTextureView: {} as GPUTextureView,
       envMarginalTextureView: {} as GPUTextureView,
       envConditionalTextureView: {} as GPUTextureView,
@@ -270,6 +275,7 @@ describe('pipelineBindGroupFactory', () => {
     };
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
+      buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
     };
     const objectIdA = { createView: vi.fn(() => textureView) };
     const objectIdB = { createView: vi.fn(() => textureView) };

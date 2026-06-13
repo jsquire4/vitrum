@@ -21,7 +21,7 @@ struct WelfordTemporalUBO {
 
 @group(0) @binding(0) var w_hdr:  texture_2d<f32>;
 @group(0) @binding(1) var w_prev: texture_2d<f32>;
-@group(0) @binding(2) var w_out:  texture_storage_2d<rg32float, write>;
+@group(0) @binding(2) var w_out:  texture_storage_2d<rgba32float, write>;
 @group(0) @binding(3) var<uniform> w_ubo: WelfordTemporalUBO;
 
 @compute @workgroup_size(16, 16, 1)

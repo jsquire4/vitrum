@@ -250,7 +250,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   const varianceOut = device.createTexture({
     label: 'atrous-variance-variance-out',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 

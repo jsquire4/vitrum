@@ -24,7 +24,7 @@
  *   binding 10 — texture_2d<f32>                       momentsIn        (rg32float M1, M2 previous frame)
  *   binding 11 — texture_storage_2d<rgba16float, write> colorOut        (blended current-frame color)
  *   binding 12 — texture_storage_2d<r16uint, write>    historyOut       (updated per-pixel history h)
- *   binding 13 — texture_storage_2d<rg32float, write>  momentsOut       (updated M1, M2)
+ *   binding 13 — texture_storage_2d<rgba32float, write> momentsOut      (updated M1, M2)
  *   binding 14 — var<uniform>                          reprojUBO        (SVGFReprojUBO)
  *
  * References:
@@ -83,7 +83,7 @@ struct SVGFReprojUBO {
 // request). r32uint is base-spec storage-capable; counter stays well under
 // u16 max so the wider format is just 2x memory, no behavioural change.
 @group(0) @binding(12) var reproj_historyOut:       texture_storage_2d<r32uint, write>;
-@group(0) @binding(13) var reproj_momentsOut:       texture_storage_2d<rg32float, write>;
+@group(0) @binding(13) var reproj_momentsOut:       texture_storage_2d<rgba32float, write>;
 @group(0) @binding(14) var<uniform> reproj_ubo:     SVGFReprojUBO;
 
 // ============================================================

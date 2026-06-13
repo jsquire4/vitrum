@@ -34,8 +34,9 @@ export interface DispatchBindGroupCache {
   raysG2KeyEnv: GPUTextureView | null;
   raysG2IrrView: GPUTextureView | null;
   raysG2: GPUBindGroup | null;
-  // Blend irr — group 0: buffers (stable). Key = rayResultsBuf.
+  // Blend irr — group 0: buffers (stable). Key = rayResultsBuf + activeProbesBuf.
   blendIrrG0Key: GPUBuffer | null;
+  blendIrrG0KeyProbes: GPUBuffer | null;
   blendIrrG0: GPUBindGroup | null;
   // Blend irr — group 1: atlas textures (per-frame). Key = irrReadTex + irrWriteTex.
   blendIrrG1KeyRead: GPUTexture | null;
@@ -43,8 +44,9 @@ export interface DispatchBindGroupCache {
   blendIrrG1ReadView: GPUTextureView | null;
   blendIrrG1WriteView: GPUTextureView | null;
   blendIrrG1: GPUBindGroup | null;
-  // Blend vis — group 0: buffers (stable). Key = rayResultsBuf.
+  // Blend vis — group 0: buffers (stable). Key = rayResultsBuf + activeProbesBuf.
   blendVisG0Key: GPUBuffer | null;
+  blendVisG0KeyProbes: GPUBuffer | null;
   blendVisG0: GPUBindGroup | null;
   // Blend vis — group 1: atlas textures (per-frame). Key = visReadTex + visWriteTex.
   blendVisG1KeyRead: GPUTexture | null;

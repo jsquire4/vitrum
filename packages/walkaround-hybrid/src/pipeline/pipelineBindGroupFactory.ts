@@ -8,6 +8,7 @@
 import type { BGLCache } from './bindGroupLayouts.js';
 import {
   buildFrameBindGroup,
+  buildRisGiFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
   buildCompositeBindGroup,
@@ -19,9 +20,11 @@ import type { PipelineResourceCache } from './PipelineResourceCache.js';
 
 export interface PerFrameBindGroups {
   readonly frame: GPUBindGroup;
+  readonly risGiFrame: GPUBindGroup;
   readonly scene: GPUBindGroup;
   readonly ubo: GPUBindGroup;
   readonly hybridLayers: GPUBindGroup;
+  readonly shadeHybridLayers: GPUBindGroup;
 }
 
 export function buildPerFrameBindGroups(
@@ -49,6 +52,13 @@ export function buildPerFrameBindGroups(
     svgfCurrentObjectIdTexture: svgf.svgfCurrentObjectIdTexture,
   }, resourceCache);
   const buildScene = (): GPUBindGroup => buildSceneBindGroup(device, cache, scene);
+  const buildRisGiFrame = (): GPUBindGroup => buildRisGiFrameBindGroup(
+    device,
+    cache,
+    common.gNormalDepthTexture,
+    restirGI.reservoirGiCurrentBuffer,
+    resourceCache,
+  );
   const aoFullView = resourceCache?.textureView(gtao.aoFullTexture) ?? gtao.aoFullTexture.createView();
   const tierView = resourceCache?.textureView(common.tierTexture) ?? common.tierTexture.createView();
   const buildUbo = (): GPUBindGroup => buildUboBindGroup(
@@ -83,7 +93,7 @@ export function buildPerFrameBindGroups(
     scene.tlasInstanceLocalToWorldBuffer,
     scene.bvhNormalBuffer,           // 11
     scene.bvhEmissiveTextureView,    // 12
-    scene.analyticLightsBuffer,      // 13 — H41, recreated by updateAnalyticLights
+    scene.analyticLightsTextureView, // 13 — recreated by updateAnalyticLights
     scene.bvhRoughMetalTextureView,  // 14 — B1
     scene.envMapTextureView,         // 15 — B3, recreated by updateEnvironment
     scene.envMarginalTextureView,    // 16
@@ -106,6 +116,10 @@ export function buildPerFrameBindGroups(
       common.albedoTexture,
       svgf.svgfCurrentObjectIdTexture,
     ], buildFrame) ?? buildFrame(),
+    risGiFrame: resourceCache?.bindGroup('per-frame:ris-gi-frame', [
+      common.gNormalDepthTexture,
+      restirGI.reservoirGiCurrentBuffer,
+    ], buildRisGiFrame) ?? buildRisGiFrame(),
     scene: resourceCache?.bindGroup('per-frame:scene', sceneKey, buildScene) ?? buildScene(),
     ubo: resourceCache?.bindGroup('per-frame:ubo', [
       common.uboBuffer,
@@ -113,6 +127,7 @@ export function buildPerFrameBindGroups(
       common.tierTexture,
     ], buildUbo) ?? buildUbo(),
     hybridLayers: ddgi.buildBindGroup(device, cache, resources, resourceCache),
+    shadeHybridLayers: ddgi.buildShadeBindGroup(device, cache, resources, resourceCache),
   };
 }
 

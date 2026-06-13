@@ -34,7 +34,7 @@
  *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .x = linear depth)
  *     binding 4 — texture_2d<f32>                        motionVectors  (RG32F, .xy = screen-space motion)
  *     binding 5 — texture_2d<f32>                        varianceIn     (RG32F — WelfordVariance mean+m2)
- *     binding 6 — texture_storage_2d<rg32float, write>   varianceOut    (estimated scalar variance per pixel)
+ *     binding 6 — texture_storage_2d<rgba32float, write> varianceOut    (estimated scalar variance per pixel)
  *     binding 7 — var<uniform> AtrousVarianceVarianceUBO
  *
  *   group 0 — à-trous pass (svgfAtrousMain):
@@ -145,7 +145,7 @@ struct AtrousVarianceAtrousUBO {
 @group(0) @binding(3) var varIn_gbufDepth:     texture_2d<f32>;
 @group(0) @binding(4) var varIn_motionVec:     texture_2d<f32>;
 @group(0) @binding(5) var varIn_varianceIn:    texture_2d<f32>;
-@group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rg32float, write>;
+@group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rgba32float, write>;
 @group(0) @binding(7) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
 // fn luminance(c: vec3f) — canonical from LUMINANCE_WGSL above; uses LUM_W709.

@@ -170,6 +170,8 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Light list for DDGI probe update pass. */
   readonly lights?: DDGILight[];
 
+  readonly ddgiMaxMaterials?: number;
+
   /** When true, enables informational ReSTIR pipeline logs (initialization / shader compile). */
   readonly verbose?: boolean;
 
@@ -191,7 +193,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *   reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
    *   history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
    *   variance-from-moments (Eq. 5), 7×7 spatial fallback for disoccluded pixels
-   *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
+   *   (§4.3). Requires historyLength (r32uint) + momentsHistory (rgba32float) +
    *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
    *
    *   `'bmfr'` — Koskela et al. 2019, "Blockwise Multi-Order Feature

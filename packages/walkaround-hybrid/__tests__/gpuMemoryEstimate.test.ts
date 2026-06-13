@@ -112,7 +112,7 @@ describe('bytesPerTexel', () => {
     expect(bytesPerTexel('r32uint')).toBe(4);
   });
 
-  it('returns 8 for rg32float (variance + motion buffers)', () => {
+  it('returns 8 for rg32float external/shared-denoiser textures', () => {
     expect(bytesPerTexel('rg32float')).toBe(8);
   });
 
@@ -221,13 +221,13 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
     expect(cat.common!).toBeGreaterThan(cat.svgf!);
   });
 
-  it('svgf budget is non-trivial — Schied 2017 persistent textures total ~52 MB at 1080p', () => {
+  it('svgf budget is non-trivial — Schied 2017 persistent textures plus portable storage formats', () => {
     const MB = 1024 * 1024;
-    // Allow a generous band: r32uint history pair (2×8 MB) + rg32float
-    // moments pair (2×16 MB) + rgba16float prev-rad pair (2×16 MB) +
-    // variance + intermed (2×16 MB) + 1×1 placeholder ≈ 104 MB total.
+    // Allow a generous band: r32uint history pair (2×8 MB) plus widened
+    // rgba32float moments / variance / intermediate textures for portable
+    // WebGPU storage-read/write support. At 1080p this is roughly 206 MB.
     expect(breakdown.byCategory.svgf!).toBeGreaterThan(40 * MB);
-    expect(breakdown.byCategory.svgf!).toBeLessThan(150 * MB);
+    expect(breakdown.byCategory.svgf!).toBeLessThan(240 * MB);
   });
 
   it('byTextureFormat shows the texture-formats-tier1 reconciliation footprint', () => {

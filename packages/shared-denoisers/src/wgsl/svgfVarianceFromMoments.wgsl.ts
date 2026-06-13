@@ -14,7 +14,7 @@
  * Bind group 0 layout (entry point: svgfVarianceFromMomentsMain):
  *   binding 0 — texture_2d<f32>                        momentsIn     (rg32float M1, M2)
  *   binding 1 — texture_2d<u32>                        historyIn     (r16uint history length)
- *   binding 2 — texture_storage_2d<rg32float, write>   varianceOut   (.r = variance, .g = h cast to f32)
+ *   binding 2 — texture_storage_2d<rgba32float, write> varianceOut   (.r = variance, .g = h cast to f32)
  *
  * References:
  *   Schied et al. HPG 2017 §4, Equation 5.
@@ -31,7 +31,7 @@ const SVGF_HISTORY_THRESHOLD: u32 = ${SVGF_HISTORY_MIN_FOR_MOMENTS}u;
 
 @group(0) @binding(0) var vmom_momentsIn:   texture_2d<f32>;
 @group(0) @binding(1) var vmom_historyIn:   texture_2d<u32>;
-@group(0) @binding(2) var vmom_varianceOut: texture_storage_2d<rg32float, write>;
+@group(0) @binding(2) var vmom_varianceOut: texture_storage_2d<rgba32float, write>;
 
 @compute @workgroup_size(16, 16, 1)
 fn svgfVarianceFromMomentsMain(@builtin(global_invocation_id) gid: vec3u) {

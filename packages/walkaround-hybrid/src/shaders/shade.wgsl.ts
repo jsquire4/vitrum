@@ -106,15 +106,7 @@ export const SHADE_WGSL = /* wgsl */ `
 // surfaces glow to the camera (the ReSTIR-DI emitter list only lights RECEIVERS;
 // without this the emitter's own pixels render black). Shade-only binding.
 @group(1) @binding(12) var bvh_emissive: texture_2d<f32>;
-// H41 — analytic point/spot emitter buffer for shade NEE.
-// Separate from the RIS area-emitter pool (no PDF contamination).
-// Stride: 4 × vec4f = 64 bytes = 16 vec4f elements per entry.
-//   element[base+0]  = position.xyz   + pad
-//   element[base+4]  = color.rgb (Le = color×intensity) + pad
-//   element[base+8]  = direction.xyz  + cosInner (1.0 for point)
-//   element[base+12] = cosOuter + pad×3 (0.0 for point = no cone)
-// arrayLength(&analytic_lights) / 16u gives the number of analytic lights.
-@group(1) @binding(13) var<storage, read> analytic_lights: array<vec4f>;
+@group(1) @binding(13) var analytic_lights: texture_2d<f32>;
 // B1 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
 // into the real GGX roughness/metal that feed lo_direct / lo_analyticNEE and the
 // glossy/metal specular-indirect lobe (was hardcoded rough=0.85/0.05, metal=0).

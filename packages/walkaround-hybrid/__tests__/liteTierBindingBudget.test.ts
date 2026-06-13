@@ -20,17 +20,16 @@
  *   The shade.wgsl binding structure:
  *     Frame group (group 0) — storage BUFFERS:  bindings 5, 6, 7, 11 = 4
  *     Frame group (group 0) — storage TEXTURES: bindings 8, 10, 12, 13, 14, 15 = 6
- *     Scene group (group 1) — storage BUFFERS (non-TLAS): 0,1,2,3,4,11,13 = 7
- *       (H41 added analytic_lights at @group(1) @binding(13))
+ *     Scene group (group 1) — storage BUFFERS (non-TLAS): 0,1,2,3,4,11 = 6
+ *       (analytic_lights moved to @group(1) @binding(13) as a texture)
  *     Scene group (group 1) — storage BUFFERS (TLAS, merged-mode dummies): 6,7,8,9,10 = 5
  *     RC cascade-0 lives in sampleCascadeC0 pipeline (separate shader stage — NOT in shade.wgsl)
  *
- *   Total storage buffers declared in shade WGSL = 4+12 = 16 (full-tier floor)
+ *   Total storage buffers declared in shade WGSL = 4+11 = 15
  *   Total storage textures declared in shade WGSL = 6 (at the lite-tier floor)
  *
  *   HYBRID_LITE_LIMITS.maxStorageBuffersPerShaderStage = 10 refers to the
- *   non-TLAS merged path: 4 (frame) + 6 (non-TLAS non-analytic scene) = 10
- *   (analytic_lights dead-stripped by lite drivers when no point/spot scene).
+ *   non-TLAS merged path: 4 (frame) + 6 (non-TLAS scene) = 10.
  *   The 5 TLAS buffers are DECLARED but the driver dead-strips them in merged mode
  *   on real Class B/C hardware (empirically validated).
  *
@@ -94,41 +93,40 @@ describe('lite-tier binding budget — static WGSL analysis (H56-b)', () => {
     expect(texCount).toBe(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!);
   });
 
-  it('shade.wgsl declares 16 storage buffers (4 frame + 12 scene; at the full-tier floor)', () => {
-    // SHADE_WGSL declares 4 frame-group + 12 scene-group storage buffers = 16.
-    // H41 (analytic-NEE @group(1) @binding(13)) raised the scene-group count
-    // from 11→12, filling the REQUIRED limit exactly. The RC cascade-0 buffer
-    // lives in a separate sampleCascadeC0 pipeline stage — NOT in shade.wgsl.
+  it('shade.wgsl declares 15 storage buffers (4 frame + 11 scene)', () => {
+    // SHADE_WGSL declares 4 frame-group + 11 scene-group storage buffers = 15.
+    // Analytic point/spot NEE is now a sampled rgba32float texture, so it no
+    // longer consumes a storage-buffer slot. The RC cascade-0 buffer lives in a
+    // separate sampleCascadeC0 pipeline stage — NOT in shade.wgsl.
     const bufCount = countStorageBuffers(SHADE_WGSL);
-    expect(bufCount).toBe(16);
-    // shade.wgsl alone = 16 = full-tier floor.
-    expect(bufCount).toBe(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
+    expect(bufCount).toBe(15);
+    expect(bufCount).toBeLessThanOrEqual(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
   });
 
-  it('non-TLAS storage buffer count (merged path minimum) = 11, above lite limit; shade total = 16', () => {
+  it('non-TLAS storage buffer count (merged path minimum) = 10; shade total = 15', () => {
     // Breakdown of non-TLAS storage buffers in shade.wgsl:
     //   Frame group:        4  (bindings 5,6,7,11 — reservoirs + GI reservoir)
-    //   Scene group non-TLAS: 7  (bindings 0,1,2,3,4,11,13 — bvh+index+pos+emitters+cdf+normals+analytic_lights)
-    //     H41 raised this from 6→7 by adding analytic_lights at @group(1) @binding(13).
-    //   Total non-TLAS in shade.wgsl: 11
+    //   Scene group non-TLAS: 6  (bindings 0,1,2,3,4,11 — bvh+index+pos+emitters+cdf+normals)
+    //   Total non-TLAS in shade.wgsl: 10
     //   TLAS (declared):    5  (bindings 6,7,8,9,10 — dummies in merged mode)
-    //   Grand total in shade.wgsl:  16  (= full-tier floor)
+    //   Grand total in shade.wgsl:  15
     //   Note: RC cascade-0 lives in sampleCascadeC0 pipeline, a SEPARATE shader stage.
     //
     // The HYBRID_LITE_LIMITS (10) is an empirical minimum for hardware that
     // dead-strips the declared-but-unused TLAS bindings.
     const nonTlasFrameBuffers    = 4;  // shade.wgsl @group(0): bindings 5,6,7,11
-    const nonTlasSceneBuffers    = 7;  // shade.wgsl @group(1): bindings 0,1,2,3,4,11,13
+    const nonTlasSceneBuffers    = 6;  // shade.wgsl @group(1): bindings 0,1,2,3,4,11
     const tlasSceneBuffers       = 5;  // shade.wgsl @group(1): bindings 6,7,8,9,10
     const nonTlasTotal = nonTlasFrameBuffers + nonTlasSceneBuffers;
     const grandTotal   = nonTlasTotal + tlasSceneBuffers;
 
-    expect(nonTlasTotal).toBe(11);
-    expect(grandTotal).toBe(16);
+    expect(nonTlasTotal).toBe(10);
+    expect(grandTotal).toBe(15);
 
-    // Non-TLAS total > lite limit (10): drivers must dead-strip TLAS to hit the lite limit.
-    expect(nonTlasTotal).toBeGreaterThan(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!);
-    expect(grandTotal).toBe(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
+    // Non-TLAS total equals the lite limit; drivers must still dead-strip TLAS
+    // to hit that limit when compiling the merged-mode path.
+    expect(nonTlasTotal).toBe(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!);
+    expect(grandTotal).toBeLessThanOrEqual(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
   });
 
   it('the 5 TLAS storage buffers ARE declared in shade.wgsl (required for BGL compat)', () => {

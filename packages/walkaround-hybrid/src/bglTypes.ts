@@ -18,6 +18,7 @@
 export type BGLKey =
   | 'frame' | 'scene' | 'ubo' | 'atrous' | 'composite' | 'accum'
   | 'hybridLayers' | 'sampleBudget' | 'resolve' | 'motionVectors'
+  | 'shadeHybridLayers' | 'risGiFrame'
   | 'gtao' | 'gtaoUpsample' | 'temporalGi' | 'spatialGi'
   | 'indirectCombine' | 'indirectTemporalAccum'
   | 'lightTree' | 'regirBuild' | 'nrc' | 'cbPrefill';

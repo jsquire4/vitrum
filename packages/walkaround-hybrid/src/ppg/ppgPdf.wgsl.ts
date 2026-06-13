@@ -180,11 +180,11 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
       // Uniform fallback when the cell's children carry no flux (cold start).
       pick = min(u32(r * 4.0), 3u);
     } else {
-      let target = r * sum;
+      let targetFlux = r * sum;
       var cum: f32 = 0.0;
       for (var ci: u32 = 0u; ci < 4u; ci = ci + 1u) {
         cum = cum + cFlux[ci];
-        if (target <= cum && pick == 3u) { pick = ci; }
+        if (targetFlux <= cum && pick == 3u) { pick = ci; }
       }
     }
     idx = firstChild + pick;

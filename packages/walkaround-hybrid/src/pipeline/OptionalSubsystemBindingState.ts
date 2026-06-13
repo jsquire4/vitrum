@@ -24,7 +24,10 @@
  * `buildBindGroup` called once per frame from `renderFrame`.
  */
 
-import { buildHybridLayersBindGroup } from './bindGroupBuilders.js';
+import {
+  buildHybridLayersBindGroup,
+  buildShadeHybridLayersBindGroup,
+} from './bindGroupBuilders.js';
 import { RC_PARAMS_BYTE_SIZE } from '../rc/rcParamsLayout.generated.js';
 import {
   buildDDGIPlaceholderUBO,
@@ -241,6 +244,40 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ppgSTreeBuffer,
       ppgDTreeBuffer,
       ppgDTreeOffsetsBuffer,
+    ], build) ?? build();
+  }
+
+  buildShadeBindGroup(
+    device: GPUDevice,
+    bglCache: BGLCache,
+    frameResources: FrameResources,
+    resourceCache?: PipelineResourceCache,
+  ): GPUBindGroup {
+    const rcPh = this._ensureRCPlaceholders();
+    const rcCascade0Buffer = this._rcCascade0 ?? rcPh.cascade0;
+    const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
+    const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
+    const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
+    const build = (): GPUBindGroup => buildShadeHybridLayersBindGroup(device, bglCache, {
+      ddgiIrrTex:             this._irrTex,
+      ddgiVisTex:             this._visTex,
+      ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
+      ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
+      nearestSampler:         frameResources.common.nearestSampler,
+      ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer,
+      rcParamsBuffer,
+      ppgSTreeBuffer:        rcCascade0Buffer,
+      ppgDTreeBuffer:        rcCascade0Buffer,
+      ppgDTreeOffsetsBuffer: rcCascade0Buffer,
+    }, resourceCache);
+    return resourceCache?.bindGroup('per-frame:shade-hybrid-layers', [
+      irrTex,
+      visTex,
+      frameResources.common.nearestSampler,
+      frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer,
+      rcParamsBuffer,
     ], build) ?? build();
   }
 

@@ -32,7 +32,7 @@
  * Bind group (`cb-prefill` BGL, 4 bindings):
  *   0  CbPrefillUniforms UBO  (16 bytes: screenW/H, frameParity, _pad)
  *   1  readAccum              (previous-frame accumulated radiance, sampled)
- *   2  motionVectorTexture    (rg32float, sampled)
+ *   2  motionVectorTexture    (rgba32float, sampled)
  *   3  hdrColorTexture        (rgba16float, storage write — gap pixels only)
  *
  * The pass has its own `_cbPrefillUboRef` buffer (16 bytes). Values are the

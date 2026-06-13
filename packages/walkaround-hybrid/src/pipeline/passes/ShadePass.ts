@@ -32,6 +32,7 @@ export class ShadePass extends SharedBindGroupPass {
   readonly passLabels: readonly PassLabel[] = ['shade'];
 
   protected override readonly useHybridLayers = true;
+  protected override readonly useShadeHybridLayers = true;
 
   override dispatch(ctx: PassDispatchContext): void {
     if (!ctx.checkerboardOn) {
@@ -51,6 +52,7 @@ export class ShadePass extends SharedBindGroupPass {
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: 'shade',
       useHybridLayers: this.useHybridLayers,
+      useShadeHybridLayers: this.useShadeHybridLayers,
       dispatchOverride: { x: cbWgX, y: cbWgY },
     });
   }

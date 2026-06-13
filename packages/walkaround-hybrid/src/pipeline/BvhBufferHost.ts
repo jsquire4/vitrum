@@ -20,6 +20,10 @@ import {
   refreshEmissiveTexture,
   type EmissiveTexture,
 } from './bvhEmissiveTexture.js';
+import {
+  uploadAnalyticLightsTexture,
+  type AnalyticLightsTexture,
+} from './analyticLightsTexture.js';
 import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import { PipelineResourceCache } from './PipelineResourceCache.js';
 import {
@@ -57,10 +61,7 @@ export interface SceneBindGroupResources {
   tlasBlasRootsBuffer: GPUBuffer;
   tlasInstanceWorldToLocalBuffer: GPUBuffer;
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
-  /** H41 — packed point/spot emitter buffer for shade analytic NEE
-   *  (binding 13). 64-byte-stride (4 × vec4f). A 16-byte placeholder is
-   *  bound when the scene has no point/spot emitters (count = 0 in UBO). */
-  analyticLightsBuffer: GPUBuffer;
+  analyticLightsTextureView: GPUTextureView;
   /** B3 — directional IBL resources (bindings 15-19). Placeholders + hasEnv=0
    *  for non-HDRI scenes (scalar-tint fallback). */
   envMapTextureView: GPUTextureView;
@@ -100,8 +101,7 @@ export class BvhBufferHost {
   private _emitterCount = 0;
   private _emitterCdfBuffer: GPUBuffer | null = null;
   private _lightTreeBuffer: GPUBuffer | null = null;
-  /** H41 — packed point/spot analytic lights buffer (binding 13). */
-  private _analyticLightsBuffer: GPUBuffer | null = null;
+  private _analyticLightsTexture: AnalyticLightsTexture | null = null;
   /** B3 — directional IBL resources (bindings 15-19). Placeholder until a raw
    *  HDRI is supplied via updateEnvironment. */
   private _env: EnvironmentTextures | null = null;
@@ -160,13 +160,14 @@ export class BvhBufferHost {
     // zeroed at the tail). `_regirGridBytes == 0` ⇒ exactly `uploadBuffer`.
     this._lightTreeBuffer = uploadBufferPadded(
       device, bvhBuffers.lightTree.cpuData, this._regirGridBytes, STORAGE);
-    // H41 — analytic point/spot lights buffer (binding 13). A 16-byte placeholder
-    // (count=0) is uploaded when the scene has no point/spot emitters, so the
-    // bind group is always valid. Count is stored in WalkaroundUBO (not here).
     const analyticPacked = scene != null
       ? packAnalyticPointSpotEmitters(scene)
       : { data: new Float32Array(16), count: 0 };
-    this._analyticLightsBuffer = uploadBuffer(device, analyticPacked.data.buffer as ArrayBuffer, STORAGE);
+    this._analyticLightsTexture = uploadAnalyticLightsTexture(
+      device,
+      analyticPacked.data,
+      analyticPacked.count,
+    );
     // B3 — directional IBL placeholder (hasEnv=0). updateEnvironment swaps in the
     // real map+CDFs when a raw HDRI is resolved (the WGSL falls back to the scalar
     // sky while this is the placeholder → no-HDRI byte-identity).
@@ -199,16 +200,12 @@ export class BvhBufferHost {
     }
   }
 
-  /**
-   * H41 — re-upload the analytic lights buffer when emitters change.
-   * Called from `updateEmitters` when point/spot emitters may have changed.
-   */
   updateAnalyticLights(device: GPUDevice, scene: Scene): void {
     const packed = packAnalyticPointSpotEmitters(scene);
-    if (this._analyticLightsBuffer != null) {
-      this._analyticLightsBuffer.destroy();
+    if (this._analyticLightsTexture != null) {
+      this._analyticLightsTexture.texture.destroy();
     }
-    this._analyticLightsBuffer = uploadBuffer(device, packed.data.buffer as ArrayBuffer, STORAGE);
+    this._analyticLightsTexture = uploadAnalyticLightsTexture(device, packed.data, packed.count);
   }
 
   /** RIS-only light-tree storage buffer (group 3 binding 0). Always non-null
@@ -261,7 +258,7 @@ export class BvhBufferHost {
       tlasBlasRootsBuffer: this._tlasBlasRootsBuffer!,
       tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer!,
       tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer!,
-      analyticLightsBuffer: this._analyticLightsBuffer!,
+      analyticLightsTextureView: this._resourceCache.textureView(this._analyticLightsTexture!.texture),
       envMapTextureView: this._resourceCache.textureView(this._env!.map),
       envMarginalTextureView: this._resourceCache.textureView(this._env!.marginal),
       envConditionalTextureView: this._resourceCache.textureView(this._env!.conditional),
@@ -311,6 +308,14 @@ export class BvhBufferHost {
         height: this._bvhRoughMetalTexture.height,
         depthOrArrayLayers: 1,
         format: 'r32uint' as GPUTextureFormat,
+      };
+    }
+    if (this._analyticLightsTexture != null) {
+      section.analyticLightsTexture = {
+        width: this._analyticLightsTexture.width,
+        height: this._analyticLightsTexture.height,
+        depthOrArrayLayers: 1,
+        format: 'rgba32float' as GPUTextureFormat,
       };
     }
 
@@ -456,7 +461,7 @@ export class BvhBufferHost {
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     this._lightTreeBuffer?.destroy();
-    this._analyticLightsBuffer?.destroy();
+    this._analyticLightsTexture?.texture.destroy();
     if (this._env != null) { disposeEnvironment(this._env); this._env = null; }
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
@@ -468,7 +473,7 @@ export class BvhBufferHost {
     this._emitterBuffer = null;
     this._emitterCdfBuffer = null;
     this._lightTreeBuffer = null;
-    this._analyticLightsBuffer = null;
+    this._analyticLightsTexture = null;
   }
 
   private _destroyTlasBuffers(): void {

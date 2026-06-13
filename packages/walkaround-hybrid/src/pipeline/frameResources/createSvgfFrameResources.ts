@@ -147,13 +147,13 @@ export function createSvgfFrameResources(
   const svgfMomentsTextureA = device.createTexture({
     label: 'svgf-real-moments-a',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: svgfMomUsage,
   });
   const svgfMomentsTextureB = device.createTexture({
     label: 'svgf-real-moments-b',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: svgfMomUsage,
   });
   const svgfRadUsage =
@@ -176,13 +176,13 @@ export function createSvgfFrameResources(
   const svgfVarianceTexture = device.createTexture({
     label: 'svgf-real-variance',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const svgfVarianceMomentsIntermedTexture = device.createTexture({
     label: 'svgf-real-variance-moments-intermed',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 

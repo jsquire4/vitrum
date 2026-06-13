@@ -206,7 +206,7 @@ export function packAtrousVarianceAtrousUniforms(
  *   - Depth G-buffer: rgba16float (.r = linear depth) or r32float
  *   - Motion vectors: rg32float (.xy = screen-space UV delta, [-1,1])
  *   - Welford variance buffer: rg32float (.r = mean, .g = M2)
- *   - Output variance map: rg32float (.r = estimated variance, .g = frameCount)
+ *   - Output variance map: rgba32float (.r = estimated variance, .g = frameCount)
  */
 export interface AtrousVarianceVarianceBindGroupLayout {
   /** binding 0 — noisy current-frame color.  Format: rgba16float. */
@@ -227,8 +227,8 @@ export interface AtrousVarianceVarianceBindGroupLayout {
    * WebGPU uploads from CPU: `runAtrousVarianceWebGPU({ welfordMeanM2 })` expects interleaved RG floats per pixel.
    */
   varianceIn: 'texture_2d<f32>';
-  /** binding 6 — estimated variance output.  Format: rg32float (storage write). */
-  varianceOut: 'texture_storage_2d<rg32float, write>';
+  /** binding 6 — estimated variance output.  Format: rgba32float (storage write). */
+  varianceOut: 'texture_storage_2d<rgba32float, write>';
   /** binding 7 — AtrousVarianceVarianceUBO (frameCount + padding). */
   ubo: 'uniform AtrousVarianceVarianceUBO';
 }
@@ -255,7 +255,7 @@ export interface AtrousVarianceAtrousBindGroupLayout {
   gbufferDepth: 'texture_2d<f32>';
   /**
    * binding 4 — per-pixel variance estimate from svgfVarianceMain.
-   * Format: rg32float (.r = variance scalar).
+   * Format: rgba32float (.r = variance scalar).
    */
   varianceMap: 'texture_2d<f32>';
   /** binding 5 — AtrousVarianceAtrousUBO (iteration, sigma values). */

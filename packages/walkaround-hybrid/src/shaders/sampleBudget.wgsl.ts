@@ -35,7 +35,7 @@
  *
  * Bindings deliberately use `texture_2d<f32>` (sampled, unfilterable-float)
  * for the variance input instead of a storage-read view: WebGPU does not
- * support read-access for rg32float storage textures across all browsers,
+ * support read-access for storage textures across all browsers,
  * but the source variance texture was created with TEXTURE_BINDING usage
  * for exactly this read path.
  *
@@ -62,9 +62,9 @@ struct SampleBudgetUniforms {
 
 @group(0) @binding(0) var<uniform>            u_budget: SampleBudgetUniforms;
 
-// RG32Float — r=mean, g=M2. Written by the welford-temporal pass each frame.
-// Bound as texture_2d<f32> (unfilterable) because storage-read of rg32float
-// is not portably supported across WebGPU browsers.
+// RGBA32Float — r=mean, g=M2. Written by the welford-temporal pass each frame.
+// Bound as texture_2d<f32> (unfilterable) because storage-read access is not
+// portably supported across WebGPU browsers.
 @group(0) @binding(1) var                     t_variance: texture_2d<f32>;
 
 // r32uint — tier byte per pixel (1, 2, or 4). Read by next-frame shade dispatch.

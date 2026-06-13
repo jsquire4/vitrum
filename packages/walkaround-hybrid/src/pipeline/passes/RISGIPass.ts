@@ -22,7 +22,6 @@
  * the GRIS-class regression discipline (f8df9a4).
  */
 
-import { dispatchSharedBindGroupPass } from '../Pass.js';
 import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
@@ -55,25 +54,20 @@ export class RISGIPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    if (this._nrcBindGroup === undefined) {
-      // NRC OFF (default) — verbatim 4-group half-res shared dispatch.
-      dispatchSharedBindGroupPass(ctx, this._pipeline, {
-        label: 'gi-ris',
-        useHybridLayers: true,
-        halfRes: true,
-      });
-      return;
+    if (this._nrcBindGroup !== undefined) {
+      this._nrcClearSlotClaims?.(ctx.encoder);
     }
-    // NRC ON — bind frame/scene/ubo/hybrid + the NRC @group(4), half-res.
-    // Byte-identical to the prior bespoke setBindGroup sequence: slots 0/1/2
-    // (+ hybrid @3 via useHybridLayers) then the NRC group at @4.
-    this._nrcClearSlotClaims?.(ctx.encoder);
-    dispatchSharedBindGroupPass(ctx, this._pipeline, {
-      label: 'gi-ris',
-      useHybridLayers: true,
-      halfRes: true,
-      extraGroups: [{ slot: 4, group: this._nrcBindGroup() }],
-    });
+    const pass = ctx.encoder.beginComputePass(ctx.computeDesc('gi-ris'));
+    pass.setPipeline(this._pipeline);
+    pass.setBindGroup(0, ctx.risGiFrameBindGroup);
+    pass.setBindGroup(1, ctx.sceneBindGroup);
+    pass.setBindGroup(2, ctx.uboBindGroup);
+    pass.setBindGroup(3, ctx.hybridLayersBindGroup);
+    if (this._nrcBindGroup !== undefined) {
+      pass.setBindGroup(4, this._nrcBindGroup());
+    }
+    pass.dispatchWorkgroups(ctx.halfWgX, ctx.halfWgY, 1);
+    pass.end();
   }
 
   dispose(): void {}

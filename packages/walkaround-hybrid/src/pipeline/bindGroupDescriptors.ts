@@ -60,7 +60,7 @@ type BindingKind =
   | 'tex:uint'                    // texture: { sampleType: 'uint' }
   | 'sampler:nf'                  // sampler: { type: 'non-filtering' }
   | 'storage-tex:rgba16float'     // storageTexture: write-only rgba16float
-  | 'storage-tex:rg32float'       // storageTexture: write-only rg32float
+  | 'storage-tex:rgba32float'     // storageTexture: write-only rgba32float
   | 'storage-tex:r32uint';        // storageTexture: write-only r32uint
 
 interface BindingDescriptor {
@@ -191,10 +191,10 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // Shade-only; the other primary passes declare a subset of the layout.
       { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade-only)' },
       // H41 — analytic point/spot emitters for shade NEE (separate from the
-      // RIS area-emitter pool). A 16-byte placeholder is bound when the scene
-      // has no point/spot emitters; the count is in WalkaroundUBO.analyticLightCount
-      // so the shade loop is a no-op for pure area-emitter scenes.
-      { binding: 13, kind: 'storage-ro', note: 'analytic_lights (H41 point/spot NEE; 64-byte stride; shade-only)' },
+      // RIS area-emitter pool). The rgba32float texture starts with a header
+      // texel whose .x lane is the light count, so zero-light scenes bind a
+      // valid placeholder while the shade loop remains a no-op.
+      { binding: 13, kind: 'tex', note: 'analytic_lights (H41 point/spot NEE; rgba32float texture; shade-only)' },
       // B1 (road-to-100) — per-triangle roughness+metalness lane (r32uint
       // texture, one u32 per triangle: bits[31:24]=rough×255, [23:16]=metal×255).
       // Read by ris/risGi/risGiNrc/restirCastPrimary/shade via
@@ -297,7 +297,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     visibility: 'compute',
     entries: [
       { binding: 0, kind: 'tex', note: 'gNormalDepth in' },
-      { binding: 1, kind: 'storage-tex:rg32float', note: 'motion out' },
+      { binding: 1, kind: 'storage-tex:rgba32float', note: 'motion out' },
       { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
     ],
   },
@@ -319,7 +319,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     visibility: 'compute',
     entries: [
       { binding: 0, kind: 'uniform', note: 'SampleBudgetUniforms (thresholds + screen size)' },
-      { binding: 1, kind: 'tex', note: 'variance source (rg32float, welford)' },
+      { binding: 1, kind: 'tex', note: 'variance source (rgba32float, welford)' },
       { binding: 2, kind: 'storage-tex:r32uint', note: 'tier output' },
       { binding: 3, kind: 'uniform', note: 'SampleCountUniforms (sample-count counter)' },
     ],
@@ -341,7 +341,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'uniform', note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
       { binding: 1, kind: 'tex', note: 'readAccum — previous-frame accumulated radiance' },
-      { binding: 2, kind: 'tex', note: 'motionVectors — rg32float NDC motion' },
+      { binding: 2, kind: 'tex', note: 'motionVectors — rgba32float NDC motion' },
       { binding: 3, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
     ],
   },
@@ -389,8 +389,8 @@ function layoutResourceFor(kind: BindingKind): Omit<GPUBindGroupLayoutEntry, 'bi
       return { sampler: { type: 'non-filtering' } };
     case 'storage-tex:rgba16float':
       return { storageTexture: { access: 'write-only', format: 'rgba16float' } };
-    case 'storage-tex:rg32float':
-      return { storageTexture: { access: 'write-only', format: 'rg32float' } };
+    case 'storage-tex:rgba32float':
+      return { storageTexture: { access: 'write-only', format: 'rgba32float' } };
     case 'storage-tex:r32uint':
       return { storageTexture: { access: 'write-only', format: 'r32uint' } };
   }

@@ -14,7 +14,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const MOTION_VECTORS_WGSL = /* wgsl */ `
 @group(0) @binding(0) var gNormalDepthIn: texture_2d<f32>;
-@group(0) @binding(1) var motionVectorsOut: texture_storage_2d<rg32float, write>;
+@group(0) @binding(1) var motionVectorsOut: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
 @compute @workgroup_size(8, 8, 1)

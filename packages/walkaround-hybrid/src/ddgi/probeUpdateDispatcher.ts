@@ -18,10 +18,10 @@ function makeBgCache(): DispatchBindGroupCache {
     raysG1Key0: null, raysG1Key1: null, raysG1: null,
     raysG2KeyTex: null, raysG2KeyBuf: null, raysG2KeyProbes: null, raysG2KeyEnv: null,
     raysG2IrrView: null, raysG2: null,
-    blendIrrG0Key: null, blendIrrG0: null,
+    blendIrrG0Key: null, blendIrrG0KeyProbes: null, blendIrrG0: null,
     blendIrrG1KeyRead: null, blendIrrG1KeyWrite: null,
     blendIrrG1ReadView: null, blendIrrG1WriteView: null, blendIrrG1: null,
-    blendVisG0Key: null, blendVisG0: null,
+    blendVisG0Key: null, blendVisG0KeyProbes: null, blendVisG0: null,
     blendVisG1KeyRead: null, blendVisG1KeyWrite: null,
     blendVisG1ReadView: null, blendVisG1WriteView: null, blendVisG1: null,
     borderG0KeyScratch: null, borderG0KeyWrite: null,
@@ -177,8 +177,10 @@ export function dispatchProbeUpdateBlendIrrPass(
   if (!gpu.bgCache) gpu.bgCache = makeBgCache();
   const c = gpu.bgCache;
 
-  // Group 0: stable buffer references. Invalidated on rayResultsBuf reallocation.
-  if (c.blendIrrG0Key !== gpu.rayResultsBuf) {
+  // Group 0: stable buffer references. Invalidated on rayResultsBuf or
+  // activeProbesBuf reallocation. The active-probe slice can grow by one when
+  // probeCount is not divisible by the update divisor.
+  if (c.blendIrrG0Key !== gpu.rayResultsBuf || c.blendIrrG0KeyProbes !== gpu.activeProbesBuf) {
     c.blendIrrG0 = gpu.device.createBindGroup({
       layout: gpu.blendIrrPipeline.getBindGroupLayout(0),
       entries: [
@@ -189,6 +191,7 @@ export function dispatchProbeUpdateBlendIrrPass(
       ],
     });
     c.blendIrrG0Key = gpu.rayResultsBuf;
+    c.blendIrrG0KeyProbes = gpu.activeProbesBuf;
   }
 
   // Group 1: atlas textures — changes every atlas swap (ping-pong) or resize.
@@ -228,9 +231,7 @@ export function dispatchProbeUpdateBlendVisPass(
   const c = gpu.bgCache;
 
   // Group 0: stable buffer references. Mirrors blendIrr group 0 but for vis pipeline.
-  // rayResultsBuf and activeProbesBuf are shared between irr and vis passes; keying
-  // on rayResultsBuf alone covers both because they are reallocated together.
-  if (c.blendVisG0Key !== gpu.rayResultsBuf) {
+  if (c.blendVisG0Key !== gpu.rayResultsBuf || c.blendVisG0KeyProbes !== gpu.activeProbesBuf) {
     c.blendVisG0 = gpu.device.createBindGroup({
       layout: gpu.blendVisPipeline.getBindGroupLayout(0),
       entries: [
@@ -241,6 +242,7 @@ export function dispatchProbeUpdateBlendVisPass(
       ],
     });
     c.blendVisG0Key = gpu.rayResultsBuf;
+    c.blendVisG0KeyProbes = gpu.activeProbesBuf;
   }
 
   // Group 1: atlas textures — changes every atlas swap (ping-pong) or resize.

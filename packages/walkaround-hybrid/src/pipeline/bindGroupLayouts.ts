@@ -41,6 +41,18 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
   return cache.frame;
 }
 
+export function getRisGiFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.risGiFrame) return cache.risGiFrame;
+  cache.risGiFrame = device.createBindGroupLayout({
+    label: 'ris-gi-frame-bgl',
+    entries: [
+      { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ],
+  });
+  return cache.risGiFrame;
+}
+
 export function getSceneBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.scene) return cache.scene;
   cache.scene = device.createBindGroupLayout({
@@ -226,11 +238,27 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
   return cache.hybridLayers;
 }
 
+export function getShadeHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.shadeHybridLayers) return cache.shadeHybridLayers;
+  cache.shadeHybridLayers = device.createBindGroupLayout({
+    label: 'shade-hybrid-layers-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.shadeHybridLayers;
+}
+
 /**
  * Sprint 9 — sample-budget BGL. Matches the @group(0) bindings in
  * sampleBudget.wgsl.ts:
  *   0 — SampleBudgetUniforms ubo (thresholds + screen size)
- *   1 — variance source (rg32float, sampled, unfilterable)
+ *   1 — variance source (rgba32float, sampled, unfilterable)
  *   2 — tier output (r32uint, write-only storage)
  *   3 — SampleCountUniforms ubo (sample-count counter)
  */
@@ -252,7 +280,7 @@ export function getSampleBudgetBindGroupLayout(
  *   0 — ResolveUniforms ubo (screen size + frame parity)
  *   1 — current radiance (rgba16float, sampled, unfilterable)
  *   2 — previous radiance (rgba16float, sampled, unfilterable)
- *   3 — motion vectors (rg32float, sampled, unfilterable)
+ *   3 — motion vectors (rgba32float, sampled, unfilterable)
  *   4 — resolved out (rgba16float, write-only storage)
  */
 export function getResolveBindGroupLayout(
@@ -271,7 +299,7 @@ export function getResolveBindGroupLayout(
  * Checkerboard pre-denoiser gap-fill BGL. Matches `cbPrefill.wgsl.ts`:
  *   0 — CbPrefillUniforms (uniform)
  *   1 — readAccum / previous-frame radiance (rgba16float sampled, unfilterable)
- *   2 — motionVectors (rg32float sampled, unfilterable)
+ *   2 — motionVectors (rgba32float sampled, unfilterable)
  *   3 — hdrColorTexture gap-fill output (rgba16float, write-only storage)
  */
 export function getCbPrefillBindGroupLayout(
@@ -289,7 +317,7 @@ export function getCbPrefillBindGroupLayout(
 /**
  * Motion-vectors pass BGL. Matches `motionVectors.wgsl.ts`:
  *   0 — gNormalDepth in (rgba16float sampled, unfilterable)
- *   1 — motion out (rg32float write-only storage)
+ *   1 — motion out (rgba32float write-only storage)
  *   2 — WalkaroundUBO (uniform)
  */
 export function getMotionVectorsBindGroupLayout(

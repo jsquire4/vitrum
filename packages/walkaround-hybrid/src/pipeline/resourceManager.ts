@@ -251,7 +251,7 @@ export interface SVGFFrameResources {
   /** T2.H1 — Per-pixel history length B (ping-pong pair). */
   svgfHistoryLengthTextureB: GPUTexture;
   /**
-   * T2.H1 — Per-pixel first + second luminance moments A (rg32float, full-res).
+   * T2.H1 — Per-pixel first + second luminance moments A (rgba32float, full-res).
    * Ping-pong pair with svgfMomentsTextureB.
    * M1 = E[L] (Eq. 4), M2 = E[L²] (Eq. 4). Used by variance pass Eq. 5.
    * Memory per texture at 1080p: 1920×1080×8 ≈ 16 MB.
@@ -269,13 +269,13 @@ export interface SVGFFrameResources {
   /** T2.H1 — Previous-frame EMA radiance B (ping-pong pair). */
   svgfPrevRadianceTextureB: GPUTexture;
   /**
-   * T2.H1 — SVGF variance output texture (rg32float, full-res). Written by
+   * T2.H1 — SVGF variance output texture (rgba32float, full-res). Written by
    * the 7×7 fallback pass; read by the à-trous chain.
    * Memory at 1080p: 1920×1080×8 ≈ 16 MB.
    */
   svgfVarianceTexture: GPUTexture;
   /**
-   * T2.H1 — Intermediate variance from moments (rg32float, full-res). Written
+   * T2.H1 — Intermediate variance from moments (rgba32float, full-res). Written
    * by svgfVarianceFromMomentsMain; read by svgf7x7FallbackMain.
    */
   svgfVarianceMomentsIntermedTexture: GPUTexture;
@@ -430,7 +430,7 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
   return device.createTexture({
     label: 'welford-variance',
     size: [w, h],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage:
       GPUTextureUsage.STORAGE_BINDING |
       GPUTextureUsage.TEXTURE_BINDING |

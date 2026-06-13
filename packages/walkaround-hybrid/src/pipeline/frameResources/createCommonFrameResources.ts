@@ -119,19 +119,19 @@ export function createCommonFrameResources(
   const atrousVarianceEstimateTexture = device.createTexture({
     label: 'atrous-variance-estimate',
     size: [width, height],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const motionVectorTexture = device.createTexture({
     label: 'motion-vectors-zero',
     size: [width, height],
-    format: 'rg32float',
+    format: 'rgba32float',
     usage:
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.STORAGE_BINDING,
   });
-  const rowBytes = 8 * width;
+  const rowBytes = 16 * width;
   const bytesPerRow = Math.max(256, Math.ceil(rowBytes / 256) * 256);
   const motionZero = new Uint8Array(bytesPerRow * height);
   device.queue.writeTexture(

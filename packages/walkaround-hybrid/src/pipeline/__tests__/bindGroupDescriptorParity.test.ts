@@ -124,7 +124,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     bvhRoughMetalTextureView: view,
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
-    analyticLightsBuffer: buf,
+    analyticLightsTextureView: view,
     // B3 — directional IBL env resources (bindings 15-19).
     envMapTextureView: view, envMarginalTextureView: view, envConditionalTextureView: view,
     envSampler: sampler, envParamsBuffer: buf,

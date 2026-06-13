@@ -498,7 +498,7 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
 
     // Jittered uniform area sample (deterministic per emitter index).
     let s0 = pcgHashToF32Ddgi(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
-    let s1 = pcgHashToF32Ddgi(seed0 * 7919u ^ (ei * 0x85EBCA6Bu + 0x2u));
+    let s1 = pcgHashToF32Ddgi((seed0 * 7919u) ^ (ei * 0x85EBCA6Bu + 0x2u));
     let su = sqrt(s0);
     let pos = (1.0 - su) * vA + (su * (1.0 - s1)) * vB + (su * s1) * vC;
 

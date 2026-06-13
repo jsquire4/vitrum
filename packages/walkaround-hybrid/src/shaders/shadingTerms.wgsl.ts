@@ -36,7 +36,7 @@
  *     tlasInstanceLocalToWorld : array<vec4f>   @group(1) @binding(10)
  *     bvh_normal     : array<vec4f>             @group(1) @binding(11)
  *     bvh_emissive   : texture_2d<f32>          @group(1) @binding(12)
- *     analytic_lights: array<vec4f>             @group(1) @binding(13)
+ *     analytic_lights: texture_2d<f32>          @group(1) @binding(13)
  *     bvh_material   : texture_2d<u32>          @group(1) @binding(14)
  *
  *   UBO (group 2):
@@ -153,23 +153,27 @@ fn lo_analyticNEE(
   // (= baseColor when metal). Glass still skips here (its Lo_emit / refracted
   // path drives it; refracted analytic NEE is out of scope this pass).
   if (isGlass) { return vec3f(0.0); }
-  // V28 H41-spot FIX (2026-06-09): the struct is 4×vec4f per entry (packer
-  // ANALYTIC_LIGHT_STRIDE_FLOATS=16 floats = 4 vec4s). arrayLength on an
-  // array<vec4f> returns the VEC4 count, so entry count = arrayLength/4 (was /16,
-  // which read float-stride as vec4-stride → count=0 for 1-3 lights → the analytic
-  // DIRECT NEE returned nothing; point scenes only lit via DDGI-indirect, spot
-  // scenes stayed dark). Per-entry vec4 layout: [base+0]=pos, [base+1]=color×Le,
-  // [base+2]=dir.xyz+cosInner, [base+3]=cosOuter.
-  let count = arrayLength(&analytic_lights) / 4u;
+  // V28/H41 analytic-light texture layout: texel 0 is a self-describing header
+  // (x = light count), followed by 4×vec4f per point/spot light. The header is
+  // required because the CPU side must allocate a non-empty placeholder texture
+  // for zero-light scenes; deriving count from texture dimensions would treat
+  // that placeholder as a real zeroed light.
+  let analyticDims = textureDimensions(analytic_lights);
+  let analyticHeader = textureLoad(analytic_lights, vec2i(0, 0), 0);
+  let count = u32(max(analyticHeader.x, 0.0));
   if (count == 0u) { return vec3f(0.0); }
   var Lo = vec3f(0.0);
   for (var li = 0u; li < count; li++) {
-    let base = li * 4u;
-    let lightPos  = analytic_lights[base + 0u].xyz;
-    let lightLe   = analytic_lights[base + 1u].xyz;      // pre-multiplied color×intensity
-    let lightDir  = analytic_lights[base + 2u].xyz;      // toward-light direction (spot axis); (0,0,0) = point
-    let cosInner  = analytic_lights[base + 2u].w;        // 1.0 for point
-    let cosOuter  = analytic_lights[base + 3u].x;        // 0.0 for point
+    let base = 1u + li * 4u;
+    let light0 = textureLoad(analytic_lights, vec2i(i32(base % analyticDims.x), i32(base / analyticDims.x)), 0);
+    let light1 = textureLoad(analytic_lights, vec2i(i32((base + 1u) % analyticDims.x), i32((base + 1u) / analyticDims.x)), 0);
+    let light2 = textureLoad(analytic_lights, vec2i(i32((base + 2u) % analyticDims.x), i32((base + 2u) / analyticDims.x)), 0);
+    let light3 = textureLoad(analytic_lights, vec2i(i32((base + 3u) % analyticDims.x), i32((base + 3u) / analyticDims.x)), 0);
+    let lightPos  = light0.xyz;
+    let lightLe   = light1.xyz;
+    let lightDir  = light2.xyz;
+    let cosInner  = light2.w;
+    let cosOuter  = light3.x;
 
     let toL  = lightPos - pos;
     let dist = length(toL);

@@ -133,10 +133,12 @@ export interface PassDispatchContext {
   readonly inputs: PipelineFrameInputs;
   /** Pre-built frame/scene/ubo bind groups — shared by RIS/temporal/spatial/shade. */
   readonly frameBindGroup: GPUBindGroup;
+  readonly risGiFrameBindGroup: GPUBindGroup;
   readonly sceneBindGroup: GPUBindGroup;
   readonly uboBindGroup: GPUBindGroup;
   /** Pre-built DDGI hybrid-layers bind group (slot 3) — used by gi-ris + shade. */
   readonly hybridLayersBindGroup: GPUBindGroup;
+  readonly shadeHybridLayersBindGroup: GPUBindGroup;
   /** Pre-built light-tree bind group (slot 3) — RIS-only DI light selection. */
   readonly lightTreeBindGroup: GPUBindGroup;
   /** Workgroup counts — 8×8 (wgX/wgY), 16×16 (wgX16/wgY16),
@@ -222,6 +224,7 @@ export function dispatchSharedBindGroupPass(
     readonly label: PassLabel;
     /** Bind the DDGI hybrid-layers group at slot 3 (gi-ris + shade). */
     readonly useHybridLayers?: boolean;
+    readonly useShadeHybridLayers?: boolean;
     /** Dispatch at half resolution (`halfWgX/halfWgY`) instead of full
      *  (`wgX/wgY`). Used by the Sprint-16 gi-ris pass. */
     readonly halfRes?: boolean;
@@ -243,7 +246,7 @@ export function dispatchSharedBindGroupPass(
 ): void {
   const {
     encoder, computeDesc,
-    frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
+    frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup, shadeHybridLayersBindGroup,
     wgX, wgY, halfWgX, halfWgY,
   } = ctx;
   const pass = encoder.beginComputePass(computeDesc(opts.label));
@@ -251,7 +254,9 @@ export function dispatchSharedBindGroupPass(
   pass.setBindGroup(0, frameBindGroup);
   pass.setBindGroup(1, sceneBindGroup);
   pass.setBindGroup(2, uboBindGroup);
-  if (opts.useHybridLayers) pass.setBindGroup(3, hybridLayersBindGroup);
+  if (opts.useHybridLayers) {
+    pass.setBindGroup(3, opts.useShadeHybridLayers ? shadeHybridLayersBindGroup : hybridLayersBindGroup);
+  }
   if (opts.extraGroups) {
     for (const { slot, group } of opts.extraGroups) pass.setBindGroup(slot, group);
   }
@@ -281,6 +286,7 @@ export abstract class SharedBindGroupPass implements Pass {
 
   /** Bind the hybrid-layers group at slot 3 (gi-ris + shade override). */
   protected readonly useHybridLayers: boolean = false;
+  protected readonly useShadeHybridLayers: boolean = false;
   /** Dispatch at half resolution (gi-ris override). */
   protected readonly halfRes: boolean = false;
 
@@ -301,6 +307,7 @@ export abstract class SharedBindGroupPass implements Pass {
       dispatchSharedBindGroupPass(ctx, this._pipeline, {
         label,
         useHybridLayers: this.useHybridLayers,
+        useShadeHybridLayers: this.useShadeHybridLayers,
         halfRes: this.halfRes,
       });
     }

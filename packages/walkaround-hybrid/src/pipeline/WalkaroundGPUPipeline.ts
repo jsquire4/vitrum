@@ -784,7 +784,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *   normalDepth   — rgba16float, xyz = world-space normal, w = linear depth.
    *   albedo        — rgba16float, demodulated visible-point diffuse albedo
    *                   (Schied 2017 §4.1) — lighting × albedo = final colour.
-   *   motionVectors — rg32float, (dx, dy) screen-space pixels.
+   *   motionVectors — rgba32float, (dx, dy) screen-space pixels in .xy.
    * Fresh views per call (cheap); owned by the pipeline — callers MUST NOT
    * destroy them, and the handles are invalidated on the next setScene / resize
    * / dispose. Null before initialize() resolves.
@@ -1682,9 +1682,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
     const {
       frame: bgFrame,
+      risGiFrame: bgRisGiFrame,
       scene: bgScene,
       ubo: bgUbo,
       hybridLayers: bgHybrid,
+      shadeHybridLayers: bgShadeHybrid,
     } = buildPerFrameBindGroups(
       d,
       this._bglCache,
@@ -1782,9 +1784,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       resources: this._res,
       inputs,
       frameBindGroup: bgFrame,
+      risGiFrameBindGroup: bgRisGiFrame,
       sceneBindGroup: bgScene,
       uboBindGroup: bgUbo,
       hybridLayersBindGroup: bgHybrid,
+      shadeHybridLayersBindGroup: bgShadeHybrid,
       lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
       // Checkerboard sparse dispatch state. When ON, ShadePass + SpatialReservoirPass

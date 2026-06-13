@@ -13,12 +13,14 @@
 import { defineUbo } from '@vitrum/shared-samplers';
 import {
   getFrameBindGroupLayout,
+  getRisGiFrameBindGroupLayout,
   getSceneBindGroupLayout,
   getUboBindGroupLayout,
   getAtrousBindGroupLayout,
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
+  getShadeHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
   getCbPrefillBindGroupLayout,
@@ -112,6 +114,23 @@ export function buildFrameBindGroup(
   ]);
 }
 
+export function buildRisGiFrameBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  gNormalDepthTexture: GPUTexture,
+  reservoirGiCurrentBuffer: GPUBuffer,
+  viewCache?: TextureViewCache,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'ris-gi-frame-bg',
+    layout: getRisGiFrameBindGroupLayout(device, cache),
+    entries: [
+      { binding: 10, resource: textureView(gNormalDepthTexture, viewCache) },
+      { binding: 11, resource: { buffer: reservoirGiCurrentBuffer } },
+    ],
+  });
+}
+
 // ── Scene bind group ─────────────────────────────────────────────────────────
 
 interface SceneBindGroupResources {
@@ -134,8 +153,7 @@ interface SceneBindGroupResources {
   tlasBlasRootsBuffer: GPUBuffer;
   tlasInstanceWorldToLocalBuffer: GPUBuffer;
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
-  /** H41 — packed point/spot analytic lights (binding 13). 64-byte stride. */
-  analyticLightsBuffer: GPUBuffer;
+  analyticLightsTextureView: GPUTextureView;
   /** B3 — directional IBL (bindings 15-19). Placeholders + envParams.hasEnv=0
    *  for non-HDRI scenes (scalar-tint fallback, no-HDRI byte-identity). */
   envMapTextureView: GPUTextureView;
@@ -164,7 +182,7 @@ export function buildSceneBindGroup(
     { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
     { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
-    { buffer: r.analyticLightsBuffer },             // 13 H41 analytic point/spot lights for shade NEE
+    r.analyticLightsTextureView,                    // 13 analytic point/spot lights
     r.bvhRoughMetalTextureView,                     // 14 B1 per-tri roughness+metalness (r32uint texture)
     r.envMapTextureView,                            // 15 B3 directional IBL radiance + per-texel pdf
     r.envMarginalTextureView,                       // 16 B3 marginal inverse-CDF
@@ -427,6 +445,28 @@ export function buildHybridLayersBindGroup(
   });
 }
 
+export function buildShadeHybridLayersBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  r: HybridLayersResources,
+  viewCache?: TextureViewCache,
+): GPUBindGroup {
+  const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;
+  const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderVisRgba16f;
+  return device.createBindGroup({
+    label: 'shade-hybrid-layers-bg',
+    layout: getShadeHybridLayersBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: textureView(irrTex, viewCache) },
+      { binding: 1, resource: textureView(visTex, viewCache) },
+      { binding: 2, resource: r.nearestSampler },
+      { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
+      { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
+      { binding: 5, resource: { buffer: r.rcParamsBuffer } },
+    ],
+  });
+}
+
 // ── Composite bind group ─────────────────────────────────────────────────────
 
 export function buildCompositeBindGroup(
@@ -455,7 +495,7 @@ export function buildSampleBudgetBindGroup(
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'sampleBudget', getSampleBudgetBindGroupLayout(device, cache), [
     { buffer: budgetUbo },        // 0
-    varianceView,                 // 1 welford variance source (rg32float)
+    varianceView,                 // 1 welford variance source (rgba32float)
     tierWriteView,                // 2 tier output (r32uint)
     { buffer: sampleCountUbo },   // 3
   ]);
@@ -628,7 +668,7 @@ export function buildIndirectCombineBindGroup(
 //   1 = color output (rgba16float, storage write)
 //   2 = gNormalDepth (rgba32float or rgba16float, texture_2d) — normal
 //   3 = gNormalDepth (same view) — depth
-//   4 = variance estimate (rg32float, texture_2d)
+//   4 = variance estimate (rgba32float, texture_2d)
 //   5 = AtrousVarianceAtrousUBO (uniform)
 
 /**

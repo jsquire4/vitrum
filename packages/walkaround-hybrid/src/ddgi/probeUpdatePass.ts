@@ -452,8 +452,8 @@ export class ProbeUpdatePass {
     });
 
     // Allocate placeholder buffers (1 element each, replaced on first update).
-    const makeBuffer = (size: number, usage: number) =>
-      device.createBuffer({ size: Math.max(size, 16), usage });
+    const makeBuffer = (label: string, size: number, usage: number) =>
+      device.createBuffer({ label, size: Math.max(size, 16), usage });
 
     const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
@@ -476,27 +476,27 @@ export class ProbeUpdatePass {
       ...pipelines,
       irrScratchTex:  null,
       visScratchTex:  null,
-      bvhBuf:          makeBuffer(16, RO),
-      posBuf:          makeBuffer(12, RO),
-      idxBuf:          makeBuffer(12, RO),
-      normBuf:         makeBuffer(12, RO),
-      matIdBuf:        makeBuffer(4,  RO),
-      tlasNodesBuf:    makeBuffer(16, RO),
-      tlasInstIdxBuf:  makeBuffer(16, RO),
-      tlasBlasRootsBuf: makeBuffer(16, RO),
-      tlasW2lBuf:      makeBuffer(16, RO),
-      tlasL2wBuf:      makeBuffer(16, RO),
-      traceParamsBuf:  makeBuffer(16, UB),
-      materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:       makeBuffer(DDGI_PROBE_LIGHTS_BUFFER_BYTES, UB),
-      gridParamsBuf:   makeBuffer(64, UB),
-      frameParamsBuf:  makeBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
-      blendParamsBuf:  makeBuffer(16, UB),
-      borderVisUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
-      rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
-      activeProbesBuf: makeBuffer(4, RO),
+      bvhBuf:          makeBuffer('ddgi.bvh.nodes.placeholder', 16, RO),
+      posBuf:          makeBuffer('ddgi.bvh.positions.placeholder', 12, RO),
+      idxBuf:          makeBuffer('ddgi.bvh.indices.placeholder', 12, RO),
+      normBuf:         makeBuffer('ddgi.bvh.normals.placeholder', 12, RO),
+      matIdBuf:        makeBuffer('ddgi.bvh.material-ids.placeholder', 4,  RO),
+      tlasNodesBuf:    makeBuffer('ddgi.tlas.nodes.placeholder', 16, RO),
+      tlasInstIdxBuf:  makeBuffer('ddgi.tlas.instance-indices.placeholder', 16, RO),
+      tlasBlasRootsBuf: makeBuffer('ddgi.tlas.blas-roots.placeholder', 16, RO),
+      tlasW2lBuf:      makeBuffer('ddgi.tlas.world-to-local.placeholder', 16, RO),
+      tlasL2wBuf:      makeBuffer('ddgi.tlas.local-to-world.placeholder', 16, RO),
+      traceParamsBuf:  makeBuffer('ddgi.trace-params', 16, UB),
+      materialsBuf:    makeBuffer('ddgi.materials', this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
+      lightsBuf:       makeBuffer('ddgi.lights', DDGI_PROBE_LIGHTS_BUFFER_BYTES, UB),
+      gridParamsBuf:   makeBuffer('ddgi.grid-params', 64, UB),
+      frameParamsBuf:  makeBuffer('ddgi.frame-params', DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
+      blendParamsBuf:  makeBuffer('ddgi.blend-params', 16, UB),
+      borderVisUboBuf: makeBuffer('ddgi.border-vis-ubo', DDGI_BORDER_UBO_BYTES, UB),
+      rayResultsBuf:   makeBuffer('ddgi.ray-results', PROBE_RAY_STRIDE_BYTES, RW),
+      activeProbesBuf: makeBuffer('ddgi.active-probes', 4, RO),
       // H18 — placeholder (16 bytes); real data uploaded by setEmitterTris().
-      emitterTrisBuf:  makeBuffer(16, RO),
+      emitterTrisBuf:  makeBuffer('ddgi.emitter-tris.placeholder', 16, RO),
       emitterTrisCount: 0,
       linearSampler,
       // Wave 4 — env map: placeholder initially; real view + sampler wired via
@@ -574,6 +574,7 @@ export class ProbeUpdatePass {
     if (maxProbes !== this._maxProbes) {
       this._gpu.rayResultsBuf.destroy();
       this._gpu.rayResultsBuf = device.createBuffer({
+        label: 'ddgi.ray-results',
         size: maxProbes * RAYS_PER_PROBE * PROBE_RAY_STRIDE_BYTES,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
@@ -593,6 +594,7 @@ export class ProbeUpdatePass {
     if (this._gpu.activeProbesBuf.size < activeSize) {
       this._gpu.activeProbesBuf.destroy();
       this._gpu.activeProbesBuf = device.createBuffer({
+        label: 'ddgi.active-probes',
         size: activeSize,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
@@ -767,6 +769,7 @@ export class ProbeUpdatePass {
     if (gpu.emitterTrisBuf.size < needed) {
       gpu.emitterTrisBuf.destroy();
       gpu.emitterTrisBuf = device.createBuffer({
+        label: 'ddgi.emitter-tris',
         size: needed,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
@@ -903,6 +906,7 @@ export class ProbeUpdatePass {
     const unpadded = w * 8; // rgba16float = 8 bytes/texel
     const bytesPerRow = Math.ceil(unpadded / 256) * 256;
     const staging = device.createBuffer({
+      label: 'ddgi.readback.rgba16f',
       size: bytesPerRow * h,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });

@@ -14,7 +14,7 @@
  *   gap pixel:    (px + py) & 1u != frameParity
  *
  * Motion vector / reprojection:
- *   The shader accepts a motion-vector storage texture (rg32float, r=dx,
+ *   The shader accepts a motion-vector texture (rgba32float, r=dx,
  *   g=dy in NDC space). If the binding is present and the motion-vector
  *   magnitude is non-zero, the previous-frame radiance is sampled at
  *   (px - round(dx * screenWidth), py - round(dy * screenHeight)).
@@ -36,8 +36,8 @@
  *   available from the host.
  *
  * Bindings use `texture_2d<f32>` (sampled, unfilterable-float) for all
- * reads — rgba16float and rg32float are tier-1 storage formats whose
- * read access is not portably supported across WebGPU browsers. The
+ * reads — storage-read access is not portably supported across WebGPU
+ * browsers for every relevant format. The
  * upstream textures (writeAccum, readAccum, motionVectorTexture) all
  * carry TEXTURE_BINDING usage for exactly this path.
  *
@@ -67,7 +67,7 @@ struct ResolveUniforms {
 // Previous-frame accumulated radiance (rgba16float). Source: readAccum.
 @group(0) @binding(2) var           t_prev_radiance:    texture_2d<f32>;
 
-// Motion vectors (rg32float). r=dx, g=dy in NDC [-1..1] space. Zero-filled
+// Motion vectors (rgba32float). r=dx, g=dy in NDC [-1..1] space. Zero-filled
 // fallback when no motion-vector pass is wired (current host state).
 @group(0) @binding(3) var           t_motion_vectors:   texture_2d<f32>;
 

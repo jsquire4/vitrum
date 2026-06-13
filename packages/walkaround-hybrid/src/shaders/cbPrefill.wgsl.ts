@@ -13,7 +13,7 @@
  * Binding layout (4 bindings, own `cb-prefill` BGL):
  *   0  CbPrefillUniforms UBO   (screenW/H, frameParity — 12 bytes, padded to 16)
  *   1  readAccum in            (rgba16float sampled — previous-frame radiance)
- *   2  motionVectorTexture in  (rg32float sampled)
+ *   2  motionVectorTexture in  (rgba32float sampled; xy stores motion)
  *   3  hdrColorTexture out     (rgba16float storage write — gap pixels filled)
  *
  * NOTE: hdrColorTexture is not bound as a sampled input here. Only gap pixels
@@ -54,7 +54,7 @@ struct CbPrefillUniforms {
 // Source for temporal reprojection of gap pixels.
 @group(0) @binding(1) var           t_prev_radiance: texture_2d<f32>;
 
-// Motion vectors (rg32float, sampled). r=dx_ndc, g=dy_ndc.
+// Motion vectors (rgba32float, sampled). r=dx_ndc, g=dy_ndc.
 @group(0) @binding(2) var           t_motion_vec:    texture_2d<f32>;
 
 // hdrColorTexture (rgba16float, storage write).

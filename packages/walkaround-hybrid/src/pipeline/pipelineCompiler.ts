@@ -55,12 +55,14 @@ import {
 } from './wgslModules.js';
 import {
   getFrameBindGroupLayout,
+  getRisGiFrameBindGroupLayout,
   getSceneBindGroupLayout,
   getUboBindGroupLayout,
   getAtrousBindGroupLayout,
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
+  getShadeHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
   getCbPrefillBindGroupLayout,
@@ -245,7 +247,7 @@ export async function compilePipelines(
       getFrameBindGroupLayout(device, bglCache),
       getSceneBindGroupLayout(device, bglCache),
       getUboBindGroupLayout(device, bglCache),
-      getHybridLayersBindGroupLayout(device, bglCache),
+      getShadeHybridLayersBindGroupLayout(device, bglCache),
     ],
   });
   const atrousLayout = device.createPipelineLayout({
@@ -381,14 +383,21 @@ export async function compilePipelines(
   const risGiLayout = nrcOn
     ? device.createPipelineLayout({
         bindGroupLayouts: [
-          getFrameBindGroupLayout(device, bglCache),
+          getRisGiFrameBindGroupLayout(device, bglCache),
           getSceneBindGroupLayout(device, bglCache),
           getUboBindGroupLayout(device, bglCache),
           getHybridLayersBindGroupLayout(device, bglCache),
           getNrcBindGroupLayout(device, bglCache),
         ],
       })
-    : shadeLayout;
+    : device.createPipelineLayout({
+        bindGroupLayouts: [
+          getRisGiFrameBindGroupLayout(device, bglCache),
+          getSceneBindGroupLayout(device, bglCache),
+          getUboBindGroupLayout(device, bglCache),
+          getHybridLayersBindGroupLayout(device, bglCache),
+        ],
+      });
   pipelineDraft['risGiPipeline'] = await device.createComputePipelineAsync({
     label: 'risGi', layout: risGiLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },

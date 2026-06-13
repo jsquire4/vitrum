@@ -16,7 +16,7 @@
  *   binding 0 — texture_2d<f32>                        currColor    (rgba16float noisy current frame)
  *   binding 1 — texture_2d<u32>                        historyIn    (r16uint history length)
  *   binding 2 — texture_2d<f32>                        varianceIn   (rg32float from svgfVarianceFromMomentsMain)
- *   binding 3 — texture_storage_2d<rg32float, write>   varianceOut  (merged output)
+ *   binding 3 — texture_storage_2d<rgba32float, write> varianceOut  (merged output)
  *
  * References:
  *   Schied et al. HPG 2017 §4.3.
@@ -40,7 +40,7 @@ const SVGF_SPATIAL_THRESHOLD: u32 = ${SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD}u;
 @group(0) @binding(0) var sfb_currColor:    texture_2d<f32>;
 @group(0) @binding(1) var sfb_historyIn:    texture_2d<u32>;
 @group(0) @binding(2) var sfb_varianceIn:   texture_2d<f32>;
-@group(0) @binding(3) var sfb_varianceOut:  texture_storage_2d<rg32float, write>;
+@group(0) @binding(3) var sfb_varianceOut:  texture_storage_2d<rgba32float, write>;
 
 @compute @workgroup_size(16, 16, 1)
 fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
