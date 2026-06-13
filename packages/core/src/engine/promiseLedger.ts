@@ -551,7 +551,7 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   transmissionMap: 'unsupported',
   thicknessMap: 'unsupported',
   emissiveMap: 'approximate', // shared baseColor UV transform
-  alphaMap: 'unsupported',
+  alphaMap: 'approximate',    // shared baseColor UV transform
   aoMap: 'approximate',       // shared baseColor UV transform
   aoMapIntensity: 'native',
   clearcoatMap: 'unsupported',

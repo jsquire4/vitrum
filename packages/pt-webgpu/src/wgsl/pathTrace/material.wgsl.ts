@@ -316,7 +316,8 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}      ← D3 (-1 = no map)
 //   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
 //   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
-const MATERIAL_TEX_VEC4_STRIDE = 6u;
+//   6: {alphaMapIdx, _, _, _}                             (-1 = no map)
+const MATERIAL_TEX_VEC4_STRIDE = 7u;
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
 // interpolate the per-vertex UV by the hit barycentrics, apply the material's
@@ -550,16 +551,28 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   return select(shadingNormal, perturbed / plen, plen > 1e-6);
 }
 
+// Standalone alpha map (LINEAR coverage data) — descriptor vec4[6].x.
+// Multiplies the baseColor texture alpha and material opacity in alphaMode
+// mask/blend. Returns 1 when absent, so legacy alpha behavior is unchanged.
+fn sampleAlphaTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 6u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let alphaIdx = i32(materialTexDescriptors[base + 6u].x);
+  if (alphaIdx < 0) { return 1.0; }
+  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW).r, 0.0, 1.0);
+}
+
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes
 // straight through, as if there were no surface here)? Drives glTF alphaMode:
 //   opaque (0) → never (returns false immediately → opaque is byte-identical).
-//   mask   (1) → pass through where baseColorTexAlpha·opacity < alphaCutoff
+//   mask   (1) → pass through where baseColorTexAlpha·alphaMap·opacity < alphaCutoff
 //                (hard cutout — foliage, fences, decals).
 //   blend  (2) → STOCHASTIC pass-through with probability 1 − alpha·opacity
 //                (unbiased screen-door transparency in a path tracer; the
 //                converged mean equals true alpha compositing).
-// The base-color texture's .a supplies the per-texel alpha (1 when no map, so an
-// untextured material with material.opacity<1 still blends/cuts by opacity).
+// The base-color texture's .a and standalone alphaMap supply per-texel alpha
+// (both 1 when absent, so an untextured material with material.opacity<1 still
+// blends/cuts by opacity).
 // Ref: glTF 2.0 §3.9.4 (alphaMode); PBR screen-door / stochastic transparency.
 fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, rng: ptr<function, u32>) -> bool {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
@@ -568,7 +581,9 @@ fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, rng: ptr<funct
   if (alphaMode == 0u) { return false; } // opaque — byte-identical
   let alphaCutoff = materialTexDescriptors[base + 1u].y;
   let opacity = materialTexDescriptors[base + 1u].z;
-  let alpha = sampleBaseColorTexture(matId, triIndex, baryVW).a * opacity;
+  let alpha = sampleBaseColorTexture(matId, triIndex, baryVW).a *
+    sampleAlphaTexture(matId, triIndex, baryVW) *
+    opacity;
   if (alphaMode == 1u) { return alpha < alphaCutoff; }   // mask
   return rand_f32(rng) >= alpha;                          // blend (stochastic)
 }

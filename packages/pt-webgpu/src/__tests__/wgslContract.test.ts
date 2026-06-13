@@ -213,8 +213,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
     // analytic sampleSky gradient. Missing/invalid env maps now return black
     // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
-    expect(digest).toBe('4aae12e9561bc587aaff6118369715ac62b310c17158f7e11b2e47d66ac9592c');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326468);
+    // Re-pinned 2026-06-12: standalone alphaMap is now sampled as LINEAR
+    // coverage data and multiplies baseColor alpha + opacity in alphaMode paths.
+    expect(digest).toBe('86dbb1d2648bcd8e6333e96862baacd92a32d43a4e009d533465c09019b8e00e');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(327234);
   });
 });
 
