@@ -249,7 +249,7 @@ export const GAP_CLOSURE_SCENARIOS = [
  * PR-6 primary-release hybrid benchmarks (plan/primary-release-and-webgpu-pt-parity).
  * Host capture pages should read `vitrumScenario` + `vitrumBackend=walkaround`.
  */
-/** WG-0.2 — pt-webgpu scenarios that use `capturePtWebgpu.mjs` when GPU capture is on. */
+/** WG-0.2 — pt-webgpu scenarios captured by the configured Playwright adapter when GPU capture is on. */
 export const WG0_PT_WEBGPU_SCENARIOS = [
   'ptwgpu-parity-material-fields',
   'rfe03-layered-front-back',
