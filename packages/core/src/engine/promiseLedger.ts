@@ -539,10 +539,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // slab-thickness approximation knob has no consumption site.
   thickness: 'unsupported',
   baseColorMap: 'native',
-  // Sampled + TBN-applied with glTF normalTexture.scale and per-map UV metadata.
-  // Still approximate until the backend consumes authored tangent.xyzw /
-  // handedness instead of deriving a frame from positions + UVs at the hit.
-  normalMap: 'approximate',
+  // Sampled + TBN-applied with glTF normalTexture.scale, per-map UV metadata,
+  // and authored/generated tangent.xyzw handedness when available. Legacy or
+  // tangentless scenes fall back to UV-gradient frame derivation.
+  normalMap: 'native',
   normalScale: 'native',
   // Single ORM slot (glTF combined: G=roughness, B=metallic).
   roughnessMap: 'approximate',
@@ -560,9 +560,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // evidence carry the same texture-modulated parameters end-to-end.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
-  // Sampled in the full-tier megakernel clearcoat BRDF/PDF/source sampler, but
-  // still derived from the hit tangent frame (not authored tangent.xyzw) and not
-  // carried by every specialty payload schema.
+  // Sampled in the full-tier megakernel clearcoat BRDF/PDF/source sampler, using
+  // authored/generated tangent.xyzw when present; still not carried by every
+  // specialty payload schema.
   clearcoatNormalMap: 'approximate',
   clearcoatNormalScale: 'native',
   sheenColorMap: 'approximate',

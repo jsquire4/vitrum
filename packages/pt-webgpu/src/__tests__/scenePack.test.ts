@@ -34,9 +34,34 @@ describe('buildPackedScene core packing', () => {
     const packed = buildPackedScene(makeScene());
     expect(packed.triangleCount).toBe(1);
     expect(Array.from(packed.indices)).toEqual([0, 1, 2, 0]);
+    expect(packed.tangents.length).toBe(packed.positions.length);
+    expect(Array.from(packed.tangents)).toEqual(new Array(packed.positions.length).fill(0));
     expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (KHR specular scalars)
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[4]).toBeCloseTo(0.4);
+  });
+
+  it('preserves authored tangents for full-tier material normal reconstruction', () => {
+    const scene = makeScene();
+    const mesh = scene.primitives[0]!;
+    if (mesh.kind !== 'mesh') throw new Error('expected mesh');
+    const withTangents: Scene = {
+      ...scene,
+      primitives: [{
+        ...mesh,
+        tangents: new Float32Array([
+          1, 0, 0, -1,
+          1, 0, 0, -1,
+          1, 0, 0, -1,
+        ]),
+      }],
+    };
+    const packed = buildPackedScene(withTangents);
+    expect(Array.from(packed.tangents.slice(0, 12))).toEqual([
+      1, 0, 0, -1,
+      1, 0, 0, -1,
+      1, 0, 0, -1,
+    ]);
   });
 
   it('packs analytic primitive payload for shader intersections', () => {

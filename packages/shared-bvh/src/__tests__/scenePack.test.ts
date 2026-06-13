@@ -68,6 +68,39 @@ function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['pri
 }
 
 describe('packSceneFromCore (SP-*)', () => {
+  it('packs authored tangent.xyzw beside positions/normals/uvs and defaults missing tangents to zero', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'with-tangents',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          tangents: new Float32Array([
+            1, 0, 0, -1,
+            0, 1, 0, 1,
+            1, 1, 0, -1,
+          ]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+        unitTriMesh('without-tangents', translate(2)),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(packed.tangents.length).toBe(packed.positions.length);
+    expect(Array.from(packed.tangents.slice(0, 12))).toEqual([
+      1, 0, 0, -1,
+      0, 1, 0, 1,
+      1, 1, 0, -1,
+    ]);
+    expect(Array.from(packed.tangents.slice(12, 24))).toEqual(new Array(12).fill(0));
+  });
+
   it('SP-1: two static boxes build TLAS and nearest instance matches oracle', () => {
     const scene: Scene = {
       primitives: [

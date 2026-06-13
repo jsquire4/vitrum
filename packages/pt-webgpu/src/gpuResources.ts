@@ -754,7 +754,7 @@ export class GpuResources {
         ],
       });
       // Group 3 — WS2 light-tree node buffer + P2 material textures (per-vertex
-      // UVs, per-material descriptors, the baseColor texture_2d_array, a sampler).
+      // UVs/tangents, per-material descriptors, the baseColor texture_2d_array, a sampler).
       // A DEDICATED group so the lite tier (which never reaches this branch) carries
       // no group-3 layout, and so adding it leaves groups 0/1/2 byte-identical.
       // A4 — Group 3 extended with SPPM bindings 6/7/8 (photonCells + cellCounters
@@ -776,6 +776,7 @@ export class GpuResources {
           _buf(7, _rw), // A4: sppmCellCounters (read_write storage, atomic)
           _buf(8, _uniform), // A4: sppmStats (uniform)
           _buf(9, _rw), // A4-progressive: sppmPixelStats (read_write storage)
+          _buf(10, _ro), // tangent.xyzw (authored/generated TBN handedness)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -1334,6 +1335,7 @@ export class GpuResources {
           { binding: 7, resource: { buffer: this.sppmCellCountersBuffer! } },
           { binding: 8, resource: { buffer: this.sppmStatsBuffer! } },
           { binding: 9, resource: { buffer: this.sppmPixelStatsBuffer! } },
+          { binding: 10, resource: { buffer: sb.tangentsBuffer } },
         ],
       });
     }

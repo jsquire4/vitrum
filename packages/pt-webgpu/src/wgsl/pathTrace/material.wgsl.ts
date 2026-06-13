@@ -311,6 +311,7 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 @group(3) @binding(3) var materialTextures: texture_2d_array<f32>;        // sRGB (baseColor + emissive)
 @group(3) @binding(4) var materialTexSampler: sampler;                    // shared by both arrays
 @group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>;  // LINEAR (normal + ORM)
+@group(3) @binding(10) var<storage, read> meshTangents: array<vec4f>;      // xyz = tangent, w = bitangent sign
 
 // vec4s per material in the descriptor buffer — MUST match the TS
 // MATERIAL_TEX_VEC4_STRIDE in scene/materialTextures.ts.
@@ -413,21 +414,50 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW, MATERIAL_TEX_UV_ORM, materialTexDescriptors[base + 8u].zw, materialTexDescriptors[base + 13u].zw);
 }
 
-// D9.3 — shared tangent-frame derivation for applyNormalMap + applyBumpMap.
-// Builds the world-space (tangent, bitangent) pair for a triangle hit using
-// Lengyel's method: position edges + UV deltas → raw tangent → TLAS instance
-// transform → Gram-Schmidt against 'normal'.  Both map functions share this
-// exact ~25-line block; extracting it keeps the formulas in one place.
+// D9.3 / H52 — shared tangent-frame builder for normal/bump/clearcoat-normal maps.
+// Prefer authored/generated glTF tangent.xyzw (including handedness) when present;
+// fall back to Lengyel UV-gradient derivation for old scenes with no tangent data.
 // Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
 struct ShadingTangentFrame {
   tangent: vec3f,
   bitangent: vec3f,
   valid: bool,
 }
-fn buildShadingTangentFrame(triIndex: u32, normal: vec3f, instanceIndex: u32) -> ShadingTangentFrame {
+fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, instanceIndex: u32) -> ShadingTangentFrame {
   var frame: ShadingTangentFrame;
   frame.valid = false;
   let tri = indices[triIndex];
+  if (tri.x < arrayLength(&meshTangents) && tri.y < arrayLength(&meshTangents) && tri.z < arrayLength(&meshTangents)) {
+    let v = baryVW.x;
+    let w = baryVW.y;
+    let u = 1.0 - v - w;
+    let ta = meshTangents[tri.x];
+    let tb = meshTangents[tri.y];
+    let tc = meshTangents[tri.z];
+    var tangent = ta.xyz * u + tb.xyz * v + tc.xyz * w;
+    let handednessRaw = ta.w * u + tb.w * v + tc.w * w;
+    if (length(tangent) > 1e-8 && abs(handednessRaw) > 0.5) {
+      if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
+        let m = instanceIndex * 4u;
+        if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
+          let l2w0 = tlasInstanceLocalToWorld[m];
+          let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+          let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+          tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
+        }
+      }
+      tangent = tangent - normal * dot(normal, tangent);
+      let tlen = length(tangent);
+      if (tlen > 1e-8) {
+        tangent = tangent / tlen;
+        let handedness = select(-1.0, 1.0, handednessRaw >= 0.0);
+        frame.tangent = tangent;
+        frame.bitangent = cross(normal, tangent) * handedness;
+        frame.valid = true;
+        return frame;
+      }
+    }
+  }
   let p0 = positions[tri.x].xyz;
   let e1 = positions[tri.y].xyz - p0;
   let e2 = positions[tri.z].xyz - p0;
@@ -477,7 +507,7 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return geomNormal;
   }
-  let frame = buildShadingTangentFrame(triIndex, geomNormal, instanceIndex);
+  let frame = buildShadingTangentFrame(triIndex, baryVW, geomNormal, instanceIndex);
   if (!frame.valid) { return geomNormal; }
   let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_NORMAL, materialTexDescriptors[base + 8u].xy, materialTexDescriptors[base + 13u].xy).xyz;
   var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
@@ -503,7 +533,7 @@ fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNo
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return clearcoatNormal;
   }
-  let frame = buildShadingTangentFrame(triIndex, clearcoatNormal, instanceIndex);
+  let frame = buildShadingTangentFrame(triIndex, baryVW, clearcoatNormal, instanceIndex);
   if (!frame.valid) { return clearcoatNormal; }
   let ts = sampleMaterialLayerLinear(
     clearcoatNormalIdx,
@@ -620,7 +650,7 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   }
   let bumpScale = materialTexDescriptors[base + 4u].z;
   // Build the same world-space tangent frame applyNormalMap uses (D9.3 shared helper).
-  let frame = buildShadingTangentFrame(triIndex, shadingNormal, instanceIndex);
+  let frame = buildShadingTangentFrame(triIndex, baryVW, shadingNormal, instanceIndex);
   if (!frame.valid) { return shadingNormal; }
   let tangent = frame.tangent;
   let bitangent = frame.bitangent;

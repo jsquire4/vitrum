@@ -78,12 +78,14 @@ describe('uploadScenePackBlasOnly', () => {
 
     uploadScenePackBlasOnly(device, sb, rebuilt.pack);
 
-    // 6 BLAS writes: positions, normals, uvs (P2), indices, triMaterialIds, bvhNodes.
-    expect(writeBuffer).toHaveBeenCalledTimes(6);
+    // 7 BLAS writes: positions, normals, uvs (P2), tangents, indices,
+    // triMaterialIds, bvhNodes.
+    expect(writeBuffer).toHaveBeenCalledTimes(7);
     const labels = writeBuffer.mock.calls.map((c) => String((c[0] as GPUBuffer).label ?? ''));
     expect(labels.some((l) => l.includes('tlas'))).toBe(false);
     expect(labels.some((l) => l.includes('positions'))).toBe(true);
     expect(labels.some((l) => l.includes('uvs'))).toBe(true);
+    expect(labels.some((l) => l.includes('tangents'))).toBe(true);
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(true);
   });
 });

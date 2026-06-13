@@ -234,8 +234,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-13: full-tier clearcoatNormalMap now has appended
     // descriptor lanes and threads a sampled clearcoat normal through the main
     // megakernel's clearcoat BRDF/PDF/source-sampler paths.
-    expect(digest).toBe('51646aa48ebc56582ba20a9b84549a0ce639706ec264d6c168bb8682932e4fd0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(352578);
+    // Re-pinned 2026-06-13: full-tier pt-webgpu now uploads authored/generated
+    // tangent.xyzw at group(3)/binding(10) and buildShadingTangentFrame
+    // consumes interpolated handedness before falling back to UV-gradient
+    // derivation. Lite unchanged.
+    expect(digest).toBe('b7f5c3f58107bb9bdcafe404fd2c6e6ed06f11933020c3280189c48245cea322');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(353881);
   });
 });
 

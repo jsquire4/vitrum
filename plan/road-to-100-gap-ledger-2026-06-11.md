@@ -192,8 +192,10 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `material.wgsl.ts` samples those maps with their own `TextureRef.texCoord`,
   KHR_texture_transform, wrap modes, and heterogeneous-layer UV-fit scales.
   The core promise ledger now promotes alpha/transmission/emissive/AO/light/
-  bump/anisotropy maps where this was the remaining approximation; `normalMap`
-  stays approximate until authored tangent.xyzw/handedness is consumed.
+  bump/anisotropy maps where this was the remaining approximation. Follow-up
+  2026-06-13: full-tier pt-webgpu now also uploads authored/generated
+  tangent.xyzw and uses handedness for normal/bump/clearcoat-normal maps, so
+  `normalMap` is native on pt-webgpu full tier.
 - SPEC-01 pt-webgpu scalar `KHR_materials_specular` consumption landed: material
   vec4 #27 carries `specularColor.rgb` + `specularIntensity`, `material.wgsl.ts`
   decodes them, `bsdf.wgsl.ts` uses them for dielectric F0, and the scalar pair
@@ -322,11 +324,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   KHR_texture_transform, wrap, and UV-fit metadata, and the shade prologue
   modulates decoded lobe parameters before downstream BSDF/PDF/NEE calls. The
   main megakernel now threads a sampled `clearcoatNormalMap` through clearcoat
-  BRDF/PDF/source-sampler paths. The promise ledger promotes those map rows to
-  `approximate`, not `native`, because BDPT light-subpath texture-map payloads
-  are still scalar-only, inverse/adjoint gradients target the base
-  parameterization, pt-webgpu still derives tangent frames instead of consuming
-  authored tangent.xyzw, and material-lobe reference A/B is still pending.
+  BRDF/PDF/source-sampler paths. Follow-up 2026-06-13: pt-webgpu now consumes
+  authored/generated tangent.xyzw and handedness for those tangent-space maps.
+  The promise ledger still promotes the extension map rows to `approximate`,
+  not `native`, because BDPT light-subpath texture-map payloads are still
+  scalar-only, inverse/adjoint gradients target the base parameterization, and
+  material-lobe reference A/B is still pending.
   Verification: focused pt-webgpu material/WGSL/reuse/lite suites, full
   typecheck, shader gate, and WSL GPU T1 smoke.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
@@ -602,8 +605,10 @@ implementation or explicit downgrade.
 
 Closure:
 - pt-webgl2: consume tangents as part of WEBGL2-01.
-- pt-webgpu: either consume tangent streams in material frame construction or
-  explicitly document/diagnose derived tangent frames.
+- pt-webgpu: closed 2026-06-13. `shared-bvh` packs tangent.xyzw, pt-webgpu
+  uploads it as a group-3 storage buffer, and `buildShadingTangentFrame`
+  interpolates handedness before falling back to derived frames for tangentless
+  scenes.
 - walkaround: decide whether tangent-space maps are part of supported material
   fidelity, then implement or diagnose.
 
