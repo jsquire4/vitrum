@@ -206,6 +206,15 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFull(');
   });
 
+  it('covers spot and mesh-area emitters in the suffix direct-lighting producer', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var si = 0u; si < params.spotLightCount; si = si + 1u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let a = meshAreaLights[mb].xyz;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let mr = meshAreaLights[mb + 3u].rgb;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
+  });
+
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');

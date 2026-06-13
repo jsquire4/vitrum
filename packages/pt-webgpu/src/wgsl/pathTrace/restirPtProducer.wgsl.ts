@@ -249,8 +249,8 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
 }
 
 // Direct-lighting NEE at the RECONNECTION vertex xs (visible-vertex independent).
-// Adds the rect-/disc-area + directional + point + environment connections with
-// the SAME analytic estimators the megakernel uses, at the suffix throughput
+// Adds the rect-/disc-/mesh-area + directional + point + spot + environment
+// connections with the SAME analytic estimators the megakernel uses, at the suffix throughput
 // passed in (the suffix starts at throughput 1 at xs). The rect-area branch is
 // ENERGY-CRITICAL (it is the engine's primary area-light NEE — see its inline
 // note); the delta + env branches are full-weight, the area branch is the
@@ -422,6 +422,47 @@ fn rptDirectAtVertex(
             anisotropy, anisotropyRotation,
           );
           contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
+        }
+      }
+    }
+  }
+  // Mesh-area lights: full-weight area-measure connection for implicit and
+  // explicit mesh emitters. This mirrors the main kernel's triangle sampler
+  // without light-selection compensation because this producer loops all lights.
+  for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+    let mb = mi * 4u;
+    let a = meshAreaLights[mb].xyz;
+    let b = meshAreaLights[mb + 1u].xyz;
+    let c = meshAreaLights[mb + 2u].xyz;
+    let mr = meshAreaLights[mb + 3u].rgb;
+    let r1 = rand_f32(rng);
+    let r2 = rand_f32(rng);
+    let su = sqrt(r1);
+    let uu = 1.0 - su;
+    let vv = r2 * su;
+    let ww = 1.0 - uu - vv;
+    let lpos = a * uu + b * vv + c * ww;
+    let toLight = lpos - pos;
+    let dist2 = max(dot(toLight, toLight), 1e-6);
+    let dist = sqrt(dist2);
+    let wi = toLight / dist;
+    let nDotL = max(dot(normal, wi), 0.0);
+    if (nDotL > 0.0) {
+      let lightNormal = safe_normalize(cross(b - a, c - a));
+      let cosLight = max(dot(lightNormal, -wi), 0.0);
+      if (cosLight > 0.0) {
+        let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
+        let lightPdf = dist2 / max(cosLight * area, 1e-6);
+        let shadowRay = Ray(pos + normal * 1e-3, wi);
+        if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+          let brdf = evaluateBrdfFull(
+            baseColor, roughness, metallic, normal, wo, wi,
+            clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+            iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            specularColor, specularIntensity,
+            anisotropy, anisotropyRotation,
+          );
+          contrib = contrib + suffixThroughput * brdf * nDotL * mr / max(lightPdf, 1e-6);
         }
       }
     }
