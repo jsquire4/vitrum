@@ -562,7 +562,7 @@ Already native. **glTF instancing:** glTF uses multiple nodes, not `instanced-me
 | Item | File(s) | Current | Required for native |
 |------|---------|---------|---------------------|
 | Point/spot DI | `shade.wgsl.ts` `lo_analyticNEE`, `analytic_lights` binding 13 | H41 wired in code | Verify emitter upload populates binding 13 — trace from `coreEmittersToDDGILights` / emitter pack |
-| Mesh-area `color`/`intensity` | `restir/bvhSceneHelpers.ts:316-318` | Ignored (H23) | Multiply Le |
+| Mesh-area `color`/`intensity` | `restir/bvhCore.ts`; `restir/__tests__/directLightEmitterCore.test.ts` | ✅ CODE CLOSED: mesh-area emitters now override the referenced primitive material slot with `Le = emitter.color × emitter.intensity` before ReSTIR emitter-list packing, and the same override feeds the TLAS/merged emissive-Le glow buffer. | Keep the existing H23 regression: `color=[10,10,10]`, `intensity=10` produces `[100,100,100]` and total emissive power follows the override. |
 | Emitter `castShadow` | DDGI/ReSTIR paths | unsupported | Pack flag; gate in `shadingTerms.wgsl.ts` |
 | `primitiveCastShadow` GI-side | DDGI, ReSTIR-GI, RC | approximate | Extend `bvhCastShadowMask` to GI rays (`shared-bvh`, `probeUpdateRays.wgsl.ts`, `risGi.wgsl.ts`) |
 | `updateLighting` sun | `HybridEngine.ts`; `HybridEngineDdgiSync.ts` | ✅ SOURCE-VERIFIED STALE: `updateLighting({ primaryLightDir })` re-syncs DDGI sun lights through `_syncDdgiLightsFromCoreScene()` or `orientDdgiSunLights(...)`; `primaryLightIntensity` also updates the DDGI sun multiplier with scene-directional single-count handling. | Keep mutation-matrix coverage |
