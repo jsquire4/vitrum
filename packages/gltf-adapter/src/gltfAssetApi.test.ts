@@ -583,6 +583,23 @@ describe('loadGltfForEngine', () => {
     })).rejects.toThrow('baseColorMap');
   });
 
+  it('rejects unsupported point/line primitive modes before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      mode: 1,
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow('primitive:mode:1=unsupported at meshes[0].primitives[0].mode');
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('does not treat an explicitly enabled texture-source extension as a missing host hook', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.extensionsUsed = ['KHR_texture_basisu'];

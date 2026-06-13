@@ -665,7 +665,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 | `reject-unsupported` | Any used field `unsupported` on selected backend |
 | `reject-degraded` | Any non-`native` issue including `approximate`, `requires-hook` without hook |
 
-**Plug-in:** `engineBridge.ts` `enforceCompatibility` — extend to check `report.primitives.unsupportedModes.length` for used modes.
+✅ **DONE (2026-06-12):** `engineBridge.ts` strict modes now reject selected-backend unsupported primitive modes through the same compatibility issue stream as material/extension rows, and the thrown diagnostic preserves the source path (`primitive:mode:1=unsupported at meshes[0].primitives[0].mode`). Test: `gltfAssetApi.test.ts` rejects a point/line-mode asset before invoking the injected engine factory.
 
 #### 4C — Texture handle contract (all backends)
 

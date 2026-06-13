@@ -163,12 +163,16 @@ function enforceCompatibility<
       if (mode === 'reject-unsupported') return issue.support === 'unsupported';
       return issue.support !== 'native';
     })
-    .map((issue) => `${issue.category}:${issue.name}=${issue.support}`)
+    .map(formatCompatibilityIssue)
     .join(', ');
   throw new Error(
     `[vitrum/gltf-adapter] Selected backend "${backend}" does not satisfy ` +
       `${mode}: ${issues || 'unknown compatibility issue'}.`,
   );
+}
+
+function formatCompatibilityIssue(issue: GltfCompatibilityIssue): string {
+  return `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`;
 }
 
 function isSatisfiedHostHook<
