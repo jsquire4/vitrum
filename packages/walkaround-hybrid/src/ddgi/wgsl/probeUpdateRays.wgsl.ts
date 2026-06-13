@@ -130,6 +130,8 @@ const PI: f32              = 3.14159265359;
 const LIGHT_SUN:   u32 = 0u;
 const LIGHT_POINT: u32 = 1u;
 const LIGHT_SPOT:  u32 = 2u;
+const LIGHT_KIND_MASK: u32 = 0x7fffffffu;
+const LIGHT_CAST_SHADOW_DISABLED: u32 = 0x80000000u;
 const MAX_LIGHTS:  u32 = 16u;
 
 struct DDGILight {
@@ -147,6 +149,14 @@ struct DDGILightUniforms {
   count: u32,
   _pad0: u32, _pad1: u32, _pad2: u32,
   items: array<DDGILight, 16>,
+}
+
+fn ddgiLightKind(light: DDGILight) -> u32 {
+  return light.kind & LIGHT_KIND_MASK;
+}
+
+fn ddgiLightCastShadowDisabled(light: DDGILight) -> bool {
+  return (light.kind & LIGHT_CAST_SHADOW_DISABLED) != 0u;
 }
 
 // -----------------------------------------------------------------
@@ -393,7 +403,7 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
  */
 function makeDirectLightingWGSL(): string { return /* wgsl */`
 fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
-                hitPos: vec3f, hitNormal: vec3f) -> vec3f {
+                hitPos: vec3f, hitNormal: vec3f, castShadowDisabled: bool) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
   if (nDotL < 1e-3) { return vec3f(0.0); }
 
@@ -401,7 +411,10 @@ fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
   // + binary glass-attenuation pre-fix).
   // M13: normal bias derived from probe spacing to stay scene-scale-agnostic.
   let normalBias = gridParams.spacing * 0.001;
-  let visibility = traceSunVisibility(hitPos + hitNormal * normalBias, lightDir);
+  var visibility = vec3f(1.0);
+  if (!castShadowDisabled) {
+    visibility = traceSunVisibility(hitPos + hitNormal * normalBias, lightDir);
+  }
   return lightColor * intensity * nDotL * visibility;
 }
 
@@ -432,12 +445,14 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
 
   // M13: normal bias proportional to probe spacing (scene-scale-agnostic).
   let normalBias_p = gridParams.spacing * 0.001;
-  var shadowRay: Ray;
-  shadowRay.origin    = hitPos + hitNormal * normalBias_p;
-  shadowRay.direction = lightDir;
-  let shadow = bvhTraceFirstHit(shadowRay);
-  if (shadow.didHit && shadow.dist < dist - normalBias_p) {
-    return vec3f(0.0);
+  if (!ddgiLightCastShadowDisabled(light)) {
+    var shadowRay: Ray;
+    shadowRay.origin    = hitPos + hitNormal * normalBias_p;
+    shadowRay.direction = lightDir;
+    let shadow = bvhTraceFirstHit(shadowRay);
+    if (shadow.didHit && shadow.dist < dist - normalBias_p) {
+      return vec3f(0.0);
+    }
   }
   let atten = light.intensity / (dist * dist + 1.0);
   return light.color * atten * nDotL * coneFalloff;
@@ -447,10 +462,13 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   var result = vec3f(0.0);
   for (var li = 0u; li < min(lights.count, MAX_LIGHTS); li = li + 1u) {
     let light = lights.items[li];
-    if (light.kind == LIGHT_SUN) {
+    let kind = ddgiLightKind(light);
+    if (kind == LIGHT_SUN) {
       let dir = normalize(-light.direction);
-      result = result + evalSunLight(dir, light.color, light.intensity, hitPos, hitNormal);
-    } else if (light.kind == LIGHT_POINT) {
+      result = result + evalSunLight(
+        dir, light.color, light.intensity, hitPos, hitNormal,
+        ddgiLightCastShadowDisabled(light));
+    } else if (kind == LIGHT_POINT) {
       result = result + evalPointLight(light, hitPos, hitNormal);
     }
   }

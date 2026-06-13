@@ -31,10 +31,20 @@ describe('RC light-eval WGSL contract', () => {
     expect(emitterNee).not.toContain('sHit.didHit && sHit.dist < dist - normalBias');
 
     const pointSpot = functionBody(PROBE_RAY_CAST_WGSL, 'evalRCPointSpotLights');
+    expect(PROBE_RAY_CAST_WGSL).toContain('sunCastShadowDisabled: u32');
+    expect(PROBE_RAY_CAST_WGSL).toContain('RC_LIGHT_CAST_SHADOW_DISABLED');
+    expect(pointSpot).toContain('let kind = light.kind & RC_LIGHT_KIND_MASK;');
+    expect(pointSpot).toContain('let castShadowDisabled = (light.kind & RC_LIGHT_CAST_SHADOW_DISABLED) != 0u;');
+    expect(pointSpot).toContain('if (!castShadowDisabled && shadowTMax > 0.0 && rcTraceAny');
     expect(pointSpot).toContain(
       'rcTraceAny(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)',
     );
     expect(pointSpot).not.toContain('let shadow = rcTraceFirstHit');
     expect(pointSpot).not.toContain('shadow.didHit && shadow.dist < dist - normalBias');
+  });
+
+  it('gates both RC direct-sun visibility calls with sunCastShadowDisabled', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain('if (u.sunCastShadowDisabled == 0u)');
+    expect(PROBE_RAY_CAST_WGSL.match(/traceSunVisibility/g)?.length).toBeGreaterThanOrEqual(3);
   });
 });

@@ -132,6 +132,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
           z: -e.direction[2] * inv,
         },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+        ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }
     case 'rect-area':
@@ -152,6 +153,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         intensity: e.intensity,
         position: { x: e.position[0], y: e.position[1], z: e.position[2] },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+        ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }
     case 'spot': {
@@ -174,6 +176,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         spotAxis: { x: e.direction[0] * inv, y: e.direction[1] * inv, z: e.direction[2] * inv },
         spotCosOuter: Math.cos(e.angle),
         spotCosInner: Math.cos(e.angle * (1 - penumbra)),
+        ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }
     case 'mesh-area':

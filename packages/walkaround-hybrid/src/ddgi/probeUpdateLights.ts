@@ -5,6 +5,10 @@ import type { DDGILight } from './types.js';
 
 const MAX_DDGI_PROBE_LIGHTS = 16;
 const LIGHT_STRIDE_FLOATS = 16;
+export const DDGI_LIGHT_KIND_SUN = 0;
+export const DDGI_LIGHT_KIND_POINT = 1;
+export const DDGI_LIGHT_KIND_MASK = 0x7fffffff;
+export const DDGI_LIGHT_CAST_SHADOW_DISABLED = 0x80000000;
 export const DDGI_PROBE_LIGHTS_BUFFER_BYTES =
   (4 + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS) * Float32Array.BYTES_PER_ELEMENT;
 
@@ -43,6 +47,7 @@ export function packDDGIProbeLights(
   packable.slice(0, MAX_DDGI_PROBE_LIGHTS).forEach((l, i) => {
     const base = headerSize + i * LIGHT_STRIDE_FLOATS;
     const ubase = base;
+    const shadowFlag = l.castShadow === false ? DDGI_LIGHT_CAST_SHADOW_DISABLED : 0;
     if (l.kind === 'sun') {
       // Sun travel direction. When a `@vitrum/core` `directional` emitter
       // drives the sun, `coreEmitterToDDGILight` carries its real direction
@@ -52,7 +57,7 @@ export function packDDGIProbeLights(
       // host-supplied sun light with no direction is unchanged.
       const dir = l.direction;
       const col = l.color;
-      udata[ubase] = 0;
+      udata[ubase] = (DDGI_LIGHT_KIND_SUN | shadowFlag) >>> 0;
       data[base + 4] = 0;
       data[base + 5] = 0;
       data[base + 6] = 0;
@@ -68,7 +73,7 @@ export function packDDGIProbeLights(
       data[base + 14] = col?.b ?? 0.85;
       data[base + 15] = 0;
     } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
-      udata[ubase] = 1;
+      udata[ubase] = (DDGI_LIGHT_KIND_POINT | shadowFlag) >>> 0;
       const pos = l.position;
       const col = l.color;
       // [8,9,10] = spot cone axis (toward-light; 0 for a point → no cone in the

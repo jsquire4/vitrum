@@ -148,7 +148,9 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
   var Lo = vec3f(0.0);
   for (var li: u32 = 0u; li < count; li = li + 1u) {
     let light = rc_lights.items[li];
-    if (light.kind != RC_LIGHT_POINT && light.kind != RC_LIGHT_SPOT) { continue; }
+    let kind = light.kind & RC_LIGHT_KIND_MASK;
+    let castShadowDisabled = (light.kind & RC_LIGHT_CAST_SHADOW_DISABLED) != 0u;
+    if (kind != RC_LIGHT_POINT && kind != RC_LIGHT_SPOT) { continue; }
 
     let toLight = light.position - hitPos;
     let dist    = length(toLight);
@@ -169,7 +171,7 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
     // Shadow test — stop just short of the light position. H37 mirrors emitter
     // NEE: transmissive geometry does not fully occlude coarse RC direct light.
     let shadowTMax = max(0.0, dist - normalBias);
-    if (shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)) {
+    if (!castShadowDisabled && shadowTMax > 0.0 && rcTraceAny(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)) {
       continue;
     }
 

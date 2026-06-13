@@ -103,6 +103,36 @@ describe('coreEmittersToDDGILights — no fixture for rect/disc area emitters', 
     expect(fixtures[0]!.intensity).toBe(10);
   });
 
+  it('preserves castShadow:false on directional, point, and spot analytic lights', () => {
+    const lights = coreEmittersToDDGILights(makeScene(
+      {
+        kind: 'directional',
+        id: 'sun-no-shadow',
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
+      {
+        ...POINT,
+        id: 'point-no-shadow',
+        castShadow: false,
+      },
+      {
+        kind: 'spot',
+        id: 'spot-no-shadow',
+        position: [0, 1, 0],
+        direction: [0, -1, 0],
+        angle: Math.PI / 6,
+        penumbra: 0.25,
+        color: [1, 1, 1],
+        intensity: 2,
+        castShadow: false,
+      },
+    ));
+    expect(lights.map((l) => l.castShadow)).toEqual([false, false, false]);
+  });
+
   it('mixed scene: rect-area + point produces exactly one fixture (the point)', () => {
     const lights = coreEmittersToDDGILights(makeScene(RECT_AREA, POINT));
     const fixtures = lights.filter((l) => l.kind === 'fixture');

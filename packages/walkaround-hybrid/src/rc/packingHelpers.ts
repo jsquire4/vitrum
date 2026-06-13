@@ -81,7 +81,8 @@ export function packRCParams(
 // Total: 4 + 256 = 260 u32/f32 = 1040 bytes.
 //
 // Each RCLight (matches WGSL RCLight struct, 64 bytes = 16 floats):
-//   [0]       kind (u32): 0=skip, 1=point, 2=spot
+//   [0]       kind (u32): low bits 0=skip, 1=point, 2=spot;
+//             high bit set => castShadow:false on the source emitter
 //   [1..3]    _pad
 //   [4..6]    position (vec3f)
 //   [7]       intensity (f32)
@@ -97,6 +98,8 @@ export function packRCParams(
 
 /** Byte size of the full RCLightBuffer GPU allocation. */
 export const RC_LIGHTS_BUFFER_BYTES = (4 + 16 * 16) * 4; // 1040 bytes
+export const RC_LIGHT_KIND_MASK = 0x7fffffff;
+export const RC_LIGHT_CAST_SHADOW_DISABLED = 0x80000000;
 
 /**
  * Byte offsets within the `RCLightBuffer` header section (first 16 bytes).
@@ -168,7 +171,8 @@ export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
     const base = HEADER_FLOATS + i * LIGHT_FLOATS;
     const ub   = base;
     const isSpot = l.spotAxis != null && (l.spotCosInner != null || l.spotCosOuter != null);
-    ui[ub]        = isSpot ? 2 : 1;         // kind: 2=spot, 1=point
+    const shadowFlag = l.castShadow === false ? RC_LIGHT_CAST_SHADOW_DISABLED : 0;
+    ui[ub]        = ((isSpot ? 2 : 1) | shadowFlag) >>> 0; // kind + shadow flag
     data[base + 4] = l.position?.x ?? 0;
     data[base + 5] = l.position?.y ?? 0;
     data[base + 6] = l.position?.z ?? 0;

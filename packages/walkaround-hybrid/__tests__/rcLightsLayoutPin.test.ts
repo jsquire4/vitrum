@@ -11,7 +11,7 @@
  *
  * WGSL struct reference (probeRayCast.wgsl.ts):
  *   struct RCLight {
- *     kind:      u32,        // word 0  = byte 0
+ *     kind:      u32,        // word 0  = byte 0; high bit = castShadowDisabled
  *     _pad0/1/2: f32×3,      // words 1-3 = bytes 4-12
  *     position:  vec3f,      // words 4-6 = bytes 16-28
  *     intensity: f32,        // word 7  = byte 28
@@ -31,6 +31,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   packRCLights,
   RCSubsystem,
+  RC_LIGHT_CAST_SHADOW_DISABLED,
+  RC_LIGHT_KIND_MASK,
   RC_LIGHTS_BUFFER_BYTES,
   RC_LIGHTS_HEADER_BYTES,
   RC_LIGHT_ENTRY_BYTES,
@@ -166,10 +168,26 @@ describe('packRCLights output byte alignment', () => {
     expect(readU32(buf, item0 + RCLightEntryOffset.kind)).toBe(1);
   });
 
+  it('point castShadow:false sets the high kind bit while preserving low kind', () => {
+    const buf = packRCLights([{ ...POINT_LIGHT, castShadow: false }]);
+    const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
+    const kindWord = readU32(buf, item0 + RCLightEntryOffset.kind);
+    expect(kindWord & RC_LIGHT_KIND_MASK).toBe(1);
+    expect((kindWord & RC_LIGHT_CAST_SHADOW_DISABLED) >>> 0).toBe(RC_LIGHT_CAST_SHADOW_DISABLED);
+  });
+
   it('spot light kind = 2 at item[0].kind', () => {
     const buf = packRCLights([SPOT_LIGHT]);
     const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
     expect(readU32(buf, item0 + RCLightEntryOffset.kind)).toBe(2);
+  });
+
+  it('spot castShadow:false sets the high kind bit while preserving low kind', () => {
+    const buf = packRCLights([{ ...SPOT_LIGHT, castShadow: false }]);
+    const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
+    const kindWord = readU32(buf, item0 + RCLightEntryOffset.kind);
+    expect(kindWord & RC_LIGHT_KIND_MASK).toBe(2);
+    expect((kindWord & RC_LIGHT_CAST_SHADOW_DISABLED) >>> 0).toBe(RC_LIGHT_CAST_SHADOW_DISABLED);
   });
 
   it('point light position packed at correct bytes', () => {

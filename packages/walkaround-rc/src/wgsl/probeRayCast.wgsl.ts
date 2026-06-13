@@ -140,7 +140,7 @@ struct CascadeUniforms {
   // 0 ⇒ analytic-light evaluation is skipped (byte-identical with prior).
   // Host packs this at slot 30 (offset 120) in buildCascadeUniformDataInto.
   lightCount        : u32,
-  _pad3             : u32,
+  sunCastShadowDisabled: u32,
   _pad4             : u32,
   _pad5             : u32,
 };
@@ -201,7 +201,8 @@ ${RC_SUN_VISIBILITY_WGSL}
 // the evalRCPointSpotLights loop is a no-op (byte-identical with prior).
 //
 // Struct layout (4 × u32/f32 = 16 floats = 64 bytes):
-//   [0]       kind:       0 = not used (skipped), 1 = point, 2 = spot
+//   [0]       kind:       low bits 0 = skipped, 1 = point, 2 = spot;
+//                         high bit set => source emitter castShadow:false
 //   [1..3]    _pad0..2
 //   [4..6]    position:   vec3f world-space position
 //   [7]       intensity:  scalar (lux / cd equivalent — 1/r² applied below)
@@ -212,6 +213,8 @@ ${RC_SUN_VISIBILITY_WGSL}
 
 const RC_LIGHT_POINT: u32 = 1u;
 const RC_LIGHT_SPOT:  u32 = 2u;
+const RC_LIGHT_KIND_MASK: u32 = 0x7fffffffu;
+const RC_LIGHT_CAST_SHADOW_DISABLED: u32 = 0x80000000u;
 const RC_MAX_LIGHTS:  u32 = 16u;
 
 struct RCLight {
@@ -329,7 +332,10 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     // min(roomSize) * 0.001 mirrors DDGI's gridParams.spacing * 0.001 (M13).
     let normalBias = min(u.roomSize.x, min(u.roomSize.y, u.roomSize.z)) * 0.001;
 
-    let sunVis = traceSunVisibility(hitPos + n * normalBias, u.sunDirection, slabStep, triEps);
+    var sunVis = vec3f(1.0);
+    if (u.sunCastShadowDisabled == 0u) {
+      sunVis = traceSunVisibility(hitPos + n * normalBias, u.sunDirection, slabStep, triEps);
+    }
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
 
@@ -361,12 +367,15 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondMatId = rc_triMatId[secondHit.indices.w];
         let secondMat   = rc_materials[secondMatId];
         let secondColor = secondMat.baseColor;
-        let sunVis2 = traceSunVisibility(
-          secondPos + secondHit.normal * normalBias,
-          u.sunDirection,
-          slabStep,
-          triEps,
-        );
+        var sunVis2 = vec3f(1.0);
+        if (u.sunCastShadowDisabled == 0u) {
+          sunVis2 = traceSunVisibility(
+            secondPos + secondHit.normal * normalBias,
+            u.sunDirection,
+            slabStep,
+            triEps,
+          );
+        }
         let nDotL2 = max(0.0, dot(secondHit.normal, u.sunDirection));
         transContrib = u.sunColor * secondColor * nDotL2 * 0.31831
                        * beerAttenColor * matColor * sunVis2;

@@ -14,10 +14,12 @@
  * Fields verified against probeUpdatePass.ts _uploadLights (the only
  * consumer in this package):
  *   - kind      — switched on: 'sun' | 'fixture' | 'teaLight'
- *   - intensity — multiplied by _sunIntensityMul for sun lights
- *   - position  — accessed via unsafe cast on fixture/teaLight lights
- *   - direction — sun travel-direction; packed for 'sun' lights (see below)
- *   - on        — filter: only lights where on===true are uploaded
+   *   - intensity — multiplied by _sunIntensityMul for sun lights
+   *   - position  — accessed via unsafe cast on fixture/teaLight lights
+   *   - direction — sun travel-direction; packed for 'sun' lights (see below)
+   *   - on        — filter: only lights where on===true are uploaded
+   *   - castShadow — when false, the probe direct-light estimator skips the
+   *     light's own visibility ray while still emitting radiance
  */
 export interface DDGILight {
   /** Runtime kind tag. Only 'sun', 'fixture', and 'teaLight' are handled;
@@ -41,6 +43,11 @@ export interface DDGILight {
   /** Whether this light is active. ProbeUpdatePass filters to only
    *  lights where on === true before uploading to the GPU UBO. */
   readonly on: boolean;
+
+  /** Mirrors `SceneEmitter.castShadow`. When false, this light still contributes
+   *  radiance but its direct-light shadow ray is disabled in DDGI / RC probe
+   *  estimators. Undefined and true both mean normal shadow casting. */
+  readonly castShadow?: boolean;
 
   /** World-space position. Only used for 'fixture' and 'teaLight' kinds.
    *  Accessed via an unsafe cast in the original source because LightSource

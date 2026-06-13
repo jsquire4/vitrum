@@ -9,7 +9,8 @@
  *
  *   Per-light entry, LIGHT_STRIDE_FLOATS=16 floats = 64 bytes, starting at
  *   float offset (4 + i*16):
- *     +0  kind        u32   (0=sun, 1=fixture/teaLight)
+ *     +0  kind        u32   (low bits: 0=sun, 1=fixture/teaLight;
+ *                            high bit: castShadowDisabled)
  *     +1  _pad0       f32
  *     +2  _pad1       f32
  *     +3  _pad2       f32
@@ -32,7 +33,11 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { packDDGIProbeLights } from '../probeUpdateLights.js';
+import {
+  DDGI_LIGHT_CAST_SHADOW_DISABLED,
+  DDGI_LIGHT_KIND_MASK,
+  packDDGIProbeLights,
+} from '../probeUpdateLights.js';
 
 const HEADER_FLOATS = 4;
 const LIGHT_STRIDE_FLOATS = 16;
@@ -66,6 +71,22 @@ describe('packDDGIProbeLights — sun light', () => {
     // kind = 0 (LIGHT_SUN).
     const base = lightBase(0);
     expect(u32[base]).toBe(0); // kind = LIGHT_SUN
+  });
+
+  it('packs castShadow:false into the high kind bit without changing the sun kind', () => {
+    const buf = packDDGIProbeLights([
+      {
+        kind: 'sun',
+        on: true,
+        intensity: 1,
+        direction: { x: 0, y: -1, z: 0 },
+        castShadow: false,
+      },
+    ], 1);
+    const { u32 } = decode(buf);
+    const kindWord = u32[lightBase(0)]!;
+    expect(kindWord & DDGI_LIGHT_KIND_MASK).toBe(0);
+    expect((kindWord & DDGI_LIGHT_CAST_SHADOW_DISABLED) >>> 0).toBe(DDGI_LIGHT_CAST_SHADOW_DISABLED);
   });
 
   it('packs sun direction (travel dir) into direction lanes [+8,+9,+10]', () => {
@@ -154,6 +175,22 @@ describe('packDDGIProbeLights — point fixture', () => {
     const { u32 } = decode(buf);
     const base = lightBase(0);
     expect(u32[base]).toBe(1); // kind = LIGHT_POINT
+  });
+
+  it('packs castShadow:false into the high kind bit without changing point kind', () => {
+    const buf = packDDGIProbeLights([
+      {
+        kind: 'fixture',
+        on: true,
+        intensity: 2,
+        position: { x: 1, y: 2, z: 3 },
+        castShadow: false,
+      },
+    ], 1);
+    const { u32 } = decode(buf);
+    const kindWord = u32[lightBase(0)]!;
+    expect(kindWord & DDGI_LIGHT_KIND_MASK).toBe(1);
+    expect((kindWord & DDGI_LIGHT_CAST_SHADOW_DISABLED) >>> 0).toBe(DDGI_LIGHT_CAST_SHADOW_DISABLED);
   });
 
   it('packs position into position lanes [+4,+5,+6]', () => {

@@ -139,7 +139,10 @@ const FRAME_INPUT = {
 function makeRcFrameDeps(args: {
   scene: Scene | null;
   primaryLightIntensity: number;
-  capture: { sunColor: readonly [number, number, number] | null };
+  capture: {
+    sunColor: readonly [number, number, number] | null;
+    sunCastShadowDisabled?: boolean | null;
+  };
 }): HybridEngineFrameDeps {
   let lastTs = 0;
   const pipeline = {
@@ -167,8 +170,12 @@ function makeRcFrameDeps(args: {
   const rc = {
     syncRestirBvhBuffers: () => undefined,
     updateLights: () => undefined,
-    dispatchFrame: (inputs: { sunColor: readonly [number, number, number] }) => {
+    dispatchFrame: (inputs: {
+      sunColor: readonly [number, number, number];
+      sunCastShadowDisabled?: boolean;
+    }) => {
       args.capture.sunColor = inputs.sunColor;
+      args.capture.sunCastShadowDisabled = inputs.sunCastShadowDisabled ?? false;
     },
     buildRCInputs: () => null,
   };
@@ -284,5 +291,31 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     );
 
     expect(capture.sunColor).toEqual([3.5, 3.5, 3.5]);
+  });
+
+  it('forwards directional emitter castShadow:false as the RC sun shadow flag', () => {
+    const capture = {
+      sunColor: null as readonly [number, number, number] | null,
+      sunCastShadowDisabled: null as boolean | null,
+    };
+    const scene: Scene = {
+      primitives: [],
+      emitters: [{
+        kind: 'directional',
+        id: 'soft-no-shadow-sun',
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene, primaryLightIntensity: 10, capture }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.sunCastShadowDisabled).toBe(true);
   });
 });

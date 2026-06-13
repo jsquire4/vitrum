@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   packStainedGlassFlags,
+  SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED,
   SG_FLAG_SUN_CAUSTIC,
   SG_FLAG_SKY_APERTURE,
 } from '../src/pipeline/uboUpdater.js';
@@ -45,7 +46,9 @@ describe('T5 — packStainedGlassFlags', () => {
   it('TS bit masks are distinct single bits (no overlap)', () => {
     expect(SG_FLAG_SUN_CAUSTIC).toBe(1);
     expect(SG_FLAG_SKY_APERTURE).toBe(2);
+    expect(SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED).toBe(4);
     expect(SG_FLAG_SUN_CAUSTIC & SG_FLAG_SKY_APERTURE).toBe(0);
+    expect((SG_FLAG_SUN_CAUSTIC | SG_FLAG_SKY_APERTURE) & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED).toBe(0);
   });
 });
 
@@ -58,6 +61,9 @@ describe('T5 — WGSL / TS flag-mask agreement', () => {
     );
     expect(WALKAROUND_UBO_WGSL).toContain(
       `const SG_FLAG_SKY_APERTURE: u32 = ${SG_FLAG_SKY_APERTURE}u;`,
+    );
+    expect(WALKAROUND_UBO_WGSL).toContain(
+      `const SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED: u32 = ${SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED}u;`,
     );
   });
 });

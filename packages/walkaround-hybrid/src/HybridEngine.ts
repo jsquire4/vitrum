@@ -84,6 +84,7 @@ import {
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import { solveSkin } from '@vitrum/core';
 import { readRgba16fWalkaround } from './util/gpuReadback.js';
+import { SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED } from './pipeline/uboUpdater.js';
 import {
   transformRefit,
   positionsRefit,
@@ -875,32 +876,11 @@ export class HybridEngine implements Engine {
       }
     }
 
-    // SHADOW-01 — structured signals for the shadow flags this backend only
-    // partially honors. Primitive castShadow IS honored by DI shadow rays
-    // ('approximate' — GI-side occlusion ignores it) → no warning. Emitter
-    // castShadow is honored by direct/area NEE paths but not all DDGI/RC
-    // point/spot/sun fixture paths yet, so keep a compatibility warning.
-    const emitterCastShadowIds = scene.emitters
-      .filter((e) => e.castShadow === false)
-      .map((e) => e.id);
-    if (emitterCastShadowIds.length > 0) {
-      this._warn({
-        code: 'walkaround-hybrid.approximate-emitter-cast-shadow',
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/walkaround-hybrid] setScene: emitter castShadow:false is partially ` +
-          `consumed by this backend (direct analytic/area NEE skips emitter occlusion; ` +
-          `DDGI/RC point/spot/sun fixture paths may still shadow-test); emitters: ` +
-          `${emitterCastShadowIds.join(', ')}.`,
-        details: {
-          emitterIds: emitterCastShadowIds,
-          supportedPaths: ['analytic direct NEE', 'ReSTIR-DI area NEE', 'DDGI area NEE', 'RC area NEE'],
-          residualPaths: ['DDGI point/spot fixture lights', 'RC point/spot fixture lights', 'directional sun paths'],
-        },
-      });
-    }
+    // SHADOW-01 — primitive castShadow remains approximate because GI-side
+    // occlusion rays still see castShadow:false geometry. Emitter castShadow is
+    // now honored by direct analytic/area NEE, DDGI fixture/sun probe lights, RC
+    // fixture/sun probe lights, and the main direct-sun shade path, so it no
+    // longer emits a compatibility warning here.
     const receiveShadowIds = scene.primitives
       .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
       .map((p) => p.id);
@@ -1963,6 +1943,8 @@ export class HybridEngine implements Engine {
    *  because they are tuple-valued; grouping them keeps {@link _buildFrameDeps}
    *  compact and makes a new tuple knob a single edit. */
   private _denoiserFilterDeps(): HybridDenoiserFilterDeps {
+    const directionalSunShadowDisabled =
+      this._renderScene?.emitters.some((e) => e.kind === 'directional' && e.castShadow === false) === true;
     return {
       // B15 — scene-scale-aware default (falls back to the Cornell baseline
       // before the first setScene). Host overrides already pass through verbatim
@@ -1970,7 +1952,9 @@ export class HybridEngine implements Engine {
       indirectFireflyClamp: this._scaledIndirectFireflyClamp ?? this._cfg.indirectFireflyClamp,
       atrousDirectSigmas: this._cfg.atrousDirectSigmas,
       atrousIndirectSigmas: this._cfg.atrousIndirectSigmas,
-      stainedGlassFlags: this._cfg.stainedGlassFlags,
+      stainedGlassFlags: directionalSunShadowDisabled
+        ? (this._cfg.stainedGlassFlags | SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) >>> 0
+        : this._cfg.stainedGlassFlags,
       restirPtReuse: this._cfg.restirPtReuse,
       nrcEnabled: this._cfg.nrcEnabled,
     };

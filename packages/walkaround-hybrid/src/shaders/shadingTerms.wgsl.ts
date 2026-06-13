@@ -385,14 +385,16 @@ fn lo_sunNEE(
   // flag is set. This conservative transparency matches the analytic-NEE convention
   // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
   // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
-  let occ = traceSceneAnyCastMask(
-    ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
-  if (occ) { return vec3f(0.0); }
+  if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
+    let occ = traceSceneAnyCastMask(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    if (occ) { return vec3f(0.0); }
+  }
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
   // evalGGX already folds in nDotSun as its NdotL term (returns 0 when NdotL<1e-6).

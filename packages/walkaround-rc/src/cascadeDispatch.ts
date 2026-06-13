@@ -130,6 +130,8 @@ export interface RCDispatchOptsRaw {
   /** Sun direction (world space, normalised) and RGB tint. */
   sunDirection:       readonly [number, number, number];
   sunColor:           readonly [number, number, number];
+  /** When true, direct RC sun lighting skips the sun visibility ray. */
+  sunCastShadowDisabled?: boolean;
 
   /** Environment equirectangular texture — caller supplies a pre-created
    *  view + sampler. Pass `null` to use the dispatcher's 1×1 black placeholder. */
@@ -180,6 +182,7 @@ interface CascadeUniformInputs {
   readonly roomSize:         readonly [number, number, number];
   readonly sunDir:           readonly [number, number, number];
   readonly sunColor:         readonly [number, number, number];
+  readonly sunCastShadowDisabled: boolean;
   readonly envIntensity:     number;
   readonly frameSeed:        number;
   /** E2: Möller–Trumbore coplanarity threshold (was local WGSL const). */
@@ -212,6 +215,7 @@ function buildCascadeUniformDataInto(
     roomSize,
     sunDir,
     sunColor,
+    sunCastShadowDisabled,
     envIntensity,
     frameSeed,
     triIntersectEpsilon,
@@ -235,7 +239,9 @@ function buildCascadeUniformDataInto(
   // sunColor(3f), envIntensity(f)
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), bvhMode(u)
   // tlasNodeCount(u), emitterCount(u) [slot 29 — RC emitter NEE]
-  // lightCount(u) [slot 30 — A7 point/spot lights], _pad3/4/5(u)
+  // lightCount(u) [slot 30 — A7 point/spot lights],
+  // sunCastShadowDisabled(u) [slot 31 — Scene directional castShadow:false],
+  // _pad4/5(u)
   // Total allocation 40 float/uint = 160 bytes.
   const ui = new Uint32Array(d.buffer);
   d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
@@ -255,7 +261,8 @@ function buildCascadeUniformDataInto(
   ui[28] = tlasNodeCount >>> 0;
   ui[29] = emitterCount >>> 0;
   ui[30] = lightCount >>> 0;    // A7: point/spot analytic light count
-  // ui[31..33] = _pad3/4/5 (zero from Float32Array init)
+  ui[31] = sunCastShadowDisabled ? 1 : 0; // directional emitter castShadow:false
+  // ui[32..33] = _pad4/5 (zero from Float32Array init)
 }
 
 function buildMergeUniformData(
@@ -429,6 +436,7 @@ export class RCDispatcher {
         roomSize:         opts.roomSize,
         sunDir:           opts.sunDirection,
         sunColor:         opts.sunColor,
+        sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
         envIntensity:     1.0,
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
@@ -735,6 +743,7 @@ export class RCDispatcher {
         roomSize:         opts.roomSize,
         sunDir:           opts.sunDirection,
         sunColor:         opts.sunColor,
+        sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
         envIntensity:     1.0,
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,

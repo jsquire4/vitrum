@@ -660,14 +660,12 @@ engineContract.test.ts):
     light subpath, ReSTIR-PT, MNEE/SPPM caustic legs) and in-medium
     directional NEE still shadow-test; lite directional rides the flag-less
     UBO mirror.
-  - walkaround-hybrid `approximate` (2026-06-12 follow-up): analytic
-    point/spot payloads pack binding-13 lane `[13]`; shared `EmitterTri`
-    packs lane `[19]`; ReSTIR-DI candidate visibility + shade visibility gate
-    on `e.castShadowDisabled`; DDGI/RC area-emitter NEE skip the emitter shadow
-    ray. `HybridEngine` now emits
-    `walkaround-hybrid.approximate-emitter-cast-shadow` with explicit residuals
-    when a scene sets it false. Remaining native work: add equivalent flag lanes
-    to DDGI/RC point/spot fixture-light structs and directional sun paths.
+  - walkaround-hybrid `native` (2026-06-13 follow-up): analytic point/spot
+    payloads pack binding-13 lane `[13]`; shared `EmitterTri` packs lane `[19]`;
+    ReSTIR-DI candidate visibility + shade visibility gate on
+    `e.castShadowDisabled`; DDGI/RC area-emitter NEE skip the emitter shadow ray;
+    DDGI and RC fixture/sun lights carry castShadow-disabled flags; main direct
+    sun gates its visibility ray from the scene directional emitter flag.
 - **receiveShadow** — `unsupported` on ALL THREE backends (a "receiver ignores
   occlusion" toggle is non-physical for a GI path tracer; kept @reserved).
   Structured `*.reserved-receive-shadow` warnings fire on pt-webgpu, pt-webgl2,

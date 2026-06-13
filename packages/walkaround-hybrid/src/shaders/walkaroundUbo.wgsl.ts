@@ -133,12 +133,11 @@ struct WalkaroundUBO {
   checkerboardOn:             u32,     //  offset 332 - checkerboard sparse-shade gate; was _padEnd
   bvhMode:                    u32,     //  offset 336 — 0 merged world BVH, 1 TLAS+local BLAS
   tlasNodeCount:              u32,     //  offset 340 — TLAS node count (0 → merged path)
-  // T5 — stained-glass opt-in flags (repurposed pad slot; byte-size unchanged).
-  // Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0 (both
-  // OFF) → a generic scene gets ZERO stained-glass caustic/aperture physics.
-  // Hosts opt in via HybridEngineOptions.stainedGlass; the bits gate the
-  // early-return in lo_sg_caustic / lo_sg_aperture (stainedGlassShade.wgsl.ts).
-  stainedGlassFlags:          u32,     //  offset 344 — T5 (was _tracePad0)
+  // T5 / SHADOW-01 — shade flags (repurposed pad slot; byte-size unchanged).
+  // Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled, bit 2 = direct
+  // sun visibility disabled for scene directional castShadow:false. Default 0
+  // keeps generic scenes on the standard shaded path.
+  stainedGlassFlags:          u32,     //  offset 344 — shade flags (was _tracePad0)
   // PPG (Müller 2017) guided-sampling controls (W9 guided-sampling landing).
   // ppgEnabled is the runtime gate the gi-ris RIS source-pdf mixture reads:
   // when 0, the Bernoulli mixing weight α collapses to 0 so the gi-ris
@@ -197,6 +196,7 @@ struct WalkaroundUBO {
 // helper in pipeline/uboUpdater.ts (the two MUST agree on bit positions).
 const SG_FLAG_SUN_CAUSTIC: u32 = 1u;   // bit 0
 const SG_FLAG_SKY_APERTURE: u32 = 2u;  // bit 1
+const SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED: u32 = 4u; // bit 2
 
 // Emitter geometry term G with a configurable dist² clamp applied at
 // every call site. Use this everywhere instead of inlining

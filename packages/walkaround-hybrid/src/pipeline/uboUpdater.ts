@@ -35,7 +35,7 @@
  *   offset 332: checkerboardOn              (u32 = 4 bytes) — checkerboard sparse-shade gate (was _padEnd)
  *   offset 336: bvhMode                     (u32 = 4 bytes) — PR-3
  *   offset 340: tlasNodeCount               (u32 = 4 bytes)
- *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — T5 (was _tracePad0)
+ *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — shade flags bitfield
  *   offset 348: ppgEnabled                  (u32 = 4 bytes) — PPG guided-sampling gate (was _tracePad1)
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
  *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
@@ -56,14 +56,14 @@ import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
 import { WALKAROUND_UBO_SIZE_BYTES } from './constants.js';
 
 /**
- * T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,
- * bit 1 gates the sky-aperture term. MUST match the `SG_FLAG_SUN_CAUSTIC` /
- * `SG_FLAG_SKY_APERTURE` constants in `shaders/walkaroundUbo.wgsl.ts` (the two
- * sides agree on bit positions). Exported so the engine + tests can pack the
- * flags without re-deriving the bit layout.
+ * T5 — shade flag bit masks packed into `stainedGlassFlags`. Bits 0/1 are the
+ * stained-glass opt-ins; bit 2 disables the direct-sun visibility ray when a
+ * scene directional emitter sets `castShadow:false`. MUST match the constants
+ * in `shaders/walkaroundUbo.wgsl.ts`.
  */
 export const SG_FLAG_SUN_CAUSTIC = 1; // bit 0
 export const SG_FLAG_SKY_APERTURE = 2; // bit 1
+export const SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED = 4; // bit 2
 
 /**
  * Pack the per-engine stained-glass opt-in booleans into the `u32` bitfield

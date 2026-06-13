@@ -179,12 +179,10 @@ export interface PipelineFrameFilter {
   /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[32.0, 20.0, 0.5]`. Consumed by AtrousIndirectPass. */
   atrousIndirectSigmas: readonly [number, number, number];
-  /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
-   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
-   *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
-   *  generic scene gets zero stained-glass physics. Hosts opt in via
-   *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
-   *  `packStainedGlassFlags`. */
+  /** T5 / SHADOW-01 — shade flag bitfield (lands at UBO offset 344).
+   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled, bit 2 = direct
+   *  sun visibility disabled for a scene directional emitter with
+   *  `castShadow:false`. Default 0 keeps generic scenes on the standard path. */
   stainedGlassFlags: number;
 }
 

@@ -55,6 +55,8 @@ import type { PipelineSubsystem } from './pipeline/PipelineSubsystem.js';
 export {
   packRCParams,
   packRCLights,
+  RC_LIGHT_CAST_SHADOW_DISABLED,
+  RC_LIGHT_KIND_MASK,
   RC_LIGHTS_BUFFER_BYTES,
   RC_LIGHTS_HEADER_BYTES,
   RC_LIGHT_ENTRY_BYTES,
@@ -83,6 +85,8 @@ interface RCBVHBuffers {
 interface RCFrameInputs {
   readonly sunDirection:        readonly [number, number, number];
   readonly sunColor:            readonly [number, number, number];
+  /** Scene directional emitter castShadow:false disables RC sun visibility rays. */
+  readonly sunCastShadowDisabled?: boolean;
   readonly frameSeed:           number;
   readonly triIntersectEpsilon: number;
   /** Rect-area emitter NEE (2026-06-07): the main pipeline's packed
@@ -452,6 +456,7 @@ export class RCSubsystem implements PipelineSubsystem {
       roomSize:         this._roomSize,
       sunDirection:     inputs.sunDirection,
       sunColor:         inputs.sunColor,
+      sunCastShadowDisabled: inputs.sunCastShadowDisabled === true,
       frameSeed:        inputs.frameSeed,
       triIntersectEpsilon: inputs.triIntersectEpsilon,
       bvhMode:          this._bvhMode,

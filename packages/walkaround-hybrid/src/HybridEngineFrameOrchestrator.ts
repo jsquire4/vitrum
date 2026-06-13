@@ -421,6 +421,7 @@ function dispatchRcAndSetInputs(
     // If no scene directional exists, keep the legacy host config fallback.
     const dirEmitter = scene?.emitters.find((e) => e.kind === 'directional');
     const I = dirEmitter?.intensity ?? deps.lighting.primaryLightIntensity;
+    const sunCastShadowDisabled = dirEmitter?.castShadow === false;
     const sunColor: [number, number, number] = dirEmitter != null
       ? [
           dirEmitter.color[0] * I,
@@ -437,6 +438,7 @@ function dispatchRcAndSetInputs(
     deps.subsystems.rc.dispatchFrame({
       sunDirection: deps.lighting.primaryLightDir,
       sunColor,
+      sunCastShadowDisabled,
       frameSeed: input.frameSeed,
       triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
       ...(rcEmitters != null
