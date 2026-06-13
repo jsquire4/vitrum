@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Scene } from '@vitrum/core';
 import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
 import { EMITTER_TRI_STRIDE_BYTES } from '../../restir/emitterList.js';
 
@@ -67,6 +68,7 @@ vi.mock('../environmentTexture.js', () => ({
 }));
 
 import { BvhBufferHost } from '../BvhBufferHost.js';
+import { uploadAnalyticLightsTexture } from '../analyticLightsTexture.js';
 
 function mockDevice(): GPUDevice {
   return {
@@ -121,6 +123,56 @@ describe('BvhBufferHost', () => {
     expect(mem['tlasNodesBuffer']).toMatchObject({ size: 16, usage: 0x80 });
     expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
     expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
+    host.dispose();
+  });
+
+  it('uploadInitial packs point and spot emitters into the analytic-lights texture when a scene is supplied', () => {
+    const host = new BvhBufferHost();
+    const device = mockDevice();
+    const scene: Scene = {
+      primitives: [],
+      emitters: [
+        {
+          kind: 'point',
+          id: 'point-a',
+          position: [1, 2, 3],
+          color: [0.25, 0.5, 0.75],
+          intensity: 4,
+        },
+        {
+          kind: 'spot',
+          id: 'spot-a',
+          position: [-1, 3, 2],
+          direction: [0, -2, 0],
+          angle: Math.PI / 3,
+          penumbra: 0.25,
+          color: [0.2, 0.4, 0.6],
+          intensity: 5,
+        },
+      ],
+      environment: { kind: 'none' },
+    };
+
+    const upload = vi.mocked(uploadAnalyticLightsTexture);
+    upload.mockClear();
+
+    host.uploadInitial(device, makeSceneBvhBuffers(), scene);
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    const [, data, count] = upload.mock.calls[0] as [GPUDevice, Float32Array, number];
+    expect(count).toBe(2);
+    expect(data.length).toBe(32);
+    expect(Array.from(data.slice(0, 7))).toEqual([1, 2, 3, 0, 1, 2, 3]);
+    expect(Array.from(data.slice(8, 13))).toEqual([0, 0, 0, 1, 0]);
+
+    const spot = 16;
+    expect(Array.from(data.slice(spot, spot + 7))).toEqual([-1, 3, 2, 0, 1, 2, 3]);
+    expect(data[spot + 8]).toBeCloseTo(0, 6);
+    expect(data[spot + 9]).toBeCloseTo(-1, 6);
+    expect(data[spot + 10]).toBeCloseTo(0, 6);
+    expect(data[spot + 11]).toBeCloseTo(Math.cos(Math.PI / 4), 6);
+    expect(data[spot + 12]).toBeCloseTo(Math.cos(Math.PI / 3), 6);
+
     host.dispose();
   });
 
