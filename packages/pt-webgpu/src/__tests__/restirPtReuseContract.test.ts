@@ -180,6 +180,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
       '0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,',
     );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('specularColorV, specularIntensityV,');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyV, anisotropyRotationV,');
   });
 
@@ -209,11 +210,63 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'r.iridescenceIorV = iridescenceIorV;',
       'r.iridescenceThicknessMinV = iridescenceThicknessMinV;',
       'r.iridescenceThicknessMaxV = iridescenceThicknessMaxV;',
+      'r.specularColorV = specularColorV;',
+      'r.specularIntensityV = specularIntensityV;',
       'r.anisotropyV = anisotropyV;',
       'r.anisotropyRotationV = anisotropyRotationV;',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(field);
     }
+  });
+
+  it('mirrors the main shade prologue material-map stack for the visible vertex payload', () => {
+    for (const line of [
+      'baseColorV = vMat.baseColor * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;',
+      'baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);',
+      'let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW);',
+      'roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.02, 1.0);',
+      'metallicV = clamp(vMat.metallic * ormSampleV.b, 0.0, 1.0);',
+      'transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
+      'nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
+      'clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));',
+      'sheenRoughnessV = clamp(vMat.sheenRoughness * sampleSheenRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'let iridescenceThicknessSampleV = sampleIridescenceThicknessTexture(vMatId, vHit.triIndex, vHit.baryVW);',
+      'specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));',
+      'specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+  });
+
+  it('applies alpha pass-through and mapped transmission before the reusable-visible gate', () => {
+    const alphaIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('alphaTestPassThrough(hitMaterialId(vHit), vHit.triIndex, vHit.baryVW, &rng)');
+    const transmissionIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('var transmissionV = clamp(vMat.transmission * sampleTransmissionTexture');
+    const gateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)');
+    expect(alphaIdx).toBeGreaterThanOrEqual(0);
+    expect(transmissionIdx).toBeGreaterThan(alphaIdx);
+    expect(gateIdx).toBeGreaterThan(transmissionIdx);
+  });
+
+  it('mirrors layer, thin-film, and spectral visible-vertex prologue effects before sampling', () => {
+    for (const line of [
+      'iorV = cauchyIorAtLambda(heroLambda, vMat.ior, vMat.dispersionAbbe);',
+      'let layerTxV = clamp(select(vMat.backLayerTx, vMat.frontLayerTx, vIsFront), vec3f(0.0), vec3f(1.0));',
+      'roughnessV = clamp(layerRoughnessV, 0.02, 1.0);',
+      'activeLayerWeightRgb(layerTxV, heroLambda, true)',
+      'let rt = thinFilmTmmRt(',
+      'baseColorV = mix(baseColorV, baseColorV * thinFilmReflectTintV, filmStrengthV);',
+      'evalJakobHanikaSpectrum(vMat.spectralReflCoeffs, heroLambda)',
+      'baseColorV = vec3f(reflScalarV);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+    const prologueIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('baseColorV = vec3f(reflScalarV);');
+    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0V = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);');
+    expect(f0Idx).toBeGreaterThan(prologueIdx);
   });
 
   it('gates specular / transmissive visible vertices to an EMPTY reservoir (no reuse)', () => {

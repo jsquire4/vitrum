@@ -438,10 +438,22 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
 
   var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
-  let primaryRay = generatePrimaryRay(gid.x, gid.y, jitter);
+  var primaryRay = generatePrimaryRay(gid.x, gid.y, jitter);
+  var heroLambda = params.heroLambdaNm;
+  if (params.spectralEnabled != 0u) {
+    let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));
+    heroLambda = hero.x;
+  }
 
   // ── 1. Primary ray → visible vertex xv (the path prefix) ──
-  let vHit = traceClosest(primaryRay, 1e-4, INFINITY);
+  var vHit = traceClosest(primaryRay, 1e-4, INFINITY);
+  for (var aSkip = 0u; aSkip < 8u; aSkip = aSkip + 1u) {
+    if (!vHit.didHit || !alphaTestPassThrough(hitMaterialId(vHit), vHit.triIndex, vHit.baryVW, &rng)) {
+      break;
+    }
+    primaryRay.origin = primaryRay.origin + primaryRay.direction * (vHit.dist + 1e-4);
+    vHit = traceClosest(primaryRay, 1e-4, INFINITY);
+  }
   if (!vHit.didHit) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
     return;
@@ -450,23 +462,83 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let vMat = decodeMaterial(vMatId);
   let xv = primaryRay.origin + primaryRay.direction * vHit.dist;
   let vIsFront = dot(vHit.normal, primaryRay.direction) < 0.0;
-  let nv = select(-vHit.normal, vHit.normal, vIsFront);
+  var nv = select(-vHit.normal, vHit.normal, vIsFront);
+  nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
+  nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   let woV = -primaryRay.direction; // eye-side direction at xv
-  let baseColorV = vMat.baseColor;
-  let roughnessV = max(vMat.roughness, 0.02);
-  let metallicV = vMat.metallic;
-  let transmissionV = vMat.transmission;
-  let clearcoatV = vMat.clearcoat;
-  let clearcoatRoughnessV = vMat.clearcoatRoughness;
-  let sheenV = vMat.sheen;
-  let sheenRoughnessV = vMat.sheenRoughness;
-  let sheenColorV = vMat.sheenColor;
-  let iridescenceV = vMat.iridescence;
+  var baseColorV = vMat.baseColor * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;
+  baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);
+  let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW);
+  var roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.02, 1.0);
+  var metallicV = clamp(vMat.metallic * ormSampleV.b, 0.0, 1.0);
+  var transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
+  var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
+  var clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
+  var sheenV = vMat.sheen;
+  var sheenRoughnessV = clamp(vMat.sheenRoughness * sampleSheenRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
+  var sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));
+  var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
+  let iridescenceThicknessSampleV = sampleIridescenceThicknessTexture(vMatId, vHit.triIndex, vHit.baryVW);
+  var iridescenceThicknessMinV = vMat.iridescenceThicknessMin;
+  var iridescenceThicknessMaxV = vMat.iridescenceThicknessMax;
+  if (iridescenceThicknessSampleV >= 0.0) {
+    let iridescenceThicknessV = mix(vMat.iridescenceThicknessMin, vMat.iridescenceThicknessMax, iridescenceThicknessSampleV);
+    iridescenceThicknessMinV = iridescenceThicknessV;
+    iridescenceThicknessMaxV = iridescenceThicknessV;
+    if (iridescenceThicknessV <= 0.0) { iridescenceV = 0.0; }
+  }
   let iridescenceIorV = vMat.iridescenceIor;
-  let iridescenceThicknessMinV = vMat.iridescenceThicknessMin;
-  let iridescenceThicknessMaxV = vMat.iridescenceThicknessMax;
+  var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));
+  var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);
   let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);
   let anisotropyRotationV = materialAnisotropyRotation(vMatId, vHit.triIndex, vHit.baryVW);
+  var iorV = vMat.ior;
+  if (params.spectralEnabled != 0u && vMat.dispersionAbbe >= 1.0) {
+    iorV = cauchyIorAtLambda(heroLambda, vMat.ior, vMat.dispersionAbbe);
+  }
+  let layerTxV = clamp(select(vMat.backLayerTx, vMat.frontLayerTx, vIsFront), vec3f(0.0), vec3f(1.0));
+  let layerRoughnessV = select(vMat.backLayerRoughness, vMat.frontLayerRoughness, vIsFront);
+  if (layerRoughnessV >= 0.0) {
+    roughnessV = clamp(layerRoughnessV, 0.02, 1.0);
+  }
+  let layerWeightV = select(
+    layerTxV,
+    activeLayerWeightRgb(layerTxV, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(layerTxV) < 0.999,
+  );
+  baseColorV = baseColorV * layerWeightV;
+  if (vMat.thinFilmEnabled) {
+    let viewCosV = clamp(dot(nv, woV), 0.0, 1.0);
+    var thinFilmReflectTintV = vec3f(1.0);
+    if (params.spectralEnabled != 0u) {
+      let rt = thinFilmTmmRt(
+        vMatId,
+        vMat.thinFilmLayerCountU,
+        heroLambda,
+        iorV,
+        vMat.thinFilmIncidentIor,
+        vMat.thinFilmAngleDependent,
+        viewCosV,
+      );
+      thinFilmReflectTintV = vec3f(clamp(rt.x, 0.0, 1.0));
+    } else {
+      let rtR = thinFilmTmmRt(vMatId, vMat.thinFilmLayerCountU, 630.0, iorV, vMat.thinFilmIncidentIor, vMat.thinFilmAngleDependent, viewCosV);
+      let rtG = thinFilmTmmRt(vMatId, vMat.thinFilmLayerCountU, 540.0, iorV, vMat.thinFilmIncidentIor, vMat.thinFilmAngleDependent, viewCosV);
+      let rtB = thinFilmTmmRt(vMatId, vMat.thinFilmLayerCountU, 460.0, iorV, vMat.thinFilmIncidentIor, vMat.thinFilmAngleDependent, viewCosV);
+      thinFilmReflectTintV = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
+    }
+    let layerStrengthV = clamp(0.12 + 0.06 * f32(vMat.thinFilmLayerCountU), 0.0, 0.55);
+    let filmStrengthV = clamp(layerStrengthV * (1.0 - roughnessV), 0.0, 0.6);
+    baseColorV = mix(baseColorV, baseColorV * thinFilmReflectTintV, filmStrengthV);
+  }
+  if (params.spectralEnabled != 0u) {
+    let reflScalarV = select(
+      max(luminance(baseColorV), 0.0),
+      evalJakobHanikaSpectrum(vMat.spectralReflCoeffs, heroLambda),
+      vMat.hasSpectralReflectance,
+    );
+    baseColorV = vec3f(reflScalarV);
+  }
 
   // Specular / transmissive visible vertex → not reusable; write empty.
   if (vMat.isUnlit || !rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {
@@ -489,7 +561,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     tanB = rotatedB;
   }
   let cosO = max(dot(nv, woV), 0.0);
-  let f0V = materialSpecularF0(baseColorV, metallicV, vMat.specularColor, vMat.specularIntensity);
+  let f0V = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);
   let fresV = fresnelSchlick(cosO, f0V);
   // Partition specular vs diffuse exactly as sampleNextBounceDirection's
   // non-transmissive branch, so wi_recon's pdf matches brdfDirectionalPdf.
@@ -526,10 +598,10 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // ~0 anyway), so dropping the single frame's sample is the correct, unbiased
   // choice; the temporal history is re-seeded the next non-degenerate frame.
   let pdfSrc = brdfDirectionalPdfFull(
-    baseColorV, roughnessV, metallicV, 0.0, vMat.ior, nv, woV, wiRecon,
+    baseColorV, roughnessV, metallicV, 0.0, iorV, nv, woV, wiRecon,
     0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
-    vMat.specularColor, vMat.specularIntensity,
+    specularColorV, specularIntensityV,
     anisotropyV, anisotropyRotationV,
   );
   if (pdfSrc <= 1e-8) {
@@ -590,8 +662,8 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   r.iridescenceIorV = iridescenceIorV;
   r.iridescenceThicknessMinV = iridescenceThicknessMinV;
   r.iridescenceThicknessMaxV = iridescenceThicknessMaxV;
-  r.specularColorV = vMat.specularColor;
-  r.specularIntensityV = vMat.specularIntensity;
+  r.specularColorV = specularColorV;
+  r.specularIntensityV = specularIntensityV;
   r.anisotropyV = anisotropyV;
   r.anisotropyRotationV = anisotropyRotationV;
   r.prefixVertexCount = 1u;

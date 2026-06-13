@@ -863,20 +863,22 @@ Evidence:
   p-hat uses `evaluateBrdfFull`, and resolve reconstructs with
   `evaluateBrdfFull`.
 - Extension-lobe texture maps now reach the full-tier megakernel shade
-  prologue, but remaining approximate/schema sites are not simple omissions:
-  ReSTIR-PT visible-vertex texture-map parity still needs the same
-  baseColor/ORM/normal/bump/layer treatment as the main shade prologue;
-  clearcoat/sheen are evaluated but not sampled as producer source lobes, so
-  `pdfSrc` intentionally remains the actual anisotropic base sampling density;
-  BDPT light-subpath scatter PDFs are tied to the light-subpath sampler; inverse
+  prologue. ReSTIR-PT visible-vertex payload now mirrors that prologue for
+  alpha pass-through, baseColor/AO/ORM/normal/bump/transmission/extension maps,
+  layer tint/roughness, thin-film, and spectral albedo before storing the
+  reservoir-visible domain. Remaining approximate/schema sites are not simple
+  omissions: clearcoat/sheen are evaluated but not sampled as producer source
+  lobes, so `pdfSrc` intentionally remains the actual anisotropic base sampling
+  density; ReSTIR-PT suffix vertices still decode raw material values; BDPT
+  light-subpath scatter PDFs are tied to the light-subpath sampler; inverse
   adjoints use a separate derivative model.
 
 Closure:
 - Redesign sampler/PDF coherence: extend `sampleNextBounceDirection`, the
   ReSTIR-PT producer source sampler, and associated source/reverse PDFs for
   clearcoat/sheen sampling rather than only changing evaluation.
-- Add visible-vertex material-map parity to the ReSTIR-PT producer/payload path
-  before promoting the extension-map subset beyond approximate.
+- Add suffix-vertex material-map parity to the ReSTIR-PT producer path before
+  promoting the producer's cached Lo path beyond approximate.
 - Extend BDPT light-subpath sampling/PDF bookkeeping before marking light-path
   extension-lobe parity closed.
 - Add material-furnace and lobe-specific tests plus reference A/B before
