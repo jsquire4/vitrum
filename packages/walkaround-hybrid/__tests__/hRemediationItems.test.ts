@@ -4,7 +4,7 @@
  * Items covered:
  *  H15  — UV plumb-through: bvhCore passes real UVs into packUVIntoPositionW
  *  H16  — DDGI invalidate: packProbeUpdateBlendParams supports hysteresisOverride=0
- *  H22  — phantom emitter is inert (power=0, Le=[0,0,0]) on zero-emitter scenes
+ *  H22  — phantom emitter is inert (power=0, finite CDF, Le=[0,0,0]) on zero-emitter scenes
  *  H24-A — materialResolver warns on unknown primitive id
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
@@ -212,23 +212,33 @@ describe('H22 — phantom emitter is inert on zero-emitter scenes', () => {
    *   48..63 : normal.xyz + area         → f32 indices 12..15
    *   64..79 : Le.rgb + intensity        → f32 indices 16..19
    */
-  it('zero-emitter scene produces emitterCount=1 placeholder with Le=[0,0,0]', () => {
+  it('zero-emitter scene produces an inert finite-CDF placeholder', () => {
     const scene = zeroEmitterScene();
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
 
     // Structural: one placeholder must exist (WebGPU zero-buffer guard).
     expect(buffers.emitterCount).toBe(1);
+    expect(buffers.totalEmissivePower).toBe(0);
 
     const floats = new Float32Array(buffers.emitters.cpuData);
     // Le.rgb is at byte offset 64 → float indices 16, 17, 18.
     const leR = floats[16]!;
     const leG = floats[17]!;
     const leB = floats[18]!;
+    const intensity = floats[19]!;
 
     // Le must be zero so the RIS p̂ = luminance(Le × brdf × G) = 0.
     expect(leR).toBe(0);
     expect(leG).toBe(0);
     expect(leB).toBe(0);
+    expect(intensity).toBe(0);
+
+    // The zero-power path still uploads a valid CDF entry, avoiding NaN in the
+    // storage buffer while leaving the placeholder unable to contribute light.
+    const cdf = new Float32Array(buffers.emitterCdf.cpuData);
+    expect(cdf).toHaveLength(1);
+    expect(Number.isFinite(cdf[0]!)).toBe(true);
+    expect(cdf[0]).toBe(1);
   });
 
   it('one-emitter scene has correct non-zero Le (guard against over-zeroing)', () => {
