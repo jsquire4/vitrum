@@ -540,6 +540,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
+    expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
+    expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
+    expect(wgsl).toContain('textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, lod)');
+    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, lod)');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
     expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_NORMAL');

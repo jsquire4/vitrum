@@ -238,8 +238,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // tangent.xyzw at group(3)/binding(10) and buildShadingTangentFrame
     // consumes interpolated handedness before falling back to UV-gradient
     // derivation. Lite unchanged.
-    expect(digest).toBe('b7f5c3f58107bb9bdcafe404fd2c6e6ed06f11933020c3280189c48245cea322');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(353881);
+    // Re-pinned 2026-06-13: material texture arrays now allocate generated mip
+    // chains and the sampler uses an explicit geometric LOD estimate instead of
+    // hard-coding level 0 in the compute shader.
+    expect(digest).toBe('92eb74ad8ebb5c5218be31ee4fb727218d22e464bd2594c37542b0d8874b7efd');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(356647);
   });
 });
 

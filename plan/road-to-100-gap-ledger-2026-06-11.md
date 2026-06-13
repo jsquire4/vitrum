@@ -770,16 +770,19 @@ Closure:
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
 
 Evidence:
-- pt-webgpu material texture array v1 uses one max-sized `rgba8unorm-srgb`
-  2D-array, warns on heterogeneous source sizes, and has no per-layer UV fit.
-- Supported map list excludes several core material maps.
-- Several paths still use base `evaluateBrdf` rather than full material lobe
-  evaluation.
+- Historical v1 material texture array gaps have been narrowed: pt-webgpu now
+  carries per-layer UV fit, per-map UV metadata/wrap modes, sRGB vs linear
+  arrays, raw-data validation, generated mip chains, and explicit geometric LOD
+  selection in the compute shader.
+- Remaining supported-map / sampling-path gaps are now the actual risk surface,
+  not the old "no UV fit/no mips/no per-map transform" infrastructure hole.
+- Several specialty paths still need source-verified full material lobe
+  evaluation before the corresponding fidelity rows can be promoted.
 
 Closure:
-- Add per-map texture transforms, texture color-space handling, mips or an
-  explicit no-mips policy, and per-layer UV fit/atlas behavior.
-- Implement missing high-value maps or mark them unsupported.
+- Keep per-map texture transforms, color-space handling, mip/LOD behavior, and
+  per-layer UV fit pinned by tests as the texture descriptor grows.
+- Implement remaining high-value maps or mark them unsupported.
 - Extend full-lobe evaluation across all sampling/contribution paths that claim
   material fidelity.
 

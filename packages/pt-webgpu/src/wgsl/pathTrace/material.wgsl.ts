@@ -259,13 +259,40 @@ function materialLayerSamplerWgsl(
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
+  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
+  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
+  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
+  let uvA = vec2f(
+    sx * c * rawA.x + sx * s * rawA.y + xform.x,
+    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  );
+  let uvB = vec2f(
+    sx * c * rawB.x + sx * s * rawB.y + xform.x,
+    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  );
+  let uvC = vec2f(
+    sx * c * rawC.x + sx * s * rawC.y + xform.x,
+    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  );
   let uv = vec2f(
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
   let wrappedUv = vec2f(wrapTextureCoord(uv.x, wrapMode.x), wrapTextureCoord(uv.y, wrapMode.y));
   let fittedUv = wrappedUv * uvFitScale;
-  return textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, 0.0);
+  let texDim = vec2f(textureDimensions(${texArray}, 0));
+  let mipCount = f32(textureNumLevels(${texArray}));
+  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let pa = positions[tri.x].xyz;
+  let pb = positions[tri.y].xyz;
+  let pc = positions[tri.z].xyz;
+  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let hitPos = pa * u + pb * v + pc * w;
+  let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
+  let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  return textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, lod);
 }`;
 }
 
@@ -382,6 +409,8 @@ fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
 // multiply — when layerIdx < 0 or the hit is not a mesh triangle (analytic shapes
 // carry no UVs in v1), so a material lacking that map stays byte-identical.
 // textureSampleLevel (explicit LOD) keeps the call valid in non-uniform flow.
+// LOD is estimated from triangle UV density, projected world area, and camera
+// distance because compute shaders do not have implicit screen derivatives.
 // Each map reads its own TextureRef.texCoord + KHR_texture_transform metadata.
 ${_SAMPLE_MAT_LAYER_WGSL}
 

@@ -1,33 +1,51 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMaterialTextureArray } from '../scene/materialTextureArray.js';
+import {
+  createMaterialTextureArray,
+  materialTextureMipLevelCount,
+} from '../scene/materialTextureArray.js';
 import { installGpuConstStubs } from './gpuStub.js';
 
-function makeDevice(): {
-  readonly device: GPUDevice;
-  readonly writeTexture: ReturnType<typeof vi.fn>;
-} {
+function makeDevice() {
   const writeTexture = vi.fn();
+  const beginRenderPass = vi.fn(() => ({
+    setPipeline: vi.fn(),
+    setBindGroup: vi.fn(),
+    draw: vi.fn(),
+    end: vi.fn(),
+  }));
+  const submit = vi.fn();
+  const createTexture = vi.fn((desc: GPUTextureDescriptor) => {
+    const size = desc.size as { width: number; height: number; depthOrArrayLayers?: number };
+    return {
+      label: desc.label,
+      width: size.width,
+      height: size.height,
+      depthOrArrayLayers: size.depthOrArrayLayers ?? 1,
+      format: desc.format,
+      createView: vi.fn(() => ({})),
+      destroy: vi.fn(),
+    };
+  });
   const device = {
     limits: { maxTextureDimension2D: 8192 },
     queue: {
       writeTexture,
       copyExternalImageToTexture: vi.fn(),
+      submit,
     },
-    createTexture: vi.fn((desc: GPUTextureDescriptor) => {
-      const size = desc.size as { width: number; height: number; depthOrArrayLayers?: number };
-      return {
-        label: desc.label,
-        width: size.width,
-        height: size.height,
-        depthOrArrayLayers: size.depthOrArrayLayers ?? 1,
-        format: desc.format,
-        createView: vi.fn(() => ({})),
-        destroy: vi.fn(),
-      };
-    }),
+    createTexture,
     createSampler: vi.fn(() => ({})),
+    createShaderModule: vi.fn(() => ({})),
+    createRenderPipeline: vi.fn(() => ({
+      getBindGroupLayout: vi.fn(() => ({})),
+    })),
+    createBindGroup: vi.fn(() => ({})),
+    createCommandEncoder: vi.fn(() => ({
+      beginRenderPass,
+      finish: vi.fn(() => ({})),
+    })),
   } as unknown as GPUDevice;
-  return { device, writeTexture };
+  return { device, writeTexture, createTexture, beginRenderPass, submit };
 }
 
 function rawImage(width: number, height: number): { width: number; height: number; data: Uint8Array } {
@@ -35,6 +53,30 @@ function rawImage(width: number, height: number): { width: number; height: numbe
 }
 
 describe('createMaterialTextureArray', () => {
+  it('computes full mip chain lengths from the max texture dimension', () => {
+    expect(materialTextureMipLevelCount(1, 1)).toBe(1);
+    expect(materialTextureMipLevelCount(2, 1)).toBe(2);
+    expect(materialTextureMipLevelCount(4, 2)).toBe(3);
+    expect(materialTextureMipLevelCount(8, 8)).toBe(4);
+  });
+
+  it('allocates and renders a mip chain for each material texture array layer', () => {
+    installGpuConstStubs();
+    const { device, createTexture, beginRenderPass, submit } = makeDevice();
+    const array = createMaterialTextureArray(device, [
+      rawImage(4, 4),
+      rawImage(4, 4),
+    ]);
+
+    expect(array.mipLevelCount).toBe(3);
+    expect(createTexture).toHaveBeenCalledWith(expect.objectContaining({
+      mipLevelCount: 3,
+      size: { width: 4, height: 4, depthOrArrayLayers: 2 },
+    }));
+    expect(beginRenderPass).toHaveBeenCalledTimes(4);
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it('reports per-layer UV-fit scales for heterogeneous source dimensions', () => {
     installGpuConstStubs();
     const { device } = makeDevice();

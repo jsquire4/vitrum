@@ -26,6 +26,8 @@ export interface MaterialTextureArray {
   readonly sampler: GPUSampler;
   /** Array layer count (≥ 1; 1 = the white dummy when there are no sources). */
   readonly layerCount: number;
+  /** Number of mip levels allocated/generated for every array layer. */
+  readonly mipLevelCount: number;
   /** Per-layer source-rect UV scale: [copyWidth / arrayWidth, copyHeight / arrayHeight]. */
   readonly layerUvScales: readonly MaterialTextureLayerUvScale[];
   readonly warnings: readonly string[];
@@ -107,6 +109,11 @@ function normalizeRawRgba8(
 const DUMMY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures.dummy';
 const ARRAY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures';
 
+export function materialTextureMipLevelCount(width: number, height: number): number {
+  const maxDim = Math.max(1, Math.floor(Math.max(width, height)));
+  return Math.floor(Math.log2(maxDim)) + 1;
+}
+
 function makeSampler(device: GPUDevice): GPUSampler {
   return device.createSampler({
     label: 'vitrum.pt-webgpu.scene.materialTextures.sampler',
@@ -116,6 +123,107 @@ function makeSampler(device: GPUDevice): GPUSampler {
     addressModeU: 'repeat',
     addressModeV: 'repeat',
   });
+}
+
+const MATERIAL_TEXTURE_MIPMAP_WGSL = /* wgsl */ `
+struct VsOut {
+  @builtin(position) position: vec4f,
+  @location(0) uv: vec2f,
+};
+
+@vertex
+fn vsMain(@builtin(vertex_index) vertexIndex: u32) -> VsOut {
+  var positions = array<vec2f, 3>(
+    vec2f(-1.0, -1.0),
+    vec2f( 3.0, -1.0),
+    vec2f(-1.0,  3.0),
+  );
+  let p = positions[vertexIndex];
+  var out: VsOut;
+  out.position = vec4f(p, 0.0, 1.0);
+  out.uv = p * 0.5 + vec2f(0.5);
+  return out;
+}
+
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+@group(0) @binding(1) var srcSampler: sampler;
+
+@fragment
+fn fsMain(in: VsOut) -> @location(0) vec4f {
+  return textureSample(srcTex, srcSampler, in.uv);
+}
+`;
+
+function generateTextureArrayMips(
+  device: GPUDevice,
+  texture: GPUTexture,
+  layerCount: number,
+  format: GPUTextureFormat,
+  mipLevelCount: number,
+): void {
+  if (mipLevelCount <= 1) return;
+
+  const module = device.createShaderModule({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.module',
+    code: MATERIAL_TEXTURE_MIPMAP_WGSL,
+  });
+  const sampler = device.createSampler({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.sampler',
+    magFilter: 'linear',
+    minFilter: 'linear',
+  });
+  const pipeline = device.createRenderPipeline({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.pipeline',
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vsMain' },
+    fragment: { module, entryPoint: 'fsMain', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  const encoder = device.createCommandEncoder({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.encoder',
+  });
+
+  for (let layer = 0; layer < layerCount; layer += 1) {
+    for (let mip = 1; mip < mipLevelCount; mip += 1) {
+      const sourceView = texture.createView({
+        dimension: '2d',
+        baseMipLevel: mip - 1,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      });
+      const targetView = texture.createView({
+        dimension: '2d',
+        baseMipLevel: mip,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      });
+      const bindGroup = device.createBindGroup({
+        label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.bindGroup',
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: sampler },
+        ],
+      });
+      const pass = encoder.beginRenderPass({
+        label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.pass',
+        colorAttachments: [{
+          view: targetView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3);
+      pass.end();
+    }
+  }
+
+  device.queue.submit([encoder.finish()]);
 }
 
 /** 1×1 white single-layer array — the always-bound placeholder for scenes with
@@ -138,6 +246,7 @@ function createDummyArray(device: GPUDevice, format: GPUTextureFormat): Material
     view: texture.createView({ dimension: '2d-array' }),
     sampler: makeSampler(device),
     layerCount: 1,
+    mipLevelCount: 1,
     layerUvScales: [[1, 1]],
     warnings: [],
   };
@@ -165,12 +274,14 @@ export function createMaterialTextureArray(
     width = Math.max(width, Math.min(p.width, maxDim));
     height = Math.max(height, Math.min(p.height, maxDim));
   }
+  const mipLevelCount = materialTextureMipLevelCount(width, height);
 
   const texture = device.createTexture({
     label: ARRAY_LABEL,
     size: { width, height, depthOrArrayLayers: sources.length },
+    mipLevelCount,
     format,
-    // RENDER_ATTACHMENT is required by copyExternalImageToTexture.
+    // RENDER_ATTACHMENT lets us downsample base uploads into a real mip chain.
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
@@ -216,12 +327,14 @@ export function createMaterialTextureArray(
       );
     }
   }
+  generateTextureArrayMips(device, texture, sources.length, format, mipLevelCount);
 
   return {
     texture,
     view: texture.createView({ dimension: '2d-array' }),
     sampler: makeSampler(device),
     layerCount: sources.length,
+    mipLevelCount,
     layerUvScales: payloads.map((p): MaterialTextureLayerUvScale => {
       if (p == null) return [1, 1];
       const copyW = Math.min(p.width, width);
