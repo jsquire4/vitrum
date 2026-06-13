@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { createMockGl } from './mockGl.js';
+import { composeTraceGlsl } from '../glsl/composeTraceGlsl.js';
+import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
 
 // ── Upload-gap regression GUARD (items_to_fix §H H1/H2/H3) ───────────────────
 //
@@ -69,6 +71,41 @@ function frame(spp: number): FrameInput {
   };
 }
 
+function declaredUniformNames(src: string): Set<string> {
+  const out = new Set<string>();
+  const re = /^\s*uniform\s+[A-Za-z0-9_]+\s+([A-Za-z0-9_]+)(?:\s*\[[^\]]+\])?\s*;/gm;
+  for (const m of src.matchAll(re)) {
+    if (m[1] != null) out.add(m[1]);
+  }
+  return out;
+}
+
+const EXPLICITLY_NON_UPLOADED_UNIFORMS = new Map<string, string>([
+  // Struct roots: uploaded through their scalar/sampler members (for example
+  // lights.count / envMapInfo.totalSum / bvh.index), not by setting the root name.
+  ['envMapInfo', 'struct root; members are uploaded/bound individually'],
+  ['lights', 'struct root; lights.count and lights.tex are handled separately'],
+  ['bvh', 'struct root; bvh.* sampler members are bound separately'],
+  // Samplers: the mock GL does not enumerate ACTIVE_UNIFORMS, so sampler-unit
+  // assignment is not observable in this unit test. #bindSceneTextures is covered
+  // by its per-name table/tests; scalar companion uniforms are checked here.
+  ['uMeshLights', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
+  ['attributesArray', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
+  ['materialIndexAttribute', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
+  ['materials', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
+  ['textures', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
+  ['backgroundMap', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
+  ['sobolTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
+  ['stratifiedTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
+  ['stratifiedOffsetTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
+  ['uBdptLightPathTex', 'sampler uniform; BDPT path binds it when FEATURE_BDPT is active'],
+  // Compile-gated non-default feature uniforms; focused tests below cover accepted
+  // host-controllable variants where applicable.
+  ['backgroundRotation', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
+  ['backgroundIntensity', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
+  ['physicalCamera', 'FEATURE_DOF struct root; physicalCamera.* members are uploaded'],
+]);
+
 async function renderAndRecord(
   scene: Scene,
   engineOpts: Record<string, unknown> = {},
@@ -129,6 +166,42 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.has('uMeshLightCount')).toBe(true);
     expect(rec.get('uMeshLightCount')).toBe(0);
     expect(rec.get('uTotalEmissiveArea')).toBe(0);
+  });
+
+  it('D10: every declared non-sampler default shader uniform is uploaded or explicitly classified', async () => {
+    const declared = declaredUniformNames(composeTraceGlsl(DEFAULT_TRACE_FEATURES));
+    const records = [
+      await renderAndRecord(sceneNoEmitters()),
+      await renderAndRecord(sceneNoEmitters(), { spectral: true }),
+      await renderAndRecord(sceneNoEmitters(), { dof: { focusDistance: 4, bokehSize: 1 } }),
+      await renderAndRecord(sceneWithPointLight(), { bdpt: true }),
+    ];
+    const uploaded = new Set<string>();
+    for (const rec of records) {
+      for (const name of rec.keys()) uploaded.add(name);
+    }
+    const missing = Array.from(declared)
+      .filter((name) => !uploaded.has(name) && !EXPLICITLY_NON_UPLOADED_UNIFORMS.has(name))
+      .sort();
+    expect(missing).toEqual([]);
+  });
+
+  it('D10: explicit non-uploaded-uniform classifications remain real declarations', () => {
+    const declared = declaredUniformNames(composeTraceGlsl(DEFAULT_TRACE_FEATURES));
+    for (const [name, reason] of EXPLICITLY_NON_UPLOADED_UNIFORMS) {
+      expect(reason.length, `${name} must carry a reason`).toBeGreaterThan(10);
+      expect(declared.has(name), `${name} classification should match a shader declaration`).toBe(true);
+    }
+  });
+
+  it('D10: backgroundBlur is explicitly uploaded as 0 by default and follows the option', async () => {
+    const rec = await renderAndRecord(sceneNoEmitters());
+    expect(rec.has('backgroundBlur')).toBe(true);
+    expect(rec.get('backgroundBlur')).toBe(0);
+
+    const blurred = await renderAndRecord(sceneNoEmitters(), { backgroundBlur: 0.25 });
+    expect(blurred.has('backgroundBlur')).toBe(true);
+    expect(blurred.get('backgroundBlur')).toBeCloseTo(0.25, 6);
   });
 
   it('D11: materialLodDepth is explicitly uploaded as 0 by default (texture LOD disabled)', async () => {

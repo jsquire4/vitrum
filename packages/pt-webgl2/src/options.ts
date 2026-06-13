@@ -56,6 +56,12 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    */
   readonly backgroundAlpha?: number;
   /**
+   * Background/environment blur radius for directly-visible miss rays. Default 0
+   * preserves the sharp environment lookup; positive values opt into the fork's
+   * stochastic background blur approximation.
+   */
+  readonly backgroundBlur?: number;
+  /**
    * Camera projection model (flag-plumbing audit 2026-06-10). The GLSL
    * `getCameraRay` fully implements all three; the host declares which one its
    * `projMatrix` represents (the matrix alone can't disambiguate equirect, which

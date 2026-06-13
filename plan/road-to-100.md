@@ -213,12 +213,15 @@ buckets that the A–D framing was missing:**
   column describes a deleted package and omits pt-webgl2; CHANGELOG `[Unreleased]` has no
   Removed entry for e14000c; ~6 tool READMEs document dead workflows; 2 packages have no
   README (items H39–H45, H59). S–M effort, zero rendering risk, large honesty payoff.
-- **NEW D10 — test-infrastructure gates** ✅/◻: the suite is structurally blind to the
-  H1-class (mock GL accepts every uniform; stub GPUDevices validate no sizes; no vitest run
-  compiles any shader; the only behavioral gates live outside `npm test`). The top-3 payoff
-  tests: GL uniform-upload completeness via recording mock, in-repo naga parse gate, and a
-  size-validating GPU stub (items H53–H56 list ten, prioritized). M effort total; this is
-  what stops the next H1 from shipping green.
+- **NEW D10 — test-infrastructure gates** ✅/◻: the GL uniform-upload completeness
+  sub-gate is now landed in `pt-webgl2` (`uploadGapGuard.test.ts` extracts declared
+  shader uniforms, exercises default/spectral/DOF/BDPT frames, and requires every
+  non-sampler uniform to be uploaded or explicitly classified). That gate immediately
+  closed one additional inert residue: `backgroundBlur` is now a validated
+  `PTEngineWebGL2Options.backgroundBlur` knob, default `0`, uploaded every frame.
+  Remaining D10 infrastructure work: in-repo shader compile gate coverage inside the
+  ordinary test command, and a size-validating GPU stub (items H53–H56 list ten,
+  prioritized). M effort total; this is what stops the next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
   casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b

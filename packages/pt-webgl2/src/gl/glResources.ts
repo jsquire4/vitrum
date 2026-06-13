@@ -131,6 +131,7 @@ export interface FrameUniforms {
   readonly invProjectionMatrix: Float32Array; // inverse(projMatrix)
   readonly environmentIntensity: number;
   readonly environmentRotation: Float32Array; // mat4
+  readonly backgroundBlur: number;
   readonly spectralEnabled: boolean;
   readonly causticStrategy: number; // 0=none, 1=manifold-nee, 2=photon-map
   readonly mneeMaxIterations: number;
@@ -365,6 +366,7 @@ export class GlResources {
     prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
     prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
     prog.setFloat('environmentIntensity', frame.environmentIntensity);
+    prog.setFloat('backgroundBlur', frame.backgroundBlur);
     // H3 FIX (2026-06-09): upload backgroundAlpha. Directly-visible background
     // (NO_HIT first ray) sets `pc_fragColor.a = backgroundAlpha`, then the running
     // average multiplies by `opacity`; in the 'normal' regime the SRC_ALPHA blend

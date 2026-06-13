@@ -226,7 +226,7 @@ export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
   { glslName: 'uMeshLightCount',      glslType: 'uint',             frameKey: 'samplerOrStruct' },
   { glslName: 'uTotalEmissiveArea',   glslType: 'float',            frameKey: 'samplerOrStruct' },
   // ── background ───────────────────────────────────────────────────────────
-  { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'samplerOrStruct' },
+  { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'backgroundBlur' },
   { glslName: 'backgroundAlpha',       glslType: 'float',            frameKey: 'backgroundAlpha' },
   // backgroundMap / backgroundRotation / backgroundIntensity are gated under
   // #if FEATURE_BACKGROUND_MAP — inlined in buildUniformDecls(), not manifest rows.

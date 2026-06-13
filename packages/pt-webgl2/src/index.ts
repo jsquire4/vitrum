@@ -167,6 +167,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #mneeMaxChainLength: number;
   readonly #materialLodDepth: number;
   readonly #backgroundAlpha: number;
+  readonly #backgroundBlur: number;
   readonly #regime: AccumRegime;
   // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
   readonly #traceTier: WebGl2TraceTier;
@@ -220,6 +221,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
     this.#materialLodDepth = Math.max(0, Math.floor(opts.materialLodDepth ?? 0));
     this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));
+    this.#backgroundBlur = Math.max(0, opts.backgroundBlur ?? 0);
     // Flag-plumbing audit (2026-06-10): cameraType + dof are now real options.
     this.#cameraType =
       opts.cameraType === 'orthographic' ? 1 : opts.cameraType === 'equirectangular' ? 2 : 0;
@@ -663,6 +665,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       environmentRotation: (env?.kind === 'hdri' && env.rotationY != null && env.rotationY !== 0)
         ? makeRotationYMat4(-(env.rotationY))
         : IDENTITY_MAT4,
+      backgroundBlur: this.#backgroundBlur,
       spectralEnabled: this.#spectralEnabled,
       causticStrategy: caustic,
       mneeMaxIterations: this.#mneeMaxIterations,
@@ -762,6 +765,14 @@ export const createPTEngine_WebGL2: EngineFactory<
   ) {
     throw new RangeError(
       `createPTEngine_WebGL2: materialLodDepth must be a finite number >= 0 (got ${opts.materialLodDepth})`,
+    );
+  }
+  if (
+    opts.backgroundBlur !== undefined &&
+    (!Number.isFinite(opts.backgroundBlur) || opts.backgroundBlur < 0)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: backgroundBlur must be a finite number >= 0 (got ${opts.backgroundBlur})`,
     );
   }
   // H-denoiser: pt-webgl2 has no denoiser pipeline (no OIDN/SVGF passes wired).
