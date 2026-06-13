@@ -555,6 +555,36 @@ export class HybridEngine implements Engine {
         details: { requested: strategy },
       });
     }
+    // H46 — maxSamplesPerPixel is a converged-PT structural cap. walkaround is a
+    // realtime single-frame GI engine (capabilities.accumulates=false), so there
+    // is no SPP accumulator to size or clamp. Warn when a host supplies it rather
+    // than silently accepting a knob this backend cannot honour.
+    if (opts.maxSamplesPerPixel !== undefined) {
+      this._warn({
+        code: 'walkaround-hybrid.max-samples-per-pixel-ignored',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] maxSamplesPerPixel=${opts.maxSamplesPerPixel} is ignored by ` +
+        `walkaround-hybrid. This backend does not progressively accumulate samples ` +
+        `(capabilities.accumulates=false); use FrameInput quality knobs or a path-tracing ` +
+        `backend for SPP caps.`,
+        details: { requested: opts.maxSamplesPerPixel },
+      });
+    }
+    if (opts.causticOptions !== undefined) {
+      this._warn({
+        code: 'walkaround-hybrid.unsupported-caustic-options',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] causticOptions were provided but walkaround-hybrid does ` +
+        `not implement causticStrategy modes. The causticOptions object is ignored.`,
+        details: { keys: Object.keys(opts.causticOptions) },
+      });
+    }
 
     this._device                = opts.device;
     this._width                 = opts.width;

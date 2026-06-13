@@ -9,7 +9,7 @@
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
  *  H25-H28 — Road/items ledger does not re-open already-closed PPG/NRC/ReLU defects
- *  H46  — HybridEngine warns on maxBounces ≠ 4 and on causticStrategy ≠ 'none'
+ *  H46  — HybridEngine warns on inherited options that walkaround cannot honour
  *  H47/H29 — PPG spatial-cell and dTree-node caps thread to PPGCoordinator.initialize
  */
 
@@ -407,6 +407,43 @@ describe('H46 — HybridEngine construction warnings', () => {
       (c) => String(c[0]).includes('causticStrategy'),
     );
     expect(causticWarns).toHaveLength(0);
+  });
+
+  it('warns when maxSamplesPerPixel is supplied (walkaround does not accumulate SPP)', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    const structured: import('@vitrum/core').EngineWarning[] = [];
+    new HybridEngine(makeStubOpts({
+      maxSamplesPerPixel: 64,
+      onWarning: (w: import('@vitrum/core').EngineWarning) => structured.push(w),
+    }) as never);
+    const sampleWarns = warnSpy.mock.calls.filter(
+      (c) => String(c[0]).includes('maxSamplesPerPixel'),
+    );
+    expect(sampleWarns.length).toBeGreaterThan(0);
+    expect(String(sampleWarns[0]![0])).toContain('64');
+    expect(structured.some((w) =>
+      w.code === 'walkaround-hybrid.max-samples-per-pixel-ignored' &&
+      w.details?.requested === 64,
+    )).toBe(true);
+  });
+
+  it('warns when causticOptions are supplied even if causticStrategy is none', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    const structured: import('@vitrum/core').EngineWarning[] = [];
+    new HybridEngine(makeStubOpts({
+      causticStrategy: 'none',
+      causticOptions: { mneeMaxIterations: 6 },
+      onWarning: (w: import('@vitrum/core').EngineWarning) => structured.push(w),
+    }) as never);
+    const optionWarns = warnSpy.mock.calls.filter(
+      (c) => String(c[0]).includes('causticOptions'),
+    );
+    expect(optionWarns.length).toBeGreaterThan(0);
+    expect(structured.some((w) =>
+      w.code === 'walkaround-hybrid.unsupported-caustic-options' &&
+      Array.isArray(w.details?.keys) &&
+      (w.details.keys as string[]).includes('mneeMaxIterations'),
+    )).toBe(true);
   });
 });
 
