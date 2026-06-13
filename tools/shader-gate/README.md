@@ -11,6 +11,11 @@ In-repo shader compile gate.  Two scripts:
   feature-flag combination of `@vitrum/pt-webgl2` and validates each one with
   `glslangValidator`.
 
+This directory is also an npm workspace package.  Root `npm test` runs the CPU-only
+GLSL gate plus its injected-error self-test through `@vitrum/shader-gate`; the WGSL
+gate remains an explicit `npm run shader-gate` / CI step because it needs a WebGPU
+adapter.
+
 ## How to run locally
 
 **Prerequisites:** Deno ≥2.8, Mesa lavapipe (or any Vulkan ICD), `glslang-tools`.

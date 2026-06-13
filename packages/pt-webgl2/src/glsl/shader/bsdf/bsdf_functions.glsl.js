@@ -29,6 +29,35 @@ export const bsdf_functions = /* glsl */`
 		return pathThroughputFromRgb( surf.activeLayerTransmission, heroWavelength );
 	}
 
+	float sampleExponentialDistance( float xi, float sigmaT, float maxDistance ) {
+		if ( sigmaT <= 0.0 ) return maxDistance;
+		float u = max( 1.0 - clamp( xi, 0.0, 0.999999 ), 1e-6 );
+		return min( - log( u ) / sigmaT, maxDistance );
+	}
+
+	float hg_phase( float cosTheta, float g ) {
+		float gg = clamp( g, -0.9999, 0.9999 );
+		float g2 = gg * gg;
+		float denom = 1.0 + g2 - 2.0 * gg * clamp( cosTheta, -1.0, 1.0 );
+		return ( 1.0 - g2 ) / ( 4.0 * PI * denom * sqrt( denom ) );
+	}
+
+	vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward ) {
+		float gg = clamp( g, -0.9999, 0.9999 );
+		float cosTheta;
+		if ( abs( gg ) < 1e-4 ) {
+			cosTheta = 1.0 - 2.0 * u2;
+		} else {
+			float sqrtTerm = ( 1.0 - gg * gg ) / ( 1.0 - gg + 2.0 * gg * u2 );
+			cosTheta = ( 1.0 + gg * gg - sqrtTerm * sqrtTerm ) / ( 2.0 * gg );
+		}
+		cosTheta = clamp( cosTheta, -1.0, 1.0 );
+		float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
+		float phi = 2.0 * PI * u1;
+		vec3 localDir = vec3( sinTheta * cos( phi ), sinTheta * sin( phi ), cosTheta );
+		return normalize( getBasisFromNormal( normalize( forward ) ) * localDir );
+	}
+
 	// diffuse
 	float diffuseEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, inout vec3 color ) {
 
@@ -671,7 +700,7 @@ export const bsdf_functions = /* glsl */`
 		// — so reading them collapsed SSS to a degenerate Beer-Lambert=1 term with a
 		// fixed albedo (the per-material magnitudes were packed + gated on but never
 		// consumed). surf.* IS the per-material data and is already in scope here.
-		float tScatter = sampleExponential( rand( 17 ), surf.sssSigmaT, 1e6 );
+		float tScatter = sampleExponentialDistance( rand( 17 ), surf.sssSigmaT, 1e6 );
 		float beerLambert = exp( - surf.sssSigmaT * tScatter );
 
 		vec3 rd = normalize( - worldWo ); // refracted direction approximation

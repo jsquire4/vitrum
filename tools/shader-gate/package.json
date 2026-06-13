@@ -1,0 +1,13 @@
+{
+  "name": "@vitrum/shader-gate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:glsl && npm run test:glsl:self-test",
+    "test:glsl": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp ./glslGate.mjs",
+    "test:glsl:self-test": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp ./glslGate.mjs --self-test",
+    "test:wgsl": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env ./gate.mjs",
+    "test:wgsl:self-test": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env ./gate.mjs --self-test"
+  }
+}

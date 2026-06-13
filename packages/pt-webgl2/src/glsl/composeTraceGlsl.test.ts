@@ -168,6 +168,17 @@ describe('composeTraceGlsl', () => {
     expect(src).not.toContain('Volume scatter event');
   });
 
+  it('D10: SSS free-flight helper is defined before the SSS sample path uses it', () => {
+    const helper = idx('float sampleExponentialDistance( float xi, float sigmaT, float maxDistance )');
+    const hgPdf = idx('float hg_phase( float cosTheta, float g )');
+    const hgSampler = idx('vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward )');
+    const call = idx('float tScatter = sampleExponentialDistance( rand( 17 ), surf.sssSigmaT, 1e6 );');
+    expect(helper).toBeLessThan(call);
+    expect(hgPdf).toBeLessThan(call);
+    expect(hgSampler).toBeLessThan(call);
+    expect(src).not.toContain('sampleExponential( rand( 17 )');
+  });
+
   it('Phase 6: pt-webgl2 NEE strategy uses one selector variate for analytic/mesh/env slots', () => {
     const directLightSource = readFileSync(
       fileURLToPath(new URL('./render/direct_light_contribution_function.glsl.js', import.meta.url)),
