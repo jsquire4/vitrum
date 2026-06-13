@@ -135,6 +135,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `scene` snapshot and falls back to `setScene()` on both engines when either
   incremental primitive path is missing or rejects; fallback patching uses the
   core `patchPrimitiveInScene()` invariant layer.
+- `ProgressiveHandoffCoordinator` also accepts a structural animation
+  `controller` (for example `GltfSceneController`) and advances it once per
+  `frame()`, routing controller `setScene` / `updatePrimitive` calls through
+  the same dual-engine scene-authority path so animated handoff cannot patch
+  only one side.
 - `gltf-adapter` decodes embedded `data:` URI images locally and rejects
   unsupported `extensionsRequired` entries instead of silently importing an
   invalid scene.

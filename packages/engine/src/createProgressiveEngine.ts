@@ -45,6 +45,8 @@ import { computeSceneAABB } from './sceneAABB.js';
 import { configureWebGpuCanvas } from './configureWebGpuCanvas.js';
 import {
   ProgressiveHandoffCoordinator,
+  type ProgressiveHandoffController,
+  type ProgressiveHandoffControllerDelta,
   type ProgressiveHandoffOptions,
 } from './progressiveHandoff.js';
 import type { AdapterProfile } from '@vitrum/core';
@@ -94,6 +96,19 @@ export interface CreateProgressiveEngineOptions {
   /** Forwarded to the coordinator — max-abs camera-delta below which a frame
    *  counts as "still". Default 1e-5. */
   readonly cameraEpsilon?: number;
+
+  /** Forwarded to the coordinator — optional scene animation controller (for
+   *  example a glTF controller). The coordinator advances it once per frame and
+   *  routes patches to both sub-engines. */
+  readonly controller?: ProgressiveHandoffController;
+
+  /** Forwarded to the coordinator — seconds passed to `controller.advance()` per
+   *  frame. Default 1/60. */
+  readonly controllerDeltaSeconds?: ProgressiveHandoffControllerDelta;
+
+  /** Forwarded to the coordinator — `loop` option for controller animation.
+   *  Default true. */
+  readonly controllerLoop?: boolean;
 
   /** Debug overlay opt-in, forwarded to BOTH sub-engines as `debug: true`. */
   readonly debug?: boolean;
@@ -348,6 +363,11 @@ export async function createProgressiveEngine(
         ? { convergedDisplaySamples: opts.convergedDisplaySamples }
         : {}),
       ...(opts.cameraEpsilon != null ? { cameraEpsilon: opts.cameraEpsilon } : {}),
+      ...(opts.controller != null ? { controller: opts.controller } : {}),
+      ...(opts.controllerDeltaSeconds != null
+        ? { controllerDeltaSeconds: opts.controllerDeltaSeconds }
+        : {}),
+      ...(opts.controllerLoop != null ? { controllerLoop: opts.controllerLoop } : {}),
     };
     const coordinator = new ProgressiveHandoffCoordinator(coordinatorOpts);
 

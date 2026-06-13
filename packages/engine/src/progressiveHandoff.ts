@@ -24,6 +24,45 @@
 import { patchPrimitiveInScene } from '@vitrum/core';
 import type { Engine, FrameInput, FrameOutput, Scene, ScenePrimitive } from '@vitrum/core';
 
+/** Which engine the coordinator is presenting. */
+export type HandoffPhase =
+  /** Camera moving (or just moved) — real-time engine. */
+  | 'realtime'
+  /** Camera still but not yet past the handoff threshold — still real-time. */
+  | 'settling'
+  /** Camera still past the threshold; the converged engine is accumulating
+   *  BEHIND the still-displayed real-time image (settleBehindRealtime only). */
+  | 'prerolling'
+  /** Camera still past the threshold — converged engine, displayed + accumulating. */
+  | 'converging';
+
+export interface ProgressiveHandoffControllerTarget {
+  setScene(scene: Scene): void;
+  updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+}
+
+export interface ProgressiveHandoffControllerAdvanceOptions {
+  readonly engine?: ProgressiveHandoffControllerTarget;
+  readonly loop?: boolean;
+}
+
+/** Structural animation-controller seam. `@vitrum/gltf-adapter`'s
+ *  GltfSceneController satisfies this without making `@vitrum/engine` import the
+ *  adapter at runtime. */
+export interface ProgressiveHandoffController {
+  readonly animations?: readonly unknown[];
+  advance(deltaSeconds: number, options?: ProgressiveHandoffControllerAdvanceOptions): unknown;
+}
+
+export interface ProgressiveHandoffControllerDeltaState {
+  readonly phase: HandoffPhase;
+  readonly stillFrames: number;
+}
+
+export type ProgressiveHandoffControllerDelta =
+  | number
+  | ((input: FrameInput, state: ProgressiveHandoffControllerDeltaState) => number);
+
 export interface ProgressiveHandoffOptions {
   /** Smooth real-time GI engine — driven while the camera moves. */
   readonly realtime: Engine;
@@ -71,19 +110,20 @@ export interface ProgressiveHandoffOptions {
    *  trust the real-time seed longer before PT samples dominate; it decays as
    *  W/(W+M) so it never biases the converged mean. Default 4. */
   readonly seedWeight?: number;
+  /** Optional scene animation controller (for example a glTF controller). It is
+   *  advanced once at the start of each {@link frame} call and receives a
+   *  synthetic patch target that forwards `setScene` / `updatePrimitive` to BOTH
+   *  engines through this coordinator. This keeps animated realtime + converged
+   *  engines synchronized and naturally invalidates temporal/converged history
+   *  through the existing mutation reset path. */
+  readonly controller?: ProgressiveHandoffController;
+  /** Seconds passed to `controller.advance()` per frame. Default 1/60. Hosts
+   *  with an external clock can provide a function of the current FrameInput and
+   *  previous handoff state. */
+  readonly controllerDeltaSeconds?: ProgressiveHandoffControllerDelta;
+  /** Forwarded to `controller.advance(..., { loop })`. Default true. */
+  readonly controllerLoop?: boolean;
 }
-
-/** Which engine the coordinator is presenting. */
-export type HandoffPhase =
-  /** Camera moving (or just moved) — real-time engine. */
-  | 'realtime'
-  /** Camera still but not yet past the handoff threshold — still real-time. */
-  | 'settling'
-  /** Camera still past the threshold; the converged engine is accumulating
-   *  BEHIND the still-displayed real-time image (settleBehindRealtime only). */
-  | 'prerolling'
-  /** Camera still past the threshold — converged engine, displayed + accumulating. */
-  | 'converging';
 
 export interface HandoffFrameResult {
   readonly phase: HandoffPhase;
@@ -145,6 +185,13 @@ export class ProgressiveHandoffCoordinator {
   readonly #displaySamples: number;
   readonly #seedFromRealtime: boolean;
   readonly #seedWeight: number;
+  readonly #controller: ProgressiveHandoffController | undefined;
+  readonly #controllerDeltaSeconds: ProgressiveHandoffControllerDelta;
+  readonly #controllerLoop: boolean;
+  readonly #controllerTarget: ProgressiveHandoffControllerTarget = {
+    setScene: (scene) => this.setScene(scene),
+    updatePrimitive: (id, patch) => this.updatePrimitive(id, patch),
+  };
 
   #prev: CameraSnapshot | null = null;
   #stillFrames = 0;
@@ -163,6 +210,9 @@ export class ProgressiveHandoffCoordinator {
     this.#displaySamples = Math.max(1, Math.floor(opts.convergedDisplaySamples ?? 64));
     this.#seedFromRealtime = opts.seedFromRealtime ?? false;
     this.#seedWeight = Math.max(0, opts.seedWeight ?? 4);
+    this.#controller = opts.controller;
+    this.#controllerDeltaSeconds = opts.controllerDeltaSeconds ?? (1 / 60);
+    this.#controllerLoop = opts.controllerLoop ?? true;
     this.#scene = opts.scene ?? null;
   }
 
@@ -300,6 +350,8 @@ export class ProgressiveHandoffCoordinator {
    * output. The host presents `result.output`.
    */
   frame(input: FrameInput): HandoffFrameResult {
+    this.#advanceController(input);
+
     const cam = snapshot(input);
     const moved = this.#prev === null || cameraMoved(this.#prev, cam, this.#eps);
     this.#prev = cam;
@@ -374,6 +426,29 @@ export class ProgressiveHandoffCoordinator {
       weight: this.#seedWeight,
       width: destWidth,
       height: destHeight,
+    });
+  }
+
+  #advanceController(input: FrameInput): void {
+    const controller = this.#controller;
+    if (controller == null) return;
+    if (controller.animations != null && controller.animations.length === 0) return;
+
+    const delta = typeof this.#controllerDeltaSeconds === 'function'
+      ? this.#controllerDeltaSeconds(input, {
+        phase: this.#phase,
+        stillFrames: this.#stillFrames,
+      })
+      : this.#controllerDeltaSeconds;
+    if (!Number.isFinite(delta)) {
+      throw new TypeError(
+        'ProgressiveHandoffCoordinator.frame: controllerDeltaSeconds must resolve to a finite number.',
+      );
+    }
+    if (delta === 0) return;
+    controller.advance(delta, {
+      engine: this.#controllerTarget,
+      loop: this.#controllerLoop,
     });
   }
 }

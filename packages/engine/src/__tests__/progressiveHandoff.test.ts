@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asMat4, type Engine, type FrameInput, type FrameOutput, type Scene, type ScenePrimitive } from '@vitrum/core';
-import { ProgressiveHandoffCoordinator } from '../progressiveHandoff.js';
+import {
+  ProgressiveHandoffCoordinator,
+  type ProgressiveHandoffController,
+} from '../progressiveHandoff.js';
 
 /** Minimal stub engine that records renderFrame / reset and reports an
  *  incrementing sample count (reset → 0). */
@@ -279,6 +282,113 @@ describe('ProgressiveHandoffCoordinator', () => {
     c.reset();
     expect(c.phase).toBe('realtime');
     expect(c.frame(input(0)).phase).toBe('realtime'); // first frame after reset is "moved"
+  });
+
+  it('advances a scene controller once per frame and routes primitive patches to both engines before render', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const materialPatch = {
+      material: { baseColor: [0.25, 0.5, 0.75], roughness: 1, metallic: 0 },
+    } as Partial<ScenePrimitive>;
+    const advance = vi.fn(
+      (_deltaSeconds: number, options?: Parameters<ProgressiveHandoffController['advance']>[1]) => {
+        options?.engine?.updatePrimitive?.('p', materialPatch);
+      },
+    );
+    const controller: ProgressiveHandoffController = { animations: [{}], advance };
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      stillFramesBeforeHandoff: 1,
+      controller,
+    });
+
+    const result = c.frame(input(0));
+
+    expect(result.phase).toBe('realtime');
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledWith(1 / 60, {
+      engine: expect.objectContaining({ setScene: expect.any(Function), updatePrimitive: expect.any(Function) }),
+      loop: true,
+    });
+    expect(rt.updatePrimitive).toHaveBeenCalledWith('p', materialPatch);
+    expect(cv.updatePrimitive).toHaveBeenCalledWith('p', materialPatch);
+    expect(rt.updatePrimitive.mock.invocationCallOrder[0] ?? 0)
+      .toBeLessThan(rt.renderFrame.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('uses the host controller delta callback and loop flag', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const advance = vi.fn();
+    const controller: ProgressiveHandoffController = { animations: [{}], advance };
+    const controllerDeltaSeconds = vi.fn((_frame: FrameInput, state: { phase: string; stillFrames: number }) =>
+      state.phase === 'realtime' && state.stillFrames === 0 ? 0.125 : 0.25,
+    );
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      controller,
+      controllerDeltaSeconds,
+      controllerLoop: false,
+    });
+
+    c.frame(input(0));
+
+    expect(controllerDeltaSeconds).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledWith(0.125, {
+      engine: expect.any(Object),
+      loop: false,
+    });
+  });
+
+  it('skips glTF-style controllers that report no animations', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const advance = vi.fn(() => {
+      throw new Error('should not advance');
+    });
+    const controller: ProgressiveHandoffController = { animations: [], advance };
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      controller,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    expect(() => c.frame(input(0))).not.toThrow();
+    expect(advance).not.toHaveBeenCalled();
+    expect(rt.renderFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to setScene on both engines when controller patches need the scene fallback', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).updatePrimitive;
+    const nextPositions = new Float32Array([3, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const advance = vi.fn(
+      (_deltaSeconds: number, options?: Parameters<ProgressiveHandoffController['advance']>[1]) => {
+        options?.engine?.updatePrimitive?.('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+      },
+    );
+    const controller: ProgressiveHandoffController = { animations: [{}], advance };
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      controller,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    c.frame(input(0));
+
+    expect(rt.updatePrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).toHaveBeenCalledTimes(1);
+    expect(cv.setScene).toHaveBeenCalledTimes(1);
+    const patched = rt.setScene.mock.calls[0]![0] as Scene;
+    expect((patched.primitives[0] as { positions: Float32Array }).positions).toBe(nextPositions);
+    expect(cv.setScene).toHaveBeenCalledWith(patched);
   });
 });
 
