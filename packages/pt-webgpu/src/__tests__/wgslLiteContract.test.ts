@@ -94,19 +94,23 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: shared prologue changed `transmission` from let to
     // var so the full tier can modulate it by transmissionMap; lite still has
     // no material texture bindings and remains scalar-only.
-    expect(digest).toBe('04c13f3dfeba678320dff87ea6722379914120010d8d3c6876c86a1c0d037b92');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138427);
+    // Re-pinned 2026-06-12: lite MNEE/env reconnection call sites accept the
+    // decoded KHR_materials_specular scalar factors to keep the scalar material
+    // contract interface-aligned with full-tier shaders.
+    expect(digest).toBe('d82deb97ea1598f145e3cdae032c72c15f3295d0c35dcae576a52f71b26a9536');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(140941);
   });
 });
 
 describe('pt-webgpu lite WGSL contract', () => {
   it('uses the reduced binding layout (no motion / TLAS / light buffers)', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 27u;'); // A3: 26 → 27
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 28u;'); // SPEC-01: 27 → 28
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('motionVectorsTexture');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('pointLights');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.isUnlit');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('specularIntensity: f32,');
   });
 
   it('routes lite scalar extension lobes through full BRDF helpers with zero anisotropy', () => {

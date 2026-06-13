@@ -233,6 +233,8 @@ fn sppmGatherProgressive(
   iridescenceIor : f32,
   iridescenceThicknessMin : f32,
   iridescenceThicknessMax : f32,
+  specularColor : vec3f,
+  specularIntensity : f32,
   anisotropy : f32,
   anisotropyRotation : f32,
   throughput : vec3f,
@@ -276,6 +278,7 @@ fn sppmGatherProgressive(
             baseColor, roughness, metallic, normal, wo, -ph.incidentDir.xyz,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            specularColor, specularIntensity,
             anisotropy, anisotropyRotation,
           );
           let fluxRgb = ph.flux.rgb;

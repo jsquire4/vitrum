@@ -580,10 +580,12 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescence: 'native',
   iridescenceIor: 'native',
   iridescenceThicknessRange: 'native',
-  // KHR_materials_specular scalars are never packed (materialPacking.ts has no
-  // specular lane); dielectric F0 comes from `ior` only.
-  specularIntensity: 'unsupported',
-  specularColor: 'unsupported',
+  // SPEC-01 — scalar factors are packed in material vec4 #27 and consumed by the
+  // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, and BDPT light-subpath
+  // surface scattering. Approximate until ReSTIR-PT reservoirs/resolve and the
+  // remaining legacy default payload paths carry them too.
+  specularIntensity: 'approximate',
+  specularColor: 'approximate',
   envMapIntensity: 'native',
   spectralAttenuation: 'native',
   dispersionAbbeNumber: 'native',

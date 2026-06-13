@@ -236,6 +236,8 @@ fn bsdfAreaLightConnectionContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughputAtVertex: vec3f,
@@ -249,6 +251,7 @@ fn bsdfAreaLightConnectionContribution(
     baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   if (bsdfPdf <= 1e-6) {
@@ -305,6 +308,7 @@ fn bsdfAreaLightConnectionContribution(
     baseColor, roughness, metallic, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
@@ -330,6 +334,8 @@ fn bsdfEnvironmentConnectionContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughputAtVertex: vec3f,
@@ -342,6 +348,7 @@ fn bsdfEnvironmentConnectionContribution(
     baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
@@ -353,6 +360,7 @@ fn bsdfEnvironmentConnectionContribution(
     baseColor, roughness, metallic, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   // A3 — spectralize the env connection at the hero λ in spectral mode, matching the

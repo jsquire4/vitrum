@@ -481,9 +481,13 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       }
       scatterDir = sampledDir;
       pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
-                                      prevNormal, woAtPrev, scatterDir);
+                                      prevNormal, woAtPrev, scatterDir,
+                                      prevMat.specularColor, prevMat.specularIntensity);
       cosPrev = max(dot(prevNormal, scatterDir), 0.0);
-      fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir);
+      fPrev = evaluateBrdf(
+        prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir,
+        prevMat.specularColor, prevMat.specularIntensity,
+      );
     }
   
     if (pdfScatter <= 1e-8 || cosPrev <= 1e-5) {
@@ -563,7 +567,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       let prevMetalRev = prevMatForRev.metallic;
       // Reverse: incoming = scatterDir, outgoing (toward prevCol's predecessor) = woAtPrev.
       pdfRevAtPrev = brdfDirectionalPdf(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
-                                        prevMatForRev.ior, prevNormal, scatterDir, woAtPrev);
+                                        prevMatForRev.ior, prevNormal, scatterDir, woAtPrev,
+                                        prevMatForRev.specularColor, prevMatForRev.specularIntensity);
     }
     let old_r2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
     bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);

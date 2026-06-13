@@ -222,6 +222,8 @@ fn pointLightReflectionCaustic(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughput: vec3f,
@@ -334,6 +336,7 @@ fn pointLightReflectionCaustic(
         baseColor, roughness, metallic, normal, wo, wi,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        specularColor, specularIntensity,
         anisotropy, anisotropyRotation,
       );
       contribution = contribution + throughput * fr * e;
@@ -432,6 +435,8 @@ fn pointLightRefractionCaustic(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughput: vec3f,
@@ -579,6 +584,7 @@ fn pointLightRefractionCaustic(
         baseColor, roughness, metallic, normal, wo, wi,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        specularColor, specularIntensity,
         anisotropy, anisotropyRotation,
       );
       contribution = contribution + throughput * fr * e;
@@ -667,6 +673,8 @@ fn pointLightGlassSlabCaustic(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughput: vec3f,
@@ -792,6 +800,7 @@ fn pointLightGlassSlabCaustic(
         baseColor, roughness, metallic, normal, wo, wi,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        specularColor, specularIntensity,
         anisotropy, anisotropyRotation,
       );
       contribution = contribution + throughput * fr * e;
@@ -877,6 +886,8 @@ fn manifoldNeeContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughput: vec3f,
@@ -889,6 +900,7 @@ fn manifoldNeeContribution(
     rng, hitPos, normal, wo, baseColor, roughness, metallic,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
     throughput,
   );
@@ -901,6 +913,7 @@ fn manifoldNeeContribution(
     rng, hitPos, normal, wo, baseColor, roughness, metallic,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
     throughput,
   );
@@ -913,6 +926,7 @@ fn manifoldNeeContribution(
     rng, hitPos, normal, wo, baseColor, roughness, metallic,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
     throughput,
   );
@@ -956,12 +970,14 @@ fn manifoldNeeContribution(
       baseColor, roughness, metallic, normal, wo, candidateDir,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity,
       anisotropy, anisotropyRotation,
     );
     let brdfPdf = brdfDirectionalPdfFull(
       baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity,
       anisotropy, anisotropyRotation,
     );
     let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
@@ -1019,6 +1035,8 @@ fn photonMapContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   throughput: vec3f,
@@ -1032,6 +1050,7 @@ fn photonMapContribution(
     pixelIndex, hitPos, normal, wo, baseColor, roughness, metallic,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
     throughput, heroLambda,
   );

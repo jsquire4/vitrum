@@ -223,19 +223,24 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // per map (repeat / clamp-to-edge / mirrored-repeat).
     // Re-pinned 2026-06-12: material samplers now consume TextureRef.texCoord
     // and KHR_texture_transform metadata per map instead of sharing baseColor.
-    expect(digest).toBe('bfa4d6f42626f8622518e4320c4ff06e6d37bd1678128e8a1df95cc0232288d5');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(331331);
+    // Re-pinned 2026-06-12: KHR_materials_specular scalar factors now flow
+    // through full-tier MNEE/SPPM receiver BRDF/PDF paths instead of defaulting
+    // those caustic receivers to dielectric F0.
+    expect(digest).toBe('d223aad0f271d646c349875de7654bd6e40101d8a07f4fd2805a0c723ac7d4e0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(335315);
   });
 });
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
-    // A3 bumped the stride 26 → 27 (new vec4 #26 carries the baseColor Jakob-Hanika
-    // spectral-reflectance sigmoid coeffs). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 27u;');
+    // SPEC-01 bumped the stride 27 → 28 (new vec4 #27 carries KHR specular scalars).
+    // Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 28u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.isUnlit');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('specularColor: vec3f,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity = clamp(m27.w, 0.0, 1.0);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
     );

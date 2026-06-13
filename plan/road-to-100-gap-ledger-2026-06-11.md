@@ -182,6 +182,18 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   The core promise ledger now promotes alpha/transmission/emissive/AO/light/
   bump/anisotropy maps where this was the remaining approximation; `normalMap`
   stays approximate until authored tangent.xyzw/handedness is consumed.
+- SPEC-01 pt-webgpu scalar `KHR_materials_specular` consumption landed: material
+  vec4 #27 carries `specularColor.rgb` + `specularIntensity`, `material.wgsl.ts`
+  decodes them, `bsdf.wgsl.ts` uses them for dielectric F0, and the scalar pair
+  now flows through ordinary PT BRDF/PDF paths, lite/full env connection
+  interfaces, MNEE/SPPM receiver paths, and BDPT light-subpath surface
+  scattering. The promise ledger intentionally keeps pt-webgpu
+  `specularColor`/`specularIntensity` at `approximate` until ReSTIR-PT
+  reservoir/resolve payloads and remaining legacy default paths carry the same
+  fields. Verification: focused pt-webgpu material/WGSL/BDPT suites, core
+  ledger/capability suites, pt-webgpu typecheck, `git diff --check`, and
+  `npm run shader-gate -- --self-test` (51 production shaders OK; injected
+  self-test failure detected).
 - The fifth arbitrary-glTF API/compatibility slice landed in
   `@vitrum/gltf-adapter`: `loadGltfForEngine()` now combines `loadGltfAsset()`,
   backend compatibility selection, optional compatibility rejection, injected

@@ -295,6 +295,8 @@ export function composePathTraceKernelWgsl(opts: {
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         anisoStrength,
         anisoRotation,
         throughputAtVertex,
@@ -319,6 +321,8 @@ export function composePathTraceKernelWgsl(opts: {
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         anisoStrength,
         anisoRotation,
         throughputAtVertex,
@@ -496,7 +500,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_
     let throughputAtVertex = throughput;
 ${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
-    let f0 = mix(vec3f(0.04), baseColor, metallic);
+    let f0 = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     var lightCount = 0u;
@@ -595,6 +599,7 @@ ${transmissiveBlock}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, sampleDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             // A3 — spectralise the directional irradiance at the hero λ (RGB unchanged).
             let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
@@ -629,6 +634,7 @@ ${transmissiveBlock}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             // Ranged-decay falloff: pow(max(dist,1), -ptDecay). decay=0 → attenuation=1;
             // decay=2 → physical inverse-square (matches rad/dist2 at dist≥1).
@@ -676,7 +682,8 @@ ${transmissiveBlock}
               let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
-              anisoStrength, anisoRotation);
+                mat.specularColor, mat.specularIntensity,
+                anisoStrength, anisoRotation);
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
               // A3 — spectralise the spot radiance at the hero λ (RGB unchanged).
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
@@ -728,6 +735,7 @@ ${transmissiveBlock}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
@@ -736,6 +744,7 @@ ${transmissiveBlock}
               let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                mat.specularColor, mat.specularIntensity,
                 anisoStrength, anisoRotation);
               // MIS balances the per-light AREA-sampling pdf against the BRDF pdf
               // (the engine's emissive-BRDF hit is added unweighted at line 183,
@@ -782,6 +791,7 @@ ${transmissiveBlock}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             let lightNormal = safe_normalize(cross(b - a, c - a));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
@@ -791,6 +801,7 @@ ${transmissiveBlock}
               let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                mat.specularColor, mat.specularIntensity,
                 anisoStrength, anisoRotation);
               // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see
               // the rect-area branch. Keeps the converged mean independent of the
@@ -830,10 +841,12 @@ ${transmissiveBlock}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
             // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
             // rect-area branch. Mean stays independent of the selection pdf.
@@ -924,6 +937,8 @@ ${transmissiveBlock}
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         anisoStrength,
         anisoRotation,
         throughputAtVertex,
@@ -955,6 +970,8 @@ ${transmissiveBlock}
           mat.iridescenceIor,
           mat.iridescenceThicknessMin,
           mat.iridescenceThicknessMax,
+          mat.specularColor,
+          mat.specularIntensity,
           anisoStrength,
           anisoRotation,
           throughputAtVertex,
@@ -998,7 +1015,8 @@ ${mediumStateUpdate}
       // to the next iteration as E_{bounce+1}'s reverse density. (eyePdfFwd is
       // now this real value, not the old hardcoded 1.0.)
       let scatterPdfFwd = brdfDirectionalPdf(
-        baseColor, roughness, metallic, transmission, ior, normal, wo, sampledDir);
+        baseColor, roughness, metallic, transmission, ior, normal, wo, sampledDir,
+        mat.specularColor, mat.specularIntensity);
       // Merged pdfFwd(E_{bounce-1}): swapped-direction reverse density at the
       // PREVIOUS eye vertex toward E_bounce, using the natural next eye direction
       // as wo (PBRT camera[d-1].pdfRev set while at camera[d]). Write into the
@@ -1006,7 +1024,8 @@ ${mediumStateUpdate}
       if (bounce >= 1u) {
         let toPrev = safe_normalize(bdptPrevPos - hitPos);
         let swappedRev = brdfDirectionalPdf(
-          baseColor, roughness, metallic, transmission, ior, normal, sampledDir, toPrev);
+          baseColor, roughness, metallic, transmission, ior, normal, sampledDir, toPrev,
+          mat.specularColor, mat.specularIntensity);
         bdptEyeStackSetFwd(bounce - 1u, swappedRev);
       }
       bdptPrevScatterPdf = scatterPdfFwd;

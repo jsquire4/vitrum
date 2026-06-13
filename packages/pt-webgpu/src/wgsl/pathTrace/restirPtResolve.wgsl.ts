@@ -101,6 +101,7 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
     r.albV, r.roughnessV, r.metalV, r.nv, wo, wiRecon,
     r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
     r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
+    vec3f(1.0), 1.0,
     r.anisotropyV, r.anisotropyRotationV,
   );
   let indirect = fBsdf * cosTheta * r.Lo * r.W;

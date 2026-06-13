@@ -134,6 +134,8 @@ fn rptDirectAtVertex(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   suffixThroughput: vec3f,
 ) -> vec3f {
   var contrib = vec3f(0.0);
@@ -148,6 +150,7 @@ fn rptDirectAtVertex(
           baseColor, roughness, metallic, normal, wo, lightDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          specularColor, specularIntensity,
           0.0, 0.0,
         );
         contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;
@@ -203,6 +206,7 @@ fn rptDirectAtVertex(
             baseColor, roughness, metallic, normal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            specularColor, specularIntensity,
             0.0, 0.0,
           );
           contrib = contrib + suffixThroughput * brdf * nDotL * rr / max(lightPdf, 1e-6);
@@ -233,6 +237,7 @@ fn rptDirectAtVertex(
           baseColor, roughness, metallic, normal, wo, wi,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          specularColor, specularIntensity,
           0.0, 0.0,
         );
         contrib = contrib + suffixThroughput * brdf * nDotL * rad * attenuation;
@@ -270,6 +275,7 @@ fn rptDirectAtVertex(
             baseColor, roughness, metallic, normal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            specularColor, specularIntensity,
             0.0, 0.0,
           );
           contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
@@ -301,12 +307,14 @@ fn rptDirectAtVertex(
           baseColor, roughness, metallic, normal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          specularColor, specularIntensity,
           0.0, 0.0,
         );
         let brdfPdf = brdfDirectionalPdfFull(
           baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+          specularColor, specularIntensity,
           0.0, 0.0,
         );
         let misWeight = powerHeuristic(envPdf, brdfPdf);
@@ -364,6 +372,7 @@ fn rptComputeLoAtReconnection(
       rng, pos, normal, wo, baseColor, roughness, metallic,
       mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
       mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+      mat.specularColor, mat.specularIntensity,
       suffixThroughput,
     );
 
@@ -393,6 +402,7 @@ fn rptComputeLoAtReconnection(
       baseColor, roughness, metallic, normal, wo, nextDir,
       mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
       mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+      mat.specularColor, mat.specularIntensity,
       0.0, 0.0,
     );
     suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
@@ -479,7 +489,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     tanB = rotatedB;
   }
   let cosO = max(dot(nv, woV), 0.0);
-  let f0V = mix(vec3f(0.04), baseColorV, metallicV);
+  let f0V = materialSpecularF0(baseColorV, metallicV, vMat.specularColor, vMat.specularIntensity);
   let fresV = fresnelSchlick(cosO, f0V);
   // Partition specular vs diffuse exactly as sampleNextBounceDirection's
   // non-transmissive branch, so wi_recon's pdf matches brdfDirectionalPdf.
@@ -519,6 +529,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     baseColorV, roughnessV, metallicV, 0.0, vMat.ior, nv, woV, wiRecon,
     0.0, clearcoatRoughnessV, 0.0, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
+    vMat.specularColor, vMat.specularIntensity,
     anisotropyV, anisotropyRotationV,
   );
   if (pdfSrc <= 1e-8) {

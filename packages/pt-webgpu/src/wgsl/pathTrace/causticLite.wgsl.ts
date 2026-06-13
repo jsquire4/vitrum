@@ -21,6 +21,8 @@ fn manifoldNeeContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   throughput: vec3f,
 ) -> vec3f {
   _ = rng;
@@ -41,6 +43,8 @@ fn manifoldNeeContribution(
   _ = iridescenceIor;
   _ = iridescenceThicknessMin;
   _ = iridescenceThicknessMax;
+  _ = specularColor;
+  _ = specularIntensity;
   _ = throughput;
   return vec3f(0.0);
 }

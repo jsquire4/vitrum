@@ -330,6 +330,7 @@ fn evaluateBdptConnection(
     baseColor, roughness, metallic, eyeNormal, eyeWo, connDir,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    vec3f(1.0), 1.0,
     anisotropy, anisotropyRotation,
   );
   let cosEye = max(dot(eyeNormal, connDir), 0.0);
@@ -367,6 +368,7 @@ fn evaluateBdptConnection(
       lightNormal, -connDir, lvWoPrev,
       lvMat.clearcoat, lvMat.clearcoatRoughness, lvMat.sheen, lvMat.sheenRoughness, lvMat.sheenColor,
       lvMat.iridescence, lvMat.iridescenceIor, lvMat.iridescenceThicknessMin, lvMat.iridescenceThicknessMax,
+      lvMat.specularColor, lvMat.specularIntensity,
       0.0, 0.0,
     );
     // bdptGeometricTerm already contributes the light-vertex cosine.
@@ -398,6 +400,7 @@ fn evaluateBdptConnection(
       0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE,
       lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,
       lvMatF.iridescence, lvMatF.iridescenceIor, lvMatF.iridescenceThicknessMin, lvMatF.iridescenceThicknessMax,
+      lvMatF.specularColor, lvMatF.specularIntensity,
       0.0, 0.0,
     );
   }
@@ -412,6 +415,7 @@ fn evaluateBdptConnection(
     baseColor, roughness, metallic, transmission, ior, eyeNormal, eeToPrev, connDir,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    vec3f(1.0), 1.0,
     anisotropy, anisotropyRotation,
   );
   var fwdEeMinus = 0.0;
@@ -420,6 +424,7 @@ fn evaluateBdptConnection(
       baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      vec3f(1.0), 1.0,
       anisotropy, anisotropyRotation,
     );
   }
@@ -437,6 +442,7 @@ fn evaluateBdptConnection(
         0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus,
         lvMatR.clearcoat, lvMatR.clearcoatRoughness, lvMatR.sheen, lvMatR.sheenRoughness,
         lvMatR.iridescence, lvMatR.iridescenceIor, lvMatR.iridescenceThicknessMin, lvMatR.iridescenceThicknessMax,
+        lvMatR.specularColor, lvMatR.specularIntensity,
         0.0, 0.0,
       );
     } else {

@@ -29,7 +29,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // fPrev = 1.0 gave 1.0·cos/(cos/π) = π — a spurious ×π on every emitter bounce.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('glossyReflectionSample(&rng, woAtPrev, prevNormal, prevTanT, prevTanB, prevRough)');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir)');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;');
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdf(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
@@ -48,7 +49,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // Prior fPrev = vec3f(1.0) gave (1.0) * cos / (cos/π) = π — a spurious ×π.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(INV_PI);');
     // Surface vertices still use the real evaluateBrdf (unchanged).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir)');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdf(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity');
   });
 
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {

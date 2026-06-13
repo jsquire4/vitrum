@@ -137,7 +137,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       }
     }
     let cosThetaO = max(0.0, dot(normal, wo));
-    let f0 = mix(vec3f(0.04), baseColor, metallic);
+    let f0 = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     // B12 — lite-tier NEE: directional + env/sky + point + spot + rect-area.
@@ -174,6 +174,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
             directLi = throughput * brdf * nDotL * params.lightDir.w;
           }
@@ -204,6 +205,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
@@ -245,6 +247,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                mat.specularColor, mat.specularIntensity,
                 0.0, 0.0);
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
               directLi = throughput * brdf * nDotL * softness * sradOut * attenuation;
@@ -294,6 +297,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
@@ -333,10 +337,12 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
             let brdfPdf = brdfDirectionalPdfFull(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+              mat.specularColor, mat.specularIntensity,
               0.0, 0.0);
             // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
@@ -369,6 +375,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
@@ -429,6 +437,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         throughputAtVertex,
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(
@@ -450,6 +460,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceIor,
         mat.iridescenceThicknessMin,
         mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
         throughputAtVertex,
       );
     }

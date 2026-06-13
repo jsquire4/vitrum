@@ -473,6 +473,7 @@ fn restirPtTargetAt(
     albV, roughnessV, metalV, nv, wo, wi,
     clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
+    vec3f(1.0), 1.0,
     anisotropyV, anisotropyRotationV,
   );
   return luminance(f * cosTheta * Lo);

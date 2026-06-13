@@ -177,6 +177,23 @@ fn iridescenceModifiedF0(
   return mix(baseF0, iridF, iridescence);
 }
 
+// SPEC-01 — KHR_materials_specular dielectric F0 composition.
+// specularColor/specularIntensity scale the dielectric 4% baseline; metallic
+// surfaces still use baseColor as F0. Defaults ([1,1,1], 1) reproduce the old path.
+fn materialSpecularF0(
+  baseColor: vec3f,
+  metallic: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  let dielectricF0 = clamp(
+    vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0),
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  return mix(dielectricF0, baseColor, metallic);
+}
+
 // ── Clearcoat (additive GGX specular at fixed IOR 1.5) ────────────────────────
 // Ref: glTF KHR_materials_clearcoat (Spec rev 3.0) §3.
 //      Burley, "Physically-Based Shading at Disney," SIGGRAPH 2012 §5.4.
@@ -499,6 +516,8 @@ fn evaluateBrdfFull(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> vec3f {
@@ -510,7 +529,7 @@ fn evaluateBrdfFull(
   let vDotH = max(dot(wo, h), 0.0);
 
   // Iridescence-modified F0 (modifies diffuse/specular partition + specular colour).
-  let f0base = mix(vec3f(0.04), baseColor, metallic);
+  let f0base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let f0 = iridescenceModifiedF0(
     f0base, iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax, vDotH,
@@ -577,6 +596,8 @@ fn brdfDirectionalPdfFull(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> f32 {
@@ -591,7 +612,7 @@ fn brdfDirectionalPdfFull(
     if (nDotV <= 1e-5) { return 0.0; }
     let h = safe_normalize(wi + wo);
     let vDotH = max(dot(wo, h), 1e-6);
-    let f0 = mix(vec3f(0.04), baseColor, metallic);
+    let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
     let fresnel = fresnelSchlick(vDotH, f0);
     let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
     let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
@@ -615,7 +636,10 @@ fn brdfDirectionalPdfFull(
     let pdfDiff = nDotL * INV_PI;
     basePdf = diffProb * pdfDiff + specProb * pdfSpec;
   } else {
-    basePdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+    basePdf = brdfDirectionalPdf(
+      baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+      specularColor, specularIntensity,
+    );
   }
   // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
   let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, wi);
@@ -631,7 +655,16 @@ fn brdfDirectionalPdfFull(
   return total;
 }
 
-fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+fn evaluateBrdf(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) {
@@ -640,7 +673,7 @@ fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, 
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let f0 = mix(vec3f(0.04), baseColor, metallic);
+  let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let f = fresnelSchlick(vDotH, f0);
   let alpha = max(roughness * roughness, 1e-3);
   let d = ggxD(nDotH, alpha);
@@ -662,6 +695,8 @@ fn brdfDirectionalPdf(
   normal: vec3f,
   wo: vec3f,
   wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
 ) -> f32 {
   let wiDotN = dot(normal, wi);
   let woDotN = dot(normal, wo);
@@ -672,7 +707,7 @@ fn brdfDirectionalPdf(
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 1e-6);
-  let f0 = mix(vec3f(0.04), baseColor, metallic);
+  let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let fresnel = fresnelSchlick(vDotH, f0);
   let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
   let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);

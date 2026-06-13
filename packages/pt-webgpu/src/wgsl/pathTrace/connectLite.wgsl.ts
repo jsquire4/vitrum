@@ -145,6 +145,8 @@ fn bsdfAreaLightConnectionContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   _ = hitPos;
@@ -165,6 +167,8 @@ fn bsdfAreaLightConnectionContribution(
   _ = iridescenceIor;
   _ = iridescenceThicknessMin;
   _ = iridescenceThicknessMax;
+  _ = specularColor;
+  _ = specularIntensity;
   _ = throughputAtVertex;
   return vec3f(0.0);
 }
@@ -188,6 +192,8 @@ fn bsdfEnvironmentConnectionContribution(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
@@ -196,6 +202,7 @@ fn bsdfEnvironmentConnectionContribution(
     baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     0.0, 0.0,
   );
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
@@ -208,6 +215,7 @@ fn bsdfEnvironmentConnectionContribution(
     baseColor, roughness, metallic, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
     0.0, 0.0,
   );
   return throughputAtVertex * brdf * nDotL * envColor * misWeight / max(bsdfPdf, 1e-6);

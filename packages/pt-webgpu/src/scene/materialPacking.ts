@@ -27,6 +27,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *      castShadowDisabled (1.0 ⇔ source primitive set castShadow:false; 0.0 default)  ← H52 / SHADOW-01
  *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm),
  *      materialFlags: bit0 hasSpectralReflectance, bit1 unlit shadingModel  ← A3 / GLTF-unlit
+ *   27 specularColor.rgb, specularIntensity                         ← SPEC-01
  *
  * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
  * Hanika 2019 RGB→spectrum upsampling coefficients for the material's baseColor,
@@ -51,7 +52,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  * skipped when it is 0).
  * Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
  */
-const MATERIAL_VEC4_STRIDE = 27;
+const MATERIAL_VEC4_STRIDE = 28;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light wavelength range, canonical from shared-samplers/cieCmf.
@@ -275,6 +276,18 @@ export function materialToPackedVec4s(
   );
   const materialFlags = 1 + (material.shadingModel === 'unlit' ? 2 : 0);
   packed.push(finite(specC0), finite(specC1), finite(specC2), materialFlags);
+
+  // SPEC-01 — KHR_materials_specular scalar factors for dielectric F0. Defaults
+  // are specularColor=[1,1,1], specularIntensity=1 so old scenes keep the same
+  // 4% dielectric F0. Metallic F0 remains baseColor-driven in WGSL.
+  const specularColor = material.specularColor ?? [1, 1, 1];
+  const specularIntensity = clamp01(material.specularIntensity ?? 1);
+  packed.push(
+    clamp01(specularColor[0] ?? 1),
+    clamp01(specularColor[1] ?? 1),
+    clamp01(specularColor[2] ?? 1),
+    specularIntensity,
+  );
 
   return packed;
 }

@@ -34,7 +34,7 @@ describe('buildPackedScene core packing', () => {
     const packed = buildPackedScene(makeScene());
     expect(packed.triangleCount).toBe(1);
     expect(Array.from(packed.indices)).toEqual([0, 1, 2, 0]);
-    expect(packed.materials.length).toBe(108); // A3: MATERIAL_FLOAT_STRIDE 104 → 108 (baseColor Jakob-Hanika spectral coeffs)
+    expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (KHR specular scalars)
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[4]).toBeCloseTo(0.4);
   });

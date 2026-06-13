@@ -27,7 +27,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(108); // A3: MATERIAL_FLOAT_STRIDE 104 → 108 (baseColor Jakob-Hanika spectral coeffs)
+    expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (specularColor/intensity)
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
@@ -261,6 +261,38 @@ describe('A3 spectral reflectance coefficient packing', () => {
   });
 });
 
+// ── SPEC-01 — KHR_materials_specular scalar packing (vec4 #27) ───────────────
+describe('SPEC-01 specular scalar packing', () => {
+  const SPECULAR_OFFSET = 27 * 4; // 108
+
+  it('packs specularColor.rgb and specularIntensity after the spectral flags', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.8, 0.7, 0.6],
+      roughness: 0.5,
+      metallic: 0,
+      specularColor: [0.2, 0.4, 0.9],
+      specularIntensity: 0.35,
+    });
+    expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
+    expect(packed[SPECULAR_OFFSET + 0]).toBeCloseTo(0.2);
+    expect(packed[SPECULAR_OFFSET + 1]).toBeCloseTo(0.4);
+    expect(packed[SPECULAR_OFFSET + 2]).toBeCloseTo(0.9);
+    expect(packed[SPECULAR_OFFSET + 3]).toBeCloseTo(0.35);
+  });
+
+  it('defaults to the KHR_materials_specular no-op values', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.8, 0.7, 0.6],
+      roughness: 0.5,
+      metallic: 0,
+    });
+    expect(packed[SPECULAR_OFFSET + 0]).toBe(1);
+    expect(packed[SPECULAR_OFFSET + 1]).toBe(1);
+    expect(packed[SPECULAR_OFFSET + 2]).toBe(1);
+    expect(packed[SPECULAR_OFFSET + 3]).toBe(1);
+  });
+});
+
 // ── Material stride consistency gate (TS vs WGSL lockstep) ───────────────────
 // MATERIAL_VEC4_STRIDE is a constant that exists in two places:
 //   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 27, exported as
@@ -270,8 +302,8 @@ describe('A3 spectral reflectance coefficient packing', () => {
 // This test checks both sources agree, and that the TS float-stride is exactly
 // 4× the WGSL vec4-stride.
 describe('material stride consistency (TS vs WGSL lockstep)', () => {
-  it('MATERIAL_FLOAT_STRIDE equals 27 * 4 = 108 (A3 bumped 26→27)', () => {
-    expect(MATERIAL_FLOAT_STRIDE).toBe(108);
+  it('MATERIAL_FLOAT_STRIDE equals 28 * 4 = 112 (SPEC-01 bumped 27→28)', () => {
+    expect(MATERIAL_FLOAT_STRIDE).toBe(112);
   });
 
   it('WGSL MATERIAL_VEC4_STRIDE constant matches TS stride / 4', () => {
