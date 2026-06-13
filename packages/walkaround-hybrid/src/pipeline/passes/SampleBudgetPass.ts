@@ -80,13 +80,19 @@ export class SampleBudgetPass implements Pass {
     const varianceTex = ctx.welfordPing === 0
       ? resources.common.varianceBuffer
       : resources.common.varianceBufferAux;
-    const bg = buildSampleBudgetBindGroup(
+    const buildBg = (): GPUBindGroup => buildSampleBudgetBindGroup(
       device, ctx.bglCache,
-      varianceTex.createView(),
-      resources.common.tierTexture.createView(),
+      ctx.resourceCache?.textureView(varianceTex) ?? varianceTex.createView(),
+      ctx.resourceCache?.textureView(resources.common.tierTexture) ?? resources.common.tierTexture.createView(),
       this._budgetUboRef.buf!,
       this._sampleCountUboRef.buf!,
     );
+    const bg = ctx.resourceCache?.bindGroup('pass:sample-budget', [
+      varianceTex,
+      resources.common.tierTexture,
+      this._budgetUboRef.buf,
+      this._sampleCountUboRef.buf,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'sample-budget');
   }
 

@@ -179,27 +179,40 @@ export class NeuralDenoiser implements Denoiser {
       return ctx.resources.common.hdrColorTexture;
     }
     this._lastFallbackReason = null;
+    const packPipeline = this._packPipeline;
+    const unpackPipeline = this._unpackPipeline;
+    const packParamsBuf = this._packParamsBuf;
+    const unpackParamsBuf = this._unpackParamsBuf;
     const pixelCount = ctx.width * ctx.height;
     const params = new Uint32Array([ctx.width, ctx.height, pixelCount, 0]);
-    device.queue.writeBuffer(this._packParamsBuf, 0, params);
-    device.queue.writeBuffer(this._unpackParamsBuf, 0, params);
+    device.queue.writeBuffer(packParamsBuf, 0, params);
+    device.queue.writeBuffer(unpackParamsBuf, 0, params);
 
-    const packBG = device.createBindGroup({
+    const buildPackBg = (): GPUBindGroup => device.createBindGroup({
       label: 'neural-denoiser-pack-bg',
-      layout: this._packPipeline.getBindGroupLayout(0),
+      layout: packPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: ctx.resources.common.hdrColorTexture.createView() },
-        { binding: 1, resource: ctx.resources.common.albedoTexture.createView() },
-        { binding: 2, resource: ctx.resources.common.gNormalDepthTexture.createView() },
+        { binding: 0, resource: ctx.resourceCache?.textureView(ctx.resources.common.hdrColorTexture) ?? ctx.resources.common.hdrColorTexture.createView() },
+        { binding: 1, resource: ctx.resourceCache?.textureView(ctx.resources.common.albedoTexture) ?? ctx.resources.common.albedoTexture.createView() },
+        { binding: 2, resource: ctx.resourceCache?.textureView(ctx.resources.common.gNormalDepthTexture) ?? ctx.resources.common.gNormalDepthTexture.createView() },
         { binding: 3, resource: { buffer: tb.noisyBuf } },
         { binding: 4, resource: { buffer: tb.albedoBuf } },
         { binding: 5, resource: { buffer: tb.normalsBuf } },
-        { binding: 6, resource: { buffer: this._packParamsBuf } },
+        { binding: 6, resource: { buffer: packParamsBuf } },
       ],
     });
+    const packBG = ctx.resourceCache?.bindGroup('denoiser:neural:pack', [
+      ctx.resources.common.hdrColorTexture,
+      ctx.resources.common.albedoTexture,
+      ctx.resources.common.gNormalDepthTexture,
+      tb.noisyBuf,
+      tb.albedoBuf,
+      tb.normalsBuf,
+      packParamsBuf,
+    ], buildPackBg) ?? buildPackBg();
     {
       const pass = ctx.encoder.beginComputePass(ctx.computeDesc('neural-pack'));
-      pass.setPipeline(this._packPipeline);
+      pass.setPipeline(packPipeline);
       pass.setBindGroup(0, packBG);
       pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
       pass.end();
@@ -213,18 +226,23 @@ export class NeuralDenoiser implements Denoiser {
       ctx.encoder,
     );
 
-    const unpackBG = device.createBindGroup({
+    const buildUnpackBg = (): GPUBindGroup => device.createBindGroup({
       label: 'neural-denoiser-unpack-bg',
-      layout: this._unpackPipeline.getBindGroupLayout(0),
+      layout: unpackPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: tb.outputBuf } },
-        { binding: 1, resource: tb.outputTex.createView() },
-        { binding: 2, resource: { buffer: this._unpackParamsBuf } },
+        { binding: 1, resource: ctx.resourceCache?.textureView(tb.outputTex) ?? tb.outputTex.createView() },
+        { binding: 2, resource: { buffer: unpackParamsBuf } },
       ],
     });
+    const unpackBG = ctx.resourceCache?.bindGroup('denoiser:neural:unpack', [
+      tb.outputBuf,
+      tb.outputTex,
+      unpackParamsBuf,
+    ], buildUnpackBg) ?? buildUnpackBg();
     {
       const pass = ctx.encoder.beginComputePass(ctx.computeDesc('neural-unpack'));
-      pass.setPipeline(this._unpackPipeline);
+      pass.setPipeline(unpackPipeline);
       pass.setBindGroup(0, unpackBG);
       pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
       pass.end();

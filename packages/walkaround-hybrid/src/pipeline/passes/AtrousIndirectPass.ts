@@ -25,9 +25,10 @@
 
 import {
   ATROUS_UBO_BINDING_STRIDE_BYTES,
-  buildAtrousBindGroup,
+  buildPreparedAtrousBindGroup,
   type AtrousSigmas,
   type UboRef,
+  writeAtrousUbo,
 } from '../bindGroupBuilders.js';
 import type {
   Pass,
@@ -70,7 +71,7 @@ export class AtrousIndirectPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState, inputs } = ctx;
+    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState, inputs, resourceCache } = ctx;
     const common = resources.common;
     // B3a — per-frame indirect sigmas from HybridEngineOptions (host
     // override) or Cornell defaults `[32, 20, 0.5]`.
@@ -87,17 +88,29 @@ export class AtrousIndirectPass implements Pass {
       wgX: wgX16,
       wgY: wgY16,
       computeDesc,
-      bindGroupFor: (iter, inputView, outputView) =>
-        buildAtrousBindGroup(
-          device, bglCache, this._uboRef,
-          inputView, outputView,
-          gNormalDepthView, gNormalDepthView, 1 << iter,
-          sigmas,
+      ...(resourceCache ? { textureViewFor: (texture: GPUTexture) => resourceCache.textureView(texture) } : {}),
+      bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
+        const byteOffset = iter * ATROUS_UBO_BINDING_STRIDE_BYTES;
+        const ubo = writeAtrousUbo(
+          device, this._uboRef, 1 << iter, sigmas,
           {
-            byteOffset: iter * ATROUS_UBO_BINDING_STRIDE_BYTES,
+            byteOffset,
             minSizeBytes: ATROUS_INDIRECT_ITERATIONS * ATROUS_UBO_BINDING_STRIDE_BYTES,
           },
-        ),
+        );
+        const buildBg = (): GPUBindGroup => buildPreparedAtrousBindGroup(
+          device, bglCache, ubo,
+          inputView, outputView,
+          gNormalDepthView, gNormalDepthView,
+          byteOffset,
+        );
+        return resourceCache?.bindGroup(`pass:atrous-indirect:${iter}`, [
+          this._uboRef,
+          inputTex,
+          outputTex,
+          resources.common.gNormalDepthTexture,
+        ], buildBg) ?? buildBg();
+      },
       labelFor: (iter) => `atrous-indirect-${iter}` as PassLabel,
     });
   }

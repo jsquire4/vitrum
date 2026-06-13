@@ -23,8 +23,9 @@
 
 import {
   ATROUS_UBO_BINDING_STRIDE_BYTES,
-  buildAtrousBindGroup,
+  buildPreparedAtrousBindGroup,
   type UboRef,
+  writeAtrousUbo,
 } from '../bindGroupBuilders.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
@@ -68,6 +69,7 @@ export class AtrousDenoiser implements Denoiser {
       wgY16,
       computeDesc,
       sharedAtrousPipeline,
+      resourceCache,
     } = ctx;
     const common = resources.common;
 
@@ -87,17 +89,29 @@ export class AtrousDenoiser implements Denoiser {
       wgX: wgX16,
       wgY: wgY16,
       computeDesc,
-      bindGroupFor: (iter, inputView, outputView) =>
-        buildAtrousBindGroup(
-          device, bglCache, this._uboRef,
-          inputView, outputView,
-          gNormalDepthView, gNormalDepthView, 1 << iter,
-          sigmas,
+      ...(resourceCache ? { textureViewFor: (texture: GPUTexture) => resourceCache.textureView(texture) } : {}),
+      bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
+        const byteOffset = iter * ATROUS_UBO_BINDING_STRIDE_BYTES;
+        const ubo = writeAtrousUbo(
+          device, this._uboRef, 1 << iter, sigmas,
           {
-            byteOffset: iter * ATROUS_UBO_BINDING_STRIDE_BYTES,
+            byteOffset,
             minSizeBytes: ATROUS_ITERATIONS * ATROUS_UBO_BINDING_STRIDE_BYTES,
           },
-        ),
+        );
+        const buildBg = (): GPUBindGroup => buildPreparedAtrousBindGroup(
+          device, bglCache, ubo,
+          inputView, outputView,
+          gNormalDepthView, gNormalDepthView,
+          byteOffset,
+        );
+        return resourceCache?.bindGroup(`denoiser:atrous:${iter}`, [
+          this._uboRef,
+          inputTex,
+          outputTex,
+          resources.common.gNormalDepthTexture,
+        ], buildBg) ?? buildBg();
+      },
       labelFor: (iter) => `atrous-${iter}` as PassLabel,
     });
   }

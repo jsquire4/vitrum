@@ -66,19 +66,30 @@ export class PPGUpdatePass implements Pass {
       );
     }
 
-    const [bg0, bg1] = buildPpgUpdateBindGroups(
+    const ppgBindGroupResources = {
+      reservoirGiCurrentBuffer: resources.restirGI.reservoirGiCurrentBuffer,
+      fluxAtomicsBuf: ppg.fluxAtomicsBuf,
+      sTreeBuf: ppg.sTreeBuf,
+      dTreeBuf: ppg.dTreeBuf,
+      dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
+      cellSampleCountsBuf: ppg.cellSampleCountsBuf,
+      updateUboBuffer: ppg.updateUboBuffer,
+    };
+    const buildBgs = (): readonly [GPUBindGroup, GPUBindGroup] => buildPpgUpdateBindGroups(
       device,
       (i) => this._pipeline.getBindGroupLayout(i),
-      {
-        reservoirGiCurrentBuffer: resources.restirGI.reservoirGiCurrentBuffer,
-        fluxAtomicsBuf: ppg.fluxAtomicsBuf,
-        sTreeBuf: ppg.sTreeBuf,
-        dTreeBuf: ppg.dTreeBuf,
-        dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
-        cellSampleCountsBuf: ppg.cellSampleCountsBuf,
-        updateUboBuffer: ppg.updateUboBuffer,
-      },
+      ppgBindGroupResources,
     );
+    const bgPair = ctx.resourceCache?.bindGroup('pass:ppg-update', [
+      ppgBindGroupResources.reservoirGiCurrentBuffer,
+      ppgBindGroupResources.fluxAtomicsBuf,
+      ppgBindGroupResources.sTreeBuf,
+      ppgBindGroupResources.dTreeBuf,
+      ppgBindGroupResources.dTreeOffsetsBuf,
+      ppgBindGroupResources.cellSampleCountsBuf,
+      ppgBindGroupResources.updateUboBuffer,
+    ], buildBgs);
+    const [bg0, bg1] = bgPair ?? buildBgs();
 
     const sampleCount = Math.max(1, Math.floor(width / 2)) * Math.max(1, Math.floor(height / 2));
     const wgCount = Math.max(1, Math.ceil(sampleCount / 64));

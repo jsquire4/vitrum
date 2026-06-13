@@ -317,6 +317,29 @@ export function buildAtrousBindGroup(
     readonly minSizeBytes?: number;
   } = {},
 ): GPUBindGroup {
+  const ubo = writeAtrousUbo(device, uboRef, stepWidth, sigmas, uboLayout);
+  return buildPreparedAtrousBindGroup(
+    device,
+    cache,
+    ubo,
+    inputView,
+    outputView,
+    gNormalView,
+    gDepthView,
+    uboLayout.byteOffset ?? 0,
+  );
+}
+
+export function writeAtrousUbo(
+  device: GPUDevice,
+  uboRef: UboRef,
+  stepWidth: number,
+  sigmas: Readonly<AtrousSigmas>,
+  uboLayout: {
+    readonly byteOffset?: number;
+    readonly minSizeBytes?: number;
+  } = {},
+): GPUBuffer {
   const byteOffset = uboLayout.byteOffset ?? 0;
   const minSizeBytes = uboLayout.minSizeBytes ?? ATROUS_UBO.sizeBytes;
   const requiredSizeBytes = Math.max(minSizeBytes, byteOffset + ATROUS_UBO.sizeBytes);
@@ -343,15 +366,28 @@ export function buildAtrousBindGroup(
   });
   device.queue.writeBuffer(uboRef.buf, byteOffset, uboData);
 
+  return uboRef.buf;
+}
+
+export function buildPreparedAtrousBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboBuffer: GPUBuffer,
+  inputView: GPUTextureView,
+  outputView: GPUTextureView,
+  gNormalView: GPUTextureView,
+  gDepthView: GPUTextureView,
+  byteOffset = 0,
+): GPUBindGroup {
   return device.createBindGroup({
-    label: `atrous-bg-step${stepWidth}`,
+    label: `atrous-bg-offset${byteOffset}`,
     layout: getAtrousBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: inputView },
       { binding: 1, resource: outputView },
       { binding: 2, resource: gNormalView },
       { binding: 3, resource: gDepthView },
-      { binding: 4, resource: { buffer: uboRef.buf, offset: byteOffset, size: ATROUS_UBO.sizeBytes } },
+      { binding: 4, resource: { buffer: uboBuffer, offset: byteOffset, size: ATROUS_UBO.sizeBytes } },
     ],
   });
 }
@@ -367,6 +403,22 @@ export function buildAccumBindGroup(
   accumOutView: GPUTextureView,
   alpha: number,
 ): GPUBindGroup {
+  const ubo = writeAccumUbo(device, uboRef, alpha);
+  return buildPreparedAccumBindGroup(
+    device,
+    cache,
+    ubo,
+    currentAtrousView,
+    prevAccumView,
+    accumOutView,
+  );
+}
+
+export function writeAccumUbo(
+  device: GPUDevice,
+  uboRef: UboRef,
+  alpha: number,
+): GPUBuffer {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
       size: ACCUM_UBO.sizeBytes,
@@ -381,6 +433,17 @@ export function buildAccumBindGroup(
   const accumUboData = new ArrayBuffer(ACCUM_UBO.sizeBytes);
   ACCUM_UBO.pack(new DataView(accumUboData), 0, { alpha });
   device.queue.writeBuffer(uboRef.buf, 0, accumUboData);
+  return uboRef.buf;
+}
+
+export function buildPreparedAccumBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboBuffer: GPUBuffer,
+  currentAtrousView: GPUTextureView,
+  prevAccumView: GPUTextureView,
+  accumOutView: GPUTextureView,
+): GPUBindGroup {
   return device.createBindGroup({
     label: 'accum-bg',
     layout: getAccumBindGroupLayout(device, cache),
@@ -388,7 +451,7 @@ export function buildAccumBindGroup(
       { binding: 0, resource: currentAtrousView },
       { binding: 1, resource: prevAccumView },
       { binding: 2, resource: accumOutView },
-      { binding: 3, resource: { buffer: uboRef.buf } },
+      { binding: 3, resource: { buffer: uboBuffer } },
     ],
   });
 }

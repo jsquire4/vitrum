@@ -23,6 +23,7 @@
  */
 
 import type { BGLCache } from '../bindGroupLayouts.js';
+import type { PipelineResourceCache } from '../PipelineResourceCache.js';
 import type { FrameResources } from '../resourceManager.js';
 import type { PassLabel } from '../timestampQueries.js';
 
@@ -159,6 +160,8 @@ export interface DenoiserDispatchContext {
   readonly wgY16: number;
   /** Build a `GPUComputePassDescriptor` with optional timestampWrites. */
   readonly computeDesc: (label: PassLabel) => GPUComputePassDescriptor;
+  /** Identity-keyed per-frame cache shared with pipeline passes. */
+  readonly resourceCache?: PipelineResourceCache;
 }
 
 export interface Denoiser {

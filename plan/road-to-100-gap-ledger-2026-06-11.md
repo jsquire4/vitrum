@@ -209,7 +209,7 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   gradients and remaining specialty texture-map payload schemas carry the same
   fields. Verification: focused pt-webgpu material/WGSL/BDPT suites, core
   ledger/capability suites, pt-webgpu typecheck, `git diff --check`, and
-  `npm run shader-gate -- --self-test` (51 production shaders OK; injected
+  `npm run shader-gate -- --self-test` (47 production shaders OK; injected
   self-test failure detected).
 - The fifth arbitrary-glTF API/compatibility slice landed in
   `@vitrum/gltf-adapter`: `loadGltfForEngine()` now combines `loadGltfAsset()`,
@@ -583,21 +583,22 @@ Closure:
 - Internal debug/resource chatter remains console-only by design; it is not a
   contract-affecting degradation.
 
-### CAP-01 - Per-field material support is not explicit enough
+### CAP-01 - CLOSED 2026-06-13 - Per-field material support matrix is explicit
 
-Evidence:
-- Core `MaterialSpec` contains many maps/scalars.
-- pt-webgpu collects only a subset of maps.
-- walkaround intentionally ignores many material fields.
-- pt-webgl2 supports many glTF maps, but still misses some fields such as surface
-  anisotropy, displacement, receiveShadow, and layered normal maps.
+Status:
+- Source-verified closed by `BACKEND_PROMISE_LEDGER` material rows plus
+  `packages/core/src/__tests__/engineContract.test.ts`,
+  `packages/pt-webgl2/src/__tests__/engineContract.test.ts`, and
+  `packages/pt-webgpu/src/__tests__/liteTierCapabilities.test.ts`.
+- Every `MaterialSpec` field is now classified per backend as implemented,
+  approximated, ignored-with-warning, or unsupported. Backend fidelity gaps
+  such as displacement, receiveShadow, and specialty map consumption remain
+  tracked by their specific implementation rows instead of this matrix gate.
 
-Closure:
-- Build a backend-by-backend material support matrix from code, not docs.
-- For every field, mark implemented, approximated, ignored-with-warning, or
-  unsupported.
-- Add tests for the high-value implemented rows and diagnostics tests for
-  unsupported rows.
+Closure evidence:
+- The material matrix is exhaustive over `MATERIAL_SPEC_FIELDS`.
+- pt-webgl2 and pt-webgpu contract tests cover unsupported-field diagnostics
+  and supported-row capability promises.
 
 ## P2 backend-wide contract completion
 
@@ -1200,12 +1201,16 @@ Closure:
 
 These gates prevent the same class of plan drift from recurring.
 
-### GATE-01 - Backend promise ledger audit
+### GATE-01 - CLOSED 2026-06-13 - Backend promise ledger audit
 
-For every backend and tier:
-- Re-read the actual capability object and support details.
-- Compare against implementation code and shader bindings.
-- Add tests that fail if a backend advertises a feature it does not consume.
+Status:
+- Source-verified closed by `packages/core/src/__tests__/ledgerVsCapabilities.test.ts`.
+- The gate imports live pt-webgl2 support/capability data and compares it to
+  `BACKEND_PROMISE_LEDGER`, including primitive/emitter/environment kinds,
+  analytic unsupported rows, mutation grades, debug surface, and full-tier
+  `supportsAuxBuffers:true` with lite-tier runtime downgrade to `false`.
+- Keep the gate as a permanent regression guard; future backend rows should
+  extend it rather than reopening this audit item.
 
 ### GATE-02 - Material contract audit
 

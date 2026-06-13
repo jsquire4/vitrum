@@ -225,6 +225,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
       wgY16,
       frameIndex,
       computeDesc,
+      resourceCache,
     } = ctx;
     const common = resources.common;
     const wf = this._welfordPipeline;
@@ -249,20 +250,30 @@ export class AtrousVarianceDenoiser implements Denoiser {
     });
     device.queue.writeBuffer(this._welfordUboRef.buf!, 0, wUboBytes);
 
-    const hdrColorView = common.hdrColorTexture.createView();
+    const hdrColorView = resourceCache?.textureView(common.hdrColorTexture)
+      ?? common.hdrColorTexture.createView();
     // Sprint 18 follow-up — welford reads the total-radiance texture so the
     // variance and the sample-budget tier derived from it cover both direct
     // and indirect channels. Variance + atrous still read hdrColorView
     // (direct-only) so the denoiser sees the channel it is tuned for.
-    const hdrTotalView = common.hdrTotalTexture.createView();
+    const hdrTotalView = resourceCache?.textureView(common.hdrTotalTexture)
+      ?? common.hdrTotalTexture.createView();
     {
+      const buildBg = (): GPUBindGroup => buildWelfordBindGroup(
+        device, wf,
+        hdrTotalView,
+        resourceCache?.textureView(welfordRead) ?? welfordRead.createView(),
+        resourceCache?.textureView(welfordWrite) ?? welfordWrite.createView(),
+        this._welfordUboRef.buf!,
+      );
       const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
-      pass.setBindGroup(0, buildWelfordBindGroup(
-        device, wf,
-        hdrTotalView, welfordRead.createView(), welfordWrite.createView(),
-        this._welfordUboRef.buf!,
-      ));
+      pass.setBindGroup(0, resourceCache?.bindGroup('denoiser:atrous-variance:welford', [
+        common.hdrTotalTexture,
+        welfordRead,
+        welfordWrite,
+        this._welfordUboRef.buf,
+      ], buildBg) ?? buildBg());
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
@@ -272,21 +283,29 @@ export class AtrousVarianceDenoiser implements Denoiser {
     device.queue.writeBuffer(this._varianceUboRef.buf!, 0, varUboBytes);
 
     {
-      const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
-      pass.setPipeline(sv);
-      pass.setBindGroup(0, buildAtrousVarianceVarianceBindGroup(
+      const buildBg = (): GPUBindGroup => buildAtrousVarianceVarianceBindGroup(
         device, sv,
         hdrColorView,
-        welfordWrite.createView(),
-        common.atrousVarianceEstimateTexture.createView(),
+        resourceCache?.textureView(welfordWrite) ?? welfordWrite.createView(),
+        resourceCache?.textureView(common.atrousVarianceEstimateTexture)
+          ?? common.atrousVarianceEstimateTexture.createView(),
         this._varianceUboRef.buf!,
-      ));
+      );
+      const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
+      pass.setPipeline(sv);
+      pass.setBindGroup(0, resourceCache?.bindGroup('denoiser:atrous-variance:variance', [
+        common.hdrColorTexture,
+        welfordWrite,
+        common.atrousVarianceEstimateTexture,
+        this._varianceUboRef.buf,
+      ], buildBg) ?? buildBg());
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
 
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    const varView = common.atrousVarianceEstimateTexture.createView();
+    const varView = resourceCache?.textureView(common.atrousVarianceEstimateTexture)
+      ?? common.atrousVarianceEstimateTexture.createView();
     const denoised = runAtrousChain(encoder, sa, {
       iterations: ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
       startTex: common.hdrColorTexture,
@@ -295,9 +314,10 @@ export class AtrousVarianceDenoiser implements Denoiser {
       wgX: wgX16,
       wgY: wgY16,
       computeDesc,
+      ...(resourceCache ? { textureViewFor: (texture: GPUTexture) => resourceCache.textureView(texture) } : {}),
       // The shared eager UBO is re-packed + re-written each iteration BEFORE
       // its dispatch is encoded into that iteration's aligned byte range.
-      bindGroupFor: (iter, inputView, outputView) => {
+      bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
         const atrousUboByteOffset = iter * ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES;
         packAtrousVarianceAtrousUniforms(
           { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
@@ -305,7 +325,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
           0,
         );
         device.queue.writeBuffer(this._atrousUboRef.buf!, atrousUboByteOffset, atrousUboBytes);
-        return buildAtrousVarianceAtrousBindGroup(
+        const buildBg = (): GPUBindGroup => buildAtrousVarianceAtrousBindGroup(
           device, sa,
           inputView, outputView,
           gNormalDepthView, varView,
@@ -313,6 +333,13 @@ export class AtrousVarianceDenoiser implements Denoiser {
           `atrous-variance-atrous-bg-${iter}`,
           atrousUboByteOffset,
         );
+        return resourceCache?.bindGroup(`denoiser:atrous-variance:atrous:${iter}`, [
+          this._atrousUboRef.buf,
+          inputTex,
+          outputTex,
+          resources.common.gNormalDepthTexture,
+          common.atrousVarianceEstimateTexture,
+        ], buildBg) ?? buildBg();
       },
       labelFor: (iter) => `atrous-variance-atrous-${iter}` as PassLabel,
     });

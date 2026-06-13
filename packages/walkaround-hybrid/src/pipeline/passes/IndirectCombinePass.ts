@@ -38,20 +38,26 @@ export class IndirectCombinePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, frameState } = ctx;
+    const { device, bglCache, resources, frameState, resourceCache } = ctx;
     const combinedTex = resources.common.combinedDenoisedTexture;
     // W5-I2 (2026-05-18): gNormalDepthView removed from this call — the
     // indirect-combine shader never read it (declared "for BGL compat,
     // unused"). The PassDispatchContext field stays for the other passes
     // that genuinely use it.
-    const bg = buildIndirectCombineBindGroup(
+    const buildBg = (): GPUBindGroup => buildIndirectCombineBindGroup(
       device, bglCache,
-      frameState.denoisedDirect.createView(),
-      frameState.denoisedIndirect.createView(),
-      combinedTex.createView(),
+      resourceCache?.textureView(frameState.denoisedDirect) ?? frameState.denoisedDirect.createView(),
+      resourceCache?.textureView(frameState.denoisedIndirect) ?? frameState.denoisedIndirect.createView(),
+      resourceCache?.textureView(combinedTex) ?? combinedTex.createView(),
       // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
-      resources.common.albedoTexture.createView(),
+      resourceCache?.textureView(resources.common.albedoTexture) ?? resources.common.albedoTexture.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:indirect-combine', [
+      frameState.denoisedDirect,
+      frameState.denoisedIndirect,
+      combinedTex,
+      resources.common.albedoTexture,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-combine', { wg16: true });
     frameState.combinedDenoised = combinedTex;
   }

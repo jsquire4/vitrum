@@ -106,6 +106,7 @@ export function runAtrousChain(
     readonly wgX: number;
     readonly wgY: number;
     readonly computeDesc: (label: PassLabel) => GPUComputePassDescriptor;
+    readonly textureViewFor?: (texture: GPUTexture) => GPUTextureView;
     /** Build the per-iteration bind group bound at slot 0. Receives the
      *  current input/output texture views so the site's builder can pack
      *  its UBO + assemble its (5- or 6-binding) layout exactly as before. */
@@ -113,6 +114,8 @@ export function runAtrousChain(
       iter: number,
       inputView: GPUTextureView,
       outputView: GPUTextureView,
+      inputTex: GPUTexture,
+      outputTex: GPUTexture,
     ) => GPUBindGroup;
     readonly labelFor: (iter: number) => PassLabel;
   },
@@ -120,7 +123,9 @@ export function runAtrousChain(
   let inputTex: GPUTexture = opts.startTex;
   for (let iter = 0; iter < opts.iterations; iter++) {
     const outputTex = iter % 2 === 0 ? opts.pingTex : opts.pongTex;
-    const bg = opts.bindGroupFor(iter, inputTex.createView(), outputTex.createView());
+    const inputView = opts.textureViewFor?.(inputTex) ?? inputTex.createView();
+    const outputView = opts.textureViewFor?.(outputTex) ?? outputTex.createView();
+    const bg = opts.bindGroupFor(iter, inputView, outputView, inputTex, outputTex);
     const pass = encoder.beginComputePass(opts.computeDesc(opts.labelFor(iter)));
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bg);

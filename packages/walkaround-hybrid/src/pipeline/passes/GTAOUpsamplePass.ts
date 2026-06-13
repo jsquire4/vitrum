@@ -37,14 +37,20 @@ export class GTAOUpsamplePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources } = ctx;
-    const bg = buildGTAOUpsampleBindGroup(
+    const { device, bglCache, resources, resourceCache } = ctx;
+    const buildBg = (): GPUBindGroup => buildGTAOUpsampleBindGroup(
       device, bglCache,
-      resources.gtao.aoHalfTexture.createView(),
-      resources.common.gNormalDepthTexture.createView(),
-      resources.gtao.aoFullTexture.createView(),
+      resourceCache?.textureView(resources.gtao.aoHalfTexture) ?? resources.gtao.aoHalfTexture.createView(),
+      resourceCache?.textureView(resources.common.gNormalDepthTexture) ?? resources.common.gNormalDepthTexture.createView(),
+      resourceCache?.textureView(resources.gtao.aoFullTexture) ?? resources.gtao.aoFullTexture.createView(),
       resources.gtao.gtaoUboBuffer,
     );
+    const bg = resourceCache?.bindGroup('pass:gtao-upsample', [
+      resources.gtao.aoHalfTexture,
+      resources.common.gNormalDepthTexture,
+      resources.gtao.aoFullTexture,
+      resources.gtao.gtaoUboBuffer,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gtao-upsample');
   }
 

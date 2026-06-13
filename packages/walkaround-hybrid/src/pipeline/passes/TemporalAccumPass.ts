@@ -15,7 +15,11 @@
  * downstream-of-shade work to preserve dataflow.
  */
 
-import { buildAccumBindGroup, type UboRef } from '../bindGroupBuilders.js';
+import {
+  buildPreparedAccumBindGroup,
+  writeAccumUbo,
+  type UboRef,
+} from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
@@ -47,14 +51,20 @@ export class TemporalAccumPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, frameState } = ctx;
-    const bg = buildAccumBindGroup(
-      device, bglCache, this._uboRef,
-      frameState.combinedDenoised.createView(),
-      frameState.readAccum.createView(),
-      frameState.writeAccum.createView(),
-      frameState.alpha,
+    const { device, bglCache, frameState, resourceCache } = ctx;
+    const ubo = writeAccumUbo(device, this._uboRef, frameState.alpha);
+    const buildBg = (): GPUBindGroup => buildPreparedAccumBindGroup(
+      device, bglCache, ubo,
+      resourceCache?.textureView(frameState.combinedDenoised) ?? frameState.combinedDenoised.createView(),
+      resourceCache?.textureView(frameState.readAccum) ?? frameState.readAccum.createView(),
+      resourceCache?.textureView(frameState.writeAccum) ?? frameState.writeAccum.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:temporal-accum', [
+      this._uboRef,
+      frameState.combinedDenoised,
+      frameState.readAccum,
+      frameState.writeAccum,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'temporalAccum', { wg16: true });
   }
 

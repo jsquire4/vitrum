@@ -99,6 +99,7 @@ export class DenoiserAdapterPass implements Pass {
       wgX16: ctx.wgX16,
       wgY16: ctx.wgY16,
       computeDesc: ctx.computeDesc,
+      ...(ctx.resourceCache ? { resourceCache: ctx.resourceCache } : {}),
     });
     // Legacy contract: NoneDenoiser returns null → fall back to the raw
     // HDR target. The frame ledger is already seeded with that handle by

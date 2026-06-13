@@ -236,6 +236,7 @@ export class SVGFRealDenoiser implements Denoiser {
       wgX16,
       wgY16,
       computeDesc,
+      resourceCache,
     } = ctx;
     const common = resources.common;
     const svgf = resources.svgf;
@@ -266,13 +267,28 @@ export class SVGFRealDenoiser implements Denoiser {
       : svgf.svgfPrevObjIdPlaceholderTexture;
 
     {
-      const bg = this._buildReprojBindGroup(
+      const buildBg = (): GPUBindGroup => this._buildReprojBindGroup(
         device, common, svgf,
         radRead, radWrite,
         histRead, histWrite,
         momRead, momWrite,
         currObjIdTexture, prevObjIdTexture,
       );
+      const bg = resourceCache?.bindGroup('denoiser:svgf-real:reproj', [
+        common.hdrColorTexture,
+        radRead,
+        common.motionVectorTexture,
+        common.gNormalDepthTexture,
+        currObjIdTexture,
+        svgf.svgfPrevNormalDepthTexture,
+        prevObjIdTexture,
+        histRead,
+        momRead,
+        radWrite,
+        histWrite,
+        momWrite,
+        this._reprojUboRef.buf,
+      ], buildBg) ?? buildBg();
       const pass = encoder.beginComputePass(computeDesc('svgf-real-reproj'));
       pass.setPipeline(this._reprojPipeline);
       pass.setBindGroup(0, bg);
@@ -283,7 +299,12 @@ export class SVGFRealDenoiser implements Denoiser {
     // ── Pass 2: Variance from moments ────────────────────────────────────
     // Reads momWrite (just written by reproj) and histWrite.
     {
-      const bg = this._buildMomentsBindGroup(device, svgf, momWrite, histWrite);
+      const buildBg = (): GPUBindGroup => this._buildMomentsBindGroup(device, svgf, momWrite, histWrite);
+      const bg = resourceCache?.bindGroup('denoiser:svgf-real:moments', [
+        momWrite,
+        histWrite,
+        svgf.svgfVarianceMomentsIntermedTexture,
+      ], buildBg) ?? buildBg();
       const pass = encoder.beginComputePass(computeDesc('svgf-real-moments'));
       pass.setPipeline(this._momentsPipeline);
       pass.setBindGroup(0, bg);
@@ -293,7 +314,13 @@ export class SVGFRealDenoiser implements Denoiser {
 
     // ── Pass 3: 7×7 spatial fallback ─────────────────────────────────────
     {
-      const bg = this._buildFallbackBindGroup(device, common, svgf, histWrite);
+      const buildBg = (): GPUBindGroup => this._buildFallbackBindGroup(device, common, svgf, histWrite);
+      const bg = resourceCache?.bindGroup('denoiser:svgf-real:fallback', [
+        common.hdrColorTexture,
+        histWrite,
+        svgf.svgfVarianceMomentsIntermedTexture,
+        svgf.svgfVarianceTexture,
+      ], buildBg) ?? buildBg();
       const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
       pass.setPipeline(this._fallbackPipeline);
       pass.setBindGroup(0, bg);
@@ -309,7 +336,8 @@ export class SVGFRealDenoiser implements Denoiser {
     // Ping-pong with denoisedPing/Pong as usual.
     const sa = this._atrousPipeline;
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    const varView = svgf.svgfVarianceTexture.createView();
+    const varView = resourceCache?.textureView(svgf.svgfVarianceTexture)
+      ?? svgf.svgfVarianceTexture.createView();
     const denoised = runAtrousChain(encoder, sa, {
       iterations: SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
       startTex: radWrite,
@@ -318,9 +346,10 @@ export class SVGFRealDenoiser implements Denoiser {
       wgX: wgX16,
       wgY: wgY16,
       computeDesc,
+      ...(resourceCache ? { textureViewFor: (texture: GPUTexture) => resourceCache.textureView(texture) } : {}),
       // Each iteration has a separate persistent UBO, so encoded dispatches
       // keep their own constants while avoiding per-frame GPUBuffer churn.
-      bindGroupFor: (iter, inputView, outputView) => {
+      bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
         packAtrousVarianceAtrousUniforms(
           { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
           atrousUboBytes,
@@ -331,13 +360,20 @@ export class SVGFRealDenoiser implements Denoiser {
           throw new Error(`SVGFRealDenoiser: missing atrous UBO for iteration ${iter}`);
         }
         device.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
-        return buildAtrousVarianceAtrousBindGroup(
+        const buildBg = (): GPUBindGroup => buildAtrousVarianceAtrousBindGroup(
           device, sa,
           inputView, outputView,
           gNormalDepthView, varView,
           iterUbo,
           `svgf-real-atrous-bg-${iter}`,
         );
+        return resourceCache?.bindGroup(`denoiser:svgf-real:atrous:${iter}`, [
+          iterUbo,
+          inputTex,
+          outputTex,
+          common.gNormalDepthTexture,
+          svgf.svgfVarianceTexture,
+        ], buildBg) ?? buildBg();
       },
       labelFor: (iter) => `svgf-real-atrous-${iter}` as PassLabel,
     });

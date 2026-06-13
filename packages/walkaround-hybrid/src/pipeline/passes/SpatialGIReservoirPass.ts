@@ -67,7 +67,7 @@ export class SpatialGIReservoirPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, sceneBindGroup } = ctx;
+    const { device, bglCache, resources, sceneBindGroup, resourceCache } = ctx;
     const current = resources.restirGI.reservoirGiCurrentBuffer;
     const spatial = resources.restirGI.reservoirGiSpatialBuffer;
 
@@ -86,9 +86,14 @@ export class SpatialGIReservoirPass implements Pass {
       label: PassLabel,
       bgLabel: string,
     ): void => {
-      const bg = buildSpatialGiBindGroup(
+      const buildBg = (): GPUBindGroup => buildSpatialGiBindGroup(
         device, bglCache, inBuf, outBuf, resources.common.uboBuffer, bgLabel,
       );
+      const bg = resourceCache?.bindGroup(`pass:gi-spatial:${bgLabel}`, [
+        inBuf,
+        outBuf,
+        resources.common.uboBuffer,
+      ], buildBg) ?? buildBg();
       dispatchSingleBindGroup(ctx, this._pipeline, bg, label, { half: true, ...giExtra });
     };
 

@@ -120,7 +120,7 @@ or silently drop user data — exactly the rot that has made the maturity pictur
 - **D3 — Contract material gaps** ✅ DONE (contract + ingestion) / ◻ consumption tracked: added `specularIntensity`/`specularColor` (+ their maps), `bumpMap`/`bumpScale`, `displacementMap`/`displacementScale`/`displacementBias`, `lightMap`/`lightMapIntensity`, `envMapIntensity` as first-class optional fields on core `MaterialSpec` (+ `MaterialMapFields` slice); `three-bindings.convertMaterial` now extracts them so the THREE→core data loss is closed (+4 tests). **REMAINING — per-backend BSDF consumption (these require golden-breaking material-layout changes, so they're real B-bucket fidelity work, not ingestion): specular F0 modulation + envMapIntensity scale in the 4 BSDFs; bump-map normal perturbation; displacement-map geometry; lightMap additive in shade — plus the reverse `vitrumSceneToThree` round-trip for the pt-webgl path.** **Effort: ingestion M (done); consumption S–L per field.**
 - **D4 — Memory accounting** ✅ VERIFIED closed in HEAD: `UploadedSceneBuffers.gpuMemoryBytes()` sums live scene buffers + material texture arrays (`packages/pt-webgpu/src/scene/uploadSceneBuffers.ts:1408`), and `debug.estimatedGpuMemoryBytes()` includes those bytes under `byCategory.scene`, `byTextureFormat`, and `byBufferUsage.storage` before telemetry emits the scalar total (`packages/pt-webgpu/src/index.ts:787`, `:950`). **Effort: closed.**
 - **D5 — Stale comments contradicting code** ✅ CLOSED 2026-06-12: source-read verified the RC light-model and current `packages/walkaround-rc/src/cascadeDispatch.ts` verification-status citations were already corrected; `createRestirGIFrameResources.ts` now says the GRIS reconnection cache is read by the reuse variants today, and `atrousVariance.wgsl.ts` now calls `svgfVarianceMain`/`svgfAtrousMain` legacy entry-point names rather than evidence that the module is Schied SVGF. Focused stale-comment gates pin those statements. **Effort: closed.**
-- **D6 — Per-frame bind-group churn** ◻: ~20–30 `createBindGroup`/frame in walkaround, zero memoization. Perf hygiene. **Effort: M.**
+- **D6 — Per-frame bind-group churn** ✅ CLOSED 2026-06-13: `PipelineResourceCache` now memoizes texture views and a bounded set of bind-group key variants per id (so ping-pong groups reuse both hot variants instead of missing every other frame). Central frame/scene/ubo/risGi/composite/hybrid/light-tree/GTAO groups were already cached; this wave added cache keys for ReGIR, sample-budget, GTAO upsample, motion vectors, indirect combine, indirect temporal accum, temporal/ spatial GI, checkerboard prefill, resolve, PPG update, temporal accum, indirect à-trous, and built-in denoisers (`atrous`, default `atrous-variance`, `svgf-real`, `bmfr`, `neural`). UBO-writing builders were split so alpha/sigma/uniform writes still execute every dispatch while the bind group object is reused. `passBindGroupCache.test.ts` pins cache reuse, ping-pong variants, invalidation after identity changes, tuple-valued PPG cache entries, and live per-frame UBO writes. Remaining `createBindGroup` source hits are setup/lifecycle/harness paths or cached builder internals rather than default per-frame pass churn. **Effort: closed.**
 - **D7 — SVGF texture allocation** ✅ CLOSED 2026-06-12: `createSvgfFrameResources.ts` now collapses the heavy SVGF history textures and the current/previous object-id textures to 1×1 whenever the active denoiser is not `svgf-real`; shade writes object IDs through a dimension-guarded helper so the inactive 1×1 storage texture remains a legal frame-layout placeholder. `gpuMemoryEstimate.test.ts`, `svgfObjectIdResources.test.ts`, and `svgfObjectId.test.ts` pin the inactive placeholder sizes, active full-res sizes, and guarded shader store. **Effort: closed.**
 - **D8 — fork lint red** ✅ FIXED (bumped to ESLint 9): the red was an `eslint@8` vs `@typescript-eslint@8` plugin crash (`no-unused-expressions` reading `allowShortCircuit`) — NOT the audit's stale-SSS gate (`tsc` + `shader-smoke` always passed). Fix: bumped the fork to `eslint@^9.39.4` (deduped to root; had to prune an orphan nested `eslint@8.57.1` the lockfile kept reinstalling — uninstall→reinstall on the workspace cleared it), kept `.eslintrc.json` via `ESLINT_USE_FLAT_CONFIG=false` in the lint script, and made its `extends` hoist-proof (`"mdcs"` shareable name instead of a relative `./node_modules/...` path that broke when mdcs hoisted to root). `npm run lint` is now green (0 errors, 1 pre-existing `no-unused-vars` warning in `example/`; tsc + shader-smoke pass). **Future:** eslintrc is deprecated in eslint v10 → a flat-config migration when the repo moves to v10.
 - **D9 — traceTier dedup** ✅ CLOSED 2026-06-12: source-read verified `WebGl2TraceTier` is owned by `packages/pt-webgl2/src/traceTier.ts` and re-exported from `options.ts` instead of being duplicated; `traceTier.ts` and the package README now describe `lite` as aux-buffer-only degradation with the trace kernel unchanged rather than promising hidden bounce/texture caps. `traceTier.test.ts` pins both the single-source type surface and the lite-tier policy wording. **Effort: closed.**
@@ -348,7 +348,7 @@ buckets that the A–D framing was missing:**
 
 | Gate | Plug-in | Footgun |
 |------|---------|---------|
-| **GATE-01** | Extend `ledgerVsCapabilities.test.ts` — runtime `buildCapabilities()` must match `BACKEND_PROMISE_LEDGER` for pt-webgl2 lite/full aux buffers | Ledger said `supportsAuxBuffers:false` while full tier had MRT — already bit you (H39) |
+| **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic unsupported rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
 | **GATE-02** | Per `native` material row: one test that packs + shader string pin OR readback oracle | Byte-identity SHA tests can be green while both sides share a bug |
 | **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; keep `npm run shader-gate` explicit in CI for every WGSL `PASS_ORDER` variant including walkaround texture bind layout because that path needs a WebGPU adapter | WGSL string tests don't compile shaders |
 | **GATE-GLTF** | `gltfKhronosSweep.test.ts` — `analyzeGltfAsset` only, no network in CI (fixtures vendored) | Live URL tests flake in CI |
@@ -980,3 +980,27 @@ was pulled forward into the now-ACTIVE A8 GPU A/B task** (converged-unbiasedness
 of GRIS-on + measured error of the biased default). The default-flip itself
 stays gated on those numbers + the perf budget; F6 is the flip, A8 is the
 evidence that justifies it.
+
+### BUG RESOLVED (2026-06-13) — pt-webgl2 accumulation shader SSS helper compile failure
+
+Found while driving `createPTEngine_WebGL2` from a consumer app (the honeycomb
+stained-glass bench) on real WebGL2 (Chrome, NVIDIA Lovelace). The accumulation
+fragment shader failed GLSL compilation at runtime:
+
+```
+ERROR: 0:3946: 'sampleExponential' : no matching overloaded function found
+ERROR: 0:3950: 'sampleHG_glsl'     : no matching overloaded function found
+ERROR: 0:3950: '='                 : dimension mismatch
+ERROR: 0:3950: '='                 : cannot convert from 'const mediump float' to 'highp 3-component vector of float'
+ERROR: 0:3953: 'hg_phase'          : no matching overloaded function found
+```
+
+- **Resolution:** closed by the D10 shader-gate wave. `bsdf_functions.glsl.js`
+  now defines `sampleExponentialDistance`, `sampleHG_glsl`, and `hg_phase`
+  before the SSS call site and no longer calls the undefined
+  `sampleExponential(...)` symbol. `composeTraceGlsl.test.ts` pins the helper
+  ordering, and `@vitrum/shader-gate` is now a workspace package whose ordinary
+  root `npm test` path runs the CPU GLSL production-variant compile gate plus
+  its injected-error self-test. Current proof: root `npm test` compiles all 6
+  pt-webgl2 GLSL feature combinations and the self-test detects the injected
+  broken shader.

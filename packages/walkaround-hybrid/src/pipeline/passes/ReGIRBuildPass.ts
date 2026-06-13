@@ -78,13 +78,18 @@ export class ReGIRBuildPass implements Pass {
     if (total === 0) return;
 
     const res = this._resources();
-    const bg = buildRegirBuildBindGroup(
+    const buildBg = (): GPUBindGroup => buildRegirBuildBindGroup(
       ctx.device,
       this._bglCache,
       res.combinedLightTreeBuffer,
       res.emitterBuffer,
       res.uboBuffer,
     );
+    const bg = ctx.resourceCache?.bindGroup('pass:regir-build', [
+      res.combinedLightTreeBuffer,
+      res.emitterBuffer,
+      res.uboBuffer,
+    ], buildBg) ?? buildBg();
     const pass = ctx.encoder.beginComputePass(ctx.computeDesc('regir-build'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);

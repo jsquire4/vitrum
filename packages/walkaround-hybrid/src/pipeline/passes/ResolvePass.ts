@@ -64,7 +64,7 @@ export class ResolvePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, frameState, frameCount, width, height } = ctx;
+    const { device, bglCache, resources, frameState, frameCount, width, height, resourceCache } = ctx;
 
     // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
     // W2-C13 follow-up: byte-identical to the prior Uint32Array write —
@@ -86,14 +86,21 @@ export class ResolvePass implements Pass {
       checkerboardOn: checkerboardOn ? 1 : 0,
     });
     device.queue.writeBuffer(this._uboRef.buf!, 0, resolveUboBytes);
-    const bg = buildResolveBindGroup(
+    const buildBg = (): GPUBindGroup => buildResolveBindGroup(
       device, bglCache,
       this._uboRef.buf!,
-      frameState.writeAccum.createView(),           // current radiance (post-accum)
-      frameState.readAccum.createView(),            // prev radiance (other ping-pong slot)
-      resources.common.motionVectorTexture.createView(),
-      resources.common.resolvedTexture.createView(),
+      resourceCache?.textureView(frameState.writeAccum) ?? frameState.writeAccum.createView(),
+      resourceCache?.textureView(frameState.readAccum) ?? frameState.readAccum.createView(),
+      resourceCache?.textureView(resources.common.motionVectorTexture) ?? resources.common.motionVectorTexture.createView(),
+      resourceCache?.textureView(resources.common.resolvedTexture) ?? resources.common.resolvedTexture.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:resolve', [
+      this._uboRef.buf,
+      frameState.writeAccum,
+      frameState.readAccum,
+      resources.common.motionVectorTexture,
+      resources.common.resolvedTexture,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'resolve');
   }
 

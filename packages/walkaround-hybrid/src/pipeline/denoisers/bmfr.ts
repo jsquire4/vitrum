@@ -122,7 +122,7 @@ export class BmfrDenoiser implements Denoiser {
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {
-    const { device, encoder, resources, computeDesc, isMoving } = ctx;
+    const { device, encoder, resources, computeDesc, isMoving, resourceCache } = ctx;
     const common = resources.common;
     const w = ctx.width;
     const h = ctx.height;
@@ -135,18 +135,25 @@ export class BmfrDenoiser implements Denoiser {
     const histRead = this._pingPong === 0 ? this._historyA! : this._historyB!;
     const histWrite = this._pingPong === 0 ? this._historyB! : this._historyA!;
 
-    const bg = device.createBindGroup({
+    const buildBg = (): GPUBindGroup => device.createBindGroup({
       label: 'bmfr-bg',
       layout: this._pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: common.hdrColorTexture.createView() },     // noisy color (fit target)
-        { binding: 1, resource: common.gNormalDepthTexture.createView() }, // normal .xyz
-        { binding: 2, resource: common.gNormalDepthTexture.createView() }, // depth .w (screen-space proxy)
-        { binding: 3, resource: histRead.createView() },                   // temporal history
-        { binding: 4, resource: histWrite.createView() },                  // reconstructed + accumulated out
+        { binding: 0, resource: resourceCache?.textureView(common.hdrColorTexture) ?? common.hdrColorTexture.createView() },
+        { binding: 1, resource: resourceCache?.textureView(common.gNormalDepthTexture) ?? common.gNormalDepthTexture.createView() },
+        { binding: 2, resource: resourceCache?.textureView(common.gNormalDepthTexture) ?? common.gNormalDepthTexture.createView() },
+        { binding: 3, resource: resourceCache?.textureView(histRead) ?? histRead.createView() },
+        { binding: 4, resource: resourceCache?.textureView(histWrite) ?? histWrite.createView() },
         { binding: 5, resource: { buffer: this._ubo } },
       ],
     });
+    const bg = resourceCache?.bindGroup('denoiser:bmfr', [
+      common.hdrColorTexture,
+      common.gNormalDepthTexture,
+      histRead,
+      histWrite,
+      this._ubo,
+    ], buildBg) ?? buildBg();
 
     // One workgroup per 32×32 block. Each thread owns a 2×2 patch, so a
     // 16×16 workgroup covers a full block.

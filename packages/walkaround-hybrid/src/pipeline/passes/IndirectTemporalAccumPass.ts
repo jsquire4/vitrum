@@ -59,7 +59,7 @@ export class IndirectTemporalAccumPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, frameState } = ctx;
+    const { device, bglCache, resources, frameState, resourceCache } = ctx;
     const common = resources.common;
     const indirectAccumOut = this._pingPongRef.value === 0
       ? common.indirectAccumPingTexture
@@ -68,12 +68,17 @@ export class IndirectTemporalAccumPass implements Pass {
       ? common.indirectAccumPongTexture
       : common.indirectAccumPingTexture;
 
-    const bg = buildIndirectTemporalAccumBindGroup(
+    const buildBg = (): GPUBindGroup => buildIndirectTemporalAccumBindGroup(
       device, bglCache,
-      common.hdrIndirectTexture.createView(),
-      indirectAccumPrev.createView(),
-      indirectAccumOut.createView(),
+      resourceCache?.textureView(common.hdrIndirectTexture) ?? common.hdrIndirectTexture.createView(),
+      resourceCache?.textureView(indirectAccumPrev) ?? indirectAccumPrev.createView(),
+      resourceCache?.textureView(indirectAccumOut) ?? indirectAccumOut.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:indirect-temporal-accum', [
+      common.hdrIndirectTexture,
+      indirectAccumPrev,
+      indirectAccumOut,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-temporal-accum', { wg16: true });
 
     // Publish the output handle for the downstream atrous chain.

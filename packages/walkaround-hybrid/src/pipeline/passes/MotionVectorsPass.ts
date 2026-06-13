@@ -37,14 +37,19 @@ export class MotionVectorsPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources } = ctx;
-    const bg = buildMotionVectorsBindGroup(
+    const { device, bglCache, resources, resourceCache } = ctx;
+    const buildBg = (): GPUBindGroup => buildMotionVectorsBindGroup(
       device,
       bglCache,
-      resources.common.gNormalDepthTexture.createView(),
-      resources.common.motionVectorTexture.createView(),
+      resourceCache?.textureView(resources.common.gNormalDepthTexture) ?? resources.common.gNormalDepthTexture.createView(),
+      resourceCache?.textureView(resources.common.motionVectorTexture) ?? resources.common.motionVectorTexture.createView(),
       resources.common.uboBuffer,
     );
+    const bg = resourceCache?.bindGroup('pass:motion-vectors', [
+      resources.common.gNormalDepthTexture,
+      resources.common.motionVectorTexture,
+      resources.common.uboBuffer,
+    ], buildBg) ?? buildBg();
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'motion-vectors');
   }
 

@@ -3,12 +3,14 @@
  *
  * The cache intentionally only memoizes descriptor-free texture views and bind
  * groups whose resource identities are supplied by the caller. Resize/resource
- * recreation naturally invalidates entries because the key objects change.
+ * recreation naturally invalidates entries because the key objects change. A
+ * small bounded variant list per id covers ping-pong groups without letting
+ * scene-update churn accumulate forever.
  */
 
-type CachedBindGroup = {
+type CachedValue<T> = {
   readonly keys: readonly unknown[];
-  readonly bindGroup: GPUBindGroup;
+  readonly value: T;
 };
 
 function sameKeys(a: readonly unknown[], b: readonly unknown[]): boolean {
@@ -20,8 +22,10 @@ function sameKeys(a: readonly unknown[], b: readonly unknown[]): boolean {
 }
 
 export class PipelineResourceCache {
+  private static readonly MAX_BIND_GROUP_VARIANTS_PER_ID = 8;
+
   private _textureViews = new WeakMap<GPUTexture, GPUTextureView>();
-  private readonly _bindGroups = new Map<string, CachedBindGroup>();
+  private readonly _bindGroups = new Map<string, CachedValue<unknown>[]>();
 
   textureView(texture: GPUTexture): GPUTextureView {
     const cached = this._textureViews.get(texture);
@@ -31,16 +35,23 @@ export class PipelineResourceCache {
     return view;
   }
 
-  bindGroup(
+  bindGroup<T = GPUBindGroup>(
     id: string,
     keys: readonly unknown[],
-    create: () => GPUBindGroup,
-  ): GPUBindGroup {
+    create: () => T,
+  ): T {
     const cached = this._bindGroups.get(id);
-    if (cached && sameKeys(cached.keys, keys)) return cached.bindGroup;
-    const bindGroup = create();
-    this._bindGroups.set(id, { keys: [...keys], bindGroup });
-    return bindGroup;
+    const hit = cached?.find((entry) => sameKeys(entry.keys, keys));
+    if (hit) return hit.value as T;
+    const value = create();
+    const entry = { keys: [...keys], value };
+    if (!cached) {
+      this._bindGroups.set(id, [entry]);
+    } else {
+      cached.unshift(entry);
+      cached.length = Math.min(cached.length, PipelineResourceCache.MAX_BIND_GROUP_VARIANTS_PER_ID);
+    }
+    return value;
   }
 
   clear(): void {

@@ -44,13 +44,18 @@ export class TemporalGIReservoirPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, sceneBindGroup } = ctx;
-    const bg = buildTemporalGiBindGroup(
+    const { device, bglCache, resources, sceneBindGroup, resourceCache } = ctx;
+    const buildBg = (): GPUBindGroup => buildTemporalGiBindGroup(
       device, bglCache,
       resources.restirGI.reservoirGiCurrentBuffer,
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,
     );
+    const bg = resourceCache?.bindGroup('pass:gi-temporal', [
+      resources.restirGI.reservoirGiCurrentBuffer,
+      resources.restirGI.reservoirGiPreviousBuffer,
+      resources.common.uboBuffer,
+    ], buildBg) ?? buildBg();
     // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
     // ONLY when the GRIS pipeline variant is active. Half-res dispatch.
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gi-temporal', {

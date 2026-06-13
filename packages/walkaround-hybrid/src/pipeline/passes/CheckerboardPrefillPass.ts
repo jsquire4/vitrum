@@ -96,7 +96,7 @@ export class CheckerboardPrefillPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, frameState, frameCount, width, height } = ctx;
+    const { device, bglCache, frameState, frameCount, width, height, resourceCache } = ctx;
 
     // Pack CbPrefillUniforms: screenW/H + frameParity + padding.
     const uboBytes = new ArrayBuffer(CB_PREFILL_UBO.sizeBytes);
@@ -108,13 +108,19 @@ export class CheckerboardPrefillPass implements Pass {
     });
     device.queue.writeBuffer(this._uboRef.buf!, 0, uboBytes);
 
-    const bg = buildCbPrefillBindGroup(
+    const buildBg = (): GPUBindGroup => buildCbPrefillBindGroup(
       device, bglCache,
       this._uboRef.buf!,
-      frameState.readAccum.createView(),                        // 1: prev-frame radiance
-      ctx.resources.common.motionVectorTexture.createView(),    // 2: motion vectors
-      ctx.resources.common.hdrColorTexture.createView(),        // 3: gap-pixel fill target
+      resourceCache?.textureView(frameState.readAccum) ?? frameState.readAccum.createView(),
+      resourceCache?.textureView(ctx.resources.common.motionVectorTexture) ?? ctx.resources.common.motionVectorTexture.createView(),
+      resourceCache?.textureView(ctx.resources.common.hdrColorTexture) ?? ctx.resources.common.hdrColorTexture.createView(),
     );
+    const bg = resourceCache?.bindGroup('pass:cb-prefill', [
+      this._uboRef.buf,
+      frameState.readAccum,
+      ctx.resources.common.motionVectorTexture,
+      ctx.resources.common.hdrColorTexture,
+    ], buildBg) ?? buildBg();
 
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'cb-prefill');
   }
