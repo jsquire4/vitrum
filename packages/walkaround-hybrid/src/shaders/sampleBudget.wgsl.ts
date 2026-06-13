@@ -106,8 +106,13 @@ fn sampleBudgetKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let n = u_sampleCount.sampleCount;
   let variance = welfordVariance(state, n);
 
-  // Classify tier.
-  let tier = sampleTierFromVariance(variance, u_budget.threshold_low, u_budget.threshold_high);
+  // First frame has no useful previous-frame variance; force low confidence
+  // instead of letting welfordVariance(n < 2) collapse to 0 and under-sample.
+  let tier = select(
+    sampleTierFromVariance(variance, u_budget.threshold_low, u_budget.threshold_high),
+    4u,
+    n < 2u,
+  );
 
   // Write tier to per-pixel tile.
   textureStore(t_tier_out, vec2<u32>(px, py), vec4<u32>(tier, 0u, 0u, 0u));

@@ -27,4 +27,18 @@ describe('Road D5 stale-comment gates', () => {
     expect(cascadeDispatch).toContain('PLUS behavioral');
     expect(cascadeDispatch).toContain('GPU smoke');
   });
+
+  it('keeps H38 fork-era DDGI/GI comments reconciled to the raw WebGPU path', () => {
+    const risGi = readSource('shaders/risGi.wgsl.ts');
+    const risGiNrc = readSource('shaders/risGiNrc.wgsl.ts');
+    const probeUpdatePass = readSource('ddgi/probeUpdatePass.ts');
+    const probeGrid = readSource('ddgi/probeGrid.ts');
+
+    for (const source of [risGi, risGiNrc, probeUpdatePass, probeGrid]) {
+      expect(source).not.toContain('path-traced fork');
+      expect(source).not.toContain('three.js binding system');
+      expect(source).not.toContain('three/webgpu');
+    }
+    expect(probeGrid).toContain('raw WebGPU bind groups');
+  });
 });

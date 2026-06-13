@@ -15,9 +15,8 @@
  *
  * Atlas slots are plain `{width, height}` records; ProbeGrid does not hold
  * any GPU handles. probeUpdatePass.ts maintains the GPUTexture per slot via
- * a WeakMap keyed on the slot instance. applyDDGIShading.ts (the TSL consumer)
- * wraps each slot in a three/webgpu StorageTexture — that is the only
- * three/webgpu coupling; the raw compute path is host-neutral.
+ * a WeakMap keyed on the slot instance, and frame shading consumes the atlas
+ * through raw WebGPU bind groups.
  */
 
 // Atlas-layout constants imported from the canonical source so producer
@@ -281,4 +280,3 @@ export class ProbeGrid {
     this._disposeAtlases();
   }
 }
-

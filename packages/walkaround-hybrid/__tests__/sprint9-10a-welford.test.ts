@@ -183,6 +183,11 @@ describe('SAMPLE_BUDGET_WGSL — variance-driven dispatch tier shader', () => {
     expect(SAMPLE_BUDGET_WGSL).toContain('return 4u');
   });
 
+  it('forces first-frame pixels to low-confidence tier 4 before variance is meaningful', () => {
+    expect(SAMPLE_BUDGET_WGSL).toContain('n < 2u');
+    expect(SAMPLE_BUDGET_WGSL).toMatch(/select\(\s*sampleTierFromVariance[\s\S]*?4u[\s\S]*?n\s*<\s*2u/);
+  });
+
   it('writes tier to t_tier_out via textureStore', () => {
     expect(SAMPLE_BUDGET_WGSL).toContain('textureStore(t_tier_out');
   });
