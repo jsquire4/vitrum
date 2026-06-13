@@ -2,7 +2,7 @@
 //
 // Given the scene's MaterialSpec[], dedup the texture-map source handles into an
 // upload-ordered list and pack a per-material descriptor buffer (texture indices
-// + alpha-mode + the KHR_texture_transform UV transform / texCoord). The GPU
+// + alpha-mode + per-map KHR_texture_transform UV transform / texCoord). The GPU
 // upload step (follow-on) turns `sources` into a texture_2d_array; the WGSL
 // sampler reads the descriptor buffer (this layout) to sample with the right
 // index + UVs. Materials with no maps get index -1 → the sampler skips them, so
@@ -31,6 +31,11 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *  14: {aoWrap.xy, lightMapWrap.xy}
  *  15: {bumpWrap.xy, anisotropyWrap.xy}
  *  16: {alphaWrap.xy, transmissionWrap.xy}
+ *  17-36: per-map UV metadata, 2 vec4s per consumed map:
+ *     vec4 A: {texCoord, offsetX, offsetY, rotation}
+ *     vec4 B: {scaleX, scaleY, 0, 0}
+ *     map order: baseColor, emissive, normal, ORM, AO, lightMap, bumpMap,
+ *                anisotropyMap, alphaMap, transmissionMap
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -56,8 +61,16 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     the copied source rectangle instead of sampling padded black texels.
  *   - vec4 #12–#16: per-map wrap modes from TextureRef.wrapS/wrapT. Defaults are
  *     repeat/repeat, matching glTF. Encoded as 0 repeat, 1 clamp, 2 mirrored.
+ *   - vec4 #17–#36: per-map `TextureRef.texCoord` and KHR_texture_transform
+ *     metadata. Older rows only carried the baseColor transform and every other
+ *     map inherited it; these lanes make the full-tier sampler honor each map's
+ *     own UV channel/transform without changing the original baseColor lanes.
  */
-export const MATERIAL_TEX_VEC4_STRIDE = 17;
+export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 17;
+export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
+export const MATERIAL_TEX_UV_MAP_COUNT = 10;
+export const MATERIAL_TEX_VEC4_STRIDE =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * MATERIAL_TEX_UV_MAP_COUNT;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -113,6 +126,24 @@ function writeWrapPair(
 ): void {
   descriptors[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
   descriptors[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
+}
+
+function writeUvMeta(
+  descriptors: Float32Array,
+  b: number,
+  mapSlot: number,
+  ref: TextureRef | undefined,
+): void {
+  const vecBase = b + (MATERIAL_TEX_UV_META_VEC4_OFFSET + mapSlot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
+  const t = ref?.transform;
+  descriptors[vecBase] = ref?.texCoord ?? 0;
+  descriptors[vecBase + 1] = t?.offset?.[0] ?? 0;
+  descriptors[vecBase + 2] = t?.offset?.[1] ?? 0;
+  descriptors[vecBase + 3] = t?.rotation ?? 0;
+  descriptors[vecBase + 4] = t?.scale?.[0] ?? 1;
+  descriptors[vecBase + 5] = t?.scale?.[1] ?? 1;
+  descriptors[vecBase + 6] = 0;
+  descriptors[vecBase + 7] = 0;
 }
 
 /** Fill per-map UV-fit descriptor lanes after the texture arrays reveal their
@@ -221,8 +252,8 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 21] = m.anisotropyRotation ?? 0;
     descriptors[b + 22] = indexOfLinear(m.anisotropyMap);
     descriptors[b + 23] = m.normalScale ?? 1;
-    // Standalone alphaMap is coverage data (linear), sampled with the shared v1
-    // material texture UV transform. BaseColor alpha still participates too.
+    // Standalone alphaMap is coverage data (linear). BaseColor alpha still
+    // participates too; each map carries its own UV metadata below.
     descriptors[b + 24] = indexOfLinear(m.alphaMap);
     descriptors[b + 25] = indexOfLinear(m.transmissionMap);
     descriptors[b + 26] = 0;
@@ -238,6 +269,16 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeWrapPair(descriptors, b + 62, m.anisotropyMap);
     writeWrapPair(descriptors, b + 64, m.alphaMap);
     writeWrapPair(descriptors, b + 66, m.transmissionMap);
+    writeUvMeta(descriptors, b, 0, bc);
+    writeUvMeta(descriptors, b, 1, m.emissiveMap);
+    writeUvMeta(descriptors, b, 2, m.normalMap);
+    writeUvMeta(descriptors, b, 3, orm);
+    writeUvMeta(descriptors, b, 4, m.aoMap);
+    writeUvMeta(descriptors, b, 5, m.lightMap);
+    writeUvMeta(descriptors, b, 6, m.bumpMap);
+    writeUvMeta(descriptors, b, 7, m.anisotropyMap);
+    writeUvMeta(descriptors, b, 8, m.alphaMap);
+    writeUvMeta(descriptors, b, 9, m.transmissionMap);
   });
 
   return { sources, linearSources, descriptors };

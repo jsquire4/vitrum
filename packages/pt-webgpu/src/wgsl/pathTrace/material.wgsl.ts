@@ -235,8 +235,8 @@ function materialLayerSamplerWgsl(
   preXformLines: string,
   xformSuffix: string,
 ): string {
-  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
-  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
     return vec4f(1.0);
@@ -249,10 +249,12 @@ function materialLayerSamplerWgsl(
   let uvc = meshUvs[tri.z];
   let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
   let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
-  let texCoord = u32(materialTexDescriptors[base + 1u].w);
+  let uvMeta = materialTexDescriptors[base + uvMetaOffset];
+  let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let texCoord = u32(uvMeta.x);
   let rawUv = select(ch0, ch1, texCoord == 1u);
-  ${preXformLines}let xform = materialTexDescriptors[base + 2u];${xformSuffix}
-  let rot = materialTexDescriptors[base + 3u].x;
+  ${preXformLines}let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);${xformSuffix}
+  let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
@@ -329,7 +331,20 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  14: {aoWrap.xy, lightMapWrap.xy}
 //  15: {bumpWrap.xy, anisotropyWrap.xy}
 //  16: {alphaWrap.xy, transmissionWrap.xy}
-const MATERIAL_TEX_VEC4_STRIDE = 17u;
+//  17-36: per-map UV metadata, two vec4s per consumed map:
+//     A = {texCoord, offsetX, offsetY, rotation}
+//     B = {scaleX, scaleY, 0, 0}
+const MATERIAL_TEX_VEC4_STRIDE = 37u;
+const MATERIAL_TEX_UV_BASE_COLOR = 17u;
+const MATERIAL_TEX_UV_EMISSIVE = 19u;
+const MATERIAL_TEX_UV_NORMAL = 21u;
+const MATERIAL_TEX_UV_ORM = 23u;
+const MATERIAL_TEX_UV_AO = 25u;
+const MATERIAL_TEX_UV_LIGHT = 27u;
+const MATERIAL_TEX_UV_BUMP = 29u;
+const MATERIAL_TEX_UV_ANISOTROPY = 31u;
+const MATERIAL_TEX_UV_ALPHA = 33u;
+const MATERIAL_TEX_UV_TRANSMISSION = 35u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -350,21 +365,21 @@ fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
 // multiply — when layerIdx < 0 or the hit is not a mesh triangle (analytic shapes
 // carry no UVs in v1), so a material lacking that map stays byte-identical.
 // textureSampleLevel (explicit LOD) keeps the call valid in non-uniform flow.
-// All maps of a material share its baseColor UV transform (v1 simplification).
+// Each map reads its own TextureRef.texCoord + KHR_texture_transform metadata.
 ${_SAMPLE_MAT_LAYER_WGSL}
 
 // baseColor map (sRGB array) — descriptor vec4[0].x.
 fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 12u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 12u].xy);
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 12u].xy);
 }
 
 // emissive map (sRGB array, same layers as baseColor) — descriptor vec4[0].w.
 fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 12u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 12u].zw);
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 12u].zw);
 }
 
 // As sampleMaterialLayer, but samples the LINEAR array (materialTexturesLinear)
@@ -379,7 +394,7 @@ ${_SAMPLE_MAT_LAYER_LINEAR_WGSL}
 fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW, materialTexDescriptors[base + 8u].zw, materialTexDescriptors[base + 13u].zw);
+  return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW, MATERIAL_TEX_UV_ORM, materialTexDescriptors[base + 8u].zw, materialTexDescriptors[base + 13u].zw);
 }
 
 // D9.3 — shared tangent-frame derivation for applyNormalMap + applyBumpMap.
@@ -448,7 +463,7 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   }
   let frame = buildShadingTangentFrame(triIndex, geomNormal, instanceIndex);
   if (!frame.valid) { return geomNormal; }
-  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, materialTexDescriptors[base + 8u].xy, materialTexDescriptors[base + 13u].xy).xyz;
+  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_NORMAL, materialTexDescriptors[base + 8u].xy, materialTexDescriptors[base + 13u].xy).xyz;
   var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
   let normalScale = materialTexDescriptors[base + 5u].w;
   tn.x = tn.x * normalScale;
@@ -478,7 +493,7 @@ fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   let aoIdx = i32(materialTexDescriptors[base + 3u].y);
   if (aoIdx < 0) { return 1.0; }
   let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
-  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, materialTexDescriptors[base + 9u].xy, materialTexDescriptors[base + 14u].xy).r;
+  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO, materialTexDescriptors[base + 9u].xy, materialTexDescriptors[base + 14u].xy).r;
   return clamp(mix(1.0, r, intensity), 0.0, 1.0);
 }
 
@@ -497,7 +512,7 @@ fn sampleLightMapRadiance(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
   let lmIdx = i32(materialTexDescriptors[base + 3u].z);
   if (lmIdx < 0) { return vec3f(0.0); }
   let intensity = max(materialTexDescriptors[base + 4u].y, 0.0);
-  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 14u].zw).rgb * intensity;
+  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 14u].zw).rgb * intensity;
 }
 
 // Per-material environment-map intensity scale — descriptor vec4[4].w (default 1).
@@ -516,7 +531,7 @@ fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   var a = clamp(materialTexDescriptors[base + 5u].x, 0.0, 1.0);
   let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
   if (anisoIdx >= 0) {
-    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).b;
+    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).b;
   }
   return clamp(a, 0.0, 1.0);
 }
@@ -530,7 +545,7 @@ fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   var rot = materialTexDescriptors[base + 5u].y;
   let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
   if (anisoIdx >= 0) {
-    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).rg * 2.0 - vec2f(1.0);
+    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).rg * 2.0 - vec2f(1.0);
     rot = rot + atan2(rg.y, rg.x);
   }
   return rot;
@@ -563,14 +578,14 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   // step; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
   let bumpUvFitScale = materialTexDescriptors[base + 10u].xy;
   let bumpWrapMode = materialTexDescriptors[base + 15u].xy;
-  let hC = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, bumpUvFitScale, bumpWrapMode).r;
+  let hC = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
   // Approximate dh/du, dh/dv by sampling a small step along the interpolated UV
   // via barycentric perturbation toward each triangle edge.
   let du = 1.0 / 512.0;
   let baryU = vec2f(baryVW.x + du, baryVW.y);
   let baryV = vec2f(baryVW.x, baryVW.y + du);
-  let hU = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryU, bumpUvFitScale, bumpWrapMode).r;
-  let hV = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryV, bumpUvFitScale, bumpWrapMode).r;
+  let hU = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryU, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hV = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryV, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
   let dhdu = (hU - hC) / du;
   let dhdv = (hV - hC) / du;
   let perturbed = shadingNormal - bumpScale * (dhdu * tangent + dhdv * bitangent);
@@ -586,7 +601,7 @@ fn sampleAlphaTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + 16u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let alphaIdx = i32(materialTexDescriptors[base + 6u].x);
   if (alphaIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 16u].xy).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 16u].xy).r, 0.0, 1.0);
 }
 
 // Transmission map (LINEAR scalar data) — descriptor vec4[6].y.
@@ -597,7 +612,7 @@ fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + 16u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let transmissionIdx = i32(materialTexDescriptors[base + 6u].y);
   if (transmissionIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 16u].zw).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 16u].zw).r, 0.0, 1.0);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

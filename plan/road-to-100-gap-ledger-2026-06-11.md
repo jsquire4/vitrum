@@ -173,6 +173,15 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   both `roughnessMap` and `metallicMap`. The same sweep now pins
   `KHR_materials_volume.thicknessTexture` import through the reserved
   `MaterialSpec.thicknessMap` field. The glTF adapter suite is now 135 tests.
+- The pt-webgpu material texture backend consumption slice landed after that
+  adapter import work: `materialTextures.ts` packs per-map UV metadata for every
+  map the backend currently samples (baseColor, emissive, normal, ORM, AO,
+  lightMap, bumpMap, anisotropyMap, alphaMap, transmissionMap), and
+  `material.wgsl.ts` samples those maps with their own `TextureRef.texCoord`,
+  KHR_texture_transform, wrap modes, and heterogeneous-layer UV-fit scales.
+  The core promise ledger now promotes alpha/transmission/emissive/AO/light/
+  bump/anisotropy maps where this was the remaining approximation; `normalMap`
+  stays approximate until authored tangent.xyzw/handedness is consumed.
 - The fifth arbitrary-glTF API/compatibility slice landed in
   `@vitrum/gltf-adapter`: `loadGltfForEngine()` now combines `loadGltfAsset()`,
   backend compatibility selection, optional compatibility rejection, injected

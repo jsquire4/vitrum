@@ -221,8 +221,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // carry per-map UV-fit scales; material samplers use fract(uv) * scale.
     // Re-pinned 2026-06-12: material samplers now consume TextureRef.wrapS/T
     // per map (repeat / clamp-to-edge / mirrored-repeat).
-    expect(digest).toBe('e58c4b988411bfee828f7c51c4acd1fc76a2cf4806312e4cca4b0c03096efc8b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(330159);
+    // Re-pinned 2026-06-12: material samplers now consume TextureRef.texCoord
+    // and KHR_texture_transform metadata per map instead of sharing baseColor.
+    expect(digest).toBe('bfa4d6f42626f8622518e4320c4ff06e6d37bd1678128e8a1df95cc0232288d5');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(331331);
   });
 });
 

@@ -259,7 +259,7 @@ const ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH: BackendSupportDetails['analyticSh
 //                   contribution path with the field's documented semantics.
 //   'approximate' — consumed, but with materially different semantics
 //                   (quantization, reinterpretation, partial sub-field
-//                   consumption, shared-UV-transform substitution, …). The
+//                   consumption, authored-tangent substitution, …). The
 //                   divergence is documented on the row.
 //   'unsupported' — silently dropped by the backend's scene ingestion
 //                   (structured `*.unsupported-…` / `*.unconsumed-…` warnings
@@ -510,12 +510,11 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
 });
 
 /**
- * pt-webgpu — the 27-vec4 material buffer (materialPacking.ts) + the 6-vec4
+ * pt-webgpu — the 27-vec4 material buffer (materialPacking.ts) + the 37-vec4
  * texture-descriptor buffer (materialTextures.ts) feed material.wgsl /
- * bsdf.wgsl / kernel.wgsl. Caveat shared by every non-baseColor map row below:
- * all maps of a material sample with baseColor's UV transform + texCoord
- * (material.wgsl "v1 simplification") — an authored per-map transform is
- * silently substituted, hence 'approximate'.
+ * bsdf.wgsl / kernel.wgsl. Full-tier material samplers now consume
+ * TextureRef.texCoord, KHR_texture_transform, wrapS/T, and heterogeneous-layer
+ * UV-fit scales per map for every texture field this backend samples.
  */
 const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   baseColor: 'native',
@@ -539,20 +538,21 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // slab-thickness approximation knob has no consumption site.
   thickness: 'unsupported',
   baseColorMap: 'native',
-  // Sampled + TBN-applied with glTF normalTexture.scale. Still approximate
-  // because the map shares baseColor's UV transform.
+  // Sampled + TBN-applied with glTF normalTexture.scale and per-map UV metadata.
+  // Still approximate until the backend consumes authored tangent.xyzw /
+  // handedness instead of deriving a frame from positions + UVs at the hit.
   normalMap: 'approximate',
   normalScale: 'native',
-  // Single ORM slot (glTF combined: G=roughness, B=metallic); shared UV transform.
+  // Single ORM slot (glTF combined: G=roughness, B=metallic).
   roughnessMap: 'approximate',
   // Same ORM slot — silently dropped when its handle differs from roughnessMap
   // (H51-B once-warn in materialTextures.ts).
   metallicMap: 'approximate',
-  transmissionMap: 'unsupported',
+  transmissionMap: 'native',
   thicknessMap: 'unsupported',
-  emissiveMap: 'approximate', // shared baseColor UV transform
-  alphaMap: 'approximate',    // shared baseColor UV transform
-  aoMap: 'approximate',       // shared baseColor UV transform
+  emissiveMap: 'native',
+  alphaMap: 'native',
+  aoMap: 'native',
   aoMapIntensity: 'native',
   clearcoatMap: 'unsupported',
   clearcoatRoughnessMap: 'unsupported',
@@ -562,15 +562,15 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheenRoughnessMap: 'unsupported',
   iridescenceMap: 'unsupported',
   iridescenceThicknessMap: 'unsupported',
-  anisotropyMap: 'approximate', // shared baseColor UV transform
+  anisotropyMap: 'native',
   specularColorMap: 'unsupported',
   specularIntensityMap: 'unsupported',
-  bumpMap: 'approximate',       // shared baseColor UV transform
+  bumpMap: 'native',
   bumpScale: 'native',
   displacementMap: 'unsupported',
   displacementScale: 'unsupported',
   displacementBias: 'unsupported',
-  lightMap: 'approximate',      // shared baseColor UV transform
+  lightMap: 'native',
   lightMapIntensity: 'native',
   sheen: 'native',
   sheenColor: 'native',
