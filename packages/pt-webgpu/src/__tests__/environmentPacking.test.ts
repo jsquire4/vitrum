@@ -82,6 +82,8 @@ describe('environmentPacking — all-black HDRI message', () => {
     expect(p.warnings.some((w) => w.includes('lacks CPU pixel data'))).toBe(false);
     // Must accurately report zero luminance
     expect(p.warnings.some((w) => w.includes('zero total luminance') || w.includes('all-black'))).toBe(true);
+    // No shader-side procedural-sky fallback is implied for invalid HDRI payloads.
+    expect(p.warnings.some((w) => w.includes('procedural sky model'))).toBe(false);
   });
 
   it('emits the "lacks CPU pixel data" warning only when data is genuinely absent', () => {
@@ -96,6 +98,26 @@ describe('environmentPacking — all-black HDRI message', () => {
     const p = environmentParams(scene);
     expect(p.hasHdri).toBe(false);
     expect(p.warnings.some((w) => w.includes('lacks CPU pixel data'))).toBe(true);
+    expect(p.warnings.some((w) => w.includes('procedural sky model'))).toBe(false);
+  });
+});
+
+describe('environmentPacking — no environment', () => {
+  it('packs kind:none as a truly black no-environment slot', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const p = environmentParams(scene);
+    expect(p.hasHdri).toBe(false);
+    expect(p.hdriWidth).toBe(0);
+    expect(p.hdriHeight).toBe(0);
+    expect(p.hdriIntensity).toBe(0);
+    expect(p.sunStrength).toBe(0);
+    expect(p.hdriTexels.length).toBe(0);
+    expect(p.hdriCdf.length).toBe(0);
+    expect(p.warnings).toEqual([]);
   });
 });
 

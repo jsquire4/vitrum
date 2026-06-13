@@ -88,8 +88,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // shader-gate caught a stale stub/caller mismatch. Caustic lite still returns
     // zero by design; environment reconnection now receives the same scalar
     // extension fields it already evaluates.
-    expect(digest).toBe('23c4d8920929a1339f7eacb715bd0ff20855d89fb62522433b83de68dd36c034');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138767);
+    // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
+    // analytic sampleSky gradient. Missing/invalid env maps now return black
+    // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
+    expect(digest).toBe('3ba1fdd25e2619cfb7077e8d6364da51c0331cca194ba67071594ebe3db3cf32');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(138427);
   });
 });
 
@@ -114,6 +117,14 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn traceMeshBvh');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('params.lightDir.w');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
+  });
+
+  it('treats absent lite-tier environments as black, not procedural sky', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('return vec4f(0.0);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (lk.a <= 0.0) { return 0.0; }');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('return vec4f(sampleSky(dir), 0.0);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('if (lk.a <= 0.0) { return sampleSky(dir); }');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('Procedural-sky fallback: uniform-sphere sample + sky eval.');
   });
 
   it('gates emissive-on-hit to camera + refraction paths (camera-visible emitters)', () => {

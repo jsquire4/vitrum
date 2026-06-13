@@ -7,9 +7,9 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
  *
  * Bundled here:
  *  - Procedural sky + HDRI bookkeeping:
- *      - `sampleSky` — analytic sky fallback (sun glow + zenith tint)
+ *      - `sampleSky` — legacy analytic sky helper retained in the shared core
  *      - `hasEnvironmentMap`, `environmentDimensions` — UBO/binding guards
- *      - `sampleEnvironmentColor` — equirect lookup with sky fallback
+ *      - `sampleEnvironmentColor` — equirect lookup with black no-env fallback
  *      - `environmentPdf` — equirect importance PDF
  *      - `sampleEnvironmentImportance` — RNG-driven HDRI importance sample
  *  - Area-light directional intersectors used by BSDF→light MIS:
@@ -30,9 +30,10 @@ ${PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL}
 // FrameParams (hasEnvironmentMap / environmentMapWidth / environmentMapHeight).
 // Previously these lived in the .w lanes of meshAreaTri{B,C} / environmentTint —
 // a space-saving hack that has been removed.
-// The second clause below guards the legacy "flag set but dims=0" edge case:
-// if the host writes hasEnvironmentMap=1 but never uploads a non-zero map,
-// we still fall back to the procedural sky.
+// The second clause below guards the legacy "flag set but dims=0" edge case.
+// Procedural sky is CPU-baked into the HDRI path before this shader runs; if no
+// map is present here, the authored environment is none or invalid and must
+// contribute no radiance.
 fn hasEnvironmentMap() -> bool {
   return params.hasEnvironmentMap > 0u && params.environmentMapWidth > 0u;
 }
@@ -56,11 +57,11 @@ struct EnvironmentLookup {
 
 fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {
-    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
+    return EnvironmentLookup(vec3f(0.0), 0.0);
   }
   let dims = environmentDimensions();
   if (dims.x == 0u || dims.y == 0u) {
-    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
+    return EnvironmentLookup(vec3f(0.0), 0.0);
   }
   // H6: rotate the lookup direction by -rotationY so the unrotated map is
   // sampled at the correct texel for a CCW-rotated environment dome.
@@ -75,7 +76,7 @@ fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   let y = min(u32(floor(v * f32(dims.y))), dims.y - 1u);
   let idx = y * dims.x + x;
   if (idx >= arrayLength(&environmentMapTexels)) {
-    return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));
+    return EnvironmentLookup(vec3f(0.0), 0.0);
   }
   let texel = environmentMapTexels[idx];
   return EnvironmentLookup(

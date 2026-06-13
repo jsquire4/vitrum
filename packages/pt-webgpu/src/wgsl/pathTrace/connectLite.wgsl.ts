@@ -8,7 +8,8 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
  *
  * When `params.hasEnvironmentMap == 0` (no HDRI / procedural-sky with CDF) the
  * textures are 1×1 black placeholders — `hasEnvironmentMap()` returns false and
- * the code falls back to the procedural sky.
+ * the code returns black no-environment radiance. Procedural sky is CPU-baked to
+ * the HDRI/CDF path before this shader runs.
  *
  * Area-light BSDF→light MIS (`bsdfAreaLightConnectionContribution`) is a zero stub:
  * rect-area lights fire via the NEE loop in kernelLite only (analytic contribution),
@@ -34,15 +35,15 @@ fn environmentDimensions() -> vec2u {
 // D9.13 — rotateYNeg / rotateYPos are now in connectCore.wgsl.ts (shared).
 
 // B12 — look up a texel from the lite env radiance texture via textureLoad.
-// Returns (rgb=radiance, a=pdf_per_sr).  Falls back to (sampleSky, 0) when
-// the map is absent (hasEnvironmentMap()=false).
+// Returns (rgb=radiance, a=pdf_per_sr).  Falls back to black when the map is
+// absent (hasEnvironmentMap()=false).
 fn liteEnvLookup(dir: vec3f) -> vec4f {
   if (!hasEnvironmentMap()) {
-    return vec4f(sampleSky(dir), 0.0);
+    return vec4f(0.0);
   }
   let dims = environmentDimensions();
   if (dims.x == 0u || dims.y == 0u) {
-    return vec4f(sampleSky(dir), 0.0);
+    return vec4f(0.0);
   }
   let rotY = params.environmentTint.w;
   let lookupDir = rotateYNeg(dir, rotY);
@@ -58,13 +59,12 @@ fn liteEnvLookup(dir: vec3f) -> vec4f {
 
 fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
   let lk = liteEnvLookup(dir);
-  if (lk.a <= 0.0) { return sampleSky(dir); }
   return lk.rgb;
 }
 
 fn environmentPdf(dir: vec3f) -> f32 {
   let lk = liteEnvLookup(dir);
-  if (lk.a <= 0.0) { return 1.0 / (4.0 * PI); }
+  if (lk.a <= 0.0) { return 0.0; }
   return max(lk.a, 1e-8);
 }
 
@@ -78,12 +78,6 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   result.pdf = 0.0;
 
   if (!hasEnvironmentMap()) {
-    // Procedural-sky fallback: uniform-sphere sample + sky eval.
-    let xi = vec2f(rand_f32(rng), rand_f32(rng));
-    let dir = uniformSphere(xi);
-    result.wi = dir;
-    result.value = sampleSky(dir);
-    result.pdf = 1.0 / (4.0 * PI);
     return result;
   }
 

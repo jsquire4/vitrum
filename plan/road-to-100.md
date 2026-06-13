@@ -479,9 +479,10 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 > directional the megakernel outgrew (chromatic loss + missing light kinds in
 > those paths). Also in scope: BDPT's hardcoded 50-unit emitter placement radius
 > (`bdptLightSubpath.wgsl.ts` `emitPos = -lightDir * 50.0`) — derive from scene
-> bounds; and `environment:'none'` must stop returning the lit `sampleSky`
-> gradient (`connect.wgsl.ts:59-63`) — a no-environment scene gets free ambient
-> light today, a contract violation.
+> bounds. ✅ **environment:'none' phantom skylight CLOSED (2026-06-12):**
+> full + lite no-map env lookups now return black radiance and zero env pdf
+> (`connect.wgsl.ts`, `connectLite.wgsl.ts`); procedural sky remains lit through
+> the CPU-baked HDRI path, and `environmentPacking.test.ts` pins kind:none.
 
 Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extension lobes must match across paths:
 

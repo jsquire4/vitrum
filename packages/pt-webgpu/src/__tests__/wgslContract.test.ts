@@ -210,8 +210,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // materials remain behaviorally unchanged.
     // Re-pinned 2026-06-12: normalScale is now consumed by applyNormalMap,
     // scaling tangent-space xy before reconstructing the perturbed normal.
-    expect(digest).toBe('1108a11b462672919a59baeae3c2c2fd0d1153265a1c62ccaad95337be224bc2');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326455);
+    // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
+    // analytic sampleSky gradient. Missing/invalid env maps now return black
+    // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
+    expect(digest).toBe('4aae12e9561bc587aaff6118369715ac62b310c17158f7e11b2e47d66ac9592c');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(326468);
   });
 });
 
@@ -351,6 +354,11 @@ describe('pt-webgpu WGSL material contract', () => {
     // omitting it would cause a runtime WGSL compile failure for any scene
     // with an HDRI environment.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const INV_2PI');
+  });
+
+  it('treats absent full-tier environments as black, not procedural sky', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return EnvironmentLookup(vec3f(0.0), 0.0);');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));');
   });
 
   it('FrameParams matches the host-side 512-byte UBO buffer size', () => {

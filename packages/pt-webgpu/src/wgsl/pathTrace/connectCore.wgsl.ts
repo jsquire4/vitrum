@@ -1,10 +1,12 @@
 /**
- * Connect CORE — the byte-identical `sampleSky` helper shared by both the
- * full-tier (`connect.wgsl.ts`) and lite-tier (`connectLite.wgsl.ts`)
+ * Connect CORE — Y-rotation helpers and the legacy `sampleSky` helper shared by
+ * both the full-tier (`connect.wgsl.ts`) and lite-tier (`connectLite.wgsl.ts`)
  * connect modules.
  *
  * Bundled here (verbatim, shared by both tiers):
- *  - `sampleSky` — analytic sky fallback (sun glow + zenith tint)
+ *  - `sampleSky` — analytic sky helper kept for shader compatibility. Authored
+ *    procedural sky is now baked into the HDRI path; no-environment lookups must
+ *    return black rather than calling this helper.
  *
  * The full tier appends the HDRI bookkeeping helpers (`hasEnvironmentMap`,
  * `environmentDimensions`, `sampleEnvironmentColor`, `environmentPdf`,

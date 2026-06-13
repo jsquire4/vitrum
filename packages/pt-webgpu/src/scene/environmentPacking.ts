@@ -526,7 +526,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       hdriCdf: new Float32Array(0),
       warnings: [
         ...warnings,
-        'HDRI environment has zero total luminance (all-black or transparent pixels); falling back to procedural sky model.',
+        'HDRI environment has zero total luminance (all-black or transparent pixels); using black no-environment fallback.',
       ],
     };
   }
@@ -542,7 +542,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     hdriTexels: new Float32Array(0),
     hdriCdf: new Float32Array(0),
     warnings: [
-      'HDRI environment lacks CPU pixel data (width/height/data); falling back to procedural sky model.',
+      'HDRI environment lacks CPU pixel data (width/height/data); using black no-environment fallback.',
     ],
   };
 }
