@@ -11,6 +11,7 @@ import {
   SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
   SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL,
   SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL,
 } from './shadePrologue.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 
@@ -491,7 +492,7 @@ ${mediumStateDecls}
       break;
     }
 
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL, SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL, SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL)}
+${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL, SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL, SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL, SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL)}
     // Item 8 — record this surface's envMapIntensity for the forward env escape
     // pickup on the NEXT iteration (mirrors pt-webgl2 state.envMapIntensity update).
     lastEnvMapIntensity = materialEnvMapIntensity(matId);
@@ -597,7 +598,7 @@ ${transmissiveBlock}
             let nDotL = max(0.0, dot(normal, sampleDir));
             // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
             // zero-default → identical to evaluateBrdf when all scalars are 0.
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, sampleDir,
+            let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, sampleDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -632,7 +633,7 @@ ${transmissiveBlock}
           // SHADOW-01 — ptExtra.z carries the emitter castShadowDisabled flag.
           if (ptExtra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+            let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -680,7 +681,7 @@ ${transmissiveBlock}
               // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
-              let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+              let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
@@ -733,7 +734,7 @@ ${transmissiveBlock}
           let wi = toLight / dist;
           let nDotL = max(dot(normal, wi), 0.0);
           if (nDotL > 0.0) {
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+            let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -742,7 +743,7 @@ ${transmissiveBlock}
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+              let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
@@ -789,7 +790,7 @@ ${transmissiveBlock}
           let wi = toLight / dist;
           let nDotL = max(dot(normal, wi), 0.0);
           if (nDotL > 0.0) {
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, wi,
+            let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -799,7 +800,7 @@ ${transmissiveBlock}
             if (cosLight > 0.0) {
               let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
-              let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+              let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
@@ -839,12 +840,12 @@ ${transmissiveBlock}
         if (nDotL > 1e-6) {
           let shadowRay = Ray(hitPos + normal * 1e-3, envDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, envDir,
+            let brdf = evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation);
-            let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir,
+            let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
@@ -982,12 +983,13 @@ ${transmissiveBlock}
       }
     }
 
-    let bs = sampleNextBounceDirection(
+    let bs = sampleNextBounceDirectionWithClearcoatNormal(
       &rng,
       ray.direction,
       hitPos,
       hit.normal,
       normal,
+      clearcoatNormal,
       baseColor,
       roughness,
       metallic,
@@ -1020,8 +1022,8 @@ ${mediumStateUpdate}
       // The forward scatter pdf of the chosen next direction at E_bounce — fed
       // to the next iteration as E_{bounce+1}'s reverse density. (eyePdfFwd is
       // now this real value, not the old hardcoded 1.0.)
-      let scatterPdfFwd = brdfDirectionalPdfFullSampled(
-        baseColor, roughness, metallic, transmission, ior, normal, wo, sampledDir,
+      let scatterPdfFwd = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+        baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, sampledDir,
         mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
         mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
         mat.specularColor, mat.specularIntensity,
@@ -1032,8 +1034,8 @@ ${mediumStateUpdate}
       // previous scratch slot (D1 — non-symmetric reverse density).
       if (bounce >= 1u) {
         let toPrev = safe_normalize(bdptPrevPos - hitPos);
-        let swappedRev = brdfDirectionalPdfFullSampled(
-          baseColor, roughness, metallic, transmission, ior, normal, sampledDir, toPrev,
+        let swappedRev = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+          baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, sampledDir, toPrev,
           mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
           mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
           mat.specularColor, mat.specularIntensity,

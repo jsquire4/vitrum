@@ -338,7 +338,10 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  39-42: extension-lobe UV-fit scale pairs
 //  43-46: extension-lobe wrap pairs
 //  47-62: extension-lobe UV metadata, two vec4s per extension map
-const MATERIAL_TEX_VEC4_STRIDE = 63u;
+//  63: {clearcoatNormalMapIdx, clearcoatNormalScale, clearcoatNormalUvFit.xy}
+//  64: {clearcoatNormalWrap.xy, 0, 0}
+//  65-66: clearcoat-normal UV metadata
+const MATERIAL_TEX_VEC4_STRIDE = 67u;
 const MATERIAL_TEX_UV_BASE_COLOR = 17u;
 const MATERIAL_TEX_UV_EMISSIVE = 19u;
 const MATERIAL_TEX_UV_NORMAL = 21u;
@@ -357,6 +360,7 @@ const MATERIAL_TEX_UV_IRIDESCENCE = 55u;
 const MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS = 57u;
 const MATERIAL_TEX_UV_SPECULAR_COLOR = 59u;
 const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;
+const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -483,6 +487,40 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + geomNormal * tn.z;
   let plen = length(perturbed);
   return select(geomNormal, perturbed / plen, plen > 1e-6);
+}
+
+// KHR_materials_clearcoat clearcoatNormalTexture. This is a LINEAR tangent-space
+// normal map with its own scale/UV/wrap metadata. It returns the caller-supplied
+// normal unchanged when absent, so zero-map scenes keep the historical clearcoat
+// lobe normal exactly.
+fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNormal: vec3f, instanceIndex: u32) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 66u >= arrayLength(&materialTexDescriptors)) { return clearcoatNormal; }
+  let clearcoatNormalIdx = i32(materialTexDescriptors[base + 63u].x);
+  if (clearcoatNormalIdx < 0 || triIndex >= arrayLength(&indices)) { return clearcoatNormal; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return clearcoatNormal;
+  }
+  let frame = buildShadingTangentFrame(triIndex, clearcoatNormal, instanceIndex);
+  if (!frame.valid) { return clearcoatNormal; }
+  let ts = sampleMaterialLayerLinear(
+    clearcoatNormalIdx,
+    base,
+    triIndex,
+    baryVW,
+    MATERIAL_TEX_UV_CLEARCOAT_NORMAL,
+    materialTexDescriptors[base + 63u].zw,
+    materialTexDescriptors[base + 64u].xy,
+  ).xyz;
+  var tn = ts * 2.0 - vec3f(1.0);
+  let clearcoatNormalScale = materialTexDescriptors[base + 63u].y;
+  tn.x = tn.x * clearcoatNormalScale;
+  tn.y = tn.y * clearcoatNormalScale;
+  let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + clearcoatNormal * tn.z;
+  let plen = length(perturbed);
+  return select(clearcoatNormal, perturbed / plen, plen > 1e-6);
 }
 
 // ── D3 — reserved-field consumption (aoMap / lightMap / bumpMap / envMapIntensity

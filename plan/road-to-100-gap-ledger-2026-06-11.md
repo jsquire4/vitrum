@@ -314,17 +314,19 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   ReSTIR-PT contract tests pin the 192-byte layout, field serialization,
   domain-copy helper, full-lobe target/resolve, and anisotropic producer path;
   the WGSL shader gate compiles all four ReSTIR-PT passes.
-- The nineteenth pt-webgpu material-texture slice landed: full-tier material
-  descriptors now extend to 63 vec4s and pack clearcoat factor/roughness,
-  sheen color/roughness, iridescence factor/thickness, and specular
-  color/intensity maps. `material.wgsl.ts` samples the glTF channel conventions
-  from the correct sRGB/linear texture arrays with per-map texCoord,
+- The nineteenth/twentieth pt-webgpu material-texture slices landed: full-tier
+  material descriptors now extend to 67 vec4s and pack clearcoat factor/
+  roughness/normal, sheen color/roughness, iridescence factor/thickness, and
+  specular color/intensity maps. `material.wgsl.ts` samples the glTF channel
+  conventions from the correct sRGB/linear texture arrays with per-map texCoord,
   KHR_texture_transform, wrap, and UV-fit metadata, and the shade prologue
-  modulates decoded lobe parameters before downstream BSDF/PDF/NEE calls.
-  The promise ledger promotes those map rows to `approximate`, not `native`,
-  because `clearcoatNormalMap` stays unsupported, BDPT light-subpath texture-map
-  payloads are still scalar-only, inverse/adjoint gradients target the base
-  parameterization, and material-lobe reference A/B is still pending.
+  modulates decoded lobe parameters before downstream BSDF/PDF/NEE calls. The
+  main megakernel now threads a sampled `clearcoatNormalMap` through clearcoat
+  BRDF/PDF/source-sampler paths. The promise ledger promotes those map rows to
+  `approximate`, not `native`, because BDPT light-subpath texture-map payloads
+  are still scalar-only, inverse/adjoint gradients target the base
+  parameterization, pt-webgpu still derives tangent frames instead of consuming
+  authored tangent.xyzw, and material-lobe reference A/B is still pending.
   Verification: focused pt-webgpu material/WGSL/reuse/lite suites, full
   typecheck, shader gate, and WSL GPU T1 smoke.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
@@ -1057,8 +1059,9 @@ Evidence:
   rows and needs tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel
   extension-lobe maps now modulate the decoded material before ordinary
-  BSDF/PDF/NEE calls. It still needs extension-lobe parity across the remaining
-  specialty schema paths (`PTWG-MAT-01`). The local non-schema paths now use the
+  BSDF/PDF/NEE calls, including `clearcoatNormalMap` in the clearcoat lobe. It
+  still needs extension-lobe parity across the remaining specialty schema paths
+  (`PTWG-MAT-01`). The local non-schema paths now use the
   full helpers: full/lite direct and env lighting, full BSDF-side area/env
   connections, lite BSDF-env connection, SPPM receiver gather, MNEE receiver
   caustics and cone-vs-BSDF sampled PDF, BDPT connection endpoints, main

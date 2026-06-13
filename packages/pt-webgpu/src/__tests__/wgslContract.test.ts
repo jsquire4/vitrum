@@ -231,8 +231,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // modulates decoded lobe parameters before downstream BSDF/PDF calls.
     // Re-pinned 2026-06-13: MNEE cone-vs-BSDF MIS now uses the sampled-density
     // BRDF PDF helper to match the base/clearcoat/sheen source sampler.
-    expect(digest).toBe('59b9c3a7a6b35504c73229670f9fc27c6e5eb0816ffd7bc552b3eddc3ed6958d');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(346449);
+    // Re-pinned 2026-06-13: full-tier clearcoatNormalMap now has appended
+    // descriptor lanes and threads a sampled clearcoat normal through the main
+    // megakernel's clearcoat BRDF/PDF/source-sampler paths.
+    expect(digest).toBe('51646aa48ebc56582ba20a9b84549a0ce639706ec264d6c168bb8682932e4fd0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(352578);
   });
 });
 
@@ -265,12 +268,14 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsCc = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampled(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
   });
 
   it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {
@@ -502,6 +507,19 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);',
     );
+  });
+
+  it('threads clearcoatNormalMap through the full-tier clearcoat lobe', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, clearcoatNormal, hit.instanceIndex);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bs = sampleNextBounceDirectionWithClearcoatNormal(');
   });
 
   it('uses conservative local-ray bounds for TLAS closest-hit traversal under scaling', () => {

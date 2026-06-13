@@ -35,6 +35,7 @@ export function composeShadePrologueWgsl(
   bumpMapApply = '',
   transmissionMapApply = '',
   extensionLobeTexApply = '',
+  clearcoatNormalMapApply = '',
 ): string {
   const materialDecl = extensionLobeTexApply === '' ? 'let' : 'var';
   return /* wgsl */ `    let matId = hitMaterialId(hit);
@@ -84,6 +85,7 @@ ${emissiveComment}
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
     var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
+    var clearcoatNormal = normal;${clearcoatNormalMapApply}
     if (mat.isUnlit) {
       if (!firstHitValid) {
         firstHitValid = true;
@@ -233,6 +235,9 @@ export const SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL =
  *  when no bumpMap → byte-identical. */
 export const SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL =
   `\n    normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;
+
+export const SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL =
+  `\n    clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, clearcoatNormal, hit.instanceIndex);`;
 
 /** KHR_materials_transmission map: multiply the scalar transmission factor by
  *  the texture's R channel. sampleTransmissionTexture returns 1 when absent,

@@ -6,6 +6,9 @@ import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
   MATERIAL_TEX_FLOAT_STRIDE,
+  MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET,
+  MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
@@ -98,6 +101,37 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[23]).toBeCloseTo(0.35);
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 1]).toBe(0); // deduped normal handle
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 23]).toBe(1); // glTF default scale
+  });
+
+  it('collects clearcoatNormalMap as LINEAR data with scale, wrap, and UV metadata', () => {
+    const ccNormalTex = { id: 'cc-normal' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        clearcoatNormalMap: {
+          handle: ccNormalTex,
+          texCoord: 1,
+          wrapS: 'clamp-to-edge',
+          wrapT: 'mirrored-repeat',
+          transform: { offset: [0.2, 0.3], scale: [0.4, 0.5], rotation: 0.6 },
+        },
+        clearcoatNormalScale: 0.45,
+      }),
+    ]);
+    const ccBase = MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4;
+    const ccWrap = MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4;
+    const ccMeta = MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET * 4;
+
+    expect(linearSources).toEqual([ccNormalTex]);
+    expect(descriptors[ccBase]).toBe(0);
+    expect(descriptors[ccBase + 1]).toBeCloseTo(0.45);
+    expect(descriptors[ccBase + 2]).toBe(1);
+    expect(descriptors[ccBase + 3]).toBe(1);
+    expect(descriptors[ccWrap]).toBe(1);
+    expect(descriptors[ccWrap + 1]).toBe(2);
+    expectCloseArray(
+      descriptors.slice(ccMeta, ccMeta + 8),
+      [1, 0.2, 0.3, 0.6, 0.4, 0.5, 0, 0],
+    );
   });
 
   it('collects alphaMap as LINEAR coverage data and packs its descriptor lane', () => {
@@ -464,6 +498,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
     expect(wgsl).toContain('fn sampleClearcoatTexture(');
     expect(wgsl).toContain('fn sampleSpecularIntensityTexture(');
+    expect(wgsl).toContain('fn applyClearcoatNormalMap(');
     expect(wgsl).toContain('wrappedUv * uvFitScale');
     expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
@@ -474,6 +509,9 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 37u].x');
     expect(wgsl).toContain('materialTexDescriptors[base + 38u].w');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;');
+    expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 63u].x);');
+    expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 63u].y;');
   });
 
   it('normal maps transform derived tangents through the hit TLAS instance', () => {
@@ -495,6 +533,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('const MATERIAL_TEX_UV_TRANSMISSION = 35u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 47u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
@@ -510,6 +549,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR');
     expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY');
+    expect(wgsl).toContain('clearcoatNormalIdx,');
     expect(wgsl).not.toContain('All maps of a material share its baseColor UV transform');
   });
 });

@@ -97,8 +97,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-12: lite MNEE/env reconnection call sites accept the
     // decoded KHR_materials_specular scalar factors to keep the scalar material
     // contract interface-aligned with full-tier shaders.
-    expect(digest).toBe('3f9596abd07230055e998a819c2890ea48922368d0229156816dfac344cca987');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(144297);
+    // Re-pinned 2026-06-13: shared material.wgsl.ts appended clearcoatNormalMap
+    // descriptor helpers for the full tier. Lite composes the shared text but
+    // still has no material texture bindings; this is render-neutral for lite.
+    expect(digest).toBe('376d59a47580581eddf87c42908b433a08115ad67496051d6328d0efad4ee1ed');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(147963);
   });
 });
 

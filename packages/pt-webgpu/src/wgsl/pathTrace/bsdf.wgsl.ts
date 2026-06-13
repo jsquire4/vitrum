@@ -500,11 +500,12 @@ fn brdfAnisotropicSpecPdf(
 //
 // Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence;
 //       Belcour & Barla 2017 (iridescence); Estevez & Kulla 2017 (sheen).
-fn evaluateBrdfFull(
+fn evaluateBrdfFullWithClearcoatNormal(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   clearcoat: f32,
@@ -569,9 +570,38 @@ fn evaluateBrdfFull(
   let base = diff + spec + ms;
 
   // Additive extension lobes (each returns BRDF kernel, no nDotL factor).
-  let cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, wi);
+  let cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
   let sh = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, wo, wi);
   return base + cc + sh;
+}
+
+fn evaluateBrdfFull(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> vec3f {
+  return evaluateBrdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, normal, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+  );
 }
 
 // brdfDirectionalPdfFull: the pdf for the full lobe mixture used in MIS.
@@ -579,13 +609,14 @@ fn evaluateBrdfFull(
 // their (weighted) pdfs.  The sheen PDF uses a cosine-hemisphere approximation
 // (v1 documented bias — see evalSheenLobe).
 // When all extension scalars are 0 the result is identical to brdfDirectionalPdf.
-fn brdfDirectionalPdfFull(
+fn brdfDirectionalPdfFullWithClearcoatNormal(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   transmission: f32,
   ior: f32,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   clearcoat: f32,
@@ -642,7 +673,7 @@ fn brdfDirectionalPdfFull(
     );
   }
   // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
-  let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, wi);
+  let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
   // Sheen PDF approximation: cosine-hemisphere (v1 accepted bias — see evalSheenLobe).
   let nDotL = max(dot(normal, wi), 0.0);
   let sheenPdf = sheen * nDotL * INV_PI;
@@ -655,17 +686,48 @@ fn brdfDirectionalPdfFull(
   return total;
 }
 
-fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
-  return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1.0);
-}
-
-fn brdfDirectionalPdfFullSampled(
+fn brdfDirectionalPdfFull(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   transmission: f32,
   ior: f32,
   normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> f32 {
+  return brdfDirectionalPdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, ior, normal, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+  );
+}
+
+fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
+  return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1.0);
+}
+
+fn brdfDirectionalPdfFullSampledWithClearcoatNormal(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   clearcoat: f32,
@@ -690,13 +752,43 @@ fn brdfDirectionalPdfFullSampled(
       specularColor, specularIntensity,
     );
   }
-  return brdfDirectionalPdfFull(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+  return brdfDirectionalPdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   ) / brdfExtensionLobeWeightSum(clearcoat, sheen);
+}
+
+fn brdfDirectionalPdfFullSampled(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> f32 {
+  return brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, ior, normal, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+  );
 }
 
 fn evaluateBrdf(
@@ -926,12 +1018,13 @@ fn computeAnisotropicAxes(alpha: f32, anisotropy: f32) -> vec2f {
   return vec2f(ax, ay);
 }
 
-fn sampleNextBounceDirection(
+fn sampleNextBounceDirectionWithClearcoatNormal(
   rng: ptr<function, u32>,
   incomingDir: vec3f,
   hitPos: vec3f,
   hitNormal: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
@@ -1121,15 +1214,18 @@ fn sampleNextBounceDirection(
     }
   } else if (xiLobe < 1.0 + clearcoatWeight) {
     let wo = -incomingDir;
-    result.newRayOrigin = hitPos + normal * 1e-3;
-    let bsCc = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);
+    var ccTanT: vec3f;
+    var ccTanB: vec3f;
+    buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
+    result.newRayOrigin = hitPos + clearcoatNormal * 1e-3;
+    let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
     result.sampledDir = bsCc.wi;
     result.newRayDir = bsCc.wi;
     result.sampleAllowsAreaMis = true;
-    let nDotCc = max(dot(normal, result.sampledDir), 0.0);
-    let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, normal, wo, result.sampledDir);
+    let nDotCc = max(dot(clearcoatNormal, result.sampledDir), 0.0);
+    let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
     let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;
-    let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, result.sampledDir);
+    let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
     result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
@@ -1144,6 +1240,53 @@ fn sampleNextBounceDirection(
     result.throughputMul = shBrdf * nDotSh / max(shDensity, 1e-8);
   }
   return result;
+}
+
+fn sampleNextBounceDirection(
+  rng: ptr<function, u32>,
+  incomingDir: vec3f,
+  hitPos: vec3f,
+  hitNormal: vec3f,
+  normal: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  fresnel: vec3f,
+  thinFilmTransmitTint: vec3f,
+  isTranslucent: bool,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> BounceSample {
+  return sampleNextBounceDirectionWithClearcoatNormal(
+    rng,
+    incomingDir,
+    hitPos,
+    hitNormal,
+    normal,
+    normal,
+    baseColor,
+    roughness,
+    metallic,
+    transmission,
+    ior,
+    fresnel,
+    thinFilmTransmitTint,
+    isTranslucent,
+    clearcoat,
+    clearcoatRoughness,
+    sheen,
+    sheenRoughness,
+    sheenColor,
+    anisotropy,
+    anisotropyRotation,
+  );
 }
 `;
 

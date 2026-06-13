@@ -556,12 +556,15 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   aoMap: 'native',
   aoMapIntensity: 'native',
   // Full-tier megakernel samples these extension-lobe maps. Approximate until
-  // ReSTIR-PT/reuse payloads and source-lobe sampler schemas carry the same
-  // texture-modulated parameters end-to-end.
+  // ReSTIR-PT/reuse payloads, BDPT light-subpath payloads, and reference A/B
+  // evidence carry the same texture-modulated parameters end-to-end.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
-  clearcoatNormalMap: 'unsupported',
-  clearcoatNormalScale: 'unsupported',
+  // Sampled in the full-tier megakernel clearcoat BRDF/PDF/source sampler, but
+  // still derived from the hit tangent frame (not authored tangent.xyzw) and not
+  // carried by every specialty payload schema.
+  clearcoatNormalMap: 'approximate',
+  clearcoatNormalScale: 'native',
   sheenColorMap: 'approximate',
   sheenRoughnessMap: 'approximate',
   iridescenceMap: 'approximate',
