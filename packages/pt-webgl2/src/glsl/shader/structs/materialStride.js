@@ -10,8 +10,9 @@
 // 55..84 = 15 texture transforms (2 texels each), 85/86 = D3 ao/light/bump map
 // ids + scalars + envMapIntensity, 87..92 = D3 ao/light/bump transforms
 // (2 texels each), 93..94 = alphaMap transform, 95..96 = anisotropyMap transform,
-// 97..106 = per-map wrap modes (two maps per RGBA texel).
-export const MATERIAL_WRAP_TEXEL_OFFSET = 97;
+// 97 = volume thickness payload, 98..99 = thicknessMap transform,
+// 100..110 = per-map wrap modes (two maps per RGBA texel).
+export const MATERIAL_WRAP_TEXEL_OFFSET = 100;
 
 // Map order shared by the UV-set bitmask and the wrap-mode payload. Bit k in
 // UV_SET_BIT and pair k in the wrap texels describe the same MaterialSpec map.
@@ -36,6 +37,7 @@ export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([
   'lightMap',
   'bumpMap',
   'anisotropyMap',
+  'thicknessMap',
 ]);
 
 export const MATERIAL_WRAP_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 2);
@@ -55,6 +57,7 @@ export const MATERIAL_PIXELS = MATERIAL_WRAP_TEXEL_OFFSET + MATERIAL_WRAP_TEXELS
 //   bit 7  = clearcoatMap          bit 17 = lightMap
 //   bit 8  = clearcoatRoughnessMap bit 18 = bumpMap
 //   bit 9  = clearcoatNormalMap    bit 19 = anisotropyMap
+//                                     bit 20 = thicknessMap
 export const UV_SET_BIT = /** @type {Record<string, number>} */ (
   Object.fromEntries(MATERIAL_MAP_FIELD_ORDER.map((field, i) => [field, 1 << i]))
 );

@@ -132,6 +132,7 @@ describe('backend promise ledger', () => {
     expect(gl2.scatteringCoefficientRGB).toBe('approximate');
     expect(gl2.shadingModel).toBe('approximate');
     expect(gl2.thickness).toBe('approximate');
+    expect(gl2.thicknessMap).toBe('approximate');
     expect(gl2.thinFilmStack).toBe('native');
 
     // pt-webgpu: KHR_materials_specular scalars are consumed by the ordinary PT

@@ -151,11 +151,30 @@ export const attenuate_hit_function = /* glsl */`
 
 				} else if ( surfaceHit.side == - 1.0 ) {
 
+					float attenuationDist = surfaceHit.dist;
+					if ( material.thickness > 0.0 || material.thicknessMap != - 1 ) {
+
+						float attenuationThickness = material.thickness;
+						if ( material.thicknessMap != - 1 ) {
+
+							vec3 uvPrime = material.thicknessMapTransform * vec3( ATTENUATE_MAP_UV( 20u ), 1 );
+							attenuationThickness *= sampleMaterialTexture(
+								textures,
+								uvPrime.xy,
+								material.thicknessMap,
+								material.thicknessMapWrap
+							).g;
+
+						}
+						attenuationDist = min( attenuationDist, max( attenuationThickness, 0.0 ) );
+
+					}
+
 					// attenuate by medium once we hit the opposite side of the model.
 					// Sprint 12 Gap §5: use hero-wavelength attenuation when spectral data exists.
 					vec3 attenuation = transmissionAttenuationThroughput(
 						materials,
-						surfaceHit.dist,
+						attenuationDist,
 						material.attenuationColor,
 						material.attenuationDistance,
 						material.hasSpectralAttenuation,

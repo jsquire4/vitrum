@@ -86,11 +86,18 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader).toContain('m.anisotropyMap = int( round( s6.b ) );');
     expect(shader).toContain('m.anisotropy = clamp( s11.a, 0.0, 1.0 );');
     expect(shader).toContain('m.anisotropyRotation = s17.b;');
+    expect(shader).toContain('m.thickness = max( s22.r, 0.0 );');
+    expect(shader).toContain('m.thicknessMap = int( round( s22.g ) );');
     expect(shader).toContain('m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );');
+    expect(shader).toContain('m.thicknessMapTransform = m.thicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 98u );');
     expect(shader).toContain('m.anisotropyMapWrap = w9.ba;');
+    expect(shader).toContain('m.thicknessMapWrap = w10.rg;');
     expect(shader).toContain('vec3 uvPrime = material.anisotropyMapTransform * vec3( MAP_UV( 19u ), 1 );');
     expect(shader).toContain('anisotropy *= anisotropyTexel.b;');
     expect(shader).toContain('anisotropyRotation += atan( rg.y, rg.x );');
+    expect(shader).toContain('vec3 uvPrime = material.thicknessMapTransform * vec3( MAP_UV( 20u ), 1 );');
+    expect(shader).toContain('attenuationThickness *= sampleMaterialTexture(');
+    expect(shader).toContain('attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );');
     expect(shader).toContain('surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );');
     expect(shader).toContain('vec2 anisotropicRoughnessAxes( SurfaceRecord surf )');
     expect(shader).toContain('ggxDirectionForSurface( wo, surf, rand2( 12 ) )');

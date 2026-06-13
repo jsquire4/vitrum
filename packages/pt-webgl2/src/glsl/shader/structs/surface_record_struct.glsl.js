@@ -41,6 +41,8 @@ export const surface_record_struct = /* glsl */`
 		uint materialIndex;
 		vec3 attenuationColor;
 		float attenuationDistance;
+		float attenuationThickness;
+		bool hasAttenuationThickness;
 
 		// clearcoat
 		vec3 clearcoatNormal;

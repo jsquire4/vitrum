@@ -51,6 +51,8 @@ export const material_struct = /* glsl */ `
 
 		vec3 attenuationColor;
 		float attenuationDistance;
+		float thickness;
+		int thicknessMap;
 
 		int alphaMap;
 
@@ -125,6 +127,7 @@ export const material_struct = /* glsl */ `
 		mat3 specularIntensityMapTransform;
 		mat3 alphaMapTransform;
 		mat3 anisotropyMapTransform;
+		mat3 thicknessMapTransform;
 
 		vec2 mapWrap;
 		vec2 metalnessMapWrap;
@@ -146,6 +149,7 @@ export const material_struct = /* glsl */ `
 		vec2 lightMapWrap;
 		vec2 bumpMapWrap;
 		vec2 anisotropyMapWrap;
+		vec2 thicknessMapWrap;
 
 		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
 		// see readMaterialInfo). Identity when the corresponding map id == -1.
@@ -208,11 +212,12 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		// D3 — stride bumped 85 → 107 (single-sourced from materialStride.js; the
+		// D3 — stride bumped 85 → 111 (single-sourced from materialStride.js; the
 		// packer imports the same constant): texels 85/86 carry ao/light/bump map
 		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
 		// texels 93/94 carry alphaMapTransform; texels 95/96 carry anisotropyMapTransform;
-		// texels 97..106 carry per-map wrap.
+		// texel 97 carries volume thickness + thicknessMap; texels 98/99 carry
+		// thicknessMapTransform; texels 100..110 carry per-map wrap.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
@@ -235,6 +240,7 @@ export const material_struct = /* glsl */ `
 		vec4 s17 = texelFetch1D( tex, i + 17u );
 		vec4 s18 = texelFetch1D( tex, i + 18u );
 		vec4 s19 = texelFetch1D( tex, i + 19u );
+		vec4 s22 = texelFetch1D( tex, i + 97u );
 
 		Material m;
 		m.color = s0.rgb;
@@ -287,6 +293,8 @@ export const material_struct = /* glsl */ `
 
 		m.attenuationColor = s12.rgb;
 		m.attenuationDistance = s12.a;
+		m.thickness = max( s22.r, 0.0 );
+		m.thicknessMap = int( round( s22.g ) );
 
 		m.alphaMap = int( round( s13.r ) );
 
@@ -354,6 +362,7 @@ export const material_struct = /* glsl */ `
 		m.specularIntensityMapTransform = m.specularIntensityMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, firstTextureTransformIdx + 28u );
 		m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u );
 		m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );
+		m.thicknessMapTransform = m.thicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 98u );
 
 		// D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
 		m.aoMapTransform = m.aoMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 87u );
@@ -361,16 +370,17 @@ export const material_struct = /* glsl */ `
 		m.bumpMapTransform = m.bumpMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 91u );
 
 		// TextureRef.wrapS/wrapT: 0 repeat, 1 clamp-to-edge, 2 mirrored-repeat.
-		vec4 w0 = texelFetch1D( tex, i + 97u );
-		vec4 w1 = texelFetch1D( tex, i + 98u );
-		vec4 w2 = texelFetch1D( tex, i + 99u );
-		vec4 w3 = texelFetch1D( tex, i + 100u );
-		vec4 w4 = texelFetch1D( tex, i + 101u );
-		vec4 w5 = texelFetch1D( tex, i + 102u );
-		vec4 w6 = texelFetch1D( tex, i + 103u );
-		vec4 w7 = texelFetch1D( tex, i + 104u );
-		vec4 w8 = texelFetch1D( tex, i + 105u );
-		vec4 w9 = texelFetch1D( tex, i + 106u );
+		vec4 w0 = texelFetch1D( tex, i + 100u );
+		vec4 w1 = texelFetch1D( tex, i + 101u );
+		vec4 w2 = texelFetch1D( tex, i + 102u );
+		vec4 w3 = texelFetch1D( tex, i + 103u );
+		vec4 w4 = texelFetch1D( tex, i + 104u );
+		vec4 w5 = texelFetch1D( tex, i + 105u );
+		vec4 w6 = texelFetch1D( tex, i + 106u );
+		vec4 w7 = texelFetch1D( tex, i + 107u );
+		vec4 w8 = texelFetch1D( tex, i + 108u );
+		vec4 w9 = texelFetch1D( tex, i + 109u );
+		vec4 w10 = texelFetch1D( tex, i + 110u );
 		m.mapWrap = w0.rg;
 		m.metalnessMapWrap = w0.ba;
 		m.roughnessMapWrap = w1.rg;
@@ -391,6 +401,7 @@ export const material_struct = /* glsl */ `
 		m.lightMapWrap = w8.ba;
 		m.bumpMapWrap = w9.rg;
 		m.anisotropyMapWrap = w9.ba;
+		m.thicknessMapWrap = w10.rg;
 
 		return m;
 

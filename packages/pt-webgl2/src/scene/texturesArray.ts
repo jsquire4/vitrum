@@ -32,6 +32,8 @@ const SAMPLED_MAP_KEYS = [
   'aoMap', 'lightMap', 'bumpMap',
   // KHR_materials_anisotropy: RG = tangent direction, B = strength.
   'anisotropyMap',
+  // KHR_materials_volume: G = scalar multiplier for thicknessFactor.
+  'thicknessMap',
 ] as const satisfies ReadonlyArray<keyof MaterialSpec>;
 
 // ── D10.12: TextureHandleHint ─────────────────────────────────────────────────

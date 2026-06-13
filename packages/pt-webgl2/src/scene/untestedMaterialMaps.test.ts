@@ -271,8 +271,9 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
 
   it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform and wrap-mode texels', () => {
     // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
-    // texels 95/96 carry anisotropyMapTransform; texels 97..106 carry per-map wrap modes.
-    expect(MATERIAL_PIXELS).toBe(107);
+    // texels 95/96 carry anisotropyMapTransform; texel 97 carries thickness;
+    // texels 98/99 carry thicknessMapTransform; texels 100..110 carry per-map wrap modes.
+    expect(MATERIAL_PIXELS).toBe(111);
   });
 
   it('packer writes non-zero bitmask when any map has texCoord:1', () => {

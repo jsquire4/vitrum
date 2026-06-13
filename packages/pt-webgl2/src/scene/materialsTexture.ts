@@ -26,7 +26,8 @@ import {
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
  *  texels 85..92 + alphaMap transform texels 93..94 + anisotropyMap transform
- *  texels 95..96 + wrap texels 97..106). Re-exported for tests and parity guards. */
+ *  texels 95..96 + thickness payload/transform texels 97..99 + wrap texels
+ *  100..110). Re-exported for tests and parity guards. */
 export { MATERIAL_MAP_FIELD_ORDER, MATERIAL_PIXELS, MATERIAL_WRAP_TEXEL_OFFSET };
 /** Floats per material (MATERIAL_PIXELS px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
@@ -192,6 +193,7 @@ interface LayerIds {
   lightMap: number;
   bump: number;
   anisotropy: number;
+  thickness: number;
 }
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
@@ -217,6 +219,7 @@ function packLayerIds(m: MaterialSpec, layerOf: Map<unknown, number> | undefined
     lightMap: mapLayer(m.lightMap, layerOf),
     bump: mapLayer(m.bumpMap, layerOf),
     anisotropy: mapLayer(m.anisotropyMap, layerOf),
+    thickness: mapLayer(m.thicknessMap, layerOf),
   };
 }
 
@@ -481,7 +484,8 @@ function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): numbe
 /**
  * D10.8: Write texture-transform mat3s at samples 55..84, the D3 auxiliary block
  * at texels 85..92, alphaMapTransform at 93..94, anisotropyMapTransform at
- * 95..96, and per-map wrap modes at
+ * 95..96, thickness payload at 97, thicknessMapTransform at 98..99, and per-map
+ * wrap modes at
  * MATERIAL_WRAP_TEXEL_OFFSET.. Uses absolute texel offsets from `base` (not
  * `index`) — these writes are non-sequential (the transform slots are at fixed
  * positions).
@@ -521,6 +525,7 @@ function packTextureTransforms(
   if (ids.specularIntensity >= 0) writeTransform(data, base, 83, m.specularIntensityMap);
   if (ids.alpha >= 0) writeTransform(data, base, 93, m.alphaMap);
   if (ids.anisotropy >= 0) writeTransform(data, base, 95, m.anisotropyMap);
+  if (ids.thickness >= 0) writeTransform(data, base, 98, m.thicknessMap);
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
@@ -545,6 +550,12 @@ function packTextureTransforms(
   if (ids.ao >= 0) writeTransform(data, base, 87, m.aoMap);
   if (ids.lightMap >= 0) writeTransform(data, base, 89, m.lightMap);
   if (ids.bump >= 0) writeTransform(data, base, 91, m.bumpMap);
+
+  const volume = base + 97 * 4;
+  data[volume] = m.thickness ?? 0.0;
+  data[volume + 1] = ids.thickness;
+  data[volume + 2] = 0.0;
+  data[volume + 3] = 0.0;
 
   for (let mapIdx = 0; mapIdx < MATERIAL_MAP_FIELD_ORDER.length; mapIdx += 1) {
     const texel = MATERIAL_WRAP_TEXEL_OFFSET + Math.floor(mapIdx / 2);

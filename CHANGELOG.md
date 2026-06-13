@@ -6,9 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Added (pt-webgl2 anisotropy map, 2026-06-13)
+### Added (pt-webgl2 material maps, 2026-06-13)
 
-- **KHR_materials_anisotropy map on `@vitrum/pt-webgl2`:** `anisotropyMap` now packs into the material atlas/stride, preserves per-map UV channel, `KHR_texture_transform`, and wrap modes, and the GLSL surface path samples B-channel strength plus RG rotation offset before feeding anisotropic GGX sampling/eval/PDF. The promise ledger now marks pt-webgl2 `anisotropyMap` native; displacement and `thicknessMap` remain explicit unsupported material rows.
+- **KHR_materials_anisotropy map on `@vitrum/pt-webgl2`:** `anisotropyMap` now packs into the material atlas/stride, preserves per-map UV channel, `KHR_texture_transform`, and wrap modes, and the GLSL surface path samples B-channel strength plus RG rotation offset before feeding anisotropic GGX sampling/eval/PDF. The promise ledger now marks pt-webgl2 `anisotropyMap` native.
+- **KHR_materials_volume thickness texture on `@vitrum/pt-webgl2`:** `thicknessMap` now packs alongside scalar `thickness`, preserves per-map UV channel, `KHR_texture_transform`, and wrap modes, and the GLSL surface/attenuation paths sample the KHR volume G channel to clamp Beer-Lambert attenuation distance. The promise ledger marks pt-webgl2 `thicknessMap` approximate, not native, because the backend still uses closed-surface attenuation rather than exact thin-shell volume integration.
 
 ### Added (SHADOW-01 shadow flags, 2026-06-11)
 

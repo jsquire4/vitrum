@@ -244,12 +244,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   ranking now reports unlit assets through the normal material field support
   path: pt-webgl2, pt-webgpu, and walkaround-hybrid are `approximate`.
 - The ninth arbitrary-glTF contract slice landed across `@vitrum/core` and
-  `@vitrum/gltf-adapter`: `MaterialSpec.thicknessMap` is now a reserved texture
-  field, every backend promise-ledger material matrix explicitly marks it
-  unsupported, and `KHR_materials_volume.thicknessTexture` imports to
-  `thicknessMap` instead of being dropped with a warning. Backend compatibility
-  ranking now reports volume thickness textures through the normal material
-  field support path.
+  `@vitrum/gltf-adapter`: `MaterialSpec.thicknessMap` is now a first-class
+  texture field, `KHR_materials_volume.thicknessTexture` imports to
+  `thicknessMap` instead of being dropped with a warning, and backend
+  compatibility ranking reports volume thickness textures through the normal
+  material field support path. Current backend grades: pt-webgl2 approximate;
+  pt-webgpu and walkaround-hybrid unsupported.
 - The tenth arbitrary-glTF downgrade-policy slice landed in
   `@vitrum/gltf-adapter`: assets using archived
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` now receive a
@@ -736,7 +736,7 @@ Evidence:
   `metallicRoughnessTexture`, and pt-webgl2 samples G for roughness / B for
   metallic in `get_surface_record_function.glsl.js`. Tests:
   `gltfTextureSweep.test.ts` and `untestedMaterialMaps.test.ts`.
-- `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 105,
+- `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 111,
   `materialsTexture.ts` packs `alphaMapTransform` at texels 93/94,
   `material_struct.glsl.js` decodes it, and both
   `get_surface_record_function.glsl.js` and `attenuate_hit_function.glsl.js`
@@ -744,8 +744,9 @@ Evidence:
   `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
   `materialStrideParity.test.ts`.
 - glTF sampler wrap parity is now code-closed for pt-webgl2: the material
-  record packs per-map `wrapS`/`wrapT` at texels 97..106 (after
-  alphaMapTransform at 93/94 and anisotropyMapTransform at 95/96),
+  record packs per-map `wrapS`/`wrapT` at texels 100..110 (after
+  alphaMapTransform at 93/94, anisotropyMapTransform at 95/96, thickness
+  payload at 97, and thicknessMapTransform at 98/99),
   `material_struct` decodes repeat/clamp/mirrored-repeat pairs, and both
   surface and attenuation paths call `sampleMaterialTexture(...)` so every
   material texture fetch applies manual per-layer wrapping instead of relying
@@ -764,6 +765,12 @@ Evidence:
   `anisotropyMap` native after reserved-lane pack/decode, atlas/UV/wrap
   payload wiring, KHR RG/B map sampling, and anisotropic GGX sampling/eval/PDF
   consumption.
+- KHR volume thickness-map support is now source-verified for pt-webgl2:
+  `promiseLedger.ts` marks `thicknessMap` approximate after the material
+  packer writes scalar `thickness`, atlas layer, UV bit, transform, and wrap
+  payloads; the surface and attenuation GLSL paths sample the G channel and
+  clamp Beer-Lambert path length. The approximation is explicit because this is
+  closed-surface attenuation, not exact thin-shell volume integration.
 
 Closure:
 - WEBGL2-04 is closed as an honesty row. Future layered face-normal support
@@ -1043,9 +1050,11 @@ Evidence:
 - Required-extension policy now accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness`; scalar-only spec-gloss conversion is
   compatibility-scored as approximate even without a texture.
-- `KHR_materials_volume.thicknessTexture` now maps to the reserved core
+- `KHR_materials_volume.thicknessTexture` now maps to the core
   `MaterialSpec.thicknessMap` field, and compatibility scoring reports
-  `thicknessMap` through each backend's material support matrix.
+  `thicknessMap` through each backend's material support matrix. pt-webgl2 now
+  consumes it approximately; pt-webgpu and walkaround-hybrid still report
+  unsupported.
 - Morph-target `TANGENT` deltas remain unsupported and are now compatibility
   scored as ignored primitive data.
 - `EXT_mesh_gpu_instancing` is explicitly unsupported rather than silently
@@ -1058,8 +1067,8 @@ Closure:
   or reject with a structured compatibility error.
 - High-priority remaining implementations: optional texture-bake parity for
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
-  glossiness-in-alpha, and real backend consumption for
-  `MaterialSpec.thicknessMap`.
+  glossiness-in-alpha, plus pt-webgpu/walkaround parity for
+  `MaterialSpec.thicknessMap` if those profiles need volume-thickness support.
 - Add core fields only when at least one backend consumes them or the
   compatibility report can honestly say they are imported-but-unsupported.
 - Continue adding real-world sample sweeps for supported/approximate required
@@ -1184,8 +1193,8 @@ Closure:
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
   parity is required, walkaround `alphaMap`/fractional blend + atlas material
-  maps, real backend consumption for `thicknessMap`, and backend
-  material-consumption parity.
+  maps, pt-webgpu/walkaround `thicknessMap` parity, and backend material-
+  consumption parity.
 
 ## P5 validation and promotion gates
 

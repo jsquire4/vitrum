@@ -210,9 +210,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32051', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 32246', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32051);
+    expect(assembled).toHaveLength(32246);
     // All 9 sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(9);
     expect(assembled).toContain('void main() {');

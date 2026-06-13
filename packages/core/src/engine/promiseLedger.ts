@@ -447,8 +447,8 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // attenuate_hit_function.glsl.js — per-ray Beer-Lambert.
   attenuationColor: 'native',
   attenuationDistance: 'native',
-  // VALUE is dropped: only `thickness === 0` participates (thin-film-vs-volume
-  // discriminator `isThinFilm` + glass sidedness in materialsTexture.ts s13).
+  // Path-length attenuation clamps to authored thickness/thicknessMap when present,
+  // but still depends on closed-surface traversal rather than a true thin-shell volume.
   thickness: 'approximate',
   baseColorMap: 'native',
   normalMap: 'native',
@@ -456,7 +456,7 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   roughnessMap: 'native',  // glTF G channel
   metallicMap: 'native',   // glTF B channel
   transmissionMap: 'native',
-  thicknessMap: 'unsupported',
+  thicknessMap: 'approximate',
   emissiveMap: 'native',
   // Sampled (bit 6) with uv-set selection but NO KHR_texture_transform slot —
   // an authored alphaMap.transform is ignored (get_surface_record: raw MAP_UV).

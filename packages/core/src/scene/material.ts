@@ -187,7 +187,7 @@ export interface MaterialSpec {
   readonly metallicMap?: TextureRef;
   readonly transmissionMap?: TextureRef;
   /** glTF KHR_materials_volume.thicknessTexture.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  Consumed approximately by pt-webgl2 as a Beer-Lambert distance clamp. */
   readonly thicknessMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;

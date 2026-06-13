@@ -1135,9 +1135,13 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							// attenuate the throughput color by the medium color
 							if ( ! surf.frontFace ) {
 
+								float attenuationDist = surfaceHit.dist;
+								if ( surf.hasAttenuationThickness ) {
+									attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );
+								}
 								state.throughput *= transmissionAttenuationThroughput(
 									materials,
-									surfaceHit.dist,
+									attenuationDist,
 									surf.attenuationColor,
 									surf.attenuationDistance,
 									surf.hasSpectralAttenuation,

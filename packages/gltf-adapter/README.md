@@ -143,7 +143,7 @@ asset's feature report.
 | `KHR_materials_transmission.transmissionTexture` | `transmissionMap` |
 | `KHR_materials_ior.ior` | `ior` |
 | `KHR_materials_volume.thicknessFactor` | `thickness` |
-| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (reserved; backend support varies) |
+| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (pt-webgl2 approximate; backend support varies) |
 | `KHR_materials_volume.attenuationDistance` | `attenuationDistance` |
 | `KHR_materials_volume.attenuationColor` | `attenuationColor` |
 | `KHR_materials_specular.specularFactor` | `specularIntensity` |
@@ -207,9 +207,10 @@ frame and pushes the results:
   (see Compressed geometry). Without a hook the spec fallbacks apply, else warn + skip
   (or throw when the extension is in `extensionsRequired`).
 - **Morph TANGENT deltas**: warn + skipped (core `SkinnedMeshPrimitive` has no morph-tangent field).
-- **`KHR_materials_volume.thicknessTexture`**: imported as reserved
-  `thicknessMap`; backend support varies and compatibility reports surface
-  unsupported targets.
+- **`KHR_materials_volume.thicknessTexture`**: imported as `thicknessMap`;
+  pt-webgl2 consumes it approximately as a Beer-Lambert distance clamp, while
+  compatibility reports surface unsupported targets for backends that do not
+  consume it.
 - **Low-level URI-based buffers / images**: `gltfToScene` does not fetch. Use
   `loadGltfAsset` for URL/base-URI loading, or pre-load and supply
   `opts.buffers` / `opts.imageBytes`.

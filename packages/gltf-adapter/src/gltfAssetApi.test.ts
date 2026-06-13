@@ -375,7 +375,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues.some((issue) =>
       issue.name === 'thicknessMap' &&
-      issue.support === 'unsupported',
+      issue.support === 'approximate',
     )).toBe(true);
     expect(compatibility.issues.some((issue) =>
       issue.category === 'material' &&

@@ -167,6 +167,23 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
+		// KHR_materials_volume thicknessTexture (bit 20): G channel scales
+		// thicknessFactor. When present (or when scalar thickness > 0), the
+		// Beer-Lambert path length is clamped to this authored local thickness.
+		float attenuationThickness = material.thickness;
+		bool hasAttenuationThickness = material.thickness > 0.0 || material.thicknessMap != - 1;
+		if ( useTextures && material.thicknessMap != - 1 ) {
+
+			vec3 uvPrime = material.thicknessMapTransform * vec3( MAP_UV( 20u ), 1 );
+			attenuationThickness *= sampleMaterialTexture(
+				textures,
+				uvPrime.xy,
+				material.thicknessMap,
+				material.thicknessMapWrap
+			).g;
+
+		}
+
 		// normal
 		if ( material.flatShading ) {
 
@@ -454,6 +471,8 @@ export const get_surface_record_function = /* glsl */`
 		surf.materialIndex = materialIndex;
 		surf.attenuationColor = material.attenuationColor;
 		surf.attenuationDistance = material.attenuationDistance;
+		surf.attenuationThickness = max( attenuationThickness, 0.0 );
+		surf.hasAttenuationThickness = hasAttenuationThickness;
 
 		surf.clearcoatNormal = clearcoatNormal;
 		surf.clearcoat = clearcoat;
