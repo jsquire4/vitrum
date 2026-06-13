@@ -196,11 +196,11 @@ Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS do
 **Second-wave claims-surface audit (same session, items H39–H59) added three structural
 buckets that the A–D framing was missing:**
 
-- **NEW C4 — zero examples** ✅: the THREE cutover deleted `examples/` and nothing replaced
-  it; every public entry point (`createEngine`, `attachVitrum`, `VitrumCanvas`,
-  `createProgressiveEngine`, both PT factories, the hybrid factory) has no runnable example
-  (items H57). For "a professional library others can use," this is a provisioning gap on
-  par with the OIDN assets. M effort (one core-Scene Cornell example per entry point).
+- **NEW C4 — examples / DX surface** ✅ SOURCE-RECONCILED 2026-06-12:
+  the old "zero examples" claim is stale. The repo now has runnable Vite examples for
+  `createEngine`, `attachVitrum`, `VitrumCanvas`, `createProgressiveEngine`, both direct
+  PT factories, and **`loadGltfWithEngine()`** (`examples/gltf-viewer`). H57 is closed
+  as a provisioning gap; future examples are product polish, not a Road blocker.
 - **NEW C5 — contract-truth reconciliation** ✅: `promiseLedger` rows contradict shipped
   runtime capabilities (pt-webgl2 analytic/mutations/aux); the fidelity matrix's `pt-webgl`
   column describes a deleted package and omits pt-webgl2; CHANGELOG `[Unreleased]` has no
@@ -657,7 +657,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 | ~~`VitrumCanvas` `gltf` prop~~ ✅ DONE | `VitrumCanvas.tsx` now accepts `gltf` + `gltfOptions`, loads via `loadGltfAsset`, forwards the imported scene to `attachVitrum`, passes the `gltfAsset` recommendation through the lifecycle into `createEngine`, and recreates on `gltf` / `gltfOptions` identity changes. Tests: `vitrumCanvasMount.test.tsx`, `attachVitrumLoop.test.ts`. | Direct `scene` remains supported; `gltf` is the creation-time alternative. |
 | `ProgressiveHandoffCoordinator` + glTF | `progressiveHandoff.ts` | Already has scene fallback; add `controller` reference for animated handoff |
 | Shared-device handoff | `createProgressiveEngine.ts` | Textures must be `GPUTexture` compatible — decode to GPU on WebGPU path, not CPU-only handles |
-| Examples | `examples/gltf-viewer/` (NEW) | Examples exist (`examples/attach-vitrum/`) but **no glTF example** — gap for DX 100% |
+| ~~Examples~~ ✅ DONE | `examples/gltf-viewer/` | Self-contained Vite app now exercises `loadGltfWithEngine()`, backend recommendation, `textureDecodeReport`, controller attachment, and the capture protocol. |
 
 #### 4B — Compatibility enforcement
 
@@ -749,7 +749,7 @@ Extend `walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` + pt-webgpu muta
 | `plan/renderer-fidelity-matrix.md` | Remove deleted `pt-webgl` column; add pt-webgl2 |
 | `items_to_fix.md` §H | Close items as fixed or strike |
 | ~~H30~~ ✅ CLOSED | Canvas backing store sizing is now applied before engine construction; `attachVitrumLoop.test.ts` pins CSS×DPR sizing |
-| H57 | Strike "no examples" — add `gltf-viewer` instead |
+| ~~H57~~ ✅ CLOSED | `examples/gltf-viewer/` added; `examples/README.md` lists the glTF path and debug capture fields. |
 
 #### 5E — Behavioral gate expansion
 

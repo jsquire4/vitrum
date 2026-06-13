@@ -1,0 +1,22 @@
+{
+  "name": "@vitrum-examples/gltf-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal example: loadGltfWithEngine() — self-contained glTF asset, backend recommendation, controller, and capture protocol.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitrum/core": "file:../../packages/core",
+    "@vitrum/engine": "file:../../packages/engine"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.5.0",
+    "vite": "^5.0.0"
+  }
+}

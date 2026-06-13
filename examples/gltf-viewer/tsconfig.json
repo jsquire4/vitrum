@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "@webgpu/types"
+    ]
+  },
+  "include": [
+    "src",
+    "../../packages/pt-webgl2/src/glsl/glsl-modules.d.ts"
+  ]
+}

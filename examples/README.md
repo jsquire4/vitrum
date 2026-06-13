@@ -1,6 +1,6 @@
 # vitrum examples
 
-Seven self-contained Vite apps that demonstrate the `@vitrum/core` Scene contract
+Eight self-contained Vite apps that demonstrate the `@vitrum/core` Scene contract
 against each public API entry point.  Every app implements the **capture protocol**
 (see below) so reference-render scripts can drive them headlessly.
 
@@ -14,6 +14,7 @@ against each public API entry point.  Every app implements the **capture protoco
 | `create-engine/` | `@vitrum-examples/create-engine` | `createEngine()` lower-level API — manual RAF loop, auto backend selection |
 | `vitrum-canvas/` | `@vitrum-examples/vitrum-canvas` | `<VitrumCanvas>` React component — drop-in mount, `onProgress` telemetry |
 | `progressive/` | `@vitrum-examples/progressive` | `createProgressiveEngine()` — realtime walkaround while camera moves, hands off to converged PT when it settles |
+| `gltf-viewer/` | `@vitrum-examples/gltf-viewer` | `loadGltfWithEngine()` — self-contained glTF asset, feature report, backend recommendation, controller attachment |
 | `pt-webgpu-direct/` | `@vitrum-examples/pt-webgpu-direct` | Backend-direct WebGPU — `negotiateWebGPUDevice()` + `createPTEngine_WebGPU()`, host-owned device lifecycle |
 | `pt-webgl2-direct/` | `@vitrum-examples/pt-webgl2-direct` | Backend-direct WebGL2 — `createPTEngine_WebGL2()`, host-owned `WebGL2RenderingContext` |
 | `cornell-scene/` | `@vitrum-examples/cornell-scene` | Shared scene factory (not a runnable app — exported as `createCornellScene()`) |
@@ -59,6 +60,14 @@ Examples:
 http://localhost:5173/?vitrumSpp=64
 http://localhost:5173/?vitrumSpp=256&vitrumBounces=16
 ```
+
+The `gltf-viewer` app also exposes these debug fields:
+
+| Field | Type | Set when |
+|-------|------|----------|
+| `VITRUM_GLTF_BACKEND` | string | `loadGltfWithEngine()` selects a backend |
+| `VITRUM_GLTF_TEXTURE_REPORT` | `GltfTextureDecodeReport` | the embedded asset has been decoded and reported |
+| `VITRUM_GLTF_WARNINGS` | string[] | adapter/controller warnings, if any |
 
 ---
 
