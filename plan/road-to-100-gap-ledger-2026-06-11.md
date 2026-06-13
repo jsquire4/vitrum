@@ -718,8 +718,12 @@ Closure:
 ### WEBGL2-04 - pt-webgl2 material texture edge cases remain
 
 Evidence:
-- glTF combined metallic-roughness texture maps only to roughness in
-  `gltf-adapter`, while pt-webgl2 reads metalness from `metallicMap`.
+- glTF combined metallic-roughness texture parity is code-closed:
+  `gltf-adapter/src/materials.ts` assigns the same `TextureRef` to both
+  `roughnessMap` and `metallicMap`, `featureReport.ts` reports both fields from
+  `metallicRoughnessTexture`, and pt-webgl2 samples G for roughness / B for
+  metallic in `get_surface_record_function.glsl.js`. Tests:
+  `gltfTextureSweep.test.ts` and `untestedMaterialMaps.test.ts`.
 - `alphaMap` transform parity is now code-closed: `MATERIAL_PIXELS` is 95,
   `materialsTexture.ts` packs `alphaMapTransform` at texels 93/94,
   `material_struct.glsl.js` decodes it, and both
@@ -731,8 +735,6 @@ Evidence:
 - Surface anisotropy is not consumed by pt-webgl2.
 
 Closure:
-- Map combined metallic-roughness to both roughness and metalness channels or add
-  an explicit combined ORM convention.
 - Implement or explicitly downgrade layered normal maps and anisotropy.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
