@@ -776,7 +776,9 @@ Evidence:
   `materialsTexture.ts` packs `alphaMapTransform` at texels 93/94,
   `material_struct.glsl.js` decodes it, and both
   `get_surface_record_function.glsl.js` and `attenuate_hit_function.glsl.js`
-  sample alpha maps through the transform. Tests:
+  sample alpha maps through the transform. The promise ledger now grades
+  pt-webgl2 `alphaMap` as `native` instead of the stale transform-caveat
+  `approximate` row. Tests:
   `materialsTexture.test.ts`, `untestedMaterialMaps.test.ts`, and
   `materialStrideParity.test.ts`.
 - glTF sampler wrap parity is now code-closed for pt-webgl2: the material

@@ -22,8 +22,8 @@
 > buffer reset on camera/scene/reset, Cesàro accumulator argument, 36 TS-mirror tests.
 > **Implementation distance remaining:** A6 NRC semantics; A8 GRIS-default gate;
 > sun-NEE-default gate; B2 DDGI glossy bounce; glass refracted GI (B1 tail);
-> production-quality neural weights (starter only); `TextureRef.texCoord` on pt-webgl2
-> (documented unkept promise); H-residue (H5/H21/H24-cluster/H32/H34/H35).
+> production-quality neural weights (starter only); walkaround material-map atlas parity
+> beyond its current base/ORM/AO slices; H-residue (H5/H21/H24-cluster/H32/H34/H35).
 > **Big validation tail: V28-B** — GPU A/B recapture for every render-changing landing
 > (improvement confirmations, not regression suspects).
 
@@ -239,9 +239,11 @@ buckets that the A–D framing was missing:**
   authored/generated tangent.xyzw consumption. Remaining broad-residual rows are
   displacement, receiveShadow, and backend-specific approximation rows ledgered in
   `BACKEND_PROMISE_LEDGER`; walkaround texture-map parity remains the large material gap.
-  `TextureRef.texCoord` on pt-webgl2 still zero consumption (documented unkept
-  promise, R7c). `denoiser` is a silent no-op on both PT backends for any value but
-  `'oidn-final'` (H48).
+  The former pt-webgl2 `TextureRef.texCoord`/`alphaMap.transform` warning is closed:
+  pt-webgl2 now packs per-map UV bits, KHR texture transforms, and wrap modes for its
+  atlas-backed material maps, including alpha sampling in both surface and attenuation
+  paths. `denoiser` is still an honest unsupported/degrade path on pt-webgl2 except for
+  explicit `oidn-final` bridge behavior (H48).
 
 ## Open decisions (need a call before building)
 

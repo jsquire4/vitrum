@@ -434,7 +434,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
 });
 
 /**
- * pt-webgl2 — the 93-texel RGBA32F materials texture (materialsTexture.ts)
+ * pt-webgl2 — the 111-texel RGBA32F materials texture (materialsTexture.ts)
  * carries near-the-full MaterialSpec; the GLSL surface-record/BSDF chain
  * consumes it (get_surface_record_function.glsl.js, shader/bsdf/*). Texture
  * maps resolve through the SAMPLED_MAP_KEYS atlas (texturesArray.ts) with
@@ -468,9 +468,9 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   transmissionMap: 'native',
   thicknessMap: 'approximate',
   emissiveMap: 'native',
-  // Sampled (bit 6) with uv-set selection but NO KHR_texture_transform slot —
-  // an authored alphaMap.transform is ignored (get_surface_record: raw MAP_UV).
-  alphaMap: 'approximate',
+  // Sampled with uv-set selection, KHR_texture_transform, and wrap modes in
+  // both surface-record and attenuation paths.
+  alphaMap: 'native',
   aoMap: 'native',
   aoMapIntensity: 'native',
   clearcoatMap: 'native',
