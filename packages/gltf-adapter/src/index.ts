@@ -93,6 +93,8 @@ export type {
   GltfResourceKind,
   GltfResourceUse,
   GltfSceneGraphFeatureReport,
+  GltfTextureSourceExtensionName,
+  GltfTextureSourceExtensionUse,
 } from './featureReport.js';
 export { animationNodeId } from './animations.js';
 export type { GltfJson } from './gltfTypes.js';

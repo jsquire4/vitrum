@@ -261,6 +261,19 @@ describe('glTF common extension policy', () => {
   it('requires opt-in before a required texture-source extension can override texture.source', async () => {
     const { gltf, buffers, extensionBytes } = textureSourceGltf('KHR_texture_basisu');
     gltf.extensionsRequired = ['KHR_texture_basisu'];
+    const report = analyzeGltfAsset(gltf);
+    expect(report.extensions.textureSourceUses).toEqual([
+      {
+        extension: 'KHR_texture_basisu',
+        textureIndex: 0,
+        sourceImageIndex: 1,
+        path: 'textures[0].extensions.KHR_texture_basisu',
+        required: true,
+        hasBaseSource: true,
+        requiresHook: true,
+        mimeType: 'image/ktx2',
+      },
+    ]);
     await expect(gltfToScene(gltf, { buffers })).rejects.toThrow('KHR_texture_basisu');
 
     const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
@@ -300,6 +313,18 @@ describe('glTF common extension policy', () => {
     expect(report.extensions.supported).toContain('EXT_texture_webp');
     expect(report.extensions.requiresHook).not.toContain('EXT_texture_webp');
     expect(report.extensions.unsupportedOptional).not.toContain('EXT_texture_webp');
+    expect(report.extensions.textureSourceUses).toEqual([
+      {
+        extension: 'EXT_texture_webp',
+        textureIndex: 0,
+        sourceImageIndex: 1,
+        path: 'textures[0].extensions.EXT_texture_webp',
+        required: false,
+        hasBaseSource: true,
+        requiresHook: false,
+        mimeType: 'image/webp',
+      },
+    ]);
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues).not.toContainEqual(expect.objectContaining({
       category: 'extension',
@@ -315,6 +340,17 @@ describe('glTF common extension policy', () => {
     const report = analyzeGltfAsset(gltf);
     expect(report.extensions.requiresHook).toContain('EXT_texture_webp');
     expect(report.extensions.unsupportedOptional).not.toContain('EXT_texture_webp');
+    expect(report.extensions.textureSourceUses).toEqual([
+      expect.objectContaining({
+        extension: 'EXT_texture_webp',
+        textureIndex: 0,
+        sourceImageIndex: 1,
+        path: 'textures[0].extensions.EXT_texture_webp',
+        required: false,
+        hasBaseSource: false,
+        requiresHook: true,
+      }),
+    ]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues).toContainEqual(expect.objectContaining({

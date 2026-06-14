@@ -34,7 +34,24 @@ export interface GltfExtensionReport {
   readonly requiresHook: readonly string[];
   readonly unsupportedOptional: readonly string[];
   readonly unsupportedRequired: readonly string[];
+  readonly textureSourceUses: readonly GltfTextureSourceExtensionUse[];
   readonly sourcePaths: Readonly<Record<string, readonly string[]>>;
+}
+
+export type GltfTextureSourceExtensionName =
+  | 'KHR_texture_basisu'
+  | 'EXT_texture_webp'
+  | 'MSFT_texture_dds';
+
+export interface GltfTextureSourceExtensionUse {
+  readonly extension: GltfTextureSourceExtensionName;
+  readonly textureIndex: number;
+  readonly sourceImageIndex: number;
+  readonly path: string;
+  readonly required: boolean;
+  readonly hasBaseSource: boolean;
+  readonly requiresHook: boolean;
+  readonly mimeType?: string;
 }
 
 export interface GltfPrimitiveFeatureReport {
@@ -165,11 +182,13 @@ const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
   'MSFT_texture_dds',
 ]);
 
-const TEXTURE_SOURCE_EXTENSIONS = new Set([
+const TEXTURE_SOURCE_EXTENSION_NAMES = [
   'KHR_texture_basisu',
   'EXT_texture_webp',
   'MSFT_texture_dds',
-]);
+] as const satisfies readonly GltfTextureSourceExtensionName[];
+
+const TEXTURE_SOURCE_EXTENSIONS = new Set<string>(TEXTURE_SOURCE_EXTENSION_NAMES);
 
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
@@ -576,6 +595,7 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
     requiresHook: sorted(requiresHook),
     unsupportedOptional: sorted(unsupportedOptional),
     unsupportedRequired: sorted(unsupportedRequired),
+    textureSourceUses: collectTextureSourceExtensionUses(gltf, required),
     sourcePaths: sourcePathRecord(sourcePaths),
   };
 }
@@ -602,6 +622,32 @@ function extensionRequiresHostHook(
 function textureSourceExtensionHasImageSource(value: unknown): boolean {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   return typeof (value as { readonly source?: unknown }).source === 'number';
+}
+
+function collectTextureSourceExtensionUses(
+  gltf: GltfJson,
+  required: readonly string[],
+): readonly GltfTextureSourceExtensionUse[] {
+  const uses: GltfTextureSourceExtensionUse[] = [];
+  for (const [textureIndex, texture] of (gltf.textures ?? []).entries()) {
+    for (const extension of TEXTURE_SOURCE_EXTENSION_NAMES) {
+      const source = texture.extensions?.[extension]?.source;
+      if (typeof source !== 'number') continue;
+      const requiredUse = required.includes(extension);
+      const hasBaseSource = texture.source !== undefined;
+      uses.push({
+        extension,
+        textureIndex,
+        sourceImageIndex: source,
+        path: `textures[${textureIndex}].extensions.${extension}`,
+        required: requiredUse,
+        hasBaseSource,
+        requiresHook: requiredUse || !hasBaseSource,
+        ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source]!.mimeType } : {}),
+      });
+    }
+  }
+  return uses;
 }
 
 function analyzeResources(gltf: GltfJson): GltfResourceFeatureReport {

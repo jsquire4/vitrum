@@ -1093,7 +1093,9 @@ Evidence:
   represented as host-decode-required alternate texture-source paths when the
   extension is required, selected, or the texture has no base `texture.source`
   fallback. Optional alternates with a base fallback remain compatibility-clean
-  until the host opts in.
+  until the host opts in. `GltfFeatureReport.extensions.textureSourceUses[]`
+  now records the exact texture index, alternate image index, source path,
+  fallback/required status, MIME type, and whether that use requires a hook.
 - `KHR_materials_variants` now supports a `materialVariant` selection option and
   falls back to base materials when no active variant is selected.
 - `KHR_materials_unlit` now maps to the core `MaterialSpec.shadingModel`
