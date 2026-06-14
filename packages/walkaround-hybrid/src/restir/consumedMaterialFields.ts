@@ -51,6 +51,11 @@
  *                           uv0 TextureRefs into an RGBA32F array texture;
  *                           shade.wgsl samples it with wrap + transform and
  *                           multiplies the visible scalar baseColor.
+ *  normalMap              same material atlas path; shade.wgsl derives a
+ *                           per-triangle tangent frame from positions + uv0/uv1
+ *                           and perturbs the camera-visible smooth normal.
+ *  normalScale            stored in normal-map atlas metadata and applied to
+ *                           tangent-space xy before normal reconstruction.
  *  roughnessMap           same material atlas + metadata path; shade.wgsl
  *                           samples the glTF G channel and overrides the
  *                           scalar roughness for visible BRDF terms.
@@ -67,8 +72,9 @@
  *                           uses opacity * alphaMap.r < alphaCutoff, while
  *                           blend remains approximate for fractional coverage.
  *
- * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
- * metallicMap / aoMap / alphaMap / emissiveMap / transmissionMap, Disney BSDF scalars, spectral curves,
+ * Everything else — TextureRef maps other than baseColorMap / normalMap /
+ * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
+ * transmissionMap, Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
  * extension scalars — is IGNORED.
  */
@@ -93,6 +99,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'ior',
   'extensions',
   'baseColorMap',
+  'normalMap',
+  'normalScale',
   'roughnessMap',
   'metallicMap',
   'aoMap',

@@ -1,10 +1,11 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 15;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 18;
 
 type AtlasMapField =
   | 'baseColorMap'
+  | 'normalMap'
   | 'roughnessMap'
   | 'metallicMap'
   | 'aoMap'
@@ -15,6 +16,7 @@ type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
   { field: 'baseColorMap', colorSpace: 'srgb' },
+  { field: 'normalMap', colorSpace: 'linear' },
   { field: 'roughnessMap', colorSpace: 'linear' },
   { field: 'metallicMap', colorSpace: 'linear' },
   { field: 'aoMap', colorSpace: 'linear' },
@@ -31,6 +33,7 @@ export interface MaterialTextureAtlasPayload {
   readonly baseColorMetaWidth: number;
   readonly baseColorMetaHeight: number;
   readonly readableBaseColorLayerCount: number;
+  readonly readableNormalLayerCount: number;
   readonly readableRoughnessLayerCount: number;
   readonly readableMetallicLayerCount: number;
   readonly readableAoLayerCount: number;
@@ -220,6 +223,7 @@ export function packMaterialTextureAtlas(
   const ordered: { readonly handle: unknown; readonly pixels: RawPixels; readonly colorSpace: AtlasColorSpace }[] = [];
   const fieldLayers: Record<AtlasMapField, Set<number>> = {
     baseColorMap: new Set<number>(),
+    normalMap: new Set<number>(),
     roughnessMap: new Set<number>(),
     metallicMap: new Set<number>(),
     aoMap: new Set<number>(),
@@ -320,6 +324,16 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = Number.isFinite(mat?.normalScale)
+      ? Math.max(0, mat?.normalScale ?? 1)
+      : 1;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -331,6 +345,8 @@ export function packMaterialTextureAtlas(
     writeAlphaCoverageMeta(mat, baseTexel + 10);
     writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + 11);
     writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + 13);
+    writeMapMeta(mat, 'normalMap', 'linear', baseTexel + 15);
+    writeNormalScaleMeta(mat, baseTexel + 17);
   }
 
   return {
@@ -341,6 +357,7 @@ export function packMaterialTextureAtlas(
     baseColorMetaWidth,
     baseColorMetaHeight,
     readableBaseColorLayerCount: fieldLayers.baseColorMap.size,
+    readableNormalLayerCount: fieldLayers.normalMap.size,
     readableRoughnessLayerCount: fieldLayers.roughnessMap.size,
     readableMetallicLayerCount: fieldLayers.metallicMap.size,
     readableAoLayerCount: fieldLayers.aoMap.size,

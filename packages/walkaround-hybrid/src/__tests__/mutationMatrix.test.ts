@@ -318,6 +318,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           roughness: 0.5,
           metallic: 0,
           baseColorMap: { handle: baseColorMapHandle(128) },
+          normalMap: { handle: baseColorMapHandle(96), texCoord: 1 },
+          normalScale: 0.5,
           roughnessMap: { handle: baseColorMapHandle(64) },
           aoMap: { handle: baseColorMapHandle(32), wrapS: 'clamp-to-edge' },
           aoMapIntensity: 0.5,
@@ -338,6 +340,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
       expect(rebuilt.materialTextureAtlas.readableBaseColorLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableNormalLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableRoughnessLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableAoLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
@@ -346,6 +349,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
+          normalMap?: unknown;
+          normalScale?: unknown;
           roughnessMap?: unknown;
           aoMap?: unknown;
           alphaMap?: unknown;
@@ -354,6 +359,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         };
       }).material;
       expect(material.baseColorMap).toBeDefined();
+      expect(material.normalMap).toBeDefined();
+      expect(material.normalScale).toBe(0.5);
       expect(material.roughnessMap).toBeDefined();
       expect(material.aoMap).toBeDefined();
       expect(material.alphaMap).toBeDefined();

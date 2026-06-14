@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 15u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 18u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -18,6 +18,8 @@ const MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 const MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;
+const MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
+const MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -51,6 +53,10 @@ fn materialAtlasUv1ForHit(hit: IntersectionResult) -> vec2f {
   let n1 = bvh_normal[hit.indices.y];
   let n2 = bvh_normal[hit.indices.z];
   return interpolateUv1FromNormalW(hit, n0, n1, n2);
+}
+
+fn materialAtlasPackedUvFromVec4(v: vec4f) -> vec2f {
+  return unpack2x16unorm(bitcast<u32>(v.w));
 }
 
 fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -135,6 +141,98 @@ fn sampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32)
     return scalarTransmission;
   }
   return clamp(scalarTransmission * texelColor.r, 0.0, 1.0);
+}
+
+fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
+  let b = cross(n, t);
+  let len2 = dot(b, b);
+  if (len2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
+    return normalize(cross(n, up));
+  }
+  return b * inverseSqrt(len2);
+}
+
+fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_NORMAL_TEXEL_OFFSET;
+  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return baseNormal;
+  }
+
+  let uv1 = materialAtlasUv1ForHit(hit);
+  let texelColor = sampleMaterialAtlasRawAtOffset(
+    triIndex,
+    MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
+    hit.uv,
+    uv1,
+  );
+  if (texelColor.x < 0.0) {
+    return baseNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET),
+    0,
+  );
+  let normalScale = max(scaleMeta.x, 0.0);
+  let tangentSample = normalize(vec3f(
+    (texelColor.r * 2.0 - 1.0) * normalScale,
+    (texelColor.g * 2.0 - 1.0) * normalScale,
+    texelColor.b * 2.0 - 1.0,
+  ));
+
+  let flags = u32(max(meta0.y, 0.0) + 0.5);
+  let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
+  let p0 = bvh_position[hit.indices.x];
+  let p1 = bvh_position[hit.indices.y];
+  let p2 = bvh_position[hit.indices.z];
+  let n0 = bvh_normal[hit.indices.x];
+  let n1 = bvh_normal[hit.indices.y];
+  let n2 = bvh_normal[hit.indices.z];
+  let uv0a = materialAtlasPackedUvFromVec4(p0);
+  let uv0b = materialAtlasPackedUvFromVec4(p1);
+  let uv0c = materialAtlasPackedUvFromVec4(p2);
+  let uv1a = materialAtlasPackedUvFromVec4(n0);
+  let uv1b = materialAtlasPackedUvFromVec4(n1);
+  let uv1c = materialAtlasPackedUvFromVec4(n2);
+  let ta = select(uv0a, uv1a, useUv1);
+  let tb = select(uv0b, uv1b, useUv1);
+  let tc = select(uv0c, uv1c, useUv1);
+
+  let dp1 = p1.xyz - p0.xyz;
+  let dp2 = p2.xyz - p0.xyz;
+  let duv1 = tb - ta;
+  let duv2 = tc - ta;
+  let det = duv1.x * duv2.y - duv1.y * duv2.x;
+  var tangent = dp1;
+  var bitangent = fallbackBitangentForNormal(baseNormal, tangent);
+  if (abs(det) > 1e-8) {
+    let invDet = 1.0 / det;
+    tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
+    bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+  }
+
+  tangent = tangent - baseNormal * dot(baseNormal, tangent);
+  let tLen2 = dot(tangent, tangent);
+  if (tLen2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(baseNormal.y) > 0.95);
+    tangent = normalize(cross(up, baseNormal));
+  } else {
+    tangent = tangent * inverseSqrt(tLen2);
+  }
+  bitangent = bitangent - baseNormal * dot(baseNormal, bitangent) - tangent * dot(tangent, bitangent);
+  let bLen2 = dot(bitangent, bitangent);
+  if (bLen2 < 1e-8) {
+    bitangent = fallbackBitangentForNormal(baseNormal, tangent);
+  } else {
+    bitangent = bitangent * inverseSqrt(bLen2);
+  }
+
+  let perturbed = normalize(tangent * tangentSample.x + bitangent * tangentSample.y + baseNormal * tangentSample.z);
+  return select(-perturbed, perturbed, dot(perturbed, baseNormal) >= 0.0);
 }
 
 fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {

@@ -377,17 +377,19 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Approximate because glass Beer/transmission tint still uses the scalar
   // packed color path and the rest of the texture-map family is not sampled.
   baseColorMap: 'approximate',
-  // Phase-3D scalar-map slice: roughness/metallic sample glTF G/B channels in
-  // shade for visible BRDF terms; AO samples the glTF R channel and multiplies
-  // the runtime GTAO factor; alphaMap samples R for primary/RIS/GI cutout
-  // traversal; emissiveMap modulates camera-visible emitter glow; transmissionMap
-  // modulates shade/RIS/GI glass gating. Approximate because upstream reservoir/
-  // candidate PDFs, emitter power, and GI payloads still use scalar packed lanes,
-  // and alpha blend has no OIT path.
+  // Phase-3D map slice: normalMap perturbs the camera-visible smooth normal
+  // through a derived per-triangle tangent frame; roughness/metallic sample glTF
+  // G/B channels in shade for visible BRDF terms; AO samples the glTF R channel
+  // and multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
+  // cutout traversal; emissiveMap modulates camera-visible emitter glow;
+  // transmissionMap modulates shade/RIS/GI glass gating. Approximate because
+  // authored tangents are not consumed, upstream reservoir/candidate PDFs,
+  // emitter power, and GI payloads still use scalar packed lanes, and alpha blend
+  // has no OIT path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
-  normalMap: 'unsupported',
-  normalScale: 'unsupported',
+  normalMap: 'approximate',
+  normalScale: 'approximate',
   transmissionMap: 'approximate',
   thicknessMap: 'unsupported',
   emissiveMap: 'approximate',

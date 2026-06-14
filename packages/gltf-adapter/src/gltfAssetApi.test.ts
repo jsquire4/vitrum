@@ -406,7 +406,7 @@ describe('decodeSceneTextures', () => {
         backendReadiness: expect.objectContaining({
           ptWebgl2: 'ready',
           ptWebgpu: 'ready',
-          walkaroundHybrid: 'ignored',
+          walkaroundHybrid: 'ready',
         }),
       }),
     ]));

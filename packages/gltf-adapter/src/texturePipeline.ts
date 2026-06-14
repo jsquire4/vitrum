@@ -172,6 +172,7 @@ const SRGB_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
 
 const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'baseColorMap',
+  'normalMap',
   'roughnessMap',
   'metallicMap',
   'aoMap',

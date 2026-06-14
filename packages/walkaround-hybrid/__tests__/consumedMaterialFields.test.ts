@@ -3,7 +3,7 @@
  *
  * Pins:
  *   (a) A scene supplying baseColorMap + normalMap + clearcoat warns only for
- *       the fields without a walkaround texture path.
+ *       clearcoat because normalMap now has a walkaround texture path.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -47,6 +47,8 @@ describe('collectUnconsumedMaterialFields', () => {
       emissive: [1, 0, 0],
       emissiveIntensity: 2,
       shadingModel: 'unlit',
+      normalMap: { handle: stubTextureRef() },
+      normalScale: 0.5,
       transmission: 0.9,
       attenuationColor: [0.8, 0.9, 1],
       attenuationDistance: 1,
@@ -68,7 +70,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('baseColorMap');
   });
 
-  it('names normalMap when supplied', () => {
+  it('does not name normalMap when supplied', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -76,7 +78,7 @@ describe('collectUnconsumedMaterialFields', () => {
       normalMap: stubTextureRef(),
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
-    expect(result).toContain('normalMap');
+    expect(result).not.toContain('normalMap');
   });
 
   it('names clearcoat when supplied', () => {
@@ -90,7 +92,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).toContain('clearcoat');
   });
 
-  it('(pin a) names normalMap + clearcoat while baseColorMap is consumed', () => {
+  it('(pin a) names clearcoat while baseColorMap + normalMap are consumed', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -101,7 +103,7 @@ describe('collectUnconsumedMaterialFields', () => {
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
     // Result is sorted alphabetically.
-    expect(result).toEqual(['clearcoat', 'normalMap']);
+    expect(result).toEqual(['clearcoat']);
   });
 
   it('dedupes unconsumed fields across multiple primitives', () => {
@@ -157,6 +159,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
       'thickness', 'ior', 'extensions', 'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
+      'normalMap', 'normalScale',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -164,7 +167,6 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
 
   it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
-      'normalMap',
       'thicknessMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',

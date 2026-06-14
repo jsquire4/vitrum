@@ -264,12 +264,13 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let n0 = bvh_normal[primaryHit.indices.x];
   let n1 = bvh_normal[primaryHit.indices.y];
   let n2 = bvh_normal[primaryHit.indices.z];
-  let normal = smoothShadingNormal(
+  let smoothNormal = smoothShadingNormal(
     primaryHit, geoNormal,
     n0.xyz, n1.xyz, n2.xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
+  let normal = applyNormalMapForHit(primaryHit, smoothNormal);
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).

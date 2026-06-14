@@ -212,6 +212,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `scalarTransmission * transmissionMap.r`; the ledger grades the row
   `approximate` because emitter power, direct-light candidate payloads, and GI
   payload lanes remain scalar.
+- Follow-up 2026-06-14: walkaround readable `normalMap` handles now pack into
+  the same material texture atlas as linear tangent-space RGB with uv0/uv1,
+  wrap-mode, `KHR_texture_transform`, and `normalScale` metadata. `shade.wgsl`
+  derives a per-triangle TBN from positions + UVs and perturbs the visible
+  smooth normal before G-buffer/lighting writes. The ledger grades
+  `normalMap`/`normalScale` `approximate` because authored tangent.xyzw buffers
+  and reservoir/GI material payload parity are still open.
 - SPEC-01 pt-webgpu scalar `KHR_materials_specular` consumption landed: material
   vec4 #27 carries `specularColor.rgb` + `specularIntensity`, `material.wgsl.ts`
   decodes them, `bsdf.wgsl.ts` uses them for dielectric F0, and the scalar pair

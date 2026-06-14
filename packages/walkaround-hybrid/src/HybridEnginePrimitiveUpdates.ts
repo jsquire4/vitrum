@@ -1032,6 +1032,7 @@ function uv2Component(
 
 const ATLAS_MATERIAL_MAP_FIELDS = [
   'baseColorMap',
+  'normalMap',
   'roughnessMap',
   'metallicMap',
   'aoMap',
@@ -1065,9 +1066,12 @@ function materialAtlasPatchRequiresFullRebuild(
   prev: MaterialSpec | undefined,
   next: MaterialSpec | undefined,
 ): boolean {
-  return ATLAS_MATERIAL_MAP_FIELDS.some((field) =>
+  const mapChanged = ATLAS_MATERIAL_MAP_FIELDS.some((field) =>
     textureMapPatchRequiresFullRebuild(prev, next, field),
   );
+  if (mapChanged) return true;
+  if (prev?.normalMap == null && next?.normalMap == null) return false;
+  return (prev?.normalScale ?? 1) !== (next?.normalScale ?? 1);
 }
 
 /**
