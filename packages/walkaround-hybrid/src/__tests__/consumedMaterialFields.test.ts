@@ -105,7 +105,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
       'baseColorMap', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
-      'emissiveMap',
+      'emissiveMap', 'transmissionMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }

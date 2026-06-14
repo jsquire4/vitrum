@@ -150,7 +150,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // The reservoir is built at the FIRST DIFFUSE SURFACE reached by a 1-interface
   // refraction walk (castPrimaryThroughGlass below). Multi-interface rough-glass
   // is documented-out-of-scope (plan/residue-closure-plan-2026-06-10.md §B1 tail).
-  let matColor = decodeMaterialColor(hit.matColorPacked);
+  let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
+  let matColor = vec4f(
+    scalarMatColor.rgb,
+    sampleTransmissionMapForHit(hit, scalarMatColor.a),
+  );
   let isGlass = matColor.a > 0.3;
 
   // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
@@ -259,7 +263,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
       walkHitPos = walkOrigin + refractDir * walkHit.dist;
       walkHitNormal = walkHit.normal;
-      let walkMat = decodeMaterialColor(walkHit.matColorPacked);
+      let scalarWalkMat = decodeMaterialColor(walkHit.matColorPacked);
+      let walkMat = vec4f(
+        scalarWalkMat.rgb,
+        sampleTransmissionMapForHit(walkHit, scalarWalkMat.a),
+      );
       let walkIsGlass = walkMat.a > 0.3;
 
       if (!walkIsGlass) {

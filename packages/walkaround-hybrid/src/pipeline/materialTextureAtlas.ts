@@ -1,9 +1,16 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 13;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 15;
 
-type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap' | 'aoMap' | 'alphaMap' | 'emissiveMap';
+type AtlasMapField =
+  | 'baseColorMap'
+  | 'roughnessMap'
+  | 'metallicMap'
+  | 'aoMap'
+  | 'alphaMap'
+  | 'emissiveMap'
+  | 'transmissionMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -13,6 +20,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'aoMap', colorSpace: 'linear' },
   { field: 'alphaMap', colorSpace: 'linear' },
   { field: 'emissiveMap', colorSpace: 'srgb' },
+  { field: 'transmissionMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -28,6 +36,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableAoLayerCount: number;
   readonly readableAlphaLayerCount: number;
   readonly readableEmissiveLayerCount: number;
+  readonly readableTransmissionLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -216,6 +225,7 @@ export function packMaterialTextureAtlas(
     aoMap: new Set<number>(),
     alphaMap: new Set<number>(),
     emissiveMap: new Set<number>(),
+    transmissionMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -320,6 +330,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + 8);
     writeAlphaCoverageMeta(mat, baseTexel + 10);
     writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + 11);
+    writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + 13);
   }
 
   return {
@@ -335,6 +346,7 @@ export function packMaterialTextureAtlas(
     readableAoLayerCount: fieldLayers.aoMap.size,
     readableAlphaLayerCount: fieldLayers.alphaMap.size,
     readableEmissiveLayerCount: fieldLayers.emissiveMap.size,
+    readableTransmissionLayerCount: fieldLayers.transmissionMap.size,
   };
 }
 

@@ -171,7 +171,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).
-  let matColor  = decodeMaterialColor(hit.matColorPacked);
+  let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
+  let matColor  = vec4f(
+    scalarMatColor.rgb,
+    sampleTransmissionMapForHit(hit, scalarMatColor.a),
+  );
   let isGlass   = matColor.a > 0.3;  // transmission > ~76/255
   // Use the actual BVH-baked material color for all surfaces.
   let albedo    = matColor.rgb;

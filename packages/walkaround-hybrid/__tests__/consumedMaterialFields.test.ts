@@ -156,7 +156,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'emissive', 'emissiveIntensity',
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
       'thickness', 'ior', 'extensions', 'baseColorMap', 'roughnessMap', 'metallicMap',
-      'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap',
+      'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -165,7 +165,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
   it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
       'normalMap',
-      'transmissionMap', 'thicknessMap',
+      'thicknessMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
       'iridescenceThicknessMap', 'anisotropyMap', 'specularColorMap',

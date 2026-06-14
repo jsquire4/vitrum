@@ -273,7 +273,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).
-  let matColor = decodeMaterialColor(primaryHit.matColorPacked);
+  let scalarMatColor = decodeMaterialColor(primaryHit.matColorPacked);
+  let matColor = vec4f(
+    scalarMatColor.rgb,
+    sampleTransmissionMapForHit(primaryHit, scalarMatColor.a),
+  );
   let isGlass  = matColor.a > 0.3;  // transmission > ~76/255
   let isMetal  = decodeIsMetal(primaryHit.matColorPacked);  // came / solder
 

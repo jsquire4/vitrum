@@ -229,7 +229,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // B1 — metals/glossy now get a (diffuse-target) GI reservoir; shade reflects
   // it via the GGX specular lobe. Glass still punts (refracted GI out of scope).
   // Mirrors risGi.wgsl. The Lambertian target p̂ is unchanged.
-  let matColor = decodeMaterialColor(hit.matColorPacked);
+  let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
+  let matColor = vec4f(
+    scalarMatColor.rgb,
+    sampleTransmissionMapForHit(hit, scalarMatColor.a),
+  );
   let isGlass = matColor.a > 0.3;
   if (isGlass) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());

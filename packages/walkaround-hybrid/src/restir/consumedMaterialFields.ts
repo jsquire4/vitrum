@@ -35,6 +35,9 @@
  *                           emitter power and GI remain scalar, so approximate.
  *  transmission           packingHelpers.ts – packBVHIndexWFromCore (trans4
  *                           lane) + resolveRoughMetal (glass-roughness branch)
+ *  transmissionMap        materialAtlas.wgsl samples readable linear R-channel
+ *                           maps for shade/RIS/GI glass gating; emitter/GI
+ *                           payloads still use scalar packed lanes.
  *  attenuationColor       shared-bvh materialSpecTriColor / Beer-Lambert lane
  *                           (bvh_beer buffer)
  *  attenuationDistance    same Beer-Lambert path
@@ -65,7 +68,7 @@
  *                           blend remains approximate for fractional coverage.
  *
  * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
- * metallicMap / aoMap / alphaMap / emissiveMap, Disney BSDF scalars, spectral curves,
+ * metallicMap / aoMap / alphaMap / emissiveMap / transmissionMap, Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
  * extension scalars — is IGNORED.
  */
@@ -83,6 +86,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'alphaCutoff',
   'opacity',
   'transmission',
+  'transmissionMap',
   'attenuationColor',
   'attenuationDistance',
   'thickness',

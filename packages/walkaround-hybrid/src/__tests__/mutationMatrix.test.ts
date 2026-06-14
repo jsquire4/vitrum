@@ -327,6 +327,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           emissive: [2, 1, 0.5],
           emissiveIntensity: 3,
           emissiveMap: { handle: baseColorMapHandle(8), wrapT: 'mirrored-repeat' },
+          transmission: 1,
+          transmissionMap: { handle: baseColorMapHandle(4), wrapS: 'clamp-to-edge' },
         },
       });
 
@@ -340,6 +342,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableAoLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableEmissiveLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableTransmissionLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
@@ -347,6 +350,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           aoMap?: unknown;
           alphaMap?: unknown;
           emissiveMap?: unknown;
+          transmissionMap?: unknown;
         };
       }).material;
       expect(material.baseColorMap).toBeDefined();
@@ -354,6 +358,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(material.aoMap).toBeDefined();
       expect(material.alphaMap).toBeDefined();
       expect(material.emissiveMap).toBeDefined();
+      expect(material.transmissionMap).toBeDefined();
     } finally {
       engine.dispose();
     }
