@@ -68,16 +68,20 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     // FD gradient + drives a converging fit, lavapipe 2026-06-03.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL); // byte-identical partials
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn generatePrimaryRay');           // re-trace
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sampleCount: u32');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('ADJOINT_FROZEN_SEED_BASE + sampleIdx');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let invReplaySamples = 1.0 / f32(replaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('generatePrimaryRay(gid.x, gid.y, jitter)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn closestHit');                   // brute-force intersect
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn anyHit');                        // shadow rays
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0)'); // faceforward
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights');                  // rect-area NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x)'); // per-param scatter
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x * invReplaySamples)'); // per-param scatter
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
     // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x * invReplaySamples)');
     // The UBO is mat4 + vec4 + 2×uvec4 = 112 bytes; the field codes are stable.
     expect(ADJOINT_PARAMS_UBO_BYTES).toBe(112);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);

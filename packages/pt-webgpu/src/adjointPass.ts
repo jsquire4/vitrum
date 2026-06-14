@@ -74,6 +74,7 @@ export class AdjointPass {
     const pipeline = this.#pipeline;
 
     const { width, height, channels, params, gradientLength, dLoss_dRendered } = req;
+    const sampleCount = Math.max(1, Math.floor(req.samples));
 
     // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 2×uvec4 of counts.
     const vp = multiplyMat4(last.projMatrix, last.viewMatrix);
@@ -96,6 +97,7 @@ export class AdjointPass {
     uboU[24] = params.length >>> 0;
     uboU[25] = channels >>> 0;
     uboU[26] = sb.rectAreaLightCount >>> 0;
+    uboU[27] = sampleCount >>> 0;
 
     // adjointParamDescs: per param {matId, fieldCode, gradOffset, w}. For an
     // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the

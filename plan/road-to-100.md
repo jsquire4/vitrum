@@ -179,9 +179,10 @@ Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS do
   ReLU layers allocate distinct output buffers and remap downstream tensor reads;
   `reluPingPong.test.ts` pins the no read/read_write alias invariant. The remaining
   A10 gap is trained weights plus quality A/B.
-- **NEW B13 — walkaround texture sampling is broken at the seam** ✅: UVs zeroed at both
-  `restir/bvhCore.ts` build sites (items H15). The G3 texture work (63a6dab) wired UVs
-  through shared-bvh, but walkaround discards them. S-effort, render-changing.
+- **NEW B13 — ✅ CLOSED / SOURCE-VERIFIED 2026-06-13 — walkaround texture seam UVs**
+  `restir/bvhCore.ts` now packs real UVs at both build seams: scene-pack UVs are
+  extracted to stride-2 before `packUVIntoPositionW(...)`, and merged geometry uses
+  `merged.uvs`. `hRemediationItems.test.ts` pins the old all-zero UV failure.
 - **NEW B14 — ✅ DONE (v1-closure Wave 1/2, 0dbaff5) — DDGI emitter NEE complete**: rect/disc-area fixture point-proxy REMOVED (was double-counted against H18 NEE triangles — `coreEmittersToDDGILights.ts:155` map deleted; code-verified 0 hits for fixture-rect pattern); mesh-area emitter triangles now expand into the probe NEE list (`HybridEngineLifecycle.ts:545`, `collectMeshAreaEmitterTrisFromCore` + `setEmitterTris`); emissive-mesh scenes get nonzero DDGI indirect. Code-verified both fix sites.
 - **NEW B15 — ✅ DONE (Wave B) scene-scale-aware radiometric clamp defaults**:
   `HybridEngineScaleAwareClamps.ts` + `HybridEngine.ts:719-1145` derive the clamp DEFAULTS
@@ -513,7 +514,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | BDPT | `bdptConnection.wgsl.ts`, `bdptLightSubpath.wgsl.ts` | ✅ eye↔light connection uses full helpers; scalar light-subpath scatter now reuses `sampleNextBounceDirection` and records `brdfDirectionalPdfFullSampled` forward/reverse densities. **Open:** light-subpath texture-map payloads and independent radiometric oracle coverage. |
 | SPPM / caustics | `caustic.wgsl.ts`, `sppmBindings.wgsl.ts` | ✅ receiver-side SPPM/caustic BRDF/PDF helper propagation closed; MNEE cone-vs-BSDF MIS now uses the sampled-density helper for the BRDF alternative |
 | ReSTIR-PT | `restirPtProducer.wgsl.ts`, `restirPtCompose.wgsl.ts`, `reservoirPtHero.wgsl.ts`, `restirPtResolve.wgsl.ts` | ✅ producer direct/onward paths use full helpers; ✅ scalar-lobe reservoir payload/target/resolve now uses full visible-domain helpers, including `KHR_materials_specular` scalar colour/intensity (`ReservoirPTHero` 52-word layout); ✅ visible-vertex payload now mirrors the main shade prologue for alpha pass-through, baseColor/AO/ORM/normal/bump/transmission/extension maps, layer tint/roughness, thin-film, and spectral albedo; ✅ suffix/reconnection vertices now alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral domain before Lo evaluation, using the mapped suffix normal for the reservoir geometry; ✅ producer source sampler now samples a normalized base/clearcoat/sheen lobe mixture and stores the matching `pdfSrc` |
-| Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | OPEN — derivatives still target the base BRDF parameterization |
+| Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | ◻/✅ `req.samples` is now consumed by replaying the frozen inverse sample sequence and averaging gradients; still OPEN for full-path parity because derivatives target the base BRDF parameterization and single-bounce point/rect direct lighting only |
 | Present | `present.wgsl.ts` tonemap only — no BSDF | N/A |
 
 **Footgun:** Fixing megakernel only used to leave BDPT/SPPM wrong for glTF clearcoat scenes with `bdpt:true`; that local helper class is now narrowed. The remaining class is specialty texture payloads, inverse/adjoint derivatives, and proof/A-B coverage, not just missed function calls.

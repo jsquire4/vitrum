@@ -323,7 +323,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     target: targetImage(2, 2, [0.8, 0.1, 0.1]),
     parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
     method: 'path-replay',
-    samplesPerStep: 1,
+    samplesPerStep: 4,
   });
 
   it('resolves to path-replay when the engine provides the hook + every param is eligible', () => {
@@ -370,6 +370,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(fake.renderCount - before).toBe(1);
     expect(captured).not.toBeNull();
     expect(captured!.dLoss_dRendered.length).toBe(2 * 2 * 3); // per-pixel loss gradient
+    expect(captured!.samples).toBe(4); // consumed by the engine adjoint replay loop
     expect(captured!.gradientLength).toBe(3);
     expect(captured!.params[0]).toMatchObject({ domain: 'materials', id: 'panel', field: 'baseColor', offset: 0, length: 3 });
     expect(result.gradient[0]).toEqual([0.5, -0.25, 0.125]); // used the hook's gradient verbatim (pre-Adam)

@@ -23,9 +23,11 @@
  * all lights (no MC light selection: the adjoint is the deterministic expectation;
  * rect-area lights are center-sampled). baseColor (rgb) + roughness. The shading
  * normal is faced toward the viewer (the same flip the forward shade prologue
- * applies). The sampled directions are FROZEN (path replay differentiates only the
- * continuous shading, never the light/BSDF sampling — sidesteps visibility
- * discontinuities).
+ * applies). The primary-ray jitter sequence matches the inverse baseline render:
+ * sample `s` uses `frameSeed = 0x5eed5eed + s`, `frameIndex = 0`, then the pass
+ * averages the per-sample derivatives. The sampled directions are FROZEN (path
+ * replay differentiates only the continuous shading, never the light/BSDF
+ * sampling — sidesteps visibility discontinuities).
  *
  * A FOCUSED single-group pipeline (not a forward-kernel variant): the forward
  * spends all 4 bind groups, so the adjoint binds only the read subset it needs +
@@ -33,6 +35,7 @@
  *
  * Ref: Vicini 2021 (Path Replay Backprop); Möller-Trumbore 1997 (intersection).
  */
+import { PCG_WGSL } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from './pathTraceAdjoint.wgsl.js';
 
 /** Field codes in the adjointParams descriptor (matches inverseSession fields). */
@@ -73,7 +76,7 @@ struct AdjointParams {
   paramCount:  u32,
   channels:    u32,
   rectAreaLightCount: u32,
-  _pad1:       u32,
+  sampleCount: u32,
 }
 
 @group(0) @binding(0) var<uniform>             params:        AdjointParams;
@@ -91,6 +94,8 @@ struct AdjointParams {
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
+const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
+${PCG_WGSL}
 //
 // MIRROR SITE — these four functions are intentionally duplicated here from
 // their canonical definitions so this adjoint-pass shader is a self-contained
@@ -130,8 +135,8 @@ ${PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL}
 
 // ── camera (mirror kernelCore.generatePrimaryRay) ───────────────────────────
 struct Ray { origin: vec3f, direction: vec3f }
-fn generatePrimaryRay(px: u32, py: u32) -> Ray {
-  let uv = (vec2f(f32(px), f32(py)) + vec2f(0.5)) / vec2f(f32(params.width), f32(params.height));
+fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
+  let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
   let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
@@ -194,119 +199,128 @@ fn anyHit(ro: vec3f, rd: vec3f, tMax: f32) -> bool {
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) { return; }
-  let ray = generatePrimaryRay(gid.x, gid.y);
-  let hit = closestHit(ray.origin, ray.direction);
-  if (!hit.valid) { return; }
-
-  let matId = triMaterialIds[hit.tri];
-  let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
-  let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
-  let baseColor = m0.rgb;
-  let roughness = clamp(m0.w, 0.02, 1.0);
-  let metallic = clamp(m1.w, 0.0, 1.0);
-
-  let idx = indices[hit.tri];
-  let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
-  // Face the shading normal toward the viewer — the SAME flip the forward shade
-  // prologue applies (shadePrologue.wgsl.ts). Without it, back-facing geometry
-  // gets nDotL<=0 against an interior light and contributes no gradient.
-  let n = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
-  let pos = ray.origin + ray.direction * hit.t;
-  let wo = -ray.direction;
 
   // Per-pixel ∂loss/∂rendered (the session computed it from baseline vs target).
   let pixel = gid.y * params.width + gid.x;
   let base = pixel * params.channels;
   let dLoss_dR = vec3f(dLossDRendered[base], dLossDRendered[base + 1u], dLossDRendered[base + 2u]);
 
-  // Emissive partial — NOT a NEE term. The forward adds throughput * emissive for
-  // the emission this surface is seen to emit DIRECTLY by the camera ray at THIS
-  // (primary) hit (shadePrologue.wgsl.ts:63). Path-replay's primary hit has
-  // throughput = 1, so d(rendered_c)/d(emissive_c) = emissiveIntensity (dContribution_
-  // dEmissive with throughput = 1), and d(loss)/d(emissive_c) = dLoss_dR_c * intensity.
-  // Independent of light visibility — computed here, scattered per-descriptor below
-  // with that descriptor's fixed emissiveIntensity (carried in .w). It is gated by
-  // the matId match in the scatter loop, so a pixel only contributes to the emissive
-  // gradient when ITS primary-hit material is the optimized emissive primitive.
-  let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
+  let replaySamples = max(params.sampleCount, 1u);
+  let invReplaySamples = 1.0 / f32(replaySamples);
+  for (var sampleIdx = 0u; sampleIdx < replaySamples; sampleIdx = sampleIdx + 1u) {
+    var rng = pcgInit(gid.x, gid.y, ADJOINT_FROZEN_SEED_BASE + sampleIdx);
+    let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
+    let ray = generatePrimaryRay(gid.x, gid.y, jitter);
+    let hit = closestHit(ray.origin, ray.direction);
+    if (!hit.valid) { continue; }
 
-  // Single-bounce direct lighting, summed deterministically over all point lights.
-  // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
-  var gBaseColor = vec3f(0.0);
-  var gRough = 0.0;
-  for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
-    let lp = pointLights[pi * 3u].xyz;
-    let rad = pointLights[pi * 3u + 1u].rgb;
-    let ptExtra = pointLights[pi * 3u + 2u];
-    let ptMaxDist = ptExtra.x;
-    let ptDecay   = ptExtra.y;
-    let toPoint = lp - pos;
-    let dist2 = max(dot(toPoint, toPoint), 1e-5);
-    let dist = sqrt(dist2);
-    if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
-    let wi = toPoint / dist;
-    let nDotL = max(0.0, dot(n, wi));
-    if (nDotL <= 0.0) { continue; }
-    if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-    let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
-    let Li = rad * attenuation;
-    // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
-    gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
-    // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
-    gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
-  }
+    let matId = triMaterialIds[hit.tri];
+    let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
+    let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
+    let baseColor = m0.rgb;
+    let roughness = clamp(m0.w, 0.02, 1.0);
+    let metallic = clamp(m1.w, 0.0, 1.0);
 
-  // Rect-area lights: deterministic CENTER-sample of the same geometric term the
-  // forward area NEE integrates (brdf·nDotL·radiance·cosLight·area/dist²). One
-  // sample is a biased-but-correct-direction estimate of the area integral — good
-  // enough for the gradient direction (Adam handles the magnitude). GPU-validated
-  // on a camera-near rect-area light (directly lights the visible target).
-  for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
-    let rb = ri * 4u;
-    let rpos = rectAreaLights[rb].xyz;
-    let ru = rectAreaLights[rb + 1u].xyz;
-    let rv = rectAreaLights[rb + 2u].xyz;
-    let rad = rectAreaLights[rb + 3u].rgb;
-    let toLight = rpos - pos;
-    let dist2 = max(dot(toLight, toLight), 1e-6);
-    let dist = sqrt(dist2);
-    let wi = toLight / dist;
-    let nDotL = max(0.0, dot(n, wi));
-    if (nDotL <= 0.0) { continue; }
-    let lightNormal = safe_normalize(cross(ru, rv));
-    let cosLight = max(dot(lightNormal, -wi), 0.0);
-    if (cosLight <= 0.0) { continue; }
-    if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-    let area = max(4.0 * length(cross(ru, rv)), 1e-6);
-    let Li = rad * (cosLight * area / dist2);
-    gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
-    gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
-  }
+    let idx = indices[hit.tri];
+    let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
+    // Face the shading normal toward the viewer — the SAME flip the forward shade
+    // prologue applies (shadePrologue.wgsl.ts). Without it, back-facing geometry
+    // gets nDotL<=0 against an interior light and contributes no gradient.
+    let n = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
+    let pos = ray.origin + ray.direction * hit.t;
+    let wo = -ray.direction;
 
-  // Scatter into the gradient slot of every param that targets THIS hit's material
-  // (the matId gate is what makes the emissive gradient respond to the optimized
-  // primitive's own pixels — a pixel whose primary hit is a different material
-  // contributes nothing to that primitive's emissive slot).
-  for (var k = 0u; k < params.paramCount; k = k + 1u) {
-    let d = adjointParamDescs[k];
-    if (d.x != matId) { continue; }
-    let gradOffset = d.z;
-    if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
-      adjointScatter(gradOffset, gBaseColor.x);
-      adjointScatter(gradOffset + 1u, gBaseColor.y);
-      adjointScatter(gradOffset + 2u, gBaseColor.z);
-    } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
-      // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
-      // folds intensity into emissive.rgb, so the host hands the fixed
-      // emissiveIntensity in the descriptor's .w (bitcast f32); the partial per
-      // unit intensity is (1,1,1) at the primary hit (throughput = 1).
-      let emissiveIntensity = bitcast<f32>(d.w);
-      let gEmissive = dLoss_dR * dRendered_dEmissivePerUnitIntensity * emissiveIntensity;
-      adjointScatter(gradOffset, gEmissive.x);
-      adjointScatter(gradOffset + 1u, gEmissive.y);
-      adjointScatter(gradOffset + 2u, gEmissive.z);
-    } else {
-      adjointScatter(gradOffset, gRough);
+    // Emissive partial — NOT a NEE term. The forward adds throughput * emissive for
+    // the emission this surface is seen to emit DIRECTLY by the camera ray at THIS
+    // (primary) hit (shadePrologue.wgsl.ts:63). Path-replay's primary hit has
+    // throughput = 1, so d(rendered_c)/d(emissive_c) = emissiveIntensity (dContribution_
+    // dEmissive with throughput = 1), and d(loss)/d(emissive_c) = dLoss_dR_c * intensity.
+    // Independent of light visibility — computed here, scattered per-descriptor below
+    // with that descriptor's fixed emissiveIntensity (carried in .w). It is gated by
+    // the matId match in the scatter loop, so a pixel only contributes to the emissive
+    // gradient when ITS primary-hit material is the optimized emissive primitive.
+    let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
+
+    // Single-bounce direct lighting, summed deterministically over all point lights.
+    // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
+    var gBaseColor = vec3f(0.0);
+    var gRough = 0.0;
+    for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
+      let lp = pointLights[pi * 3u].xyz;
+      let rad = pointLights[pi * 3u + 1u].rgb;
+      let ptExtra = pointLights[pi * 3u + 2u];
+      let ptMaxDist = ptExtra.x;
+      let ptDecay   = ptExtra.y;
+      let toPoint = lp - pos;
+      let dist2 = max(dot(toPoint, toPoint), 1e-5);
+      let dist = sqrt(dist2);
+      if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
+      let wi = toPoint / dist;
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL <= 0.0) { continue; }
+      if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+      let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
+      let Li = rad * attenuation;
+      // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
+      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
+      // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
+      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+    }
+
+    // Rect-area lights: deterministic CENTER-sample of the same geometric term the
+    // forward area NEE integrates (brdf·nDotL·radiance·cosLight·area/dist²). One
+    // sample is a biased-but-correct-direction estimate of the area integral — good
+    // enough for the gradient direction (Adam handles the magnitude). GPU-validated
+    // on a camera-near rect-area light (directly lights the visible target).
+    for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
+      let rb = ri * 4u;
+      let rpos = rectAreaLights[rb].xyz;
+      let ru = rectAreaLights[rb + 1u].xyz;
+      let rv = rectAreaLights[rb + 2u].xyz;
+      let rad = rectAreaLights[rb + 3u].rgb;
+      let toLight = rpos - pos;
+      let dist2 = max(dot(toLight, toLight), 1e-6);
+      let dist = sqrt(dist2);
+      let wi = toLight / dist;
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL <= 0.0) { continue; }
+      let lightNormal = safe_normalize(cross(ru, rv));
+      let cosLight = max(dot(lightNormal, -wi), 0.0);
+      if (cosLight <= 0.0) { continue; }
+      if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+      let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+      let Li = rad * (cosLight * area / dist2);
+      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
+      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+    }
+
+    // Scatter into the gradient slot of every param that targets THIS hit's material
+    // (the matId gate is what makes the emissive gradient respond to the optimized
+    // primitive's own pixels — a pixel whose primary hit is a different material
+    // contributes nothing to that primitive's emissive slot). Scale by
+    // 1/sampleCount because the baseline render is the mean of the same frozen
+    // sample sequence.
+    for (var k = 0u; k < params.paramCount; k = k + 1u) {
+      let d = adjointParamDescs[k];
+      if (d.x != matId) { continue; }
+      let gradOffset = d.z;
+      if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
+        adjointScatter(gradOffset, gBaseColor.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gBaseColor.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gBaseColor.z * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
+        // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
+        // folds intensity into emissive.rgb, so the host hands the fixed
+        // emissiveIntensity in the descriptor's .w (bitcast f32); the partial per
+        // unit intensity is (1,1,1) at the primary hit (throughput = 1).
+        let emissiveIntensity = bitcast<f32>(d.w);
+        let gEmissive = dLoss_dR * dRendered_dEmissivePerUnitIntensity * emissiveIntensity;
+        adjointScatter(gradOffset, gEmissive.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gEmissive.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gEmissive.z * invReplaySamples);
+      } else {
+        adjointScatter(gradOffset, gRough * invReplaySamples);
+      }
     }
   }
 }
