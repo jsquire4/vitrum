@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (engine H31 residue, 2026-06-14)
+
+- **`@vitrum/engine` attach/progressive diagnostics:** `attachVitrum()` handles now expose a live `backendId` getter so hosts can see the currently selected backend even after auto-recreate swaps the underlying engine. `createProgressiveEngine()` now has a focused regression test proving final WebGPU canvas `configure()` failures surface through `onError` as `{ phase:'canvas-configure', backend:'walkaround-hybrid', recoverable:true }`.
+
 ### Added (walkaround roughness/metallic/AO atlas slice, 2026-06-14)
 
 - **`@vitrum/walkaround-hybrid` roughness/metallic/AO map consumption:** the material texture atlas now packs readable `roughnessMap`, `metallicMap`, and `aoMap` handles alongside `baseColorMap`, preserving per-map uv0/uv1 selection, wrap modes, and `KHR_texture_transform` metadata. `shade.wgsl` samples roughness from the glTF G channel, metallic from the B channel, and AO from the R channel, with `aoMapIntensity` carried in the per-triangle material word and applied with glTF occlusion-strength semantics. The promise ledger grades these rows `approximate` because upstream reservoir/GI payloads still use scalar packed lanes.

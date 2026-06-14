@@ -42,10 +42,11 @@ function makeCamera() {
   };
 }
 
-function makeEngine() {
+function makeEngine(backendId = 'pt-webgl2') {
   const errorCallbacks: Array<(err: EngineError) => void> = [];
   const setScene = vi.fn();
   const engine = {
+    backendId,
     state: 'ready',
     capabilities: {},
     setScene,
@@ -114,6 +115,33 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
+
+    handle.dispose();
+  });
+
+  it('exposes the selected backend id through the stable attach handle', async () => {
+    const first = makeEngine('pt-webgl2');
+    const second = makeEngine('walkaround-hybrid');
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    expect(handle.backendId).toBe('pt-webgl2');
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
 
     handle.dispose();
   });

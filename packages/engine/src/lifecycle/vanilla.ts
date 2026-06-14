@@ -259,6 +259,10 @@ export interface AttachVitrumHandle {
   /** The underlying Engine. Hosts can subscribe to telemetry or call
    *  reset() / pause() / resume() directly via this handle. */
   readonly engine: Engine;
+  /** Backend selected by createEngine for the currently attached engine.
+   *  Auto-recreate keeps the same stable handle object, so this is exposed as a
+   *  live getter and updates if a recreated engine lands on a different backend. */
+  readonly backendId: EngineWithBackendId['backendId'];
   /** Stop the RAF loop, disconnect the ResizeObserver, unsubscribe from
    *  document.visibilitychange, and dispose the engine. Idempotent. */
   dispose(): void;
@@ -625,6 +629,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let disposed = false;
   return {
     get engine() { return engine; },
+    get backendId() { return engine.backendId; },
     dispose: () => {
       if (disposed) return;
       disposed = true;

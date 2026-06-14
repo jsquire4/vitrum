@@ -744,10 +744,10 @@ The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, h
 
 | Item | File |
 |------|------|
-| `backendId` on attach handle | `vanilla.ts` |
-| `createProgressiveEngine` `onError` on canvas configure | `createProgressiveEngine.ts:307` |
-| `analyticPrimitiveToMesh` UVs | `packages/core/src/analyticToMesh.ts` |
-| `idempotentDispose` errors | `idempotentDispose.ts` → `onError` |
+| ~~`backendId` on attach handle~~ ✅ CODE CLOSED | `vanilla.ts` exposes `AttachVitrumHandle.backendId` as a live getter over the current engine, so auto-recreate swaps are observable without re-grabbing `handle.engine`. Test: `attachVitrumAutoRecreate.test.ts`. |
+| ~~`createProgressiveEngine` `onError` on canvas configure~~ ✅ CODE CLOSED | `createProgressiveEngine.ts` reports the final best-effort `configureWebGpuCanvas()` failure with `{ phase:'canvas-configure', backend:'walkaround-hybrid', recoverable:true }`. Test: `createProgressiveEngineCanvasError.test.ts`. |
+| ~~`analyticPrimitiveToMesh` UVs~~ ✅ SOURCE-VERIFIED STALE | `packages/core/src/scene/analyticToMesh.ts` generated meshes carry `uvs`, and `analyticToMesh.test.ts` pins UV ranges plus fallback UV cloning. |
+| ~~`idempotentDispose` errors~~ ✅ SOURCE-VERIFIED STALE | `idempotentDispose.ts` exposes `onDisposeError` for backend/post-dispose throws instead of swallowing them silently; existing proxy-table coverage keeps disposed behavior pinned. |
 
 #### 4F — Extensions not yet in spec (gap fill for true arbitrary glTF)
 
