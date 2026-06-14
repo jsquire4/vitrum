@@ -7,13 +7,22 @@
 
 import { loadGltfForEngine } from '@vitrum/gltf-adapter';
 import type {
+  GltfAssetInput,
+  GltfAssetResult,
   GltfEngineSelection,
   GltfCompatibilityMode,
   GltfForEngineResult,
+  GltfSceneController,
+  GltfTextureDecodeReport,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
 import { probeAdapterProfile } from './adapterProfile.js';
 import { createEngine } from './createEngine.js';
+import {
+  createProgressiveEngine,
+  type CreateProgressiveEngineOptions,
+  type ProgressiveEngineHandle,
+} from './createProgressiveEngine.js';
 import type {
   CreateEngineBackendId,
   CreateEngineOptions,
@@ -42,6 +51,26 @@ export type LoadGltfWithEngineOptions = Omit<
   readonly engineOptions?: GltfCreateEngineOptions;
 };
 
+export type GltfCreateProgressiveEngineOptions =
+  Omit<CreateProgressiveEngineOptions, 'scene' | 'controller'>;
+
+export type LoadGltfWithProgressiveEngineOptions = Omit<
+  LoadGltfForEngineOptions,
+  'engine' | 'createEngine' | 'engineOptions' | 'attachScene' | 'backend'
+> & {
+  readonly engineOptions: GltfCreateProgressiveEngineOptions;
+};
+
+export interface GltfProgressiveEngineResult {
+  readonly asset: GltfAssetResult;
+  readonly backend: 'pt-webgpu';
+  readonly engine: ProgressiveEngineHandle;
+  readonly controller: GltfSceneController;
+  readonly attached: true;
+  readonly textureDecodeReport: GltfTextureDecodeReport;
+  readonly warnings: readonly string[];
+}
+
 export async function loadGltfWithEngine(
   input: Parameters<typeof loadGltfForEngine>[0],
   options: LoadGltfWithEngineOptions = {},
@@ -60,6 +89,33 @@ export async function loadGltfWithEngine(
       });
     },
   });
+}
+
+export async function loadGltfWithProgressiveEngine(
+  input: GltfAssetInput,
+  options: LoadGltfWithProgressiveEngineOptions,
+): Promise<GltfProgressiveEngineResult> {
+  const { engineOptions, ...adapterOptions } = options;
+  const loaded = await loadGltfForEngine(input, {
+    ...adapterOptions,
+    backend: 'pt-webgpu',
+    attachScene: false,
+  });
+  const engine = await createProgressiveEngine({
+    ...engineOptions,
+    scene: loaded.asset.scene,
+    controller: loaded.controller,
+  });
+
+  return {
+    asset: loaded.asset,
+    backend: 'pt-webgpu',
+    engine,
+    controller: loaded.controller,
+    attached: true,
+    textureDecodeReport: loaded.textureDecodeReport,
+    warnings: loaded.warnings,
+  };
 }
 
 async function assertStrictPtWebgpuTier(
