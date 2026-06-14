@@ -194,11 +194,11 @@ function packBVHIndexWTri(
 //                 Decode: ior = 1 + (byte / 255) * 2.  Quantization step = 2/255 ≈ 0.0078.
 //                 IOR_GLASS = 1.5 encodes to byte 63.75 → rounds to 64 → decodes to
 //                 1 + 64/255 * 2 ≈ 1.502 (error < 0.003 — within glass dispersion spread).
-//   bits[7:0]   = material flags:
+//   bits[7:0]   = material flags + low-precision scalar sidecar:
 //                 bit 0 = castShadowDisabled
 //                 bit 1 = unlit shading model
 //                 bit 2 = scalarAlphaDiscarded
-//                 bits 3-7 reserved (zero).
+//                 bits 3-7 = aoMapIntensity × 31 (glTF occlusion strength).
 //
 // DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
 // ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
@@ -235,6 +235,11 @@ export function dequantizeIor(byte: number): number {
 const BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT = 1 << 0;
 const BVH_MATERIAL_UNLIT_BIT = 1 << 1;
 const BVH_MATERIAL_SCALAR_ALPHA_DISCARDED_BIT = 1 << 2;
+
+function quantizeAoMapIntensity(value: number | undefined): number {
+  const strength = Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? 1)) : 1;
+  return (Math.round(strength * 31) & 0x1F) << 3;
+}
 
 function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
   const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
@@ -567,6 +572,10 @@ export function packBVHIndexWFromCore(
  * (`opacity <= 0`). Texture alpha (`alphaMap`) remains unsupported until the
  * walkaround atlas exists, and fractional blend is warned as approximate by
  * HybridEngine.setScene.
+ *
+ * AO map strength (2026-06-14) — bits 3-7 carry `aoMapIntensity` quantized to
+ * 5 bits. Shade applies the glTF occlusion formula `mix(1, aoMap.r, strength)`
+ * and multiplies it into the runtime GTAO factor.
  */
 export function packBVHRoughMetalFromCore(
   triMaterialId: Uint32Array,
@@ -582,6 +591,7 @@ export function packBVHRoughMetalFromCore(
     let castShadowDisabled = 0;
     let unlit = 0;
     let scalarAlphaDiscardedFlag = 0;
+    let aoStrengthBits = 0;
     if (mat) {
       const rm = resolveRoughMetal(mat.roughness, mat.metallic, mat.transmission, mat.ior);
       rough = rm.rough;
@@ -595,12 +605,14 @@ export function packBVHRoughMetalFromCore(
       scalarAlphaDiscardedFlag = scalarAlphaDiscarded(mat)
         ? BVH_MATERIAL_SCALAR_ALPHA_DISCARDED_BIT
         : 0;
+      aoStrengthBits = mat.aoMap != null ? quantizeAoMapIntensity(mat.aoMapIntensity) : 0;
     }
     rmBuf[t] = (
       packRoughMetalIorBytes(rough, metal, ior) |
       castShadowDisabled |
       unlit |
-      scalarAlphaDiscardedFlag
+      scalarAlphaDiscardedFlag |
+      aoStrengthBits
     ) >>> 0;
   }
   return rmBuf;

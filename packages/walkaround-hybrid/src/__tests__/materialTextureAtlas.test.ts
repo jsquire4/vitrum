@@ -143,16 +143,55 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[21]).toBeCloseTo(4, 5);
     expect(atlas.baseColorMetaData[22]).toBeCloseTo(Math.cos(Math.PI), 5);
     expect(atlas.baseColorMetaData[23]).toBeCloseTo(Math.sin(Math.PI), 5);
+    expect(atlas.baseColorMetaData[24]).toBe(-1);
   });
 
-  it('shade samples roughness and metallic scalar maps from the atlas', () => {
+  it('packs aoMap as a linear R-channel atlas slot', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([96, 128, 200, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      aoMap: {
+        handle,
+        wrapS: 'clamp-to-edge',
+        wrapT: 'mirrored-repeat',
+      },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableAoLayerCount).toBe(1);
+    expect(atlas.atlasLayerCount).toBe(1);
+    expect(atlas.atlasData[0]).toBeCloseTo(96 / 255, 5);
+    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
+    expect(atlas.atlasData[2]).toBeCloseTo(200 / 255, 5);
+    // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5], ao=[6,7].
+    expect(atlas.baseColorMetaData[0]).toBe(-1);
+    expect(atlas.baseColorMetaData[8]).toBe(-1);
+    expect(atlas.baseColorMetaData[16]).toBe(-1);
+    expect(atlas.baseColorMetaData[24]).toBe(0);
+    expect(atlas.baseColorMetaData[25]).toBe(1 + 2 * 4);
+  });
+
+  it('shade samples roughness, metallic, and AO scalar maps from the atlas', () => {
     expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
+    expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
     expect(SHADE_WGSL).toContain(
       'let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);',
     );
     expect(SHADE_WGSL).toContain(
       'let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);',
     );
+    expect(SHADE_WGSL).toContain(
+      'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
+    );
+    expect(SHADE_WGSL).toContain(') * authoredAo;');
   });
 });

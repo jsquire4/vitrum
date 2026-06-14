@@ -192,12 +192,12 @@ export interface MaterialSpec {
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;
   /** Ambient occlusion map (glTF occlusionTexture).
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  atlas-backed visible shade path. */
   readonly aoMap?: TextureRef;
   /** Ambient occlusion strength multiplier. Default 1.
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer. */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  per-triangle material word. */
   readonly aoMapIntensity?: number;
   readonly clearcoatMap?: TextureRef;
   readonly clearcoatRoughnessMap?: TextureRef;

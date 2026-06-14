@@ -114,7 +114,7 @@ export const SHADE_WGSL = /* wgsl */ `
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
 // Phase-3D material-map atlas. The host stores readable baseColorMap,
-// roughnessMap, and metallicMap handles as RGBA32F array layers and a
+// roughnessMap, metallicMap, and aoMap handles as RGBA32F array layers and a
 // per-triangle metadata texture. Texture sampling uses textureLoad (nearest)
 // so no sampler binding is needed and the scene group storage-buffer count
 // stays unchanged.
@@ -169,10 +169,11 @@ fn storeSvgfObjectId(pix: vec2u, id: u32) {
 }
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 6u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 8u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
+const MATERIAL_MAP_SLOT_AO: u32 = 3u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -247,6 +248,12 @@ fn sampleMaterialScalarMap(triIndex: u32, slot: u32, channel: u32, uv0: vec2f, u
     return fallback;
   }
   return clamp(materialMapChannel(texelColor, channel), 0.0, 1.0);
+}
+
+fn sampleAoMapFactor(triIndex: u32, materialWord: u32, uv0: vec2f, uv1: vec2f) -> f32 {
+  let rawOcclusion = sampleMaterialScalarMap(triIndex, MATERIAL_MAP_SLOT_AO, 0u, uv0, uv1, 1.0);
+  let strength = decodeAoMapIntensity(materialWord);
+  return mix(1.0, rawOcclusion, strength);
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
@@ -389,6 +396,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let rm       = decodeRoughMetal(materialWord);
   let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);
   let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);
+  let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
   // output the authored base color directly, bypassing all lighting and GI.
@@ -467,7 +475,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     select(1.0, aoClamped.r, aoRaw.r > 0.001),
     select(1.0, aoClamped.g, aoRaw.g > 0.001),
     select(1.0, aoClamped.b, aoRaw.b > 0.001),
-  );
+  ) * authoredAo;
 
   // Sprint 18 — split the radiance into a direct channel (heads to the
   // tight-sigma atrous-variance chain) and an indirect channel (heads to

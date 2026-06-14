@@ -39,6 +39,11 @@ function decodeIor(packed: number): number {
   return 1.0 + (byte / 255) * 2.0;
 }
 
+/** Mirror of WGSL `decodeAoMapIntensity` — bits[7:3], /31. */
+function decodeAoMapIntensity(packed: number): number {
+  return ((packed >>> 3) & 0x1f) / 31;
+}
+
 const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
 
@@ -362,5 +367,47 @@ describe('Scalar alpha cutout — material flag bit 2 in packBVHRoughMetalFromCo
     expect(decodeRoughMetal(buf[0]!).metal).toBeCloseTo(0.5, 2);
     expect(Math.abs(decodeIor(buf[0]!) - 2.0)).toBeLessThan(0.01);
     expect(buf[0]! & 0xff).toBe(0x7);
+  });
+});
+
+describe('AO map strength — material flag bits 3-7 in packBVHRoughMetalFromCore', () => {
+  it('packs aoMapIntensity only when an AO map exists', () => {
+    const handle = { width: 1, height: 1, data: new Uint8Array([128, 128, 128, 255]) };
+    const coreMats = [
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, aoMapIntensity: 0.25 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, aoMap: { handle }, aoMapIntensity: 0.25 },
+      { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, aoMap: { handle } },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0, 1, 2]), coreMats, 3);
+
+    expect(buf[0]! & 0xf8).toBe(0);
+    expect(decodeAoMapIntensity(buf[1]!)).toBeCloseTo(0.25, 1);
+    expect(decodeAoMapIntensity(buf[2]!)).toBeCloseTo(1, 5);
+  });
+
+  it('coexists with low-byte flags and does not perturb rough/metal/IOR lanes', () => {
+    const handle = { width: 1, height: 1, data: new Uint8Array([128, 128, 128, 255]) };
+    const coreMats = [
+      {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0.5,
+        ior: 2.0,
+        transmission: 1.0,
+        castShadow: false,
+        shadingModel: 'unlit',
+        alphaMode: 'mask',
+        opacity: 0.1,
+        alphaCutoff: 0.5,
+        aoMap: { handle },
+        aoMapIntensity: 0.5,
+      },
+    ] as unknown as MaterialSpec[];
+    const buf = packBVHRoughMetalFromCore(new Uint32Array([0]), coreMats, 1);
+    expect(decodeRoughMetal(buf[0]!).rough).toBeCloseTo(0.5, 2);
+    expect(decodeRoughMetal(buf[0]!).metal).toBeCloseTo(0.5, 2);
+    expect(Math.abs(decodeIor(buf[0]!) - 2.0)).toBeLessThan(0.01);
+    expect(buf[0]! & 0x7).toBe(0x7);
+    expect(decodeAoMapIntensity(buf[0]!)).toBeCloseTo(0.5, 1);
   });
 });

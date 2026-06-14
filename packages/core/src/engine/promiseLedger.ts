@@ -335,7 +335,7 @@ type MaterialSupportMatrix = Readonly<
  * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
  * 4-bit transmission, scalar-alpha cutout bit, pre-baked Beer-Lambert tint) +
  * f32 HDR emissive Le. The texture-atlas path samples readable uv0/uv1
- * baseColorMap, roughnessMap, and metallicMap handles in shade; other
+ * baseColorMap, roughnessMap, metallicMap, and aoMap handles in shade; other
  * TextureRefs are not sampled.
  * Everything not consumed is warned once per setScene via
  * `walkaround-hybrid.unconsumed-material-fields`
@@ -375,9 +375,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Approximate because glass Beer/transmission tint still uses the scalar
   // packed color path and the rest of the texture-map family is not sampled.
   baseColorMap: 'approximate',
-  // Phase-3D scalar-map slice: sampled from the glTF G/B channels in shade for
-  // visible BRDF terms. Approximate because upstream reservoir/candidate PDFs
-  // and GI payloads still use the scalar packed lanes.
+  // Phase-3D scalar-map slice: roughness/metallic sample glTF G/B channels in
+  // shade for visible BRDF terms; AO samples the glTF R channel and multiplies
+  // the runtime GTAO factor. Approximate because upstream reservoir/candidate
+  // PDFs and GI payloads still use the scalar packed lanes.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'unsupported',
@@ -386,8 +387,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   thicknessMap: 'unsupported',
   emissiveMap: 'unsupported',
   alphaMap: 'unsupported',
-  aoMap: 'unsupported',
-  aoMapIntensity: 'unsupported',
+  aoMap: 'approximate',
+  aoMapIntensity: 'approximate',
   clearcoatMap: 'unsupported',
   clearcoatRoughnessMap: 'unsupported',
   clearcoatNormalMap: 'unsupported',

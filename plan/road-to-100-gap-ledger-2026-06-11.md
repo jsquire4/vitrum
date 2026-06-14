@@ -284,6 +284,15 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   to WGSL, and `shade.wgsl` emits base-color radiance directly with zero
   indirect for unlit hits. Bit 0 remains the primitive cast-shadow-disabled
   flag; rough/metal/IOR lanes are unchanged.
+- Walkaround-hybrid Phase-3D atlas follow-up (2026-06-14): after the
+  `baseColorMap` first slice and `roughnessMap`/`metallicMap` scalar slice,
+  `aoMap` now also packs into `pipeline/materialTextureAtlas.ts` as a linear
+  R-channel atlas slot with per-map uv0/uv1, wrap, and texture-transform
+  metadata. `packBVHRoughMetalFromCore()` stores `aoMapIntensity` in material
+  word bits 3-7, `decodeAoMapIntensity()` exposes it to `shade.wgsl`, and shade
+  multiplies runtime GTAO by `mix(1, aoMap.r, strength)`. The ledger promotes
+  `aoMap`/`aoMapIntensity` to approximate, not native, because upstream
+  reservoir/GI payloads still use scalar packed lanes.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,
@@ -1220,9 +1229,10 @@ Closure:
   imported base/KHR material map.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
-  parity is required, walkaround `alphaMap`/fractional blend + atlas material
-  maps, pt-webgpu/walkaround `thicknessMap` parity, and backend material-
-  consumption parity.
+  parity is required, walkaround `alphaMap`/fractional blend plus the remaining
+  atlas map families (normal/emissive/transmission/thickness/extension/light/
+  bump/displacement policy), pt-webgpu/walkaround `thicknessMap` parity, and
+  backend material-consumption parity.
 
 ## P5 validation and promotion gates
 

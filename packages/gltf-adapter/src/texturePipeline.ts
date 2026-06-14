@@ -174,6 +174,7 @@ const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'baseColorMap',
   'roughnessMap',
   'metallicMap',
+  'aoMap',
 ]);
 
 export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): GltfTextureColorSpace {

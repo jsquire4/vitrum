@@ -86,7 +86,13 @@ fn decodeIsUnlitMaterial(packed: u32) -> bool {
 // wrapper traceSceneFirstHitAlphaMask skips those triangles globally, while the
 // cast-shadow-masked any-hit path skips them for occlusion rays too. No decode
 // helper is needed by shade because the discarded triangle is never returned.
-// Bits 3-7 remain reserved (zero).
+//
+// AO-01 (2026-06-14) — bits 3-7 = aoMapIntensity quantized to 5 bits. glTF's
+// occlusion strength is intentionally low precision here because it is a scalar
+// sidecar to the atlas-backed R-channel map and only modulates diffuse lighting.
+fn decodeAoMapIntensity(packed: u32) -> f32 {
+  return f32((packed >> 3u) & 0x1Fu) / 31.0;
+}
 
 `;
 

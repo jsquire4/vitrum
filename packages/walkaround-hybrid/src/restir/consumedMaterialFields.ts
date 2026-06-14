@@ -51,9 +51,14 @@
  *  metallicMap            same material atlas + metadata path; shade.wgsl
  *                           samples the glTF B channel and overrides the
  *                           scalar metallic value for visible BRDF terms.
+ *  aoMap                  same material atlas + metadata path; shade.wgsl
+ *                           samples the glTF R channel and multiplies it into
+ *                           the runtime GTAO factor for diffuse lighting.
+ *  aoMapIntensity         packBVHRoughMetalFromCore stores the glTF
+ *                           occlusion strength in material-word bits 3-7.
  *
  * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
- * metallicMap (including alphaMap), Disney BSDF scalars, spectral curves,
+ * metallicMap / aoMap (including alphaMap), Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
  * extension scalars — is IGNORED.
  */
@@ -78,6 +83,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'baseColorMap',
   'roughnessMap',
   'metallicMap',
+  'aoMap',
+  'aoMapIntensity',
 ]);
 
 /**

@@ -1030,7 +1030,7 @@ function uv2Component(
   return value?.[index] ?? fallback;
 }
 
-const ATLAS_MATERIAL_MAP_FIELDS = ['baseColorMap', 'roughnessMap', 'metallicMap'] as const;
+const ATLAS_MATERIAL_MAP_FIELDS = ['baseColorMap', 'roughnessMap', 'metallicMap', 'aoMap'] as const;
 
 function textureMapPatchRequiresFullRebuild(
   prev: MaterialSpec | undefined,
