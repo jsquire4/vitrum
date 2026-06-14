@@ -716,7 +716,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 | walkaround (Phase 3D) | Same as pt-webgl2 for atlas build | CPU pixels → atlas |
 
 ✅ **DONE (2026-06-13):** `@vitrum/gltf-adapter` exports `decodeSceneTextures(scene, { target: 'cpu-linear' | 'webgpu', decodePixels })`.
-The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, height, data: Float32Array }` RGBA linear payloads with a Vitrum hint, applies the adapter's per-field sRGB-vs-linear policy, keeps alpha linear, emits source-path warnings when a raw image cannot be decoded, and returns a fresh `textureDecodeReport`. The `webgpu` target intentionally preserves handles for the WebGPU upload path. Host image decoding/transcoding is still injected; built-in PNG/Basis transcoders, max-size/NPOT policy, mip generation, and broader backend map consumption remain separate Road rows.
+The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, height, data: Float32Array }` RGBA linear payloads with a Vitrum hint, applies the adapter's per-field sRGB-vs-linear policy, keeps alpha linear, emits source-path warnings when a raw image cannot be decoded, returns structured diagnostics for missing decoders / unsupported handles / max-size / NPOT-repeat hazards, and returns a fresh `textureDecodeReport`. The `webgpu` target intentionally preserves handles for the WebGPU upload path. Host image decoding/transcoding is still injected; built-in PNG/Basis transcoders, automatic downsampling, mip generation, and broader backend map consumption remain separate Road rows.
 
 **Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.
 

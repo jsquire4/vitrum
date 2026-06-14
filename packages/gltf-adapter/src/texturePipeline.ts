@@ -98,9 +98,34 @@ export type DecodeGltfTexturePixelsFn = (
   },
 ) => Promise<GltfDecodedTexturePixels> | GltfDecodedTexturePixels;
 
+export type DecodeSceneTextureDiagnosticCode =
+  | 'unsupported-handle-kind'
+  | 'raw-image-decoder-missing'
+  | 'decoded-texture-exceeds-max-size'
+  | 'decoded-texture-npot-repeat-wrap';
+
+export interface DecodeSceneTextureDiagnostic {
+  readonly severity: 'warning';
+  readonly code: DecodeSceneTextureDiagnosticCode;
+  readonly path: string;
+  readonly materialField: GltfMaterialTextureField;
+  readonly primitiveId: string;
+  readonly primitiveIndex: number;
+  readonly message: string;
+  readonly handleKind?: GltfTextureHandleKind;
+  readonly width?: number;
+  readonly height?: number;
+  readonly maxTextureSize?: number;
+  readonly wrapS?: TextureWrapMode;
+  readonly wrapT?: TextureWrapMode;
+}
+
 export interface DecodeSceneTexturesOptions {
   readonly target: 'cpu-linear' | 'webgpu';
   readonly decodePixels?: DecodeGltfTexturePixelsFn;
+  readonly maxTextureSize?: number;
+  readonly warnOnNpotRepeatWrap?: boolean;
+  readonly onDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   readonly onWarning?: (message: string) => void;
 }
 
@@ -109,6 +134,7 @@ export interface DecodeSceneTexturesResult {
   readonly report: GltfTextureDecodeReport;
   readonly decodedCount: number;
   readonly unchangedCount: number;
+  readonly diagnostics: readonly DecodeSceneTextureDiagnostic[];
   readonly warnings: readonly string[];
 }
 
@@ -194,13 +220,16 @@ export async function decodeSceneTextures(
   options: DecodeSceneTexturesOptions,
 ): Promise<DecodeSceneTexturesResult> {
   const warnings: string[] = [];
+  const diagnostics: DecodeSceneTextureDiagnostic[] = [];
   const decoded = new Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>();
   let decodedCount = 0;
   let unchangedCount = 0;
 
-  const warn = (message: string): void => {
-    warnings.push(message);
-    options.onWarning?.(message);
+  const diagnostic = (entry: DecodeSceneTextureDiagnostic): void => {
+    diagnostics.push(entry);
+    warnings.push(entry.message);
+    options.onDiagnostic?.(entry);
+    options.onWarning?.(entry.message);
   };
 
   const primitives = await Promise.all(scene.primitives.map(async (primitive, primitiveIndex) => {
@@ -217,7 +246,7 @@ export async function decodeSceneTextures(
         primitiveIndex,
         options,
         decoded,
-        warn,
+        diagnostic,
       });
       if (nextRef === ref) {
         unchangedCount += 1;
@@ -236,6 +265,7 @@ export async function decodeSceneTextures(
     report: buildTextureDecodeReport(nextScene),
     decodedCount,
     unchangedCount,
+    diagnostics,
     warnings,
   };
 }
@@ -275,24 +305,38 @@ async function decodeTextureRef(
     readonly primitiveIndex: number;
     readonly options: DecodeSceneTexturesOptions;
     readonly decoded: Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>;
-    readonly warn: (message: string) => void;
+    readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   },
 ): Promise<TextureRef> {
   if (context.options.target === 'webgpu') return ref;
   const handleKind = classifyTextureHandle(ref.handle);
   if (handleKind === 'pixel-data' || handleKind === 'data-texture') return ref;
   if (handleKind !== 'raw-image') {
-    context.warn(
-      `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
+    context.diagnostic({
+      severity: 'warning',
+      code: 'unsupported-handle-kind',
+      path: context.path,
+      materialField: context.field,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+      handleKind,
+      message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
         'decodeSceneTextures(target:"cpu-linear") can only normalize raw-image handles. Texture left unchanged.',
-    );
+    });
     return ref;
   }
   if (context.options.decodePixels == null) {
-    context.warn(
-      `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied. ` +
+    context.diagnostic({
+      severity: 'warning',
+      code: 'raw-image-decoder-missing',
+      path: context.path,
+      materialField: context.field,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+      handleKind,
+      message: `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied. ` +
         'Texture left unchanged.',
-    );
+    });
     return ref;
   }
 
@@ -314,7 +358,61 @@ async function decodeTextureRef(
     handle = normalizeDecodedPixels(pixels, colorSpace);
     perSpace.set(colorSpace, handle);
   }
+  emitDecodedTextureDiagnostics(handle, ref, context);
   return { ...ref, handle };
+}
+
+function emitDecodedTextureDiagnostics(
+  handle: GltfCpuLinearTextureHandle,
+  ref: TextureRef,
+  context: {
+    readonly field: GltfMaterialTextureField;
+    readonly path: string;
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+    readonly options: DecodeSceneTexturesOptions;
+    readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+  },
+): void {
+  const maxTextureSize = context.options.maxTextureSize;
+  if (typeof maxTextureSize === 'number' && maxTextureSize > 0 &&
+      (handle.width > maxTextureSize || handle.height > maxTextureSize)) {
+    context.diagnostic({
+      severity: 'warning',
+      code: 'decoded-texture-exceeds-max-size',
+      path: context.path,
+      materialField: context.field,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+      width: handle.width,
+      height: handle.height,
+      maxTextureSize,
+      message: `[vitrum/gltf-adapter] ${context.path} decoded to ${handle.width}x${handle.height}, ` +
+        `which exceeds maxTextureSize=${maxTextureSize}. Texture left at decoded size; downsample before upload ` +
+        'or choose a backend/device that can accept it.',
+    });
+  }
+
+  if (context.options.warnOnNpotRepeatWrap === true && !isPowerOfTwo(handle.width, handle.height) &&
+      usesRepeatWrap(ref)) {
+    const wrapS = ref.wrapS ?? 'repeat';
+    const wrapT = ref.wrapT ?? 'repeat';
+    context.diagnostic({
+      severity: 'warning',
+      code: 'decoded-texture-npot-repeat-wrap',
+      path: context.path,
+      materialField: context.field,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+      width: handle.width,
+      height: handle.height,
+      wrapS,
+      wrapT,
+      message: `[vitrum/gltf-adapter] ${context.path} decoded to NPOT ${handle.width}x${handle.height} ` +
+        `with wrapS=${wrapS} wrapT=${wrapT}. WebGL2/WebGPU can sample NPOT textures, but exact mip/border ` +
+        'parity depends on backend upload policy; pre-resize to power-of-two if this asset needs strict parity.',
+    });
+  }
 }
 
 function normalizeDecodedPixels(
@@ -362,6 +460,18 @@ function inferDecodedDataType(data: ArrayLike<number>): 'uint8' | 'uint16' | 'fl
   if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 'uint8';
   if (data instanceof Uint16Array) return 'uint16';
   return 'float32';
+}
+
+function isPowerOfTwo(width: number, height: number): boolean {
+  return isSinglePowerOfTwo(width) && isSinglePowerOfTwo(height);
+}
+
+function isSinglePowerOfTwo(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && (value & (value - 1)) === 0;
+}
+
+function usesRepeatWrap(ref: TextureRef): boolean {
+  return (ref.wrapS ?? 'repeat') !== 'clamp-to-edge' || (ref.wrapT ?? 'repeat') !== 'clamp-to-edge';
 }
 
 function decodeChannel(value: number, dataType: 'uint8' | 'uint16' | 'float32'): number {

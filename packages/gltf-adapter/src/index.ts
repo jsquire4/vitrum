@@ -35,6 +35,8 @@ export {
 } from './texturePipeline.js';
 export type {
   DecodeGltfTexturePixelsFn,
+  DecodeSceneTextureDiagnostic,
+  DecodeSceneTextureDiagnosticCode,
   DecodeSceneTexturesOptions,
   DecodeSceneTexturesResult,
   GltfCpuLinearTextureHandle,

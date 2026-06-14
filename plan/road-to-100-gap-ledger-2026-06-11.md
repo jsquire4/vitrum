@@ -306,9 +306,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `@vitrum/gltf-adapter`. The CPU-linear target converts raw-image handles to
   RGBA `Float32Array` linear pixel payloads using the same per-field sRGB/data
   policy as the report, preserves alpha, returns a refreshed report, and warns
-  with source paths when a host decoder is missing. The WebGPU target preserves
-  opaque handles for backend upload. Built-in image transcoders and remaining
-  backend map consumption are still tracked outside this API bridge.
+  with source paths when a host decoder is missing. It also returns structured
+  diagnostics for missing decoders, unsupported handles, max-size hazards, and
+  NPOT-repeat hazards so hosts do not have to parse warning strings. The WebGPU
+  target preserves opaque handles for backend upload. Built-in image transcoders,
+  automatic downsampling/mip generation, and remaining backend map consumption are
+  still tracked outside this API bridge.
 - The seventeenth arbitrary-glTF geometry slice landed in `@vitrum/gltf-adapter`:
   normal/bump/clearcoat-normal mapped primitives that omit authored `TANGENT`
   now synthesize per-vertex xyzw tangents from POSITION/NORMAL/TEXCOORD_0 during

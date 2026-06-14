@@ -367,6 +367,7 @@ describe('decodeSceneTextures', () => {
     expect(decoderColorSpaces).toEqual(['srgb', 'linear']);
     expect(result.decodedCount).toBe(2);
     expect(result.unchangedCount).toBe(0);
+    expect(result.diagnostics).toEqual([]);
     expect(result.warnings).toEqual([]);
 
     const before = asset.scene.primitives[0] as MeshPrimitive;
@@ -426,9 +427,72 @@ describe('decodeSceneTextures', () => {
     expect(result.decodedCount).toBe(0);
     expect(result.unchangedCount).toBe(1);
     expect(result.warnings).toEqual(warnings);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'raw-image-decoder-missing',
+        path: 'scene.primitives[0].material.baseColorMap',
+        materialField: 'baseColorMap',
+        primitiveId: 'gltf-prim-0',
+        primitiveIndex: 0,
+        handleKind: 'raw-image',
+      }),
+    ]);
     expect(warnings[0]).toContain('scene.primitives[0].material.baseColorMap');
     expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
     expect(result.report.rawImageCount).toBe(1);
+  });
+
+  it('emits structured size and NPOT-repeat diagnostics after host decoding', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const asset = await loadGltfAsset(gltf, { buffers });
+    const diagnostics: unknown[] = [];
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'cpu-linear',
+      maxTextureSize: 2,
+      warnOnNpotRepeatWrap: true,
+      decodePixels: () => ({
+        width: 3,
+        height: 5,
+        data: new Float32Array(3 * 5 * 4).fill(1),
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      }),
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(result.decodedCount).toBe(1);
+    expect(result.diagnostics).toEqual(diagnostics);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-exceeds-max-size',
+        path: 'scene.primitives[0].material.baseColorMap',
+        materialField: 'baseColorMap',
+        primitiveId: 'gltf-prim-0',
+        primitiveIndex: 0,
+        width: 3,
+        height: 5,
+        maxTextureSize: 2,
+      }),
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-npot-repeat-wrap',
+        path: 'scene.primitives[0].material.baseColorMap',
+        materialField: 'baseColorMap',
+        primitiveId: 'gltf-prim-0',
+        primitiveIndex: 0,
+        width: 3,
+        height: 5,
+        wrapS: 'repeat',
+        wrapT: 'repeat',
+      }),
+    ]);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings[0]).toContain('exceeds maxTextureSize=2');
+    expect(result.warnings[1]).toContain('NPOT 3x5');
   });
 
   it('leaves texture handles unchanged for the webgpu target', async () => {
@@ -446,6 +510,7 @@ describe('decodeSceneTextures', () => {
     expect(decodePixels).not.toHaveBeenCalled();
     expect(result.decodedCount).toBe(0);
     expect(result.unchangedCount).toBe(1);
+    expect(result.diagnostics).toEqual([]);
     expect(result.warnings).toEqual([]);
     expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
   });
