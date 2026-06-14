@@ -11,6 +11,8 @@ import {
 } from '@vitrum/core';
 import {
   BVH_NODE_FLOATS,
+  mergeUv1FromCore,
+  mergeWorldSpaceFromCore,
   packSceneFromCore,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
@@ -364,6 +366,16 @@ export interface BuildPackedSceneOptions {
    * behaviour (emissive stays at whatever the scene primitive carries).
    */
   readonly cameraVisibleEmitters?: boolean;
+
+  /**
+   * Geometry pack shape.
+   *
+   * `tlas` is the full-tier path: local-space BLAS streams plus TLAS instance
+   * tables. `merged` is the lite-tier path: one baked world-space BLAS rooted at
+   * node 0 so the single-group lite shader, which cannot bind TLAS buffers, still
+   * sees every static mesh/skinned/instanced primitive.
+   */
+  readonly geometryMode?: 'tlas' | 'merged';
 }
 
 /**
@@ -446,6 +458,37 @@ function applySolveSkinToScene(scene: Scene): Scene {
   return { ...scene, primitives: nextPrimitives };
 }
 
+function padTriangleIndicesToVec4(indices: Uint32Array): Uint32Array {
+  const triCount = Math.floor(indices.length / 3);
+  const out = new Uint32Array(triCount * 4);
+  for (let t = 0; t < triCount; t += 1) {
+    out[t * 4] = indices[t * 3] ?? 0;
+    out[t * 4 + 1] = indices[t * 3 + 1] ?? 0;
+    out[t * 4 + 2] = indices[t * 3 + 2] ?? 0;
+    out[t * 4 + 3] = 0;
+  }
+  return out;
+}
+
+function packMergedUvs(scene: Scene, merged: ReturnType<typeof mergeWorldSpaceFromCore>): Float32Array {
+  const vertexCount = merged.vertexCount;
+  const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, vertexCount);
+  const out = new Float32Array(vertexCount * 4);
+  for (let i = 0; i < vertexCount; i += 1) {
+    out[i * 4] = merged.uvs[i * 2] ?? 0;
+    out[i * 4 + 1] = merged.uvs[i * 2 + 1] ?? 0;
+    out[i * 4 + 2] = uv1?.[i * 2] ?? out[i * 4]!;
+    out[i * 4 + 3] = uv1?.[i * 2 + 1] ?? out[i * 4 + 1]!;
+  }
+  return out;
+}
+
+function packMergedMaterial(
+  material: MaterialSpec & { readonly castShadow?: boolean },
+): number[] {
+  return materialToPackedVec4s(material, { castShadow: material.castShadow });
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
@@ -460,6 +503,7 @@ export function buildPackedScene(
   // solved (deformed) positions instead of rest-pose. morphTargets are also
   // handled by solveSkin (blend applied before LBS).
   const scene = applySolveSkinToScene(filteredScene);
+  const geometryMode = options.geometryMode ?? 'tlas';
 
   // Camera-visible emitters: delegate to the shared packFoldedMaterialEntry helper
   // (H10). This ensures the fold logic is identical across the full pack and the
@@ -482,6 +526,9 @@ export function buildPackedScene(
   let nextMaterialId = 0;
 
   for (const primitive of scene.primitives) {
+    if (geometryMode === 'merged') {
+      continue;
+    }
     if (primitive.kind === 'analytic') {
       // Shape support was already vetted by the capability filter above; any
       // analytic primitive that reaches here has a known shape id (> 0).
@@ -524,13 +571,45 @@ export function buildPackedScene(
     materialSpecs.push(primitive.material);
   }
 
-  const texCollection = collectMaterialTextures(materialSpecs);
-
-  const geo = packSceneFromCore(scene, {
-    tlas: true,
-    resolveMaterialId: (id) => meshMaterialIds.get(id) ?? 0,
-  });
+  const geo = geometryMode === 'merged'
+    ? (() => {
+        const merged = mergeWorldSpaceFromCore(scene, {
+          positionStride: 4,
+          splitMaterialsByCastShadow: true,
+        });
+        for (const material of merged.materials) {
+          const withShadow = material as MaterialSpec & { readonly castShadow?: boolean };
+          materials.push(...packMergedMaterial(withShadow));
+          materialSpecs.push(withShadow);
+        }
+        const colors = new Float32Array(merged.positions.length);
+        colors.fill(1);
+        return {
+          positions: merged.positions,
+          normals: merged.normals,
+          uvs: packMergedUvs(scene, merged),
+          tangents: new Float32Array(merged.positions.length),
+          colors,
+          indices: padTriangleIndicesToVec4(merged.indices),
+          triMaterialIds: merged.triMaterialId,
+          bvhNodes: merged.bvhNodes,
+          triangleCount: merged.triangleCount,
+          tlasNodes: new Uint32Array(0),
+          tlasInstanceIndices: new Uint32Array(0),
+          tlasBlasRoots: new Uint32Array(0),
+          tlasInstanceWorldToLocal: new Float32Array(0),
+          tlasInstanceLocalToWorld: new Float32Array(0),
+          tlasNodeCount: 0,
+          primitiveTlasBindings: [] as readonly PrimitiveTlasBinding[],
+          warnings: [] as readonly string[],
+        } satisfies ScenePackResult;
+      })()
+    : packSceneFromCore(scene, {
+        tlas: true,
+        resolveMaterialId: (id) => meshMaterialIds.get(id) ?? 0,
+      });
   warnings.push(...geo.warnings);
+  const texCollection = collectMaterialTextures(materialSpecs);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
   warnings.push(...environment.warnings);

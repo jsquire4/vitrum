@@ -110,21 +110,6 @@ export {
   type BdptLightPathBufferWebGPUOptions,
 } from './bdpt/bdptLightPathBufferWebGPU.js';
 
-function isIdentityMat4(m: ArrayLike<number> | undefined): boolean {
-  if (m == null) return true;
-  const identity = [
-    1, 0, 0, 0,
-    0, 1, 0, 0,
-    0, 0, 1, 0,
-    0, 0, 0, 1,
-  ] as const;
-  if (m.length !== 16) return false;
-  for (let i = 0; i < 16; i += 1) {
-    if (Math.abs((m[i] ?? 0) - identity[i]!) > 1e-6) return false;
-  }
-  return true;
-}
-
 const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
   'displacementMap',
   'displacementScale',
@@ -661,7 +646,7 @@ class PTEngineWebGPU implements Engine {
         ? {
             transform: false,
             positions: true,
-            material: true,
+            material: false,
             emitter: true,
             topology: false,
           }
@@ -685,6 +670,8 @@ class PTEngineWebGPU implements Engine {
       // H12 — lite-tier capabilities reflect what the lite kernel ACTUALLY binds:
       //   • No analytic shapes (group-1 is not bound on the lite layout; the
       //     analytic geometry/params/localToWorld/worldToLocal buffers are absent).
+      //   • Mesh/skinned/instanced primitives are statically supported by baking
+      //     all mesh-like primitives into one world-space BLAS at setScene time.
       //   • Emitters: directional + point + spot + rect-area (B12 — texture-packed).
       //     Disc-area and mesh-area remain unsupported (no NEE path in lite kernel).
       //   • Environments: none + procedural-sky + hdri (B12 — texture-packed).
@@ -720,7 +707,7 @@ class PTEngineWebGPU implements Engine {
         ? new Set<import('@vitrum/core').SceneEmitter['kind']>(['directional', 'point', 'spot', 'rect-area'])
         : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
       supportedPrimitiveKinds: this.#traceTier === 'lite'
-        ? new Set<import('@vitrum/core').ScenePrimitive['kind']>(['mesh', 'skinned-mesh'])
+        ? new Set<import('@vitrum/core').ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh'])
         : new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
       supportedEnvironmentKinds: this.#traceTier === 'lite'
         // B12 — HDRI env now supported via lite texture packing (liteEnvTex + liteEnvCdfTex).
@@ -731,6 +718,9 @@ class PTEngineWebGPU implements Engine {
       // not the full-tier ledger. Group-0 lite omits group-1 (analytic, env, lights)
       // and group-2 (TLAS, BDPT). Disc-area and mesh-area emitters, analytic primitives,
       // and analytic shapes remain unsupported (no NEE path for those in the lite kernel).
+      // Static instanced meshes are native because the lite packer bakes each
+      // instance into its single root-0 BLAS; transform/topology patches remain
+      // unsupported below because those incremental paths are TLAS-oriented.
       // B12 — point/spot/rect-area upgraded to 'native' (texture-packed NEE).
       // B12 — hdri upgraded to 'native' (liteEnvTex + liteEnvCdfTex importance sampling).
       supportDetails:
@@ -739,7 +729,7 @@ class PTEngineWebGPU implements Engine {
               primitives: {
                 mesh: 'native',
                 'skinned-mesh': 'native',
-                'instanced-mesh': 'unsupported',
+                'instanced-mesh': 'native',
                 analytic: 'unsupported',
               },
               emitters: {
@@ -772,6 +762,7 @@ class PTEngineWebGPU implements Engine {
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'unsupported',
+                material: 'fallback-rebuild',
                 topology: 'unsupported',
               },
             }
@@ -1060,7 +1051,9 @@ class PTEngineWebGPU implements Engine {
       // B12 — point/spot/rect-area emitters and HDRI environments are now
       // supported via texture packing (liteLightTex, liteEnvTex, liteEnvCdfTex).
       // Remaining unsupported: analytic primitives (group-1 absent), disc-area
-      // and mesh-area emitters (no NEE path in lite kernel).
+      // and mesh-area emitters (no NEE path in lite kernel). Static
+      // mesh/skinned/instanced primitives, including non-identity transforms, are
+      // baked into the lite tier's single world-space BLAS at pack time.
       const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
       if (analyticPrimitives.length > 0) {
         this.#warn({
@@ -1073,36 +1066,6 @@ class PTEngineWebGPU implements Engine {
             'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
             'These will be silently ignored.',
           details: { count: analyticPrimitives.length },
-        });
-      }
-      const instancedPrimitives = scene.primitives.filter((p) => p.kind === 'instanced-mesh');
-      if (instancedPrimitives.length > 0) {
-        this.#warn({
-          code: 'pt-webgpu.lite-instanced-mesh',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains ${instancedPrimitives.length} instanced-mesh primitive(s) — ` +
-            'instancing requires TLAS instance traversal, which is absent from the lite shader. ' +
-            'Use the full tier or bake instances into mesh geometry before setScene().',
-          details: { count: instancedPrimitives.length },
-        });
-      }
-      const transformedPrimitives = scene.primitives.filter((p) =>
-        (p.kind === 'mesh' || p.kind === 'skinned-mesh') && !isIdentityMat4(p.transform),
-      );
-      if (transformedPrimitives.length > 0) {
-        this.#warn({
-          code: 'pt-webgpu.lite-primitive-transform',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains ${transformedPrimitives.length} mesh/skinned-mesh primitive(s) with non-identity transforms — ` +
-            'primitive transforms require TLAS traversal, which is absent from the lite shader. ' +
-            'Use the full tier or bake transforms into vertex data before setScene().',
-          details: { count: transformedPrimitives.length },
         });
       }
       // B12 — only disc-area and mesh-area are unsupported on lite; point/spot/rect-area
@@ -1249,6 +1212,7 @@ class PTEngineWebGPU implements Engine {
     }
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,
+      geometryMode: this.#traceTier === 'lite' ? 'merged' : 'tlas',
     });
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
@@ -2325,7 +2289,7 @@ export const createPTEngine_WebGPU: EngineFactory<
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
+        '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged mesh-like BVH, directional/point/spot/rect-area emitters, HDRI and procedural-sky environments. ' +
         'Disabled on lite: analytic shapes, TLAS, disc-area/mesh-area emitters, caustics, BDPT, multi-directional lights, and motion/variance aux buffers. ' +
         `On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE} and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.`,
       details: { traceTier },

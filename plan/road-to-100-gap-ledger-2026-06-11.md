@@ -552,20 +552,27 @@ professional-library gaps.
 ### PTWG-06 - pt-webgpu lite tier overclaims transform/topology capability
 
 Evidence:
-- Lite capabilities advertise broad incremental patch support and native
-  instanced-mesh support.
 - Lite intersection starts traversal at BVH root `0u` and has no TLAS group.
+- Earlier lite static scenes still used TLAS-oriented packing, so multi-primitive
+  or transformed scenes could be advertised while only BLAS root 0 was consumed.
 - Transform/instance fast paths update TLAS data that lite traversal does not
-  consume.
+  consume, so those incremental patch rows must stay unsupported.
 
 Closure:
-- Closed in the 2026-06-11 implementation wave by making lite capabilities
-  tier-specific, adding lite `setScene()` diagnostics for instanced meshes and
-  non-identity transforms, and rejecting transform/topology fast paths before
-  they update TLAS-only buffers.
-- Optional future upgrade: implement lite TLAS traversal or rebuild/upload a
-  lite-consumed merged world-space BVH on transform/instance patches, then add
-  lite render/pick oracles with multiple transformed instances.
+- Static ingestion closed by the 2026-06-14 implementation wave: lite
+  `setScene()` routes through `buildPackedScene(..., { geometryMode:'merged' })`,
+  which uses `mergeWorldSpaceFromCore()` to bake mesh/skinned/instanced
+  primitives, including non-identity transforms, into a single world-space BLAS
+  rooted at node 0. `scenePack.test.ts` pins multi-mesh and instanced expansion;
+  `liteTierCapabilities.test.ts` pins `instanced-mesh` as native for static lite
+  scenes.
+- Mutation honesty remains intentional: material patches are now
+  `fallback-rebuild` on lite because merged material slots are deduped, while
+  transform/topology patch rows stay `unsupported` and `SceneMutationRouter`
+  still rejects those lite fast paths before they update TLAS-only buffers. A
+  future enhancement could rebuild and upload the merged lite BLAS on
+  transform/instance patches, but that is no longer required for static
+  arbitrary multi-primitive ingestion.
 
 ### PTWG-07 - pt-webgpu lite emitter/environment mutations leave texture path stale
 

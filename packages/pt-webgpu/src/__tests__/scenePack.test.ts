@@ -190,6 +190,92 @@ describe('buildPackedScene core packing', () => {
     expect(packed.tlasInstanceWorldToLocal[12]).toBeCloseTo(-3, 5);
   });
 
+  it('packs lite merged geometry as one world-space BLAS for multi-mesh scenes', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'left',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 0, 0], roughness: 0.4, metallic: 0 },
+        },
+        {
+          kind: 'mesh',
+          id: 'right',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          transform: asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            2, 0, 0, 1,
+          ])),
+          material: { baseColor: [0, 1, 0], roughness: 0.4, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene, { geometryMode: 'merged' });
+    expect(packed.triangleCount).toBe(2);
+    expect(packed.tlasNodes.length).toBe(0);
+    expect(packed.tlasBlasRoots.length).toBe(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
+    expect(packed.indices.length).toBe(8);
+    expect(packed.indices[3]).toBe(0);
+    expect(packed.indices[7]).toBe(0);
+    expect(packed.triMaterialIds.length).toBe(2);
+    expect(new Set(Array.from(packed.triMaterialIds))).toEqual(new Set([0, 1]));
+    expect(packed.materials.length).toBe(224);
+    expect(Array.from(packed.positions.slice(12, 24))).toEqual([
+      2, 0, 0, 0,
+      3, 0, 0, 0,
+      2, 1, 0, 0,
+    ]);
+  });
+
+  it('packs lite merged geometry by baking instanced meshes into root-zero BLAS geometry', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: 'inst-tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        instances: [
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ])),
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            4, 0, 0, 1,
+          ])),
+        ],
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene, { geometryMode: 'merged' });
+    expect(packed.triangleCount).toBe(2);
+    expect(packed.tlasNodes.length).toBe(0);
+    expect(packed.indices.length).toBe(8);
+    expect(packed.triMaterialIds.length).toBe(2);
+    expect(new Set(Array.from(packed.triMaterialIds))).toEqual(new Set([0]));
+    expect(Array.from(packed.positions.slice(12, 24))).toEqual([
+      4, 0, 0, 0,
+      5, 0, 0, 0,
+      4, 1, 0, 0,
+    ]);
+  });
+
   it('refits existing TLAS nodes for transform-only scene changes', () => {
     const base = makeScene();
     const baseMesh = base.primitives[0];

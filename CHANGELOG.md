@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu lite static multi-primitive packing, 2026-06-14)
+
+- **`@vitrum/pt-webgpu` lite-tier static geometry:** lite `setScene()` now packs mesh, skinned-mesh, and instanced-mesh primitives through a merged world-space BLAS (`mergeWorldSpaceFromCore`) so the lite shader's root-0 traversal sees multi-primitive and transformed static scenes without TLAS bindings. Static `instanced-mesh` is now advertised as native on lite; material patches fall back to a merged-scene repack, and transform/topology mutation rows remain unsupported because those incremental paths are still TLAS-oriented.
+
 ### Added (pt-webgpu COLOR_0 vertex colors, 2026-06-14)
 
 - **`@vitrum/pt-webgpu` full-tier vertex colors:** shared-bvh now packs core `colors` as rgba vertex data with white defaults, pt-webgpu uploads/binds the stream at group(3)/binding(11), and the full-tier material paths multiply `COLOR_0` into base color plus alpha pass-through. glTF compatibility now treats `pt-webgpu` full as native for vertex colors while keeping `pt-webgpu-lite` and walkaround-hybrid as structured unsupported profiles.

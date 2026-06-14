@@ -13,7 +13,7 @@ import { PT_WEBGPU_PATH_TRACE_CAUSTIC_LITE_WGSL } from './pathTrace/causticLite.
 import { PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL } from './pathTrace/kernelLite.wgsl.js';
 
 /**
- * Compatibility-tier path trace shader — merged-mesh BVH only, procedural sky,
+ * Compatibility-tier path trace shader — merged mesh-like BVH only, procedural sky,
  * directional direct light. Fits adapters with ≥8 storage buffers and ≥4
  * storage textures per compute stage (e.g. SwiftShader Vulkan).
  */

@@ -226,6 +226,24 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
+  it('lite tier material patches fall back to a merged-scene repack', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeLiteStubDevice();
+    const engine = await createPTEngine_WebGPU({ device, traceTier: 'lite' });
+    expect(engine.capabilities.incrementalPatchSupport?.material).toBe(false);
+    engine.setScene(makeScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('mesh-b', {
+      material: { baseColor: [0.2, 0.7, 0.9], roughness: 0.05, metallic: 0.4 },
+    });
+
+    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 1);
+  });
+
   it('splices a vertex-count change, reallocating only the 13 geometry buffers', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();

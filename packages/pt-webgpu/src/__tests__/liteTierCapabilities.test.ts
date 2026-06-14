@@ -1,7 +1,9 @@
 /**
  * H12 — lite-tier capabilities truth: the lite kernel uses a reduced binding
- * layout; analytic shapes, instanced TLAS transforms, BDPT, disc-area, and
- * mesh-area emitters are absent from the lite shader path.
+ * layout; analytic shapes, BDPT, disc-area, and mesh-area emitters are absent
+ * from the lite shader path. Mesh/skinned/instanced primitives are statically
+ * supported by baking them into one world-space BLAS at setScene time; transform
+ * and topology mutations stay unsupported because the fast paths are TLAS-based.
  *
  * B12 (2026-06-10) — point/spot/rect-area emitters and HDRI environments are now
  * supported on the lite tier via texture packing (liteLightTex, liteEnvTex,
@@ -104,17 +106,18 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(engine.capabilities.incrementalPatchSupport).toEqual({
       transform: false,
       positions: true,
-      material: true,
+      material: false,
       emitter: true,
       topology: false,
     });
     const primitiveKinds = engine.capabilities.supportedPrimitiveKinds!;
     expect(primitiveKinds.has('mesh')).toBe(true);
     expect(primitiveKinds.has('skinned-mesh')).toBe(true);
-    expect(primitiveKinds.has('instanced-mesh')).toBe(false);
+    expect(primitiveKinds.has('instanced-mesh')).toBe(true);
     const sd = engine.capabilities.supportDetails!;
-    expect(sd.primitives['instanced-mesh']).toBe('unsupported');
+    expect(sd.primitives['instanced-mesh']).toBe('native');
     expect(sd.mutations.transform).toBe('unsupported');
+    expect(sd.mutations.material).toBe('fallback-rebuild');
     expect(sd.mutations.topology).toBe('unsupported');
     expect(sd.materials.baseColor).toBe('native');
     expect(sd.materials.clearcoat).toBe('native');
@@ -239,7 +242,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when scene contains instanced meshes', async () => {
+  it('lite tier: setScene does NOT warn for static instanced meshes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -267,16 +270,19 @@ describe('H12: lite-tier capabilities truth', () => {
       /* GPU stubs may throw after the warn — that's expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('instanced-mesh') && c.includes('Lite tier'))).toBe(true);
-    expect(calls.some((c) => c.includes('TLAS') && c.includes('lite shader'))).toBe(true);
-    expect(structured.some((w) => w.code === 'pt-webgpu.lite-instanced-mesh')).toBe(true);
+    expect(calls.some((c) => c.includes('instanced-mesh') && c.includes('Lite tier'))).toBe(false);
+    expect(structured.some((w) => w.code === 'pt-webgpu.lite-instanced-mesh')).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when mesh transforms need TLAS traversal', async () => {
+  it('lite tier: setScene does NOT warn for static mesh transforms', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     const scene: Scene = {
       primitives: [
@@ -298,8 +304,8 @@ describe('H12: lite-tier capabilities truth', () => {
       /* GPU stubs may throw after the warn — that's expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('non-identity transforms') && c.includes('Lite tier'))).toBe(true);
-    expect(calls.some((c) => c.includes('bake transforms') && c.includes('vertex data'))).toBe(true);
+    expect(calls.some((c) => c.includes('non-identity transforms') && c.includes('Lite tier'))).toBe(false);
+    expect(structured.some((w) => w.code === 'pt-webgpu.lite-primitive-transform')).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });
