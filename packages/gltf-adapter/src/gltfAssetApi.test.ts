@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeGltfAsset,
+  decodeSceneTextures,
   evaluateGltfBackendCompatibility,
   evaluateGltfBackendProfileCompatibility,
   GltfFetchFailed,
@@ -16,7 +17,7 @@ import {
   loadGltfAsset,
   rankGltfBackends,
 } from './index.js';
-import type { GltfAssetFetchResponse, GltfJson } from './index.js';
+import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
 import type { MeshPrimitive, TextureRef } from '@vitrum/core';
 
 function f32Buffer(values: number[]): ArrayBuffer {
@@ -33,6 +34,11 @@ function bytes(values: number[]): ArrayBuffer {
 function textBuffer(text: string): ArrayBuffer {
   const encoded = new TextEncoder().encode(text);
   return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+}
+
+function srgbToLinearForTest(value: number): number {
+  const c = Math.max(0, Math.min(1, value));
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 function response(data: ArrayBuffer, contentType = 'application/octet-stream'): GltfAssetFetchResponse {
@@ -329,6 +335,119 @@ describe('loadGltfAsset', () => {
         },
       }),
     ]);
+  });
+});
+
+describe('decodeSceneTextures', () => {
+  it('normalizes raw-image texture refs to linear CPU pixel handles with field color-space policy', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.materials![0] = {
+      ...gltf.materials![0]!,
+      normalTexture: { index: 0 },
+    };
+    const asset = await loadGltfAsset(gltf, { buffers });
+    const decoderColorSpaces: string[] = [];
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => {
+      decoderColorSpaces.push(context.colorSpace);
+      return {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([128, 64, 255, 128]),
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+      };
+    });
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'cpu-linear',
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(2);
+    expect(decoderColorSpaces).toEqual(['srgb', 'linear']);
+    expect(result.decodedCount).toBe(2);
+    expect(result.unchangedCount).toBe(0);
+    expect(result.warnings).toEqual([]);
+
+    const before = asset.scene.primitives[0] as MeshPrimitive;
+    const after = result.scene.primitives[0] as MeshPrimitive;
+    const baseColor = after.material.baseColorMap as TextureRef;
+    const normal = after.material.normalMap as TextureRef;
+    const baseHandle = baseColor.handle as { data: Float32Array; __vitrum_hint__: { colorSpace: string } };
+    const normalHandle = normal.handle as { data: Float32Array; __vitrum_hint__: { colorSpace: string } };
+
+    expect(baseColor.handle).not.toBe((before.material.baseColorMap as TextureRef).handle);
+    expect(baseHandle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(baseHandle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+    expect(baseHandle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+    expect(baseHandle.data[2]).toBeCloseTo(1);
+    expect(baseHandle.data[3]).toBeCloseTo(128 / 255);
+    expect(normalHandle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(normalHandle.data[0]).toBeCloseTo(128 / 255);
+    expect(normalHandle.data[1]).toBeCloseTo(64 / 255);
+    expect(normalHandle.data[2]).toBeCloseTo(1);
+    expect(normalHandle.data[3]).toBeCloseTo(128 / 255);
+    expect(result.report.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        colorSpace: 'srgb',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        }),
+      }),
+      expect.objectContaining({
+        materialField: 'normalMap',
+        colorSpace: 'linear',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ignored',
+        }),
+      }),
+    ]));
+  });
+
+  it('warns and preserves raw-image texture refs when no CPU decode hook is supplied', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const asset = await loadGltfAsset(gltf, { buffers });
+    const warnings: string[] = [];
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'cpu-linear',
+      onWarning: (message) => warnings.push(message),
+    });
+
+    const before = asset.scene.primitives[0] as MeshPrimitive;
+    const after = result.scene.primitives[0] as MeshPrimitive;
+    expect(result.decodedCount).toBe(0);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.warnings).toEqual(warnings);
+    expect(warnings[0]).toContain('scene.primitives[0].material.baseColorMap');
+    expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
+    expect(result.report.rawImageCount).toBe(1);
+  });
+
+  it('leaves texture handles unchanged for the webgpu target', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const asset = await loadGltfAsset(gltf, { buffers });
+    const decodePixels = vi.fn();
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'webgpu',
+      decodePixels,
+    });
+
+    const before = asset.scene.primitives[0] as MeshPrimitive;
+    const after = result.scene.primitives[0] as MeshPrimitive;
+    expect(decodePixels).not.toHaveBeenCalled();
+    expect(result.decodedCount).toBe(0);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.warnings).toEqual([]);
+    expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
   });
 });
 

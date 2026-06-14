@@ -715,7 +715,8 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 | pt-webgpu | Opaque; uploaded via `webGpuTextureUpload` path in scene pack | GPU texture handle after upload |
 | walkaround (Phase 3D) | Same as pt-webgl2 for atlas build | CPU pixels → atlas |
 
-**New shared package or `gltf-adapter/decodeTextures.ts`:** `decodeSceneTextures(scene, { decodeImage, target: 'cpu-linear' | 'webgpu' })` — single entry.
+✅ **DONE (2026-06-13):** `@vitrum/gltf-adapter` exports `decodeSceneTextures(scene, { target: 'cpu-linear' | 'webgpu', decodePixels })`.
+The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, height, data: Float32Array }` RGBA linear payloads with a Vitrum hint, applies the adapter's per-field sRGB-vs-linear policy, keeps alpha linear, emits source-path warnings when a raw image cannot be decoded, and returns a fresh `textureDecodeReport`. The `webgpu` target intentionally preserves handles for the WebGPU upload path. Host image decoding/transcoding is still injected; built-in PNG/Basis transcoders, max-size/NPOT policy, mip generation, and broader backend map consumption remain separate Road rows.
 
 **Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.
 

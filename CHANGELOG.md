@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (glTF texture decode bridge, 2026-06-13)
+
+- **`@vitrum/gltf-adapter` `decodeSceneTextures()`:** new public helper normalizes raw-image `TextureRef` handles into backend-ready CPU-linear RGBA `Float32Array` payloads when hosts provide a `decodePixels` hook, applying the adapter's sRGB/data-map policy and preserving alpha. It returns a refreshed `textureDecodeReport`, source-path warnings for undecodable raw images, and a `webgpu` target that deliberately leaves opaque handles for backend upload. Built-in PNG/Basis transcoders, mip/max-size policy, and non-baseColor walkaround map consumption remain Road-to-100 follow-ups.
+
 ### Added (walkaround baseColorMap atlas first slice, 2026-06-13)
 
 - **`@vitrum/walkaround-hybrid` baseColorMap consumption:** readable raw/DataTexture-shaped `TextureRef` handles on uv0/uv1 now pack into a linear RGBA32F texture array with per-triangle metadata, bind through scene bindings 20-21, and modulate shade-visible albedo with wrap + `KHR_texture_transform` semantics. `CONSUMED_MATERIAL_FIELDS` and the core promise ledger now grade walkaround `baseColorMap` as `approximate`; glass transmission tint, alpha/normal/ORM/emissive/extension maps, and tangent-space map support remain Road-to-100 follow-ups.

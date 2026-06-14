@@ -301,6 +301,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   for pt-webgl2 / pt-webgpu / walkaround-hybrid. `loadGltfAndDecodeTextures()`
   is exported as the explicit decode/report entry point while keeping backend
   atlas/upload work in the PT and walkaround phases.
+  Follow-up closure (2026-06-13): `decodeSceneTextures(scene, { target:
+  'cpu-linear' | 'webgpu', decodePixels })` is now exported from
+  `@vitrum/gltf-adapter`. The CPU-linear target converts raw-image handles to
+  RGBA `Float32Array` linear pixel payloads using the same per-field sRGB/data
+  policy as the report, preserves alpha, returns a refreshed report, and warns
+  with source paths when a host decoder is missing. The WebGPU target preserves
+  opaque handles for backend upload. Built-in image transcoders and remaining
+  backend map consumption are still tracked outside this API bridge.
 - The seventeenth arbitrary-glTF geometry slice landed in `@vitrum/gltf-adapter`:
   normal/bump/clearcoat-normal mapped primitives that omit authored `TANGENT`
   now synthesize per-vertex xyzw tangents from POSITION/NORMAL/TEXCOORD_0 during

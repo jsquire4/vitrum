@@ -31,10 +31,17 @@ export type { GltfAssetResourceKind } from './errors.js';
 export {
   buildTextureDecodeReport,
   classifyTextureHandle,
+  decodeSceneTextures,
 } from './texturePipeline.js';
 export type {
+  DecodeGltfTexturePixelsFn,
+  DecodeSceneTexturesOptions,
+  DecodeSceneTexturesResult,
+  GltfCpuLinearTextureHandle,
+  GltfDecodedTexturePixels,
   GltfBackendTextureStatus,
   GltfMaterialTextureField,
+  GltfTextureColorSpace,
   GltfTextureDecodeReport,
   GltfTextureDecodeReportEntry,
   GltfTextureHandleKind,

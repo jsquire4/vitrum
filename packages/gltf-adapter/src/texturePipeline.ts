@@ -67,6 +67,51 @@ export interface GltfTextureDecodeReport {
   readonly entries: readonly GltfTextureDecodeReportEntry[];
 }
 
+export interface GltfDecodedTexturePixels {
+  readonly width: number;
+  readonly height: number;
+  readonly data: ArrayLike<number>;
+  readonly channels?: 1 | 2 | 3 | 4;
+  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  readonly colorSpace?: GltfTextureColorSpace;
+}
+
+export interface GltfCpuLinearTextureHandle {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Float32Array;
+  readonly __vitrum_hint__: {
+    readonly channels: 4;
+    readonly dataType: 'float32';
+    readonly colorSpace: 'linear';
+  };
+}
+
+export type DecodeGltfTexturePixelsFn = (
+  handle: RawImageHandle,
+  context: {
+    readonly materialField: GltfMaterialTextureField;
+    readonly path: string;
+    readonly colorSpace: GltfTextureColorSpace;
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+  },
+) => Promise<GltfDecodedTexturePixels> | GltfDecodedTexturePixels;
+
+export interface DecodeSceneTexturesOptions {
+  readonly target: 'cpu-linear' | 'webgpu';
+  readonly decodePixels?: DecodeGltfTexturePixelsFn;
+  readonly onWarning?: (message: string) => void;
+}
+
+export interface DecodeSceneTexturesResult {
+  readonly scene: Scene;
+  readonly report: GltfTextureDecodeReport;
+  readonly decodedCount: number;
+  readonly unchangedCount: number;
+  readonly warnings: readonly string[];
+}
+
 const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
   'baseColorMap',
   'normalMap',
@@ -144,6 +189,57 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
   };
 }
 
+export async function decodeSceneTextures(
+  scene: Scene,
+  options: DecodeSceneTexturesOptions,
+): Promise<DecodeSceneTexturesResult> {
+  const warnings: string[] = [];
+  const decoded = new Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>();
+  let decodedCount = 0;
+  let unchangedCount = 0;
+
+  const warn = (message: string): void => {
+    warnings.push(message);
+    options.onWarning?.(message);
+  };
+
+  const primitives = await Promise.all(scene.primitives.map(async (primitive, primitiveIndex) => {
+    const material = materialForPrimitive(primitive);
+    let nextMaterial: MaterialSpec | null = null;
+    for (const field of MATERIAL_TEXTURE_FIELDS) {
+      const ref = material[field] as TextureRef | undefined;
+      if (!ref) continue;
+      const path = `scene.primitives[${primitiveIndex}].material.${field}`;
+      const nextRef = await decodeTextureRef(ref, {
+        field,
+        path,
+        primitiveId: String(primitive.id),
+        primitiveIndex,
+        options,
+        decoded,
+        warn,
+      });
+      if (nextRef === ref) {
+        unchangedCount += 1;
+        continue;
+      }
+      decodedCount += 1;
+      if (nextMaterial == null) nextMaterial = { ...material };
+      (nextMaterial as unknown as Record<string, unknown>)[field] = nextRef;
+    }
+    return nextMaterial == null ? primitive : { ...primitive, material: nextMaterial };
+  }));
+
+  const nextScene = { ...scene, primitives } as Scene;
+  return {
+    scene: nextScene,
+    report: buildTextureDecodeReport(nextScene),
+    decodedCount,
+    unchangedCount,
+    warnings,
+  };
+}
+
 export function classifyTextureHandle(handle: unknown): GltfTextureHandleKind {
   if (isRawImageHandle(handle)) return 'raw-image';
   if (isDataTextureLike(handle)) return 'data-texture';
@@ -168,6 +264,115 @@ function backendReadinessForHandle(
       ? (cpuReady ? 'ready' : 'opaque')
       : 'ignored',
   };
+}
+
+async function decodeTextureRef(
+  ref: TextureRef,
+  context: {
+    readonly field: GltfMaterialTextureField;
+    readonly path: string;
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+    readonly options: DecodeSceneTexturesOptions;
+    readonly decoded: Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>;
+    readonly warn: (message: string) => void;
+  },
+): Promise<TextureRef> {
+  if (context.options.target === 'webgpu') return ref;
+  const handleKind = classifyTextureHandle(ref.handle);
+  if (handleKind === 'pixel-data' || handleKind === 'data-texture') return ref;
+  if (handleKind !== 'raw-image') {
+    context.warn(
+      `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
+        'decodeSceneTextures(target:"cpu-linear") can only normalize raw-image handles. Texture left unchanged.',
+    );
+    return ref;
+  }
+  if (context.options.decodePixels == null) {
+    context.warn(
+      `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied. ` +
+        'Texture left unchanged.',
+    );
+    return ref;
+  }
+
+  const colorSpace = gltfTextureColorSpaceForField(context.field);
+  let perSpace = context.decoded.get(ref.handle);
+  if (perSpace == null) {
+    perSpace = new Map();
+    context.decoded.set(ref.handle, perSpace);
+  }
+  let handle = perSpace.get(colorSpace);
+  if (handle == null) {
+    const pixels = await context.options.decodePixels(ref.handle as RawImageHandle, {
+      materialField: context.field,
+      path: context.path,
+      colorSpace,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+    });
+    handle = normalizeDecodedPixels(pixels, colorSpace);
+    perSpace.set(colorSpace, handle);
+  }
+  return { ...ref, handle };
+}
+
+function normalizeDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  fieldColorSpace: GltfTextureColorSpace,
+): GltfCpuLinearTextureHandle {
+  const width = Math.max(0, Math.floor(pixels.width));
+  const height = Math.max(0, Math.floor(pixels.height));
+  if (width <= 0 || height <= 0) {
+    throw new Error(`[vitrum/gltf-adapter] decodePixels returned invalid texture dimensions ${pixels.width}x${pixels.height}.`);
+  }
+  const channels = pixels.channels ?? inferDecodedChannels(pixels.data, width, height);
+  const dataType = pixels.dataType ?? inferDecodedDataType(pixels.data);
+  const sourceColorSpace = pixels.colorSpace ?? fieldColorSpace;
+  const out = new Float32Array(width * height * 4);
+  for (let p = 0; p < width * height; p += 1) {
+    const s = p * channels;
+    const r = decodeChannel(pixels.data[s] ?? 0, dataType);
+    const g = decodeChannel(pixels.data[s + (channels > 1 ? 1 : 0)] ?? 0, dataType);
+    const b = decodeChannel(pixels.data[s + (channels > 2 ? 2 : 0)] ?? 0, dataType);
+    const a = channels >= 4 ? decodeChannel(pixels.data[s + 3] ?? 1, dataType) : 1;
+    const convert = fieldColorSpace === 'srgb' && sourceColorSpace !== 'linear';
+    out[p * 4] = convert ? srgbToLinear(r) : r;
+    out[p * 4 + 1] = convert ? srgbToLinear(g) : g;
+    out[p * 4 + 2] = convert ? srgbToLinear(b) : b;
+    out[p * 4 + 3] = a;
+  }
+  return {
+    width,
+    height,
+    data: out,
+    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+  };
+}
+
+function inferDecodedChannels(data: ArrayLike<number>, width: number, height: number): 1 | 2 | 3 | 4 {
+  const stride = Math.max(1, Math.round(data.length / Math.max(1, width * height)));
+  if (stride <= 1) return 1;
+  if (stride === 2) return 2;
+  if (stride === 3) return 3;
+  return 4;
+}
+
+function inferDecodedDataType(data: ArrayLike<number>): 'uint8' | 'uint16' | 'float32' {
+  if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 'uint8';
+  if (data instanceof Uint16Array) return 'uint16';
+  return 'float32';
+}
+
+function decodeChannel(value: number, dataType: 'uint8' | 'uint16' | 'float32'): number {
+  if (dataType === 'uint8') return Math.max(0, Math.min(1, value / 255));
+  if (dataType === 'uint16') return Math.max(0, Math.min(1, value / 65535));
+  return Number(value);
+}
+
+function srgbToLinear(v: number): number {
+  const c = Math.max(0, Math.min(1, v));
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 function isRawImageHandle(handle: unknown): handle is RawImageHandle {
