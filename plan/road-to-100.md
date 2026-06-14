@@ -620,20 +620,20 @@ Scene MaterialSpec.*Map
 ```
 
 **First slice landed (2026-06-13):** `baseColorMap` now has a real
-walkaround path for readable raw/DataTexture-shaped `TextureRef` handles on uv0.
+walkaround path for readable raw/DataTexture-shaped `TextureRef` handles on uv0
+and uv1.
 `pipeline/materialTextureAtlas.ts` builds a linear RGBA32F `texture_2d_array`
 plus per-triangle metadata; `BvhBufferHost` uploads/binds it at scene bindings
 20-21; `shade.wgsl.ts` samples it with wrap + `KHR_texture_transform` metadata
 and multiplies visible albedo; `CONSUMED_MATERIAL_FIELDS` and the core promise
 ledger now grade walkaround `baseColorMap` as `approximate`. It is deliberately
-not `native`: texCoord 1 is still disabled in this first slice, glass
-Beer/transmission tint still uses the scalar packed color path, and the rest of
-the texture-map family is still open.
+not `native`: glass Beer/transmission tint still uses the scalar packed color
+path, and the rest of the texture-map family is still open.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
 | Atlas build | ✅ FIRST SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap` raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers. Remaining maps still need atlas rows/channel policy. |
-| UV buffer | `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | **Must** propagate `uvs` stride-2 and `uv1` — merge already can (`worldSpaceMerge` per H33 fix) |
+| UV buffer | ✅ FIRST SLICE: `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | uv0 rides `bvh_position.w`; uv1 rides `bvh_normal.w` using the same packed 16:16 unorm convention. |
 | Tangent buffer | `bvh_normal` exists; add `bvh_tangent` or pack in aux buffer | Normal maps require TBN in `materialDecode.wgsl.ts` |
 | Bind group | ✅ FIRST SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-21 add baseColor atlas + metadata as textures, not storage buffers, preserving the storage-buffer budget. |
 | Material index per tri | ✅ FIRST SLICE: metadata texture keyed by triangle index | `baseColorMap` uses `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |

@@ -334,7 +334,7 @@ type MaterialSupportMatrix = Readonly<
  * walkaround-hybrid — the realtime GI stack's material model is QUANTIZED
  * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
  * 4-bit transmission, scalar-alpha cutout bit, pre-baked Beer-Lambert tint) +
- * f32 HDR emissive Le. The first texture-atlas slice samples readable uv0
+ * f32 HDR emissive Le. The first texture-atlas slice samples readable uv0/uv1
  * baseColorMap handles in shade; other TextureRefs are not sampled.
  * Everything not consumed is warned once per setScene via
  * `walkaround-hybrid.unconsumed-material-fields`
@@ -369,10 +369,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   attenuationColor: 'approximate',
   attenuationDistance: 'approximate',
   thickness: 'approximate',
-  // Phase-3D first slice: readable raw/DataTexture-shaped uv0 baseColorMap
+  // Phase-3D first slice: readable raw/DataTexture-shaped uv0/uv1 baseColorMap
   // handles are sampled with wrap+transform and multiplied into visible albedo.
-  // Approximate because texCoord 1 and glass Beer/transmission tint still use
-  // the scalar packed color path.
+  // Approximate because glass Beer/transmission tint still uses the scalar
+  // packed color path and the rest of the texture-map family is not sampled.
   baseColorMap: 'approximate',
   normalMap: 'unsupported',
   normalScale: 'unsupported',

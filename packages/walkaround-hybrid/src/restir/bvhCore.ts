@@ -10,6 +10,7 @@
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   collapseIndicesToStride3,
+  mergeUv1FromCore,
   mergeWorldSpaceFromCore,
   packSceneFromCore,
   rebuildPrimitiveBlas,
@@ -17,6 +18,7 @@ import {
 } from '@vitrum/shared-bvh';
 import {
   packUVIntoPositionW,
+  packUVIntoVec4W,
   packBVHIndexWFromCore,
   packBVHBeerColorsFromCore,
   packBVHEmissiveLeFromCore,
@@ -340,6 +342,15 @@ function stride4UvsToStride2Uv0(uvs4: Float32Array, vertCount: number): Float32A
   return out;
 }
 
+function stride4UvsToStride2Uv1(uvs4: Float32Array, vertCount: number): Float32Array {
+  const out = new Float32Array(vertCount * 2);
+  for (let i = 0; i < vertCount; i++) {
+    out[i * 2] = uvs4[i * 4 + 2] ?? 0;
+    out[i * 2 + 1] = uvs4[i * 4 + 3] ?? 0;
+  }
+  return out;
+}
+
 function buffersFromCoreScenePack(
   scene: Scene,
   geo: ScenePackResult,
@@ -355,6 +366,8 @@ function buffersFromCoreScenePack(
   // same primitive-concat order, so indices align 1:1.
   const uv0Stride2 = stride4UvsToStride2Uv0(geo.uvs, vertCount);
   const positionsWithUV = packUVIntoPositionW(geo.positions, { array: uv0Stride2 }, vertCount);
+  const uv1Stride2 = stride4UvsToStride2Uv1(geo.uvs, vertCount);
+  const normalsWithUV1 = packUVIntoVec4W(geo.normals, { array: uv1Stride2 }, vertCount);
   const triIndices3 = collapseIndicesToStride3(geo.indices);
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
@@ -390,7 +403,7 @@ function buffersFromCoreScenePack(
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
     materialTextureAtlas,
     bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
-    bvhNormals: makeStorageHandle(geo.normals, 16),
+    bvhNormals: makeStorageHandle(normalsWithUV1, 16),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,
     emitterCount: emitterSlice.emitterCount,
@@ -446,6 +459,8 @@ function buildReSTIRSceneBVHFromCoreMerged(
   // is stride-2 (u0, v0 per vertex), which is exactly what packUVIntoPositionW's
   // { array } path expects (reads array[i*2] / array[i*2+1]).
   const positionsWithUV = packUVIntoPositionW(merged.positions, { array: merged.uvs }, vertCount);
+  const mergedUv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+  const normalsWithUV1 = packUVIntoVec4W(merged.normals, mergedUv1 == null ? undefined : { array: mergedUv1 }, vertCount);
   const indexBuf = packBVHIndexWFromCore(
     merged.indices,
     merged.triMaterialId,
@@ -477,7 +492,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
     materialTextureAtlas,
     bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
-    bvhNormals: makeStorageHandle(merged.normals, 16),
+    bvhNormals: makeStorageHandle(normalsWithUV1, 16),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,
     emitterCount: emitterSlice.emitterCount,

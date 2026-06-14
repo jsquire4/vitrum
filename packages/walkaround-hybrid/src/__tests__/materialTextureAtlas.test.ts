@@ -70,7 +70,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[7]).toBeCloseTo(Math.sin(rotation), 5);
   });
 
-  it('leaves texCoord 1 disabled in the first atlas slice', () => {
+  it('keeps texCoord 1 baseColorMap layers readable and records the uv-set selector', () => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 1,
@@ -88,7 +88,8 @@ describe('walkaround materialTextureAtlas', () => {
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
-    expect(atlas.readableBaseColorLayerCount).toBe(0);
-    expect(atlas.baseColorMetaData[0]).toBe(-1);
+    expect(atlas.readableBaseColorLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.baseColorMetaData[1]).toBe(16);
   });
 });

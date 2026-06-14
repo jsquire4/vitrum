@@ -175,6 +175,15 @@ function storedScene(engine: HybridEngine): Scene {
   return scene;
 }
 
+function unpackUvFromVec4W(stream: Float32Array, vertexIndex: number): [number, number] {
+  const words = new Uint32Array(stream.buffer, stream.byteOffset, stream.byteLength / 4);
+  const word = words[vertexIndex * 4 + 3] ?? 0;
+  return [
+    (word & 0xFFFF) / 0xFFFF,
+    ((word >>> 16) & 0xFFFF) / 0xFFFF,
+  ];
+}
+
 describe('HybridEngine mutation matrix (non-GPU seam)', () => {
   let warnSpy: MockInstance;
 
@@ -185,6 +194,47 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
   afterEach(() => {
     warnSpy.mockRestore();
   });
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'packs uv1 into bvh normal .w for texCoord 1 baseColorMap in %s mode',
+    (bvhMode) => {
+      const primitive = {
+        kind: 'mesh',
+        id: 'uv1-mesh',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uv1: new Float32Array([0.125, 0.25, 0.5, 0.625, 0.75, 0.875]),
+        material: {
+          baseColor: [1, 1, 1] as [number, number, number],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: { handle: baseColorMapHandle(255), texCoord: 1 },
+        },
+        transform: mat4Translate(0),
+      } satisfies ScenePrimitive;
+      const scene: Scene = {
+        primitives: [primitive],
+        emitters: [],
+        environment: { kind: 'none' },
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode });
+      const normals = new Float32Array(buffers.bvhNormals.cpuData);
+      const uv0 = unpackUvFromVec4W(normals, 0);
+      const uv1 = unpackUvFromVec4W(normals, 1);
+      const uv2 = unpackUvFromVec4W(normals, 2);
+
+      expect(uv0[0]).toBeCloseTo(0.125, 4);
+      expect(uv0[1]).toBeCloseTo(0.25, 4);
+      expect(uv1[0]).toBeCloseTo(0.5, 4);
+      expect(uv1[1]).toBeCloseTo(0.625, 4);
+      expect(uv2[0]).toBeCloseTo(0.75, 4);
+      expect(uv2[1]).toBeCloseTo(0.875, 4);
+      expect(buffers.materialTextureAtlas.baseColorMetaData[0]).toBe(0);
+      expect(buffers.materialTextureAtlas.baseColorMetaData[1]).toBe(16);
+    },
+  );
 
   it('updatePrimitive(transform) refits TLAS, resets accumulation, and re-syncs DDGI BVH without invalidating probes', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });

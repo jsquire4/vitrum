@@ -175,7 +175,6 @@ export function packMaterialTextureAtlas(
   for (const material of materials) {
     const ref = asTextureRef(material.baseColorMap);
     if (ref?.handle == null) continue;
-    if ((ref.texCoord ?? 0) !== 0) continue;
     if (readable.has(ref.handle)) continue;
     const pixels = readHandlePixels(ref.handle);
     if (pixels == null) {
@@ -212,7 +211,7 @@ export function packMaterialTextureAtlas(
       continue;
     }
     const texCoord = ref.texCoord ?? 0;
-    const layer = texCoord === 0 ? readable.get(ref.handle)?.layer : undefined;
+    const layer = texCoord === 0 || texCoord === 1 ? readable.get(ref.handle)?.layer : undefined;
     if (layer == null) {
       writeDisabledMeta(baseColorMetaData, texel);
       continue;

@@ -84,8 +84,21 @@ export function packUVIntoPositionW(
   uvAttr: BufferAttributeLike | undefined,
   vertCount: number,
 ): Float32Array<ArrayBuffer> {
-  const out = new Float32Array(positions.length);
-  out.set(positions);
+  return packUVIntoVec4W(positions, uvAttr, vertCount);
+}
+
+/**
+ * Pack UV (16-bit unorm pair) into the .w slot of a vec4f-strided stream.
+ * The xyz lanes are preserved verbatim. Used for position.w (uv0, consumed by
+ * traversal) and normal.w (uv1, consumed by material texture sampling).
+ */
+export function packUVIntoVec4W(
+  values: Float32Array,
+  uvAttr: BufferAttributeLike | undefined,
+  vertCount: number,
+): Float32Array<ArrayBuffer> {
+  const out = new Float32Array(values.length);
+  out.set(values);
   const u32View = new Uint32Array(out.buffer);
   const sourceUvs = uvAttr?.array;
 

@@ -189,20 +189,30 @@ fn wrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
   return vec2f(wrapMaterialUv1(uv.x, wrapS), wrapMaterialUv1(uv.y, wrapT));
 }
 
-fn sampleBaseColorMap(triIndex: u32, uv: vec2f, scalarBaseColor: vec3f) -> vec3f {
+fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: vec4f) -> vec2f {
+  let uvA = unpack2x16unorm(bitcast<u32>(n0.w));
+  let uvB = unpack2x16unorm(bitcast<u32>(n1.w));
+  let uvC = unpack2x16unorm(bitcast<u32>(n2.w));
+  return hit.barycoord.x * uvA + hit.barycoord.y * uvB + hit.barycoord.z * uvC;
+}
+
+fn sampleBaseColorMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarBaseColor: vec3f) -> vec3f {
   let metaTexel = triIndex * 2u;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
   let layer = i32(meta0.x);
   if (layer < 0) {
     return scalarBaseColor;
   }
+  let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
+  let texCoord = (wrapPacked >> 4u) & 0x3u;
+  let uv = select(uv0, uv1, texCoord == 1u);
   let meta1 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel + 1u), 0);
   let scaled = uv * meta1.xy;
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
   ) + meta0.zw;
-  let wrapped = wrapMaterialUv(transformed, u32(max(meta0.y, 0.0) + 0.5));
+  let wrapped = wrapMaterialUv(transformed, wrapPacked);
   let dims = textureDimensions(materialTextureAtlas);
   let texel = vec2i(
     i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
@@ -314,9 +324,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let n_base = primaryHit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
   let n_i = select(0u, n_base, n_ok);
+  let n0 = bvh_normal[primaryHit.indices.x];
+  let n1 = bvh_normal[primaryHit.indices.y];
+  let n2 = bvh_normal[primaryHit.indices.z];
   let normal = smoothShadingNormal(
     primaryHit, geoNormal,
-    bvh_normal[primaryHit.indices.x].xyz, bvh_normal[primaryHit.indices.y].xyz, bvh_normal[primaryHit.indices.z].xyz,
+    n0.xyz, n1.xyz, n2.xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
@@ -337,7 +350,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   storeSvgfObjectId(pix, stableSvgfObjectId(primaryHit));
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
-  let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, matColor.rgb);
+  let uv1 = interpolateUv1FromNormalW(primaryHit, n0, n1, n2);
+  let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
   // invariant packs 0.85 for unspecified roughness / 0.05 for glass / metal 0,
