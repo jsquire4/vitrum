@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 18;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 21;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -11,7 +11,8 @@ type AtlasMapField =
   | 'aoMap'
   | 'alphaMap'
   | 'emissiveMap'
-  | 'transmissionMap';
+  | 'transmissionMap'
+  | 'lightMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -23,6 +24,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'alphaMap', colorSpace: 'linear' },
   { field: 'emissiveMap', colorSpace: 'srgb' },
   { field: 'transmissionMap', colorSpace: 'linear' },
+  { field: 'lightMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -40,6 +42,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableAlphaLayerCount: number;
   readonly readableEmissiveLayerCount: number;
   readonly readableTransmissionLayerCount: number;
+  readonly readableLightLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -230,6 +233,7 @@ export function packMaterialTextureAtlas(
     alphaMap: new Set<number>(),
     emissiveMap: new Set<number>(),
     transmissionMap: new Set<number>(),
+    lightMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -334,6 +338,16 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeLightMapIntensityMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = Number.isFinite(mat?.lightMapIntensity)
+      ? Math.max(0, mat?.lightMapIntensity ?? 1)
+      : 1;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -347,6 +361,8 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + 13);
     writeMapMeta(mat, 'normalMap', 'linear', baseTexel + 15);
     writeNormalScaleMeta(mat, baseTexel + 17);
+    writeMapMeta(mat, 'lightMap', 'linear', baseTexel + 18);
+    writeLightMapIntensityMeta(mat, baseTexel + 20);
   }
 
   return {
@@ -364,6 +380,7 @@ export function packMaterialTextureAtlas(
     readableAlphaLayerCount: fieldLayers.alphaMap.size,
     readableEmissiveLayerCount: fieldLayers.emissiveMap.size,
     readableTransmissionLayerCount: fieldLayers.transmissionMap.size,
+    readableLightLayerCount: fieldLayers.lightMap.size,
   };
 }
 

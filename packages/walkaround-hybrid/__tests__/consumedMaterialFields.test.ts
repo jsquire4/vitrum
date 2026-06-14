@@ -46,6 +46,8 @@ describe('collectUnconsumedMaterialFields', () => {
       metallic: 0,
       emissive: [1, 0, 0],
       emissiveIntensity: 2,
+      lightMap: { handle: stubTextureRef() },
+      lightMapIntensity: 1.5,
       shadingModel: 'unlit',
       normalMap: { handle: stubTextureRef() },
       normalScale: 0.5,
@@ -159,7 +161,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
       'thickness', 'ior', 'extensions', 'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
-      'normalMap', 'normalScale',
+      'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -171,7 +173,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
       'iridescenceThicknessMap', 'anisotropyMap', 'specularColorMap',
-      'specularIntensityMap', 'bumpMap', 'displacementMap', 'lightMap',
+      'specularIntensityMap', 'bumpMap', 'displacementMap',
     ];
     for (const field of textureMaps) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(false);

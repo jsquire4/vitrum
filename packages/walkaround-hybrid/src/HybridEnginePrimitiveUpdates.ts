@@ -1039,6 +1039,7 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'alphaMap',
   'emissiveMap',
   'transmissionMap',
+  'lightMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(
@@ -1062,6 +1063,21 @@ function textureMapPatchRequiresFullRebuild(
   return (at?.rotation ?? 0) !== (bt?.rotation ?? 0);
 }
 
+function alphaModeAtlasIndex(mode: MaterialSpec['alphaMode'] | undefined): number {
+  switch (mode ?? 'opaque') {
+    case 'mask':
+      return 1;
+    case 'blend':
+      return 2;
+    case 'opaque':
+      return 0;
+  }
+}
+
+function alphaAtlasUnit(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
+}
+
 function materialAtlasPatchRequiresFullRebuild(
   prev: MaterialSpec | undefined,
   next: MaterialSpec | undefined,
@@ -1070,8 +1086,20 @@ function materialAtlasPatchRequiresFullRebuild(
     textureMapPatchRequiresFullRebuild(prev, next, field),
   );
   if (mapChanged) return true;
-  if (prev?.normalMap == null && next?.normalMap == null) return false;
-  return (prev?.normalScale ?? 1) !== (next?.normalScale ?? 1);
+  const normalScaleChanged =
+    (prev?.normalMap != null || next?.normalMap != null) &&
+    (prev?.normalScale ?? 1) !== (next?.normalScale ?? 1);
+  const lightMapIntensityChanged =
+    (prev?.lightMap != null || next?.lightMap != null) &&
+    (prev?.lightMapIntensity ?? 1) !== (next?.lightMapIntensity ?? 1);
+  const alphaCoverageChanged =
+    (prev?.alphaMap != null || next?.alphaMap != null) &&
+    (
+      alphaModeAtlasIndex(prev?.alphaMode) !== alphaModeAtlasIndex(next?.alphaMode) ||
+      alphaAtlasUnit(prev?.opacity, 1) !== alphaAtlasUnit(next?.opacity, 1) ||
+      alphaAtlasUnit(prev?.alphaCutoff, 0.5) !== alphaAtlasUnit(next?.alphaCutoff, 0.5)
+    );
+  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged;
 }
 
 /**

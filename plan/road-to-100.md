@@ -623,7 +623,7 @@ Scene MaterialSpec.*Map
 ```
 
 **Atlas slices landed:** `baseColorMap` (2026-06-13) plus
-`normalMap`/`roughnessMap`/`metallicMap`/`aoMap`/`alphaMap`/`emissiveMap`/`transmissionMap` (2026-06-14) now have real walkaround paths for
+`normalMap`/`roughnessMap`/`metallicMap`/`aoMap`/`alphaMap`/`emissiveMap`/`transmissionMap`/`lightMap` (2026-06-14) now have real walkaround paths for
 readable raw/DataTexture-shaped `TextureRef` handles on uv0 and uv1.
 `pipeline/materialTextureAtlas.ts` builds a linear RGBA32F `texture_2d_array`
 plus per-triangle metadata; `BvhBufferHost` uploads/binds it at scene bindings
@@ -634,22 +634,22 @@ channel and applies `aoMapIntensity` via the glTF occlusion-strength formula
 before multiplying the runtime GTAO factor. Normal maps perturb the visible
 smooth normal through a derived per-triangle tangent frame and `normalScale`,
 but do not yet consume authored tangent buffers. Alpha maps cut out primary/RIS/GI
-hits, emissive maps modulate camera-visible emitter glow, and transmission maps modulate shade/RIS/GI glass gating. `CONSUMED_MATERIAL_FIELDS` and the
+hits, emissive maps modulate camera-visible emitter glow, transmission maps modulate shade/RIS/GI glass gating, and light maps add first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_FIELDS` and the
 core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
-`metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, and `transmissionMap` as
+`metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `lightMap`, and `lightMapIntensity` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission tint,
-emitter power, and upstream reservoir/GI payloads still use scalar packed lanes,
-and the rest of the texture-map family is still open.
+emitter power, upstream reservoir/GI payloads, and baked light maps' non-camera
+paths still use scalar packed lanes, and the rest of the texture-map family is still open.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
-| Atlas build | ✅ SECOND SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap` and `emissiveMap` raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, and `transmissionMap` are packed as linear scalar-map layers and sampled from glTF RGB/G/B/R/R/R channels. Remaining maps still need atlas rows/channel policy. |
+| Atlas build | ✅ THIRD SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap` and `emissiveMap` raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, and `lightMap` are packed as linear map layers and sampled from glTF RGB/G/B/R/R/R/RGB channels. Remaining maps still need atlas rows/channel policy. |
 | UV buffer | ✅ FIRST SLICE: `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | uv0 rides `bvh_position.w`; uv1 rides `bvh_normal.w` using the same packed 16:16 unorm convention. |
 | Tangent buffer | ◑ DERIVED-TBN SLICE: `materialAtlas.wgsl.ts` | Normal maps currently derive a per-triangle frame from positions + uv0/uv1; authored/generated tangent.xyzw is still not bound, so the ledger row stays approximate. |
 | Bind group | ✅ SECOND SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-21 add a shared material-map atlas + metadata as textures, not storage buffers, preserving the storage-buffer budget. |
-| Material index per tri | ✅ SECOND SLICE: metadata texture keyed by triangle index | `baseColorMap`, `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `emissiveMap`, and `transmissionMap` use `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |
-| `materialPatch` fast path | ✅ SECOND SLICE: `HybridEnginePrimitiveUpdates.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild so atlas metadata cannot go stale. A narrower atlas refresh remains an optimization follow-up. |
-| Ledger | ✅ SECOND SLICE: `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | `baseColorMap`, `normalMap`, `normalScale`, `roughnessMap`, `metallicMap`, `aoMap`, `aoMapIntensity`, `alphaMap`, `emissiveMap`, and `transmissionMap` promoted to `approximate` with tests. Remaining maps remain unsupported until each has shader consumption. |
+| Material index per tri | ✅ THIRD SLICE: metadata texture keyed by triangle index | `baseColorMap`, `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `emissiveMap`, `transmissionMap`, and `lightMap` use `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |
+| `materialPatch` fast path | ✅ THIRD SLICE: `HybridEnginePrimitiveUpdates.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `alphaMode` / `opacity` / `alphaCutoff` when a relevant map exists) also rebuild so metadata cannot go stale. A narrower atlas refresh remains an optimization follow-up. |
+| Ledger | ✅ THIRD SLICE: `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | `baseColorMap`, `normalMap`, `normalScale`, `roughnessMap`, `metallicMap`, `aoMap`, `aoMapIntensity`, `alphaMap`, `emissiveMap`, `transmissionMap`, `lightMap`, and `lightMapIntensity` promoted to `approximate` with tests. Remaining maps remain unsupported until each has shader consumption. |
 
 **Footguns:**
 - Sampling baseColor UV for all maps (pt-webgpu v1 bug) — use per-map `TextureRef.texCoord` + `transform` from glTF.

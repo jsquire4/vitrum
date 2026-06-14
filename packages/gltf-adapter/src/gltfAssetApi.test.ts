@@ -18,7 +18,7 @@ import {
   rankGltfBackends,
 } from './index.js';
 import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
-import type { MeshPrimitive, TextureRef } from '@vitrum/core';
+import type { MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
 
 function f32Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 4);
@@ -339,6 +339,53 @@ describe('loadGltfAsset', () => {
 });
 
 describe('decodeSceneTextures', () => {
+  it('reports decoded lightMap handles as walkaround-ready', async () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'lightmap-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 1,
+            metallic: 0,
+            lightMap: { handle: { kind: 'raw-image', uri: 'light.png' } },
+            lightMapIntensity: 2,
+          },
+        } as MeshPrimitive,
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, {
+      target: 'cpu-linear',
+      decodePixels: () => ({
+        width: 1,
+        height: 1,
+        data: new Uint8Array([64, 128, 255, 255]),
+        channels: 4,
+        dataType: 'uint8',
+      }),
+    });
+
+    expect(result.report.entries).toEqual([
+      expect.objectContaining({
+        primitiveId: 'lightmap-mesh',
+        materialField: 'lightMap',
+        colorSpace: 'linear',
+        handleKind: 'pixel-data',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]);
+  });
+
   it('normalizes raw-image texture refs to linear CPU pixel handles with field color-space policy', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.materials![0] = {

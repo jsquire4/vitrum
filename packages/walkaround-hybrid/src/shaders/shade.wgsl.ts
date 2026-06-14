@@ -332,6 +332,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     uv1,
     lo_emitterGlow(primaryHit.indices.w),
   );
+  // Baked camera-visible outgoing radiance. Like the PT backends, this is
+  // first-hit only and additive; it does not feed ReSTIR emitter power or GI.
+  let Lo_lightMap = sampleLightMap(primaryHit.indices.w, primaryHit.uv, uv1);
   let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
@@ -406,8 +409,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // physically-parameterised sky channel and was not portable to scenes with
   // a different skyIrradiance.  The 0.08 has been dropped; Lo_skyAperture
   // is summed at full magnitude.
-  // Lo_emitterGlow (self-emission) joins Lo_emit OUTSIDE the AO term — emission
-  // is not occluded by ambient occlusion.
+  // Lo_emitterGlow (self-emission) and Lo_lightMap (baked outgoing radiance)
+  // join Lo_emit OUTSIDE the AO term — emission/baked lighting already carry
+  // their own visibility and should not be contact-darkened again.
   // H41 — Lo_analyticNEE is in the direct channel (same firefly-clamp tier as Lo_direct).
   // B1 — Lo_indirectSpec (glossy/metal specular reflection of GI) joins the
   // UN-demodulated direct channel (it is not albedo-proportional, so it must
@@ -418,7 +422,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_transmittedGI joins the direct channel (un-demodulated; bypasses AO —
   // the diffuse wall behind the glass is not in contact-shadow from the glass
   // pane, and GI through glass is a transmission term, not an occlusion term).
-  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
+  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

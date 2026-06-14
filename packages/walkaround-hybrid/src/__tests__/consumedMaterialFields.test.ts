@@ -105,7 +105,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
-      'emissiveMap', 'transmissionMap',
+      'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -137,6 +137,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'specularIntensity',
       'specularColorMap',
       'specularIntensityMap',
+      'bumpMap',
       'frontLayer',
       'backLayer',
       'thinFilmStack',

@@ -331,6 +331,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           emissiveMap: { handle: baseColorMapHandle(8), wrapT: 'mirrored-repeat' },
           transmission: 1,
           transmissionMap: { handle: baseColorMapHandle(4), wrapS: 'clamp-to-edge' },
+          lightMap: { handle: baseColorMapHandle(2), texCoord: 1 },
+          lightMapIntensity: 2,
         },
       });
 
@@ -346,6 +348,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableEmissiveLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableTransmissionLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
@@ -356,6 +359,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           alphaMap?: unknown;
           emissiveMap?: unknown;
           transmissionMap?: unknown;
+          lightMap?: unknown;
+          lightMapIntensity?: unknown;
         };
       }).material;
       expect(material.baseColorMap).toBeDefined();
@@ -366,6 +371,60 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(material.alphaMap).toBeDefined();
       expect(material.emissiveMap).toBeDefined();
       expect(material.transmissionMap).toBeDefined();
+      expect(material.lightMap).toBeDefined();
+      expect(material.lightMapIntensity).toBe(2);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) rebuilds material texture atlas when atlas metadata scalars change', () => {
+    const lightHandle = baseColorMapHandle(192);
+    const alphaHandle = baseColorMapHandle(64);
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            alphaMode: 'mask',
+            alphaCutoff: 0.5,
+            opacity: 1,
+            alphaMap: { handle: alphaHandle },
+            lightMap: { handle: lightHandle },
+            lightMapIntensity: 1,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          alphaMode: 'mask',
+          alphaCutoff: 0.25,
+          opacity: 0.75,
+          alphaMap: { handle: alphaHandle },
+          lightMap: { handle: lightHandle },
+          lightMapIntensity: 3,
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
     } finally {
       engine.dispose();
     }

@@ -335,8 +335,8 @@ type MaterialSupportMatrix = Readonly<
  * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
  * 4-bit transmission, scalar-alpha cutout bit, pre-baked Beer-Lambert tint) +
  * f32 HDR emissive Le. The texture-atlas path samples readable uv0/uv1
- * baseColorMap, roughnessMap, metallicMap, and aoMap handles in shade; other
- * TextureRefs are not sampled.
+ * baseColorMap, normal/ORM/AO/alpha/emissive/transmission maps, and a
+ * camera-visible lightMap in shade; other TextureRefs are not sampled.
  * Everything not consumed is warned once per setScene via
  * `walkaround-hybrid.unconsumed-material-fields`
  * (restir/consumedMaterialFields.ts allowlist — this matrix mirrors it exactly:
@@ -382,10 +382,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // G/B channels in shade for visible BRDF terms; AO samples the glTF R channel
   // and multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
   // cutout traversal; emissiveMap modulates camera-visible emitter glow;
-  // transmissionMap modulates shade/RIS/GI glass gating. Approximate because
-  // authored tangents are not consumed, upstream reservoir/candidate PDFs,
-  // emitter power, and GI payloads still use scalar packed lanes, and alpha blend
-  // has no OIT path.
+  // transmissionMap modulates shade/RIS/GI glass gating; lightMap adds
+  // first-hit baked outgoing radiance. Approximate because authored tangents are
+  // not consumed, upstream reservoir/candidate PDFs, emitter power, and GI
+  // payloads still use scalar packed lanes, lightMap is camera-visible only, and
+  // alpha blend has no OIT path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',
@@ -412,8 +413,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   displacementMap: 'unsupported',
   displacementScale: 'unsupported',
   displacementBias: 'unsupported',
-  lightMap: 'unsupported',
-  lightMapIntensity: 'unsupported',
+  lightMap: 'approximate',
+  lightMapIntensity: 'approximate',
   sheen: 'unsupported',
   sheenColor: 'unsupported',
   sheenRoughness: 'unsupported',

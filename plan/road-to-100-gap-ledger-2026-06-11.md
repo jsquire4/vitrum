@@ -219,6 +219,15 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   smooth normal before G-buffer/lighting writes. The ledger grades
   `normalMap`/`normalScale` `approximate` because authored tangent.xyzw buffers
   and reservoir/GI material payload parity are still open.
+- Follow-up 2026-06-14: walkaround readable `lightMap` handles now pack into
+  the material texture atlas as linear RGB layers with uv0/uv1, wrap-mode,
+  `KHR_texture_transform`, and `lightMapIntensity` metadata. `shade.wgsl`
+  adds the sampled value as camera-visible first-hit baked outgoing radiance.
+  The ledger grades `lightMap`/`lightMapIntensity` `approximate` because the
+  baked-light term does not feed ReSTIR emitter power, reservoir payloads, or GI.
+  `HybridEngine.updatePrimitive(material)` now rebuilds the atlas when
+  `lightMap`, `lightMapIntensity`, or alpha-map coverage metadata changes, so
+  scalar metadata edits cannot leave stale atlas rows.
 - SPEC-01 pt-webgpu scalar `KHR_materials_specular` consumption landed: material
   vec4 #27 carries `specularColor.rgb` + `specularIntensity`, `material.wgsl.ts`
   decodes them, `bsdf.wgsl.ts` uses them for dielectric F0, and the scalar pair
@@ -1256,7 +1265,7 @@ Closure:
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
   parity is required, walkaround fractional blend plus the remaining atlas map
-  families (normal/transmission/thickness/extension/light/bump/displacement
+  families (thickness/extension/bump/displacement
   policy), pt-webgpu/walkaround `thicknessMap` parity, and backend material-
   consumption parity.
 

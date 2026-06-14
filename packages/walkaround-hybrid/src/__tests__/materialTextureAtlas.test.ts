@@ -134,7 +134,8 @@ describe('walkaround materialTextureAtlas', () => {
 
     // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5], ao=[6,7],
     // alpha=[8,9], alphaCoverage=[10], emissive=[11,12],
-    // transmission=[13,14], normal=[15,16], normalScale=[17].
+    // transmission=[13,14], normal=[15,16], normalScale=[17],
+    // lightMap=[18,19], lightMapIntensity=[20].
     expect(atlas.baseColorMetaData[0]).toBe(-1);
     expect(atlas.baseColorMetaData[8]).toBe(0);
     expect(atlas.baseColorMetaData[9]).toBe(2 + 1 * 4);
@@ -151,6 +152,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[44]).toBe(-1);
     expect(atlas.baseColorMetaData[52]).toBe(-1);
     expect(atlas.baseColorMetaData[60]).toBe(-1);
+    expect(atlas.baseColorMetaData[72]).toBe(-1);
   });
 
   it('packs aoMap as a linear R-channel atlas slot', () => {
@@ -319,6 +321,39 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[68]).toBeCloseTo(0.5, 5);
   });
 
+  it('packs lightMap as a linear atlas slot with intensity metadata', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([64, 128, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      lightMap: {
+        handle,
+        texCoord: 1,
+        wrapS: 'mirrored-repeat',
+        wrapT: 'clamp-to-edge',
+      },
+      lightMapIntensity: 2.5,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableLightLayerCount).toBe(1);
+    expect(atlas.atlasLayerCount).toBe(1);
+    expect(atlas.atlasData[0]).toBeCloseTo(64 / 255, 5);
+    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
+    expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+    // lightMap slot starts at texel 18; lightMapIntensity metadata at texel 20.
+    expect(atlas.baseColorMetaData[72]).toBe(0);
+    expect(atlas.baseColorMetaData[73]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[80]).toBeCloseTo(2.5, 5);
+  });
+
   it('shade and traversal sample material maps from the shared atlas module', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
@@ -327,8 +362,10 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_LIGHT_TEXEL_OFFSET: u32 = 18u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < cutoff;');
@@ -344,6 +381,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('traceSceneFirstHitAlphaMaskTextured(');
     expect(SHADE_WGSL).toContain('let normal = applyNormalMapForHit(primaryHit, smoothNormal);');
     expect(SHADE_WGSL).toContain('let Lo_emitterGlow = sampleEmissiveMap(');
+    expect(SHADE_WGSL).toContain('let Lo_lightMap = sampleLightMap(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('sampleTransmissionMapForHit(primaryHit, scalarMatColor.a)');
     expect(SHADE_WGSL).toContain(') * authoredAo;');
   });
