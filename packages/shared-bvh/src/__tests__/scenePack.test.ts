@@ -102,6 +102,55 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(Array.from(packed.tangents.slice(12, 24))).toEqual(new Array(12).fill(0));
   });
 
+  it('packs COLOR_0 vertex colors as rgba and defaults missing colors to white', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'rgb-colors',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+          ]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+        {
+          kind: 'mesh',
+          id: 'rgba-colors',
+          positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([
+            0.25, 0.5, 0.75, 0.1,
+            0.5, 0.25, 0.75, 0.2,
+            0.75, 0.5, 0.25, 0.3,
+          ]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+        unitTriMesh('without-colors', translate(4)),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(packed.colors.length).toBe(packed.positions.length);
+    expect(Array.from(packed.colors.slice(0, 12))).toEqual([
+      1, 0, 0, 1,
+      0, 1, 0, 1,
+      0, 0, 1, 1,
+    ]);
+    expect(Array.from(packed.colors.slice(12, 24))).toEqual([
+      0.25, 0.5, 0.75, 0.1,
+      0.5, 0.25, 0.75, 0.2,
+      0.75, 0.5, 0.25, 0.3,
+    ].map((v) => expect.closeTo(v)));
+    expect(Array.from(packed.colors.slice(24, 36))).toEqual(new Array(12).fill(1));
+  });
+
   it('SP-1: two static boxes build TLAS and nearest instance matches oracle', () => {
     const scene: Scene = {
       primitives: [

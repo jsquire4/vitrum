@@ -171,6 +171,7 @@ const BLAS_LABELS = [
   'scene.normals',
   'scene.uvs',
   'scene.tangents',
+  'scene.colors',
   'scene.indices',
   'scene.triMaterialIds',
   'scene.bvhNodes',
@@ -225,7 +226,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('splices a vertex-count change, reallocating only the 12 geometry buffers', async () => {
+  it('splices a vertex-count change, reallocating only the 13 geometry buffers', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -238,7 +239,7 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     // Grow mesh-b from 3 verts / 1 tri to 4 verts / 2 tris (a quad). Slice-2
     // rebuilds ONLY mesh-b's BLAS, splices it into the concat buffers, and
-    // reallocates exactly the 7 BLAS (incl. uvs/tangents) + 5 TLAS geometry
+    // reallocates exactly the 8 BLAS (incl. uvs/tangents/colors) + 5 TLAS geometry
     // buffers — NOT the material / analytic / light buffers (those would prove
     // a full setScene).
     engine.updatePrimitive?.('mesh-b', {
@@ -246,8 +247,8 @@ describe('pt-webgpu incremental primitive updates', () => {
       indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 12);
-    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(12);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 13);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(13);
     const created = labelsCreatedSince(createBuffer, buffersBefore);
     expect(
       created.every(
@@ -255,6 +256,7 @@ describe('pt-webgpu incremental primitive updates', () => {
       ),
     ).toBe(true);
     expect(created.some((l) => l.includes('tangents'))).toBe(true);
+    expect(created.some((l) => l.includes('colors'))).toBe(true);
     // No non-geometry buffer was recreated (materials/analytic/lights stay put).
     expect(created.some((l) => l.includes('materials'))).toBe(false);
     expect(created.some((l) => l.includes('analytic'))).toBe(false);
@@ -444,17 +446,18 @@ describe('pt-webgpu incremental primitive updates', () => {
     const destroysBefore = totalDestroyCalls(createBuffer);
 
     // Resize mesh-a (the FIRST primitive) — mesh-b is downstream, so its concat
-    // offsets must rebase. The engine still takes the splice path: exactly the 12
+    // offsets must rebase. The engine still takes the splice path: exactly the 13
     // geometry buffers reallocate (not the full ~23-buffer setScene set).
     engine.updatePrimitive?.('mesh-a', {
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
       indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 12);
-    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(12);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 13);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(13);
     const created = labelsCreatedSince(createBuffer, buffersBefore);
     expect(created.some((l) => l.includes('tangents'))).toBe(true);
+    expect(created.some((l) => l.includes('colors'))).toBe(true);
     expect(created.some((l) => l.includes('materials'))).toBe(false);
     expect(created.some((l) => l.includes('analytic'))).toBe(false);
     expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore);

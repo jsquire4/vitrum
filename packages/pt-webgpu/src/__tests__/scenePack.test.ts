@@ -36,9 +36,34 @@ describe('buildPackedScene core packing', () => {
     expect(Array.from(packed.indices)).toEqual([0, 1, 2, 0]);
     expect(packed.tangents.length).toBe(packed.positions.length);
     expect(Array.from(packed.tangents)).toEqual(new Array(packed.positions.length).fill(0));
+    expect(packed.colors.length).toBe(packed.positions.length);
+    expect(Array.from(packed.colors)).toEqual(new Array(packed.positions.length).fill(1));
     expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (KHR specular scalars)
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[4]).toBeCloseTo(0.4);
+  });
+
+  it('preserves authored COLOR_0 colors for full-tier baseColor modulation', () => {
+    const scene = makeScene();
+    const mesh = scene.primitives[0]!;
+    if (mesh.kind !== 'mesh') throw new Error('expected mesh');
+    const withColors: Scene = {
+      ...scene,
+      primitives: [{
+        ...mesh,
+        colors: new Float32Array([
+          1, 0, 0, 0.25,
+          0, 1, 0, 0.5,
+          0, 0, 1, 0.75,
+        ]),
+      }],
+    };
+    const packed = buildPackedScene(withColors);
+    expect(Array.from(packed.colors.slice(0, 12))).toEqual([
+      1, 0, 0, 0.25,
+      0, 1, 0, 0.5,
+      0, 0, 1, 0.75,
+    ]);
   });
 
   it('preserves authored tangents for full-tier material normal reconstruction', () => {

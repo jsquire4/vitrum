@@ -246,7 +246,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('mirrors the main shade prologue material-map stack for the visible vertex payload', () => {
     for (const line of [
-      'baseColorV = vMat.baseColor * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;',
+      'baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;',
       'baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);',
       'let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW);',
       'roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.02, 1.0);',
@@ -298,7 +298,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('struct RptSuffixMaterial {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial');
     for (const line of [
-      'out.baseColor = mat.baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;',
+      'out.baseColor = mat.baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;',
       'out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);',
       'let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);',
       'out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;',

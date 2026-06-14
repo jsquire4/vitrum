@@ -165,7 +165,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   let mat = decodeMaterial(matId);
   let isFrontFace = dot(hit.normal, incomingDir) < 0.0;
   var out: RptSuffixMaterial;
-  out.baseColor = mat.baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;
+  out.baseColor = mat.baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;
   out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);
   let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);
   out.roughness = clamp(mat.roughness * ormSample.g, 0.02, 1.0);
@@ -735,7 +735,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   let woV = -primaryRay.direction; // eye-side direction at xv
-  var baseColorV = vMat.baseColor * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;
+  var baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;
   baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);
   let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW);
   var roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.02, 1.0);

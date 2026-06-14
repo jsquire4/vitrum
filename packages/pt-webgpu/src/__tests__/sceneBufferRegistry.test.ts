@@ -29,13 +29,13 @@ describe('D8.7 SceneBufferRegistry', () => {
    *      (sanity check on the registry itself).
    *   2. Confirm every registry bufferField would be a distinct field name
    *      (no duplicate bufferField entries — that would silently shadow one).
-   *   3. Confirm the count of registry entries equals 26 (the canonical buffer
-   *      count as of D8.7, including the P2 + TLAS buffers). If a buffer is
+   *   3. Confirm the count of registry entries equals 27 (the canonical buffer
+   *      count after COLOR_0 added the P2 colors buffer). If a buffer is
    *      added to UploadedSceneBuffers without a registry entry this assertion
    *      will fail with a clear message.
    */
-  it('has 26 entries, each with a unique bufferField ending in "Buffer"', () => {
-    expect(SCENE_BUFFER_REGISTRY.length).toBe(26);
+  it('has 27 entries, each with a unique bufferField ending in "Buffer"', () => {
+    expect(SCENE_BUFFER_REGISTRY.length).toBe(27);
 
     const seen = new Set<string>();
     for (const entry of SCENE_BUFFER_REGISTRY) {
@@ -81,8 +81,8 @@ describe('D8.7 SceneBufferRegistry', () => {
 
   it('TLAS_START_INDEX resolves correctly at runtime', () => {
     const idx = SCENE_BUFFER_REGISTRY.findIndex((e) => e.bufferField === 'tlasNodesBuffer');
-    // There are 21 non-TLAS entries (BLAS + analytic + env + emitters + light-tree + P2 UVs/tangents/descriptors).
-    expect(idx).toBe(21);
+    // There are 22 non-TLAS entries (BLAS + analytic + env + emitters + light-tree + P2 UVs/tangents/colors/descriptors).
+    expect(idx).toBe(22);
     // Remaining 5 entries are the TLAS buffers.
     expect(SCENE_BUFFER_REGISTRY.length - idx).toBe(5);
   });

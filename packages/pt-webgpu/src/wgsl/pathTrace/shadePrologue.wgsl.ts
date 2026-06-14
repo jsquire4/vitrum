@@ -191,7 +191,7 @@ export const SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE =
  *  no-op multiply (vec4(1)) for materials without a baseColor map. Leads with a
  *  newline + 4-space indent so it sits on its own line after the declaration. */
 export const SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL =
-  `\n    baseColor = baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;`;
+  `\n    baseColor = baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;`;
 
 /** Full-tier emissive texture modulation (P2). Injected after `var emissive`;
  *  no-op (vec4(1)) for materials without an emissive map → byte-identical. */

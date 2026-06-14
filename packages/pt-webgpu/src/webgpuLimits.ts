@@ -26,12 +26,12 @@ export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
 /**
  * Full-tier storage-buffer bindings visible to the compute stage.
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
- * D10 (2026-06-13): group 3 is 7, not 5: lightTree, meshUvs,
+ * D10/H53 (2026-06-14): group 3 is 8, not 5: lightTree, meshUvs,
  * materialTexDescriptors, sppmPhotonCells, sppmCellCounters, sppmPixelStats,
- * meshTangents. Total: g0(8) + g1(11) + g2(7) + g3(7) = 33.
+ * meshTangents, meshVertexColors. Total: g0(8) + g1(11) + g2(7) + g3(8) = 34.
  * @public — public device-limit constant; consumed by host device-acquisition code and tests.
  */
-export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 33;
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 34;
 
 /** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =

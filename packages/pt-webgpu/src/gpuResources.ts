@@ -777,6 +777,7 @@ export class GpuResources {
           _buf(8, _uniform), // A4: sppmStats (uniform)
           _buf(9, _rw), // A4-progressive: sppmPixelStats (read_write storage)
           _buf(10, _ro), // tangent.xyzw (authored/generated TBN handedness)
+          _buf(11, _ro), // vertex color.rgba (glTF COLOR_0)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -1336,6 +1337,7 @@ export class GpuResources {
           { binding: 8, resource: { buffer: this.sppmStatsBuffer! } },
           { binding: 9, resource: { buffer: this.sppmPixelStatsBuffer! } },
           { binding: 10, resource: { buffer: sb.tangentsBuffer } },
+          { binding: 11, resource: { buffer: sb.colorsBuffer } },
         ],
       });
     }

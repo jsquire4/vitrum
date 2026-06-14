@@ -39,7 +39,7 @@ describe('webgpuLimits', () => {
     expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(
       PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
-    expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(33);
+    expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(34);
   });
 
   it('mergeAdapterRequiredLimits clamps to adapter caps', () => {

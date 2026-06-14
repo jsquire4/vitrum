@@ -174,9 +174,10 @@ const TEXTURE_SOURCE_EXTENSIONS = new Set([
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const UNSUPPORTED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
-const VERTEX_COLOR_SUPPORT: Readonly<Record<BackendId, BackendSupportMode>> = Object.freeze({
+const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, BackendSupportMode>> = Object.freeze({
   'pt-webgl2': 'native',
-  'pt-webgpu': 'unsupported',
+  'pt-webgpu': 'native',
+  'pt-webgpu-lite': 'unsupported',
   'walkaround-hybrid': 'unsupported',
 });
 
@@ -405,7 +406,7 @@ export function evaluateGltfBackendProfileCompatibility(
   }
 
   if (report.primitives.hasVertexColors) {
-    const support = VERTEX_COLOR_SUPPORT[backend];
+    const support = VERTEX_COLOR_SUPPORT[profileId];
     if (support === 'native') {
       nativeCount += 1;
     } else {
@@ -414,7 +415,7 @@ export function evaluateGltfBackendProfileCompatibility(
         name: 'vertexColors',
         support,
         path: firstSourcePath(report.primitives.issuePaths, 'vertexColors', 'meshes'),
-        message: `Backend ${backend} reports glTF COLOR_0 vertex colors as ${support}.`,
+        message: `Backend profile ${profileId} reports glTF COLOR_0 vertex colors as ${support}.`,
       });
     }
   }

@@ -241,10 +241,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-13: material texture arrays now allocate generated mip
     // chains and the sampler uses an explicit geometric LOD estimate instead of
     // hard-coding level 0 in the compute shader.
-    // Re-pinned 2026-06-13: roughnessMap and metallicMap now occupy distinct
-    // material texture descriptor slots with independent UV/wrap metadata.
-    expect(digest).toBe('4f4c246de8bdf408eba4e4d9eee066a8306b61e1b9ba642f6b0b564b2c1337ea');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(357208);
+    // Re-pinned 2026-06-14: full-tier COLOR_0 vertex colors now bind at group(3)
+    // binding 11 and multiply baseColor / alpha in material paths.
+    expect(digest).toBe('11cd9a40330e7195dfa5d74fad41e26b9228be4da85368e3cd5b0341cdc596df');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(357898);
   });
 });
 

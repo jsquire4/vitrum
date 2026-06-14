@@ -544,8 +544,12 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('@group(3) @binding(3) var materialTextures: texture_2d_array<f32>');
     expect(wgsl).toContain('@group(3) @binding(4) var materialTexSampler: sampler');
     expect(wgsl).toContain('@group(3) @binding(10) var<storage, read> meshTangents');
+    expect(wgsl).toContain('@group(3) @binding(11) var<storage, read> meshVertexColors');
     expect(wgsl).toContain('fn sampleBaseColorTexture(');
+    expect(wgsl).toContain('fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f');
+    expect(wgsl).toContain('return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;');
     expect(wgsl).toContain('fn sampleAlphaTexture(');
+    expect(wgsl).toContain('sampleVertexColor(triIndex, baryVW).a');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
     expect(wgsl).toContain('fn sampleClearcoatTexture(');

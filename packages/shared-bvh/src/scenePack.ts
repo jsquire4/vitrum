@@ -57,6 +57,10 @@ export interface ScenePackResult {
    *  tangents are encoded as 0,0,0,0 so consumers can fall back to deriving a
    *  frame from positions + UVs. */
   readonly tangents: Float32Array;
+  /** Per-vertex colors, vec4f-strided (rgba). Missing colors are encoded as
+   *  1,1,1,1 so consumers can multiply them into material base color/alpha
+   *  without adding an authored-color presence bit. */
+  readonly colors: Float32Array;
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
   readonly bvhNodes: Float32Array;
@@ -223,6 +227,7 @@ interface PackedPrimitiveSlice {
    *  triangle index list), so uvs[i] follows vertex i exactly. */
   readonly localUvs: Float32Array;
   readonly localTangents: Float32Array;
+  readonly localColors: Float32Array;
   readonly indexWords: readonly number[];
   readonly triMaterialIds: readonly number[];
   readonly bvhNodeWords: readonly number[];
@@ -282,6 +287,16 @@ function packOneMeshLikePrimitive(
       `expected ${vertexCount * 4}. Ignoring authored tangents and falling back to derived frames.`,
     );
   }
+  const localColors = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
+  const baseColors = primitive.colors;
+  const hasRgbaColors = baseColors != null && baseColors.length >= vertexCount * 4;
+  const hasRgbColors = baseColors != null && !hasRgbaColors && baseColors.length >= vertexCount * 3;
+  if (baseColors != null && !hasRgbaColors && !hasRgbColors) {
+    warnings.push(
+      `Primitive "${primitive.id}" provides ${baseColors.length} color floats; ` +
+      `expected at least ${vertexCount * 3}. Ignoring authored vertex colors.`,
+    );
+  }
   for (let i = 0; i < vertexCount; i += 1) {
     localPositions[i * VERTEX_STRIDE_F32] = basePositions[i * 3] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 1] = basePositions[i * 3 + 1] ?? 0;
@@ -304,6 +319,22 @@ function packOneMeshLikePrimitive(
       localTangents[i * VERTEX_STRIDE_F32 + 1] = baseTangents[i * 4 + 1] ?? 0;
       localTangents[i * VERTEX_STRIDE_F32 + 2] = baseTangents[i * 4 + 2] ?? 0;
       localTangents[i * VERTEX_STRIDE_F32 + 3] = baseTangents[i * 4 + 3] ?? 0;
+    }
+    if (hasRgbaColors) {
+      localColors[i * VERTEX_STRIDE_F32] = baseColors[i * 4] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 1] = baseColors[i * 4 + 1] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 2] = baseColors[i * 4 + 2] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 3] = baseColors[i * 4 + 3] ?? 1;
+    } else if (hasRgbColors) {
+      localColors[i * VERTEX_STRIDE_F32] = baseColors[i * 3] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 1] = baseColors[i * 3 + 1] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 2] = baseColors[i * 3 + 2] ?? 1;
+      localColors[i * VERTEX_STRIDE_F32 + 3] = 1;
+    } else {
+      localColors[i * VERTEX_STRIDE_F32] = 1;
+      localColors[i * VERTEX_STRIDE_F32 + 1] = 1;
+      localColors[i * VERTEX_STRIDE_F32 + 2] = 1;
+      localColors[i * VERTEX_STRIDE_F32 + 3] = 1;
     }
   }
 
@@ -360,6 +391,7 @@ function packOneMeshLikePrimitive(
       localNormals,
       localUvs,
       localTangents,
+      localColors,
       indexWords,
       triMaterialIds,
       bvhNodeWords,
@@ -527,6 +559,7 @@ function spliceResizedPrimitiveBlasIntoPack(
   const normals = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
   const uvs = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
   const tangents = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
+  const colors = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
   const indices = new Uint32Array(newTotalTris * 4);
   const triMaterialIds = new Uint32Array(newTotalTris);
   const newNodeView = new Uint32Array(newTotalNodes * BVH_NODE_FLOATS);
@@ -542,17 +575,20 @@ function spliceResizedPrimitiveBlasIntoPack(
   normals.set(prev.normals.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
   uvs.set(prev.uvs.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
   tangents.set(prev.tangents.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
+  colors.set(prev.colors.subarray(0, oldVertStart * VERTEX_STRIDE_F32), 0);
   // Changed primitive's new local slice at the SAME vertexStart.
   positions.set(slice.localPositions, oldVertStart * VERTEX_STRIDE_F32);
   normals.set(slice.localNormals, oldVertStart * VERTEX_STRIDE_F32);
   uvs.set(slice.localUvs, oldVertStart * VERTEX_STRIDE_F32);
   tangents.set(slice.localTangents, oldVertStart * VERTEX_STRIDE_F32);
+  colors.set(slice.localColors, oldVertStart * VERTEX_STRIDE_F32);
   // Suffix (downstream primitives) shifted by deltaVert*VERTEX_STRIDE_F32 floats.
   if (oldVertEnd < prevTotalVerts) {
     positions.set(prev.positions.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
     normals.set(prev.normals.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
     uvs.set(prev.uvs.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
     tangents.set(prev.tangents.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
+    colors.set(prev.colors.subarray(oldVertEnd * VERTEX_STRIDE_F32), (oldVertEnd + deltaVert) * VERTEX_STRIDE_F32);
   }
 
   // ── Indices (vec4u-strided; .x.y.z global vertex refs, .w = 0) ────────────
@@ -632,6 +668,7 @@ function spliceResizedPrimitiveBlasIntoPack(
       normals,
       uvs,
       tangents,
+      colors,
       indices,
       triMaterialIds,
       bvhNodes,
@@ -683,6 +720,7 @@ function splicePrimitiveBlasIntoPack(
   const normals = new Float32Array(prev.normals);
   const uvs = new Float32Array(prev.uvs);
   const tangents = new Float32Array(prev.tangents);
+  const colors = new Float32Array(prev.colors);
   const indices = new Uint32Array(prev.indices);
   const triMaterialIds = new Uint32Array(prev.triMaterialIds);
   const bvhNodes = new Float32Array(prev.bvhNodes);
@@ -692,6 +730,7 @@ function splicePrimitiveBlasIntoPack(
   normals.set(slice.localNormals, vertOff);
   uvs.set(slice.localUvs, vertOff);
   tangents.set(slice.localTangents, vertOff);
+  colors.set(slice.localColors, vertOff);
 
   const indexOff = binding.triStart * 4;
   for (let i = 0; i < slice.indexWords.length; i += 1) {
@@ -733,6 +772,7 @@ function splicePrimitiveBlasIntoPack(
       normals,
       uvs,
       tangents,
+      colors,
       indices,
       triMaterialIds,
       bvhNodes,
@@ -774,6 +814,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const normals: number[] = [];
   const uvs: number[] = [];
   const tangents: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
   const triMaterialIds: number[] = [];
   const bvhNodeWords: number[] = [];
@@ -829,6 +870,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     for (let i = 0; i < slice.localNormals.length; i += 1) normals.push(slice.localNormals[i] ?? 0);
     for (let i = 0; i < slice.localUvs.length; i += 1) uvs.push(slice.localUvs[i] ?? 0);
     for (let i = 0; i < slice.localTangents.length; i += 1) tangents.push(slice.localTangents[i] ?? 0);
+    for (let i = 0; i < slice.localColors.length; i += 1) colors.push(slice.localColors[i] ?? 1);
     for (let i = 0; i + 3 < slice.indexWords.length; i += 4) {
       indices.push(
         (slice.indexWords[i] ?? 0) + vertexBase,
@@ -900,6 +942,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const packedNormals = new Float32Array(normals);
   const packedUvs = new Float32Array(uvs);
   const packedTangents = new Float32Array(tangents);
+  const packedColors = new Float32Array(colors);
   const packedIndices = new Uint32Array(indices);
   const packedTriMaterialIds = new Uint32Array(triMaterialIds);
   const packedBvhNodes = new Float32Array(new Uint32Array(bvhNodeWords).buffer);
@@ -919,6 +962,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     normals: packedNormals,
     uvs: packedUvs,
     tangents: packedTangents,
+    colors: packedColors,
     indices: packedIndices,
     triMaterialIds: packedTriMaterialIds,
     bvhNodes: packedBvhNodes,
@@ -1196,6 +1240,7 @@ export function rebuildTlasReuseBlas(
       normals: prev.normals,
       uvs: prev.uvs,
       tangents: prev.tangents,
+      colors: prev.colors,
       indices: prev.indices,
       triMaterialIds: prev.triMaterialIds,
       bvhNodes: prev.bvhNodes,

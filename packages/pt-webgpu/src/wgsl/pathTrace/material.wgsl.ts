@@ -339,6 +339,7 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 @group(3) @binding(4) var materialTexSampler: sampler;                    // shared by both arrays
 @group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>;  // LINEAR (normal + scalar maps)
 @group(3) @binding(10) var<storage, read> meshTangents: array<vec4f>;      // xyz = tangent, w = bitangent sign
+@group(3) @binding(11) var<storage, read> meshVertexColors: array<vec4f>;  // rgba = glTF COLOR_0, defaults to 1
 
 // vec4s per material in the descriptor buffer — MUST match the TS
 // MATERIAL_TEX_VEC4_STRIDE in scene/materialTextures.ts.
@@ -422,6 +423,18 @@ fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 13u].xy);
+}
+
+fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
+  if (triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshVertexColors) || tri.y >= arrayLength(&meshVertexColors) || tri.z >= arrayLength(&meshVertexColors)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;
 }
 
 // emissive map (sRGB array, same layers as baseColor) — descriptor vec4[0].w.
@@ -833,6 +846,7 @@ fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, rng: ptr<funct
   let alphaCutoff = materialTexDescriptors[base + 1u].y;
   let opacity = materialTexDescriptors[base + 1u].z;
   let alpha = sampleBaseColorTexture(matId, triIndex, baryVW).a *
+    sampleVertexColor(triIndex, baryVW).a *
     sampleAlphaTexture(matId, triIndex, baryVW) *
     opacity;
   if (alphaMode == 1u) { return alpha < alphaCutoff; }   // mask

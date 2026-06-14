@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (pt-webgpu COLOR_0 vertex colors, 2026-06-14)
+
+- **`@vitrum/pt-webgpu` full-tier vertex colors:** shared-bvh now packs core `colors` as rgba vertex data with white defaults, pt-webgpu uploads/binds the stream at group(3)/binding(11), and the full-tier material paths multiply `COLOR_0` into base color plus alpha pass-through. glTF compatibility now treats `pt-webgpu` full as native for vertex colors while keeping `pt-webgpu-lite` and walkaround-hybrid as structured unsupported profiles.
+
 ### Fixed (pt-webgpu roughness/metallic texture parity, 2026-06-13)
 
 - **`@vitrum/pt-webgpu` distinct roughness/metallic maps:** the full-tier material texture descriptor now carries separate `roughnessMap` and `metallicMap` slots with independent UV channel, `KHR_texture_transform`, wrap, and heterogeneous-layer UV-fit metadata. A canonical glTF combined metallicRoughness texture still maps both slots to the same linear-array layer, while assets that author distinct texture handles no longer drop `metallicMap`. The promise ledger now marks pt-webgpu `roughnessMap` and `metallicMap` native.

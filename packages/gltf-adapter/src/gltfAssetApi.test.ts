@@ -693,8 +693,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(webgl2.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
 
-    for (const backend of ['pt-webgpu', 'walkaround-hybrid'] as const) {
-      const compatibility = evaluateGltfBackendCompatibility(report, backend);
+    const webgpuFull = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu');
+    expect(webgpuFull.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
+
+    for (const profile of ['pt-webgpu-lite', 'walkaround-hybrid'] as const) {
+      const compatibility = evaluateGltfBackendProfileCompatibility(report, profile);
       expect(compatibility.issues).toContainEqual(expect.objectContaining({
         category: 'primitive',
         name: 'vertexColors',

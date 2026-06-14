@@ -44,6 +44,8 @@ interface PackedSceneData {
   /** vec4f packed authored/generated tangents (.xyz = tangent, .w = handedness);
    *  zero .w means absent and the shader falls back to UV-gradient derivation. */
   readonly tangents: Float32Array;
+  /** vec4f packed vertex colors (.rgba); absent authored colors are 1,1,1,1. */
+  readonly colors: Float32Array;
   /** Per-material texture descriptor floats (MATERIAL_TEX_FLOAT_STRIDE each):
    *  texture indices + alpha-mode + KHR UV transform. Indexed by matId. */
   readonly materialTexDescriptors: Float32Array;
@@ -170,6 +172,8 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly uvsBuffer: GPUBuffer;
   /** Per-vertex tangent.xyzw storage buffer (group 3, full tier only). */
   readonly tangentsBuffer: GPUBuffer;
+  /** Per-vertex color.rgba storage buffer (group 3, full tier only). */
+  readonly colorsBuffer: GPUBuffer;
   /** P2 — per-material texture descriptor storage buffer (group 3). */
   readonly materialTexDescriptorsBuffer: GPUBuffer;
   /** P2 — sampled sRGB texture_2d_array handle (baseColor/emissive; for dispose). */
@@ -246,11 +250,12 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'meshAreaLightsData',    bufferField: 'meshAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.meshAreaLights' },
   // ── WS2 light tree ────────────────────────────────────────────────────────
   { key: 'lightTreeNodes', bufferField: 'lightTreeBuffer', label: 'vitrum.pt-webgpu.scene.lightTree' },
-  // ── P2 per-vertex UVs/tangents + material texture descriptors ────────────
+  // ── P2 per-vertex UVs/tangents/colors + material texture descriptors ─────
   { key: 'uvs',                    bufferField: 'uvsBuffer',                    label: 'vitrum.pt-webgpu.scene.uvs' },
   { key: 'tangents',               bufferField: 'tangentsBuffer',               label: 'vitrum.pt-webgpu.scene.tangents' },
+  { key: 'colors',                 bufferField: 'colorsBuffer',                 label: 'vitrum.pt-webgpu.scene.colors' },
   { key: 'materialTexDescriptors', bufferField: 'materialTexDescriptorsBuffer', label: 'vitrum.pt-webgpu.scene.materialTexDescriptors' },
-  // ── TLAS (must be contiguous at the END; index 20 = TLAS_START_INDEX) ─────
+  // ── TLAS (must be contiguous at the END; index 22 = TLAS_START_INDEX) ─────
   { key: 'tlasNodes',                  bufferField: 'tlasNodesBuffer',                  label: 'vitrum.pt-webgpu.scene.tlasNodes' },
   { key: 'tlasInstanceIndices',        bufferField: 'tlasInstanceIndicesBuffer',        label: 'vitrum.pt-webgpu.scene.tlasInstanceIndices' },
   { key: 'tlasBlasRoots',             bufferField: 'tlasBlasRootsBuffer',             label: 'vitrum.pt-webgpu.scene.tlasBlasRoots' },
@@ -565,6 +570,7 @@ export function buildPackedScene(
     normals: geo.normals,
     uvs: geo.uvs,
     tangents: geo.tangents,
+    colors: geo.colors,
     indices: geo.indices,
     triMaterialIds: geo.triMaterialIds,
     materials: new Float32Array(materials),
@@ -621,6 +627,7 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
     normals: packed.normals,
     uvs: packed.uvs,
     tangents: packed.tangents,
+    colors: packed.colors,
     indices: packed.indices,
     triMaterialIds: packed.triMaterialIds,
     bvhNodes: packed.bvhNodes,
@@ -646,6 +653,7 @@ export function uploadScenePackGeometry(
   writeBufferIfNonEmpty(sb.normalsBuffer, pack.normals, device);
   writeBufferIfNonEmpty(sb.uvsBuffer, pack.uvs, device);
   writeBufferIfNonEmpty(sb.tangentsBuffer, pack.tangents, device);
+  writeBufferIfNonEmpty(sb.colorsBuffer, pack.colors, device);
   writeBufferIfNonEmpty(sb.indicesBuffer, pack.indices, device);
   writeBufferIfNonEmpty(sb.triMaterialIdsBuffer, pack.triMaterialIds, device);
   writeBufferIfNonEmpty(sb.bvhNodesBuffer, pack.bvhNodes, device);
@@ -658,6 +666,7 @@ export function uploadScenePackGeometry(
   sb.normals.set(pack.normals);
   sb.uvs.set(pack.uvs);
   sb.tangents.set(pack.tangents);
+  sb.colors.set(pack.colors);
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
@@ -679,6 +688,7 @@ export function uploadScenePackBlasOnly(
     | 'normals'
     | 'uvs'
     | 'tangents'
+    | 'colors'
     | 'indices'
     | 'triMaterialIds'
     | 'bvhNodes'
@@ -690,6 +700,7 @@ export function uploadScenePackBlasOnly(
   writeBufferIfNonEmpty(sb.normalsBuffer, pack.normals, device);
   writeBufferIfNonEmpty(sb.uvsBuffer, pack.uvs, device);
   writeBufferIfNonEmpty(sb.tangentsBuffer, pack.tangents, device);
+  writeBufferIfNonEmpty(sb.colorsBuffer, pack.colors, device);
   writeBufferIfNonEmpty(sb.indicesBuffer, pack.indices, device);
   writeBufferIfNonEmpty(sb.triMaterialIdsBuffer, pack.triMaterialIds, device);
   writeBufferIfNonEmpty(sb.bvhNodesBuffer, pack.bvhNodes, device);
@@ -697,6 +708,7 @@ export function uploadScenePackBlasOnly(
   sb.normals.set(pack.normals);
   sb.uvs.set(pack.uvs);
   sb.tangents.set(pack.tangents);
+  sb.colors.set(pack.colors);
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
@@ -804,6 +816,7 @@ export function uploadScenePackGeometryRealloc(
   sb.normalsBuffer.destroy();
   sb.uvsBuffer.destroy();
   sb.tangentsBuffer.destroy();
+  sb.colorsBuffer.destroy();
   sb.indicesBuffer.destroy();
   sb.triMaterialIdsBuffer.destroy();
   sb.bvhNodesBuffer.destroy();
@@ -818,6 +831,7 @@ export function uploadScenePackGeometryRealloc(
   handles.normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', pack.normals);
   handles.uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', pack.uvs);
   handles.tangentsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tangents', pack.tangents);
+  handles.colorsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.colors', pack.colors);
   handles.indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', pack.indices);
   handles.triMaterialIdsBuffer = createStorageBuffer(
     device,
@@ -829,6 +843,7 @@ export function uploadScenePackGeometryRealloc(
   handles.normals = new Float32Array(pack.normals);
   handles.uvs = new Float32Array(pack.uvs);
   handles.tangents = new Float32Array(pack.tangents);
+  handles.colors = new Float32Array(pack.colors);
   handles.indices = new Uint32Array(pack.indices);
   handles.triMaterialIds = new Uint32Array(pack.triMaterialIds);
   handles.bvhNodes = new Float32Array(pack.bvhNodes);
@@ -934,6 +949,7 @@ interface MutableSceneBuffers {
   normalsBuffer: GPUBuffer;
   uvsBuffer: GPUBuffer;
   tangentsBuffer: GPUBuffer;
+  colorsBuffer: GPUBuffer;
   indicesBuffer: GPUBuffer;
   triMaterialIdsBuffer: GPUBuffer;
   bvhNodesBuffer: GPUBuffer;
@@ -941,6 +957,7 @@ interface MutableSceneBuffers {
   normals: Float32Array;
   uvs: Float32Array;
   tangents: Float32Array;
+  colors: Float32Array;
   indices: Uint32Array;
   triMaterialIds: Uint32Array;
   bvhNodes: Float32Array;
@@ -1303,12 +1320,13 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
   const lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes);
-  // P2 — per-vertex UVs/tangents + per-material texture descriptors + the baseColor
+  // P2 — per-vertex UVs/tangents/colors + per-material texture descriptors + the baseColor
   // texture_2d_array (all group 3, full tier). A textureless scene gets a 1×1
   // white dummy so the binding is always satisfied; descriptors all hold -1 so
   // the kernel never samples it (textureless render stays byte-identical).
   const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
   const tangentsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tangents', packed.tangents);
+  const colorsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.colors', packed.colors);
   const materialTextureArray = createMaterialTextureArray(device, packed.materialTextureSources);
   // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
   const materialLinearArray = createMaterialTextureArray(
@@ -1378,6 +1396,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     tlasInstanceLocalToWorldBuffer,
     uvsBuffer,
     tangentsBuffer,
+    colorsBuffer,
     materialTexDescriptorsBuffer,
     materialTexture: materialTextureArray.texture,
     materialTextureView: materialTextureArray.view,
@@ -1420,11 +1439,12 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       uploaded.tlasInstanceWorldToLocalBuffer.destroy();
       uploaded.tlasInstanceLocalToWorldBuffer.destroy();
       // P2 — uvsBuffer is realloc-swapped on a vertex-count change, so resolve it
-      // late off `uploaded`. tangentsBuffer follows the same vertex-count-sized
-      // lifetime. The descriptor buffer + texture array are
+      // late off `uploaded`. tangents/colors buffers follow the same
+      // vertex-count-sized lifetime. The descriptor buffer + texture array are
       // material-indexed (never resized by a geometry realloc) → captured locals.
       uploaded.uvsBuffer.destroy();
       uploaded.tangentsBuffer.destroy();
+      uploaded.colorsBuffer.destroy();
       materialTexDescriptorsBuffer.destroy();
       materialTextureArray.texture.destroy();
       materialLinearArray.texture.destroy();
@@ -1446,7 +1466,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
         uploaded.meshAreaLightsBuffer, uploaded.lightTreeBuffer,
         uploaded.tlasNodesBuffer, uploaded.tlasInstanceIndicesBuffer, uploaded.tlasBlasRootsBuffer,
         uploaded.tlasInstanceWorldToLocalBuffer, uploaded.tlasInstanceLocalToWorldBuffer,
-        uploaded.uvsBuffer, uploaded.tangentsBuffer, uploaded.materialTexDescriptorsBuffer,
+        uploaded.uvsBuffer, uploaded.tangentsBuffer, uploaded.colorsBuffer, uploaded.materialTexDescriptorsBuffer,
       ];
       let bufferBytes = 0;
       for (const b of buffers) bufferBytes += b.size;
