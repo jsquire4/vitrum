@@ -69,6 +69,7 @@ export interface BvhUpdateSink {
       | 'bvhIndex'
       | 'bvhBeerColors'
       | 'bvhEmissiveLe'
+      | 'materialTextureAtlas'
       | 'bvhRoughMetal'
       | 'bvhNormals'
       | 'bvhPositions'

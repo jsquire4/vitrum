@@ -1,5 +1,6 @@
 import type { MaterialSpec } from '@vitrum/core';
 import type { PrimitiveTlasBinding, ScenePackResult } from '@vitrum/shared-bvh';
+import type { MaterialTextureAtlasPayload } from '../pipeline/materialTextureAtlas.js';
 
 export type ReSTIRBvhMode = 'merged' | 'tlas';
 
@@ -30,6 +31,8 @@ export interface SceneBVHBuffers {
   triangleMaterialIds: StorageBufferHandle;
   bvhBeerColors: StorageBufferHandle;
   bvhEmissiveLe: StorageBufferHandle;
+  /** First material-texture atlas slice: baseColorMap metadata + RGBA32F array layers. */
+  materialTextureAtlas: MaterialTextureAtlasPayload;
   /** B1 (road-to-100) — per-triangle roughness+metalness lane
    *  (bits[31:24]=rough×255, bits[23:16]=metal×255), uploaded as an r32uint
    *  texture (BvhBufferHost) and read by the ReSTIR/shade GGX BRDF +

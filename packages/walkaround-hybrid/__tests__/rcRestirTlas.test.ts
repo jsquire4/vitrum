@@ -4,6 +4,7 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 installWebGPUPolyfills();
 import { makeRestirBvhSnapshot } from '../src/restir/restirBvhSnapshot.js';
 import type { RestirMergedGeometryLike, SceneBVHBuffers } from '../src/restir/bvhTypes.js';
+import { packMaterialTextureAtlas } from '../src/pipeline/materialTextureAtlas.js';
 
 function boundsGeometry(): RestirMergedGeometryLike {
   return {
@@ -25,6 +26,7 @@ function tlasBuffers(): SceneBVHBuffers {
     triangleMaterialIds: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhBeerColors: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhEmissiveLe: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
+    materialTextureAtlas: packMaterialTextureAtlas([], new Uint32Array([0]), 1),
     bvhRoughMetal: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhNormals: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     emitters: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 0 },

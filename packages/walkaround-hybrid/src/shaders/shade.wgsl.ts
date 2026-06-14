@@ -113,6 +113,12 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
+// Phase-3D first slice — baseColorMap atlas. The host stores readable
+// baseColorMap handles as linear RGBA32F layers and a per-triangle metadata
+// texture. Texture sampling uses textureLoad (nearest) so no sampler binding is
+// needed and the scene group storage-buffer count stays unchanged.
+@group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
+@group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -159,6 +165,51 @@ fn storeSvgfObjectId(pix: vec2u, id: u32) {
   if (pix.x < dims.x && pix.y < dims.y) {
     textureStore(svgfObjectIdOut, pix, vec4u(id));
   }
+}
+
+const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
+
+fn baseColorMapMetaCoord(texel: u32) -> vec2i {
+  return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
+}
+
+fn wrapMaterialUv1(v: f32, mode: u32) -> f32 {
+  if (mode == 1u) {
+    return clamp(v, 0.0, 1.0);
+  }
+  if (mode == 2u) {
+    return 1.0 - abs(fract(v * 0.5) * 2.0 - 1.0);
+  }
+  return fract(v);
+}
+
+fn wrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
+  let wrapS = wrapPacked & 0x3u;
+  let wrapT = (wrapPacked >> 2u) & 0x3u;
+  return vec2f(wrapMaterialUv1(uv.x, wrapS), wrapMaterialUv1(uv.y, wrapT));
+}
+
+fn sampleBaseColorMap(triIndex: u32, uv: vec2f, scalarBaseColor: vec3f) -> vec3f {
+  let metaTexel = triIndex * 2u;
+  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
+  let layer = i32(meta0.x);
+  if (layer < 0) {
+    return scalarBaseColor;
+  }
+  let meta1 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel + 1u), 0);
+  let scaled = uv * meta1.xy;
+  let transformed = vec2f(
+    scaled.x * meta1.z - scaled.y * meta1.w,
+    scaled.x * meta1.w + scaled.y * meta1.z,
+  ) + meta0.zw;
+  let wrapped = wrapMaterialUv(transformed, u32(max(meta0.y, 0.0) + 0.5));
+  let dims = textureDimensions(materialTextureAtlas);
+  let texel = vec2i(
+    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
+    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+  );
+  let texelColor = textureLoad(materialTextureAtlas, texel, layer, 0).rgb;
+  return scalarBaseColor * texelColor;
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
@@ -286,7 +337,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   storeSvgfObjectId(pix, stableSvgfObjectId(primaryHit));
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
-  let albedo   = matColor.rgb;
+  let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, matColor.rgb);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
   // invariant packs 0.85 for unspecified roughness / 0.05 for glass / metal 0,

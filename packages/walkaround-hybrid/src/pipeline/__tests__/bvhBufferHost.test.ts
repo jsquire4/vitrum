@@ -43,6 +43,19 @@ vi.mock('../bvhEmissiveTexture.js', () => ({
   refreshEmissiveTexture: vi.fn(),
 }));
 
+vi.mock('../materialTextureAtlas.js', () => ({
+  uploadMaterialTextureAtlas: vi.fn(() => ({
+    atlasTexture: { destroy: vi.fn() },
+    atlasTextureView: {},
+    baseColorMetaTexture: { destroy: vi.fn() },
+    baseColorMetaTextureView: {},
+    atlasDim: 1,
+    atlasLayerCount: 1,
+    baseColorMetaWidth: 2,
+    baseColorMetaHeight: 1,
+  })),
+}));
+
 vi.mock('../analyticLightsTexture.js', () => ({
   uploadAnalyticLightsTexture: vi.fn(() => ({
     texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
@@ -123,6 +136,8 @@ describe('BvhBufferHost', () => {
     expect(mem['tlasNodesBuffer']).toMatchObject({ size: 16, usage: 0x80 });
     expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
     expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
+    expect(mem['materialTextureAtlas']).toMatchObject({ width: 1, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
+    expect(mem['baseColorMapMetaTexture']).toMatchObject({ width: 2, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
     host.dispose();
   });
 

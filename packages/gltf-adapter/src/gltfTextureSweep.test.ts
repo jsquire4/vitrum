@@ -16,6 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
+import { loadGltfAsset } from './index.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
 import { gltfTextureColorSpaceForField, type GltfMaterialTextureField } from './texturePipeline.js';
 import type { MaterialSpec, MeshPrimitive, TextureRef } from '@vitrum/core';
@@ -228,6 +229,44 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       expect(gltfTextureColorSpaceForField(field as GltfMaterialTextureField)).toBe(expected);
     },
   );
+
+  it('loadGltfAsset textureDecodeReport covers every imported sweep texture field', async () => {
+    const handle = { kind: 'decoded-texture' };
+    const { gltf, buffers } = makeSweepGltf();
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      decodeImage: async () => handle,
+    });
+
+    expect(result.textureDecodeReport.mapCount).toBe(SWEEP_MAPS.length);
+    for (const [field, ordinal] of SWEEP_MAPS) {
+      const entry = result.textureDecodeReport.entries.find((candidate) =>
+        candidate.materialField === field,
+      );
+      expect(entry, `${String(field)} missing from textureDecodeReport`).toBeDefined();
+      const transform = expectedTransform(ordinal);
+      const wrap = expectedWrap(ordinal);
+      expect(entry).toMatchObject({
+        primitiveId: 'gltf-prim-0',
+        primitiveKind: 'mesh',
+        primitiveIndex: 0,
+        materialField: field,
+        path: `scene.primitives[0].material.${String(field)}`,
+        texCoord: 1,
+        hasTransform: true,
+        wrapS: wrap.wrapS,
+        wrapT: wrap.wrapT,
+        colorSpace: SRGB_SWEEP_FIELDS.has(field) ? 'srgb' : 'linear',
+        handleKind: 'opaque',
+        backendReadiness: {
+          ptWebgl2: 'opaque',
+          ptWebgpu: 'opaque',
+          walkaroundHybrid: field === 'baseColorMap' ? 'opaque' : 'ignored',
+        },
+      });
+      expect(transform.rotation).toBeGreaterThan(0);
+    }
+  });
 
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {
     const { mat } = await importSweepMaterial();

@@ -117,11 +117,12 @@ describe('backend promise ledger', () => {
     const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials;
     const gpu = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials;
 
-    // walkaround: quantized scalar model — no image maps, no Disney lobes.
+    // walkaround: quantized scalar model plus first baseColorMap atlas slice;
+    // other image maps and Disney lobes remain unsupported.
     expect(wa.baseColor).toBe('approximate');
     expect(wa.emissive).toBe('native');
     expect(wa.shadingModel).toBe('approximate');
-    expect(wa.baseColorMap).toBe('unsupported');
+    expect(wa.baseColorMap).toBe('approximate');
     expect(wa.sheen).toBe('unsupported');
     expect(wa.extensions).toBe('native');
 

@@ -64,6 +64,15 @@ function pointEmitter(intensity = 1): SceneEmitter {
   };
 }
 
+function baseColorMapHandle(r: number): { width: number; height: number; data: Uint8Array; __vitrum_hint__: { channels: 4; dataType: 'uint8' } } {
+  return {
+    width: 1,
+    height: 1,
+    data: new Uint8Array([r, 255, 255, 255]),
+    __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+  };
+}
+
 function baseScene(emitters: readonly SceneEmitter[] = []): Scene {
   return {
     primitives: [
@@ -245,6 +254,31 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.updateEmitters).not.toHaveBeenCalled();
       expect((storedScene(engine).primitives[0] as { material: { roughness: number } }).material.roughness)
         .toBe(0.25);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) rebuilds material texture atlas when baseColorMap changes', () => {
+    const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: { handle: baseColorMapHandle(128) },
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
+      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      expect(rebuilt.materialTextureAtlas.readableBaseColorLayerCount).toBe(1);
+      expect((storedScene(engine).primitives[0] as { material: { baseColorMap?: unknown } }).material.baseColorMap)
+        .toBeDefined();
     } finally {
       engine.dispose();
     }

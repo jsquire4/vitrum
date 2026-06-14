@@ -325,7 +325,7 @@ describe('loadGltfAsset', () => {
         backendReadiness: {
           ptWebgl2: 'opaque',
           ptWebgpu: 'opaque',
-          walkaroundHybrid: 'ignored',
+          walkaroundHybrid: 'opaque',
         },
       }),
     ]);
@@ -400,7 +400,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
-  it('uses the backend promise ledger to keep rich textured assets off walkaround in fidelity mode', () => {
+  it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {
     const report = analyzeGltfAsset(makeExternalTexturedGltf());
     const ranked = rankGltfBackends(report, 'fidelity');
     const walkaround = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
@@ -409,13 +409,13 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(ranked.map((entry) => entry.profileId)).toEqual([
       'pt-webgl2',
       'pt-webgpu',
-      'pt-webgpu-lite',
       'walkaround-hybrid',
+      'pt-webgpu-lite',
     ]);
     expect(walkaround.issues.some((issue) =>
       issue.category === 'material' &&
       issue.name === 'baseColorMap' &&
-      issue.support === 'unsupported',
+      issue.support === 'approximate',
     )).toBe(true);
   });
 
@@ -703,7 +703,7 @@ describe('loadGltfForEngine', () => {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'walkaround-hybrid',
-      compatibilityMode: 'reject-unsupported',
+      compatibilityMode: 'reject-degraded',
       createEngine: async () => ({ setScene: vi.fn() }),
     })).rejects.toThrow('baseColorMap');
   });

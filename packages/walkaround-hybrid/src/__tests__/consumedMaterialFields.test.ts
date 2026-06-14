@@ -73,7 +73,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` + `clearcoat` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + `clearcoat` (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -86,7 +86,7 @@ function unconsumedFieldsScene(): Scene {
           baseColor: [1, 1, 1],
           roughness: 0.3,
           metallic: 0,
-          baseColorMap: { uri: 'tex.png' },   // unconsumed
+          baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
           clearcoat: 0.8,                      // unconsumed
         },
       } as unknown as ScenePrimitive,
@@ -104,6 +104,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
+      'baseColorMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -127,7 +128,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
 
   it('does NOT contain texture-map fields', () => {
     for (const f of [
-      'baseColorMap',
       'normalMap',
       'normalScale',
       'roughnessMap',
@@ -167,7 +167,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['baseColorMap', 'clearcoat']);
+    expect(result).toEqual(['clearcoat']);
   });
 
   it('skips non-mesh kinds (analytic kind is not scanned)', () => {
@@ -272,7 +272,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns naming both baseColorMap and clearcoat when both are supplied', () => {
+  it('warns only for clearcoat when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -283,12 +283,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const warnMessages = warnSpy.mock.calls.flat().map(String);
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
-      expect(materialWarn).toContain('baseColorMap');
+      expect(materialWarn).not.toContain('baseColorMap');
       expect(materialWarn).toContain('clearcoat');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
-        w.details.fields.includes('baseColorMap') &&
+        !w.details.fields.includes('baseColorMap') &&
         w.details.fields.includes('clearcoat'),
       )).toBe(true);
     } finally {

@@ -6,6 +6,7 @@ import {
 } from '../src/restir/restirBvhSnapshot.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { RestirMergedGeometryLike } from '../src/restir/bvhTypes.js';
+import { packMaterialTextureAtlas } from '../src/pipeline/materialTextureAtlas.js';
 
 function boundsGeometry(max = 2): RestirMergedGeometryLike {
   return {
@@ -27,6 +28,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     triangleMaterialIds: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhBeerColors: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhEmissiveLe: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
+    materialTextureAtlas: packMaterialTextureAtlas([], new Uint32Array([0]), 1),
     bvhRoughMetal: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhNormals: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     emitters: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 0 },

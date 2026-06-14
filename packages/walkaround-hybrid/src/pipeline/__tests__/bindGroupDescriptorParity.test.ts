@@ -122,6 +122,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     // WS1 — beer is a uint texture (binding 5); bvh_normal is storage (binding 11).
     bvhBeerTextureView: view, bvhNormalBuffer: buf, bvhEmissiveTextureView: view,
     bvhRoughMetalTextureView: view,
+    materialTextureAtlasView: view, baseColorMapMetaTextureView: view,
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
     analyticLightsTextureView: view,

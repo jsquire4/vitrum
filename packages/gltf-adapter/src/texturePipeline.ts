@@ -125,7 +125,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         wrapT: ref.wrapT ?? 'repeat',
         colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
-        backendReadiness: backendReadinessForHandle(handleKind),
+        backendReadiness: backendReadinessForHandle(field, handleKind),
       });
     }
   }
@@ -157,13 +157,16 @@ function materialForPrimitive(primitive: ScenePrimitive): MaterialSpec {
 }
 
 function backendReadinessForHandle(
+  field: GltfMaterialTextureField,
   handleKind: GltfTextureHandleKind,
 ): GltfTextureDecodeReportEntry['backendReadiness'] {
   const cpuReady = handleKind === 'pixel-data' || handleKind === 'data-texture';
   return {
     ptWebgl2: cpuReady ? 'ready' : 'opaque',
     ptWebgpu: handleKind === 'opaque' || handleKind === 'raw-image' ? 'opaque' : 'ready',
-    walkaroundHybrid: 'ignored',
+    walkaroundHybrid: field === 'baseColorMap'
+      ? (cpuReady ? 'ready' : 'opaque')
+      : 'ignored',
   };
 }
 

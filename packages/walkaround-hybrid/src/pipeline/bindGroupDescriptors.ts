@@ -57,6 +57,7 @@ type BindingKind =
   | 'storage-rw'                  // buffer: { type: 'storage' }
   | 'uniform'                     // buffer: { type: 'uniform' }
   | 'tex'                         // texture: { sampleType: 'unfilterable-float' }
+  | 'tex-array'                   // texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' }
   | 'tex:uint'                    // texture: { sampleType: 'uint' }
   | 'sampler:nf'                  // sampler: { type: 'non-filtering' }
   | 'storage-tex:rgba16float'     // storageTexture: write-only rgba16float
@@ -213,6 +214,11 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 17, kind: 'tex', note: 'env_conditional (W×H inverse-CDF, r32float; random→col u)' },
       { binding: 18, kind: 'sampler:nf', note: 'env_sampler (declared for completeness; lookups use textureLoad)' },
       { binding: 19, kind: 'uniform', note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 416B)' },
+      // Phase-3D first slice — baseColorMap atlas and per-triangle metadata.
+      // Both are textures (not storage buffers) so the scene group stays inside
+      // the full-tier WebGPU storage-buffer floor.
+      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (baseColorMap RGBA32F array, shade-only first slice)' },
+      { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle layer/wrap/transform metadata)' },
     ],
   },
   {
@@ -383,6 +389,8 @@ function layoutResourceFor(kind: BindingKind): Omit<GPUBindGroupLayoutEntry, 'bi
       return { buffer: { type: 'uniform' } };
     case 'tex':
       return { texture: { sampleType: 'unfilterable-float' } };
+    case 'tex-array':
+      return { texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } };
     case 'tex:uint':
       return { texture: { sampleType: 'uint' } };
     case 'sampler:nf':

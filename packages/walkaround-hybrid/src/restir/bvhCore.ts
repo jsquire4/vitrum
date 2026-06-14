@@ -22,6 +22,7 @@ import {
   packBVHEmissiveLeFromCore,
   packBVHRoughMetalFromCore,
 } from './packingHelpers.js';
+import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
 import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import {
   collectRectAreaEmitterTrisFromCore,
@@ -358,6 +359,7 @@ function buffersFromCoreScenePack(
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
+  const materialTextureAtlas = packMaterialTextureAtlas(coreMaterials, geo.triMaterialIds, triCount);
   // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
   const roughMetalBuf = packBVHRoughMetalFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // H23 — apply mesh-area emitter Le overrides to the emissive-Le glow buffer so
@@ -386,6 +388,7 @@ function buffersFromCoreScenePack(
     triangleMaterialIds: makeStorageHandle(geo.triMaterialIds, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
+    materialTextureAtlas,
     bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
     bvhNormals: makeStorageHandle(geo.normals, 16),
     emitters: emitterSlice.emitters,
@@ -450,6 +453,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triCount,
   );
   const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
+  const materialTextureAtlas = packMaterialTextureAtlas(merged.materials, merged.triMaterialId, triCount);
   // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
   const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
@@ -471,6 +475,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triangleMaterialIds: makeStorageHandle(merged.triMaterialId, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
+    materialTextureAtlas,
     bvhRoughMetal: makeStorageHandle(roughMetalBuf, 4),
     bvhNormals: makeStorageHandle(merged.normals, 16),
     emitters: emitterSlice.emitters,

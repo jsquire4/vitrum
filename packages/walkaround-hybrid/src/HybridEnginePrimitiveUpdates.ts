@@ -994,6 +994,62 @@ function productionEmissiveRadianceChanged(
   return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2];
 }
 
+function textureRefLike(value: unknown): {
+  readonly handle: unknown;
+  readonly texCoord?: number;
+  readonly transform?: {
+    readonly offset?: readonly [number, number];
+    readonly scale?: readonly [number, number];
+    readonly rotation?: number;
+  };
+  readonly wrapS?: string;
+  readonly wrapT?: string;
+} | null {
+  if (value == null || typeof value !== 'object') return null;
+  if ('handle' in value) {
+    return value as {
+      readonly handle: unknown;
+      readonly texCoord?: number;
+      readonly transform?: {
+        readonly offset?: readonly [number, number];
+        readonly scale?: readonly [number, number];
+        readonly rotation?: number;
+      };
+      readonly wrapS?: string;
+      readonly wrapT?: string;
+    };
+  }
+  return { handle: value };
+}
+
+function uv2Component(
+  value: readonly [number, number] | undefined,
+  index: 0 | 1,
+  fallback: number,
+): number {
+  return value?.[index] ?? fallback;
+}
+
+function baseColorMapPatchRequiresFullRebuild(
+  prev: MaterialSpec | undefined,
+  next: MaterialSpec | undefined,
+): boolean {
+  const a = textureRefLike(prev?.baseColorMap);
+  const b = textureRefLike(next?.baseColorMap);
+  if (a == null || b == null) return a !== b;
+  if (a.handle !== b.handle) return true;
+  if ((a.texCoord ?? 0) !== (b.texCoord ?? 0)) return true;
+  if ((a.wrapS ?? 'repeat') !== (b.wrapS ?? 'repeat')) return true;
+  if ((a.wrapT ?? 'repeat') !== (b.wrapT ?? 'repeat')) return true;
+  const at = a.transform;
+  const bt = b.transform;
+  if (uv2Component(at?.offset, 0, 0) !== uv2Component(bt?.offset, 0, 0)) return true;
+  if (uv2Component(at?.offset, 1, 0) !== uv2Component(bt?.offset, 1, 0)) return true;
+  if (uv2Component(at?.scale, 0, 1) !== uv2Component(bt?.scale, 0, 1)) return true;
+  if (uv2Component(at?.scale, 1, 1) !== uv2Component(bt?.scale, 1, 1)) return true;
+  return (at?.rotation ?? 0) !== (bt?.rotation ?? 0);
+}
+
 /**
  * Material-only fast path — re-pack affected triangle slices in
  * `bvhIndex` / `bvhBeerColors` and partial GPU upload (no SAH rebuild,
@@ -1036,6 +1092,9 @@ export function materialPatch(
     prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
   const prevTransmission = vitrumMaterialTransmission(prevMaterial);
   const nextTransmission = vitrumMaterialTransmission(nextMaterial);
+  if (baseColorMapPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
+    return topologyRebuild(id, patch, ctx);
+  }
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
 

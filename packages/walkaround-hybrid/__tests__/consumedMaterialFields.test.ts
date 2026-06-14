@@ -2,8 +2,8 @@
  * Tests for the material-field consumption warning (Wave 2, §3 item 1).
  *
  * Pins:
- *   (a) A scene supplying baseColorMap + normalMap + clearcoat warns, naming
- *       those fields by name.
+ *   (a) A scene supplying baseColorMap + normalMap + clearcoat warns only for
+ *       the fields without a walkaround texture path.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -41,6 +41,7 @@ describe('collectUnconsumedMaterialFields', () => {
   it('returns [] for a material using only consumed scalar fields', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
+      baseColorMap: { handle: stubTextureRef() },
       roughness: 0.5,
       metallic: 0,
       emissive: [1, 0, 0],
@@ -56,15 +57,15 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(collectUnconsumedMaterialFields(primitivesWithMaterial(mat))).toEqual([]);
   });
 
-  it('names baseColorMap when a TextureRef is supplied', () => {
+  it('does not name baseColorMap when a TextureRef is supplied', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      baseColorMap: stubTextureRef(),
+      baseColorMap: { handle: stubTextureRef() },
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
-    expect(result).toContain('baseColorMap');
+    expect(result).not.toContain('baseColorMap');
   });
 
   it('names normalMap when supplied', () => {
@@ -89,18 +90,18 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).toContain('clearcoat');
   });
 
-  it('(pin a) names baseColorMap + normalMap + clearcoat together', () => {
+  it('(pin a) names normalMap + clearcoat while baseColorMap is consumed', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      baseColorMap: stubTextureRef(),
+      baseColorMap: { handle: stubTextureRef() },
       normalMap: stubTextureRef(),
       clearcoat: 1.0,
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
     // Result is sorted alphabetically.
-    expect(result).toEqual(['baseColorMap', 'clearcoat', 'normalMap']);
+    expect(result).toEqual(['clearcoat', 'normalMap']);
   });
 
   it('dedupes unconsumed fields across multiple primitives', () => {
@@ -154,7 +155,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColor', 'roughness', 'metallic',
       'emissive', 'emissiveIntensity',
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
-      'thickness', 'ior', 'extensions',
+      'thickness', 'ior', 'extensions', 'baseColorMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -162,7 +163,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
 
   it('does NOT include any texture-map fields', () => {
     const textureMaps = [
-      'baseColorMap', 'normalMap', 'roughnessMap', 'metallicMap',
+      'normalMap', 'roughnessMap', 'metallicMap',
       'transmissionMap', 'emissiveMap', 'thicknessMap', 'alphaMap', 'aoMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',

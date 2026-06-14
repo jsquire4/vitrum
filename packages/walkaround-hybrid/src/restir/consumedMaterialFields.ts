@@ -41,10 +41,15 @@
  *  extensions             materialSpecSurfaceTextureId (extensions.surfaceTextureId
  *                           → texType3 lane in bvhIndex.w) +
  *                           materialSpecSkipEmitter (extensions.skipEmitter)
+ *  baseColorMap           pipeline/materialTextureAtlas.ts packs readable raw
+ *                           uv0 TextureRefs into an RGBA32F array texture;
+ *                           shade.wgsl samples it with wrap + transform and
+ *                           multiplies the visible scalar baseColor.
  *
- * Everything else — ALL TextureRef maps (including alphaMap), Disney BSDF
- * scalars, spectral curves, volume scattering, thin-film stacks, layered BSDF,
- * anisotropy, and specular extension scalars — is IGNORED.
+ * Everything else — TextureRef maps other than baseColorMap (including
+ * alphaMap), Disney BSDF scalars, spectral curves, volume scattering,
+ * thin-film stacks, layered BSDF, anisotropy, and specular extension scalars —
+ * is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -64,6 +69,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'thickness',
   'ior',
   'extensions',
+  'baseColorMap',
 ]);
 
 /**
