@@ -23,7 +23,7 @@
 > **Implementation distance remaining:** A6 NRC semantics; A8 GRIS-default gate;
 > sun-NEE-default gate; B2 DDGI glossy bounce; glass refracted GI (B1 tail);
 > production-quality neural weights (starter only); walkaround material-map atlas parity
-> beyond its current base/ORM/AO/alpha/emissive slices; H-residue (H5/H21/H24-cluster/H32/H34/H35).
+> beyond its current base/ORM/AO/alpha/emissive slices; H-residue (H5/H21/H24-cluster/H32/H34).
 > **Big validation tail: V28-B** — GPU A/B recapture for every render-changing landing
 > (improvement confirmations, not regression suspects).
 
@@ -196,10 +196,12 @@ Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS do
   the `M_BRDF=1` GGX-VNDF candidate (measure-converted solid-angle→same RIS measure),
   contributing to glossy DI. Render-changing (NOT byte-identity-preserving). **Remaining:**
   glossy-DI A/B (V28-B).
-- **C-bucket correction:** C1's "clear error" fix covers the FACTORY; the runtime
-  dispatcher (`oidnDispatcherCore.ts:338-340`) still converts every OIDN failure into one
-  console.warn → silent un-denoised frames (items H35). The host-visible failure surface
-  (denoiser `state()`) has zero consumers. S effort, high consumer value.
+- **C-bucket correction:** H35 is now closed/source-verified. OIDN runtime failures flow
+  through structured backend error/state surfaces, walkaround consumes denoiser `state()`
+  in `FrameStats.denoiserState`, and the one-shot shared-denoiser WebGPU dispatchers clean
+  up transient textures/buffers from `finally` on readback failure. Remaining C-bucket work
+  should focus on still-open renderer/API gaps rather than the stale OIDN console-warning
+  claim.
 
 **Second-wave claims-surface audit (same session, items H39–H59) added three structural
 buckets that the A–D framing was missing:**

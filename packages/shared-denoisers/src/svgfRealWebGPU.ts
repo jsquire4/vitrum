@@ -95,7 +95,7 @@ export const svgfRealRemodulateAlbedo = remodulateAlbedo;
 export interface SVGFRealWebGPUOptions {
   /** Current-frame noisy HDR radiance (row-major RGB, length W*H*3). */
   readonly rgb: Float32Array;
-  readonly width:  number;
+  readonly width: number;
   readonly height: number;
 
   /** Previous-frame EMA color. If omitted, mirrors `rgb` (first frame). */
@@ -128,9 +128,9 @@ export interface SVGFRealWebGPUOptions {
   /** À-trous iterations (default SVGF_REAL_DEFAULT_ATROUS_ITERATIONS = 5). */
   readonly atrousIterations?: number;
   /** À-trous σ values. Uses ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS when omitted. */
-  readonly sigmaColor?:  number;
+  readonly sigmaColor?: number;
   readonly sigmaNormal?: number;
-  readonly sigmaDepth?:  number;
+  readonly sigmaDepth?: number;
 
   /** Explicit GPU device (never destroyed by this call). */
   readonly device?: GPUDevice;
@@ -146,15 +146,18 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   const w = opts.width;
   const h = opts.height;
   const rawAtrous = opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS;
-  const atrousIterations = Math.min(SVGF_REAL_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
-  const sigmaColor  = opts.sigmaColor  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
+  const atrousIterations = Math.min(
+    SVGF_REAL_MAX_ATROUS_ITERATIONS,
+    Math.max(1, Math.floor(rawAtrous)),
+  );
+  const sigmaColor = opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
-  const sigmaDepth  = opts.sigmaDepth  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
+  const sigmaDepth = opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
 
   const reprojU: SVGFReprojUniforms = {
-    sigmaDepth:  opts.reprojUniforms?.sigmaDepth  ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth,
+    sigmaDepth: opts.reprojUniforms?.sigmaDepth ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth,
     sigmaNormal: opts.reprojUniforms?.sigmaNormal ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal,
-    alphaMin:    opts.reprojUniforms?.alphaMin    ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
+    alphaMin: opts.reprojUniforms?.alphaMin ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
   };
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
@@ -163,265 +166,416 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     errorLabel: 'runSVGFRealWebGPU',
   });
 
-  const { reprojPipeline, momentsPipeline, fallbackPipeline, atrousPipeline } =
-    svgfRealPipelines(device);
+  const textures: GPUTexture[] = [];
+  const buffers: GPUBuffer[] = [];
+  const trackTexture = (texture: GPUTexture): GPUTexture => {
+    textures.push(texture);
+    return texture;
+  };
+  const trackBuffer = (buffer: GPUBuffer): GPUBuffer => {
+    buffers.push(buffer);
+    return buffer;
+  };
 
-  // ── Texture creation ──────────────────────────────────────────────────────
-  const texB = GPUTextureUsage.TEXTURE_BINDING;
-  const texS = GPUTextureUsage.STORAGE_BINDING;
-  const texC = GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+  try {
+    const { reprojPipeline, momentsPipeline, fallbackPipeline, atrousPipeline } =
+      svgfRealPipelines(device);
 
-  const currColorTex = device.createTexture({ label: 'svgf-curr-color', size: [w,h], format: 'rgba16float', usage: texB|texC });
-  const prevColorTex = device.createTexture({ label: 'svgf-prev-color', size: [w,h], format: 'rgba16float', usage: texB|texC });
-  const motionTex    = device.createTexture({ label: 'svgf-motion',     size: [w,h], format: 'rg32float',   usage: texB|texC });
-  const currDepthTex = device.createTexture({ label: 'svgf-depth',      size: [w,h], format: 'r32float',    usage: texB|texC });
-  const currNormTex  = device.createTexture({ label: 'svgf-norm',       size: [w,h], format: 'rgba32float', usage: texB|texC });
-  const currObjTex   = device.createTexture({ label: 'svgf-obj',        size: [w,h], format: 'r32uint',     usage: texB|texC });
-  const prevDepthTex = device.createTexture({ label: 'svgf-prev-depth', size: [w,h], format: 'r32float',    usage: texB|texC });
-  const prevNormTex  = device.createTexture({ label: 'svgf-prev-norm',  size: [w,h], format: 'rgba32float', usage: texB|texC });
-  const prevObjTex   = device.createTexture({ label: 'svgf-prev-obj',   size: [w,h], format: 'r32uint',     usage: texB|texC });
-  const histInTex    = device.createTexture({ label: 'svgf-hist-in',    size: [w,h], format: 'r16uint',     usage: texB|texC });
-  const momentsInTex = device.createTexture({ label: 'svgf-mom-in',     size: [w,h], format: 'rg32float',   usage: texB|texC });
+    // ── Texture creation ──────────────────────────────────────────────────────
+    const texB = GPUTextureUsage.TEXTURE_BINDING;
+    const texS = GPUTextureUsage.STORAGE_BINDING;
+    const texC = GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
 
-  // Reprojection outputs
-  const colorOutTex  = device.createTexture({ label: 'svgf-color-out', size: [w,h], format: 'rgba16float', usage: texS|texB|texC });
-  const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r32uint',     usage: texS|texB|texC });
-  const momOutTex    = device.createTexture({ label: 'svgf-mom-out',   size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
+    const currColorTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-curr-color',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: texB | texC,
+      }),
+    );
+    const prevColorTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-prev-color',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: texB | texC,
+      }),
+    );
+    const motionTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-motion',
+        size: [w, h],
+        format: 'rg32float',
+        usage: texB | texC,
+      }),
+    );
+    const currDepthTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-depth',
+        size: [w, h],
+        format: 'r32float',
+        usage: texB | texC,
+      }),
+    );
+    const currNormTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-norm',
+        size: [w, h],
+        format: 'rgba32float',
+        usage: texB | texC,
+      }),
+    );
+    const currObjTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-obj',
+        size: [w, h],
+        format: 'r32uint',
+        usage: texB | texC,
+      }),
+    );
+    const prevDepthTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-prev-depth',
+        size: [w, h],
+        format: 'r32float',
+        usage: texB | texC,
+      }),
+    );
+    const prevNormTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-prev-norm',
+        size: [w, h],
+        format: 'rgba32float',
+        usage: texB | texC,
+      }),
+    );
+    const prevObjTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-prev-obj',
+        size: [w, h],
+        format: 'r32uint',
+        usage: texB | texC,
+      }),
+    );
+    const histInTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-hist-in',
+        size: [w, h],
+        format: 'r16uint',
+        usage: texB | texC,
+      }),
+    );
+    const momentsInTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-mom-in',
+        size: [w, h],
+        format: 'rg32float',
+        usage: texB | texC,
+      }),
+    );
 
-  // Variance from moments output
-  const varMomOutTex  = device.createTexture({ label: 'svgf-var-mom',  size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
-  // Merged variance (after 7×7 fallback)
-  const varFinalTex   = device.createTexture({ label: 'svgf-var-final',size: [w,h], format: 'rgba32float', usage: texS|texB|texC });
+    // Reprojection outputs
+    const colorOutTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-color-out',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: texS | texB | texC,
+      }),
+    );
+    const histOutTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-hist-out',
+        size: [w, h],
+        format: 'r32uint',
+        usage: texS | texB | texC,
+      }),
+    );
+    const momOutTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-mom-out',
+        size: [w, h],
+        format: 'rgba32float',
+        usage: texS | texB | texC,
+      }),
+    );
 
-  // The atrous-variance pass computes spatial variance from moments, but for the
-  // svgf-real standalone path we already have a per-pixel variance estimate from
-  // the 7×7 spatial fallback (varFinalTex). We feed varFinalTex directly to
-  // svgfAtrousMain as the varianceMap, bypassing the atrous-variance step's own
-  // spatial variance output. A dummy texture satisfies the binding slot.
+    // Variance from moments output
+    const varMomOutTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-var-mom',
+        size: [w, h],
+        format: 'rgba32float',
+        usage: texS | texB | texC,
+      }),
+    );
+    // Merged variance (after 7×7 fallback)
+    const varFinalTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-var-final',
+        size: [w, h],
+        format: 'rgba32float',
+        usage: texS | texB | texC,
+      }),
+    );
 
-  // Atrous ping-pong
-  const pingPongUsage = texS | texB | texC;
-  const pingTex = device.createTexture({ label: 'svgf-ping', size: [w,h], format: 'rgba16float', usage: pingPongUsage });
-  const pongTex = device.createTexture({ label: 'svgf-pong', size: [w,h], format: 'rgba16float', usage: pingPongUsage });
+    // The atrous-variance pass computes spatial variance from moments, but for the
+    // svgf-real standalone path we already have a per-pixel variance estimate from
+    // the 7×7 spatial fallback (varFinalTex). We feed varFinalTex directly to
+    // svgfAtrousMain as the varianceMap, bypassing the atrous-variance step's own
+    // spatial variance output. A dummy texture satisfies the binding slot.
 
-  // ── Upload inputs ─────────────────────────────────────────────────────────
-  // Schied 2017 §4.1 — albedo demodulation. When albedoRgb is supplied,
-  // divide both the current and previous-frame HDR radiance by per-pixel
-  // albedo BEFORE the SVGF chain so reprojection blending, moment tracking,
-  // variance estimation, and the à-trous spatial filter all see the
-  // demodulated lighting estimate L = c/ρ. This keeps high-frequency albedo
-  // variation (e.g. material-boundary checkerboards) out of the cross-
-  // bilateral weights and prevents color bleed across material edges that
-  // share the same depth + normal. After the à-trous chain finishes, we
-  // multiply the filtered lighting back by albedo to restore physically
-  // correct outgoing radiance.
-  const px = w * h;
-  const rgbForChain = opts.albedoRgb != null
-    ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px)
-    : opts.rgb;
-  const prevForChain = opts.albedoRgb != null
-    ? svgfRealDemodulateAlbedo(opts.prevRadianceRgb ?? opts.rgb, opts.albedoRgb, px)
-    : (opts.prevRadianceRgb ?? opts.rgb);
-  uploadRgbAsRgba16f(device, currColorTex, rgbForChain, w, h);
-  uploadRgbAsRgba16f(device, prevColorTex, prevForChain, w, h);
+    // Atrous ping-pong
+    const pingPongUsage = texS | texB | texC;
+    const pingTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-ping',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: pingPongUsage,
+      }),
+    );
+    const pongTex = trackTexture(
+      device.createTexture({
+        label: 'svgf-pong',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: pingPongUsage,
+      }),
+    );
 
-  if (opts.motionRg != null) {
-    uploadInterleavedRgAsRg32f(device, motionTex, opts.motionRg, w, h);
-  } else {
-    fillRg32f(device, motionTex, w, h, 0, 0);
-  }
-  if (opts.linearDepth != null) {
-    uploadR32f(device, currDepthTex, opts.linearDepth, w, h);
-    uploadR32f(device, prevDepthTex, opts.linearDepth, w, h); // prev same as curr for one-shot
-  } else {
-    const ones = new Float32Array(w * h).fill(1);
-    uploadR32f(device, currDepthTex, ones, w, h);
-    uploadR32f(device, prevDepthTex, ones, w, h);
-  }
-  if (opts.gbufferNormalsRgb != null) {
-    // Upload packed normals to both curr and prev normal textures.
-    // Per-channel fallback: R→0.5, G→0.5, B→1.0 (packed octahedral +Z); alpha=0.
-    uploadRgbAsRgba32fPacked(device, currNormTex, opts.gbufferNormalsRgb, w, h, [0.5, 0.5, 1.0, 0.0]);
-    uploadRgbAsRgba32fPacked(device, prevNormTex, opts.gbufferNormalsRgb, w, h, [0.5, 0.5, 1.0, 0.0]);
-  } else {
-    fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
-    fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
-  }
-  if (opts.objectIds != null) {
-    uploadR32Uint(device, currObjTex, opts.objectIds, w, h);
-    uploadR32Uint(device, prevObjTex, opts.objectIds, w, h);
-  } else {
-    const zeros32 = new Uint32Array(w * h);
-    uploadR32Uint(device, currObjTex, zeros32, w, h);
-    uploadR32Uint(device, prevObjTex, zeros32, w, h);
-  }
-  if (opts.historyLengthIn != null) {
-    uploadR16Uint(device, histInTex, opts.historyLengthIn, w, h);
-  } else {
-    fillR16Uint(device, histInTex, w, h, 0);
-  }
-  if (opts.momentsIn != null) {
-    uploadInterleavedRgAsRg32f(device, momentsInTex, opts.momentsIn, w, h);
-  } else {
-    fillRg32f(device, momentsInTex, w, h, 0, 0);
-  }
+    // ── Upload inputs ─────────────────────────────────────────────────────────
+    // Schied 2017 §4.1 — albedo demodulation. When albedoRgb is supplied,
+    // divide both the current and previous-frame HDR radiance by per-pixel
+    // albedo BEFORE the SVGF chain so reprojection blending, moment tracking,
+    // variance estimation, and the à-trous spatial filter all see the
+    // demodulated lighting estimate L = c/ρ. This keeps high-frequency albedo
+    // variation (e.g. material-boundary checkerboards) out of the cross-
+    // bilateral weights and prevents color bleed across material edges that
+    // share the same depth + normal. After the à-trous chain finishes, we
+    // multiply the filtered lighting back by albedo to restore physically
+    // correct outgoing radiance.
+    const px = w * h;
+    const rgbForChain =
+      opts.albedoRgb != null ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px) : opts.rgb;
+    const prevForChain =
+      opts.albedoRgb != null
+        ? svgfRealDemodulateAlbedo(opts.prevRadianceRgb ?? opts.rgb, opts.albedoRgb, px)
+        : (opts.prevRadianceRgb ?? opts.rgb);
+    uploadRgbAsRgba16f(device, currColorTex, rgbForChain, w, h);
+    uploadRgbAsRgba16f(device, prevColorTex, prevForChain, w, h);
 
-  // ── UBOs ─────────────────────────────────────────────────────────────────
-  const reprojUboScratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
-  packSVGFReprojUniforms(reprojU, reprojUboScratch);
-  const reprojUboGpu = device.createBuffer({
-    size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(reprojUboGpu, 0, reprojUboScratch);
+    if (opts.motionRg != null) {
+      uploadInterleavedRgAsRg32f(device, motionTex, opts.motionRg, w, h);
+    } else {
+      fillRg32f(device, motionTex, w, h, 0, 0);
+    }
+    if (opts.linearDepth != null) {
+      uploadR32f(device, currDepthTex, opts.linearDepth, w, h);
+      uploadR32f(device, prevDepthTex, opts.linearDepth, w, h); // prev same as curr for one-shot
+    } else {
+      const ones = new Float32Array(w * h).fill(1);
+      uploadR32f(device, currDepthTex, ones, w, h);
+      uploadR32f(device, prevDepthTex, ones, w, h);
+    }
+    if (opts.gbufferNormalsRgb != null) {
+      // Upload packed normals to both curr and prev normal textures.
+      // Per-channel fallback: R→0.5, G→0.5, B→1.0 (packed octahedral +Z); alpha=0.
+      uploadRgbAsRgba32fPacked(
+        device,
+        currNormTex,
+        opts.gbufferNormalsRgb,
+        w,
+        h,
+        [0.5, 0.5, 1.0, 0.0],
+      );
+      uploadRgbAsRgba32fPacked(
+        device,
+        prevNormTex,
+        opts.gbufferNormalsRgb,
+        w,
+        h,
+        [0.5, 0.5, 1.0, 0.0],
+      );
+    } else {
+      fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
+      fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
+    }
+    if (opts.objectIds != null) {
+      uploadR32Uint(device, currObjTex, opts.objectIds, w, h);
+      uploadR32Uint(device, prevObjTex, opts.objectIds, w, h);
+    } else {
+      const zeros32 = new Uint32Array(w * h);
+      uploadR32Uint(device, currObjTex, zeros32, w, h);
+      uploadR32Uint(device, prevObjTex, zeros32, w, h);
+    }
+    if (opts.historyLengthIn != null) {
+      uploadR16Uint(device, histInTex, opts.historyLengthIn, w, h);
+    } else {
+      fillR16Uint(device, histInTex, w, h, 0);
+    }
+    if (opts.momentsIn != null) {
+      uploadInterleavedRgAsRg32f(device, momentsInTex, opts.momentsIn, w, h);
+    } else {
+      fillRg32f(device, momentsInTex, w, h, 0, 0);
+    }
 
-  // Atrous UBOs (one per iteration)
-  const atrousUbos: GPUBuffer[] = [];
-  const atrousScratch = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-  for (let iter = 0; iter < atrousIterations; iter++) {
-    const ubo = device.createBuffer({
-      label: `svgf-real-atrous-ubo-${iter}`,
-      size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    packAtrousVarianceAtrousUniforms({ iteration: iter, sigmaColor, sigmaNormal, sigmaDepth }, atrousScratch);
-    device.queue.writeBuffer(ubo, 0, atrousScratch);
-    atrousUbos.push(ubo);
-  }
+    // ── UBOs ─────────────────────────────────────────────────────────────────
+    const reprojUboScratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
+    packSVGFReprojUniforms(reprojU, reprojUboScratch);
+    const reprojUboGpu = trackBuffer(
+      device.createBuffer({
+        size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
+    );
+    device.queue.writeBuffer(reprojUboGpu, 0, reprojUboScratch);
 
-  // ── Bind groups ───────────────────────────────────────────────────────────
-  const reprojBG = device.createBindGroup({
-    layout: reprojPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0,  resource: currColorTex.createView() },
-      { binding: 1,  resource: prevColorTex.createView() },
-      { binding: 2,  resource: motionTex.createView() },
-      { binding: 3,  resource: currDepthTex.createView() },
-      { binding: 4,  resource: currNormTex.createView() },
-      { binding: 5,  resource: currObjTex.createView() },
-      { binding: 6,  resource: prevDepthTex.createView() },
-      { binding: 7,  resource: prevNormTex.createView() },
-      { binding: 8,  resource: prevObjTex.createView() },
-      { binding: 9,  resource: histInTex.createView() },
-      { binding: 10, resource: momentsInTex.createView() },
-      { binding: 11, resource: colorOutTex.createView() },
-      { binding: 12, resource: histOutTex.createView() },
-      { binding: 13, resource: momOutTex.createView() },
-      { binding: 14, resource: { buffer: reprojUboGpu } },
-    ],
-  });
+    // Atrous UBOs (one per iteration)
+    const atrousUbos: GPUBuffer[] = [];
+    const atrousScratch = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
+    for (let iter = 0; iter < atrousIterations; iter++) {
+      const ubo = trackBuffer(
+        device.createBuffer({
+          label: `svgf-real-atrous-ubo-${iter}`,
+          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        }),
+      );
+      packAtrousVarianceAtrousUniforms(
+        { iteration: iter, sigmaColor, sigmaNormal, sigmaDepth },
+        atrousScratch,
+      );
+      device.queue.writeBuffer(ubo, 0, atrousScratch);
+      atrousUbos.push(ubo);
+    }
 
-  const momentsBG = device.createBindGroup({
-    layout: momentsPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: momOutTex.createView() },
-      { binding: 1, resource: histOutTex.createView() },
-      { binding: 2, resource: varMomOutTex.createView() },
-    ],
-  });
-
-  const fallbackBG = device.createBindGroup({
-    layout: fallbackPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: colorOutTex.createView() },
-      { binding: 1, resource: histOutTex.createView() },
-      { binding: 2, resource: varMomOutTex.createView() },
-      { binding: 3, resource: varFinalTex.createView() },
-    ],
-  });
-
-  // Initial copy of colorOut → pingTex for atrous input
-  // We need a dummy variance UBO and varianceIn for the svgfVarianceMain we won't use —
-  // Instead we skip the atrous-variance's own variance pass and use varFinalTex directly
-  // as the varianceMap in all atrous iterations.
-
-  const atrousBGs = atrousUbos.map((ubo, iter) => {
-    const isEven = iter % 2 === 0;
-    return device.createBindGroup({
-      layout: atrousPipeline.getBindGroupLayout(0),
+    // ── Bind groups ───────────────────────────────────────────────────────────
+    const reprojBG = device.createBindGroup({
+      layout: reprojPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: (isEven ? pingTex : pongTex).createView() },
-        { binding: 1, resource: (isEven ? pongTex : pingTex).createView() },
-        { binding: 2, resource: currNormTex.createView() },
+        { binding: 0, resource: currColorTex.createView() },
+        { binding: 1, resource: prevColorTex.createView() },
+        { binding: 2, resource: motionTex.createView() },
         { binding: 3, resource: currDepthTex.createView() },
-        { binding: 4, resource: varFinalTex.createView() },
-        { binding: 5, resource: { buffer: ubo } },
+        { binding: 4, resource: currNormTex.createView() },
+        { binding: 5, resource: currObjTex.createView() },
+        { binding: 6, resource: prevDepthTex.createView() },
+        { binding: 7, resource: prevNormTex.createView() },
+        { binding: 8, resource: prevObjTex.createView() },
+        { binding: 9, resource: histInTex.createView() },
+        { binding: 10, resource: momentsInTex.createView() },
+        { binding: 11, resource: colorOutTex.createView() },
+        { binding: 12, resource: histOutTex.createView() },
+        { binding: 13, resource: momOutTex.createView() },
+        { binding: 14, resource: { buffer: reprojUboGpu } },
       ],
     });
-  });
 
-  // ── Command encoding ──────────────────────────────────────────────────────
-  const wg = SVGF_REAL_REPROJECTION_WORKGROUP_SIZE;
-  const wg2 = SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE;
-  const wg3 = SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE;
-  const wgA = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
+    const momentsBG = device.createBindGroup({
+      layout: momentsPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: momOutTex.createView() },
+        { binding: 1, resource: histOutTex.createView() },
+        { binding: 2, resource: varMomOutTex.createView() },
+      ],
+    });
 
-  const encoder = device.createCommandEncoder({ label: 'svgf-real-batched' });
+    const fallbackBG = device.createBindGroup({
+      layout: fallbackPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: colorOutTex.createView() },
+        { binding: 1, resource: histOutTex.createView() },
+        { binding: 2, resource: varMomOutTex.createView() },
+        { binding: 3, resource: varFinalTex.createView() },
+      ],
+    });
 
-  // 1. Reprojection
-  {
-    const pass = encoder.beginComputePass({ label: 'svgf-reproj' });
-    pass.setPipeline(reprojPipeline);
-    pass.setBindGroup(0, reprojBG);
-    pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
-    pass.end();
+    // Initial copy of colorOut → pingTex for atrous input
+    // We need a dummy variance UBO and varianceIn for the svgfVarianceMain we won't use —
+    // Instead we skip the atrous-variance's own variance pass and use varFinalTex directly
+    // as the varianceMap in all atrous iterations.
+
+    const atrousBGs = atrousUbos.map((ubo, iter) => {
+      const isEven = iter % 2 === 0;
+      return device.createBindGroup({
+        layout: atrousPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: (isEven ? pingTex : pongTex).createView() },
+          { binding: 1, resource: (isEven ? pongTex : pingTex).createView() },
+          { binding: 2, resource: currNormTex.createView() },
+          { binding: 3, resource: currDepthTex.createView() },
+          { binding: 4, resource: varFinalTex.createView() },
+          { binding: 5, resource: { buffer: ubo } },
+        ],
+      });
+    });
+
+    // ── Command encoding ──────────────────────────────────────────────────────
+    const wg = SVGF_REAL_REPROJECTION_WORKGROUP_SIZE;
+    const wg2 = SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE;
+    const wg3 = SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE;
+    const wgA = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
+
+    const encoder = device.createCommandEncoder({ label: 'svgf-real-batched' });
+
+    // 1. Reprojection
+    {
+      const pass = encoder.beginComputePass({ label: 'svgf-reproj' });
+      pass.setPipeline(reprojPipeline);
+      pass.setBindGroup(0, reprojBG);
+      pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
+      pass.end();
+    }
+
+    // 2. Variance from moments
+    {
+      const pass = encoder.beginComputePass({ label: 'svgf-moments' });
+      pass.setPipeline(momentsPipeline);
+      pass.setBindGroup(0, momentsBG);
+      pass.dispatchWorkgroups(Math.ceil(w / wg2), Math.ceil(h / wg2));
+      pass.end();
+    }
+
+    // 3. 7×7 spatial fallback (merges into varFinalTex)
+    {
+      const pass = encoder.beginComputePass({ label: 'svgf-7x7' });
+      pass.setPipeline(fallbackPipeline);
+      pass.setBindGroup(0, fallbackBG);
+      pass.dispatchWorkgroups(Math.ceil(w / wg3), Math.ceil(h / wg3));
+      pass.end();
+    }
+
+    // 4. Copy colorOut → pingTex (atrous input for iter 0)
+    encoder.copyTextureToTexture({ texture: colorOutTex }, { texture: pingTex }, [w, h]);
+
+    // 5. À-trous chain
+    for (let iter = 0; iter < atrousIterations; iter++) {
+      const pass = encoder.beginComputePass({ label: `svgf-atrous-${iter}` });
+      pass.setPipeline(atrousPipeline);
+      pass.setBindGroup(0, atrousBGs[iter]);
+      pass.dispatchWorkgroups(Math.ceil(w / wgA), Math.ceil(h / wgA));
+      pass.end();
+    }
+
+    device.queue.submit([encoder.finish()]);
+
+    // Read result: after N iterations, last write is in pong (odd) or ping (even).
+    const readTex = atrousIterations % 2 === 0 ? pingTex : pongTex;
+    const result = await readRgba16fToRgb(device, readTex, w, h);
+
+    // Schied 2017 §4.1 — albedo re-modulation: multiply the filtered lighting
+    // by per-pixel albedo to restore physically correct denoised outgoing
+    // radiance. In-place mutation of `result`. No-op when albedoRgb is omitted.
+    if (opts.albedoRgb != null) {
+      svgfRealRemodulateAlbedo(result, opts.albedoRgb, px);
+    }
+
+    return result;
+  } finally {
+    for (const buffer of buffers) buffer.destroy();
+    for (const texture of textures) texture.destroy();
+    destroyEphemeral();
   }
-
-  // 2. Variance from moments
-  {
-    const pass = encoder.beginComputePass({ label: 'svgf-moments' });
-    pass.setPipeline(momentsPipeline);
-    pass.setBindGroup(0, momentsBG);
-    pass.dispatchWorkgroups(Math.ceil(w / wg2), Math.ceil(h / wg2));
-    pass.end();
-  }
-
-  // 3. 7×7 spatial fallback (merges into varFinalTex)
-  {
-    const pass = encoder.beginComputePass({ label: 'svgf-7x7' });
-    pass.setPipeline(fallbackPipeline);
-    pass.setBindGroup(0, fallbackBG);
-    pass.dispatchWorkgroups(Math.ceil(w / wg3), Math.ceil(h / wg3));
-    pass.end();
-  }
-
-  // 4. Copy colorOut → pingTex (atrous input for iter 0)
-  encoder.copyTextureToTexture({ texture: colorOutTex }, { texture: pingTex }, [w, h]);
-
-  // 5. À-trous chain
-  for (let iter = 0; iter < atrousIterations; iter++) {
-    const pass = encoder.beginComputePass({ label: `svgf-atrous-${iter}` });
-    pass.setPipeline(atrousPipeline);
-    pass.setBindGroup(0, atrousBGs[iter]);
-    pass.dispatchWorkgroups(Math.ceil(w / wgA), Math.ceil(h / wgA));
-    pass.end();
-  }
-
-  device.queue.submit([encoder.finish()]);
-
-  // Read result: after N iterations, last write is in pong (odd) or ping (even).
-  const readTex = atrousIterations % 2 === 0 ? pingTex : pongTex;
-  const result  = await readRgba16fToRgb(device, readTex, w, h);
-
-  // Schied 2017 §4.1 — albedo re-modulation: multiply the filtered lighting
-  // by per-pixel albedo to restore physically correct denoised outgoing
-  // radiance. In-place mutation of `result`. No-op when albedoRgb is omitted.
-  if (opts.albedoRgb != null) {
-    svgfRealRemodulateAlbedo(result, opts.albedoRgb, px);
-  }
-
-  // ── Cleanup ───────────────────────────────────────────────────────────────
-  for (const t of [
-    currColorTex, prevColorTex, motionTex, currDepthTex, currNormTex,
-    currObjTex, prevDepthTex, prevNormTex, prevObjTex, histInTex,
-    momentsInTex, colorOutTex, histOutTex, momOutTex,
-    varMomOutTex, varFinalTex, pingTex, pongTex,
-  ]) {
-    t.destroy();
-  }
-  reprojUboGpu.destroy();
-  for (const ubo of atrousUbos) ubo.destroy();
-  destroyEphemeral();
-
-  return result;
 }

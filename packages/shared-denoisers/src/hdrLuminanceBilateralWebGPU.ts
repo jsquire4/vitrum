@@ -20,9 +20,7 @@ export const HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE = 0.06 as const;
 //   struct BilateralParams { sigmaLuminance: f32, _pad1: f32, _pad2: f32, _pad3: f32 };
 // Layout: 4 × f32 = 16 bytes (WebGPU minimum uniform-binding size).
 // Only `sigmaLuminance` at offset 0 is consumed; pads are zero-filled by pack.
-const HDR_BILATERAL_UBO = defineUbo([
-  { name: 'sigmaLuminance', type: 'f32' },
-] as const);
+const HDR_BILATERAL_UBO = defineUbo([{ name: 'sigmaLuminance', type: 'f32' }] as const);
 
 const HDR_BILATERAL_UBO_SIZE_BYTES = HDR_BILATERAL_UBO.sizeBytes;
 
@@ -41,16 +39,17 @@ export interface HdrLuminanceBilateralWebGPUOptions {
   readonly reuseSharedWebGpuDevice?: boolean;
 }
 
-const bilateralComputePipeline = makePerDevicePipelineCache<GPUComputePipeline>(
-  (device) => {
-    const shaderModule = device.createShaderModule({ label: 'hdr-lum-bilateral', code: HDR_LUMINANCE_BILATERAL_WGSL });
-    return device.createComputePipeline({
-      label: 'hdr-lum-bilateral-pipeline',
-      layout: 'auto',
-      compute: { module: shaderModule, entryPoint: HDR_LUMINANCE_BILATERAL_ENTRY },
-    });
-  },
-);
+const bilateralComputePipeline = makePerDevicePipelineCache<GPUComputePipeline>((device) => {
+  const shaderModule = device.createShaderModule({
+    label: 'hdr-lum-bilateral',
+    code: HDR_LUMINANCE_BILATERAL_WGSL,
+  });
+  return device.createComputePipeline({
+    label: 'hdr-lum-bilateral-pipeline',
+    layout: 'auto',
+    compute: { module: shaderModule, entryPoint: HDR_LUMINANCE_BILATERAL_ENTRY },
+  });
+});
 
 /**
  * Runs one luminance bilateral pass on linear HDR RGB (flattened length w*h*3).
@@ -74,60 +73,64 @@ export async function runHdrLuminanceBilateralWebGPU(
     errorLabel: 'runHdrLuminanceBilateralWebGPU',
   });
 
-  const pipeline = bilateralComputePipeline(device);
+  let texIn: GPUTexture | undefined;
+  let texOut: GPUTexture | undefined;
+  let ubo: GPUBuffer | undefined;
 
-  const texIn = device.createTexture({
-    label: 'hdr-bilateral-in',
-    size: [w, h],
-    format: 'rgba32float',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  const texOut = device.createTexture({
-    label: 'hdr-bilateral-out',
-    size: [w, h],
-    format: 'rgba32float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
+  try {
+    const pipeline = bilateralComputePipeline(device);
 
-  // Upload tight RGB as rgba32float (alpha=1) via the shared helper.
-  uploadRgbAsRgba32f(device, texIn, rgb, w, h);
+    texIn = device.createTexture({
+      label: 'hdr-bilateral-in',
+      size: [w, h],
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    texOut = device.createTexture({
+      label: 'hdr-bilateral-out',
+      size: [w, h],
+      format: 'rgba32float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
 
-  // BilateralParams UBO — packed via defineUbo (byte-identical to the prior
-  // hand-rolled Float32Array(4) layout: sigmaLuminance at offset 0, pads zero).
-  const uboScratch = new ArrayBuffer(HDR_BILATERAL_UBO_SIZE_BYTES);
-  HDR_BILATERAL_UBO.pack(new DataView(uboScratch), 0, { sigmaLuminance: sigma });
-  const ubo = device.createBuffer({
-    label: 'hdr-bilateral-ubo',
-    size: HDR_BILATERAL_UBO_SIZE_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(ubo, 0, uboScratch);
+    // Upload tight RGB as rgba32float (alpha=1) via the shared helper.
+    uploadRgbAsRgba32f(device, texIn, rgb, w, h);
 
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: texIn.createView() },
-      { binding: 1, resource: texOut.createView() },
-      { binding: 2, resource: { buffer: ubo } },
-    ],
-  });
+    // BilateralParams UBO — packed via defineUbo (byte-identical to the prior
+    // hand-rolled Float32Array(4) layout: sigmaLuminance at offset 0, pads zero).
+    const uboScratch = new ArrayBuffer(HDR_BILATERAL_UBO_SIZE_BYTES);
+    HDR_BILATERAL_UBO.pack(new DataView(uboScratch), 0, { sigmaLuminance: sigma });
+    ubo = device.createBuffer({
+      label: 'hdr-bilateral-ubo',
+      size: HDR_BILATERAL_UBO_SIZE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(ubo, 0, uboScratch);
 
-  const wg = HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE;
-  const encoder = device.createCommandEncoder();
-  const pass = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
-  pass.end();
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: texIn.createView() },
+        { binding: 1, resource: texOut.createView() },
+        { binding: 2, resource: { buffer: ubo } },
+      ],
+    });
 
-  device.queue.submit([encoder.finish()]);
+    const wg = HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE;
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
+    pass.end();
 
-  const out = await readRgba32fToRgb(device, texOut, w, h);
+    device.queue.submit([encoder.finish()]);
 
-  texIn.destroy();
-  texOut.destroy();
-  ubo.destroy();
-  destroyEphemeral();
-
-  return out;
+    return await readRgba32fToRgb(device, texOut, w, h);
+  } finally {
+    texIn?.destroy();
+    texOut?.destroy();
+    ubo?.destroy();
+    destroyEphemeral();
+  }
 }
