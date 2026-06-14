@@ -657,7 +657,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(webgpuRows[1]!.unsupportedCount).toBe(0);
   });
 
-  it('reports morph tangent deltas as an unsupported primitive compatibility issue', () => {
+  it('reports morph tangent deltas as an approximate primitive compatibility issue', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
       meshes: [{
@@ -673,7 +673,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) =>
       issue.category === 'primitive' &&
       issue.name === 'morphTargetTangents' &&
-      issue.support === 'unsupported',
+      issue.support === 'approximate',
     )).toBe(true);
   });
 
@@ -792,7 +792,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       expect.objectContaining({
         category: 'primitive',
         name: 'morphTargetTangents',
-        support: 'unsupported',
+        support: 'approximate',
         path: 'meshes[0].primitives[0].targets[0].TANGENT',
       }),
       expect.objectContaining({

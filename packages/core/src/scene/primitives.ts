@@ -181,10 +181,13 @@ export interface SkinnedMeshPrimitive {
    * If a host has absolute-position morphs (the older three.js
    * `morphTargetsRelative === false` mode), the adapter converts to
    * deltas at extract time. Optional `morphTargetNormals` carries
-   * matching normal deltas; omit for position-only morphs.
+   * matching normal deltas; optional `morphTargetTangents` carries glTF
+   * TANGENT direction deltas (xyz only; tangent handedness stays on the base
+   * `tangents` stream). Omit for position-only morphs.
    */
   readonly morphTargets?: ReadonlyArray<Float32Array>;
   readonly morphTargetNormals?: ReadonlyArray<Float32Array>;
+  readonly morphTargetTangents?: ReadonlyArray<Float32Array>;
   /** Per-target influence weights, length = morphTargets.length. */
   readonly morphWeights?: Float32Array;
   readonly material: MaterialSpec;

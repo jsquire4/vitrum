@@ -117,7 +117,7 @@ asset's feature report.
 | KHR_draco_mesh_compression | Supported via `opts.dracoDecode` hook. Without a hook: uncompressed fallback accessors when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | EXT_meshopt_compression | Supported via `opts.meshoptDecode` hook (bufferView-level — geometry, animation and image consumers all see decompressed data). Without a hook: spec fallback buffer when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | EXT_mesh_gpu_instancing | Unsupported. Optional node-level use warns and imports the base mesh once; compatibility reports an unsupported extension issue. Required use throws through `extensionsRequired` |
-| Morph targets (POSITION + NORMAL deltas, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). TANGENT deltas warn + skip |
+| Morph targets (POSITION + NORMAL + TANGENT deltas, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphTargetTangents` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). Shipping backends currently report morph tangent consumption as approximate because posed tangent-space shading does not yet apply those deltas. |
 | Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`) |
 | Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels) | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback |
 | Cameras | Warn + ignored |
@@ -206,7 +206,9 @@ frame and pushes the results:
   geometry requires the host to inject `opts.dracoDecode` / `opts.meshoptDecode`
   (see Compressed geometry). Without a hook the spec fallbacks apply, else warn + skip
   (or throw when the extension is in `extensionsRequired`).
-- **Morph TANGENT deltas**: warn + skipped (core `SkinnedMeshPrimitive` has no morph-tangent field).
+- **Morph TANGENT deltas**: preserved on `SkinnedMeshPrimitive.morphTargetTangents`;
+  compatibility reports current backend tangent-space shading as approximate until
+  solvers/renderers consume those deltas directly.
 - **`KHR_materials_volume.thicknessTexture`**: imported as `thicknessMap`;
   pt-webgl2 consumes it approximately as a Beer-Lambert distance clamp, while
   compatibility reports surface unsupported targets for backends that do not

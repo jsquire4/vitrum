@@ -216,7 +216,7 @@ const MORPH_BASE_NORMALS = [0, 0, 1, 0, 0, 1, 0, 0, 1];
 interface MorphTargetSpec {
   position?: number[]; // 9 floats (3 verts × 3)
   normal?: number[];   // 9 floats
-  tangent?: number[];  // 12 floats (vec4 deltas → warn-skipped)
+  tangent?: number[];  // 9 floats (glTF morph target TANGENT is a VEC3 delta)
 }
 
 /**
@@ -249,7 +249,7 @@ function makeMorphGltf(opts: {
     }
     if (spec.tangent) {
       target['TANGENT'] = accessors.length;
-      accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC4' });
+      accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC3' });
       chunks.push(f32Buffer(spec.tangent));
     }
     targets.push(target);
@@ -353,15 +353,18 @@ describe('morph targets (GLTF-04)', () => {
     }
   });
 
-  it('TANGENT morph deltas warn and are skipped (core has no morph-tangent field)', async () => {
+  it('TANGENT morph deltas are preserved on the core primitive contract', async () => {
+    const tangentDelta = [0.1, 0, 0, 0.1, 0, 0, 0.1, 0, 0];
     const { gltf, buffers } = makeMorphGltf({
-      targets: [{ position: POS_DELTA_1, tangent: new Array(12).fill(0.1) }],
+      targets: [{ position: POS_DELTA_1, tangent: tangentDelta }],
       meshWeights: [1],
     });
     const { scene, warnings } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('TANGENT deltas are ignored'))).toBe(true);
+    expect(warnings.some(w => w.includes('TANGENT deltas are ignored'))).toBe(false);
     const prim = scene.primitives[0] as SkinnedMeshPrimitive;
     expect(prim.morphTargets).toHaveLength(1);
+    expect(prim.morphTargetTangents).toHaveLength(1);
+    expect(Array.from(prim.morphTargetTangents![0]!)).toEqual(Array.from(new Float32Array(tangentDelta)));
   });
 
   it('morphWeights defaults to zeros when no weights are authored', async () => {

@@ -14,9 +14,9 @@
 //     inverseBindMatrices, rest-pose joint world transforms, bindMatrix /
 //     bindMatrixInverse from the skinned node transform).
 //   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
-//     morphWeights (POSITION + NORMAL deltas; node/mesh weights; unskinned
-//     morphed meshes are promoted with a synthesized identity skeleton).
-//     TANGENT deltas are warn-skipped (core has no morph-tangent field).
+//     morphTargetTangents / morphWeights (POSITION + NORMAL + TANGENT deltas;
+//     node/mesh weights; unskinned morphed meshes are promoted with a synthesized
+//     identity skeleton).
 //   - Animations → core AnimationClip[] on the result (LINEAR / STEP /
 //     CUBICSPLINE; translation / rotation / scale / weights channels; channel
 //     node ids are `gltf-node-<i>`, resolved to primitives via
@@ -31,7 +31,7 @@
 //     when present (Draco fallback accessors / meshopt fallback buffer);
 //     extensionsRequired without a hook or fallback throws. See compression.ts.
 //
-// Out of scope: cameras, morph TANGENT deltas,
+// Out of scope: cameras,
 //
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
@@ -596,9 +596,7 @@ export async function gltfToScene(
         }
       }
 
-      // Morph targets (GLTF-04) — POSITION/NORMAL deltas + node/mesh weights.
-      // TANGENT deltas are warn-skipped (core SkinnedMeshPrimitive has no
-      // morph-tangent field).
+      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT deltas + node/mesh weights.
       const morph = _extractMorphTargets(
         gltf, buffers, prim.targets, node.weights ?? mesh.weights,
         positions.length / 3, `${mesh.name ?? node.mesh}`, warnings,
@@ -1040,6 +1038,7 @@ function _buildPrimitive(
       ...(morph ? {
         morphTargets: morph.morphTargets,
         ...(morph.morphTargetNormals ? { morphTargetNormals: morph.morphTargetNormals } : {}),
+        ...(morph.morphTargetTangents ? { morphTargetTangents: morph.morphTargetTangents } : {}),
         morphWeights: morph.morphWeights,
       } : {}),
     };
@@ -1057,6 +1056,10 @@ interface MorphData {
    *  NORMAL deltas; targets without one get zeros (solveSkin requires the
    *  array to be parallel with morphTargets). */
   morphTargetNormals?: Float32Array[];
+  /** Per-target TANGENT direction deltas (glTF target TANGENT is VEC3, not the
+   *  base VEC4 tangent handedness). Present only when at least one target
+   *  carries TANGENT; targets without one get zeros. */
+  morphTargetTangents?: Float32Array[];
   /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
    *  when neither is authored). */
   morphWeights: Float32Array;
@@ -1067,9 +1070,10 @@ interface MorphData {
  *
  * glTF §3.7.2.2: each target maps attribute names to accessors carrying
  * DELTAS from the base attribute (sparse accessors are common here and are
- * handled by `unpackAccessorFloat`). POSITION and NORMAL deltas map onto
- * `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals`; TANGENT deltas
- * are warn-skipped because core does not model morph-tangent deltas.
+ * handled by `unpackAccessorFloat`). POSITION, NORMAL, and TANGENT deltas map
+ * onto `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` /
+ * `.morphTargetTangents`. TANGENT deltas are preserved for host/backend
+ * inspection; current solvers still derive posed tangents from solved geometry.
  *
  * Returns `undefined` when the primitive has no targets.
  */
@@ -1087,8 +1091,9 @@ function _extractMorphTargets(
 
   const morphTargets: Float32Array[] = [];
   const normalDeltas: (Float32Array | null)[] = [];
+  const tangentDeltas: (Float32Array | null)[] = [];
   let anyNormals = false;
-  let warnedTangent = false;
+  let anyTangents = false;
 
   for (let t = 0; t < tCount; t++) {
     const target = targets[t]!;
@@ -1122,15 +1127,21 @@ function _extractMorphTargets(
     if (nrmDelta) anyNormals = true;
     normalDeltas.push(nrmDelta ?? null);
 
-    // TANGENT delta — core has no morph-tangent field.
-    if (target['TANGENT'] !== undefined && !warnedTangent) {
+    // TANGENT direction delta (glTF morph target TANGENT is VEC3; base tangent
+    // handedness remains in the base TANGENT.w lane).
+    let tanDelta = _tryUnpackFloat(
+      gltf, buffers, target['TANGENT'],
+      `morph target ${t} TANGENT for "${meshLabel}"`, warnings,
+    );
+    if (tanDelta && tanDelta.length !== vertexCount * 3) {
       warnings.push(
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph targets carry TANGENT deltas, ` +
-          'which @vitrum/core does not model (SkinnedMeshPrimitive has morphTargets / ' +
-          'morphTargetNormals only). TANGENT deltas are ignored.',
+        `[vitrum/gltf-adapter] Morph target ${t} TANGENT delta length ${tanDelta.length} ` +
+          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
       );
-      warnedTangent = true;
+      tanDelta = undefined;
     }
+    if (tanDelta) anyTangents = true;
+    tangentDeltas.push(tanDelta ?? null);
 
     for (const attr of Object.keys(target)) {
       if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT') {
@@ -1160,6 +1171,9 @@ function _extractMorphTargets(
     morphTargets,
     ...(anyNormals
       ? { morphTargetNormals: normalDeltas.map(n => n ?? new Float32Array(vertexCount * 3)) }
+      : {}),
+    ...(anyTangents
+      ? { morphTargetTangents: tangentDeltas.map(t => t ?? new Float32Array(vertexCount * 3)) }
       : {}),
     morphWeights,
   };

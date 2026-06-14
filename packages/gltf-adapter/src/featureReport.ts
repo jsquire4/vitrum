@@ -399,9 +399,11 @@ export function evaluateGltfBackendProfileCompatibility(
     addIssue({
       category: 'primitive',
       name: 'morphTargetTangents',
-      support: 'unsupported',
+      support: 'approximate',
       path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTangents', 'meshes'),
-      message: 'glTF morph-target TANGENT deltas have no core primitive field and are ignored by the adapter.',
+      message:
+        'glTF morph-target TANGENT deltas are preserved on SkinnedMeshPrimitive.morphTargetTangents, ' +
+        'but shipping backends do not yet apply those deltas to posed tangent-space shading.',
     });
   }
 

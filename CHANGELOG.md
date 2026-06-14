@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (glTF morph target tangent preservation, 2026-06-14)
+
+- **`@vitrum/core` + `@vitrum/gltf-adapter` morph target tangents:** glTF morph-target `TANGENT` VEC3 deltas now import into `SkinnedMeshPrimitive.morphTargetTangents` alongside position/normal deltas and weights. Compatibility reporting now grades these assets as `approximate` rather than data-loss unsupported because shipping renderers preserve the data but do not yet apply tangent deltas to posed tangent-space shading.
+
 ### Fixed (pt-webgpu lite static multi-primitive packing, 2026-06-14)
 
 - **`@vitrum/pt-webgpu` lite-tier static geometry:** lite `setScene()` now packs mesh, skinned-mesh, and instanced-mesh primitives through a merged world-space BLAS (`mergeWorldSpaceFromCore`) so the lite shader's root-0 traversal sees multi-primitive and transformed static scenes without TLAS bindings. Static `instanced-mesh` is now advertised as native on lite; material patches fall back to a merged-scene repack, and transform/topology mutation rows remain unsupported because those incremental paths are still TLAS-oriented.

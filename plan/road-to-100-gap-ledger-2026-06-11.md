@@ -223,7 +223,9 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   engine construction or existing-engine attachment, and
   `GltfSceneController` creation without adding an `@vitrum/engine` dependency.
   Compatibility scoring now treats morph-target `TANGENT` deltas as structured
-  unsupported issues instead of passive inventory counts, while
+  approximate issues instead of passive inventory counts: data is preserved on
+  `SkinnedMeshPrimitive.morphTargetTangents`, backend tangent-space shading
+  consumption remains a truthful downgrade, and
   `loadGltfForEngine(..., compatibilityMode: 'reject-degraded')` discounts
   host hooks that were actually supplied for Draco, meshopt, and texture-source
   extensions, plus optional texture-source alternates that have a deterministic
@@ -1080,8 +1082,9 @@ Evidence:
   `thicknessMap` through each backend's material support matrix. pt-webgl2 now
   consumes it approximately; pt-webgpu and walkaround-hybrid still report
   unsupported.
-- Morph-target `TANGENT` deltas remain unsupported and are now compatibility
-  scored as ignored primitive data.
+- Morph-target `TANGENT` deltas are preserved on the core primitive contract and
+  are compatibility-scored as approximate backend tangent-space shading data
+  rather than silently ignored primitive data.
 - `EXT_mesh_gpu_instancing` is explicitly unsupported rather than silently
   ignored: optional node-level use emits an adapter warning and imports the base
   mesh once, compatibility reports an unsupported extension issue at the node
@@ -1171,18 +1174,18 @@ Status:
 - POSITION and NORMAL morph target deltas and node/mesh weights import into the
   core primitive shape; unskinned morphed meshes are promoted through an identity
   skeleton path.
-- TANGENT morph deltas are deliberately skipped because core has no
-  morph-tangent field, and this is now a structured compatibility downgrade:
+- TANGENT morph deltas import into `SkinnedMeshPrimitive.morphTargetTangents`.
+  This is still a structured compatibility downgrade for shipping renderers:
   `analyzeGltfAsset()` reports `hasMorphTargetTangents`,
-  `evaluateGltfBackendCompatibility()` emits a `morphTargetTangents`
-  unsupported primitive issue with the source path, and
+  `evaluateGltfBackendCompatibility()` emits a source-pathed
+  `morphTargetTangents` approximate primitive issue, and
   `gltfAssetApi.test.ts` pins that public API behavior.
 
 Closure:
-- Treat morph tangents as closed for the current professional contract:
-  unsupported, deterministic, source-pathed, and test-covered. Optional future
-  promotion would add a core `morphTargetTangents` field plus solver/backend
-  consumption.
+- Treat morph-tangent data preservation as closed for the current professional
+  contract: deterministic, source-pathed, and test-covered. Full renderer
+  promotion still requires solver/backend consumption of those tangent deltas,
+  so compatibility remains approximate instead of native.
 - Controller-side morph playback is closed under `GLTF-API-04`.
 
 ### GLTF-05 - glTF primitive modes

@@ -32,8 +32,9 @@
 >   Every non-native row carries a file:line evidence comment.
 > - GLTF-05 CLOSED: TRIANGLE_STRIP/FAN triangulation (`triangulation.ts`).
 > - GLTF-04 CLOSED: morph target import (POSITION/NORMAL deltas, sparse,
->   weights, unskinned→identity-skeleton promotion). TANGENT deltas warn-skip:
->   core has no `morphTargetTangents` field (recorded core-change candidate).
+>   TANGENT deltas, sparse, weights, unskinned→identity-skeleton promotion).
+>   TANGENT deltas preserve data on `SkinnedMeshPrimitive.morphTargetTangents`;
+>   renderer tangent-space consumption remains compatibility-approximate.
 > - GLTF-03 CLOSED: animations → core `AnimationClip[]` + `animationTargets`
 >   node→primitive map + `animationNodeId()` export.
 > - GLTF-06 fixture sweep CLOSED: 17-row KHR texture-extension sweep;
@@ -459,9 +460,9 @@ Plan:
    - Either triangulate triangle strip/fan or keep unsupported with diagnostics.
    - Add fixtures for strip/fan if supported.
 3. GLTF-04:
-   - Add core/adapter morph target deltas for POSITION/NORMAL/TANGENT and
-     weights.
-   - Cover triangle morph, normal morph, tangent morph, skinned+morphed.
+   - DONE: core/adapter preserve morph target deltas for POSITION/NORMAL/TANGENT
+     and weights.
+   - DONE: triangle morph, normal morph, tangent morph, skinned+morphed coverage.
 4. GLTF-03:
    - Parse animation samplers/channels/interpolation and map to core animation
      clips.
