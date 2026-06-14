@@ -89,10 +89,11 @@ export function buildSceneTextures(
 
   // (4b) materials — the merged result already dedups the scene's unique
   //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
-  //      IS the unique-material list the materials texture packs. The atlas layer
-  //      map turns each material's `<map>` ref into the GLSL's layer index.
+  //      IS the unique-material list the materials texture packs. The role-aware
+  //      atlas maps turn each material's `<map>` ref into the GLSL's layer index
+  //      without confusing sRGB color maps and linear data maps sharing a handle.
   const vertexColorMaterialIds = collectVertexColorMaterialIds(skinnedScene, merged);
-  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOf, { vertexColorMaterialIds });
+  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOfByColorSpace, { vertexColorMaterialIds });
   const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
 
   // (5) lights (6px/light) — driven from the original scene's emitters.

@@ -216,6 +216,7 @@ describe('loadGltfAsset', () => {
         path: 'scene.primitives[0].material.baseColorMap',
         wrapS: 'clamp-to-edge',
         wrapT: 'mirrored-repeat',
+        colorSpace: 'srgb',
       }),
     ]));
     expect(result.recommendedBackend.backend).toBe('pt-webgl2');
@@ -319,6 +320,7 @@ describe('loadGltfAsset', () => {
         path: 'scene.primitives[0].material.baseColorMap',
         wrapS: 'repeat',
         wrapT: 'repeat',
+        colorSpace: 'srgb',
         handleKind: 'raw-image',
         backendReadiness: {
           ptWebgl2: 'opaque',

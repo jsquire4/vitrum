@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
+import { gltfTextureColorSpaceForField, type GltfMaterialTextureField } from './texturePipeline.js';
 import type { MaterialSpec, MeshPrimitive, TextureRef } from '@vitrum/core';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
@@ -100,6 +101,13 @@ const SWEEP_MAPS: ReadonlyArray<readonly [keyof MaterialSpec, number]> = [
 ];
 
 const TEXTURE_COUNT = 16;
+
+const SRGB_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
+  'baseColorMap',
+  'emissiveMap',
+  'specularColorMap',
+  'sheenColorMap',
+]);
 
 function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
@@ -212,6 +220,14 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     expect(mat.roughnessMap).toBeDefined();
     expect(mat.metallicMap).toBe(mat.roughnessMap);
   });
+
+  it.each(SWEEP_MAPS.map(([field]) => ({ field })))(
+    '$field has an explicit glTF texture color-space policy',
+    ({ field }) => {
+      const expected = SRGB_SWEEP_FIELDS.has(field) ? 'srgb' : 'linear';
+      expect(gltfTextureColorSpaceForField(field as GltfMaterialTextureField)).toBe(expected);
+    },
+  );
 
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {
     const { mat } = await importSweepMaterial();

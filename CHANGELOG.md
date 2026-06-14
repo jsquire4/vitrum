@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF texture color-space policy, 2026-06-13)
+
+- **pt-webgl2 material texture atlas color roles:** color/tint maps (`baseColorMap`, `emissiveMap`, `sheenColorMap`, `specularColorMap`) are now inverse-sRGB decoded into the linear RGBA32F atlas, while scalar/data maps remain linear. A single glTF texture handle used in both roles now receives distinct sRGB/linear atlas layers instead of aliasing one decoded payload.
+- **glTF texture diagnostics:** `textureDecodeReport` entries now expose the adapter's per-map `colorSpace` policy so hosts can see whether a texture is treated as sRGB color or linear data before choosing a backend.
+
 ### Added (pt-webgl2 material maps, 2026-06-13)
 
 - **KHR_materials_anisotropy map on `@vitrum/pt-webgl2`:** `anisotropyMap` now packs into the material atlas/stride, preserves per-map UV channel, `KHR_texture_transform`, and wrap modes, and the GLSL surface path samples B-channel strength plus RG rotation offset before feeding anisotropic GGX sampling/eval/PDF. The promise ledger now marks pt-webgl2 `anisotropyMap` native.

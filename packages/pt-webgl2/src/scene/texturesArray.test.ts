@@ -15,6 +15,10 @@ function matWithBaseColorMap(handle: unknown): MaterialSpec {
   return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } };
 }
 
+function srgbToLinear(v: number): number {
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+}
+
 describe('packTextureAtlas', () => {
   it('returns null when no material carries a texture', () => {
     const mats: MaterialSpec[] = [{ baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0 }];
@@ -68,25 +72,25 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } };
   }
 
-  it('explicit channels:4 on Uint8 data gives correct normalized RGBA output', () => {
+  it('explicit channels:4 on Uint8 data decodes baseColorMap sRGB into linear RGBA output', () => {
     // 1×1 red pixel in Uint8 RGBA (255,0,0,255)
     const handle = hintedHandle(new Uint8Array([255, 0, 0, 255]), 1, 1, { channels: 4 });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
-    // Should decode to [1,0,0,1] after /255 normalization
+    // Should decode to linear [1,0,0,1] after /255 normalization + sRGB decode.
     expect(atlas!.data[0]).toBeCloseTo(1, 5);
     expect(atlas!.data[1]).toBeCloseTo(0, 5);
     expect(atlas!.data[2]).toBeCloseTo(0, 5);
     expect(atlas!.data[3]).toBeCloseTo(1, 5);
   });
 
-  it('explicit channels:1 expands a single-channel R value to (R,R,R,1)', () => {
+  it('explicit channels:1 expands a single-channel sRGB baseColorMap value to linear (R,R,R,1)', () => {
     // 1×1 grayscale 128/255 ≈ 0.502
     const handle = hintedHandle(new Uint8Array([128]), 1, 1, { channels: 1 });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
     const r = atlas!.data[0]!;
-    expect(r).toBeCloseTo(128 / 255, 4);
+    expect(r).toBeCloseTo(srgbToLinear(128 / 255), 4);
     // Channels 1 and 2 mirror channel 0 (stride=1 path)
     expect(atlas!.data[1]!).toBe(r);
     expect(atlas!.data[2]!).toBe(r);
@@ -94,9 +98,13 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     expect(atlas!.data[3]).toBe(1);
   });
 
-  it('explicit dataType:float32 skips normalization on Float32 data', () => {
+  it('explicit colorSpace:linear keeps Float32 baseColorMap values already in linear light', () => {
     // 1×1 pixel, RGBA, float32 already in [0,1]
-    const handle = hintedHandle(new Float32Array([0.5, 0.25, 0.75, 1.0]), 1, 1, { channels: 4, dataType: 'float32' });
+    const handle = hintedHandle(new Float32Array([0.5, 0.25, 0.75, 1.0]), 1, 1, {
+      channels: 4,
+      dataType: 'float32',
+      colorSpace: 'linear',
+    });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
     expect(atlas!.data[0]).toBeCloseTo(0.5, 5);
@@ -126,5 +134,31 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('uses separate atlas layers when the same handle is sampled as sRGB and linear data', () => {
+    const handle = hintedHandle(new Uint8Array([128, 64, 32, 255]), 1, 1, { channels: 4 });
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle },
+      roughnessMap: { handle },
+    };
+    const atlas = packTextureAtlas([material]);
+    expect(atlas).not.toBeNull();
+    expect(atlas!.layerCount).toBe(2);
+    expect(atlas!.layerOfByColorSpace.srgb.get(handle)).toBe(0);
+    expect(atlas!.layerOfByColorSpace.linear.get(handle)).toBe(1);
+
+    const linearLayerBase = atlas!.dim * atlas!.dim * 4;
+    expect(atlas!.data[0]).toBeCloseTo(srgbToLinear(128 / 255), 4);
+    expect(atlas!.data[1]).toBeCloseTo(srgbToLinear(64 / 255), 4);
+    expect(atlas!.data[2]).toBeCloseTo(srgbToLinear(32 / 255), 4);
+    expect(atlas!.data[3]).toBe(1);
+    expect(atlas!.data[linearLayerBase]).toBeCloseTo(128 / 255, 4);
+    expect(atlas!.data[linearLayerBase + 1]).toBeCloseTo(64 / 255, 4);
+    expect(atlas!.data[linearLayerBase + 2]).toBeCloseTo(32 / 255, 4);
+    expect(atlas!.data[linearLayerBase + 3]).toBe(1);
   });
 });

@@ -53,12 +53,27 @@ const SAMPLED_MAP_KEYS = [
 export interface TextureHandleHint {
   readonly channels?: 1 | 2 | 3 | 4;
   readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  /**
+   * Source encoding hint. By default, color/tint map roles are treated as sRGB
+   * sources and converted into the atlas' linear RGBA32F payload; scalar/data
+   * map roles stay linear. Set `colorSpace:'linear'` for a color map handle
+   * that is already linear-light.
+   */
+  readonly colorSpace?: TextureSampleColorSpace;
+}
+
+export type TextureSampleColorSpace = 'srgb' | 'linear';
+
+export interface TextureAtlasLayerMap {
+  readonly srgb: ReadonlyMap<unknown, number>;
+  readonly linear: ReadonlyMap<unknown, number>;
 }
 
 interface RawPixels {
   readonly width: number;
   readonly height: number;
-  readonly data: Float32Array; // RGBA, row-major, linear
+  readonly data: Float32Array; // RGBA, row-major, normalized source values
+  readonly sourceColorSpace?: TextureSampleColorSpace;
 }
 
 export interface TextureAtlas {
@@ -66,8 +81,21 @@ export interface TextureAtlas {
   readonly data: Float32Array;
   readonly dim: number;
   readonly layerCount: number;
-  /** Map a `TextureRef.handle` (object identity) → its layer index in the array. */
+  /** Back-compat default map: first layer for a handle, regardless of role. */
   readonly layerOf: Map<unknown, number>;
+  /** Role-aware layer maps; color/tint maps and data maps can share a handle safely. */
+  readonly layerOfByColorSpace: TextureAtlasLayerMap;
+}
+
+const SRGB_MAP_KEYS = new Set<keyof MaterialSpec>([
+  'baseColorMap',
+  'emissiveMap',
+  'sheenColorMap',
+  'specularColorMap',
+]);
+
+export function textureColorSpaceForMapKey(key: keyof MaterialSpec): TextureSampleColorSpace {
+  return SRGB_MAP_KEYS.has(key) ? 'srgb' : 'linear';
 }
 
 /** IEEE-754 half (uint16) → float32 (DataTextures may ship HalfFloat). */
@@ -78,6 +106,11 @@ function halfToFloat(h: number): number {
   if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
   if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
   return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
+}
+
+function srgbToLinear(v: number): number {
+  const c = Math.max(0, Math.min(1, v));
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 /** Read RGBA float pixels from a TextureRef handle (raw payload or DataTexture-shaped).
@@ -93,6 +126,7 @@ function readHandlePixels(handle: unknown): RawPixels | null {
     __vitrum_hint__?: TextureHandleHint;
     channels?: number;
     dataType?: string;
+    colorSpace?: string;
   } | null;
   if (h == null) return null;
   // raw {width,height,data} (on-ramp form) OR DataTexture {image:{...}}
@@ -110,6 +144,7 @@ function readHandlePixels(handle: unknown): RawPixels | null {
           {} as TextureHandleHint,
           h.channels != null ? { channels: h.channels as TextureHandleHint['channels'] } : {},
           h.dataType != null ? { dataType: h.dataType as TextureHandleHint['dataType'] } : {},
+          h.colorSpace != null ? { colorSpace: h.colorSpace as TextureHandleHint['colorSpace'] } : {},
         )
       : undefined
   );
@@ -146,19 +181,35 @@ function readHandlePixels(handle: unknown): RawPixels | null {
     out[p * 4 + 2] = dec(Number(src[s + (stride > 2 ? 2 : 0)] ?? 0));
     out[p * 4 + 3] = stride >= 4 ? dec(Number(src[s + 3] ?? 1)) : 1;
   }
-  return { width, height, data: out };
+  const sourceColorSpace =
+    hint?.colorSpace === 'srgb' || hint?.colorSpace === 'linear'
+      ? hint.colorSpace
+      : undefined;
+  return { width, height, data: out, ...(sourceColorSpace ? { sourceColorSpace } : {}) };
 }
 
 /** Nearest-neighbour resample `px` into a `dim × dim` RGBA float layer at `data[base..]`. */
-function blitLayer(px: RawPixels, dim: number, data: Float32Array, base: number): void {
+function blitLayer(
+  px: RawPixels,
+  dim: number,
+  data: Float32Array,
+  base: number,
+  colorSpace: TextureSampleColorSpace,
+): void {
+  const decodeSrgb = colorSpace === 'srgb' && px.sourceColorSpace !== 'linear';
   for (let y = 0; y < dim; y += 1) {
     const sy = Math.min(px.height - 1, (y * px.height / dim) | 0);
     for (let x = 0; x < dim; x += 1) {
       const sx = Math.min(px.width - 1, (x * px.width / dim) | 0);
       const s = (sy * px.width + sx) * 4;
       const d = base + (y * dim + x) * 4;
-      data[d] = px.data[s]!; data[d + 1] = px.data[s + 1]!;
-      data[d + 2] = px.data[s + 2]!; data[d + 3] = px.data[s + 3]!;
+      const r = px.data[s]!;
+      const g = px.data[s + 1]!;
+      const b = px.data[s + 2]!;
+      data[d] = decodeSrgb ? srgbToLinear(r) : r;
+      data[d + 1] = decodeSrgb ? srgbToLinear(g) : g;
+      data[d + 2] = decodeSrgb ? srgbToLinear(b) : b;
+      data[d + 3] = px.data[s + 3]!;
     }
   }
 }
@@ -169,14 +220,24 @@ function blitLayer(px: RawPixels, dim: number, data: Float32Array, base: number)
  * `null` (no atlas → all map ids stay -1) when no readable textures exist.
  */
 export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtlas | null {
-  // unique handles in first-seen order
-  const handles: unknown[] = [];
-  const seen = new Set<unknown>();
+  // unique (handle, color-space role) pairs in first-seen order
+  const handles: { handle: unknown; colorSpace: TextureSampleColorSpace }[] = [];
+  const seen = new Map<unknown, Set<TextureSampleColorSpace>>();
   for (const m of materials) {
     for (const key of SAMPLED_MAP_KEYS) {
       const ref = m[key] as { handle?: unknown } | undefined;
       const handle = ref?.handle;
-      if (handle != null && !seen.has(handle)) { seen.add(handle); handles.push(handle); }
+      if (handle == null) continue;
+      const colorSpace = textureColorSpaceForMapKey(key);
+      let seenSpaces = seen.get(handle);
+      if (seenSpaces == null) {
+        seenSpaces = new Set<TextureSampleColorSpace>();
+        seen.set(handle, seenSpaces);
+      }
+      if (!seenSpaces.has(colorSpace)) {
+        seenSpaces.add(colorSpace);
+        handles.push({ handle, colorSpace });
+      }
     }
   }
   if (handles.length === 0) return null;
@@ -185,11 +246,11 @@ export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtl
   // H7 (2026-06-09): warn on each silently-dropped handle so the host knows which
   // texture assets were skipped. An unreadable handle means the texture sampling
   // will use the default (flat/no texture) for the corresponding map.
-  const pixels: { handle: unknown; px: RawPixels }[] = [];
-  for (const handle of handles) {
+  const pixels: { handle: unknown; colorSpace: TextureSampleColorSpace; px: RawPixels }[] = [];
+  for (const { handle, colorSpace } of handles) {
     const px = readHandlePixels(handle);
     if (px != null) {
-      pixels.push({ handle, px });
+      pixels.push({ handle, colorSpace, px });
     } else {
       console.warn(
         '[pt-webgl2] texture handle is not readable (no raw {width,height,data} or DataTexture-shaped image); ' +
@@ -204,11 +265,16 @@ export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtl
   const layerCount = pixels.length;
   const data = new Float32Array(dim * dim * 4 * layerCount);
   const layerOf = new Map<unknown, number>();
-  pixels.forEach(({ handle, px }, layer) => {
-    layerOf.set(handle, layer);
-    blitLayer(px, dim, data, layer * dim * dim * 4);
+  const layerOfByColorSpace: TextureAtlasLayerMap = {
+    srgb: new Map<unknown, number>(),
+    linear: new Map<unknown, number>(),
+  };
+  pixels.forEach(({ handle, colorSpace, px }, layer) => {
+    if (!layerOf.has(handle)) layerOf.set(handle, layer);
+    (layerOfByColorSpace[colorSpace] as Map<unknown, number>).set(handle, layer);
+    blitLayer(px, dim, data, layer * dim * dim * 4, colorSpace);
   });
-  return { data, dim, layerCount, layerOf };
+  return { data, dim, layerCount, layerOf, layerOfByColorSpace };
 }
 
 /** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */

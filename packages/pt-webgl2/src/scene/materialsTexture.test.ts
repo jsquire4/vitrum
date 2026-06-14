@@ -283,6 +283,25 @@ describe('packMaterialsTexture — 111px RGBA32F byte layout', () => {
     expect(d[texel(0, 11, 0)]).toBe(1.0);
   });
 
+  it('uses role-aware atlas layers for a handle shared by sRGB and linear maps', () => {
+    const sharedHandle = {};
+    const layerOfByColorSpace = {
+      srgb: new Map<unknown, number>([[sharedHandle, 3]]),
+      linear: new Map<unknown, number>([[sharedHandle, 9]]),
+    };
+    const m: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle: sharedHandle },
+      roughnessMap: { handle: sharedHandle },
+    };
+    const d = packMaterialsTexture([m], layerOfByColorSpace).data;
+
+    expect(d[texel(0, 0, 3)]).toBe(3); // baseColorMap: sRGB atlas layer.
+    expect(d[texel(0, 1, 3)]).toBe(9); // roughnessMap: linear atlas layer.
+  });
+
   it('packs per-map wrap modes at texels 100..110', () => {
     const baseHandle = {};
     const metalHandle = {};

@@ -34,6 +34,8 @@ export type GltfTextureHandleKind =
   | 'image-bitmap'
   | 'opaque';
 
+export type GltfTextureColorSpace = 'srgb' | 'linear';
+
 export type GltfBackendTextureStatus = 'ready' | 'opaque' | 'ignored';
 
 export interface GltfTextureDecodeReportEntry {
@@ -46,6 +48,7 @@ export interface GltfTextureDecodeReportEntry {
   readonly hasTransform: boolean;
   readonly wrapS: TextureWrapMode;
   readonly wrapT: TextureWrapMode;
+  readonly colorSpace: GltfTextureColorSpace;
   readonly handleKind: GltfTextureHandleKind;
   readonly backendReadiness: {
     readonly ptWebgl2: GltfBackendTextureStatus;
@@ -89,6 +92,17 @@ const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
   'lightMap',
 ];
 
+const SRGB_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
+  'baseColorMap',
+  'emissiveMap',
+  'sheenColorMap',
+  'specularColorMap',
+]);
+
+export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): GltfTextureColorSpace {
+  return SRGB_TEXTURE_FIELDS.has(field) ? 'srgb' : 'linear';
+}
+
 export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport {
   const entries: GltfTextureDecodeReportEntry[] = [];
   const uniqueHandles = new Set<unknown>();
@@ -109,6 +123,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         hasTransform: ref.transform !== undefined,
         wrapS: ref.wrapS ?? 'repeat',
         wrapT: ref.wrapT ?? 'repeat',
+        colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
         backendReadiness: backendReadinessForHandle(handleKind),
       });

@@ -15,6 +15,7 @@
 
 import type { MaterialSpec, TextureWrapMode, Vec3 } from '@vitrum/core';
 import type { MaterialsTextureData } from './sceneTextures.js';
+import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 
 import {
   MATERIAL_MAP_FIELD_ORDER,
@@ -123,12 +124,24 @@ const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
  * Square sizing: `dim = ceil(sqrt(materials.length * MATERIAL_PIXELS))`.
  */
 /** Resolve a TextureRef → its atlas layer index (-1 = none / unmapped). */
+type TextureLayerLookup = Map<unknown, number> | TextureAtlasLayerMap;
+
+function layerMapFor(
+  layerOf: TextureLayerLookup | undefined,
+  colorSpace: TextureSampleColorSpace,
+): ReadonlyMap<unknown, number> | undefined {
+  if (layerOf == null) return undefined;
+  if (typeof (layerOf as Map<unknown, number>).get === 'function') return layerOf as Map<unknown, number>;
+  return (layerOf as TextureAtlasLayerMap)[colorSpace];
+}
+
 function mapLayer(
   ref: { handle?: unknown } | undefined,
-  layerOf: Map<unknown, number> | undefined,
+  layerOf: TextureLayerLookup | undefined,
+  colorSpace: TextureSampleColorSpace,
 ): number {
   if (ref?.handle == null || layerOf == null) return -1;
-  return layerOf.get(ref.handle) ?? -1;
+  return layerMapFor(layerOf, colorSpace)?.get(ref.handle) ?? -1;
 }
 
 /**
@@ -197,29 +210,29 @@ interface LayerIds {
 }
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
-function packLayerIds(m: MaterialSpec, layerOf: Map<unknown, number> | undefined): LayerIds {
+function packLayerIds(m: MaterialSpec, layerOf: TextureLayerLookup | undefined): LayerIds {
   return {
-    baseColor: mapLayer(m.baseColorMap, layerOf),
-    metal: mapLayer(m.metallicMap, layerOf),
-    rough: mapLayer(m.roughnessMap, layerOf),
-    transmission: mapLayer(m.transmissionMap, layerOf),
-    emissive: mapLayer(m.emissiveMap, layerOf),
-    normal: mapLayer(m.normalMap, layerOf),
-    alpha: mapLayer(m.alphaMap, layerOf),
-    clearcoat: mapLayer(m.clearcoatMap, layerOf),
-    clearcoatRoughness: mapLayer(m.clearcoatRoughnessMap, layerOf),
-    clearcoatNormal: mapLayer(m.clearcoatNormalMap, layerOf),
-    sheenColor: mapLayer(m.sheenColorMap, layerOf),
-    sheenRoughness: mapLayer(m.sheenRoughnessMap, layerOf),
-    iridescence: mapLayer(m.iridescenceMap, layerOf),
-    iridescenceThickness: mapLayer(m.iridescenceThicknessMap, layerOf),
-    specularColor: mapLayer(m.specularColorMap, layerOf),
-    specularIntensity: mapLayer(m.specularIntensityMap, layerOf),
-    ao: mapLayer(m.aoMap, layerOf),
-    lightMap: mapLayer(m.lightMap, layerOf),
-    bump: mapLayer(m.bumpMap, layerOf),
-    anisotropy: mapLayer(m.anisotropyMap, layerOf),
-    thickness: mapLayer(m.thicknessMap, layerOf),
+    baseColor: mapLayer(m.baseColorMap, layerOf, 'srgb'),
+    metal: mapLayer(m.metallicMap, layerOf, 'linear'),
+    rough: mapLayer(m.roughnessMap, layerOf, 'linear'),
+    transmission: mapLayer(m.transmissionMap, layerOf, 'linear'),
+    emissive: mapLayer(m.emissiveMap, layerOf, 'srgb'),
+    normal: mapLayer(m.normalMap, layerOf, 'linear'),
+    alpha: mapLayer(m.alphaMap, layerOf, 'linear'),
+    clearcoat: mapLayer(m.clearcoatMap, layerOf, 'linear'),
+    clearcoatRoughness: mapLayer(m.clearcoatRoughnessMap, layerOf, 'linear'),
+    clearcoatNormal: mapLayer(m.clearcoatNormalMap, layerOf, 'linear'),
+    sheenColor: mapLayer(m.sheenColorMap, layerOf, 'srgb'),
+    sheenRoughness: mapLayer(m.sheenRoughnessMap, layerOf, 'linear'),
+    iridescence: mapLayer(m.iridescenceMap, layerOf, 'linear'),
+    iridescenceThickness: mapLayer(m.iridescenceThicknessMap, layerOf, 'linear'),
+    specularColor: mapLayer(m.specularColorMap, layerOf, 'srgb'),
+    specularIntensity: mapLayer(m.specularIntensityMap, layerOf, 'linear'),
+    ao: mapLayer(m.aoMap, layerOf, 'linear'),
+    lightMap: mapLayer(m.lightMap, layerOf, 'linear'),
+    bump: mapLayer(m.bumpMap, layerOf, 'linear'),
+    anisotropy: mapLayer(m.anisotropyMap, layerOf, 'linear'),
+    thickness: mapLayer(m.thicknessMap, layerOf, 'linear'),
   };
 }
 
@@ -571,7 +584,7 @@ function packTextureTransforms(
 
 export function packMaterialsTexture(
   materials: readonly MaterialSpec[],
-  layerOf?: Map<unknown, number>,
+  layerOf?: TextureLayerLookup,
   options: { readonly vertexColorMaterialIds?: ReadonlySet<number> } = {},
 ): MaterialsTextureData {
   const materialCount = materials.length;
