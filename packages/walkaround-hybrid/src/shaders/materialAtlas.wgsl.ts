@@ -9,13 +9,14 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 11u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 13u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 const MATERIAL_MAP_SLOT_AO: u32 = 3u;
 const MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
+const MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -44,8 +45,8 @@ fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: 
   return hit.barycoord.x * uvA + hit.barycoord.y * uvB + hit.barycoord.z * uvC;
 }
 
-fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
-  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + slot * 2u;
+fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
   let layer = i32(meta0.x);
   if (layer < 0) {
@@ -67,6 +68,10 @@ fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> v
     i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
   );
   return textureLoad(materialTextureAtlas, texel, layer, 0);
+}
+
+fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return sampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
 }
 
 fn materialMapChannel(v: vec4f, channel: u32) -> f32 {
@@ -96,6 +101,19 @@ fn sampleAoMapFactor(triIndex: u32, materialWord: u32, uv0: vec2f, uv1: vec2f) -
   let rawOcclusion = sampleMaterialScalarMap(triIndex, MATERIAL_MAP_SLOT_AO, 0u, uv0, uv1, 1.0);
   let strength = decodeAoMapIntensity(materialWord);
   return mix(1.0, rawOcclusion, strength);
+}
+
+fn sampleEmissiveMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarEmissive: vec3f) -> vec3f {
+  let texelColor = sampleMaterialAtlasRawAtOffset(
+    triIndex,
+    MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+    uv0,
+    uv1,
+  );
+  if (texelColor.x < 0.0) {
+    return scalarEmissive;
+  }
+  return scalarEmissive * texelColor.rgb;
 }
 
 fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {

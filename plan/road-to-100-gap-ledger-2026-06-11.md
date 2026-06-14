@@ -1130,6 +1130,12 @@ Evidence:
   occlusion rays; fractional blend emits
   `walkaround-hybrid.alpha-blend-approximation` and real blend composition
   remains open.
+- walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
+  camera-visible emitter glow: `materialTextureAtlas.ts` packs emissive maps as
+  sRGB-decoded atlas layers with per-map UV/transform/wrap metadata, and
+  `shade.wgsl` calls `sampleEmissiveMap(..., lo_emitterGlow(...))`. Direct-light
+  emitter power, ReSTIR candidate payloads, and GI still use scalar emissive Le,
+  so this is not native parity yet.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
   rows and needs tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel
@@ -1236,9 +1242,9 @@ Closure:
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
   parity is required, walkaround fractional blend plus the remaining atlas map
-  families (normal/emissive/transmission/thickness/extension/light/bump/
-  displacement policy), pt-webgpu/walkaround `thicknessMap` parity, and backend
-  material-consumption parity.
+  families (normal/transmission/thickness/extension/light/bump/displacement
+  policy), pt-webgpu/walkaround `thicknessMap` parity, and backend material-
+  consumption parity.
 
 ## P5 validation and promotion gates
 

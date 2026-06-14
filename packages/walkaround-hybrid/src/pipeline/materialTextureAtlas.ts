@@ -1,9 +1,9 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 11;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 13;
 
-type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap' | 'aoMap' | 'alphaMap';
+type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap' | 'aoMap' | 'alphaMap' | 'emissiveMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -12,6 +12,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'metallicMap', colorSpace: 'linear' },
   { field: 'aoMap', colorSpace: 'linear' },
   { field: 'alphaMap', colorSpace: 'linear' },
+  { field: 'emissiveMap', colorSpace: 'srgb' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -26,6 +27,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableMetallicLayerCount: number;
   readonly readableAoLayerCount: number;
   readonly readableAlphaLayerCount: number;
+  readonly readableEmissiveLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -213,6 +215,7 @@ export function packMaterialTextureAtlas(
     metallicMap: new Set<number>(),
     aoMap: new Set<number>(),
     alphaMap: new Set<number>(),
+    emissiveMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -316,6 +319,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'aoMap', 'linear', baseTexel + 6);
     writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + 8);
     writeAlphaCoverageMeta(mat, baseTexel + 10);
+    writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + 11);
   }
 
   return {
@@ -330,6 +334,7 @@ export function packMaterialTextureAtlas(
     readableMetallicLayerCount: fieldLayers.metallicMap.size,
     readableAoLayerCount: fieldLayers.aoMap.size,
     readableAlphaLayerCount: fieldLayers.alphaMap.size,
+    readableEmissiveLayerCount: fieldLayers.emissiveMap.size,
   };
 }
 

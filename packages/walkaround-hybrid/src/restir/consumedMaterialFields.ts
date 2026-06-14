@@ -30,6 +30,9 @@
  *  emissive               packingHelpers.ts – packBVHEmissiveLeFromCore via
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
+ *  emissiveMap            materialAtlas.wgsl samples readable sRGB emissive
+ *                           maps for camera-visible emitter glow; direct-light
+ *                           emitter power and GI remain scalar, so approximate.
  *  transmission           packingHelpers.ts – packBVHIndexWFromCore (trans4
  *                           lane) + resolveRoughMetal (glass-roughness branch)
  *  attenuationColor       shared-bvh materialSpecTriColor / Beer-Lambert lane
@@ -62,7 +65,7 @@
  *                           blend remains approximate for fractional coverage.
  *
  * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
- * metallicMap / aoMap / alphaMap, Disney BSDF scalars, spectral curves,
+ * metallicMap / aoMap / alphaMap / emissiveMap, Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
  * extension scalars — is IGNORED.
  */
@@ -75,6 +78,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'shadingModel',
   'emissive',
   'emissiveIntensity',
+  'emissiveMap',
   'alphaMode',
   'alphaCutoff',
   'opacity',

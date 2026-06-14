@@ -380,15 +380,16 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Phase-3D scalar-map slice: roughness/metallic sample glTF G/B channels in
   // shade for visible BRDF terms; AO samples the glTF R channel and multiplies
   // the runtime GTAO factor; alphaMap samples R for primary/RIS/GI cutout
-  // traversal. Approximate because upstream reservoir/candidate PDFs and GI
-  // payloads still use scalar packed lanes, and alpha blend has no OIT path.
+  // traversal; emissiveMap modulates camera-visible emitter glow. Approximate
+  // because upstream reservoir/candidate PDFs, emitter power, and GI payloads
+  // still use scalar packed lanes, and alpha blend has no OIT path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'unsupported',
   normalScale: 'unsupported',
   transmissionMap: 'unsupported',
   thicknessMap: 'unsupported',
-  emissiveMap: 'unsupported',
+  emissiveMap: 'approximate',
   alphaMap: 'approximate',
   aoMap: 'approximate',
   aoMapIntensity: 'approximate',

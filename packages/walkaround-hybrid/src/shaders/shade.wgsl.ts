@@ -321,7 +321,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // tests in sprint18-indirectCombine.test.ts continue to match.
   let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.indices.w);
   // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
-  let Lo_emitterGlow = lo_emitterGlow(primaryHit.indices.w);
+  let Lo_emitterGlow = sampleEmissiveMap(
+    primaryHit.indices.w,
+    primaryHit.uv,
+    uv1,
+    lo_emitterGlow(primaryHit.indices.w),
+  );
   let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
