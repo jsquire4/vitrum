@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu roughness/metallic texture parity, 2026-06-13)
+
+- **`@vitrum/pt-webgpu` distinct roughness/metallic maps:** the full-tier material texture descriptor now carries separate `roughnessMap` and `metallicMap` slots with independent UV channel, `KHR_texture_transform`, wrap, and heterogeneous-layer UV-fit metadata. A canonical glTF combined metallicRoughness texture still maps both slots to the same linear-array layer, while assets that author distinct texture handles no longer drop `metallicMap`. The promise ledger now marks pt-webgpu `roughnessMap` and `metallicMap` native.
+
 ### Added (glTF texture decode bridge, 2026-06-13)
 
 - **`@vitrum/gltf-adapter` `decodeSceneTextures()`:** new public helper normalizes raw-image `TextureRef` handles into backend-ready CPU-linear RGBA `Float32Array` payloads when hosts provide a `decodePixels` hook, applying the adapter's sRGB/data-map policy and preserving alpha. It returns a refreshed `textureDecodeReport`, structured source-path diagnostics for missing decoders / unsupported handles / max-size / NPOT-repeat hazards, and a `webgpu` target that deliberately leaves opaque handles for backend upload. Built-in PNG/Basis transcoders, automatic downsampling/mip generation, and non-baseColor walkaround map consumption remain Road-to-100 follow-ups.

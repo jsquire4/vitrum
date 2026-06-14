@@ -178,7 +178,7 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly materialTextureView: GPUTextureView;
   /** P2 — filtering sampler bound in group 3 (shared by both arrays). */
   readonly materialTextureSampler: GPUSampler;
-  /** P2 — LINEAR texture_2d_array handle (normal/ORM; for dispose). */
+  /** P2 — LINEAR texture_2d_array handle (normal/scalar data maps; for dispose). */
   readonly materialLinearTexture: GPUTexture;
   /** P2 — linear 2d-array view bound in group 3 (binding 5). */
   readonly materialLinearTextureView: GPUTextureView;

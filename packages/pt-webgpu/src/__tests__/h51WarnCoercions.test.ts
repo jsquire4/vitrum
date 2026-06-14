@@ -1,8 +1,8 @@
 /**
  * H51-A/B/C — Coercion warns:
  *   A: warn when opts.maxBounces exceeds the engine's clamp cap.
- *   B: warn when a material has distinct roughnessMap + metallicMap handles
- *      (ORM single-slot drops metallicMap).
+ *   B: historical roughnessMap + metallicMap split no longer warns; both handles
+ *      are packed into independent pt-webgpu texture slots.
  *   C: warn once listing unknown opts.extensions keys.
  *   D: validate/warn bdptOptions.maxLightBounces rather than silently coercing.
  * H48: warn when opts.denoiser is neither 'none' nor 'oidn-final'.
@@ -129,7 +129,7 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
 });
 
 // ── H51-B ─────────────────────────────────────────────────────────────────────
-describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
+describe('H51-B: distinct roughnessMap + metallicMap texture slots', () => {
   const _srgbTex = { handle: { label: 'baseColor' } }; // retained: use in baseColorMap test cases if added
   const roughTex = { handle: { label: 'roughness' } };
   const metallicTex = { handle: { label: 'metallic' } }; // different handle
@@ -150,12 +150,10 @@ describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
     metallicMap: roughTex as unknown as import('@vitrum/core').TextureRef, // same handle
   } satisfies MaterialSpec;
 
-  it('warns once when materials have distinct roughnessMap and metallicMap handles', () => {
+  it('does not warn when materials have distinct roughnessMap and metallicMap handles', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    collectMaterialTextures([matWithBoth, matWithBoth]); // two materials with the issue
-    const warnCalls = warn.mock.calls.filter((c) => String(c[0]).includes('roughnessMap'));
-    // Warn fires exactly once per collectMaterialTextures call, not once per material.
-    expect(warnCalls.length).toBe(1);
+    collectMaterialTextures([matWithBoth, matWithBoth]);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('roughnessMap'))).toBe(false);
     warn.mockRestore();
   });
 
@@ -190,12 +188,11 @@ describe('H51-B: distinct roughnessMap + metallicMap warns', () => {
     warn.mockRestore();
   });
 
-  it('roughnessMap is used (not metallicMap) when both are provided', () => {
-    const { linearSources } = collectMaterialTextures([matWithBoth]);
-    // roughnessMap.handle ('roughness') appears in the linear sources.
-    expect(linearSources).toContain(roughTex.handle);
-    // metallicMap.handle ('metallic') should NOT appear (it was dropped).
-    expect(linearSources).not.toContain(metallicTex.handle);
+  it('roughnessMap and metallicMap are both packed when both are provided', () => {
+    const { linearSources, descriptors } = collectMaterialTextures([matWithBoth]);
+    expect(linearSources).toEqual([roughTex.handle, metallicTex.handle]);
+    expect(descriptors[2]).toBe(0);
+    expect(descriptors[26]).toBe(1);
   });
 });
 

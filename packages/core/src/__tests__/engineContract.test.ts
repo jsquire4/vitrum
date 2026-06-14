@@ -159,7 +159,8 @@ describe('backend promise ledger', () => {
     expect(gpu.normalScale).toBe('native');
     expect(gpu.anisotropy).toBe('native');
     expect(gpu.scatteringCoefficientRGB).toBe('native');
-    expect(gpu.metallicMap).toBe('approximate');
+    expect(gpu.roughnessMap).toBe('native');
+    expect(gpu.metallicMap).toBe('native');
   });
 
   // SHADOW-01 — shadow-flag support rows are exhaustive + pinned per backend.

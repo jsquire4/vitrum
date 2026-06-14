@@ -771,7 +771,7 @@ export class GpuResources {
           _buf(2, _ro), // materialTexDescriptors (P2)
           { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures sRGB (P2)
           { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
-          { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/ORM (P2)
+          { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/scalar data maps (P2)
           _buf(6, _rw), // A4: sppmPhotonCells (read_write storage)
           _buf(7, _rw), // A4: sppmCellCounters (read_write storage, atomic)
           _buf(8, _uniform), // A4: sppmStats (uniform)

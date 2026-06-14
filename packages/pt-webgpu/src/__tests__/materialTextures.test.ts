@@ -9,6 +9,9 @@ import {
   MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET,
   MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET,
+  MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET,
+  MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET,
+  MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
@@ -76,7 +79,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 3]).toBe(0); // mat1 emissiveIdx → tex (dedup 0)
   });
 
-  it('collects normal + ORM into a SEPARATE linear source list (own index space)', () => {
+  it('collects normal + roughness/metallic maps into a SEPARATE linear source list (own index space)', () => {
     const baseTex = { id: 'base' };
     const normTex = { id: 'norm' };
     const mrTex = { id: 'mr' };
@@ -84,10 +87,45 @@ describe('collectMaterialTextures (P2 host)', () => {
       mat({ baseColorMap: { handle: baseTex }, normalMap: { handle: normTex }, roughnessMap: { handle: mrTex } }),
     ]);
     expect(sources).toEqual([baseTex]);          // sRGB list: baseColor only
-    expect(linearSources).toEqual([normTex, mrTex]); // linear list: normal + ORM
+    expect(linearSources).toEqual([normTex, mrTex]); // linear list: normal + combined metallicRoughness
     expect(descriptors[0]).toBe(0);  // baseColorIdx → sRGB 0
     expect(descriptors[1]).toBe(0);  // normalIdx → linear 0 (separate space)
-    expect(descriptors[2]).toBe(1);  // ormIdx → linear 1
+    expect(descriptors[2]).toBe(1);  // roughnessMapIdx → linear 1
+    expect(descriptors[26]).toBe(1); // metallicMapIdx falls back to the same combined layer
+  });
+
+  it('keeps distinct roughnessMap and metallicMap handles instead of dropping metallicMap', () => {
+    const roughnessTex = { id: 'roughness' };
+    const metallicTex = { id: 'metallic' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        roughnessMap: {
+          handle: roughnessTex,
+          texCoord: 1,
+          wrapS: 'clamp-to-edge',
+          wrapT: 'repeat',
+          transform: { offset: [0.1, 0.2], scale: [1.1, 1.2], rotation: 0.3 },
+        },
+        metallicMap: {
+          handle: metallicTex,
+          texCoord: 0,
+          wrapS: 'mirrored-repeat',
+          wrapT: 'clamp-to-edge',
+          transform: { offset: [0.4, 0.5], scale: [1.4, 1.5], rotation: 0.6 },
+        },
+      }),
+    ]);
+
+    expect(linearSources).toEqual([roughnessTex, metallicTex]);
+    expect(descriptors[2]).toBe(0);
+    expect(descriptors[26]).toBe(1);
+    expect(Array.from(descriptors.slice(58, 62))).toEqual([1, 0, 2, 1]);
+    const uvMeta = (slot: number): number[] => {
+      const start = (MATERIAL_TEX_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
+      return Array.from(descriptors.slice(start, start + 8));
+    };
+    expectCloseArray(uvMeta(3), [1, 0.1, 0.2, 0.3, 1.1, 1.2, 0, 0]);
+    expectCloseArray(uvMeta(4), [0, 0.4, 0.5, 0.6, 1.4, 1.5, 0, 0]);
   });
 
   it('packs normalScale in the normal-map descriptor lane', () => {
@@ -188,13 +226,14 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[25]).toBe(0); // transmissionMapIdx -> same linear layer
   });
 
-  it('falls back to metallicMap for ORM when roughnessMap is absent', () => {
+  it('falls back to metallicMap as a combined roughness/metallic map when roughnessMap is absent', () => {
     const mrTex = { id: 'mr' };
     const { linearSources, descriptors } = collectMaterialTextures([
       mat({ metallicMap: { handle: mrTex } }),
     ]);
     expect(linearSources).toEqual([mrTex]);
-    expect(descriptors[2]).toBe(0); // ormIdx → metallicMap
+    expect(descriptors[2]).toBe(0);  // roughnessMapIdx → metallicMap's G channel
+    expect(descriptors[26]).toBe(0); // metallicMapIdx → metallicMap's B channel
   });
 
   it('defaults: opaque(0), cutoff 0.5, opacity 1, identity scale', () => {
@@ -204,10 +243,11 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[6]).toBe(1);
     expect(descriptors[10]).toBe(1);
     expect(descriptors[11]).toBe(1);
-    for (let i = 28; i < 48; i += 1) {
+    for (let i = 28; i < 52; i += 1) {
       expect(descriptors[i]).toBe(1);
     }
-    for (let i = 156; i < 172; i += 1) {
+    const extUvFitStart = MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET * 4;
+    for (let i = extUvFitStart; i < extUvFitStart + 16; i += 1) {
       expect(descriptors[i]).toBe(1);
     }
   });
@@ -243,7 +283,8 @@ describe('collectMaterialTextures (P2 host)', () => {
       iridescenceThickness,
       specularIntensity,
     ]);
-    expect(Array.from(descriptors.slice(148, 156))).toEqual([0, 1, 0, 2, 3, 4, 1, 5]);
+    const extIndexStart = MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET * 4;
+    expect(Array.from(descriptors.slice(extIndexStart, extIndexStart + 8))).toEqual([0, 1, 0, 2, 3, 4, 1, 5]);
   });
 
   it('applies extension-lobe UV-fit scales from the right texture arrays', () => {
@@ -281,7 +322,8 @@ describe('collectMaterialTextures (P2 host)', () => {
       ],
     );
 
-    expectCloseArray(descriptors.slice(156, 172), [
+    const extUvFitStart = MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET * 4;
+    expectCloseArray(descriptors.slice(extUvFitStart, extUvFitStart + 16), [
       0.31, 0.32,
       0.41, 0.42,
       0.11, 0.12,
@@ -313,8 +355,9 @@ describe('collectMaterialTextures (P2 host)', () => {
       }),
     ]);
 
-    expect(Array.from(descriptors.slice(172, 176))).toEqual([1, 2, 0, 0]);
-    expect(Array.from(descriptors.slice(184, 188))).toEqual([0, 0, 2, 1]);
+    const extWrapStart = MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET * 4;
+    expect(Array.from(descriptors.slice(extWrapStart, extWrapStart + 4))).toEqual([1, 2, 0, 0]);
+    expect(Array.from(descriptors.slice(extWrapStart + 12, extWrapStart + 16))).toEqual([0, 0, 2, 1]);
 
     const uvMeta = (slot: number): number[] => {
       const start = (MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
@@ -368,9 +411,10 @@ describe('collectMaterialTextures (P2 host)', () => {
 
     expectCloseArray(descriptors.slice(28, 32), [0.5, 1, 1, 0.25]);
     expectCloseArray(descriptors.slice(32, 36), [0.75, 1, 1, 0.5]);
-    expectCloseArray(descriptors.slice(36, 40), [0.25, 0.5, 0.8, 0.6]);
-    expectCloseArray(descriptors.slice(40, 44), [0.4, 0.3, 0.9, 0.7]);
-    expectCloseArray(descriptors.slice(44, 48), [0.2, 0.1, 0.6, 0.4]);
+    expectCloseArray(descriptors.slice(36, 40), [1, 0.5, 0.25, 0.5]);
+    expectCloseArray(descriptors.slice(40, 44), [0.8, 0.6, 0.4, 0.3]);
+    expectCloseArray(descriptors.slice(44, 48), [0.9, 0.7, 0.2, 0.1]);
+    expectCloseArray(descriptors.slice(48, 52), [0.6, 0.4, 1, 1]);
   });
 
   it('packs per-map TextureRef wrap modes for the WGSL sampler', () => {
@@ -389,11 +433,12 @@ describe('collectMaterialTextures (P2 host)', () => {
       }),
     ]);
 
-    expect(Array.from(descriptors.slice(48, 52))).toEqual([1, 2, 2, 1]);
-    expect(Array.from(descriptors.slice(52, 56))).toEqual([1, 1, 2, 0]);
-    expect(Array.from(descriptors.slice(56, 60))).toEqual([0, 1, 2, 2]);
-    expect(Array.from(descriptors.slice(60, 64))).toEqual([1, 0, 0, 2]);
-    expect(Array.from(descriptors.slice(64, 68))).toEqual([1, 2, 0, 1]);
+    expect(Array.from(descriptors.slice(52, 56))).toEqual([1, 2, 2, 1]);
+    expect(Array.from(descriptors.slice(56, 60))).toEqual([1, 1, 2, 0]);
+    expect(Array.from(descriptors.slice(60, 64))).toEqual([2, 0, 0, 1]);
+    expect(Array.from(descriptors.slice(64, 68))).toEqual([2, 2, 1, 0]);
+    expect(Array.from(descriptors.slice(68, 72))).toEqual([0, 2, 1, 2]);
+    expect(Array.from(descriptors.slice(72, 76))).toEqual([0, 1, 0, 0]);
   });
 
   it('packs per-map texCoord and KHR_texture_transform metadata', () => {
@@ -414,40 +459,45 @@ describe('collectMaterialTextures (P2 host)', () => {
           texCoord: 1,
           transform: { offset: [0.7, 0.8], scale: [1.7, 1.8], rotation: 0.9 },
         },
-        metallicMap: {
+        roughnessMap: {
           handle: {},
           texCoord: 0,
           transform: { offset: [1.0, 1.1], scale: [2.0, 2.1], rotation: 1.2 },
         },
-        aoMap: {
+        metallicMap: {
           handle: {},
           texCoord: 1,
           transform: { offset: [1.3, 1.4], scale: [2.3, 2.4], rotation: 1.5 },
         },
-        lightMap: {
+        aoMap: {
           handle: {},
           texCoord: 0,
           transform: { offset: [1.6, 1.7], scale: [2.6, 2.7], rotation: 1.8 },
         },
-        bumpMap: {
+        lightMap: {
           handle: {},
           texCoord: 1,
           transform: { offset: [1.9, 2.0], scale: [2.9, 3.0], rotation: 2.1 },
         },
-        anisotropyMap: {
+        bumpMap: {
           handle: {},
           texCoord: 0,
           transform: { offset: [2.2, 2.3], scale: [3.2, 3.3], rotation: 2.4 },
         },
-        alphaMap: {
+        anisotropyMap: {
           handle: {},
           texCoord: 1,
           transform: { offset: [2.5, 2.6], scale: [3.5, 3.6], rotation: 2.7 },
         },
-        transmissionMap: {
+        alphaMap: {
           handle: {},
           texCoord: 0,
           transform: { offset: [2.8, 2.9], scale: [3.8, 3.9], rotation: 3.0 },
+        },
+        transmissionMap: {
+          handle: {},
+          texCoord: 1,
+          transform: { offset: [3.1, 3.2], scale: [4.1, 4.2], rotation: 3.3 },
         },
       }),
     ]);
@@ -467,6 +517,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     expectCloseArray(uvMeta(7), [0, 2.2, 2.3, 2.4, 3.2, 3.3, 0, 0]);
     expectCloseArray(uvMeta(8), [1, 2.5, 2.6, 2.7, 3.5, 3.6, 0, 0]);
     expectCloseArray(uvMeta(9), [0, 2.8, 2.9, 3.0, 3.8, 3.9, 0, 0]);
+    expectCloseArray(uvMeta(10), [1, 3.1, 3.2, 3.3, 4.1, 4.2, 0, 0]);
   });
 
   it('defaults per-map UV metadata to uv0 and identity transform', () => {
@@ -508,11 +559,11 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
-    expect(wgsl).toContain('materialTexDescriptors[base + 37u].x');
-    expect(wgsl).toContain('materialTexDescriptors[base + 38u].w');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;');
-    expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 63u].x);');
-    expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 63u].y;');
+    expect(wgsl).toContain('materialTexDescriptors[base + 41u].x');
+    expect(wgsl).toContain('materialTexDescriptors[base + 42u].w');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
+    expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 67u].x);');
+    expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 67u].y;');
   });
 
   it('normal maps consume authored tangents with handedness before falling back to derived tangents', () => {
@@ -534,11 +585,13 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
 
   it('group-3 WGSL samples every consumed map with its own UV metadata slot', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_BASE_COLOR = 17u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_TRANSMISSION = 35u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 47u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 61u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 65u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_BASE_COLOR = 19u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_ROUGHNESS = 25u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_METALLIC = 27u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_TRANSMISSION = 39u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 51u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
@@ -547,7 +600,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
     expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_NORMAL');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW, MATERIAL_TEX_UV_ORM');
+    expect(wgsl).toContain('MATERIAL_TEX_UV_ROUGHNESS');
+    expect(wgsl).toContain('MATERIAL_TEX_UV_METALLIC');
     expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO');
     expect(wgsl).toContain('sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT');
     expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY');

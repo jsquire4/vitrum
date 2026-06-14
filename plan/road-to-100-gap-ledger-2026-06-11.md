@@ -190,8 +190,9 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `MaterialSpec.thicknessMap` field. The glTF adapter suite is now 135 tests.
 - The pt-webgpu material texture backend consumption slice landed after that
   adapter import work: `materialTextures.ts` packs per-map UV metadata for every
-  map the backend currently samples (baseColor, emissive, normal, ORM, AO,
-  lightMap, bumpMap, anisotropyMap, alphaMap, transmissionMap), and
+  map the backend currently samples (baseColor, emissive, normal, roughnessMap,
+  metallicMap, AO, lightMap, bumpMap, anisotropyMap, alphaMap,
+  transmissionMap), and
   `material.wgsl.ts` samples those maps with their own `TextureRef.texCoord`,
   KHR_texture_transform, wrap modes, and heterogeneous-layer UV-fit scales.
   The core promise ledger now promotes alpha/transmission/emissive/AO/light/
@@ -199,6 +200,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   2026-06-13: full-tier pt-webgpu now also uploads authored/generated
   tangent.xyzw and uses handedness for normal/bump/clearcoat-normal maps, so
   `normalMap` is native on pt-webgpu full tier.
+- Follow-up 2026-06-13: pt-webgpu full-tier split the old combined ORM
+  descriptor into distinct `roughnessMap` and `metallicMap` slots with
+  independent UV/wrap/UV-fit metadata while preserving canonical glTF
+  metallicRoughness textures by pointing both slots at one shared layer. The
+  core promise ledger now promotes both rows to `native`.
 - SPEC-01 pt-webgpu scalar `KHR_materials_specular` consumption landed: material
   vec4 #27 carries `specularColor.rgb` + `specularIntensity`, `material.wgsl.ts`
   decodes them, `bsdf.wgsl.ts` uses them for dielectric F0, and the scalar pair
@@ -900,7 +906,7 @@ Evidence:
   `evaluateBrdfFull`.
 - Extension-lobe texture maps now reach the full-tier megakernel shade
   prologue. ReSTIR-PT visible-vertex payload now mirrors that prologue for
-  alpha pass-through, baseColor/AO/ORM/normal/bump/transmission/extension maps,
+  alpha pass-through, baseColor/AO/roughness+metallic/normal/bump/transmission/extension maps,
   layer tint/roughness, thin-film, and spectral albedo before storing the
   reservoir-visible domain. ReSTIR-PT suffix/reconnection vertices now also
   alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral

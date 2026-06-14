@@ -99,7 +99,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
 
     it('group-3 WGSL declares the linear texture array for anisotropyMap', () => {
       const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
-      // Linear array binding (anisotropyMap routes to the linear/ORM array).
+      // Linear array binding (anisotropyMap routes to the normal/scalar-data array).
       expect(wgsl).toContain('@group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>');
     });
 
@@ -124,7 +124,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].x');
       // Map modulates strength via the B channel (KHR_materials_anisotropy spec).
       expect(wgsl).toContain(
-        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 10u].zw, materialTexDescriptors[base + 15u].zw).b',
+        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy).b',
       );
     });
 

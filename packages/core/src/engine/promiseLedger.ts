@@ -555,11 +555,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // tangentless scenes fall back to UV-gradient frame derivation.
   normalMap: 'native',
   normalScale: 'native',
-  // Single ORM slot (glTF combined: G=roughness, B=metallic).
-  roughnessMap: 'approximate',
-  // Same ORM slot — silently dropped when its handle differs from roughnessMap
-  // (H51-B once-warn in materialTextures.ts).
-  metallicMap: 'approximate',
+  // Distinct slots with independent UV/wrap metadata; combined glTF
+  // metallicRoughness maps still work by pointing both slots at one layer.
+  roughnessMap: 'native',
+  metallicMap: 'native',
   transmissionMap: 'native',
   thicknessMap: 'unsupported',
   emissiveMap: 'native',

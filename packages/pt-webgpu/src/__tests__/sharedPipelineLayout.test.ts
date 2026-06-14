@@ -178,7 +178,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
 
     // Group 3 — WS2 light-tree buffer (0) + P2 material textures: meshUvs (1),
     // descriptors (2), sRGB texture_2d_array (3), sampler (4), LINEAR
-    // texture_2d_array for normal/ORM (5) + A4 SPPM buffers: sppmPhotonCells (6),
+    // texture_2d_array for normal/scalar data maps (5) + A4 SPPM buffers: sppmPhotonCells (6),
     // sppmCellCounters (7), sppmStats uniform (8) + A4-progressive per-pixel
     // stats buffer (9): SppmPixelStats[W×H] read_write + authored tangents (10).
     expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);

@@ -14,41 +14,43 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
 /**
  * vec4s per material in the descriptor buffer (MUST match the WGSL
  * `MATERIAL_TEX_VEC4_STRIDE`):
- *   0: {baseColorIdx, normalIdx, ormIdx, emissiveIdx}   (-1 = no map)
+ *   0: {baseColorIdx, normalIdx, roughnessMapIdx, emissiveIdx}   (-1 = no map)
  *   1: {alphaMode (0 opaque/1 mask/2 blend), alphaCutoff, opacity, texCoord}
  *   2: {offsetX, offsetY, scaleX, scaleY}                (baseColor UV transform)
  *   3: {rotation, aoMapIdx, lightMapIdx, bumpMapIdx}     ← D3 (-1 = no map)
  *   4: {aoMapIntensity, lightMapIntensity, bumpScale, envMapIntensity}  ← D3
  *   5: {anisotropy, anisotropyRotation, anisotropyMapIdx, normalScale}  ← D3/PTWG-MAT
- *   6: {alphaMapIdx, transmissionMapIdx, _, _}            (-1 = no map)
+ *   6: {alphaMapIdx, transmissionMapIdx, metallicMapIdx, _}      (-1 = no map)
  *   7: {baseColorUvScale.xy, emissiveUvScale.xy}           (per-layer UV-fit)
- *   8: {normalUvScale.xy, ormUvScale.xy}
- *   9: {aoUvScale.xy, lightMapUvScale.xy}
- *  10: {bumpUvScale.xy, anisotropyUvScale.xy}
- *  11: {alphaUvScale.xy, transmissionUvScale.xy}
- *  12: {baseColorWrap.xy, emissiveWrap.xy}                (0 repeat / 1 clamp / 2 mirror)
- *  13: {normalWrap.xy, ormWrap.xy}
- *  14: {aoWrap.xy, lightMapWrap.xy}
- *  15: {bumpWrap.xy, anisotropyWrap.xy}
- *  16: {alphaWrap.xy, transmissionWrap.xy}
- *  17-36: per-map UV metadata, 2 vec4s per consumed base map:
+ *   8: {normalUvScale.xy, roughnessUvScale.xy}
+ *   9: {metallicUvScale.xy, aoUvScale.xy}
+ *  10: {lightMapUvScale.xy, bumpUvScale.xy}
+ *  11: {anisotropyUvScale.xy, alphaUvScale.xy}
+ *  12: {transmissionUvScale.xy, _, _}
+ *  13: {baseColorWrap.xy, emissiveWrap.xy}                (0 repeat / 1 clamp / 2 mirror)
+ *  14: {normalWrap.xy, roughnessWrap.xy}
+ *  15: {metallicWrap.xy, aoWrap.xy}
+ *  16: {lightMapWrap.xy, bumpWrap.xy}
+ *  17: {anisotropyWrap.xy, alphaWrap.xy}
+ *  18: {transmissionWrap.xy, _, _}
+ *  19-40: per-map UV metadata, 2 vec4s per consumed base map:
  *     vec4 A: {texCoord, offsetX, offsetY, rotation}
  *     vec4 B: {scaleX, scaleY, 0, 0}
- *     map order: baseColor, emissive, normal, ORM, AO, lightMap, bumpMap,
- *                anisotropyMap, alphaMap, transmissionMap
- *  37: {clearcoatMapIdx, clearcoatRoughnessMapIdx, sheenColorMapIdx,
+ *     map order: baseColor, emissive, normal, roughnessMap, metallicMap, AO,
+ *                lightMap, bumpMap, anisotropyMap, alphaMap, transmissionMap
+ *  41: {clearcoatMapIdx, clearcoatRoughnessMapIdx, sheenColorMapIdx,
  *       sheenRoughnessMapIdx}
- *  38: {iridescenceMapIdx, iridescenceThicknessMapIdx, specularColorMapIdx,
+ *  42: {iridescenceMapIdx, iridescenceThicknessMapIdx, specularColorMapIdx,
  *       specularIntensityMapIdx}
- *  39-42: extension-map UV-fit scale pairs
- *  43-46: extension-map wrap mode pairs
- *  47-62: extension-map UV metadata, 2 vec4s per consumed extension map:
+ *  43-46: extension-map UV-fit scale pairs
+ *  47-50: extension-map wrap mode pairs
+ *  51-66: extension-map UV metadata, 2 vec4s per consumed extension map:
  *     map order: clearcoat, clearcoatRoughness, sheenColor, sheenRoughness,
  *                iridescence, iridescenceThickness, specularColor,
  *                specularIntensity
- *  63: {clearcoatNormalMapIdx, clearcoatNormalScale, clearcoatNormalUvFit.xy}
- *  64: {clearcoatNormalWrap.xy, 0, 0}
- *  65-66: clearcoat normal UV metadata (A/B, same shape as the map metadata above)
+ *  67: {clearcoatNormalMapIdx, clearcoatNormalScale, clearcoatNormalUvFit.xy}
+ *  68: {clearcoatNormalWrap.xy, 0, 0}
+ *  69-70: clearcoat normal UV metadata (A/B, same shape as the map metadata above)
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -69,36 +71,36 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     not color). It multiplies baseColor alpha and opacity in alphaMode mask/blend.
  *   - vec4 #6.y: transmissionMap layer in the LINEAR array. It multiplies the
  *     scalar `MaterialSpec.transmission` (glTF KHR_materials_transmission R channel).
- *   - vec4 #7–#11: per-map UV-fit scales. Heterogeneous texture arrays copy each
+ *   - vec4 #7–#12: per-map UV-fit scales. Heterogeneous texture arrays copy each
  *     source into a max-sized layer; these scales remap repeat-wrapped UVs into
  *     the copied source rectangle instead of sampling padded black texels.
- *   - vec4 #12–#16: per-map wrap modes from TextureRef.wrapS/wrapT. Defaults are
+ *   - vec4 #13–#18: per-map wrap modes from TextureRef.wrapS/wrapT. Defaults are
  *     repeat/repeat, matching glTF. Encoded as 0 repeat, 1 clamp, 2 mirrored.
- *   - vec4 #17–#36: per-map `TextureRef.texCoord` and KHR_texture_transform
+ *   - vec4 #19–#40: per-map `TextureRef.texCoord` and KHR_texture_transform
  *     metadata. Older rows only carried the baseColor transform and every other
  *     map inherited it; these lanes make the full-tier sampler honor each map's
  *     own UV channel/transform without changing the original baseColor lanes.
- *   - vec4 #37–#62: extension-lobe texture maps. Scalar maps are LINEAR-space
+ *   - vec4 #41–#66: extension-lobe texture maps. Scalar maps are LINEAR-space
  *     data and follow the glTF extension channel conventions (clearcoat R,
  *     clearcoatRoughness G, sheenRoughness A, iridescence R,
  *     iridescenceThickness G, specularIntensity A). Color tint maps
  *     (sheenColor/specularColor) live in the sRGB array.
- *   - vec4 #63–#66: KHR_materials_clearcoat clearcoatNormalTexture. This is a
+ *   - vec4 #67–#70: KHR_materials_clearcoat clearcoatNormalTexture. This is a
  *     LINEAR tangent-space normal map with its own scale/UV/wrap metadata, kept
  *     separate from the scalar/color extension lobe map block so existing lanes
  *     do not shift.
  */
-export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 17;
+export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 19;
 export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
-export const MATERIAL_TEX_UV_MAP_COUNT = 10;
-export const MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET = 37;
-export const MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET = 39;
-export const MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET = 43;
-export const MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET = 47;
+export const MATERIAL_TEX_UV_MAP_COUNT = 11;
+export const MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET = 41;
+export const MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET = 43;
+export const MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET = 47;
+export const MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET = 51;
 export const MATERIAL_TEX_EXTENSION_MAP_COUNT = 8;
-export const MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET = 63;
-export const MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET = 64;
-export const MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET = 65;
+export const MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET = 67;
+export const MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET = 68;
+export const MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET = 69;
 export const MATERIAL_TEX_VEC4_STRIDE =
   MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET +
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
@@ -119,7 +121,7 @@ const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
 export interface CollectedTextures {
   /** Unique sRGB-decoded texture sources (baseColor + emissive), upload order. */
   readonly sources: unknown[];
-  /** Unique LINEAR texture sources (normal + ORM — must NOT be sRGB-decoded),
+  /** Unique LINEAR texture sources (normal + scalar/data maps — must NOT be sRGB-decoded),
    *  a separate index space → its own texture_2d_array. */
   readonly linearSources: unknown[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
@@ -144,7 +146,7 @@ function writeUvFitPair(
 }
 
 function writeDefaultUvFitPairs(descriptors: Float32Array, b: number): void {
-  for (let offset = b + 28; offset < b + 48; offset += 2) {
+  for (let offset = b + 28; offset < b + 52; offset += 2) {
     descriptors[offset] = 1;
     descriptors[offset + 1] = 1;
   }
@@ -200,23 +202,26 @@ export function applyMaterialTextureUvFitScales(
     // sRGB array maps: baseColor and emissive.
     writeUvFitPair(descriptors, b + 28, uvFitScaleFor(sRgbLayerScales, descriptors[b + 0] ?? -1));
     writeUvFitPair(descriptors, b + 30, uvFitScaleFor(sRgbLayerScales, descriptors[b + 3] ?? -1));
-    // Linear array maps: normal, ORM, AO, light, bump, anisotropy, alpha, transmission.
+    // Linear array maps: normal, roughness, metallic, AO, light, bump, anisotropy, alpha, transmission.
     writeUvFitPair(descriptors, b + 32, uvFitScaleFor(linearLayerScales, descriptors[b + 1] ?? -1));
     writeUvFitPair(descriptors, b + 34, uvFitScaleFor(linearLayerScales, descriptors[b + 2] ?? -1));
-    writeUvFitPair(descriptors, b + 36, uvFitScaleFor(linearLayerScales, descriptors[b + 13] ?? -1));
-    writeUvFitPair(descriptors, b + 38, uvFitScaleFor(linearLayerScales, descriptors[b + 14] ?? -1));
-    writeUvFitPair(descriptors, b + 40, uvFitScaleFor(linearLayerScales, descriptors[b + 15] ?? -1));
-    writeUvFitPair(descriptors, b + 42, uvFitScaleFor(linearLayerScales, descriptors[b + 22] ?? -1));
-    writeUvFitPair(descriptors, b + 44, uvFitScaleFor(linearLayerScales, descriptors[b + 24] ?? -1));
-    writeUvFitPair(descriptors, b + 46, uvFitScaleFor(linearLayerScales, descriptors[b + 25] ?? -1));
-    writeUvFitPair(descriptors, b + 156, uvFitScaleFor(linearLayerScales, descriptors[b + 148] ?? -1));
-    writeUvFitPair(descriptors, b + 158, uvFitScaleFor(linearLayerScales, descriptors[b + 149] ?? -1));
-    writeUvFitPair(descriptors, b + 160, uvFitScaleFor(sRgbLayerScales, descriptors[b + 150] ?? -1));
-    writeUvFitPair(descriptors, b + 162, uvFitScaleFor(linearLayerScales, descriptors[b + 151] ?? -1));
-    writeUvFitPair(descriptors, b + 164, uvFitScaleFor(linearLayerScales, descriptors[b + 152] ?? -1));
-    writeUvFitPair(descriptors, b + 166, uvFitScaleFor(linearLayerScales, descriptors[b + 153] ?? -1));
-    writeUvFitPair(descriptors, b + 168, uvFitScaleFor(sRgbLayerScales, descriptors[b + 154] ?? -1));
-    writeUvFitPair(descriptors, b + 170, uvFitScaleFor(linearLayerScales, descriptors[b + 155] ?? -1));
+    writeUvFitPair(descriptors, b + 36, uvFitScaleFor(linearLayerScales, descriptors[b + 26] ?? -1));
+    writeUvFitPair(descriptors, b + 38, uvFitScaleFor(linearLayerScales, descriptors[b + 13] ?? -1));
+    writeUvFitPair(descriptors, b + 40, uvFitScaleFor(linearLayerScales, descriptors[b + 14] ?? -1));
+    writeUvFitPair(descriptors, b + 42, uvFitScaleFor(linearLayerScales, descriptors[b + 15] ?? -1));
+    writeUvFitPair(descriptors, b + 44, uvFitScaleFor(linearLayerScales, descriptors[b + 22] ?? -1));
+    writeUvFitPair(descriptors, b + 46, uvFitScaleFor(linearLayerScales, descriptors[b + 24] ?? -1));
+    writeUvFitPair(descriptors, b + 48, uvFitScaleFor(linearLayerScales, descriptors[b + 25] ?? -1));
+    const ext = b + MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET * 4;
+    const extFit = b + MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET * 4;
+    writeUvFitPair(descriptors, extFit, uvFitScaleFor(linearLayerScales, descriptors[ext] ?? -1));
+    writeUvFitPair(descriptors, extFit + 2, uvFitScaleFor(linearLayerScales, descriptors[ext + 1] ?? -1));
+    writeUvFitPair(descriptors, extFit + 4, uvFitScaleFor(sRgbLayerScales, descriptors[ext + 2] ?? -1));
+    writeUvFitPair(descriptors, extFit + 6, uvFitScaleFor(linearLayerScales, descriptors[ext + 3] ?? -1));
+    writeUvFitPair(descriptors, extFit + 8, uvFitScaleFor(linearLayerScales, descriptors[ext + 4] ?? -1));
+    writeUvFitPair(descriptors, extFit + 10, uvFitScaleFor(linearLayerScales, descriptors[ext + 5] ?? -1));
+    writeUvFitPair(descriptors, extFit + 12, uvFitScaleFor(sRgbLayerScales, descriptors[ext + 6] ?? -1));
+    writeUvFitPair(descriptors, extFit + 14, uvFitScaleFor(linearLayerScales, descriptors[ext + 7] ?? -1));
     writeUvFitPair(
       descriptors,
       b + MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4 + 2,
@@ -229,7 +234,7 @@ export function applyMaterialTextureUvFitScales(
 }
 
 /** Collect + dedup material texture sources and pack the per-material descriptors.
- *  Two index spaces: sRGB (baseColor/emissive) and linear (normal/ORM) — they
+ *  Two index spaces: sRGB (baseColor/emissive) and linear (normal/scalar data) — they
  *  upload to separate arrays so each is sampled in the correct colour space. */
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
@@ -251,38 +256,18 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   const indexOf = makeIndexer(sources);        // sRGB array
   const indexOfLinear = makeIndexer(linearSources); // linear array
 
-  // H51-B — once-warn when a material has both roughnessMap AND metallicMap set
-  // to DISTINCT handles. pt-webgpu uses a single ORM texture slot (the glTF
-  // combined roughness-metallic, G=roughness/B=metallic); when both maps are
-  // provided and they differ, metallicMap is silently dropped (roughnessMap wins
-  // via the ?? fallback). Warn once per scene-pack call so the host is aware.
-  let warnedOrmSplit = false;
-
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
-    // H51-B: warn once on the first material with distinct roughnessMap + metallicMap.
-    if (
-      !warnedOrmSplit &&
-      m.roughnessMap != null &&
-      m.metallicMap != null &&
-      m.roughnessMap.handle !== m.metallicMap.handle
-    ) {
-      warnedOrmSplit = true;
-      console.warn(
-        '[vitrum/pt-webgpu] A material provides separate roughnessMap and metallicMap ' +
-          'pointing to different texture handles. pt-webgpu uses a single ORM slot ' +
-          '(glTF combined roughness-metallic texture: G=roughness, B=metallic). ' +
-          'roughnessMap is used; metallicMap is ignored. Supply a pre-combined ORM ' +
-          'texture as roughnessMap (or as metallicMap when roughnessMap is absent) ' +
-          'to include both channels.',
-      );
-    }
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
     const bc = m.baseColorMap;
-    const orm = m.roughnessMap ?? m.metallicMap;
+    // glTF's canonical metallicRoughness texture is one image (G=roughness,
+    // B=metallic). Preserve that combined-map behavior when only one side is
+    // supplied, but allow distinct authored maps to carry independent UV/wrap.
+    const roughnessMap = m.roughnessMap ?? m.metallicMap;
+    const metallicMap = m.metallicMap ?? m.roughnessMap;
     descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)
     descriptors[b + 1] = indexOfLinear(m.normalMap);                 // normalIdx (linear array)
-    descriptors[b + 2] = indexOfLinear(orm); // ormIdx (linear; glTF MR texture: G=rough, B=metal)
+    descriptors[b + 2] = indexOfLinear(roughnessMap); // roughness map (linear; glTF G channel)
     descriptors[b + 3] = indexOf(m.emissiveMap); // emissiveIdx (sRGB array — same layers as baseColor)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
@@ -313,18 +298,19 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // participates too; each map carries its own UV metadata below.
     descriptors[b + 24] = indexOfLinear(m.alphaMap);
     descriptors[b + 25] = indexOfLinear(m.transmissionMap);
-    descriptors[b + 26] = 0;
+    descriptors[b + 26] = indexOfLinear(metallicMap); // metallic map (linear; glTF B channel)
     descriptors[b + 27] = 0;
     // Extension-lobe texture maps. Color tint maps use the sRGB array; scalar
     // factor/roughness/thickness maps use the LINEAR array.
-    descriptors[b + 148] = indexOfLinear(m.clearcoatMap);
-    descriptors[b + 149] = indexOfLinear(m.clearcoatRoughnessMap);
-    descriptors[b + 150] = indexOf(m.sheenColorMap);
-    descriptors[b + 151] = indexOfLinear(m.sheenRoughnessMap);
-    descriptors[b + 152] = indexOfLinear(m.iridescenceMap);
-    descriptors[b + 153] = indexOfLinear(m.iridescenceThicknessMap);
-    descriptors[b + 154] = indexOf(m.specularColorMap);
-    descriptors[b + 155] = indexOfLinear(m.specularIntensityMap);
+    const extIndexBase = b + MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET * 4;
+    descriptors[extIndexBase] = indexOfLinear(m.clearcoatMap);
+    descriptors[extIndexBase + 1] = indexOfLinear(m.clearcoatRoughnessMap);
+    descriptors[extIndexBase + 2] = indexOf(m.sheenColorMap);
+    descriptors[extIndexBase + 3] = indexOfLinear(m.sheenRoughnessMap);
+    descriptors[extIndexBase + 4] = indexOfLinear(m.iridescenceMap);
+    descriptors[extIndexBase + 5] = indexOfLinear(m.iridescenceThicknessMap);
+    descriptors[extIndexBase + 6] = indexOf(m.specularColorMap);
+    descriptors[extIndexBase + 7] = indexOfLinear(m.specularIntensityMap);
     const clearcoatNormalBase = b + MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4;
     descriptors[clearcoatNormalBase] = indexOfLinear(m.clearcoatNormalMap);
     descriptors[clearcoatNormalBase + 1] = m.clearcoatNormalScale ?? 1;
@@ -332,35 +318,38 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[clearcoatNormalBase + 3] = 1;
     writeDefaultUvFitPairs(descriptors, b);
     writeDefaultExtensionUvFitPairs(descriptors, b);
-    writeWrapPair(descriptors, b + 48, bc);
-    writeWrapPair(descriptors, b + 50, m.emissiveMap);
-    writeWrapPair(descriptors, b + 52, m.normalMap);
-    writeWrapPair(descriptors, b + 54, orm);
-    writeWrapPair(descriptors, b + 56, m.aoMap);
-    writeWrapPair(descriptors, b + 58, m.lightMap);
-    writeWrapPair(descriptors, b + 60, m.bumpMap);
-    writeWrapPair(descriptors, b + 62, m.anisotropyMap);
-    writeWrapPair(descriptors, b + 64, m.alphaMap);
-    writeWrapPair(descriptors, b + 66, m.transmissionMap);
-    writeWrapPair(descriptors, b + 172, m.clearcoatMap);
-    writeWrapPair(descriptors, b + 174, m.clearcoatRoughnessMap);
-    writeWrapPair(descriptors, b + 176, m.sheenColorMap);
-    writeWrapPair(descriptors, b + 178, m.sheenRoughnessMap);
-    writeWrapPair(descriptors, b + 180, m.iridescenceMap);
-    writeWrapPair(descriptors, b + 182, m.iridescenceThicknessMap);
-    writeWrapPair(descriptors, b + 184, m.specularColorMap);
-    writeWrapPair(descriptors, b + 186, m.specularIntensityMap);
+    writeWrapPair(descriptors, b + 52, bc);
+    writeWrapPair(descriptors, b + 54, m.emissiveMap);
+    writeWrapPair(descriptors, b + 56, m.normalMap);
+    writeWrapPair(descriptors, b + 58, roughnessMap);
+    writeWrapPair(descriptors, b + 60, metallicMap);
+    writeWrapPair(descriptors, b + 62, m.aoMap);
+    writeWrapPair(descriptors, b + 64, m.lightMap);
+    writeWrapPair(descriptors, b + 66, m.bumpMap);
+    writeWrapPair(descriptors, b + 68, m.anisotropyMap);
+    writeWrapPair(descriptors, b + 70, m.alphaMap);
+    writeWrapPair(descriptors, b + 72, m.transmissionMap);
+    const extWrapBase = b + MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET * 4;
+    writeWrapPair(descriptors, extWrapBase, m.clearcoatMap);
+    writeWrapPair(descriptors, extWrapBase + 2, m.clearcoatRoughnessMap);
+    writeWrapPair(descriptors, extWrapBase + 4, m.sheenColorMap);
+    writeWrapPair(descriptors, extWrapBase + 6, m.sheenRoughnessMap);
+    writeWrapPair(descriptors, extWrapBase + 8, m.iridescenceMap);
+    writeWrapPair(descriptors, extWrapBase + 10, m.iridescenceThicknessMap);
+    writeWrapPair(descriptors, extWrapBase + 12, m.specularColorMap);
+    writeWrapPair(descriptors, extWrapBase + 14, m.specularIntensityMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4, m.clearcoatNormalMap);
     writeUvMeta(descriptors, b, 0, bc);
     writeUvMeta(descriptors, b, 1, m.emissiveMap);
     writeUvMeta(descriptors, b, 2, m.normalMap);
-    writeUvMeta(descriptors, b, 3, orm);
-    writeUvMeta(descriptors, b, 4, m.aoMap);
-    writeUvMeta(descriptors, b, 5, m.lightMap);
-    writeUvMeta(descriptors, b, 6, m.bumpMap);
-    writeUvMeta(descriptors, b, 7, m.anisotropyMap);
-    writeUvMeta(descriptors, b, 8, m.alphaMap);
-    writeUvMeta(descriptors, b, 9, m.transmissionMap);
+    writeUvMeta(descriptors, b, 3, roughnessMap);
+    writeUvMeta(descriptors, b, 4, metallicMap);
+    writeUvMeta(descriptors, b, 5, m.aoMap);
+    writeUvMeta(descriptors, b, 6, m.lightMap);
+    writeUvMeta(descriptors, b, 7, m.bumpMap);
+    writeUvMeta(descriptors, b, 8, m.anisotropyMap);
+    writeUvMeta(descriptors, b, 9, m.alphaMap);
+    writeUvMeta(descriptors, b, 10, m.transmissionMap);
     writeUvMeta(descriptors, b, 0, m.clearcoatMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 1, m.clearcoatRoughnessMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 2, m.sheenColorMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
