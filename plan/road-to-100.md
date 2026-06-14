@@ -756,7 +756,7 @@ The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, h
 | ~~`EXT_mesh_gpu_instancing`~~ ✅ policy closed | Not imported by design today; optional node-level use warns and imports the base mesh once; compatibility reports unsupported with node source path; required use throws via `extensionsRequired` | Native import to `instanced-mesh` remains future work, but arbitrary glTF now gets explicit rejection/degradation instead of silent loss |
 | `KHR_texture_basisu` | Host hook required when selected, required, or no base `texture.source` fallback; optional fallback assets load without degraded rejection | Default browser transcoder path + docs |
 | `EXT_meshopt_compression` fallback buffer | Implemented | Verify with real samples |
-| Multiple UV sets | `TEXCOORD_1` imported | pt-webgpu uv-set bitmask; walkaround needs uv1 buffer |
+| Multiple UV sets | `TEXCOORD_1` imported and consumed as `uv1`; `TEXCOORD_2+` material textures now produce structured `unsupported` compatibility issues with source paths | Native UV-set-2+ sampling remains future contract work because core `Scene` carries only `uvs` / `uv1` |
 | `KHR_materials_emissive_strength` | Imported | Verify × on all backends |
 | Draco `extensionsRequired` without hook | Throws | Good — keep |
 

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (engine H31 residue, 2026-06-14)
 
 - **`@vitrum/engine` attach/progressive diagnostics:** `attachVitrum()` handles now expose a live `backendId` getter so hosts can see the currently selected backend even after auto-recreate swaps the underlying engine. `createProgressiveEngine()` now has a focused regression test proving final WebGPU canvas `configure()` failures surface through `onError` as `{ phase:'canvas-configure', backend:'walkaround-hybrid', recoverable:true }`.
+- **`@vitrum/gltf-adapter` UV-set compatibility diagnostics:** material textures that request `TEXCOORD_2+`, including `KHR_texture_transform.texCoord` overrides, now produce structured `unsupported` compatibility issues with exact source paths. This makes the current core `uvs` / `uv1` limit explicit during backend ranking instead of allowing higher UV sets to degrade silently.
 
 ### Added (walkaround roughness/metallic/AO atlas slice, 2026-06-14)
 

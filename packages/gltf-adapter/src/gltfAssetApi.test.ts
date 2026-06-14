@@ -650,6 +650,49 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
+  it('reports material textures that require UV sets beyond the core Scene contract', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([2]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    const uvIssue = compatibility.issues.find((issue) => issue.name === 'TEXCOORD_2');
+    expect(uvIssue).toEqual(expect.objectContaining({
+      category: 'material',
+      support: 'unsupported',
+      path: 'materials[0].pbrMetallicRoughness.baseColorTexture.texCoord',
+    }));
+    expect(uvIssue?.message).toContain('only UV sets 0 and 1');
+  });
+
+  it('reports KHR_texture_transform texCoord overrides beyond uv1 at the override source path', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = {
+      index: 0,
+      texCoord: 0,
+      extensions: {
+        KHR_texture_transform: {
+          texCoord: 3,
+          offset: [0, 0],
+          scale: [1, 1],
+        },
+      },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([3]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
+    const uvIssue = compatibility.issues.find((issue) => issue.name === 'TEXCOORD_3');
+    expect(uvIssue).toEqual(expect.objectContaining({
+      category: 'material',
+      support: 'unsupported',
+      path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform.texCoord',
+    }));
+  });
+
   it('scores pt-webgpu full and lite as distinct planner profiles', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0] = {

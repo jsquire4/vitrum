@@ -471,6 +471,19 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const uvSet of report.materials.uvSets) {
+    if (uvSet <= 1) continue;
+    addIssue({
+      category: 'material',
+      name: `TEXCOORD_${uvSet}`,
+      support: 'unsupported',
+      path: firstSourcePath(report.materials.issuePaths, `uvSet:${uvSet}`, 'materials'),
+      message:
+        `glTF material textures reference TEXCOORD_${uvSet}, but the core Scene ` +
+        'contract currently carries only UV sets 0 and 1 (`uvs` / `uv1`).',
+    });
+  }
+
   for (const field of report.materials.materialFields) {
     const support = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
     if (support === 'native') {
@@ -719,7 +732,9 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
     fields.add(field);
     textureFields.add(field);
     addSourcePath(issuePaths, `field:${String(field)}`, path);
-    uvSets.add(textureInfoUvSet(info));
+    const uvSet = textureInfoUvSet(info);
+    uvSets.add(uvSet);
+    if (uvSet > 1) addSourcePath(issuePaths, `uvSet:${uvSet}`, textureInfoUvSetPath(info, path));
     if (info.extensions?.KHR_texture_transform) textureTransformCount += 1;
   };
 
@@ -897,6 +912,12 @@ function analyzeAnimations(gltf: GltfJson): GltfAnimationFeatureReport {
 
 function textureInfoUvSet(info: GltfTextureInfo): number {
   return info.extensions?.KHR_texture_transform?.texCoord ?? info.texCoord ?? 0;
+}
+
+function textureInfoUvSetPath(info: GltfTextureInfo, path: string): string {
+  return info.extensions?.KHR_texture_transform?.texCoord !== undefined
+    ? `${path}.extensions.KHR_texture_transform.texCoord`
+    : `${path}.texCoord`;
 }
 
 function collectNestedExtensionNames(
