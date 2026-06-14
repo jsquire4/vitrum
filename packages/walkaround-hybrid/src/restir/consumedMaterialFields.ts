@@ -45,11 +45,17 @@
  *                           uv0 TextureRefs into an RGBA32F array texture;
  *                           shade.wgsl samples it with wrap + transform and
  *                           multiplies the visible scalar baseColor.
+ *  roughnessMap           same material atlas + metadata path; shade.wgsl
+ *                           samples the glTF G channel and overrides the
+ *                           scalar roughness for visible BRDF terms.
+ *  metallicMap            same material atlas + metadata path; shade.wgsl
+ *                           samples the glTF B channel and overrides the
+ *                           scalar metallic value for visible BRDF terms.
  *
- * Everything else — TextureRef maps other than baseColorMap (including
- * alphaMap), Disney BSDF scalars, spectral curves, volume scattering,
- * thin-film stacks, layered BSDF, anisotropy, and specular extension scalars —
- * is IGNORED.
+ * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
+ * metallicMap (including alphaMap), Disney BSDF scalars, spectral curves,
+ * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
+ * extension scalars — is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -70,6 +76,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'ior',
   'extensions',
   'baseColorMap',
+  'roughnessMap',
+  'metallicMap',
 ]);
 
 /**

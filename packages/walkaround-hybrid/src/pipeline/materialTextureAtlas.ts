@@ -1,6 +1,16 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 6;
+
+type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap';
+type AtlasColorSpace = 'srgb' | 'linear';
+
+const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
+  { field: 'baseColorMap', colorSpace: 'srgb' },
+  { field: 'roughnessMap', colorSpace: 'linear' },
+  { field: 'metallicMap', colorSpace: 'linear' },
+];
 
 export interface MaterialTextureAtlasPayload {
   readonly atlasData: Float32Array;
@@ -10,6 +20,8 @@ export interface MaterialTextureAtlasPayload {
   readonly baseColorMetaWidth: number;
   readonly baseColorMetaHeight: number;
   readonly readableBaseColorLayerCount: number;
+  readonly readableRoughnessLayerCount: number;
+  readonly readableMetallicLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -91,7 +103,7 @@ function readHandlePixels(handle: unknown): RawPixels | null {
   const stride = hint?.channels ?? heuristicStride;
   if (hint == null && stride !== 1 && stride !== 4) {
     console.warn(
-      `[walkaround-hybrid] baseColorMap texture handle has ambiguous pixel stride ${stride} ` +
+        `[walkaround-hybrid] material texture handle has ambiguous pixel stride ${stride} ` +
         `(${src.length} values / ${width}x${height} pixels). Attach ` +
         '__vitrum_hint__ = { channels: N } to decode it deterministically.',
     );
@@ -121,9 +133,14 @@ function readHandlePixels(handle: unknown): RawPixels | null {
   return { width, height, data: out, ...(sourceColorSpace ? { sourceColorSpace } : {}) };
 }
 
-function blitBaseColorLayer(px: RawPixels, dim: number, data: Float32Array, layer: number): void {
+function blitAtlasLayer(
+  px: RawPixels,
+  dim: number,
+  data: Float32Array,
+  layer: number,
+  decodeSrgb: boolean,
+): void {
   const base = layer * dim * dim * 4;
-  const decodeSrgb = px.sourceColorSpace !== 'linear';
   for (let y = 0; y < dim; y += 1) {
     const sy = Math.min(px.height - 1, (y * px.height / dim) | 0);
     for (let x = 0; x < dim; x += 1) {
@@ -169,24 +186,43 @@ export function packMaterialTextureAtlas(
   triMaterialIds: Uint32Array,
   triCount: number,
 ): MaterialTextureAtlasPayload {
-  const readable = new Map<unknown, { readonly layer: number; readonly pixels: RawPixels }>();
-  const ordered: { readonly handle: unknown; readonly pixels: RawPixels }[] = [];
+  const readable = new Map<unknown, Partial<Record<AtlasColorSpace, { readonly layer: number; readonly pixels: RawPixels }>>>();
+  const ordered: { readonly handle: unknown; readonly pixels: RawPixels; readonly colorSpace: AtlasColorSpace }[] = [];
+  const fieldLayers: Record<AtlasMapField, Set<number>> = {
+    baseColorMap: new Set<number>(),
+    roughnessMap: new Set<number>(),
+    metallicMap: new Set<number>(),
+  };
 
-  for (const material of materials) {
-    const ref = asTextureRef(material.baseColorMap);
-    if (ref?.handle == null) continue;
-    if (readable.has(ref.handle)) continue;
+  const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
+    const ref = asTextureRef(material[field]);
+    if (ref?.handle == null) return;
+    let perHandle = readable.get(ref.handle);
+    const existing = perHandle?.[colorSpace];
+    if (existing != null) {
+      fieldLayers[field].add(existing.layer);
+      return;
+    }
     const pixels = readHandlePixels(ref.handle);
     if (pixels == null) {
       console.warn(
-        '[walkaround-hybrid] baseColorMap texture handle is not readable ' +
+        `[walkaround-hybrid] ${field} texture handle is not readable ` +
           '(expected raw {width,height,data} or DataTexture-shaped image); the map is ignored.',
       );
-      continue;
+      return;
     }
     const layer = ordered.length;
-    ordered.push({ handle: ref.handle, pixels });
-    readable.set(ref.handle, { layer, pixels });
+    ordered.push({ handle: ref.handle, pixels, colorSpace });
+    perHandle ??= {};
+    perHandle[colorSpace] = { layer, pixels };
+    readable.set(ref.handle, perHandle);
+    fieldLayers[field].add(layer);
+  };
+
+  for (const material of materials) {
+    for (const { field, colorSpace } of ATLAS_MAP_FIELDS) {
+      collect(material, field, colorSpace);
+    }
   }
 
   const atlasDim = Math.max(1, ...ordered.map((entry) => Math.max(entry.pixels.width, entry.pixels.height)));
@@ -195,26 +231,38 @@ export function packMaterialTextureAtlas(
   if (ordered.length === 0) {
     atlasData.set([1, 1, 1, 1]);
   } else {
-    ordered.forEach((entry, layer) => blitBaseColorLayer(entry.pixels, atlasDim, atlasData, layer));
+    ordered.forEach((entry, layer) => {
+      blitAtlasLayer(
+        entry.pixels,
+        atlasDim,
+        atlasData,
+        layer,
+        entry.colorSpace === 'srgb' && entry.pixels.sourceColorSpace !== 'linear',
+      );
+    });
   }
 
-  const metaTexels = Math.max(1, triCount * 2);
+  const metaTexels = Math.max(1, triCount * MATERIAL_MAP_META_TEXELS_PER_TRI);
   const baseColorMetaWidth = Math.min(BASE_COLOR_MAP_META_TEX_WIDTH, metaTexels);
   const baseColorMetaHeight = Math.ceil(metaTexels / baseColorMetaWidth);
   const baseColorMetaData = new Float32Array(baseColorMetaWidth * baseColorMetaHeight * 4);
-  for (let tri = 0; tri < triCount; tri += 1) {
-    const texel = tri * 2;
-    const mat = materials[triMaterialIds[tri] ?? 0];
-    const ref = asTextureRef(mat?.baseColorMap);
+
+  const writeMapMeta = (
+    mat: MaterialSpec | undefined,
+    field: AtlasMapField,
+    colorSpace: AtlasColorSpace,
+    texel: number,
+  ): void => {
+    const ref = asTextureRef(mat?.[field]);
     if (ref?.handle == null) {
       writeDisabledMeta(baseColorMetaData, texel);
-      continue;
+      return;
     }
     const texCoord = ref.texCoord ?? 0;
-    const layer = texCoord === 0 || texCoord === 1 ? readable.get(ref.handle)?.layer : undefined;
+    const layer = texCoord === 0 || texCoord === 1 ? readable.get(ref.handle)?.[colorSpace]?.layer : undefined;
     if (layer == null) {
       writeDisabledMeta(baseColorMetaData, texel);
-      continue;
+      return;
     }
     const t = ref.transform;
     const rotation = t?.rotation ?? 0;
@@ -228,6 +276,14 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b1 + 1] = t?.scale?.[1] ?? 1;
     baseColorMetaData[b1 + 2] = Math.cos(rotation);
     baseColorMetaData[b1 + 3] = Math.sin(rotation);
+  };
+
+  for (let tri = 0; tri < triCount; tri += 1) {
+    const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
+    const mat = materials[triMaterialIds[tri] ?? 0];
+    writeMapMeta(mat, 'baseColorMap', 'srgb', baseTexel);
+    writeMapMeta(mat, 'roughnessMap', 'linear', baseTexel + 2);
+    writeMapMeta(mat, 'metallicMap', 'linear', baseTexel + 4);
   }
 
   return {
@@ -237,7 +293,9 @@ export function packMaterialTextureAtlas(
     baseColorMetaData,
     baseColorMetaWidth,
     baseColorMetaHeight,
-    readableBaseColorLayerCount: ordered.length,
+    readableBaseColorLayerCount: fieldLayers.baseColorMap.size,
+    readableRoughnessLayerCount: fieldLayers.roughnessMap.size,
+    readableMetallicLayerCount: fieldLayers.metallicMap.size,
   };
 }
 

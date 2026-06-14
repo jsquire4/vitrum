@@ -1030,12 +1030,15 @@ function uv2Component(
   return value?.[index] ?? fallback;
 }
 
-function baseColorMapPatchRequiresFullRebuild(
+const ATLAS_MATERIAL_MAP_FIELDS = ['baseColorMap', 'roughnessMap', 'metallicMap'] as const;
+
+function textureMapPatchRequiresFullRebuild(
   prev: MaterialSpec | undefined,
   next: MaterialSpec | undefined,
+  field: (typeof ATLAS_MATERIAL_MAP_FIELDS)[number],
 ): boolean {
-  const a = textureRefLike(prev?.baseColorMap);
-  const b = textureRefLike(next?.baseColorMap);
+  const a = textureRefLike(prev?.[field]);
+  const b = textureRefLike(next?.[field]);
   if (a == null || b == null) return a !== b;
   if (a.handle !== b.handle) return true;
   if ((a.texCoord ?? 0) !== (b.texCoord ?? 0)) return true;
@@ -1048,6 +1051,15 @@ function baseColorMapPatchRequiresFullRebuild(
   if (uv2Component(at?.scale, 0, 1) !== uv2Component(bt?.scale, 0, 1)) return true;
   if (uv2Component(at?.scale, 1, 1) !== uv2Component(bt?.scale, 1, 1)) return true;
   return (at?.rotation ?? 0) !== (bt?.rotation ?? 0);
+}
+
+function materialAtlasPatchRequiresFullRebuild(
+  prev: MaterialSpec | undefined,
+  next: MaterialSpec | undefined,
+): boolean {
+  return ATLAS_MATERIAL_MAP_FIELDS.some((field) =>
+    textureMapPatchRequiresFullRebuild(prev, next, field),
+  );
 }
 
 /**
@@ -1092,7 +1104,7 @@ export function materialPatch(
     prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
   const prevTransmission = vitrumMaterialTransmission(prevMaterial);
   const nextTransmission = vitrumMaterialTransmission(nextMaterial);
-  if (baseColorMapPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
+  if (materialAtlasPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
     return topologyRebuild(id, patch, ctx);
   }
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);

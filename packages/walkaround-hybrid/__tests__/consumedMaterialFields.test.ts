@@ -155,15 +155,15 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColor', 'roughness', 'metallic',
       'emissive', 'emissiveIntensity',
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
-      'thickness', 'ior', 'extensions', 'baseColorMap',
+      'thickness', 'ior', 'extensions', 'baseColorMap', 'roughnessMap', 'metallicMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
   });
 
-  it('does NOT include any texture-map fields', () => {
+  it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
-      'normalMap', 'roughnessMap', 'metallicMap',
+      'normalMap',
       'transmissionMap', 'emissiveMap', 'thicknessMap', 'alphaMap', 'aoMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',

@@ -261,7 +261,10 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         backendReadiness: {
           ptWebgl2: 'opaque',
           ptWebgpu: 'opaque',
-          walkaroundHybrid: field === 'baseColorMap' ? 'opaque' : 'ignored',
+          walkaroundHybrid:
+            field === 'baseColorMap' || field === 'roughnessMap' || field === 'metallicMap'
+              ? 'opaque'
+              : 'ignored',
         },
       });
       expect(transform.rotation).toBeGreaterThan(0);

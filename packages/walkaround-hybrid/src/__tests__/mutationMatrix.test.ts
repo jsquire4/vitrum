@@ -309,7 +309,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) rebuilds material texture atlas when baseColorMap changes', () => {
+  it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -318,6 +318,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           roughness: 0.5,
           metallic: 0,
           baseColorMap: { handle: baseColorMapHandle(128) },
+          roughnessMap: { handle: baseColorMapHandle(64) },
         },
       });
 
@@ -327,8 +328,12 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
       expect(rebuilt.materialTextureAtlas.readableBaseColorLayerCount).toBe(1);
-      expect((storedScene(engine).primitives[0] as { material: { baseColorMap?: unknown } }).material.baseColorMap)
-        .toBeDefined();
+      expect(rebuilt.materialTextureAtlas.readableRoughnessLayerCount).toBe(1);
+      const material = (storedScene(engine).primitives[0] as {
+        material: { baseColorMap?: unknown; roughnessMap?: unknown };
+      }).material;
+      expect(material.baseColorMap).toBeDefined();
+      expect(material.roughnessMap).toBeDefined();
     } finally {
       engine.dispose();
     }

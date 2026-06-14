@@ -170,6 +170,12 @@ const SRGB_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'specularColorMap',
 ]);
 
+const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
+  'baseColorMap',
+  'roughnessMap',
+  'metallicMap',
+]);
+
 export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): GltfTextureColorSpace {
   return SRGB_TEXTURE_FIELDS.has(field) ? 'srgb' : 'linear';
 }
@@ -290,7 +296,7 @@ function backendReadinessForHandle(
   return {
     ptWebgl2: cpuReady ? 'ready' : 'opaque',
     ptWebgpu: handleKind === 'opaque' || handleKind === 'raw-image' ? 'opaque' : 'ready',
-    walkaroundHybrid: field === 'baseColorMap'
+    walkaroundHybrid: WALKAROUND_ATLAS_TEXTURE_FIELDS.has(field)
       ? (cpuReady ? 'ready' : 'opaque')
       : 'ignored',
   };

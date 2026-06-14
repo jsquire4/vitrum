@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (walkaround roughness/metallic atlas slice, 2026-06-14)
+
+- **`@vitrum/walkaround-hybrid` roughness/metallic map consumption:** the material texture atlas now packs readable `roughnessMap` and `metallicMap` handles alongside `baseColorMap`, preserving per-map uv0/uv1 selection, wrap modes, and `KHR_texture_transform` metadata. `shade.wgsl` samples roughness from the glTF G channel and metallic from the B channel for visible BRDF terms; the promise ledger grades both rows `approximate` because upstream reservoir/GI payloads still use scalar packed lanes.
+
 ### Added (glTF morph target tangent preservation, 2026-06-14)
 
 - **`@vitrum/core` + `@vitrum/gltf-adapter` morph target tangents:** glTF morph-target `TANGENT` VEC3 deltas now import into `SkinnedMeshPrimitive.morphTargetTangents` alongside position/normal deltas and weights. Compatibility reporting now grades these assets as `approximate` rather than data-loss unsupported because shipping renderers preserve the data but do not yet apply tangent deltas to posed tangent-space shading.
@@ -30,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/walkaround-hybrid` baseColorMap consumption:** readable raw/DataTexture-shaped `TextureRef` handles on uv0/uv1 now pack into a linear RGBA32F texture array with per-triangle metadata, bind through scene bindings 20-21, and modulate shade-visible albedo with wrap + `KHR_texture_transform` semantics. `CONSUMED_MATERIAL_FIELDS` and the core promise ledger now grade walkaround `baseColorMap` as `approximate`; glass transmission tint, alpha/normal/ORM/emissive/extension maps, and tangent-space map support remain Road-to-100 follow-ups.
 - **Walkaround material patch safety:** `HybridEngine.updatePrimitive(material)` keeps the scalar fast path for scalar-only edits, but `baseColorMap` handle/UV/wrap/transform changes route through a full BVH/material-atlas rebuild so cached scene bind groups cannot keep stale atlas resources.
-- **glTF texture diagnostics for walkaround:** `textureDecodeReport.backendReadiness.walkaroundHybrid` now reports `baseColorMap` as `ready` for CPU-readable handles and `opaque` for undecoded/opaque handles; other map fields remain `ignored` until their walkaround atlas slices land. A public `loadGltfAsset()` sweep test now pins every imported texture field's report entry.
+- **glTF texture diagnostics for walkaround:** `textureDecodeReport.backendReadiness.walkaroundHybrid` now reports `baseColorMap`, `roughnessMap`, and `metallicMap` as `ready` for CPU-readable handles and `opaque` for undecoded/opaque handles; other map fields remain `ignored` until their walkaround atlas slices land. A public `loadGltfAsset()` sweep test now pins every imported texture field's report entry.
 
 ### Fixed (glTF texture color-space policy, 2026-06-13)
 

@@ -113,10 +113,11 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
-// Phase-3D first slice — baseColorMap atlas. The host stores readable
-// baseColorMap handles as linear RGBA32F layers and a per-triangle metadata
-// texture. Texture sampling uses textureLoad (nearest) so no sampler binding is
-// needed and the scene group storage-buffer count stays unchanged.
+// Phase-3D material-map atlas. The host stores readable baseColorMap,
+// roughnessMap, and metallicMap handles as RGBA32F array layers and a
+// per-triangle metadata texture. Texture sampling uses textureLoad (nearest)
+// so no sampler binding is needed and the scene group storage-buffer count
+// stays unchanged.
 @group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
 
@@ -168,6 +169,10 @@ fn storeSvgfObjectId(pix: vec2u, id: u32) {
 }
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 6u;
+const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
+const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
+const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -196,12 +201,12 @@ fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: 
   return hit.barycoord.x * uvA + hit.barycoord.y * uvB + hit.barycoord.z * uvC;
 }
 
-fn sampleBaseColorMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarBaseColor: vec3f) -> vec3f {
-  let metaTexel = triIndex * 2u;
+fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + slot * 2u;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
   let layer = i32(meta0.x);
   if (layer < 0) {
-    return scalarBaseColor;
+    return vec4f(-1.0, -1.0, -1.0, -1.0);
   }
   let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
   let texCoord = (wrapPacked >> 4u) & 0x3u;
@@ -218,8 +223,30 @@ fn sampleBaseColorMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarBaseColor: ve
     i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
     i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
   );
-  let texelColor = textureLoad(materialTextureAtlas, texel, layer, 0).rgb;
-  return scalarBaseColor * texelColor;
+  return textureLoad(materialTextureAtlas, texel, layer, 0);
+}
+
+fn materialMapChannel(v: vec4f, channel: u32) -> f32 {
+  if (channel == 1u) { return v.g; }
+  if (channel == 2u) { return v.b; }
+  if (channel == 3u) { return v.a; }
+  return v.r;
+}
+
+fn sampleBaseColorMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarBaseColor: vec3f) -> vec3f {
+  let texelColor = sampleMaterialAtlasRaw(triIndex, MATERIAL_MAP_SLOT_BASE_COLOR, uv0, uv1);
+  if (texelColor.x < 0.0) {
+    return scalarBaseColor;
+  }
+  return scalarBaseColor * texelColor.rgb;
+}
+
+fn sampleMaterialScalarMap(triIndex: u32, slot: u32, channel: u32, uv0: vec2f, uv1: vec2f, fallback: f32) -> f32 {
+  let texelColor = sampleMaterialAtlasRaw(triIndex, slot, uv0, uv1);
+  if (texelColor.x < 0.0) {
+    return fallback;
+  }
+  return clamp(materialMapChannel(texelColor, channel), 0.0, 1.0);
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
@@ -360,8 +387,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let rmCoord  = vec2u(primaryHit.indices.w % BVH_MATERIAL_TEX_WIDTH, primaryHit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
   let rm       = decodeRoughMetal(materialWord);
-  let rough    = rm.x;
-  let metal    = rm.y;
+  let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);
+  let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
   // output the authored base color directly, bypassing all lighting and GI.
