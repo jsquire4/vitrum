@@ -76,6 +76,26 @@ function byteViewOf(data: ArrayBufferView): Uint8Array<ArrayBuffer> | null {
   return new Uint8Array(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
 }
 
+function numericChannelMax(data: ArrayBufferView): number | null {
+  if (data instanceof Float32Array || data instanceof Float64Array) return 1;
+  if (data instanceof Uint16Array) return 65535;
+  if (data instanceof Uint32Array) return 4294967295;
+  if (data instanceof Int16Array) return 32767;
+  if (data instanceof Int32Array) return 2147483647;
+  return null;
+}
+
+function normalizedNumberToByte(value: number, maxValue: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const unit = maxValue === 1 ? value : value / maxValue;
+  return Math.round(Math.min(1, Math.max(0, unit)) * 255);
+}
+
+function numericChannelAt(data: ArrayBufferView, index: number): number {
+  const view = data as unknown as ArrayLike<number>;
+  return Number(view[index] ?? 0);
+}
+
 function normalizeRawRgba8(
   data: ArrayBufferView,
   width: number,
@@ -104,6 +124,42 @@ function normalizeRawRgba8(
     rgba[dst + 3] = a;
   }
   return { data: rgba, bytesPerRow: width * 4, rowsPerImage: height };
+}
+
+function normalizeRawNumericRgba8(
+  data: ArrayBufferView,
+  width: number,
+  height: number,
+): NormalizedRgba8Upload | null {
+  const maxValue = numericChannelMax(data);
+  if (maxValue == null) return null;
+  const length = (data as unknown as ArrayLike<number>).length;
+  const pixelCount = width * height;
+  if (pixelCount <= 0 || length == null) return null;
+  const channels = length / pixelCount;
+  if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
+  const rgba = new Uint8Array(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channels;
+    const dst = i * 4;
+    const r = numericChannelAt(data, src);
+    const g = channels >= 2 ? numericChannelAt(data, src + 1) : r;
+    const b = channels >= 3 ? numericChannelAt(data, src + 2) : r;
+    const a = channels >= 4 ? numericChannelAt(data, src + 3) : maxValue;
+    rgba[dst] = normalizedNumberToByte(r, maxValue);
+    rgba[dst + 1] = normalizedNumberToByte(g, maxValue);
+    rgba[dst + 2] = normalizedNumberToByte(b, maxValue);
+    rgba[dst + 3] = normalizedNumberToByte(a, maxValue);
+  }
+  return { data: rgba, bytesPerRow: width * 4, rowsPerImage: height };
+}
+
+function normalizeRawTextureUpload(
+  data: ArrayBufferView,
+  width: number,
+  height: number,
+): NormalizedRgba8Upload | null {
+  return normalizeRawRgba8(data, width, height) ?? normalizeRawNumericRgba8(data, width, height);
 }
 
 const DUMMY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures.dummy';
@@ -310,12 +366,12 @@ export function createMaterialTextureArray(
         { width: copyW, height: copyH },
       );
     } else if (p.data != null) {
-      const upload = normalizeRawRgba8(p.data, p.width, p.height);
+      const upload = normalizeRawTextureUpload(p.data, p.width, p.height);
       if (upload == null) {
         warnings.push(
           `[materialTextureArray] source ${layer} has raw data with unsupported byte layout ` +
             `(${p.data.byteLength} bytes for ${p.width}×${p.height}); expected 1, 2, 3, or 4 ` +
-            `8-bit channel(s) per pixel. Layer left black.`,
+            `8-bit or normalized numeric channel(s) per pixel. Layer left black.`,
         );
         continue;
       }

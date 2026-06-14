@@ -119,16 +119,56 @@ describe('createMaterialTextureArray', () => {
     expect(call[3]).toEqual({ width: 2, height: 1 });
   });
 
-  it('warns and leaves unsupported raw typed-array data black', () => {
+  it('normalizes Float32 raw data to RGBA8 rows before writeTexture', () => {
     installGpuConstStubs();
     const { device, writeTexture } = makeDevice();
     const array = createMaterialTextureArray(device, [
-      { width: 1, height: 1, data: new Float32Array([1, 0, 0, 1]) },
+      { width: 2, height: 1, data: new Float32Array([1, 0.5, 0, 1, 0.25, 0, 0.75, 0.5]) },
+    ]);
+
+    expect(array.warnings).toEqual([]);
+    expect(writeTexture).toHaveBeenCalledTimes(1);
+    const call = writeTexture.mock.calls[0] as [
+      GPUImageCopyTexture,
+      Uint8Array,
+      GPUImageDataLayout,
+      GPUExtent3D,
+    ];
+    expect(Array.from(call[1])).toEqual([255, 128, 0, 255, 64, 0, 191, 128]);
+    expect(call[2]).toEqual({ bytesPerRow: 8, rowsPerImage: 1 });
+    expect(call[3]).toEqual({ width: 2, height: 1 });
+  });
+
+  it('normalizes Uint16 raw data to RGBA8 rows before writeTexture', () => {
+    installGpuConstStubs();
+    const { device, writeTexture } = makeDevice();
+    const array = createMaterialTextureArray(device, [
+      { width: 1, height: 1, data: new Uint16Array([65535, 32768, 0, 65535]) },
+    ]);
+
+    expect(array.warnings).toEqual([]);
+    expect(writeTexture).toHaveBeenCalledTimes(1);
+    const call = writeTexture.mock.calls[0] as [
+      GPUImageCopyTexture,
+      Uint8Array,
+      GPUImageDataLayout,
+      GPUExtent3D,
+    ];
+    expect(Array.from(call[1])).toEqual([255, 128, 0, 255]);
+    expect(call[2]).toEqual({ bytesPerRow: 4, rowsPerImage: 1 });
+    expect(call[3]).toEqual({ width: 1, height: 1 });
+  });
+
+  it('warns and leaves unsupported raw typed-array shapes black', () => {
+    installGpuConstStubs();
+    const { device, writeTexture } = makeDevice();
+    const array = createMaterialTextureArray(device, [
+      { width: 1, height: 1, data: new Float32Array([1, 0, 0, 1, 0]) },
     ]);
 
     expect(writeTexture).not.toHaveBeenCalled();
     expect(array.warnings).toContain(
-      '[materialTextureArray] source 0 has raw data with unsupported byte layout (16 bytes for 1×1); expected 1, 2, 3, or 4 8-bit channel(s) per pixel. Layer left black.',
+      '[materialTextureArray] source 0 has raw data with unsupported byte layout (20 bytes for 1×1); expected 1, 2, 3, or 4 8-bit or normalized numeric channel(s) per pixel. Layer left black.',
     );
   });
 });
