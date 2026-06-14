@@ -58,10 +58,8 @@ export const RIS_GI_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
-// WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
-// normal stored as the visible-point reservoir normal (r.nv) + hemisphere
-// frame; the geometric normal is kept for the bounce-ray origin offset.
-@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// WS1 (2026-05-29) — bvh_normal is declared by materialAtlas.wgsl so alpha
+// cutout traversal and GI shading share the same UV1/normal source.
 // B1-ior-per-tri (2026-06-10) — per-triangle roughness+metalness+IOR texture.
 // Declared here so the glass-walk Snell solve can decode per-tri IOR via decodeIor().
 // Layout: bits[31:24]=rough×255, bits[23:16]=metal×255, bits[15:8]=ior_quantized.
@@ -114,7 +112,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(
     fullPx.x, fullPx.y, fullDims.x, fullDims.y, ubo.cameraPos, invVP,
   );
-  let hit = traceSceneFirstHitAlphaMask(
+  let hit = traceSceneFirstHitAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -249,7 +247,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
       let walkRay = Ray(walkOrigin, refractDir);
-      walkHit = traceSceneFirstHitAlphaMask(
+      walkHit = traceSceneFirstHitAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -315,7 +313,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (cosTheta < 1e-4) { continue; }
 
       let bounceRay = Ray(walkHitPos + walkHit.normal * NORMAL_BIAS_GI, wi);
-      let bounceHit = traceSceneFirstHitAlphaMask(
+      let bounceHit = traceSceneFirstHitAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -433,7 +431,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
     let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
-    let bounceHit = traceSceneFirstHitAlphaMask(
+    let bounceHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -589,5 +587,5 @@ export const RIS_GI_MODULE: WgslModule = {
   source: RIS_GI_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
 };

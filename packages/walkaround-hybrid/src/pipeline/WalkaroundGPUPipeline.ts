@@ -267,10 +267,11 @@ function registerPasses(
 /**
  * WebGPU device limits required by the layered-hybrid shade pipeline.
  *
- * The ReSTIR shade pass binds 13 storage buffers in the live path:
- *   - 5 frame buffers (current + previous + spatial reservoirs + 2 G-buffer placeholders)
- *   - 5 RC cascade buffers (one per cascade level)
- *   - 3 BVH buffers (nodes / index / position)
+ * The composed ReSTIR shade pass declares 16 storage buffers:
+ *   - 4 frame buffers (current + previous + spatial + GI reservoirs)
+ *   - 6 merged-scene buffers (BVH nodes / index / position / emitters / CDF / normals)
+ *   - 5 TLAS buffers (declared for full BGL compatibility)
+ *   - 1 RC cascade-0 buffer (via sampleCascadeC0)
  *
  * WebGPU's default `maxStorageBuffersPerShaderStage` is 8. Library
  * consumers must pass these `requiredLimits` when calling
@@ -300,12 +301,13 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
  * The lite tier runs the SAME shade pipeline as full — there is no WGSL fork
  * (Deliverable 3 decision: runtime UBO/pass gating over an N× pipeline
  * permutation). The win is on the **storage-buffer axis**: lite forces the
- * merged-BVH path (`bvhMode:'merged'`), which removes the 5 TLAS scene-group
- * buffers, dropping the peak storage-buffer count from the full path's 16 to
- * the merged path's ~10. The **texture** floor stays at 6 because the shade
- * pass structurally writes six storage textures simultaneously — that cannot
- * drop without forking shade.wgsl, which the lite-tier decision explicitly
- * avoids.
+ * merged-BVH path (`bvhMode:'merged'`) and RC-off configuration, so the live
+ * non-TLAS/non-RC footprint is 10. The composed shader still declares the five
+ * TLAS buffers plus the RC cascade-0 buffer; lite viability therefore depends
+ * on inactive binding stripping in that merged/RC-off path until a true lite
+ * WGSL fork exists. The **texture** floor stays at 6 because the shade pass
+ * structurally writes six storage textures simultaneously — that cannot drop
+ * without forking shade.wgsl, which the lite-tier decision explicitly avoids.
  *
  * NOTE: these numbers are a *hypothesis* until a device requested with these
  * limits actually compiles + binds the merged-path shade pipeline on real

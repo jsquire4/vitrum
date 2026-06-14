@@ -148,7 +148,7 @@ interface SceneBindGroupResources {
   bvhEmissiveTextureView: GPUTextureView;
   /** B1 — per-tri roughness+metalness, r32uint texture (binding 14). */
   bvhRoughMetalTextureView: GPUTextureView;
-  /** Phase-3D first slice — baseColorMap RGBA32F array texture (binding 20). */
+  /** Phase-3D material-map RGBA32F array texture (binding 20). */
   materialTextureAtlasView: GPUTextureView;
   /** Phase-3D first slice — per-triangle baseColorMap metadata (binding 21). */
   baseColorMapMetaTextureView: GPUTextureView;
@@ -193,7 +193,7 @@ export function buildSceneBindGroup(
     r.envConditionalTextureView,                    // 17 B3 conditional inverse-CDF
     r.envSampler,                                   // 18 B3 env sampler (textureLoad path; declared for layout)
     { buffer: r.envParamsBuffer },                  // 19 B3 EnvParams uniform
-    r.materialTextureAtlasView,                     // 20 Phase-3D baseColorMap texture_2d_array
+    r.materialTextureAtlasView,                     // 20 Phase-3D material-map texture_2d_array
     r.baseColorMapMetaTextureView,                  // 21 Phase-3D per-triangle map metadata
   ]);
 }

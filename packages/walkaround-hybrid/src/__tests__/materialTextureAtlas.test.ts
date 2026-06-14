@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
+import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 
 function srgbToLinear(v: number): number {
   const c = Math.max(0, Math.min(1, v));
@@ -131,7 +132,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
     expect(atlas.atlasData[2]).toBeCloseTo(200 / 255, 5);
 
-    // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5].
+    // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5], ao=[6,7],
+    // alpha=[8,9], alphaCoverage=[10].
     expect(atlas.baseColorMetaData[0]).toBe(-1);
     expect(atlas.baseColorMetaData[8]).toBe(0);
     expect(atlas.baseColorMetaData[9]).toBe(2 + 1 * 4);
@@ -144,6 +146,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[22]).toBeCloseTo(Math.cos(Math.PI), 5);
     expect(atlas.baseColorMetaData[23]).toBeCloseTo(Math.sin(Math.PI), 5);
     expect(atlas.baseColorMetaData[24]).toBe(-1);
+    expect(atlas.baseColorMetaData[32]).toBe(-1);
   });
 
   it('packs aoMap as a linear R-channel atlas slot', () => {
@@ -179,10 +182,49 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[25]).toBe(1 + 2 * 4);
   });
 
-  it('shade samples roughness, metallic, and AO scalar maps from the atlas', () => {
-    expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
-    expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
-    expect(SHADE_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
+  it('packs alphaMap as a linear atlas slot with coverage metadata', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([64, 128, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      alphaMode: 'mask',
+      opacity: 0.75,
+      alphaCutoff: 0.4,
+      alphaMap: {
+        handle,
+        texCoord: 1,
+        wrapS: 'mirrored-repeat',
+        wrapT: 'clamp-to-edge',
+      },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableAlphaLayerCount).toBe(1);
+    expect(atlas.atlasLayerCount).toBe(1);
+    expect(atlas.atlasData[0]).toBeCloseTo(64 / 255, 5);
+    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
+    // alpha slot starts at texel 8, coverage scalars at texel 10.
+    expect(atlas.baseColorMetaData[32]).toBe(0);
+    expect(atlas.baseColorMetaData[33]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[40]).toBe(1);
+    expect(atlas.baseColorMetaData[41]).toBeCloseTo(0.75, 5);
+    expect(atlas.baseColorMetaData[42]).toBeCloseTo(0.4, 5);
+  });
+
+  it('shade and traversal sample material maps from the shared atlas module', () => {
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < cutoff;');
     expect(SHADE_WGSL).toContain(
       'let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);',
     );
@@ -192,6 +234,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
     );
+    expect(SHADE_WGSL).toContain('traceSceneFirstHitAlphaMaskTextured(');
     expect(SHADE_WGSL).toContain(') * authoredAo;');
   });
 });

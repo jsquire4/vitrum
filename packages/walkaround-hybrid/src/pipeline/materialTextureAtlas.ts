@@ -1,9 +1,9 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 8;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 11;
 
-type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap' | 'aoMap';
+type AtlasMapField = 'baseColorMap' | 'roughnessMap' | 'metallicMap' | 'aoMap' | 'alphaMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -11,6 +11,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'roughnessMap', colorSpace: 'linear' },
   { field: 'metallicMap', colorSpace: 'linear' },
   { field: 'aoMap', colorSpace: 'linear' },
+  { field: 'alphaMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -24,6 +25,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableRoughnessLayerCount: number;
   readonly readableMetallicLayerCount: number;
   readonly readableAoLayerCount: number;
+  readonly readableAlphaLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -183,6 +185,21 @@ function writeDisabledMeta(meta: Float32Array, texel: number): void {
   meta[b + 7] = 0;
 }
 
+function alphaModeIndex(mode: MaterialSpec['alphaMode'] | undefined): number {
+  switch (mode ?? 'opaque') {
+    case 'mask':
+      return 1;
+    case 'blend':
+      return 2;
+    case 'opaque':
+      return 0;
+  }
+}
+
+function clampedUnit(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
+}
+
 export function packMaterialTextureAtlas(
   materials: readonly MaterialSpec[],
   triMaterialIds: Uint32Array,
@@ -195,6 +212,7 @@ export function packMaterialTextureAtlas(
     roughnessMap: new Set<number>(),
     metallicMap: new Set<number>(),
     aoMap: new Set<number>(),
+    alphaMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -281,6 +299,14 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b1 + 3] = Math.sin(rotation);
   };
 
+  const writeAlphaCoverageMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = alphaModeIndex(mat?.alphaMode);
+    baseColorMetaData[b + 1] = clampedUnit(mat?.opacity, 1);
+    baseColorMetaData[b + 2] = clampedUnit(mat?.alphaCutoff, 0.5);
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -288,6 +314,8 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'roughnessMap', 'linear', baseTexel + 2);
     writeMapMeta(mat, 'metallicMap', 'linear', baseTexel + 4);
     writeMapMeta(mat, 'aoMap', 'linear', baseTexel + 6);
+    writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + 8);
+    writeAlphaCoverageMeta(mat, baseTexel + 10);
   }
 
   return {
@@ -301,6 +329,7 @@ export function packMaterialTextureAtlas(
     readableRoughnessLayerCount: fieldLayers.roughnessMap.size,
     readableMetallicLayerCount: fieldLayers.metallicMap.size,
     readableAoLayerCount: fieldLayers.aoMap.size,
+    readableAlphaLayerCount: fieldLayers.alphaMap.size,
   };
 }
 

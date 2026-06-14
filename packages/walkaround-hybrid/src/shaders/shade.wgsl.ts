@@ -100,7 +100,6 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 — per-vertex world-space normals for the smooth shading-normal blend.
-@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 // Camera-visible emitters (2026-05-30) — per-triangle HDR emissive radiance Le
 // (rgba32float texture). Read by lo_emitterGlow on a primary hit so emissive-mesh
 // surfaces glow to the camera (the ReSTIR-DI emitter list only lights RECEIVERS;
@@ -113,14 +112,6 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
-// Phase-3D material-map atlas. The host stores readable baseColorMap,
-// roughnessMap, metallicMap, and aoMap handles as RGBA32F array layers and a
-// per-triangle metadata texture. Texture sampling uses textureLoad (nearest)
-// so no sampler binding is needed and the scene group storage-buffer count
-// stays unchanged.
-@group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
-@group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
-
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 // Sprint 15 — GTAO occlusion factor (rgba16float, full-res, 1-frame lagged).
@@ -166,94 +157,6 @@ fn storeSvgfObjectId(pix: vec2u, id: u32) {
   if (pix.x < dims.x && pix.y < dims.y) {
     textureStore(svgfObjectIdOut, pix, vec4u(id));
   }
-}
-
-const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 8u;
-const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
-const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
-const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
-const MATERIAL_MAP_SLOT_AO: u32 = 3u;
-
-fn baseColorMapMetaCoord(texel: u32) -> vec2i {
-  return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
-}
-
-fn wrapMaterialUv1(v: f32, mode: u32) -> f32 {
-  if (mode == 1u) {
-    return clamp(v, 0.0, 1.0);
-  }
-  if (mode == 2u) {
-    return 1.0 - abs(fract(v * 0.5) * 2.0 - 1.0);
-  }
-  return fract(v);
-}
-
-fn wrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
-  let wrapS = wrapPacked & 0x3u;
-  let wrapT = (wrapPacked >> 2u) & 0x3u;
-  return vec2f(wrapMaterialUv1(uv.x, wrapS), wrapMaterialUv1(uv.y, wrapT));
-}
-
-fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: vec4f) -> vec2f {
-  let uvA = unpack2x16unorm(bitcast<u32>(n0.w));
-  let uvB = unpack2x16unorm(bitcast<u32>(n1.w));
-  let uvC = unpack2x16unorm(bitcast<u32>(n2.w));
-  return hit.barycoord.x * uvA + hit.barycoord.y * uvB + hit.barycoord.z * uvC;
-}
-
-fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
-  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + slot * 2u;
-  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
-  let layer = i32(meta0.x);
-  if (layer < 0) {
-    return vec4f(-1.0, -1.0, -1.0, -1.0);
-  }
-  let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
-  let texCoord = (wrapPacked >> 4u) & 0x3u;
-  let uv = select(uv0, uv1, texCoord == 1u);
-  let meta1 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel + 1u), 0);
-  let scaled = uv * meta1.xy;
-  let transformed = vec2f(
-    scaled.x * meta1.z - scaled.y * meta1.w,
-    scaled.x * meta1.w + scaled.y * meta1.z,
-  ) + meta0.zw;
-  let wrapped = wrapMaterialUv(transformed, wrapPacked);
-  let dims = textureDimensions(materialTextureAtlas);
-  let texel = vec2i(
-    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
-    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
-  );
-  return textureLoad(materialTextureAtlas, texel, layer, 0);
-}
-
-fn materialMapChannel(v: vec4f, channel: u32) -> f32 {
-  if (channel == 1u) { return v.g; }
-  if (channel == 2u) { return v.b; }
-  if (channel == 3u) { return v.a; }
-  return v.r;
-}
-
-fn sampleBaseColorMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarBaseColor: vec3f) -> vec3f {
-  let texelColor = sampleMaterialAtlasRaw(triIndex, MATERIAL_MAP_SLOT_BASE_COLOR, uv0, uv1);
-  if (texelColor.x < 0.0) {
-    return scalarBaseColor;
-  }
-  return scalarBaseColor * texelColor.rgb;
-}
-
-fn sampleMaterialScalarMap(triIndex: u32, slot: u32, channel: u32, uv0: vec2f, uv1: vec2f, fallback: f32) -> f32 {
-  let texelColor = sampleMaterialAtlasRaw(triIndex, slot, uv0, uv1);
-  if (texelColor.x < 0.0) {
-    return fallback;
-  }
-  return clamp(materialMapChannel(texelColor, channel), 0.0, 1.0);
-}
-
-fn sampleAoMapFactor(triIndex: u32, materialWord: u32, uv0: vec2f, uv1: vec2f) -> f32 {
-  let rawOcclusion = sampleMaterialScalarMap(triIndex, MATERIAL_MAP_SLOT_AO, 0u, uv0, uv1, 1.0);
-  let strength = decodeAoMapIntensity(materialWord);
-  return mix(1.0, rawOcclusion, strength);
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
@@ -313,7 +216,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let primaryHit = traceSceneFirstHitAlphaMask(
+  let primaryHit = traceSceneFirstHitAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -570,5 +473,5 @@ export const SHADE_MODULE: WgslModule = {
   source: SHADE_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint).
-  requires: ['common', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
+  requires: ['common', 'surfaceTextures', 'materialAtlas', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
 };

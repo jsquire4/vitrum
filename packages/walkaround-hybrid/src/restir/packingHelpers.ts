@@ -566,11 +566,11 @@ export function packBVHIndexWFromCore(
  * 'unlit'`. Shade consumes it as a lighting-independent base-color output.
  * Default PBR materials keep bit 1 clear, preserving the pre-unlit lane.
  *
- * Scalar alpha cutout (2026-06-13) — bit 2 carries the backend's scalar-only
+ * Scalar alpha cutout (2026-06-13) — bit 2 carries the backend's scalar
  * coverage decision: `alphaMode:'mask'` discards when `opacity < alphaCutoff`;
  * `alphaMode:'blend'` discards only the fully transparent endpoint
- * (`opacity <= 0`). Texture alpha (`alphaMap`) remains unsupported until the
- * walkaround atlas exists, and fractional blend is warned as approximate by
+ * (`opacity <= 0`). Readable `alphaMap` handles are evaluated by the material
+ * atlas traversal wrapper; fractional blend is warned as approximate by
  * HybridEngine.setScene.
  *
  * AO map strength (2026-06-14) — bits 3-7 carry `aoMapIntensity` quantized to

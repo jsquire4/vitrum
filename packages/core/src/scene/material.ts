@@ -190,6 +190,9 @@ export interface MaterialSpec {
    *  Consumed approximately by pt-webgl2 as a Beer-Lambert distance clamp. */
   readonly thicknessMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
+  /** Coverage/alpha map. Consumed by pt-webgl2, pt-webgpu, and
+   *  walkaround-hybrid's atlas-backed alpha-test traversal for readable
+   *  handles. Fractional `alphaMode:'blend'` remains backend-specific. */
   readonly alphaMap?: TextureRef;
   /** Ambient occlusion map (glTF occlusionTexture).
    *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's

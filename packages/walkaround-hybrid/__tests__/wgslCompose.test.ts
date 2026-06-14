@@ -61,6 +61,7 @@ import { SCENE_TRAVERSAL_WGSL } from '../src/shaders/sceneTraversal.wgsl.js';
 import { RESERVOIR_GI_WGSL } from '../src/shaders/reservoirGi.wgsl.js';
 import { SHARED_PRIMITIVES_WGSL } from '../src/shaders/sharedPrimitives.wgsl.js';
 import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
+import { MATERIAL_ATLAS_WGSL } from '../src/shaders/materialAtlas.wgsl.js';
 import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
 import { JACOBIAN_SHIFT_WGSL } from '../src/shaders/jacobianShift.wgsl.js';
 import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
@@ -230,7 +231,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     // environmentSample now appears at position 2 (before restirPHat) rather
     // than at the end, because restirPHat pulls it in first.
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
     );
   });
 
@@ -239,14 +240,14 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     // environmentSample is emitted before restirPHat in all passes that
     // depend on restirPHat (temporal, spatial, ris).
     expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
     );
   });
 
   it('spatial: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
     // Wave 4: see temporal note above — same dep change.
     expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
+      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
     );
   });
 
@@ -264,6 +265,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL +
       SURFACE_TEXTURES_WGSL +
+      MATERIAL_ATLAS_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +
       OCTAHEDRAL_CORE_WGSL +
@@ -328,6 +330,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       MATERIAL_DECODE_WGSL +
+      MATERIAL_ATLAS_WGSL +
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +
@@ -647,11 +650,11 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 //      the TOP of the composed string, reordering bytes — the exact failure
 //      mode common.wgsl.ts documents for honest inter-sibling `requires`.
 //
-//  (b) The block is NOT identical across consumers: every scene-traversal pass
-//      carries `bvh_normal` (binding 11), but shade adds `bvh_beer`
+//  (b) The block is NOT identical across consumers: shade adds `bvh_beer`
 //      (binding 5) + `bvh_emissive` (binding 12); risGi omits
-//      `emitters`/`emitterCdf` (bindings 3/4). A single shared fragment can
-//      reproduce none of them verbatim.
+//      `emitters`/`emitterCdf` (bindings 3/4). `bvh_normal` (binding 11) is now
+//      dependency-owned by materialAtlas.wgsl because alpha-map traversal and
+//      smooth-normal shading both need the same UV1/normal stream.
 //
 // This guard pins the divergence so a future agent doesn't naively "dedup" the
 // block and silently change a composed shader. The DDGIGridUBO struct (byte-
@@ -659,13 +662,12 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 // sits mid-file after the @group(3) texture bindings.
 // ──────────────────────────────────────────────────────────────────────────
 describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable byte-identically)', () => {
-  it('bvh_normal (binding 11) is present in every scene-traversal pass', () => {
+  it('bvh_normal (binding 11) is present once in every composed scene-traversal pass', () => {
     const norm = '@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;';
-    expect(RIS_WGSL).toContain(norm);
-    expect(SHADE_WGSL).toContain(norm);
-    expect(RIS_GI_WGSL).toContain(norm);
-    expect(TEMPORAL_WGSL).toContain(norm);
-    expect(SPATIAL_WGSL).toContain(norm);
+    for (const mod of [RIS_MODULE, SHADE_MODULE, RIS_GI_MODULE, TEMPORAL_MODULE, SPATIAL_MODULE]) {
+      const matches = composeWgsl(mod, WGSL_MODULES).match(new RegExp(norm.replace(/[()<>]/g, '\\$&'), 'g')) ?? [];
+      expect(matches.length).toBe(1);
+    }
   });
 
   it('shade carries bvh_beer (binding 5) + bvh_emissive (binding 12) that no other consumer has', () => {

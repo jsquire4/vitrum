@@ -157,9 +157,8 @@ export const RIS_GI_NRC_BODY = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
-// WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
-// normal. Byte-identical scene-group addition to risGi.wgsl (binding 11).
-@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// WS1 (2026-05-29) — bvh_normal is declared by materialAtlas.wgsl so alpha
+// cutout traversal and NRC GI shading share the same UV1/normal source.
 // A6 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
 // into the real authored roughness at the bounce vertex xs, replacing the
 // old hardcoded xsRough=1.0. Same binding as ris.wgsl / restirCastPrimary.wgsl;
@@ -201,7 +200,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(
     fullPx.x, fullPx.y, fullDims.x, fullDims.y, ubo.cameraPos, invVP,
   );
-  let hit = traceSceneFirstHitAlphaMask(
+  let hit = traceSceneFirstHitAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -295,7 +294,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
     let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
-    let bounceHit = traceSceneFirstHitAlphaMask(
+    let bounceHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -488,6 +487,6 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
     // env bindings 15-19 are already present in the scene BGL for NRC passes.
     // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
     // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
   };
 }

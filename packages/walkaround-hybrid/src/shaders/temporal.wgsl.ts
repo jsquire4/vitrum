@@ -33,7 +33,6 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
-@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;

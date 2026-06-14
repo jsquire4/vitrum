@@ -82,10 +82,10 @@ fn decodeIsUnlitMaterial(packed: u32) -> bool {
   return (packed & 0x2u) != 0u;
 }
 
-// ALPHA-01 (2026-06-13) — bit 2 = scalar alpha discarded. The closest-hit
-// wrapper traceSceneFirstHitAlphaMask skips those triangles globally, while the
-// cast-shadow-masked any-hit path skips them for occlusion rays too. No decode
-// helper is needed by shade because the discarded triangle is never returned.
+// ALPHA-01 (2026-06-13/14) — bit 2 = scalar alpha discarded. The material-atlas
+// wrapper traceSceneFirstHitAlphaMaskTextured skips scalar-discarded triangles
+// and readable alphaMap cutouts globally for primary/RIS/GI traversal; the
+// cast-shadow-masked any-hit path still consumes this scalar bit for occlusion.
 //
 // AO-01 (2026-06-14) — bits 3-7 = aoMapIntensity quantized to 5 bits. glTF's
 // occlusion strength is intentionally low precision here because it is a scalar

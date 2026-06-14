@@ -321,6 +321,9 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           roughnessMap: { handle: baseColorMapHandle(64) },
           aoMap: { handle: baseColorMapHandle(32), wrapS: 'clamp-to-edge' },
           aoMapIntensity: 0.5,
+          alphaMode: 'mask',
+          alphaCutoff: 0.25,
+          alphaMap: { handle: baseColorMapHandle(16), texCoord: 1 },
         },
       });
 
@@ -332,12 +335,14 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableBaseColorLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableRoughnessLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableAoLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
-        material: { baseColorMap?: unknown; roughnessMap?: unknown; aoMap?: unknown };
+        material: { baseColorMap?: unknown; roughnessMap?: unknown; aoMap?: unknown; alphaMap?: unknown };
       }).material;
       expect(material.baseColorMap).toBeDefined();
       expect(material.roughnessMap).toBeDefined();
       expect(material.aoMap).toBeDefined();
+      expect(material.alphaMap).toBeDefined();
     } finally {
       engine.dispose();
     }

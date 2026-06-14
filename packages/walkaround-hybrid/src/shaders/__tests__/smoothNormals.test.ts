@@ -26,11 +26,11 @@ import { describe, expect, it } from 'vitest';
 import { SHADE_WGSL } from '../shade.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
-import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
+import { RIS_GI_NRC_BODY, buildRisGiNrcModule } from '../risGiNrc.wgsl.js';
 import { SCENE_TRAVERSAL_WGSL } from '../sceneTraversal.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../restirCastPrimary.wgsl.js';
-import { TEMPORAL_WGSL } from '../temporal.wgsl.js';
-import { SPATIAL_WGSL } from '../spatial.wgsl.js';
+import { TEMPORAL_MODULE } from '../temporal.wgsl.js';
+import { SPATIAL_MODULE } from '../spatial.wgsl.js';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from '../../skin/gpuSkinBvh.wgsl.js';
 import { BIND_GROUP_TABLE } from '../../pipeline/bindGroupDescriptors.js';
 import { SHADE_MODULE } from '../shade.wgsl.js';
@@ -129,7 +129,25 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     ['risGiNrc', RIS_GI_NRC_BODY],
   ];
 
-  it.each(passes)('%s declares bvh_normal at @group(1) @binding(11)', (_name, src) => {
+  const nrcSmokeModule = buildRisGiNrcModule({
+    levels: 1,
+    featuresPerEntry: 2,
+    oneBlobBins: 4,
+    width: 4,
+    outWidth: 3,
+    hidden: 1,
+  });
+
+  const composedNormalBindingPasses: ReadonlyArray<readonly [string, string]> = [
+    ['shade', composeWgsl(SHADE_MODULE, WGSL_MODULES)],
+    ['ris', composeWgsl(RIS_MODULE, WGSL_MODULES)],
+    ['risGi', composeWgsl(RIS_GI_MODULE, WGSL_MODULES)],
+    ['risGiNrc', composeWgsl(nrcSmokeModule, WGSL_MODULES)],
+    ['temporal', composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)],
+    ['spatial', composeWgsl(SPATIAL_MODULE, WGSL_MODULES)],
+  ];
+
+  it.each(composedNormalBindingPasses)('composed %s declares bvh_normal at @group(1) @binding(11)', (_name, src) => {
     expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
   });
 
@@ -166,9 +184,9 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
   });
 
   it.each([
-    ['temporal', TEMPORAL_WGSL],
-    ['spatial', SPATIAL_WGSL],
-  ])('%s declares bvh_normal for castPrimary smooth-normal evaluation', (_name, src) => {
+    ['temporal', composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)],
+    ['spatial', composeWgsl(SPATIAL_MODULE, WGSL_MODULES)],
+  ])('composed %s declares bvh_normal for castPrimary smooth-normal evaluation', (_name, src) => {
     expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
   });
 

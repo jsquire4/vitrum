@@ -104,7 +104,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
-      'baseColorMap', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity',
+      'baseColorMap', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -131,7 +131,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'normalMap',
       'normalScale',
       'thicknessMap',
-      'alphaMap',
       'displacementMap',
       'displacementScale',
       'displacementBias',
@@ -183,7 +182,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'sheenColor']);
   });
 
-  it('surfaces representative alpha-map, specular, layered, thin-film, and anisotropy drops', () => {
+  it('surfaces representative normal-map, specular, layered, thin-film, and anisotropy drops', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         kind: 'mesh',
@@ -206,7 +205,6 @@ describe('collectUnconsumedMaterialFields', () => {
       },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual([
-      'alphaMap',
       'anisotropyMap',
       'backLayer',
       'frontLayer',

@@ -356,8 +356,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Folded into emitter Le at classification (emitterClassify.ts Le = emissive·ei).
   emissiveIntensity: 'native',
   shadingModel: 'approximate',
-  // Scalar-only cutout: mask uses opacity < alphaCutoff; blend supports only
-  // the fully-transparent endpoint and warns for fractional coverage.
+  // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
+  // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
+  // Blend supports only the fully-transparent endpoint and warns for fractional
+  // coverage because order-independent composition is not implemented.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',
@@ -377,8 +379,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   baseColorMap: 'approximate',
   // Phase-3D scalar-map slice: roughness/metallic sample glTF G/B channels in
   // shade for visible BRDF terms; AO samples the glTF R channel and multiplies
-  // the runtime GTAO factor. Approximate because upstream reservoir/candidate
-  // PDFs and GI payloads still use the scalar packed lanes.
+  // the runtime GTAO factor; alphaMap samples R for primary/RIS/GI cutout
+  // traversal. Approximate because upstream reservoir/candidate PDFs and GI
+  // payloads still use scalar packed lanes, and alpha blend has no OIT path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'unsupported',
@@ -386,7 +389,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   transmissionMap: 'unsupported',
   thicknessMap: 'unsupported',
   emissiveMap: 'unsupported',
-  alphaMap: 'unsupported',
+  alphaMap: 'approximate',
   aoMap: 'approximate',
   aoMapIntensity: 'approximate',
   clearcoatMap: 'unsupported',

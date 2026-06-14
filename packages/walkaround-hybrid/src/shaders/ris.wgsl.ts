@@ -47,7 +47,6 @@ export const RIS_WGSL = /* wgsl */ `
 // normal. ris uses it for the BRDF / candidate p̂; the geometric normal is
 // kept for the shadow-ray offset. (Beer texture binding 5 is shade-only — ris
 // declares a subset of the scene BGL; WGSL permits that.)
-@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 // B1 — per-triangle roughness+metalness (r32uint texture). Decoded into the
 // real GGX roughness/metal that feed evalGGX in the candidate p̂ (was hardcoded
 // rough=0.85/0.05, metal=0).
@@ -134,7 +133,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let invVP = invertMat4_common(vp);
 
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = traceSceneFirstHitAlphaMask(
+  let hit = traceSceneFirstHitAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -507,5 +506,5 @@ export const RIS_MODULE: WgslModule = {
   // B3 — environmentSample adds the scene-group env bindings (15-19) + the
   // directional lookup/importance helpers; ordered after restirPHat→common so
   // WalkaroundUBO/safe_normalize/rand_f32 are in scope.
-  requires: ['restirPHat', 'regir', 'environmentSample'],
+  requires: ['restirPHat', 'materialAtlas', 'regir', 'environmentSample'],
 };

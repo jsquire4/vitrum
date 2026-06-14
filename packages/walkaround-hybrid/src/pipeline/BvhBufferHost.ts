@@ -57,7 +57,7 @@ export interface SceneBindGroupResources {
    *  ReSTIR/shade GGX BRDF + glossy/metal GI target read it via
    *  `decodeRoughMetal(triIndex)`. Same r32uint layout as `bvhBeer`. */
   bvhRoughMetalTextureView: GPUTextureView;
-  /** Phase-3D first slice — baseColorMap RGBA32F array texture. */
+  /** Phase-3D material-map RGBA32F array texture. */
   materialTextureAtlasView: GPUTextureView;
   /** Phase-3D first slice — per-triangle baseColorMap layer/UV metadata. */
   baseColorMapMetaTextureView: GPUTextureView;

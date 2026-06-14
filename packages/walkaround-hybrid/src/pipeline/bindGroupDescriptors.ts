@@ -214,11 +214,11 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 17, kind: 'tex', note: 'env_conditional (W×H inverse-CDF, r32float; random→col u)' },
       { binding: 18, kind: 'sampler:nf', note: 'env_sampler (declared for completeness; lookups use textureLoad)' },
       { binding: 19, kind: 'uniform', note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 416B)' },
-      // Phase-3D first slice — baseColorMap atlas and per-triangle metadata.
+      // Phase-3D material-map atlas and per-triangle metadata.
       // Both are textures (not storage buffers) so the scene group stays inside
       // the full-tier WebGPU storage-buffer floor.
-      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (baseColorMap RGBA32F array, shade-only first slice)' },
-      { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle layer/wrap/transform metadata)' },
+      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (readable material maps as RGBA32F array layers)' },
+      { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle map layer/wrap/transform/coverage metadata)' },
     ],
   },
   {

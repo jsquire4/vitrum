@@ -56,9 +56,13 @@
  *                           the runtime GTAO factor for diffuse lighting.
  *  aoMapIntensity         packBVHRoughMetalFromCore stores the glTF
  *                           occlusion strength in material-word bits 3-7.
+ *  alphaMap               materialAtlas.wgsl samples readable alpha maps in
+ *                           primary traversal, RIS, and GI bounce casts; mask
+ *                           uses opacity * alphaMap.r < alphaCutoff, while
+ *                           blend remains approximate for fractional coverage.
  *
  * Everything else — TextureRef maps other than baseColorMap / roughnessMap /
- * metallicMap / aoMap (including alphaMap), Disney BSDF scalars, spectral curves,
+ * metallicMap / aoMap / alphaMap, Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
  * extension scalars — is IGNORED.
  */
@@ -85,6 +89,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'metallicMap',
   'aoMap',
   'aoMapIntensity',
+  'alphaMap',
 ]);
 
 /**

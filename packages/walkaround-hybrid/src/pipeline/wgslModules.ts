@@ -52,6 +52,7 @@ import { RESERVOIR_GI_MODULE } from '../shaders/reservoirGi.wgsl.js';
 import { SHARED_PRIMITIVES_MODULE } from '../shaders/sharedPrimitives.wgsl.js';
 import { GGX_BRDF_MODULE } from '../shaders/ggxBrdf.wgsl.js';
 import { MATERIAL_DECODE_MODULE } from '../shaders/materialDecode.wgsl.js';
+import { MATERIAL_ATLAS_MODULE } from '../shaders/materialAtlas.wgsl.js';
 import { EMITTER_SAMPLING_MODULE } from '../shaders/emitterSampling.wgsl.js';
 import { JACOBIAN_SHIFT_MODULE } from '../shaders/jacobianShift.wgsl.js';
 import { GRIS_REUSE_MODULE } from '../shaders/grisReuse.wgsl.js';
@@ -236,6 +237,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SHARED_PRIMITIVES_MODULE.name, SHARED_PRIMITIVES_MODULE],
   [GGX_BRDF_MODULE.name, GGX_BRDF_MODULE],
   [MATERIAL_DECODE_MODULE.name, MATERIAL_DECODE_MODULE],
+  [MATERIAL_ATLAS_MODULE.name, MATERIAL_ATLAS_MODULE],
   [EMITTER_SAMPLING_MODULE.name, EMITTER_SAMPLING_MODULE],
   [JACOBIAN_SHIFT_MODULE.name, JACOBIAN_SHIFT_MODULE],
   // GRIS / ReSTIR-PT reconnection-shift + pairwise MIS (Lin et al. 2022).
