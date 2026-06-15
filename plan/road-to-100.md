@@ -241,6 +241,9 @@ buckets that the A–D framing was missing:**
   rather than live-computed "frozen" values. `oidnFinalDenoiser.test.ts` now pins
   dispatch-time OIDN failure degradation on walkaround: raw HDR fallback remains visible,
   state becomes retryable `failed`, and the next dispatch retries successfully.
+  `sprint9-10a-welford.test.ts` now adds an independent two-pass arithmetic oracle for
+  Welford mean/M2 variance plus sample-budget first-frame and threshold tier behavior,
+  so that formerly string-only adaptive-sampling path has executable numeric coverage.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,

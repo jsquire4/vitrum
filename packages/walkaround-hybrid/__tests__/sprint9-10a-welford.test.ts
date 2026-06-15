@@ -9,6 +9,8 @@
  * Coverage:
  *   1. COMMON_WGSL — WelfordVariance struct + helpers present, layout comment
  *      references RG32Float (8 bytes/texel).
+ *   1a. CPU oracle — Welford update/variance and sample-budget tier semantics
+ *      checked against independent two-pass sample-variance vectors.
  *   2. SAMPLE_BUDGET_WGSL — entry point present, required bindings declared,
  *      sampleTierFromVariance function present, threshold params bound.
  *   3. RESOLVE_WGSL — entry point present, required bindings declared,
@@ -29,6 +31,51 @@ import { createVarianceBuffer, createFrameResources } from '../src/pipeline/reso
 // WebGPU global polyfills for the Node test environment — see helpers file.
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 installWebGPUPolyfills();
+
+type WelfordState = {
+  mean: number;
+  m2: number;
+};
+
+function updateWelfordReference(prev: WelfordState, sample: number, n: number): WelfordState {
+  const delta = sample - prev.mean;
+  const mean = prev.mean + delta / n;
+  const m2 = prev.m2 + delta * (sample - mean);
+  return { mean, m2 };
+}
+
+function runWelfordReference(samples: readonly number[]): WelfordState {
+  let state: WelfordState = { mean: 0, m2: 0 };
+  for (const [idx, sample] of samples.entries()) {
+    state = updateWelfordReference(state, sample, idx + 1);
+  }
+  return state;
+}
+
+function directSampleVariance(samples: readonly number[]): number {
+  if (samples.length < 2) return 0;
+  const mean = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+  const m2 = samples.reduce((sum, sample) => sum + (sample - mean) ** 2, 0);
+  return m2 / (samples.length - 1);
+}
+
+function welfordVarianceReference(state: WelfordState, n: number): number {
+  if (n < 2) return 0;
+  return state.m2 / (n - 1);
+}
+
+function sampleTierFromVarianceReference(v: number, thresholdLow: number, thresholdHigh: number): 1 | 2 | 4 {
+  if (v < thresholdLow) return 1;
+  if (v < thresholdHigh) return 2;
+  return 4;
+}
+
+function sampleBudgetTierReference(samples: readonly number[], thresholdLow: number, thresholdHigh: number): 1 | 2 | 4 {
+  const n = samples.length;
+  const state = runWelfordReference(samples);
+  const variance = welfordVarianceReference(state, n);
+  return n < 2 ? 4 : sampleTierFromVarianceReference(variance, thresholdLow, thresholdHigh);
+}
 
 // ─── 1. COMMON_WGSL — WelfordVariance struct ─────────────────────────────────
 
@@ -105,6 +152,38 @@ describe('COMMON_WGSL — WelfordVariance struct (Sprint 9 / Decision 13)', () =
     const f32Fields = (structBody.match(/:\s+f32/g) ?? []).length;
     // Exactly 2 f32 fields = exactly 8 bytes = RG32Float.
     expect(f32Fields).toBe(2);
+  });
+});
+
+// ─── 1a. Welford/sample-budget behavior oracle ───────────────────────────────
+
+describe('Welford/sample-budget behavior oracle', () => {
+  it('matches an independent two-pass unbiased variance calculation', () => {
+    const samples = [0.25, 1.0, 0.5, 2.0, 1.25] as const;
+    const state = runWelfordReference(samples);
+    const directMean = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+
+    expect(state.mean).toBeCloseTo(directMean, 12);
+    expect(welfordVarianceReference(state, samples.length)).toBeCloseTo(directSampleVariance(samples), 12);
+  });
+
+  it('keeps the unbiased variance degenerate guard at zero for n < 2', () => {
+    expect(welfordVarianceReference({ mean: 0, m2: 999 }, 0)).toBe(0);
+    expect(welfordVarianceReference({ mean: 0.75, m2: 999 }, 1)).toBe(0);
+  });
+
+  it('preserves sample-tier threshold edges and first-frame low-confidence override', () => {
+    const thresholdLow = 0.01;
+    const thresholdHigh = 0.10;
+
+    expect(sampleBudgetTierReference([], thresholdLow, thresholdHigh)).toBe(4);
+    expect(sampleBudgetTierReference([0.5], thresholdLow, thresholdHigh)).toBe(4);
+    expect(sampleBudgetTierReference([1.0, 1.02, 1.01], thresholdLow, thresholdHigh)).toBe(1);
+    expect(sampleBudgetTierReference([0.9, 1.1], thresholdLow, thresholdHigh)).toBe(2);
+    expect(sampleBudgetTierReference([0.0, 1.0], thresholdLow, thresholdHigh)).toBe(4);
+
+    expect(sampleTierFromVarianceReference(thresholdLow, thresholdLow, thresholdHigh)).toBe(2);
+    expect(sampleTierFromVarianceReference(thresholdHigh, thresholdLow, thresholdHigh)).toBe(4);
   });
 });
 
