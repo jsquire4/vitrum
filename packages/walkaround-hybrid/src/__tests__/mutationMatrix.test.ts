@@ -73,6 +73,38 @@ function baseColorMapHandle(r: number): { width: number; height: number; data: U
   };
 }
 
+const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
+  displacementMap: { handle: { id: 'height' } },
+  displacementScale: 0.2,
+  displacementBias: -0.1,
+  spectralAttenuation: {
+    wavelengthStart: 380,
+    wavelengthEnd: 700,
+    values: new Float32Array([0.1, 0.2, 0.3]),
+  },
+  dispersionAbbeNumber: 42,
+  scatteringCoefficient: 0.15,
+  scatteringAnisotropy: 0.25,
+  scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+  frontLayer: { transmission: [1, 0.5, 0.25] },
+  backLayer: { transmission: [0.25, 0.5, 1] },
+  thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
+};
+
+const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
+  'backLayer',
+  'dispersionAbbeNumber',
+  'displacementBias',
+  'displacementMap',
+  'displacementScale',
+  'frontLayer',
+  'scatteringAnisotropy',
+  'scatteringCoefficient',
+  'scatteringCoefficientRGB',
+  'spectralAttenuation',
+  'thinFilmStack',
+];
+
 function baseScene(emitters: readonly SceneEmitter[] = []): Scene {
   return {
     primitives: [
@@ -309,7 +341,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits structured warnings for unsupported displacement fields', () => {
+  it('updatePrimitive(material) emits structured warnings for every permanently unsupported material field', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -317,9 +349,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           baseColor: [0.6, 0.6, 0.6],
           roughness: 0.35,
           metallic: 0,
-          displacementMap: { handle: { id: 'height' } },
-          displacementScale: 0.2,
-          displacementBias: -0.1,
+          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
           envMapIntensity: 0.35,
         },
       });
@@ -328,11 +358,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         w.code === 'walkaround-hybrid.unconsumed-material-fields',
       );
       expect(materialWarning?.method).toBe('updatePrimitive');
-      expect(materialWarning?.details?.fields).toEqual([
-        'displacementBias',
-        'displacementMap',
-        'displacementScale',
-      ]);
+      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
     } finally {
       engine.dispose();
     }

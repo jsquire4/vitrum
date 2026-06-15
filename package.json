@@ -33,7 +33,8 @@
     "shader-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/shader-gate/gate.mjs",
     "shader-gate:glsl": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp tools/shader-gate/glslGate.mjs",
     "behavioral-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net tools/behavioral-gate/gate.mjs",
-    "behavioral-gate:tlas-glass-shadow": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/behavioral-gate/tlas-glass-shadow-oracle.mjs"
+    "behavioral-gate:tlas-glass-shadow": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/behavioral-gate/tlas-glass-shadow-oracle.mjs",
+    "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs"
   },
   "engines": {
     "node": ">=20"

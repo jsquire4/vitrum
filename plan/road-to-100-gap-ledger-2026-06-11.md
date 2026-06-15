@@ -1354,12 +1354,22 @@ Evidence:
   and ReSTIR-PT producer suffix/source Lo.
 
 Closure:
-- Complete `CAP-01` / `GATE-02` before calling arbitrary glTF closed.
+- `CAP-01` / the core material matrix is no longer the blocker for this row:
+  `engineContract.test.ts` keeps every `MaterialSpec` key ledgered, and the
+  2026-06-15 walkaround follow-up pins the permanent unsupported family
+  (`displacement*`, spectral/dispersion/scattering, layered, and thin-film stack
+  fields) through both `setScene()` and `updatePrimitive()` structured warnings.
+- `tools/gltf-material-sweep/` now covers the CPU/API half of the material sweep:
+  it loads a synthetic glTF through `loadGltfAndDecodeTextures()`, checks every
+  base/KHR texture field in `textureDecodeReport`, verifies uv1 transform
+  preservation, and asserts backend readiness including walkaround `thicknessMap`
+  as `ready`.
 - Prefer pt-webgl2/full pt-webgpu for fidelity policy until walkaround either
   implements texture-driven PBR fallback or is explicitly a realtime-profile
   target in the compatibility report.
-- Add a glTF material sweep that feeds each imported material feature through
-  all shipping backends and asserts native/approximate/unsupported diagnostics.
+- Remaining material-furnace proof is GPU/reference-render work: render the
+  sweep/golden fixtures on the recommended backend, assert non-black output, and
+  compare against tolerance-bounded references.
 - Remaining pt-webgpu material-lobe work must be scheduled as specialty schema
   work, not helper plumbing: inverse/adjoint gradients, BDPT light-side
   clearcoat-normal/layer/thin-film/spectral parity, and reference A/B /
@@ -1449,12 +1459,17 @@ Closure:
   `resolveTextureRef()` consumer in `materials.ts` and proves the decoded handle,
   UV-set override, and KHR texture transform survive `gltfToScene()` for each
   imported base/KHR material map.
+- The CPU material-sweep preflight is closed:
+  `tools/gltf-material-sweep/sweep.mjs` exercises
+  `loadGltfAndDecodeTextures()`, `textureDecodeReport`, backend compatibility,
+  and backend-readiness diagnostics across the same material-map family. The
+  follow-up fixed walkaround `thicknessMap` readiness drift and added a
+  source-pathed `KHR_materials_dispersion` unsupported compatibility assertion.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
   parity is required, walkaround sorted/weighted transparent composition plus
-  the remaining atlas map families (extension/bump/displacement
-  policy), and backend material-consumption
-  parity.
+  displacement/spectral/layered/scattering promotion if those ever become
+  walkaround goals, and backend material-consumption parity.
 
 ## P5 validation and promotion gates
 
@@ -1484,8 +1499,12 @@ Status:
 - 2026-06-15 follow-up: pt-webgpu now has direct descriptor/WGSL pins for the
   native scalar lanes `aoMapIntensity`, `lightMapIntensity`, and
   `envMapIntensity`; walkaround-hybrid now consumes `envMapIntensity` through
-  material-atlas metadata plus HDRI ReSTIR-DI p-hat/resolve paths, and keeps an
-  engine-level structured warning fixture for unsupported displacement fields.
+  material-atlas metadata plus HDRI ReSTIR-DI p-hat/resolve paths. The warning
+  tests now cover the full permanent walkaround unsupported material family on
+  both scene load and material update, not only displacement.
+- 2026-06-15 glTF sweep follow-up: `npm run gltf-material-sweep` keeps the
+  CPU/API material sweep executable, including `textureDecodeReport` and
+  backend-readiness checks for every imported base/KHR material map.
 - Keep this gate as a permanent regression guard when adding new material
   fields or promoting backend support rows.
 

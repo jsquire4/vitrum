@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@vitrum/core": "../../packages/core/src/index.ts",
+    "@vitrum/gltf-adapter": "../../packages/gltf-adapter/src/index.ts"
+  }
+}

@@ -704,11 +704,13 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, `envMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission/thickness tint,
 emitter power, upstream reservoir/GI payloads, and baked light maps' non-camera
-paths still use scalar packed lanes, and bump/displacement map families are still open or deliberately unsupported.
+paths still use scalar packed lanes. Bump maps are now a shade-owned visible
+normal perturbation; displacement maps remain deliberately unsupported until a
+true geometry/BVH displacement path exists.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
-| Atlas build | ✅ FOURTH SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap`, `emissiveMap`, specular-color, and sheen-color raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, `thicknessMap`, `lightMap`, specular-intensity, clearcoat, clearcoat-roughness, clearcoat-normal, sheen-roughness, anisotropy, iridescence, and iridescence-thickness maps are packed as linear map layers and sampled from their glTF channels. Scalar `envMapIntensity` is packed in atlas metadata and consumed by HDRI ReSTIR-DI scoring/reuse/resolve. Remaining maps still need atlas rows/channel policy or explicit unsupported routing. |
+| Atlas build | ✅ FOURTH SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap`, `emissiveMap`, specular-color, and sheen-color raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `bumpMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, `thicknessMap`, `lightMap`, specular-intensity, clearcoat, clearcoat-roughness, clearcoat-normal, sheen-roughness, anisotropy, iridescence, and iridescence-thickness maps are packed as linear map layers and sampled from their glTF channels. Scalar `envMapIntensity` is packed in atlas metadata and consumed by HDRI ReSTIR-DI scoring/reuse/resolve. Displacement and the spectral/layered/scattering families stay explicit unsupported warnings, not silent atlas drops. |
 | UV buffer | ✅ FIRST SLICE: `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | uv0 rides `bvh_position.w`; uv1 rides `bvh_normal.w` using the same packed 16:16 unorm convention. |
 | Tangent buffer | ✅ FOURTH SLICE: `shared-bvh/worldSpaceMerge.ts`, `restir/bvhCore.ts`, `pipeline/bvhTangentTexture.ts`, `materialAtlas.wgsl.ts` | TLAS packs forward `packSceneFromCore().tangents`; merged-world packs transform authored/generated tangent directions and flips handedness for mirrored transforms; walkaround uploads the vec4 stream as scene binding 22 (`rgba32float` texture) and the normal/clearcoat-normal TBN path prefers it before falling back to UV-gradient derivation. Ledger rows stay approximate for reservoir/GI/PDF scope, not because tangent data is dropped. |
 | Bind group | ✅ FOURTH SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-22 add a shared material-map atlas + metadata + tangent texture as textures, not storage buffers, preserving the storage-buffer budget. |
@@ -732,7 +734,7 @@ Scalar `specularColor` / `specularIntensity`, readable `specularColorMap` / `spe
 
 #### 3F — Fields intentionally permanent `unsupported` on walkaround
 
-Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersionAbbeNumber`, `thinFilmStack`, `scattering*`, `frontLayer`/`backLayer` (unless stained-glass scope). **Arbitrary glTF 100%** routes assets using these to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
+Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersionAbbeNumber`, `thinFilmStack`, `scattering*`, `frontLayer`/`backLayer` (unless stained-glass scope). These fields are now pinned by walkaround unit + engine-warning tests on both `setScene()` and `updatePrimitive()`, including the `KHR_materials_dispersion` source path in glTF compatibility reporting. **Arbitrary glTF 100%** routes assets using these to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
 
 #### 3G — Structural debt (items_to_fix §H)
 
@@ -835,7 +837,14 @@ The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, h
 
 #### 5A — Material furnace + glTF sweep
 
-**New:** `tools/gltf-material-sweep/`
+✅ **CPU PREFLIGHT ADDED (2026-06-15):** `tools/gltf-material-sweep/` plus
+`npm run gltf-material-sweep` now builds a synthetic material-heavy glTF asset,
+loads it through `loadGltfAndDecodeTextures()`, asserts every base/KHR material
+texture appears in `textureDecodeReport`, verifies `KHR_texture_transform`
+`texCoord` survives as uv1, and checks backend-readiness diagnostics for
+pt-webgl2, pt-webgpu, and walkaround-hybrid. This caught and fixed the stale
+walkaround `thicknessMap` readiness classifier: the adapter now reports it
+`ready`, matching the shipped walkaround atlas/shader path.
 
 For each fixture in `tools/reference-assets/gltf/`:
 1. `loadGltfAsset` + `decodeSceneTextures`
@@ -843,6 +852,9 @@ For each fixture in `tools/reference-assets/gltf/`:
 3. Render 64spp on **recommended** backend
 4. Assert `meanLum > ε`, no GPU validation errors
 5. Compare hash to golden PNG (tolerance for MC noise on PT)
+
+**Still queued:** the GPU render/golden-PNG half above. The new sweep is the
+CPU/API/diagnostic preflight, not a substitute for reference captures.
 
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 

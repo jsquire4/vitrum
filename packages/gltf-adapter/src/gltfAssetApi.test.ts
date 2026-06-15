@@ -848,7 +848,7 @@ describe('decodeSceneTextures', () => {
 describe('analyzeGltfAsset and compatibility ranking', () => {
   it('reports material fields, unsupported extensions, resources, and animation paths', () => {
     const gltf = makeExternalTexturedGltf();
-    gltf.extensionsUsed = ['KHR_materials_unlit', 'KHR_materials_pbrSpecularGlossiness'];
+    gltf.extensionsUsed = ['KHR_materials_unlit', 'KHR_materials_dispersion', 'KHR_materials_pbrSpecularGlossiness'];
     gltf.materials![0] = {
       ...gltf.materials![0]!,
       normalTexture: { index: 0, texCoord: 1 },
@@ -857,6 +857,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         KHR_materials_volume: {
           thicknessFactor: 0.5,
           thicknessTexture: { index: 0 },
+        },
+        KHR_materials_dispersion: {
+          dispersion: 0.05,
         },
         KHR_materials_pbrSpecularGlossiness: {
           specularGlossinessTexture: { index: 0 },
@@ -873,7 +876,15 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(report.extensions.unsupportedOptional).not.toContain('KHR_materials_unlit');
     expect(report.materials.unsupportedKnownExtensions).not.toContain('KHR_materials_unlit');
     expect(report.materials.materialFields).toEqual(
-      expect.arrayContaining(['baseColor', 'baseColorMap', 'normalMap', 'shadingModel', 'thickness', 'thicknessMap']),
+      expect.arrayContaining([
+        'baseColor',
+        'baseColorMap',
+        'dispersionAbbeNumber',
+        'normalMap',
+        'shadingModel',
+        'thickness',
+        'thicknessMap',
+      ]),
     );
     expect(report.materials.textureFields).toEqual(
       expect.arrayContaining(['baseColorMap', 'normalMap', 'thicknessMap']),
@@ -911,6 +922,13 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       issue.name === 'shadingModel' &&
       issue.support === 'approximate',
     )).toBe(true);
+    const walkaroundCompatibility = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
+    expect(walkaroundCompatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'material',
+      name: 'dispersionAbbeNumber',
+      support: 'unsupported',
+      path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
+    }));
   });
 
   it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {

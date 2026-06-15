@@ -154,9 +154,10 @@ const SWEEP_MAPS: ReadonlyArray<readonly [keyof MaterialSpec, number]> = [
   ['iridescenceMap', 13],         // KHR_materials_iridescence
   ['iridescenceThicknessMap', 14],
   ['anisotropyMap', 15],          // KHR_materials_anisotropy
+  ['thicknessMap', 16],           // KHR_materials_volume
 ];
 
-const TEXTURE_COUNT = 16;
+const TEXTURE_COUNT = 17;
 
 const SRGB_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'baseColorMap',
@@ -174,6 +175,7 @@ const WALKAROUND_OPAQUE_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'alphaMap',
   'emissiveMap',
   'transmissionMap',
+  'thicknessMap',
   'specularColorMap',
   'specularIntensityMap',
   'clearcoatMap',
@@ -213,6 +215,11 @@ function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } 
         KHR_materials_transmission: {
           transmissionFactor: 0.9,
           transmissionTexture: texInfo(5),
+        },
+        KHR_materials_volume: {
+          thicknessFactor: 0.5,
+          thicknessTexture: texInfo(16),
+          attenuationDistance: 2.0,
         },
         KHR_materials_specular: {
           specularFactor: 0.5,

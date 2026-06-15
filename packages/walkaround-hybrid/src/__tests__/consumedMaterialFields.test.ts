@@ -57,6 +57,38 @@ function makeOpts(): HybridEngineOptions {
 /** Convenience alias for the parameter type of collectUnconsumedMaterialFields. */
 type PrimLike = { readonly id?: string; readonly kind: string; readonly material?: Record<string, unknown> };
 
+const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
+  displacementMap: { handle: { id: 'height' } },
+  displacementScale: 0.2,
+  displacementBias: -0.1,
+  spectralAttenuation: {
+    wavelengthStart: 380,
+    wavelengthEnd: 700,
+    values: new Float32Array([0.1, 0.2, 0.3]),
+  },
+  dispersionAbbeNumber: 42,
+  scatteringCoefficient: 0.15,
+  scatteringAnisotropy: 0.25,
+  scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+  frontLayer: { transmission: [1, 0.5, 0.25] },
+  backLayer: { transmission: [0.25, 0.5, 1] },
+  thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
+};
+
+const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
+  'backLayer',
+  'dispersionAbbeNumber',
+  'displacementBias',
+  'displacementMap',
+  'displacementScale',
+  'frontLayer',
+  'scatteringAnisotropy',
+  'scatteringCoefficient',
+  'scatteringCoefficientRGB',
+  'spectralAttenuation',
+  'thinFilmStack',
+];
+
 /** A scene with only consumed fields in its material. */
 function consumedOnlyScene(): Scene {
   return {
@@ -137,15 +169,8 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
     }
   });
 
-  it('does NOT contain texture-map fields', () => {
-    for (const f of [
-      'displacementMap',
-      'displacementScale',
-      'displacementBias',
-      'frontLayer',
-      'backLayer',
-      'thinFilmStack',
-    ]) {
+  it('does NOT contain permanently unsupported walkaround fields', () => {
+    for (const f of WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(false);
     }
   });
@@ -182,6 +207,16 @@ describe('collectUnconsumedMaterialFields', () => {
       displacementScale: 0.25,
       displacementBias: -0.05,
     })).toEqual(['displacementBias', 'displacementMap', 'displacementScale']);
+  });
+
+  it('reports every permanently unsupported walkaround material family from a material patch', () => {
+    expect(collectUnconsumedMaterialFieldsForMaterial({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      envMapIntensity: 0.25,
+      ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+    })).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
   });
 
   it('unions across multiple primitives and deduplicates', () => {
@@ -312,7 +347,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits structured warnings for unsupported displacement fields', () => {
+  it('emits structured warnings for every permanently unsupported material field', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -329,9 +364,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
             id: 'unsupported-material-fields',
             material: {
               ...basePrim.material,
-              displacementMap: { handle: { id: 'height' } },
-              displacementScale: 0.2,
-              displacementBias: -0.1,
+              ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
               envMapIntensity: 0.35,
             },
           } as unknown as ScenePrimitive,
@@ -339,19 +372,15 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       };
 
       engine.setScene(scene);
-      const expectedFields = [
-        'displacementBias',
-        'displacementMap',
-        'displacementScale',
-      ];
       const materialWarn = warnSpy.mock.calls.flat().map(String).find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
-      for (const field of expectedFields) {
+      for (const field of WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) {
         expect(materialWarn).toContain(field);
       }
+      expect(materialWarn).not.toContain('envMapIntensity');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
-        JSON.stringify(w.details?.fields) === JSON.stringify(expectedFields),
+        JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS),
       )).toBe(true);
     } finally {
       engine.dispose();

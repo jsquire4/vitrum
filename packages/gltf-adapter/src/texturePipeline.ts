@@ -202,6 +202,7 @@ const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'alphaMap',
   'emissiveMap',
   'transmissionMap',
+  'thicknessMap',
   'lightMap',
   'specularColorMap',
   'specularIntensityMap',
