@@ -43,8 +43,13 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     // for emitter vertices (Lambertian, symmetric) pdfFwd is the correct pdfRev.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/pdfFwd = pdfScatter \* max\(gTerm/);
-    // The §10.3 connection evaluates the REAL light-vertex BSDF (4-row light path).
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 4u;');
+    // The §10.3 connection evaluates the REAL light-vertex BSDF and its hit-local
+    // texture-map material payload (5-row light path).
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 5u;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatNormal,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularColor,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (lvMatId >= 0.0) {');
     // A9 — light-bounce cap raised 3 → 8.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let maxLv = min(params.bdptMaxLightBounces, 8u);');

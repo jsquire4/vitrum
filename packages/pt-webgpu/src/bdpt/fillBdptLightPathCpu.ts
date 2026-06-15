@@ -4,9 +4,10 @@
  *
  * The light path is a read_write storage BUFFER of vec4f (NOT a storage texture —
  * `rgba32float` read_write storage textures are not in core WebGPU; gpuweb #4651).
- * Flattened row-minor as `idx = col * 4 + row` (matches WGSL `bdptLightPathIndex`):
+ * Flattened row-minor as `idx = col * 5 + row` (matches WGSL `bdptLightPathIndex`):
  * per light-vertex column, row 0 = pos (+ kind in .w), row 1 = normal + pdfFwd,
- * row 2 = throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz).
+ * row 2 = throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz),
+ * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex).
  * Bounce 0 is the emitter (matId < 0 ⇒ Lambertian/emission profile).
  */
 
@@ -20,7 +21,7 @@ import {
 
 const KIND_INVALID = 3;
 const KIND_LIGHT = 0;
-const LIGHT_PATH_ROWS = 4;
+const LIGHT_PATH_ROWS = 5;
 /** A9 — row-3 .w sentinel marking the emitter vertex (Lambertian/emission). */
 const LV_EMITTER_MATID = -1;
 

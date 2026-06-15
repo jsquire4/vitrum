@@ -904,6 +904,7 @@ ${transmissiveBlock}
           radiance = radiance + evaluateBdptConnection(
             hitPos,
             normal,
+            clearcoatNormal,
             wo,
             throughputAtVertex,
             baseColor,
@@ -920,6 +921,8 @@ ${transmissiveBlock}
             mat.iridescenceIor,
             mat.iridescenceThicknessMin,
             mat.iridescenceThicknessMax,
+            mat.specularColor,
+            mat.specularIntensity,
             anisoStrength,
             anisoRotation,
             bounce,

@@ -403,11 +403,10 @@ describe('Structural compile-time gate: SSS off when BDPT enabled', () => {
   it('does not change the FrameParams UBO byte size (σ_a lives in materials buffer)', () => {
     const extract = (w: string): string => w.match(/struct FrameParams\s*\{[\s\S]*?\};/)?.[0] ?? '';
     expect(extract(sssOn)).toBe(extract(sssOff));
-    // 400 = 388 raw (26 u32 + 7 f32 + 4 vec4f + 3 mat4x4f) + 12B WGSL struct end-pad
-    // to align to mat4x4f's 16-byte alignment. Pre-N-directional was 384 (3 mat4s
-    // ended flush on a 16-byte boundary); directionalLightCount: u32 adds a trailing
-    // 4B scalar that breaks alignment, causing 12B of end-padding → 400.
-    expect(FRAME_PARAMS_BYTE_SIZE).toBe(400);
+    // 416 = 404 raw bytes (ending at sceneRadius) + 12B WGSL struct end-pad to
+    // preserve 16-byte struct alignment. The important WS4 invariant is that SSS
+    // absorption data stays in the material buffer, not a distinct FrameParams tail.
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(416);
   });
 
   it('no-collision branch divides out the hero-channel survival probability (V23 double-count fix)', () => {

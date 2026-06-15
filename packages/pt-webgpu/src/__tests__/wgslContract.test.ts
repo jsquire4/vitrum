@@ -75,9 +75,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // with non-zero rotationY; rotationY=0 byte-identical to pre-H6.
     // Re-pinned 2026-06-10: A9 (BDPT production quality) — the BDPT-gated light
     // subpath gained a REAL glossy/specular BSDF extension (was Lambertian-only);
-    // the light-path vertex widened to 4 rows (BDPT_LIGHT_PATH_ROWS 3→4, row 3 =
-    // matId + wo-toward-prev) so the §10.3 connection evaluates the REAL light-vertex
-    // BSDF/pdfs (fwdEe/revLcMinus); the connection light-bounce cap rose 3→8; the
+    // the light-path vertex widened first to 4 rows (matId + wo-toward-prev), then
+    // to 5 rows (hit-local tri/bary/instance material payload) so the §10.3
+    // connection evaluates the REAL texture-mapped light-vertex BSDF/pdfs
+    // (fwdEe/revLcMinus); the connection light-bounce cap rose 3→8; the
     // point emitter went isotropic (uniform sphere, was cosine-up). All gated behind
     // `if (params.bdptEnabled != 0u)` so a bdpt:false RUNTIME render is byte-identical
     // (the WGSL STRING changes, hence this re-pin; the OFF runtime path does not).
@@ -247,10 +248,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // binding 11 and multiply baseColor / alpha in material paths.
     // Re-pinned 2026-06-15: finite-area BDPT light-subpath extension now keeps
     // the required cos/pdfΩ = π factor while legacy pseudo emitters keep INV_PI.
-    // Re-pinned 2026-06-15: KHR_materials_volume scalar thickness +
-    // thicknessTexture.g now clamp approximate Beer-Lambert attenuation distance.
-    expect(digest).toBe('519b55ca69c850d79c722925d6e72aaac3977c4ccf6f296bdbb2c5c40e18f2d3');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(359182);
+    // Re-pinned 2026-06-15: BDPT light vertices widened 4→5 rows and now carry
+    // hit-local material payloads for mapped light-subpath scatter/connection.
+    expect(digest).toBe('218f949664d423df358bdb50ea44fb07632a68aeb6fc7516de8594beb7ff2f6f');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(365350);
   });
 });
 
@@ -344,10 +345,10 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('uses extension-aware BRDF/PDF evaluation for BDPT connection endpoints', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn evaluateBdptConnection(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFull(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampled(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
   });
 
   it('includes hero-wavelength MIS helpers when spectral mode is enabled', () => {

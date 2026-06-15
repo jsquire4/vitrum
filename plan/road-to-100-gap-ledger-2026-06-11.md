@@ -429,9 +429,10 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   now use `evaluateBrdfFull` / `brdfDirectionalPdfFull` where the needed
   material fields are locally available. Follow-up sampler/PDF waves closed
   ReSTIR-PT visible/suffix material-map parity, clearcoat/sheen source sampling,
-  and scalar BDPT light-subpath scatter PDFs; remaining schema work is now
-  concentrated in inverse/adjoint gradients and texture-map payloads outside the
-  main eye/ReSTIR/scalar-BDPT paths.
+  and BDPT surface light-subpath scatter PDFs with hit-local material payloads;
+  remaining schema work is now concentrated in inverse/adjoint gradients and
+  BDPT light-side clearcoat-normal/layer/thin-film/spectral special cases outside
+  the main eye/ReSTIR/BDPT surface-scatter paths.
 - The sixteenth arbitrary-glTF loader/API slice landed in `@vitrum/gltf-adapter`:
   high-level URL/resource loading now throws typed `GltfFetchFailed` /
   `GltfResourceNotFound` errors with `{ url, kind }`, `LoadGltfAssetOptions.cache`
@@ -488,9 +489,9 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   BRDF/PDF/source-sampler paths. Follow-up 2026-06-13: pt-webgpu now consumes
   authored/generated tangent.xyzw and handedness for those tangent-space maps.
   The promise ledger still promotes the extension map rows to `approximate`,
-  not `native`, because BDPT light-subpath texture-map payloads are still
-  scalar-only, inverse/adjoint gradients target the base parameterization, and
-  material-lobe reference A/B is still pending.
+  not `native`, because inverse/adjoint gradients target the base parameterization,
+  BDPT light-side clearcoat-normal/layer/thin-film/spectral special cases are not
+  shade-prologue-equivalent yet, and material-lobe reference A/B is still pending.
   Verification: focused pt-webgpu material/WGSL/reuse/lite suites, full
   typecheck, shader gate, and WSL GPU T1 smoke.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
@@ -1123,11 +1124,12 @@ Evidence:
   lobe mixture and stores the matching `pdfSrc` rather than the old base-only
   density. The main eye path now samples the same normalized base/clearcoat/sheen
   mixture through `sampleNextBounceDirection`; MNEE cone-vs-BSDF MIS compares
-  against the same sampled density; and BDPT's scalar light-subpath scatter
+  against the same sampled density; and BDPT's mapped light-subpath scatter
   records matching `brdfDirectionalPdfFullSampled` forward/reverse densities.
   Remaining approximate/schema sites are not simple omissions:
-  inverse adjoints use a separate derivative model, and BDPT light-subpath
-  texture-map payloads are still scalar-only.
+  inverse adjoints use a separate derivative model, and BDPT light-side
+  clearcoat-normal/layer/thin-film/spectral special cases are not yet fully
+  shade-prologue-equivalent.
 
 Closure:
 - Keep the main eye-path `sampleNextBounceDirection` sampled-density regression
@@ -1136,8 +1138,10 @@ Closure:
 - Keep the ReSTIR-PT suffix material-map parity regression pins green; the
   suffix cached-Lo path is code-complete for hit-local maps/layers/thin-film/
   spectral emission, and the producer source-sampler/PDF limit is closed.
-- Keep the scalar BDPT light-subpath sampling/PDF regression pins green; texture
-  map payloads inside the BDPT light-subpath remain a separate schema gap.
+- Keep the BDPT light-subpath sampling/PDF regression pins green. Row-4 hit-local
+  material payloads now cover mapped base/ORM/transmission/normal/bump/extension/
+  specular/anisotropy fields; remaining BDPT work is oracle/reference promotion
+  plus the special-case parity listed above.
 - Add material-furnace and lobe-specific tests plus reference A/B before
   promoting these rows from approximate/experimental.
 
@@ -1346,8 +1350,8 @@ Evidence:
   full helpers: full/lite direct and env lighting, full BSDF-side area/env
   connections, lite BSDF-env connection, SPPM receiver gather, MNEE receiver
   caustics and cone-vs-BSDF sampled PDF, BDPT connection endpoints, main
-  eye-path sampling/PDFs, scalar BDPT light-subpath scattering, and ReSTIR-PT
-  producer suffix/source Lo.
+  eye-path sampling/PDFs, BDPT surface light-subpath material-payload scattering,
+  and ReSTIR-PT producer suffix/source Lo.
 
 Closure:
 - Complete `CAP-01` / `GATE-02` before calling arbitrary glTF closed.
@@ -1357,8 +1361,8 @@ Closure:
 - Add a glTF material sweep that feeds each imported material feature through
   all shipping backends and asserts native/approximate/unsupported diagnostics.
 - Remaining pt-webgpu material-lobe work must be scheduled as specialty schema
-  work, not helper plumbing: inverse/adjoint gradients, BDPT light-subpath
-  texture-map payloads, unsupported clearcoat-normal data, and reference A/B /
+  work, not helper plumbing: inverse/adjoint gradients, BDPT light-side
+  clearcoat-normal/layer/thin-film/spectral parity, and reference A/B /
   material-furnace promotion gates.
 
 ### GLTF-02 - Draco and meshopt compressed primitives
@@ -1517,9 +1521,9 @@ Add independent oracles for:
 - DI ReSTIR candidate accounting and selected-point shading.
 - DDGI miss visibility semantics.
 - Extension-lobe contribution/PDF parity for the remaining schema paths:
-  inverse adjoints, BDPT light-subpath texture-map payloads, unsupported
-  clearcoat-normal data, plus material-furnace/reference A/B for the sampled
-  eye/ReSTIR/scalar-BDPT paths now implemented.
+  inverse adjoints, BDPT light-side clearcoat-normal/layer/thin-film/spectral
+  special cases, plus material-furnace/reference A/B for the sampled
+  eye/ReSTIR/BDPT paths now implemented.
 
 ### GATE-05 - Reference-render A/B suite
 

@@ -277,6 +277,7 @@ fn bdptMISWeightFull(
 fn evaluateBdptConnection(
   eyePos: vec3f,
   eyeNormal: vec3f,
+  eyeClearcoatNormal: vec3f,
   eyeWo: vec3f,
   eyeThroughput: vec3f,
   baseColor: vec3f,
@@ -293,6 +294,8 @@ fn evaluateBdptConnection(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   eyeDepth: u32,
@@ -326,11 +329,11 @@ fn evaluateBdptConnection(
   if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
     return vec3f(0.0);
   }
-  let eyeBrdf = evaluateBrdfFull(
-    baseColor, roughness, metallic, eyeNormal, eyeWo, connDir,
+  let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, eyeNormal, eyeClearcoatNormal, eyeWo, connDir,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    vec3f(1.0), 1.0,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   let cosEye = max(dot(eyeNormal, connDir), 0.0);
@@ -355,6 +358,7 @@ fn evaluateBdptConnection(
   // vertex's connection consistent with the glossy light-subpath BUILD (else the
   // BSDF mismatch between build and connect biases the estimate).
   let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
+  let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];
   let lvMatId = lv3.w;
   let lvWoPrev = lv3.xyz;
   var lightBsdfCosTheta = vec3f(1.0);
@@ -362,14 +366,14 @@ fn evaluateBdptConnection(
     lightBsdfCosTheta = vec3f(cosLight / PI);
   }
   if (lvMatId >= 0.0) {
-    let lvMat = decodeMaterial(u32(lvMatId));
+    let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4);
     let lvBrdf = evaluateBrdfFull(
       lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
       lightNormal, -connDir, lvWoPrev,
       lvMat.clearcoat, lvMat.clearcoatRoughness, lvMat.sheen, lvMat.sheenRoughness, lvMat.sheenColor,
       lvMat.iridescence, lvMat.iridescenceIor, lvMat.iridescenceThicknessMin, lvMat.iridescenceThicknessMax,
       lvMat.specularColor, lvMat.specularIntensity,
-      0.0, 0.0,
+      lvMat.anisotropy, lvMat.anisotropyRotation,
     );
     // bdptGeometricTerm already contributes the light-vertex cosine.
     lightBsdfCosTheta = lvBrdf;
@@ -394,14 +398,14 @@ fn evaluateBdptConnection(
   // light-vertex BSDF used in lightBsdfCosTheta.
   var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
   if (lvMatId >= 0.0) {
-    let lvMatF = decodeMaterial(u32(lvMatId));
+    let lvMatF = bdptSampleMaterialAtPayload(u32(lvMatId), lv4);
     fwdEe = brdfDirectionalPdfFullSampled(
       lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
       0.0, lvMatF.ior, lightNormal, lvWoPrev, lcToE,
       lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,
       lvMatF.iridescence, lvMatF.iridescenceIor, lvMatF.iridescenceThicknessMin, lvMatF.iridescenceThicknessMax,
       lvMatF.specularColor, lvMatF.specularIntensity,
-      0.0, 0.0,
+      lvMatF.anisotropy, lvMatF.anisotropyRotation,
     );
   }
   // E_{e-1} position from scratch (if e>=1); else camera endpoint.
@@ -411,20 +415,20 @@ fn evaluateBdptConnection(
     eeMinusPos = prevEye.pos;
   }
   let eeToPrev = normalize(eeMinusPos - eyePos);  // E_e → E_{e-1} (or → camera at e=0)
-  let revLc = brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, eyeNormal, eeToPrev, connDir,
+  let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, ior, eyeNormal, eyeClearcoatNormal, eeToPrev, connDir,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    vec3f(1.0), 1.0,
+    specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
   var fwdEeMinus = 0.0;
   if (e >= 1u) {
-    fwdEeMinus = brdfDirectionalPdfFullSampled(
-      baseColor, roughness, metallic, transmission, ior, eyeNormal, connDir, eeToPrev,
+    fwdEeMinus = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+      baseColor, roughness, metallic, transmission, ior, eyeNormal, eyeClearcoatNormal, connDir, eeToPrev,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-      vec3f(1.0), 1.0,
+      specularColor, specularIntensity,
       anisotropy, anisotropyRotation,
     );
   }
@@ -436,14 +440,14 @@ fn evaluateBdptConnection(
     let lcm0 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 0u)];
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
     if (lvMatId >= 0.0) {
-      let lvMatR = decodeMaterial(u32(lvMatId));
+      let lvMatR = bdptSampleMaterialAtPayload(u32(lvMatId), lv4);
       revLcMinus = brdfDirectionalPdfFullSampled(
         lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
         0.0, lvMatR.ior, lightNormal, lcToE, lcToLcMinus,
         lvMatR.clearcoat, lvMatR.clearcoatRoughness, lvMatR.sheen, lvMatR.sheenRoughness,
         lvMatR.iridescence, lvMatR.iridescenceIor, lvMatR.iridescenceThicknessMin, lvMatR.iridescenceThicknessMax,
         lvMatR.specularColor, lvMatR.specularIntensity,
-        0.0, 0.0,
+        lvMatR.anisotropy, lvMatR.anisotropyRotation,
       );
     } else {
       revLcMinus = bdptLambertDirPdf(lightNormal, lcToLcMinus);

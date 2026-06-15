@@ -615,9 +615,11 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMap: 'native',
   aoMap: 'native',
   aoMapIntensity: 'native',
-  // Full-tier megakernel samples these extension-lobe maps. Approximate until
-  // ReSTIR-PT/reuse payloads, BDPT light-subpath payloads, and reference A/B
-  // evidence carry the same texture-modulated parameters end-to-end.
+  // Full-tier megakernel, ReSTIR-PT suffix/visible payloads, and BDPT surface
+  // light vertices sample these extension-lobe maps. Approximate until inverse/
+  // adjoint gradients, BDPT light-side clearcoat-normal/layer/thin-film/spectral
+  // special cases, and reference A/B evidence carry the same texture-modulated
+  // parameters end-to-end.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
   // Sampled in the full-tier megakernel clearcoat BRDF/PDF/source sampler, using
@@ -648,9 +650,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescenceIor: 'native',
   iridescenceThicknessRange: 'native',
   // SPEC-01 — scalar factors are packed in material vec4 #27 and consumed by the
-  // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, and BDPT light-subpath
-  // surface scattering. Approximate until ReSTIR-PT reservoirs/resolve and the
-  // remaining legacy default payload paths carry them too.
+  // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, ReSTIR-PT visible-domain
+  // reservoirs/resolve, and BDPT eye/light + light-subpath surface scattering.
+  // Approximate until inverse/adjoint gradients and remaining reference/furnace
+  // proof gates carry the same scalar/material-lobe coherence.
   specularIntensity: 'approximate',
   specularColor: 'approximate',
   envMapIntensity: 'native',

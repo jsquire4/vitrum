@@ -138,11 +138,78 @@ fn bdptWriteLvBsdf(col: i32, matId: f32, woTowardPrev: vec3f) {
   bdptLightPath[bdptLightPathIndex(col, 3u)] = vec4f(woTowardPrev, matId);
 }
 
+// Texture-map payload for surface light vertices. Row 4 keeps the hit-local
+// coordinate system needed by the same material sampling helpers as the eye path.
+fn bdptWriteLvMaterialPayload(col: i32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) {
+  bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(bitcast<f32>(triIndex), baryVW.x, baryVW.y, bitcast<f32>(instanceIndex));
+}
+
+fn bdptClearLvMaterialPayload(col: i32) {
+  bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(0.0);
+}
+
+struct BdptSampledMaterial {
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+}
+
+fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f) -> BdptSampledMaterial {
+  let triIndex = bitcast<u32>(payload.x);
+  let baryVW = payload.yz;
+  let mat = decodeMaterial(matId);
+  var out: BdptSampledMaterial;
+  out.baseColor = mat.baseColor * sampleVertexColor(triIndex, baryVW).rgb * sampleBaseColorTexture(matId, triIndex, baryVW).rgb;
+  out.baseColor = out.baseColor * sampleAoFactor(matId, triIndex, baryVW);
+  let orm = sampleOrmTexture(matId, triIndex, baryVW);
+  out.roughness = clamp(mat.roughness * orm.g, 0.02, 1.0);
+  out.metallic = clamp(mat.metallic * orm.b, 0.0, 1.0);
+  out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  out.ior = mat.ior;
+  out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  out.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  out.sheen = mat.sheen;
+  out.sheenRoughness = clamp(mat.sheenRoughness * sampleSheenRoughnessTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, triIndex, baryVW), vec3f(0.0), vec3f(1.0));
+  out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  let iridescenceThicknessSample = sampleIridescenceThicknessTexture(matId, triIndex, baryVW);
+  out.iridescenceThicknessMin = mat.iridescenceThicknessMin;
+  out.iridescenceThicknessMax = mat.iridescenceThicknessMax;
+  if (iridescenceThicknessSample >= 0.0) {
+    let iridescenceThickness = mix(mat.iridescenceThicknessMin, mat.iridescenceThicknessMax, iridescenceThicknessSample);
+    out.iridescenceThicknessMin = iridescenceThickness;
+    out.iridescenceThicknessMax = iridescenceThickness;
+    if (iridescenceThickness <= 0.0) { out.iridescence = 0.0; }
+  }
+  out.iridescenceIor = mat.iridescenceIor;
+  out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW), vec3f(0.0), vec3f(1.0));
+  out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, triIndex, baryVW), 0.0, 1.0);
+  out.anisotropy = materialAnisotropy(matId, triIndex, baryVW);
+  out.anisotropyRotation = materialAnisotropyRotation(matId, triIndex, baryVW);
+  return out;
+}
+
 fn bdptWriteInvalid(col: i32) {
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(0.0, 0.0, 0.0, BDPT_KIND_INVALID);
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(0.0);
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(0.0);
   bdptLightPath[bdptLightPathIndex(col, 3u)] = vec4f(0.0, 0.0, 0.0, BDPT_LV_EMITTER_MATID);
+  bdptClearLvMaterialPayload(col);
 }
 
 fn bdptFinishBounce0(
@@ -163,6 +230,7 @@ fn bdptFinishBounce0(
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
   // Emitter vertex → Lambertian/emission profile in the connection (matId < 0).
   bdptWriteLvBsdf(col, BDPT_LV_EMITTER_MATID, emitNormal);
+  bdptClearLvMaterialPayload(col);
 }
 
 fn bdptFinishBounce0Area(
@@ -182,6 +250,7 @@ fn bdptFinishBounce0Area(
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(emitNormal, pdfPos);
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
   bdptWriteLvBsdf(col, BDPT_LV_AREA_EMITTER_MATID, emitNormal);
+  bdptClearLvMaterialPayload(col);
 }
 
 // A9 — ISOTROPIC point-emitter bounce-0 finish. A point light emits uniformly over
@@ -214,6 +283,7 @@ fn bdptFinishBounce0Isotropic(
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfDir);
   // Point emitter vertex → emitter profile in the connection (matId < 0).
   bdptWriteLvBsdf(col, BDPT_LV_EMITTER_MATID, dir);
+  bdptClearLvMaterialPayload(col);
 }
 
 fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
@@ -451,7 +521,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     } else {
       // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
       // the direction that brought the path to prevPos from its predecessor).
-      let prevMat = decodeMaterial(u32(prevMatId));
+      let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
+      let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload);
       let prevBc = prevMat.baseColor;
       let prevRough = max(prevMat.roughness, 0.02);
       let prevMetal = prevMat.metallic;
@@ -477,8 +548,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
         prevMat.sheen,
         prevMat.sheenRoughness,
         prevMat.sheenColor,
-        0.0,
-        0.0,
+        prevMat.anisotropy,
+        prevMat.anisotropyRotation,
       );
       scatterDir = bsPrev.sampledDir;
       pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
@@ -488,7 +559,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
                                       prevMat.iridescence, prevMat.iridescenceIor,
                                       prevMat.iridescenceThicknessMin, prevMat.iridescenceThicknessMax,
                                       prevMat.specularColor, prevMat.specularIntensity,
-                                      0.0, 0.0);
+                                      prevMat.anisotropy, prevMat.anisotropyRotation);
       cosPrev = max(dot(prevNormal, scatterDir), 0.0);
       fPrev = evaluateBrdfFull(
         prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir,
@@ -497,7 +568,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
         prevMat.iridescence, prevMat.iridescenceIor,
         prevMat.iridescenceThicknessMin, prevMat.iridescenceThicknessMax,
         prevMat.specularColor, prevMat.specularIntensity,
-        0.0, 0.0,
+        prevMat.anisotropy, prevMat.anisotropyRotation,
       );
     }
   
@@ -515,7 +586,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       continue;
     }
     let matIdx = hitMaterialId(hit);
-    let mat = decodeMaterial(matIdx);
+    let matPayload = vec4f(bitcast<f32>(hit.triIndex), hit.baryVW.x, hit.baryVW.y, bitcast<f32>(hit.instanceIndex));
+    let mat = bdptSampleMaterialAtPayload(matIdx, matPayload);
     // Perfect-specular TRANSMISSION (glass) is non-reconnectable on the light path —
     // the reconnection-shift / Veach connection assumes a non-singular BSDF at the
     // connectable vertex. (A glossy/rough refractive vertex IS handled by the real
@@ -527,7 +599,9 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     let newPos = ray.origin + ray.direction * hit.dist;
     let newNormal = safe_normalize(hit.normal);
     // Front-relative shading normal at the new vertex (toward the incoming light dir).
-    let nsFront = select(-newNormal, newNormal, dot(newNormal, -scatterDir) > 0.0);
+    var nsFront = select(-newNormal, newNormal, dot(newNormal, -scatterDir) > 0.0);
+    nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
+    nsFront = applyBumpMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
     // Outgoing direction at newPos toward the previous vertex (= -scatterDir).
     let woLp = -scatterDir;
   
@@ -572,7 +646,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       // Surface vertex: compute the reverse pdf by swapping wo/wi in the BSDF pdf.
       // prevBc/prevRough/prevMetal/prevMat.ior are in scope from the surface branch
       // above (the emitter branch does not reach this code path since prevMatId < 0).
-      let prevMatForRev = decodeMaterial(u32(prevMatId));
+      let prevPayloadForRev = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
+      let prevMatForRev = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayloadForRev);
       let prevBcRev = prevMatForRev.baseColor;
       let prevRoughRev = max(prevMatForRev.roughness, 0.02);
       let prevMetalRev = prevMatForRev.metallic;
@@ -584,7 +659,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
                                         prevMatForRev.iridescence, prevMatForRev.iridescenceIor,
                                         prevMatForRev.iridescenceThicknessMin, prevMatForRev.iridescenceThicknessMax,
                                         prevMatForRev.specularColor, prevMatForRev.specularIntensity,
-                                        0.0, 0.0);
+                                        prevMatForRev.anisotropy, prevMatForRev.anisotropyRotation);
     }
     let old_r2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
     bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);
@@ -595,6 +670,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     // A9 — record the reached vertex's matId + wo toward the previous light vertex so
     // the §10.3 connection evaluates the REAL light-vertex BSDF (glossy/metallic).
     bdptWriteLvBsdf(col, f32(matIdx), woLp);
+    bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex);
   }
 }
 `;

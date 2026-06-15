@@ -8,20 +8,21 @@
  * (Dawn + wgpu-native lavapipe/dzn). The cache is therefore a read_write storage
  * BUFFER, mirroring the BDPT eye-stack (`bdptEyeStack`, group 2 binding 6).
  *
- * Layout: `maxLightBounces` columns × 4 rows of vec4f, flattened row-minor as
- * `idx = col * 4 + row` (matches WGSL `bdptLightPathIndex`). Per light-vertex:
+ * Layout: `maxLightBounces` columns × 5 rows of vec4f, flattened row-minor as
+ * `idx = col * 5 + row` (matches WGSL `bdptLightPathIndex`). Per light-vertex:
  * row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd, row 2 =
  * throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz) for the REAL
- * light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian).
+ * light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian),
+ * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex).
  */
 
 export interface BdptLightPathBufferWebGPUOptions {
   readonly maxLightBounces?: number;
 }
 
-/** vec4f rows per light-vertex column (A9 — was 3; row 3 carries the light-vertex
- *  matId + wo-toward-prev for the real BSDF in the connection). */
-const LIGHT_PATH_ROWS = 4;
+/** vec4f rows per light-vertex column. Row 3 carries the light-vertex matId +
+ *  wo-toward-prev; row 4 carries tri/bary/instance payload for mapped materials. */
+const LIGHT_PATH_ROWS = 5;
 /** Bytes per vec4f. */
 const VEC4F_BYTES = 16;
 
