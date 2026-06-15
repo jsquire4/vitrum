@@ -142,7 +142,13 @@ function makeRcFrameDeps(args: {
   capture: {
     sunColor: readonly [number, number, number] | null;
     sunCastShadowDisabled?: boolean | null;
+    emittersBuf?: GPUBuffer | null;
+    emitterCount?: number | null;
+    envTextureView?: GPUTextureView | null;
+    envSampler?: GPUSampler | null;
   };
+  rcEmitters?: { readonly buffer: GPUBuffer; readonly count: number } | null;
+  rcEnvBindings?: { readonly textureView: GPUTextureView; readonly sampler: GPUSampler } | null;
 }): HybridEngineFrameDeps {
   let lastTs = 0;
   const pipeline = {
@@ -153,8 +159,8 @@ function makeRcFrameDeps(args: {
     setDDGIInputs: () => undefined,
     setRCInputs: () => undefined,
     getAuxBufferTextures: () => null,
-    getEmitterBufferAndCount: () => null,
-    getEnvBindings: () => null,
+    getEmitterBufferAndCount: () => args.rcEmitters ?? null,
+    getEnvBindings: () => args.rcEnvBindings ?? null,
   };
   const ddgi = {
     warmupFrame: 0,
@@ -173,9 +179,17 @@ function makeRcFrameDeps(args: {
     dispatchFrame: (inputs: {
       sunColor: readonly [number, number, number];
       sunCastShadowDisabled?: boolean;
+      emittersBuf?: GPUBuffer;
+      emitterCount?: number;
+      envTextureView?: GPUTextureView;
+      envSampler?: GPUSampler;
     }) => {
       args.capture.sunColor = inputs.sunColor;
       args.capture.sunCastShadowDisabled = inputs.sunCastShadowDisabled ?? false;
+      args.capture.emittersBuf = inputs.emittersBuf ?? null;
+      args.capture.emitterCount = inputs.emitterCount ?? null;
+      args.capture.envTextureView = inputs.envTextureView ?? null;
+      args.capture.envSampler = inputs.envSampler ?? null;
     },
     buildRCInputs: () => null,
   };
@@ -317,5 +331,34 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     );
 
     expect(capture.sunCastShadowDisabled).toBe(true);
+  });
+
+  it('forwards the pipeline emitter buffer and environment bindings into RC dispatch', () => {
+    const capture: {
+      sunColor: readonly [number, number, number] | null;
+      emittersBuf?: GPUBuffer | null;
+      emitterCount?: number | null;
+      envTextureView?: GPUTextureView | null;
+      envSampler?: GPUSampler | null;
+    } = { sunColor: null };
+    const emittersBuf = { label: 'rc-emitters' } as unknown as GPUBuffer;
+    const envTextureView = { label: 'rc-env-view' } as unknown as GPUTextureView;
+    const envSampler = { label: 'rc-env-sampler' } as unknown as GPUSampler;
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({
+        scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+        primaryLightIntensity: 1,
+        capture,
+        rcEmitters: { buffer: emittersBuf, count: 7 },
+        rcEnvBindings: { textureView: envTextureView, sampler: envSampler },
+      }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.emittersBuf).toBe(emittersBuf);
+    expect(capture.emitterCount).toBe(7);
+    expect(capture.envTextureView).toBe(envTextureView);
+    expect(capture.envSampler).toBe(envSampler);
   });
 });

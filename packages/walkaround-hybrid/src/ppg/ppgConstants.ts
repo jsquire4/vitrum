@@ -87,7 +87,7 @@ export const PPG_MIS_ALPHA = 0.5;
  * history (lower variance than a hard reset) while provably bounding total flux.
  * `0` reproduces the old full-reset; `1` is the divergent no-decay regime that
  * caused the filed refine-loop runaway. See `sTree.decayAccumulators` +
- * `__tests__/ppgRunawayBound.test.ts`.
+ * `__tests__/ppgSpatialSplitAndRunaway.test.ts`.
  */
 export const PPG_FLUX_DECAY = 0.5;
 
