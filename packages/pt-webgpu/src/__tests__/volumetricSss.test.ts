@@ -303,8 +303,8 @@ describe('Structural compile-time gate: SSS off when BDPT enabled', () => {
     expect(sssOff).not.toContain('fn sampleHenyeyGreenstein');
   });
 
-  it('BDPT-on kernel keeps the legacy Beer-Lambert absorption fallback', () => {
-    expect(sssOff).toContain('exp(-sigmaT * hit.dist)');
+  it('BDPT-on kernel keeps the Beer-Lambert absorption fallback with thickness clamp support', () => {
+    expect(sssOff).toContain('exp(-sigmaT * materialAttenuationDistance(hit.dist, mat))');
   });
 
   it('does not change the FrameParams UBO byte size (σ_a lives in materials buffer)', () => {
@@ -321,7 +321,8 @@ describe('Structural compile-time gate: SSS off when BDPT enabled', () => {
     // The surviving throughput must be scaled by exp(-(σ_t − heroSigmaT)·d), NOT
     // the full exp(-σ_t·d) (which would double-count the transmittance already
     // realized by the free-flight survival probability).
-    expect(sssOn).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * hit.dist)');
+    expect(sssOn).toContain('let attenuationDist = min(hit.dist, mediumAttenuationLimit)');
+    expect(sssOn).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
     expect(sssOn).not.toContain('throughput = throughput * exp(-walkSigmaT * hit.dist)');
   });
 

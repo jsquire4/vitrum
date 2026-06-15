@@ -27,7 +27,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (specularColor/intensity)
+    expect(packed.materials.length).toBe(116); // VOL-THICKNESS: MATERIAL_FLOAT_STRIDE 112 → 116
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
@@ -295,15 +295,15 @@ describe('SPEC-01 specular scalar packing', () => {
 
 // ── Material stride consistency gate (TS vs WGSL lockstep) ───────────────────
 // MATERIAL_VEC4_STRIDE is a constant that exists in two places:
-//   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 27, exported as
-//      MATERIAL_FLOAT_STRIDE = 108)
-//   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 27u;)
+//   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 29, exported as
+//      MATERIAL_FLOAT_STRIDE = 116)
+//   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 29u;)
 // If they diverge, every material read in the GPU kernel is silently misaligned.
 // This test checks both sources agree, and that the TS float-stride is exactly
 // 4× the WGSL vec4-stride.
 describe('material stride consistency (TS vs WGSL lockstep)', () => {
-  it('MATERIAL_FLOAT_STRIDE equals 28 * 4 = 112 (SPEC-01 bumped 27→28)', () => {
-    expect(MATERIAL_FLOAT_STRIDE).toBe(112);
+  it('MATERIAL_FLOAT_STRIDE equals 29 * 4 = 116 (VOL-THICKNESS bumped 28→29)', () => {
+    expect(MATERIAL_FLOAT_STRIDE).toBe(116);
   });
 
   it('WGSL MATERIAL_VEC4_STRIDE constant matches TS stride / 4', () => {
@@ -312,6 +312,43 @@ describe('material stride consistency (TS vs WGSL lockstep)', () => {
     expect(match).not.toBeNull();
     const wgslStride = parseInt(match![1]!, 10);
     expect(wgslStride * 4).toBe(MATERIAL_FLOAT_STRIDE);
+  });
+});
+
+describe('VOL-THICKNESS KHR_materials_volume scalar packing', () => {
+  const VOLUME_THICKNESS_OFFSET = 28 * 4;
+
+  it('packs thickness plus a presence flag in vec4 #28', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.7, 0.7, 0.7],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      thickness: 0.42,
+    });
+    expect(packed[VOLUME_THICKNESS_OFFSET]).toBeCloseTo(0.42);
+    expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(1);
+  });
+
+  it('marks presence when only thicknessMap is authored, preserving glTF default factor 0', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.7, 0.7, 0.7],
+      roughness: 0.5,
+      metallic: 0,
+      thicknessMap: { handle: { id: 'thickness' } },
+    } as never);
+    expect(packed[VOLUME_THICKNESS_OFFSET]).toBe(0);
+    expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(1);
+  });
+
+  it('leaves the clamp absent for legacy materials', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.7, 0.7, 0.7],
+      roughness: 0.5,
+      metallic: 0,
+    });
+    expect(packed[VOLUME_THICKNESS_OFFSET]).toBe(0);
+    expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(0);
   });
 });
 

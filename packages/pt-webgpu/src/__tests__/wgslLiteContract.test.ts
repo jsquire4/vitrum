@@ -100,14 +100,16 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-13: shared material.wgsl.ts appended clearcoatNormalMap
     // descriptor helpers for the full tier. Lite composes the shared text but
     // still has no material texture bindings; this is render-neutral for lite.
-    expect(digest).toBe('376d59a47580581eddf87c42908b433a08115ad67496051d6328d0efad4ee1ed');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(147963);
+    // Re-pinned 2026-06-15: shared scalar material payload gained KHR volume
+    // thickness and lite Beer-Lambert fallback clamps to it when authored.
+    expect(digest).toBe('f8dc076a95295abfa58da2001b1c6bb34dd108938b43db6caee2fb9a6f41d3a1');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(148686);
   });
 });
 
 describe('pt-webgpu lite WGSL contract', () => {
   it('uses the reduced binding layout (no motion / TLAS / light buffers)', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 28u;'); // SPEC-01: 27 → 28
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 29u;'); // VOL-THICKNESS: 28 → 29
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('motionVectorsTexture');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');

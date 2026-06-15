@@ -247,24 +247,39 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // binding 11 and multiply baseColor / alpha in material paths.
     // Re-pinned 2026-06-15: finite-area BDPT light-subpath extension now keeps
     // the required cos/pdfΩ = π factor while legacy pseudo emitters keep INV_PI.
-    expect(digest).toBe('dd70bc1f3dfbfb484696b6c20f53bbc54caca20594261ce5099c5246748db47c');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(357108);
+    // Re-pinned 2026-06-15: KHR_materials_volume scalar thickness +
+    // thicknessTexture.g now clamp approximate Beer-Lambert attenuation distance.
+    expect(digest).toBe('519b55ca69c850d79c722925d6e72aaac3977c4ccf6f296bdbb2c5c40e18f2d3');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(359182);
   });
 });
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
-    // SPEC-01 bumped the stride 27 → 28 (new vec4 #27 carries KHR specular scalars).
+    // VOL-THICKNESS bumped the stride 28 → 29 (new vec4 #28 carries KHR volume thickness).
     // Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 28u;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 29u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.isUnlit');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('specularColor: vec3f,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity = clamp(m27.w, 0.0, 1.0);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('volumeThickness: f32,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.volumeThickness = max(m28.x, 0.0);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn materialAttenuationDistance(segmentDistance: f32, mat: DecodedMaterial) -> f32');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
     );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'var mediumAttenuationLimit = INFINITY;',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumAttenuationLimit = materialAttenuationDistance(INFINITY, mat);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let attenuationDist = min(hit.dist, mediumAttenuationLimit);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (freeFlightDist < attenuationDist)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
   });
 
   it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {

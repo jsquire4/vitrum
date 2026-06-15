@@ -126,6 +126,8 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.materials.normalScale).toBe('unsupported');
     expect(sd.materials.alphaMode).toBe('unsupported');
     expect(sd.materials.opacity).toBe('unsupported');
+    expect(sd.materials.thickness).toBe('approximate');
+    expect(sd.materials.thicknessMap).toBe('unsupported');
     expect(sd.materials.envMapIntensity).toBe('unsupported');
     expect(sd.materials.anisotropy).toBe('unsupported');
     expect(sd.materials.anisotropyRotation).toBe('unsupported');
@@ -360,7 +362,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('setScene warns when other unsupported material fields are supplied (CAP-01)', async () => {
+  it('lite tier: setScene warns for thicknessMap but not scalar thickness (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -379,7 +381,8 @@ describe('H12: lite-tier capabilities truth', () => {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
             metallic: 0,
-            // Unsupported on pt-webgpu per the CAP-01 matrix:
+            // Scalar thickness is shared-buffer approximate; thicknessMap is
+            // unsupported only on lite because it needs full-tier group-3 maps.
             thickness: 0.2,
             thicknessMap: { handle: { id: 'thickness' } },
             displacementMap: { handle: { id: 'displacement' } },
@@ -395,16 +398,12 @@ describe('H12: lite-tier capabilities truth', () => {
       /* GPU stubs may throw after the warn — that's expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) =>
-      c.includes('thickness') &&
-      c.includes('thicknessMap') &&
-      !c.includes('displacementMap'),
-    )).toBe(true);
+    expect(calls.some((c) => c.includes('thicknessMap') && !c.includes('displacementMap'))).toBe(true);
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.unsupported-material-fields' &&
       Array.isArray(w.details?.fields) &&
-      w.details.fields.includes('thickness') &&
       w.details.fields.includes('thicknessMap') &&
+      !w.details.fields.includes('thickness') &&
       !w.details.fields.includes('displacementMap'),
     )).toBe(true);
     // Consumed fields must NOT appear in the warning.

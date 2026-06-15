@@ -149,6 +149,7 @@ const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = [
   'roughnessMap',
   'metallicMap',
   'transmissionMap',
+  'thicknessMap',
   'emissiveMap',
   'alphaMap',
   'aoMap',

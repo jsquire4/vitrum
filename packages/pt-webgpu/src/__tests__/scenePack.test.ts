@@ -38,7 +38,7 @@ describe('buildPackedScene core packing', () => {
     expect(Array.from(packed.tangents)).toEqual(new Array(packed.positions.length).fill(0));
     expect(packed.colors.length).toBe(packed.positions.length);
     expect(Array.from(packed.colors)).toEqual(new Array(packed.positions.length).fill(1));
-    expect(packed.materials.length).toBe(112); // SPEC-01: MATERIAL_FLOAT_STRIDE 108 → 112 (KHR specular scalars)
+    expect(packed.materials.length).toBe(116); // VOL-THICKNESS: MATERIAL_FLOAT_STRIDE 112 -> 116
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[4]).toBeCloseTo(0.4);
   });
@@ -228,7 +228,7 @@ describe('buildPackedScene core packing', () => {
     expect(packed.indices[7]).toBe(0);
     expect(packed.triMaterialIds.length).toBe(2);
     expect(new Set(Array.from(packed.triMaterialIds))).toEqual(new Set([0, 1]));
-    expect(packed.materials.length).toBe(224);
+    expect(packed.materials.length).toBe(232);
     expect(Array.from(packed.positions.slice(12, 24))).toEqual([
       2, 0, 0, 0,
       3, 0, 0, 0,

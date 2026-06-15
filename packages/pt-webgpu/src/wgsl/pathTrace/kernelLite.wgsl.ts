@@ -129,7 +129,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
       let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
       if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
-        throughput = throughput * exp(-sigmaT * hit.dist);
+        throughput = throughput * exp(-sigmaT * materialAttenuationDistance(hit.dist, mat));
       }
       if (scatteringCoeff > 0.0) {
         let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;

@@ -28,6 +28,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm),
  *      materialFlags: bit0 hasSpectralReflectance, bit1 unlit shadingModel  ← A3 / GLTF-unlit
  *   27 specularColor.rgb, specularIntensity                         ← SPEC-01
+ *   28 volumeThickness, hasVolumeThickness, _, _                    ← VOL-THICKNESS
  *
  * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
  * Hanika 2019 RGB→spectrum upsampling coefficients for the material's baseColor,
@@ -52,7 +53,7 @@ const SPECTRAL_SAMPLE_COUNT = 32;
  * skipped when it is 0).
  * Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
  */
-const MATERIAL_VEC4_STRIDE = 28;
+const MATERIAL_VEC4_STRIDE = 29;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light wavelength range, canonical from shared-samplers/cieCmf.
@@ -96,6 +97,9 @@ export function materialToPackedVec4s(
   const roughness = material.roughness ?? 0.5;
   const metallic = material.metallic ?? 0;
   const transmission = material.transmission ?? 0;
+  const hasVolumeThickness =
+    material.thickness != null || material.thicknessMap != null;
+  const volumeThickness = Math.max(finite(material.thickness ?? 0), 0);
   const ior = material.ior ?? 1.5;
   const scatteringCoeff = material.scatteringCoefficient ?? 0;
   const scatteringAnisotropy = material.scatteringAnisotropy ?? 0;
@@ -288,6 +292,13 @@ export function materialToPackedVec4s(
     clamp01(specularColor[2] ?? 1),
     specularIntensity,
   );
+
+  // VOL-THICKNESS — KHR_materials_volume thicknessFactor. The optional
+  // thicknessMap (full tier only) multiplies this scalar in WGSL. The presence
+  // flag preserves glTF's explicit thicknessFactor=0 "no volume" default while
+  // letting attenuation paths distinguish "author supplied a slab clamp" from
+  // "use geometric segment length".
+  packed.push(volumeThickness, hasVolumeThickness ? 1 : 0, 0, 0);
 
   return packed;
 }

@@ -590,9 +590,11 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // volumetric walk's per-channel extinction — the glTF-correct derivation.
   attenuationColor: 'native',
   attenuationDistance: 'native',
-  // Never read: the volumetric path integrates REAL ray path lengths, so the
-  // slab-thickness approximation knob has no consumption site.
-  thickness: 'unsupported',
+  // VOL-THICKNESS: pt-webgpu clamps Beer-Lambert attenuation distance to authored
+  // KHR volume thickness when present. Approximate because the closed-surface
+  // tracer still uses geometric boundaries rather than exact thin-shell volume
+  // integration.
+  thickness: 'approximate',
   baseColorMap: 'native',
   // Sampled + TBN-applied with glTF normalTexture.scale, per-map UV metadata,
   // and authored/generated tangent.xyzw handedness when available. Legacy or
@@ -604,7 +606,7 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   roughnessMap: 'native',
   metallicMap: 'native',
   transmissionMap: 'native',
-  thicknessMap: 'unsupported',
+  thicknessMap: 'approximate',
   emissiveMap: 'native',
   alphaMap: 'native',
   aoMap: 'native',

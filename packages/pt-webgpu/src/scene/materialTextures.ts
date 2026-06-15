@@ -51,6 +51,9 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *  67: {clearcoatNormalMapIdx, clearcoatNormalScale, clearcoatNormalUvFit.xy}
  *  68: {clearcoatNormalWrap.xy, 0, 0}
  *  69-70: clearcoat normal UV metadata (A/B, same shape as the map metadata above)
+ *  71: {thicknessMapIdx, thicknessUvFit.xy, _}
+ *  72: {thicknessWrap.xy, 0, 0}
+ *  73-74: thicknessMap UV metadata (A/B, same shape as the map metadata above)
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -89,6 +92,9 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     LINEAR tangent-space normal map with its own scale/UV/wrap metadata, kept
  *     separate from the scalar/color extension lobe map block so existing lanes
  *     do not shift.
+ *   - vec4 #71–#74: KHR_materials_volume thicknessTexture. This is a LINEAR
+ *     scalar map sampled from G and multiplied by MaterialSpec.thickness to clamp
+ *     the approximate Beer-Lambert slab distance.
  */
 export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 19;
 export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
@@ -101,8 +107,11 @@ export const MATERIAL_TEX_EXTENSION_MAP_COUNT = 8;
 export const MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET = 67;
 export const MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET = 68;
 export const MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET = 69;
+export const MATERIAL_TEX_THICKNESS_VEC4_OFFSET = 71;
+export const MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET = 72;
+export const MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET = 73;
 export const MATERIAL_TEX_VEC4_STRIDE =
-  MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET +
+  MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET +
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
@@ -230,6 +239,14 @@ export function applyMaterialTextureUvFitScales(
         descriptors[b + MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4] ?? -1,
       ),
     );
+    writeUvFitPair(
+      descriptors,
+      b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4 + 1,
+      uvFitScaleFor(
+        linearLayerScales,
+        descriptors[b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4] ?? -1,
+      ),
+    );
   }
 }
 
@@ -316,6 +333,11 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[clearcoatNormalBase + 1] = m.clearcoatNormalScale ?? 1;
     descriptors[clearcoatNormalBase + 2] = 1;
     descriptors[clearcoatNormalBase + 3] = 1;
+    const thicknessBase = b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
+    descriptors[thicknessBase] = indexOfLinear(m.thicknessMap);
+    descriptors[thicknessBase + 1] = 1;
+    descriptors[thicknessBase + 2] = 1;
+    descriptors[thicknessBase + 3] = 0;
     writeDefaultUvFitPairs(descriptors, b);
     writeDefaultExtensionUvFitPairs(descriptors, b);
     writeWrapPair(descriptors, b + 52, bc);
@@ -339,6 +361,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeWrapPair(descriptors, extWrapBase + 12, m.specularColorMap);
     writeWrapPair(descriptors, extWrapBase + 14, m.specularIntensityMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4, m.clearcoatNormalMap);
+    writeWrapPair(descriptors, b + MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4, m.thicknessMap);
     writeUvMeta(descriptors, b, 0, bc);
     writeUvMeta(descriptors, b, 1, m.emissiveMap);
     writeUvMeta(descriptors, b, 2, m.normalMap);
@@ -359,6 +382,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeUvMeta(descriptors, b, 6, m.specularColorMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 7, m.specularIntensityMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 0, m.clearcoatNormalMap, MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET);
+    writeUvMeta(descriptors, b, 0, m.thicknessMap, MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET);
   });
 
   return { sources, linearSources, descriptors };

@@ -73,6 +73,7 @@ const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'roughnessMap',
   'metallicMap',
   'transmissionMap',
+  'thicknessMap',
   'emissiveMap',
   'alphaMap',
   'aoMap',

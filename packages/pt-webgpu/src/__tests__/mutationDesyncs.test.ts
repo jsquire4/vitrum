@@ -57,6 +57,14 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     ).toBe(false);
   });
 
+  it('rejects a patch containing thicknessMap', () => {
+    expect(
+      canFastPathMaterialPatch({
+        material: { thickness: 0.25, thicknessMap: asTextureRef({}) },
+      } as never),
+    ).toBe(false);
+  });
+
   it('accepts an emissive-only patch without any map', () => {
     expect(
       canFastPathMaterialPatch({

@@ -60,11 +60,11 @@ const INV_PI = 0.31830988618;
 // This adjoint pass reads the SAME materials storage buffer the forward kernel
 // uploads, so its per-material stride must equal the forward stride or every
 // matId>0 material read is misaligned. Was a stale 23u (the stride at the time
-// this pass was written); the forward stride has since grown (WS4, H52, A3=27).
-// Repointed to 27u with the A3 bump (matId=0 is unaffected since 0*stride=0, so
-// the existing single-material adjoint tests stay green; this fixes the latent
-// misalignment for multi-material inverse fits).
-const MATERIAL_VEC4_STRIDE = 27u;
+// this pass was written); the forward stride has since grown through WS4/H52/A3,
+// SPEC-01, and VOL-THICKNESS. matId=0 is unaffected by a stale stride because
+// 0*stride=0, so single-material adjoint tests can miss this latent multi-material
+// inverse-fit misalignment.
+const MATERIAL_VEC4_STRIDE = 29u;
 
 struct AdjointParams {
   invViewProj: mat4x4f,

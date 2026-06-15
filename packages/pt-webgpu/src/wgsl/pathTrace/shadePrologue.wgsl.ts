@@ -34,17 +34,18 @@ export function composeShadePrologueWgsl(
   lightMapApply = '',
   bumpMapApply = '',
   transmissionMapApply = '',
+  volumeThicknessMapApply = '',
   extensionLobeTexApply = '',
   clearcoatNormalMapApply = '',
 ): string {
-  const materialDecl = extensionLobeTexApply === '' ? 'let' : 'var';
+  const materialDecl = extensionLobeTexApply === '' && volumeThicknessMapApply === '' ? 'let' : 'var';
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     ${materialDecl} mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}${aoApply}
     var roughness = mat.roughness;
     var emissive = mat.emissive;${emissiveTexApply}${lightMapApply}
     var metallic = mat.metallic;${ormTexApply}
-    var transmission = mat.transmission;${transmissionMapApply}${extensionLobeTexApply}
+    var transmission = mat.transmission;${transmissionMapApply}${volumeThicknessMapApply}${extensionLobeTexApply}
     var ior = mat.ior;
     if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
       ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
@@ -244,6 +245,16 @@ export const SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL =
  *  so scalar-only transmission stays byte-identical. */
 export const SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL =
   `\n    transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);`;
+
+/** KHR_materials_volume thicknessTexture: multiply the decoded scalar
+ *  thicknessFactor by the texture's G channel. The result is consumed as an
+ *  approximate closed-surface Beer-Lambert distance clamp. */
+export const SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL =
+  `\n    let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW);` +
+  `\n    if (volumeThicknessSample >= 0.0) {` +
+  `\n      mat.volumeThickness = max(mat.volumeThickness * volumeThicknessSample, 0.0);` +
+  `\n      mat.hasVolumeThickness = true;` +
+  `\n    }`;
 
 /** Extension-lobe texture maps: full-tier only. These mutate the decoded material
  *  local so every existing downstream BSDF/PDF/NEE call observes the same lobe

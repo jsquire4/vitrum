@@ -13,6 +13,9 @@ import {
   MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_THICKNESS_VEC4_OFFSET,
+  MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
@@ -224,6 +227,45 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(linearSources).toEqual([sharedLinearTex]);
     expect(descriptors[1]).toBe(0);  // normalIdx -> linear 0
     expect(descriptors[25]).toBe(0); // transmissionMapIdx -> same linear layer
+  });
+
+  it('collects thicknessMap as LINEAR KHR volume data and packs layer, UV, wrap, and transform', () => {
+    const thicknessTex = { id: 'thickness' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({
+        thickness: 0.5,
+        thicknessMap: {
+          handle: thicknessTex,
+          texCoord: 1,
+          wrapS: 'clamp-to-edge',
+          wrapT: 'mirrored-repeat',
+          transform: { offset: [0.2, 0.3], scale: [0.4, 0.5], rotation: 0.6 },
+        },
+      }),
+    ]);
+    const thicknessBase = MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
+    const thicknessWrap = MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4;
+    const thicknessMeta = MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET * 4;
+
+    expect(linearSources).toEqual([thicknessTex]);
+    expect(descriptors[thicknessBase]).toBe(0);
+    expect(descriptors[thicknessBase + 1]).toBe(1);
+    expect(descriptors[thicknessBase + 2]).toBe(1);
+    expect(Array.from(descriptors.slice(thicknessWrap, thicknessWrap + 4))).toEqual([1, 2, 0, 0]);
+    expectCloseArray(
+      descriptors.slice(thicknessMeta, thicknessMeta + 8),
+      [1, 0.2, 0.3, 0.6, 0.4, 0.5, 0, 0],
+    );
+  });
+
+  it('applies thicknessMap UV-fit scale from the linear texture array', () => {
+    const thicknessTex = { id: 'thickness-fit' };
+    const { descriptors } = collectMaterialTextures([
+      mat({ thicknessMap: { handle: thicknessTex } }),
+    ]);
+    applyMaterialTextureUvFitScales(descriptors, [], [[0.25, 0.5]]);
+    const thicknessBase = MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
+    expectCloseArray(descriptors.slice(thicknessBase + 1, thicknessBase + 3), [0.25, 0.5]);
   });
 
   it('falls back to metallicMap as a combined roughness/metallic map when roughnessMap is absent', () => {
@@ -552,6 +594,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleVertexColor(triIndex, baryVW).a');
     expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
+    expect(wgsl).toContain('fn sampleVolumeThicknessTexture(');
     expect(wgsl).toContain('fn sampleClearcoatTexture(');
     expect(wgsl).toContain('fn sampleSpecularIntensityTexture(');
     expect(wgsl).toContain('fn applyClearcoatNormalMap(');
@@ -566,8 +609,11 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 41u].x');
     expect(wgsl).toContain('materialTexDescriptors[base + 42u].w');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_THICKNESS = 73u;');
     expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 67u].x);');
     expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 67u].y;');
+    expect(wgsl).toContain('let thicknessIdx = i32(materialTexDescriptors[base + 71u].x);');
+    expect(wgsl).toContain('materialTexDescriptors[base + 71u].yz');
   });
 
   it('normal maps consume authored tangents with handedness before falling back to derived tangents', () => {
@@ -596,6 +642,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 51u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;');
     expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
+    expect(wgsl).toContain('const MATERIAL_TEX_UV_THICKNESS = 73u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
@@ -612,6 +659,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_BUMP');
     expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA');
     expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_THICKNESS');
     expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT');
     expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR');

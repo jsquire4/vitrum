@@ -10,6 +10,7 @@ import {
   SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL,
   SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
   SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL,
   SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL,
   SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL,
 } from './shadePrologue.wgsl.js';
@@ -86,7 +87,8 @@ export function composePathTraceKernelWgsl(opts: {
       if (heroSigmaT > 1e-6) {
         let xiFlight = rand_f32(&rng);
         let freeFlightDist = -log(max(1.0 - xiFlight, 1e-9)) / heroSigmaT;
-        if (freeFlightDist < hit.dist) {
+        let attenuationDist = min(hit.dist, mediumAttenuationLimit);
+        if (freeFlightDist < attenuationDist) {
           // Real collision inside the medium BEFORE the surface: scatter.
           let scatterPos = ray.origin + ray.direction * freeFlightDist;
           // Per-channel single-scattering albedo σ_s/σ_t at the chosen flight
@@ -146,7 +148,7 @@ export function composePathTraceKernelWgsl(opts: {
           // >1 correction (they absorb less). Multiplying by the FULL exp(-σ_t·d)
           // here (the prior code) DOUBLE-counted the transmittance → exp(-2σ_t·d),
           // over-darkening every medium by the square of its transmittance. V23.
-          throughput = throughput * exp(-(walkSigmaT - vec3f(heroSigmaT)) * hit.dist);
+          throughput = throughput * exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist);
         }
       }
     }`
@@ -170,7 +172,7 @@ export function composePathTraceKernelWgsl(opts: {
       let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
       let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
       if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
-        throughput = throughput * exp(-sigmaT * hit.dist);
+        throughput = throughput * exp(-sigmaT * materialAttenuationDistance(hit.dist, mat));
       }
       if (scatteringCoeff > 0.0) {
         let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;
@@ -187,7 +189,8 @@ export function composePathTraceKernelWgsl(opts: {
   var inMedium = false;
   var mediumSigmaT = vec3f(0.0);
   var mediumSigmaS = vec3f(0.0);
-  var mediumG = 0.0;`
+  var mediumG = 0.0;
+  var mediumAttenuationLimit = INFINITY;`
     : '';
 
   // Medium-state update after the bounce sample (only when the walk is in).
@@ -217,12 +220,14 @@ export function composePathTraceKernelWgsl(opts: {
       mediumSigmaS = sigmaSWalk;
       mediumSigmaT = max(sigmaAWalk + sigmaSWalk, vec3f(0.0));
       mediumG = clamp(scatteringAnisotropy, -0.95, 0.95);
+      mediumAttenuationLimit = materialAttenuationDistance(INFINITY, mat);
       inMedium = max(mediumSigmaT.x, max(mediumSigmaT.y, mediumSigmaT.z)) > 1e-6;
     } else if (bs.exitedMedium) {
       inMedium = false;
       mediumSigmaT = vec3f(0.0);
       mediumSigmaS = vec3f(0.0);
       mediumG = 0.0;
+      mediumAttenuationLimit = INFINITY;
     }`
     : '';
 
@@ -492,7 +497,7 @@ ${mediumStateDecls}
       break;
     }
 
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL, SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL, SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL, SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL)}
+${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL, SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL, SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL, SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL, SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL)}
     // Item 8 — record this surface's envMapIntensity for the forward env escape
     // pickup on the NEXT iteration (mirrors pt-webgl2 state.envMapIntensity update).
     lastEnvMapIntensity = materialEnvMapIntensity(matId);
