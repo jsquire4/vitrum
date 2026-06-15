@@ -581,33 +581,39 @@ Closure:
   mesh-area emitter, especially on any emissive-field change.
 - Test emissive mesh -> zero emissive removes NEE/light-tree contribution.
 
-### PTWG-03 - SPPM photon emission is under-normalized and source-incomplete
+### PTWG-03 - CLOSED 2026-06-12 - SPPM photon emission source normalization
 
-Evidence:
-- Photon pass picks uniformly among directional/point/spot lights.
-- Flux is divided by photon count but not by light-selection probability.
-- Rect, disc, mesh-area, and environment photon sources are excluded.
-- Directional photon emission loses RGB/multi-directional parity and spot
-  penumbra parity relative to direct NEE.
+Verified closure:
+- `sppmBindings.wgsl.ts` computes `lightSelectInvPdf =
+  f32(availableLightCount)` and applies it to directional, point, spot,
+  rect/disc, mesh-area, and environment photon flux.
+- The photon source list now follows the same packed source families as NEE:
+  N-directional records, point/spot records with penumbra/stride parity,
+  rect/disc records, mesh-area triangle records, and environment helpers
+  (`sampleEnvironmentImportance`, `sampleEnvironmentColor`, `environmentPdf`).
+- `sppmPhotonEmission.test.ts` pins one-light/two-light expected-flux equality,
+  source-family coverage, RGB N-directional records, spot penumbra, area-source
+  conventions, and environment-pdf compensation.
+- `sppmHashGrid.test.ts` retains the progressive SPPM structural/oracle pins for
+  the production hash-grid gather path.
 
-Closure:
-- Include `1 / p_select`, or switch to power-proportional emission.
-- Emit photons from the same packed light/source model as NEE, including area
-  and environment sources or explicitly narrow the SPPM contract.
-- Add one-light vs two-light flux tests, colored directional tests, spot penumbra
-  tests, and a rendered caustic reference.
+Residual:
+- Rendered caustic reference promotion remains validation evidence, not an open
+  source implementation gap.
 
-### PTWG-04 - SPPM per-pixel stats appear to update per bounce
+### PTWG-04 - CLOSED 2026-06-12 - SPPM per-pixel stats update once per frame
 
-Evidence:
-- `photonMapContribution()` updates `sppmPixelStats[pixelIndex]`.
-- The call site is inside the main bounce loop, so max-bounce paths can advance
-  one pixel's SPPM statistics more than once.
+Verified closure:
+- `kernel.wgsl.ts` declares `var sppmGatherUpdated = false` before the bounce
+  loop and gates `photonMapContribution()` behind
+  `if (!sppmGatherUpdated && sppmReceiverEligible)`, setting the flag
+  immediately after the first eligible diffuse-ish gather surface.
+- `sppmPhotonEmission.test.ts` asserts the guard, the eligibility expression, the
+  flag write, and exactly one `photonMapContribution(` call site in the kernel.
 
-Closure:
-- Restrict SPPM gather/stat updates to the primary visible gather surface, or
-  separate path-throughput accumulation from per-pixel progressive stats.
-- Add a max-bounces > 1 test that proves one frame advances each pixel once.
+Residual:
+- Broader GPU A/Bs for long-running photon-map convergence remain validation
+  evidence, not an open source implementation gap.
 
 ### PTWG-05 - Spectral min-mu and dispersion Abbe share one packed lane
 
