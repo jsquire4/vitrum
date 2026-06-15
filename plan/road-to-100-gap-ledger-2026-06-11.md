@@ -805,7 +805,11 @@ engineContract.test.ts):
   - pt-webgl2 `approximate`: lights-texture s5.g lane consumed by
     directLightContribution for all analytic NEE lights
     (rect/disc/spot/point/directional), and uMeshLights s5.g is consumed by
-    mesh-area triangle-light NEE. Forward/BDPT residual paths do not consume it.
+    mesh-area triangle-light NEE. BDPT now stores emitter-endpoint
+    `castShadowDisabled` in `uBdptLightPathTex` row 3 and skips connection
+    visibility for direct connections to that endpoint. The forward
+    emissive-hit residual remains geometry-visible rather than
+    shadow-flag-skipped.
   - pt-webgpu `approximate`: per-light lanes (directional sign-encoded
     angularDiameter; point/spot extra .z; rect/disc center .w; mesh-area
     radiance .w) consumed by the default kernel/kernelLite NEE loops + the
@@ -829,8 +833,8 @@ engineContract.test.ts):
   re-pins (intended; default lanes pack 0.0 → flag-less scenes behaviorally
   identical), ledger exhaustiveness pin in engineContract.test.ts.
 - Remaining optional future work: pt-webgpu off-default-integrator coverage and
-  pt-webgl2 forward/BDPT residual coverage — promote rows with renderer A/B
-  evidence when implemented.
+  pt-webgl2 forward-emissive residual policy/coverage — promote rows with
+  renderer A/B evidence when implemented.
 
 ### WEBGL2-02 - CLOSED 2026-06-14 - pt-webgl2 procedural sky is approximate, not unsupported
 

@@ -131,6 +131,14 @@ describe('composeTraceGlsl', () => {
     expect(connectionDef).toBeGreaterThanOrEqual(0);
     expect(connectionDef).toBeLessThan(main);
     expect(subpathDef).toBeLessThan(main);
+    expect(bdptSrc).toContain(
+      'bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state, bool skipOcclusion )',
+    );
+    expect(bdptSrc).toContain('if ( skipOcclusion ) return true;');
+    expect(bdptSrc).toContain('vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );');
+    expect(bdptSrc).toContain('bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lv3.x > 0.5;');
+    expect(bdptSrc).toContain('bdptIsVisible( eyePos, lightPos, eyeState, lightEmitterCastShadowDisabled )');
+    expect(bdptSrc).toContain('gBdptVertex3 = vec4( lightRec.castShadowDisabled, 0.0, 0.0, 0.0 );');
   });
 
   it('item 11: CMF upload-gap guard — wavelengthToRGB returns 0 when uYCmfIntegral < 1e-3', () => {
@@ -237,10 +245,10 @@ describe('composeTraceGlsl', () => {
     expect(src).not.toContain('iesProfile !=');
   });
 
-  // D10.4: RENDER_MAIN_SECTIONS byte-identity pin (length pinned to prevent silent whitespace drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join is byte-identical — length pin 30220', () => {
-    const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(30220);
+  // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
+	it('D10.4: RENDER_MAIN_SECTIONS join length pin 30349', () => {
+		const assembled = RENDER_MAIN_SECTIONS.join('');
+		expect(assembled).toHaveLength(30349);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

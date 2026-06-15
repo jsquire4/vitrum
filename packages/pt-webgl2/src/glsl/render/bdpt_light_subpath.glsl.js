@@ -5,14 +5,15 @@
  * `uBdptLightSubpathPass` in PhysicalPathTracingMaterial (one fullscreen draw
  * per vertex column) via PathTracingRenderer.renderBdptLightSubpathPass().
  *
- * Ping-pong vertex texture layout (RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=3):
+ * Ping-pong vertex texture layout (RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=4):
  *   Texel(col, 0):  position.xyz | kind    (0=light vertex, 3=invalid/empty)
  *   Texel(col, 1):  normal.xyz   | pdfFwd  (forward PDF, SOLID-ANGLE measure)
  *   Texel(col, 2):  throughput.rgb | pdfRev (radiance weight; reverse SA PDF)
+ *   Texel(col, 3):  castShadowDisabled | 0 | 0 | 0
  *
- * Each draw call renders into a single 3-row × N-column render target at column
- * uBdptVertexCol (0…BDPT_MAX_LIGHT_BOUNCES-1). Three fragments (one per row) at
- * the same column cooperate: all three trace the SAME subpath (RNG seeded with
+ * Each draw call renders into a single 4-row × N-column render target at column
+ * uBdptVertexCol (0…BDPT_MAX_LIGHT_BOUNCES-1). Four fragments (one per row) at
+ * the same column cooperate: all four trace the SAME subpath (RNG seeded with
  * vec2(gl_FragCoord.x, 0.0) — row-independent) and each writes one row of the
  * vertex. The host ping-pongs: "write" target = current frame's texture; "read"
  * target (uBdptLightPathTex) = previous frame's texture. For bounce k=0 the read
@@ -61,11 +62,12 @@ export const bdpt_light_subpath = /* glsl */`
 	// Called when sampling fails or the subpath terminates early.
 	// kind = 3.0 = BDPT_KIND_INVALID — the connection pass skips these.
 	void writeBdptInvalidVertex(
-		out vec4 v0, out vec4 v1, out vec4 v2
+		out vec4 v0, out vec4 v1, out vec4 v2, out vec4 v3
 	) {
 		v0 = vec4( 0.0, 0.0, 0.0, 3.0 ); // kind = BDPT_KIND_INVALID
 		v1 = vec4( 0.0 );
 		v2 = vec4( 0.0 );
+		v3 = vec4( 0.0 );
 	}
 
 	// ── Main light-subpath vertex writer ─────────────────────────────────────
@@ -77,7 +79,7 @@ export const bdpt_light_subpath = /* glsl */`
 	//   lightPathTex      — ping-pong texture (read = previous frame's texture).
 	//   fogMat            — current fog material state (from host uniform).
 	//
-	// Outputs: writes to gBdptVertex0/1/2 MRT layout.
+	// Outputs: writes to gBdptVertex0/1/2/3 light-path row layout.
 	void writeLightSubpathVertex(
 		int vertexCol,
 		int maxLightBounces,
@@ -85,12 +87,13 @@ export const bdpt_light_subpath = /* glsl */`
 		Material fogMat,
 		out vec4 gBdptVertex0,
 		out vec4 gBdptVertex1,
-		out vec4 gBdptVertex2
+		out vec4 gBdptVertex2,
+		out vec4 gBdptVertex3
 	) {
 
 		// Bounds guard.
 		if ( vertexCol < 0 || vertexCol >= maxLightBounces || lights.count == 0u ) {
-			writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+			writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 			return;
 		}
 
@@ -106,7 +109,7 @@ export const bdpt_light_subpath = /* glsl */`
 			);
 
 			if ( lightRec.pdf <= 0.0 || lightRec.emission == vec3( 0.0 ) ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -126,7 +129,7 @@ export const bdpt_light_subpath = /* glsl */`
 			// Joint PDF = p_light × p_hemisphere.
 			float pdfJoint = lightRec.pdf * pdfHemi;
 			if ( pdfJoint <= 0.0 ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -141,6 +144,7 @@ export const bdpt_light_subpath = /* glsl */`
 			gBdptVertex0 = vec4( emitPos,        0.0 );    // kind = BDPT_KIND_LIGHT
 			gBdptVertex1 = vec4( emitNormal,     pdfFwd );
 			gBdptVertex2 = vec4( emitThroughput, pdfRev );
+			gBdptVertex3 = vec4( lightRec.castShadowDisabled, 0.0, 0.0, 0.0 );
 
 		} else {
 
@@ -155,7 +159,7 @@ export const bdpt_light_subpath = /* glsl */`
 
 			// Check kind — skip if the prior vertex is invalid.
 			if ( v0prev.w == 3.0 ) { // BDPT_KIND_INVALID
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -173,7 +177,7 @@ export const bdpt_light_subpath = /* glsl */`
 			float pdfScatter = cosScatter / PI;
 
 			if ( pdfScatter <= 0.0 ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -186,7 +190,7 @@ export const bdpt_light_subpath = /* glsl */`
 			int hitType = traceScene( scatterRay, fogMat, scatterHit );
 
 			if ( hitType != SURFACE_HIT ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -198,7 +202,7 @@ export const bdpt_light_subpath = /* glsl */`
 			// explicit connections through them (Veach §10.3.5).
 			bool isSpecular = ( mat.transmission > 0.5 && mat.roughness < 0.05 );
 			if ( isSpecular ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2 );
+				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3 );
 				return;
 			}
 
@@ -221,6 +225,7 @@ export const bdpt_light_subpath = /* glsl */`
 			gBdptVertex0 = vec4( newPos,        0.0 );   // kind = BDPT_KIND_LIGHT
 			gBdptVertex1 = vec4( newNormal,     pdfFwd );
 			gBdptVertex2 = vec4( newThroughput, pdfRev );
+			gBdptVertex3 = vec4( 0.0 );
 
 		}
 

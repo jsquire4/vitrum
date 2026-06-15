@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgl2 mesh-area emitter shadows, 2026-06-15)
 
-- **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. The promise ledger remains `approximate` until forward/BDPT residual paths consume the same flag.
+- **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. The promise ledger remains `approximate` for the separate forward emissive-hit residual.
+- **`@vitrum/pt-webgl2` BDPT emitter shadow metadata:** the BDPT light-subpath texture now has a fourth metadata row carrying emitter-endpoint `castShadowDisabled`, and BDPT direct connections to that endpoint skip visibility when the source light has `castShadow:false`. The ledger remains `approximate` only for the separate forward emissive-hit residual.
 
 ### Added (walkaround bump maps, 2026-06-15)
 

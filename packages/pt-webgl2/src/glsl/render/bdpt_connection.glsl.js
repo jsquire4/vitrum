@@ -61,8 +61,9 @@ export const bdpt_connection = /* glsl */`
 		return abs( dot( n, normalize( dir ) ) ) * ( 1.0 / PI );
 	}
 
-	// ── Visibility test (unchanged) ──────────────────────────────────────────
-	bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state ) {
+	// ── Visibility test ──────────────────────────────────────────────────────
+	bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state, bool skipOcclusion ) {
+		if ( skipOcclusion ) return true;
 		vec3 dir  = lightPos - eyePos;
 		float len = length( dir );
 		if ( len < RAY_OFFSET ) return false;
@@ -211,12 +212,14 @@ export const bdpt_connection = /* glsl */`
 		vec4 lv0 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 0 ), 0 );
 		vec4 lv1 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 1 ), 0 );
 		vec4 lv2 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 2 ), 0 );
+		vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );
 		if ( lv0.w == 3.0 ) return vec3( 0.0 ); // BDPT_KIND_INVALID
 
 		vec3  lightPos        = lv0.xyz;
 		vec3  lightNormal     = lv1.xyz;
 		float lightPdfFwd     = lv1.w;
 		vec3  lightThroughput = lv2.xyz;
+		bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lv3.x > 0.5;
 
 		// Connection-edge specular guard at the eye vertex (Veach §10.3.5).
 		bool eyeIsSpecular = ( eyeSurf.transmission > 0.5 && eyeSurf.filteredRoughness < 0.05 );
@@ -229,7 +232,7 @@ export const bdpt_connection = /* glsl */`
 
 		float gTerm = bdptGeometricTerm( eyePos, eyeNormal, lightPos, lightNormal );
 		if ( gTerm <= 0.0 ) return vec3( 0.0 );
-		if ( ! bdptIsVisible( eyePos, lightPos, eyeState ) ) return vec3( 0.0 );
+		if ( ! bdptIsVisible( eyePos, lightPos, eyeState, lightEmitterCastShadowDisabled ) ) return vec3( 0.0 );
 
 		// eye BSDF x cos(theta) toward the light. bsdfResult writes BSDF*cos to
 		// eyeBsdfColor and returns the directional PDF separately.

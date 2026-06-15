@@ -20,7 +20,7 @@ import { createRenderTarget, clearRenderTarget, type RenderTarget } from './fram
 
 /** A5 — BDPT light-path ping-pong dimensions (matches the GLSL kernel layout). */
 const BDPT_LIGHT_PATH_COLS = 3;
-const BDPT_LIGHT_PATH_ROWS = 3;
+const BDPT_LIGHT_PATH_ROWS = 4;
 
 /**
  * Manages the BDPT light-subpath ping-pong textures and issues the per-column
@@ -45,7 +45,7 @@ export class BdptSubpathBuilder {
    * analytic lights) — the caller then leaves the dummy bound and the frame renders
    * unidirectionally.
    *
-   * Per-column protocol (one fullscreen draw over a 3×3 viewport per bounce):
+   * Per-column protocol (one fullscreen draw over a 3×4 viewport per bounce):
    *   read  = the texture holding columns < col already built this frame
    *   write = the other ping-pong slot
    *   1. blit read → write (copy already-built columns forward; the kernel `discard`s
@@ -118,7 +118,7 @@ export class BdptSubpathBuilder {
       // the kernel ignores the texture; binding the read slot is harmless.)
       bindSceneTextures(prog, scene, read.color);
 
-      // 4. Draw the 3×3 viewport into the write slot.
+      // 4. Draw the 3×4 viewport into the write slot.
       const { fbo } = write;
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
