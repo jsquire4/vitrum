@@ -13,7 +13,7 @@
  * row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd, row 2 =
  * throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz) for the REAL
  * light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian),
- * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex).
+ * row 4 = hit-local material payload (triIndex plus front-face bit, baryVW, instanceIndex).
  */
 
 export interface BdptLightPathBufferWebGPUOptions {
@@ -21,7 +21,7 @@ export interface BdptLightPathBufferWebGPUOptions {
 }
 
 /** vec4f rows per light-vertex column. Row 3 carries the light-vertex matId +
- *  wo-toward-prev; row 4 carries tri/bary/instance payload for mapped materials. */
+ *  wo-toward-prev; row 4 carries tri/bary/instance+side payload for mapped materials. */
 const LIGHT_PATH_ROWS = 5;
 /** Bytes per vec4f. */
 const VEC4F_BYTES = 16;

@@ -250,8 +250,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // the required cos/pdfΩ = π factor while legacy pseudo emitters keep INV_PI.
     // Re-pinned 2026-06-15: BDPT light vertices carry hit-local material payloads
     // including clearcoat-normal parity for light-subpath scatter/connection.
-    expect(digest).toBe('8598b01918ea98cd919d68a3e50a97f9a6db1385c52b1df6434611a0456a3492');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(365958);
+    // Re-pinned 2026-06-15: BDPT light-side material payload sampling now mirrors
+    // the shade prologue's layer, thin-film, spectral reflectance, and Cauchy IOR
+    // transforms.
+    expect(digest).toBe('c21973a214c2c79c9a4d5483039bab42347bb90d67cd91cebe807311e5a847df');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(368800);
   });
 });
 

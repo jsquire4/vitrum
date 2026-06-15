@@ -187,8 +187,8 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
  *  light-vertex: row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd,
  *  row 2 = throughput + pdfRev, row 3 = (A9) matId + wo-toward-prev for the REAL
  *  light-vertex BSDF in the §10.3 connection (matId < 0 ⇒ emitter, Lambertian),
- *  row 4 = hit-local material coordinates (triIndex, baryVW, instanceIndex) for
- *  texture-map/material-lobe sampling at surface light vertices.
+ *  row 4 = hit-local material coordinates (triIndex plus front-face bit, baryVW,
+ *  instanceIndex) for texture-map/material-lobe sampling at surface light vertices.
  *
  *  `bdptEyeStack` is a per-pixel × bdptMaxEyeDepth read_write storage stack of
  *  eye-vertex pdf/pos/normal data (2× vec4 / vertex; specular packed as a
@@ -206,8 +206,10 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 // Light-path flat index: 5 vec4f rows per light-vertex column. Row 3 carries
 // the reached vertex's matId + wo-toward-prev so the §10.3 connection can evaluate
 // the REAL light-vertex BSDF for a glossy/metallic light-path vertex; row 4 carries
-// hit-local tri/bary/instance payload for texture-map material sampling. matId < 0
-// marks the emitter vertex, which keeps its Lambertian/emission profile.
+// hit-local tri/bary/instance payload for texture-map material sampling. The high
+// bit of row-4.x stores the front-face flag; real triangle indices are required to
+// stay below 2^31. matId < 0 marks the emitter vertex, which keeps its
+// Lambertian/emission profile.
 const BDPT_LIGHT_PATH_ROWS = 5u;
 fn bdptLightPathIndex(col: i32, row: u32) -> u32 {
   return u32(col) * BDPT_LIGHT_PATH_ROWS + row;

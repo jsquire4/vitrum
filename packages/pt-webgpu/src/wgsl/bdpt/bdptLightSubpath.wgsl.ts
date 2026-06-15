@@ -140,8 +140,10 @@ fn bdptWriteLvBsdf(col: i32, matId: f32, woTowardPrev: vec3f) {
 
 // Texture-map payload for surface light vertices. Row 4 keeps the hit-local
 // coordinate system needed by the same material sampling helpers as the eye path.
-fn bdptWriteLvMaterialPayload(col: i32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) {
-  bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(bitcast<f32>(triIndex), baryVW.x, baryVW.y, bitcast<f32>(instanceIndex));
+// The high bit of triIndex stores the front-face side for front/back layer parity.
+fn bdptWriteLvMaterialPayload(col: i32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, isFrontFace: bool) {
+  let sideBit = select(0u, 0x80000000u, isFrontFace);
+  bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(bitcast<f32>((triIndex & 0x7fffffffu) | sideBit), baryVW.x, baryVW.y, bitcast<f32>(instanceIndex));
 }
 
 fn bdptClearLvMaterialPayload(col: i32) {
@@ -170,8 +172,10 @@ struct BdptSampledMaterial {
   clearcoatNormal: vec3f,
 }
 
-fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f) -> BdptSampledMaterial {
-  let triIndex = bitcast<u32>(payload.x);
+fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f, woTowardPrev: vec3f, heroLambda: f32) -> BdptSampledMaterial {
+  let triWord = bitcast<u32>(payload.x);
+  let triIndex = triWord & 0x7fffffffu;
+  let isFrontFace = (triWord & 0x80000000u) != 0u;
   let baryVW = payload.yz;
   let instanceIndex = bitcast<u32>(payload.w);
   let mat = decodeMaterial(matId);
@@ -183,6 +187,9 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f)
   out.metallic = clamp(mat.metallic * orm.b, 0.0, 1.0);
   out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, triIndex, baryVW), 0.0, 1.0);
   out.ior = mat.ior;
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+    out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
+  }
   out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW), 0.0, 1.0);
   out.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, triIndex, baryVW), 0.0, 1.0);
   out.sheen = mat.sheen;
@@ -204,6 +211,49 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f)
   out.anisotropy = materialAnisotropy(matId, triIndex, baryVW);
   out.anisotropyRotation = materialAnisotropyRotation(matId, triIndex, baryVW);
   out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);
+  let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
+  let layerRoughness = select(mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace);
+  if (layerRoughness >= 0.0) {
+    out.roughness = clamp(layerRoughness, 0.02, 1.0);
+  }
+  let layerWeight = select(
+    layerTx,
+    activeLayerWeightRgb(layerTx, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+  );
+  out.baseColor = out.baseColor * layerWeight;
+  if (mat.thinFilmEnabled) {
+    let viewCos = clamp(dot(shadingNormal, woTowardPrev), 0.0, 1.0);
+    var thinFilmReflectTint = vec3f(1.0);
+    if (params.spectralEnabled != 0u) {
+      let rt = thinFilmTmmRt(
+        matId,
+        mat.thinFilmLayerCountU,
+        heroLambda,
+        out.ior,
+        mat.thinFilmIncidentIor,
+        mat.thinFilmAngleDependent,
+        viewCos,
+      );
+      thinFilmReflectTint = vec3f(clamp(rt.x, 0.0, 1.0));
+    } else {
+      let rtR = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 630.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      let rtG = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 540.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      let rtB = thinFilmTmmRt(matId, mat.thinFilmLayerCountU, 460.0, out.ior, mat.thinFilmIncidentIor, mat.thinFilmAngleDependent, viewCos);
+      thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
+    }
+    let layerStrength = clamp(0.12 + 0.06 * f32(mat.thinFilmLayerCountU), 0.0, 0.55);
+    let filmStrength = clamp(layerStrength * (1.0 - out.roughness), 0.0, 0.6);
+    out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);
+  }
+  if (params.spectralEnabled != 0u) {
+    let reflScalar = select(
+      max(luminance(out.baseColor), 0.0),
+      evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda),
+      mat.hasSpectralReflectance,
+    );
+    out.baseColor = vec3f(reflScalar);
+  }
   return out;
 }
 
@@ -525,7 +575,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
       // the direction that brought the path to prevPos from its predecessor).
       let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
-      let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal);
+      let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal, woAtPrev, params.heroLambdaNm);
       let prevBc = prevMat.baseColor;
       let prevRough = max(prevMat.roughness, 0.02);
       let prevMetal = prevMat.metallic;
@@ -590,8 +640,17 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       continue;
     }
     let matIdx = hitMaterialId(hit);
-    let matPayload = vec4f(bitcast<f32>(hit.triIndex), hit.baryVW.x, hit.baryVW.y, bitcast<f32>(hit.instanceIndex));
-    let mat = bdptSampleMaterialAtPayload(matIdx, matPayload, safe_normalize(hit.normal));
+    let isFrontFaceHit = dot(hit.normal, ray.direction) < 0.0;
+    let newPos = ray.origin + ray.direction * hit.dist;
+    let newNormal = safe_normalize(hit.normal);
+    // Front-relative shading normal at the new vertex (toward the incoming light dir).
+    var nsFront = select(-newNormal, newNormal, isFrontFaceHit);
+    nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
+    nsFront = applyBumpMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
+    // Outgoing direction at newPos toward the previous vertex (= -scatterDir).
+    let woLp = -scatterDir;
+    let matPayload = vec4f(bitcast<f32>((hit.triIndex & 0x7fffffffu) | select(0u, 0x80000000u, isFrontFaceHit)), hit.baryVW.x, hit.baryVW.y, bitcast<f32>(hit.instanceIndex));
+    let mat = bdptSampleMaterialAtPayload(matIdx, matPayload, nsFront, woLp, params.heroLambdaNm);
     // Perfect-specular TRANSMISSION (glass) is non-reconnectable on the light path —
     // the reconnection-shift / Veach connection assumes a non-singular BSDF at the
     // connectable vertex. (A glossy/rough refractive vertex IS handled by the real
@@ -600,14 +659,6 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       bdptWriteInvalid(col);
       continue;
     }
-    let newPos = ray.origin + ray.direction * hit.dist;
-    let newNormal = safe_normalize(hit.normal);
-    // Front-relative shading normal at the new vertex (toward the incoming light dir).
-    var nsFront = select(-newNormal, newNormal, dot(newNormal, -scatterDir) > 0.0);
-    nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
-    nsFront = applyBumpMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
-    // Outgoing direction at newPos toward the previous vertex (= -scatterDir).
-    let woLp = -scatterDir;
   
     // Throughput update: carry the prefix throughput * f·|cos|/pdf of THIS traced
     // segment. pdfFwd = generation density of scatterDir at prevPos (SA measure,
@@ -651,7 +702,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       // prevBc/prevRough/prevMetal/prevMat.ior are in scope from the surface branch
       // above (the emitter branch does not reach this code path since prevMatId < 0).
       let prevPayloadForRev = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
-      let prevMatForRev = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayloadForRev, prevNormal);
+      let prevMatForRev = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayloadForRev, prevNormal, woAtPrev, params.heroLambdaNm);
       let prevBcRev = prevMatForRev.baseColor;
       let prevRoughRev = max(prevMatForRev.roughness, 0.02);
       let prevMetalRev = prevMatForRev.metallic;
@@ -674,7 +725,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     // A9 — record the reached vertex's matId + wo toward the previous light vertex so
     // the §10.3 connection evaluates the REAL light-vertex BSDF (glossy/metallic).
     bdptWriteLvBsdf(col, f32(matIdx), woLp);
-    bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex);
+    bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex, isFrontFaceHit);
   }
 }
 `;

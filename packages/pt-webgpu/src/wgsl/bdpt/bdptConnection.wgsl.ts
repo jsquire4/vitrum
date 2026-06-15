@@ -366,7 +366,7 @@ fn evaluateBdptConnection(
     lightBsdfCosTheta = vec3f(cosLight / PI);
   }
   if (lvMatId >= 0.0) {
-    let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal);
+    let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, params.heroLambdaNm);
     let lvBrdf = evaluateBrdfFullWithClearcoatNormal(
       lvMat.baseColor, max(lvMat.roughness, 0.02), lvMat.metallic,
       lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,
@@ -398,7 +398,7 @@ fn evaluateBdptConnection(
   // light-vertex BSDF used in lightBsdfCosTheta.
   var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
   if (lvMatId >= 0.0) {
-    let lvMatF = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal);
+    let lvMatF = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, params.heroLambdaNm);
     fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(
       lvMatF.baseColor, max(lvMatF.roughness, 0.02), lvMatF.metallic,
       0.0, lvMatF.ior, lightNormal, lvMatF.clearcoatNormal, lvWoPrev, lcToE,
@@ -440,7 +440,7 @@ fn evaluateBdptConnection(
     let lcm0 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 0u)];
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
     if (lvMatId >= 0.0) {
-      let lvMatR = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal);
+      let lvMatR = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, params.heroLambdaNm);
       revLcMinus = brdfDirectionalPdfFullSampledWithClearcoatNormal(
         lvMatR.baseColor, max(lvMatR.roughness, 0.02), lvMatR.metallic,
         0.0, lvMatR.ior, lightNormal, lvMatR.clearcoatNormal, lcToE, lcToLcMinus,

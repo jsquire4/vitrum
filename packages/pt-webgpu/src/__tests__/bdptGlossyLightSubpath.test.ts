@@ -81,18 +81,23 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
 
   it('stores hit-local material payload for texture-mapped light-path vertices', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(bitcast<f32>(triIndex), baryVW.x, baryVW.y, bitcast<f32>(instanceIndex));',
+      'let sideBit = select(0u, 0x80000000u, isFrontFace);',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex);',
+      'bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(bitcast<f32>((triIndex & 0x7fffffffu) | sideBit), baryVW.x, baryVW.y, bitcast<f32>(instanceIndex));',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex, isFrontFaceHit);',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal);',
+      'let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal, woAtPrev, params.heroLambdaNm);',
     );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triIndex = bitcast<u32>(payload.x);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triWord = bitcast<u32>(payload.x);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triIndex = triWord & 0x7fffffffu;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let isFrontFace = (triWord & 0x80000000u) != 0u;');
   });
 
   it('samples texture-map material payloads before BDPT light-subpath scatter', () => {
@@ -119,6 +124,22 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     );
   });
 
+  it('applies layer, thin-film, spectral albedo, and Cauchy IOR to BDPT light-side material payloads', () => {
+    for (const line of [
+      'out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);',
+      'let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));',
+      'out.roughness = clamp(layerRoughness, 0.02, 1.0);',
+      'activeLayerWeightRgb(layerTx, heroLambda, true)',
+      'let viewCos = clamp(dot(shadingNormal, woTowardPrev), 0.0, 1.0);',
+      'let rt = thinFilmTmmRt(',
+      'out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);',
+      'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
+      'out.baseColor = vec3f(reflScalar);',
+    ]) {
+      expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(line);
+    }
+  });
+
   it('the §10.3 connection evaluates the REAL light-vertex BSDF + pdfs for a surface vertex', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('eyeClearcoatNormal: vec3f,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('specularColor: vec3f,');
@@ -133,7 +154,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // without re-multiplying cosLight (the geometry term owns edge cosines).
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal);');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, params.heroLambdaNm);');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvBrdf = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
@@ -151,8 +172,14 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('const BDPT_LV_AREA_EMITTER_MATID: f32 = -2.0;');
   });
 
-  it('the light-path vertex is 5 rows (row 4 = tri/bary/instance material payload)', () => {
+  it('the light-path vertex is 5 rows (row 4 = tri/bary/instance/side material payload)', () => {
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 5u;');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'hit-local tri/bary/instance payload for texture-map material sampling. The high',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'bit of row-4.x stores the front-face flag; real triangle indices are required to',
+    );
   });
 });
 

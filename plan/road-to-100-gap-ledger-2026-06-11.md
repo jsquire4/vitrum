@@ -429,10 +429,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   now use `evaluateBrdfFull` / `brdfDirectionalPdfFull` where the needed
   material fields are locally available. Follow-up sampler/PDF waves closed
   ReSTIR-PT visible/suffix material-map parity, clearcoat/sheen source sampling,
-  and BDPT surface light-subpath scatter PDFs with hit-local material payloads;
-  remaining schema work is now concentrated in inverse/adjoint gradients and
-  BDPT light-side clearcoat-normal/layer/thin-film/spectral special cases outside
-  the main eye/ReSTIR/BDPT surface-scatter paths.
+  ReSTIR-PT clearcoat-normal reservoir/resolve/source-PDF parity, and BDPT
+  surface light-subpath scatter PDFs with hit-local material payloads. The BDPT
+  payload now also carries the front-face side bit needed for layer selection and
+  applies layer tint/roughness, thin-film reflect tint, Cauchy IOR, and spectral
+  reflectance scalar. Remaining schema work is now concentrated in inverse/adjoint
+  gradients and material-lobe reference/furnace A/B evidence.
 - The sixteenth arbitrary-glTF loader/API slice landed in `@vitrum/gltf-adapter`:
   high-level URL/resource loading now throws typed `GltfFetchFailed` /
   `GltfResourceNotFound` errors with `{ url, kind }`, `LoadGltfAssetOptions.cache`
@@ -489,9 +491,11 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   BRDF/PDF/source-sampler paths. Follow-up 2026-06-13: pt-webgpu now consumes
   authored/generated tangent.xyzw and handedness for those tangent-space maps.
   The promise ledger still promotes the extension map rows to `approximate`,
-  not `native`, because inverse/adjoint gradients target the base parameterization,
-  BDPT light-side clearcoat-normal/layer/thin-film/spectral special cases are not
-  shade-prologue-equivalent yet, and material-lobe reference A/B is still pending.
+  not `native`, because inverse/adjoint gradients target the base parameterization
+  and material-lobe reference A/B is still pending. BDPT light-side
+  clearcoat-normal/layer/thin-film/spectral parity is now structurally
+  shade-prologue-equivalent and shader-gated, but not independently
+  furnace/reference-promoted.
   Verification: focused pt-webgpu material/WGSL/reuse/lite suites, full
   typecheck, shader gate, and WSL GPU T1 smoke.
 - The walkaround-hybrid mutation-matrix seam gained focused non-GPU coverage:
@@ -1119,9 +1123,11 @@ Evidence:
   layer tint/roughness, thin-film, and spectral albedo before storing the
   reservoir-visible domain. ReSTIR-PT suffix/reconnection vertices now also
   alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral
-  domain before Lo evaluation, including mapped normals for reservoir geometry.
-  Clearcoat-normal map parity remains open on ReSTIR-PT: that payload is not yet
-  stored in `ReservoirPTHero` or used by the resolve/source-PDF/suffix Lo helpers.
+  domain before Lo evaluation, including mapped normals for reservoir geometry
+  and mapped clearcoat normals for clearcoat BRDF/PDF paths. ReSTIR-PT
+  clearcoat-normal map parity is now closed by storing `clearcoatNormalV` in
+  `ReservoirPTHero` and using the clearcoat-normal-aware target/resolve/source-PDF/
+  suffix-Lo helpers.
   ReSTIR-PT producer source sampling now uses a normalized base/clearcoat/sheen
   lobe mixture and stores the matching `pdfSrc` rather than the old base-only
   density. The main eye path now samples the same normalized base/clearcoat/sheen
@@ -1129,11 +1135,11 @@ Evidence:
   against the same sampled density; and BDPT's mapped light-subpath scatter
   records matching `brdfDirectionalPdfFullSampled` forward/reverse densities.
   Remaining approximate/schema sites are not simple omissions:
-  inverse adjoints use a separate derivative model, and BDPT light-side
-  layer/thin-film/spectral special cases are not yet fully
-  shade-prologue-equivalent. BDPT clearcoat-normal light-side parity is now
-  closed by sampling `applyClearcoatNormalMap` into the row-4 material payload
-  and using the clearcoat-normal-aware BRDF/PDF helpers.
+  inverse adjoints use a separate derivative model, while BDPT light-side
+  clearcoat-normal/layer/thin-film/spectral parity is now structurally closed by
+  sampling `applyClearcoatNormalMap` into the row-4 material payload, storing a
+  front-face side bit for layer choice, and applying the same layer/thin-film/
+  spectral transforms as the shade prologue before BRDF/PDF evaluation.
 
 Closure:
 - Keep the main eye-path `sampleNextBounceDirection` sampled-density regression
@@ -1141,13 +1147,12 @@ Closure:
   and BDPT eye-stack forward/reverse densities must stay in lockstep.
 - Keep the ReSTIR-PT suffix material-map parity regression pins green; the
   suffix cached-Lo path is code-complete for hit-local maps/layers/thin-film/
-  spectral emission, and the producer source-sampler/PDF limit is closed except
-  for the clearcoat-normal payload/resolve parity row above.
+  spectral emission and mapped clearcoat normals, and the producer source-sampler/
+  PDF limit is closed for the base/clearcoat/sheen mixture.
 - Keep the BDPT light-subpath sampling/PDF regression pins green. Row-4 hit-local
   material payloads now cover mapped base/ORM/transmission/normal/bump/
-  clearcoat-normal/extension/specular/anisotropy fields; remaining BDPT work is
-  oracle/reference promotion plus the layer/thin-film/spectral special-case
-  parity listed above.
+  clearcoat-normal/extension/specular/anisotropy fields plus layer/thin-film/
+  spectral transforms; remaining BDPT work is oracle/reference promotion.
 - Add material-furnace and lobe-specific tests plus reference A/B before
   promoting these rows from approximate/experimental.
 
@@ -1388,8 +1393,7 @@ Closure:
   sweep/golden fixtures on the recommended backend, assert non-black output, and
   compare against tolerance-bounded references.
 - Remaining pt-webgpu material-lobe work must be scheduled as specialty schema
-  work, not helper plumbing: inverse/adjoint gradients, BDPT light-side
-  clearcoat-normal/layer/thin-film/spectral parity, and reference A/B /
+  work, not helper plumbing: inverse/adjoint gradients and reference A/B /
   material-furnace promotion gates.
 
 ### GLTF-02 - Draco and meshopt compressed primitives
@@ -1558,8 +1562,7 @@ Add independent oracles for:
 - DI ReSTIR candidate accounting and selected-point shading.
 - DDGI miss visibility semantics.
 - Extension-lobe contribution/PDF parity for the remaining schema paths:
-  inverse adjoints, BDPT light-side clearcoat-normal/layer/thin-film/spectral
-  special cases, plus material-furnace/reference A/B for the sampled
+  inverse adjoints, plus material-furnace/reference A/B for the sampled
   eye/ReSTIR/BDPT paths now implemented.
 
 ### GATE-05 - Reference-render A/B suite
