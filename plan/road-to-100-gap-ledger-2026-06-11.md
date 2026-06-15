@@ -1264,6 +1264,11 @@ Closure:
   preserving `.backend: 'pt-webgpu'` for existing engine selection. The lite
   row downgrades full-tier-only material texture/alpha/env/aniso fields to
   unsupported, matching runtime lite capabilities and warnings.
+- `loadGltfForEngine()` now also reconciles the actual attached engine backend:
+  if an existing or factory-created engine exposes `backendId`, the bridge
+  returns that backend and reruns strict compatibility against it before
+  calling `setScene()`. Factory fallback can still proceed in best-effort mode,
+  but strict mode no longer validates against one backend and attaches another.
 
 ### GLTF-API-04 - animation playback/update orchestration
 

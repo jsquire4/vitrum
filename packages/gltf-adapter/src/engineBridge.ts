@@ -109,8 +109,9 @@ export async function loadGltfForEngine<
   const asset = shouldDecodeTextures(options)
     ? await loadGltfAndDecodeTextures(input, options)
     : await loadGltfAsset(input, options);
-  const backend = selectBackend(asset, options.backend ?? 'recommended');
-  enforceCompatibility(asset, backend, options.compatibilityMode ?? 'best-effort', options);
+  const selectedBackend = selectBackend(asset, options.backend ?? 'recommended');
+  const compatibilityMode = options.compatibilityMode ?? 'best-effort';
+  enforceCompatibility(asset, selectedBackend, compatibilityMode, options);
 
   const controller = createGltfSceneController({
     gltf: asset.gltf,
@@ -128,10 +129,15 @@ export async function loadGltfForEngine<
   if (!engine && options.createEngine) {
     engine = await options.createEngine({
       scene: asset.scene,
-      backend,
+      backend: selectedBackend,
       asset,
       options: options.engineOptions ?? ({} as TFactoryOptions),
     });
+  }
+
+  const backend = backendIdFromEngine(engine) ?? selectedBackend;
+  if (backend !== selectedBackend) {
+    enforceCompatibility(asset, backend, compatibilityMode, options, 'Actual engine backend');
   }
 
   const attachScene = options.attachScene ?? true;
@@ -205,6 +211,7 @@ function enforceCompatibility<
   backend: BackendId,
   mode: GltfCompatibilityMode,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+  label = 'Selected backend',
 ): void {
   if (mode === 'best-effort') return;
   const selected = asset.backendCompatibility.find((entry) =>
@@ -231,9 +238,19 @@ function enforceCompatibility<
     .map(formatCompatibilityIssue)
     .join(', ');
   throw new Error(
-    `[vitrum/gltf-adapter] Selected backend "${backend}" does not satisfy ` +
+    `[vitrum/gltf-adapter] ${label} "${backend}" does not satisfy ` +
       `${mode}: ${issues || 'unknown compatibility issue'}.`,
   );
+}
+
+function backendIdFromEngine(engine: GltfScenePatchTarget | undefined): BackendId | undefined {
+  if (engine == null) return undefined;
+  const backendId = (engine as { readonly backendId?: unknown }).backendId;
+  return isBackendId(backendId) ? backendId : undefined;
+}
+
+function isBackendId(value: unknown): value is BackendId {
+  return value === 'walkaround-hybrid' || value === 'pt-webgl2' || value === 'pt-webgpu';
 }
 
 function formatCompatibilityIssue(issue: GltfCompatibilityIssue): string {

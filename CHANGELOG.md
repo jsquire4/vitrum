@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Lite directional `castShadow:false` parity:** `@vitrum/pt-webgpu` now sign-encodes the first directional emitter's `castShadow:false` flag into the existing `cameraPos.w` angular-diameter UBO mirror and decodes it in the lite directional NEE path, so lite directional lights can skip the visibility ray just like packed full-tier directional records. The pt-webgpu emitter-shadow ledger remains `approximate` until the remaining off-default caustic/BDPT shadow-flag proof is closed.
 
+### Fixed (glTF engine bridge, 2026-06-15)
+
+- **Actual-backend strict compatibility:** `loadGltfForEngine()` now reads `engine.backendId` from existing or factory-created engines, reports that actual backend in the bridge result, and reruns strict compatibility against it before `setScene()`. Best-effort mode can still tolerate factory fallback, but strict loads can no longer validate against one backend and silently attach another.
+
 ### Fixed (walkaround ReSTIR-DI material parity, 2026-06-15)
 
 - **Extension-aware ReSTIR-DI target scoring:** `@vitrum/walkaround-hybrid` now threads material-atlas payloads through DI `PrimarySurface` reconstruction and evaluates RIS candidate weights, finalization, temporal reuse, and spatial reuse with the same extension-aware BRDF used by shade-owned direct lighting. ReSTIR-DI pHat now consumes base/vertex/roughness/metallic maps, normal/bump/clearcoat-normal perturbations, specular scalar/color maps, clearcoat, sheen, anisotropy, iridescence, and env-map intensity instead of the old albedo/rough/metal-only proxy. Reservoir storage is unchanged; this is render-changing for rich glTF materials and still needs GPU A/B promotion evidence.

@@ -1255,6 +1255,38 @@ describe('loadGltfForEngine', () => {
     expect(engine.setScene).not.toHaveBeenCalled();
   });
 
+  it('reports an existing engine backendId instead of the planned backend', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      engine,
+    });
+
+    expect(result.backend).toBe('pt-webgpu');
+    expect(result.engine).toBe(engine);
+    expect(engine.setScene).toHaveBeenCalledWith(result.asset.scene);
+  });
+
+  it('rechecks strict compatibility against the actual factory backend before attaching', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const engine = { backendId: 'walkaround-hybrid' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async () => engine);
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow('Actual engine backend "walkaround-hybrid" does not satisfy reject-degraded');
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(engine.setScene).not.toHaveBeenCalled();
+  });
+
   it('can decode textures before engine attachment and surface decode diagnostics', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const engine = { setScene: vi.fn() };
