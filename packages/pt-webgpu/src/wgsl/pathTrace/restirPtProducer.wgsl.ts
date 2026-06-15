@@ -282,21 +282,29 @@ fn rptDirectAtVertex(
   suffixThroughput: vec3f,
 ) -> vec3f {
   var contrib = vec3f(0.0);
-  // Directional light (delta): full weight, no MIS.
-  if (params.lightDir.w > 1e-6) {
-    let lightDir = safe_normalize(params.lightDir.xyz);
-    let nDotL = max(0.0, dot(normal, lightDir));
-    if (nDotL > 0.0) {
-      let shadowRay = Ray(pos + normal * 1e-3, lightDir);
-      if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-        let brdf = evaluateBrdfFull(
-          baseColor, roughness, metallic, normal, wo, lightDir,
-          clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
-          iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-          specularColor, specularIntensity,
-          anisotropy, anisotropyRotation,
-        );
-        contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;
+  // Directional lights (delta): full weight, no MIS. Use the packed
+  // N-directional RGB records instead of the legacy scalar lightDir mirror so
+  // ReSTIR-PT suffix Lo keeps chroma and multiple directional emitters.
+  for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
+    let dBase = di * 2u;
+    let dDirAD = directionalLights[dBase];
+    let dIrrMean = directionalLights[dBase + 1u];
+    if (dIrrMean.w > 1e-6) {
+      let lightDir = safe_normalize(dDirAD.xyz);
+      let nDotL = max(0.0, dot(normal, lightDir));
+      if (nDotL > 0.0) {
+        let dirShadowDisabled = dDirAD.w < 0.0;
+        let shadowRay = Ray(pos + normal * 1e-3, lightDir);
+        if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
+          let brdf = evaluateBrdfFull(
+            baseColor, roughness, metallic, normal, wo, lightDir,
+            clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+            iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+            specularColor, specularIntensity,
+            anisotropy, anisotropyRotation,
+          );
+          contrib = contrib + suffixThroughput * brdf * nDotL * dIrrMean.rgb;
+        }
       }
     }
   }

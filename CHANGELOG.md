@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (pt-webgpu volumetric directional lights, 2026-06-15)
 
 - **`@vitrum/pt-webgpu` in-medium directional NEE:** volumetric single-scatter NEE now loops the packed N-directional light buffer instead of the legacy scalar `params.lightDir.w` mirror, preserving RGB irradiance, multiple directionals, and `castShadow:false` for directional emitters. `volumetricSss.test.ts` pins the no-scalar-regression path, and `npm run shader-gate` compiles the updated full/composite trace shaders.
+- **`@vitrum/pt-webgpu` ReSTIR-PT suffix direct lighting:** `rptDirectAtVertex()` now loops the same packed N-directional RGB records instead of the scalar lightDir mirror, preserving chroma, multiple directionals, and directional `castShadow:false` in ReSTIR-PT suffix Lo. `restirPtReuseContract.test.ts` pins the no-scalar-regression path.
 
 ### Tests (WebGPU stub validation, 2026-06-15)
 

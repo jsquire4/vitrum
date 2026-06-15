@@ -292,7 +292,19 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
+  it('uses packed N-directional RGB records in suffix direct lighting', () => {
+    const code = codeOnly(RESTIR_PT_PRODUCER_WGSL);
+    expect(code).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {');
+    expect(code).toContain('let dDirAD = directionalLights[dBase];');
+    expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
+    expect(code).toContain('let dirShadowDisabled = dDirAD.w < 0.0;');
+    expect(code).toContain('contrib = contrib + suffixThroughput * brdf * nDotL * dIrrMean.rgb;');
+    expect(code).not.toContain('contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;');
+  });
+
   it('honors packed emitter castShadow flags in suffix direct lighting where those lanes are available', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let dirShadowDisabled = dDirAD.w < 0.0;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let rectShadowDisabled = rectAreaLights[rb].w > 0.5;');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let ptShadowDisabled = ptExtra.z > 0.5;');
