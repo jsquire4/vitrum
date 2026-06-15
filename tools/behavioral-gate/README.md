@@ -24,6 +24,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 # Self-test mode (injects a synthetic BLACK result and verifies detection):
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate -- --self-test
+
+# H32 standalone oracle: TLAS shadow rays skip glass but still hit opaque geometry.
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run behavioral-gate:tlas-glass-shadow
 ```
 
 ## What it covers
@@ -130,3 +134,12 @@ The behavioral gate fills the gap between static shader compilation and full con
 tests: it exercises the engine factory, BVH build, scene upload, UBO packing, and
 readback — the class of bug that manifests as a crash or black render rather than a
 shader compile error.
+
+## Standalone oracles
+
+Some Road-to-100 closures need a narrower behavioral proof than the full engine
+matrix. These scripts live beside the main gate and are opt-in:
+
+| Command | Covers |
+|---------|--------|
+| `npm run behavioral-gate:tlas-glass-shadow` | H32 TLAS glass-shadow traversal: a real WebGPU dispatch imports the production shared-bvh BVH/TLAS WGSL and proves `traceTlasAny(..., skipGlass=true)` ignores the glass triangle while still finding opaque geometry behind it. |
