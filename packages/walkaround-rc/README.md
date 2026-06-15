@@ -34,10 +34,9 @@ arc for the emitter-NEE fix; two-scene RC acceptance gate
 - `computeOctahedralSolidAngles` — pure CPU helper used by cascade-merge math.
 
 There is no THREE bridge subpath. The package root is raw-runtime safe; it has
-no `three` or `three/webgpu` peer dependency. TSL-side receiver helpers
-(`GIReceiver`, `buildWalkaroundLightingNode`) remain in
-`@vitrum/walkaround-hybrid` — composition happens at the engine level, not in
-this subsystem package.
+no `three` or `three/webgpu` peer dependency. The old TSL receiver wrappers are
+not shipped; `@vitrum/walkaround-hybrid` composes the raw RC cascade output into
+its shade pass at the engine level.
 
 ## Design Principles
 

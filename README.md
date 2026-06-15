@@ -128,7 +128,7 @@ context loss, device-limit errors, NaN pixels) see
 @vitrum/core               Engine contract; types only, no GPU code
 @vitrum/gltf-adapter       glTF 2.0 / GLB → @vitrum/core Scene (zero-dependency)
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
-@vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + GPU dispatch + receiver)
+@vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + raw GPU dispatch)
 @vitrum/pt-webgl2          Native WebGL2 PT
 @vitrum/pt-webgpu          WebGPU-native PT (experimental backend)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)

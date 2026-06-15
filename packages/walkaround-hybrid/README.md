@@ -11,7 +11,7 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
 - **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
-- **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; sTree + dTree on CPU with WGSL update training plus inline gi-ris guided sampling under `src/ppg/`. Directional flux training is live; spatial sTree never splits (single global cell — road-to-100).
+- **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; GPU-side training atomics feed CPU sTree/dTree updates, `splitOverflowLeaves` adaptively splits high-sample spatial cells, and inline gi-ris guided sampling consumes the learned distribution under `src/ppg/`.
 - **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, `sheen`, `anisotropy`, and `iridescence` controls feed shade-owned direct, analytic, sun, and glossy-indirect lighting; readable specular, clearcoat factor/roughness/normal, sheen color/roughness, anisotropy, and iridescence factor/thickness maps multiply, perturb, or thin-film-modify the scalar controls. These rows remain approximate because upstream ReSTIR/GI candidate PDFs/payloads and authored tangents are not lobe-complete.
 
 ## Denoisers
@@ -64,11 +64,10 @@ but the denoised output will NOT be visually clean — wiring verification only.
 
 ## Host Contract
 
-The package root accepts `@vitrum/core` scene data. The DDGI path (`probeUpdatePass.ts`)
-accesses `renderer.backend.device` and imports `StorageTexture` from `three/webgpu` —
-`three/webgpu` is therefore a peer dependency **only if you use DDGI** (which is the
-default production path). ReSTIR-only consumers that supply their own raw `GPUDevice`
-without calling DDGI APIs do not need the Three.js peer dep.
+The package root accepts `@vitrum/core` scene data and a raw `GPUDevice` / canvas
+context supplied through the engine options. The DDGI, ReSTIR, RC, and denoiser
+paths run on raw WebGPU resources; `walkaround-hybrid` has no direct
+`three` / `three/webgpu` dependency.
 
 Hosts should convert their scene graph to the `@vitrum/core` `Scene` contract before
 constructing `HybridEngine`. The Three.js adapter (`sceneFromThreeJS`) was removed with
@@ -98,16 +97,17 @@ src/
                            spatial, spatialGi, shade, indirectCombine,
                            indirectTemporalAccum, gtao, gtaoUpsample,
                            composite, resolve, sampleBudget, welfordTemporal
-  ppg/                   — Practical Path Guiding (Müller 2017): sTree + dTree on CPU,
-                           ppgUpdate WGSL + gi-ris inline guiding (opt-in/experimental
-                           via ppgEnabled — spatial sTree split is road-to-100)
+  ppg/                   — Practical Path Guiding (Müller 2017): CPU sTree/dTree
+                           state, GPU training/readback merge, adaptive
+                           splitOverflowLeaves, and gi-ris inline guiding
+                           (opt-in/experimental via ppgEnabled)
   neural/                — U-Net denoiser (Chaitanya 2017): InferenceGraph,
                            inputPacker, unetArchitecture, weights loader (opt-in/
                            experimental via denoiser: 'neural'); WGSL kernels under neural/wgsl/
 ```
 
 The Radiance Cascades subsystem (`cascadePyramid`, `cascadeDispatch`, `cascadeBuffers`,
-`giReceiver`, `walkaroundDiffuseLighting`, `bvhCompute`, raw WGSL) was extracted
+raw WGSL) was extracted
 2026-05-18 into [`@vitrum/walkaround-rc`](../walkaround-rc/). `walkaround-hybrid`
 re-exports the public surface for back-compat.
 
@@ -152,12 +152,12 @@ layout and shader variant). Same pattern as `rcEnabled`, `ppgEnabled`, `regir`.
 
 ## Known Issues
 
-### DDGI path: `three/webgpu` renderer internals coupling
+### DDGI path: raw WebGPU ownership
 
-`probeUpdatePass.ts` accesses `renderer.backend.device` (raw `GPUDevice`) and imports
-`StorageTexture` from `three/webgpu`. This is an accepted known cost — `@vitrum/walkaround-hybrid`
-requires `three/webgpu` as a peer dep on the DDGI path. ReSTIR-only consumers can
-create the `GPUDevice` themselves and avoid this dependency by not calling DDGI APIs.
+DDGI now uses the same raw-device ownership model as the rest of the hybrid
+engine. Hosts provide lifecycle-owned GPU resources through the engine
+constructor; the package no longer imports `three/webgpu` or depends on Three.js
+renderer internals for probe updates.
 
 ### RC subsystem: GPU-validated 2026-06-07
 

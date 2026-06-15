@@ -92,7 +92,9 @@ export type BvhIndexStride = 3 | 4;
  * that packs its own payload into `.w` (e.g. ReSTIR packing RGBA material color
  * + texType) passes `payloadFn(triIndex)` to supply it.
  *
- * @param indices   stride-3 index buffer (length must be a multiple of 3).
+ * @param indices   stride-3 index buffer. Complete triples are expanded; any
+ *                  ragged tail shorter than one triangle is intentionally
+ *                  ignored to match historical helper behavior.
  * @param payloadFn optional `.w` value per triangle; defaults to `0`.
  */
 export function expandIndicesToStride4(

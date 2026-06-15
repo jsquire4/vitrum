@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (D1 source reconciliation, 2026-06-15)
+
+- **Walkaround/RC stale documentation cleanup:** active READMEs and source comments now reflect the raw WebGPU package boundary, live PPG sTree splitting, intentionally truncating `expandIndicesToStride4()` helper behavior, and CPU-oracle-only PPG helper functions. Package-boundary tests now reject the old `three/webgpu`, single-global-cell PPG, and RC receiver-export claims.
+
 ### Fixed (glTF diagnostics, 2026-06-15)
 
 - **`@vitrum/gltf-adapter` double-sided material diagnostics:** `gltfToScene()` now emits a structured `double-sided-material` diagnostic with the original `materials[i].doubleSided` path while preserving the flag in `MaterialSpec.extensions.doubleSided`. The adapter README also now reflects current COLOR_0 support: pt-webgl2 and full-tier pt-webgpu consume vertex colors natively, while pt-webgpu lite and walkaround-hybrid report unsupported compatibility rows.

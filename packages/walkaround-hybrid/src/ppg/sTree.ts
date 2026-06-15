@@ -114,10 +114,15 @@ export function findSTreeLeaf(
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Record that a training sample at `position` contributed `flux` to the
- * directional direction encoded in `octUV` (octahedral UV in [0,1]²).
+ * CPU oracle/test helper: record that a training sample at `position`
+ * contributed `flux` to the directional direction encoded in `octUV`
+ * (octahedral UV in [0,1]²).
  *
- * Called after each path bounce:
+ * The production hybrid path trains on the GPU, reads back per-cell counts /
+ * flux, and merges those results in `PPGCoordinator`; this helper remains for
+ * CPU-side invariants and legacy path-guiding tests.
+ *
+ * Semantics:
  *   - `position` = sample position in WORLD space
  *   - `octUV`    = octahedral map of the INCOMING direction ωi (world frame)
  *   - `flux`     = L_i estimate (incoming radiance at the sample point)
@@ -286,9 +291,12 @@ function cloneDTree(src: DTree): DTree {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Reset all leaf sampleCounts and all dTree flux accumulators after serialising
- * the current tree to the GPU buffer. Called at the start of each training
- * iteration so the next frame accumulates fresh statistics.
+ * CPU oracle/test helper: reset all leaf sampleCounts and all dTree flux
+ * accumulators.
+ *
+ * The production GPU-readback path deliberately keeps persistent dTree flux
+ * with decay after merging per-frame readback; do not read this helper as the
+ * current runtime training cadence.
  */
 export function resetAccumulators(sTree: STree): void {
   for (const node of sTree.nodes) {

@@ -52,4 +52,15 @@ describe('@vitrum/walkaround-rc package boundary', () => {
     expect(pkg.devDependencies ?? {}).not.toHaveProperty('@types/three');
     expect(pkg.devDependencies).not.toHaveProperty('three-mesh-bvh');
   });
+
+  it('keeps public docs aligned with the raw RC surface', () => {
+    const packageReadme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
+    const cascadePyramid = readFileSync(fileURLToPath(new URL('../src/cascadePyramid.ts', import.meta.url)), 'utf8');
+    const rootReadme = readFileSync(fileURLToPath(new URL('../../../README.md', import.meta.url)), 'utf8');
+
+    expect(packageReadme).not.toMatch(/GIReceiver|buildWalkaroundLightingNode|TSL-side receiver helpers/);
+    expect(cascadePyramid).not.toMatch(/GIReceiver|buildWalkaroundLightingNode|TSL-side receiver helpers/);
+    expect(rootReadme).not.toMatch(/@vitrum\/walkaround-rc\s+.*receiver/);
+    expect(packageReadme).toMatch(/old TSL receiver wrappers are\s+not shipped/);
+  });
 });

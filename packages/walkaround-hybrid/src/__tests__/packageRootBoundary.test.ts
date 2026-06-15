@@ -59,4 +59,13 @@ describe('@vitrum/walkaround-hybrid package boundary', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('keeps the README aligned with the raw WebGPU package boundary', () => {
+    const readme = readSource('../../README.md');
+
+    expect(readme).not.toMatch(/spatial sTree never splits|single global cell/);
+    expect(readme).not.toMatch(/renderer\.backend\.device|StorageTexture|requires `?three\/webgpu/);
+    expect(readme).toMatch(/splitOverflowLeaves/);
+    expect(readme).toMatch(/has no direct\s+`three` \/ `three\/webgpu` dependency/);
+  });
 });
