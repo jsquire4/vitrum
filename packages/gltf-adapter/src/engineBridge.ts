@@ -14,8 +14,13 @@ import {
   type GltfDecodedAssetResult,
   type LoadGltfAndDecodeTexturesOptions,
 } from './assetLoader.js';
-import type { DecodeSceneTextureDiagnostic, GltfTextureDecodeReport } from './texturePipeline.js';
-import type { GltfImportDiagnostic } from './gltfToScene.js';
+import type {
+  DecodeSceneTextureDiagnostic,
+  GltfBackendTextureStatus,
+  GltfTextureDecodeReport,
+  GltfTextureDecodeReportEntry,
+} from './texturePipeline.js';
+import type { GltfImportDiagnostic, GltfImportDiagnosticCode } from './gltfToScene.js';
 import {
   createGltfSceneController,
   type GltfSceneController,
@@ -79,6 +84,15 @@ export interface LoadGltfForEngineOptions<
    *   host-hook rows.
    */
   readonly compatibilityMode?: GltfCompatibilityMode;
+
+  /**
+   * Strict texture-readiness escape hatch for host-owned opaque handles.
+   * By default, `compatibilityMode:'reject-degraded'` rejects texture refs whose
+   * decode report says the selected backend sees only an opaque handle. Set this
+   * to true (or an explicit backend list) only when the host/factory guarantees
+   * those opaque handles are already uploadable by that backend.
+   */
+  readonly opaqueTextureHandlesReady?: boolean | readonly BackendId[];
 
   /** Whether attaching/constructing an engine should call setScene(scene). */
   readonly attachScene?: boolean;
@@ -221,26 +235,124 @@ function enforceCompatibility<
     throw new Error(`[vitrum/gltf-adapter] No compatibility entry found for backend "${backend}".`);
   }
   const effectiveIssues = selected.issues.filter((issue) => !isSatisfiedCompatibilityIssue(issue, options, asset));
-  const hardFailures = effectiveIssues.filter((issue) => issue.support === 'unsupported').length;
-  const degradedFailures = effectiveIssues.filter((issue) =>
-    issue.support !== 'native' && issue.support !== 'unsupported',
-  ).length;
-  const shouldReject = mode === 'reject-unsupported'
-    ? hardFailures > 0
-    : hardFailures + degradedFailures > 0;
-  if (!shouldReject) return;
-
-  const issues = effectiveIssues
+  const rejectedIssues = effectiveIssues
     .filter((issue) => {
       if (mode === 'reject-unsupported') return issue.support === 'unsupported';
       return issue.support !== 'native';
     })
-    .map(formatCompatibilityIssue)
+    .map(formatCompatibilityIssue);
+  const rejectedImportDiagnostics = importDiagnosticFailures(asset.diagnostics, mode);
+  const rejectedTextureReadiness = textureReadinessFailures(asset.textureDecodeReport, backend, mode, options);
+  const failures = [
+    ...rejectedIssues,
+    ...rejectedImportDiagnostics,
+    ...rejectedTextureReadiness,
+  ];
+  if (failures.length === 0) return;
+
+  const issues = failures
     .join(', ');
   throw new Error(
     `[vitrum/gltf-adapter] ${label} "${backend}" does not satisfy ` +
       `${mode}: ${issues || 'unknown compatibility issue'}.`,
   );
+}
+
+const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
+  'scene-not-found',
+  'unsupported-primitive-mode',
+  'unresolved-compression',
+  'missing-position',
+  'unreadable-position',
+  'unreadable-indices',
+  'empty-triangulated-primitive',
+]);
+
+const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
+  'unsupported-version',
+  'ignored-camera',
+  'ignored-gpu-instancing',
+]);
+
+function importDiagnosticFailures(
+  diagnostics: readonly GltfImportDiagnostic[],
+  mode: GltfCompatibilityMode,
+): string[] {
+  if (mode === 'best-effort') return [];
+  return diagnostics
+    .map((diagnostic) => {
+      const support = importDiagnosticSupport(diagnostic.code);
+      if (support == null) return undefined;
+      if (mode === 'reject-unsupported' && support !== 'unsupported') return undefined;
+      return `import:${diagnostic.code}=${support} at ${diagnostic.path}`;
+    })
+    .filter((message): message is string => message !== undefined);
+}
+
+function importDiagnosticSupport(code: GltfImportDiagnosticCode): 'unsupported' | 'approximate' | undefined {
+  if (UNSUPPORTED_IMPORT_DIAGNOSTICS.has(code)) return 'unsupported';
+  if (DEGRADED_IMPORT_DIAGNOSTICS.has(code)) return 'approximate';
+  return undefined;
+}
+
+function textureReadinessFailures<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(
+  report: GltfTextureDecodeReport,
+  backend: BackendId,
+  mode: GltfCompatibilityMode,
+  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+): string[] {
+  if (mode === 'best-effort') return [];
+  const key = textureReadinessKey(backend);
+  return report.entries
+    .map((entry) => {
+      const status = entry.backendReadiness[key];
+      const support = textureReadinessSupport(status, options, backend);
+      if (support == null) return undefined;
+      if (mode === 'reject-unsupported' && support !== 'unsupported') return undefined;
+      return formatTextureReadinessFailure(entry, status, support);
+    })
+    .filter((message): message is string => message !== undefined);
+}
+
+function textureReadinessSupport<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(
+  status: GltfBackendTextureStatus,
+  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+  backend: BackendId,
+): 'unsupported' | 'requires-hook' | undefined {
+  if (status === 'ready') return undefined;
+  if (status === 'opaque' && opaqueTextureHandlesReadyForBackend(options, backend)) return undefined;
+  return status === 'ignored' ? 'unsupported' : 'requires-hook';
+}
+
+function formatTextureReadinessFailure(
+  entry: GltfTextureDecodeReportEntry,
+  status: GltfBackendTextureStatus,
+  support: 'unsupported' | 'requires-hook',
+): string {
+  return `texture:${entry.materialField}=${support} at ${entry.path} (${status})`;
+}
+
+function textureReadinessKey(backend: BackendId): keyof GltfTextureDecodeReportEntry['backendReadiness'] {
+  if (backend === 'pt-webgl2') return 'ptWebgl2';
+  if (backend === 'pt-webgpu') return 'ptWebgpu';
+  return 'walkaroundHybrid';
+}
+
+function opaqueTextureHandlesReadyForBackend<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(
+  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+  backend: BackendId,
+): boolean {
+  const policy = options.opaqueTextureHandlesReady;
+  return policy === true || (Array.isArray(policy) && policy.includes(backend));
 }
 
 function backendIdFromEngine(engine: GltfScenePatchTarget | undefined): BackendId | undefined {

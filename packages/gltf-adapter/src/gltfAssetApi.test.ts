@@ -1280,11 +1280,63 @@ describe('loadGltfForEngine', () => {
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
     })).rejects.toThrow('Actual engine backend "walkaround-hybrid" does not satisfy reject-degraded');
 
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(engine.setScene).not.toHaveBeenCalled();
+  });
+
+  it('rejects structural import diagnostics in strict mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    delete gltf.meshes![0]!.primitives[0]!.attributes.POSITION;
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'import:missing-position=unsupported at meshes[0].primitives[0].attributes.POSITION',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects opaque texture handles in reject-degraded mode unless the host opts in', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'texture:baseColorMap=requires-hook at scene.primitives[0].material.baseColorMap (opaque)',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows opaque texture handles in strict mode when the host asserts backend readiness', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const engine = { setScene: vi.fn() };
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine: async () => engine,
+    })).resolves.toMatchObject({
+      backend: 'pt-webgl2',
+      attached: true,
+    });
+
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
   });
 
   it('can decode textures before engine attachment and surface decode diagnostics', async () => {
@@ -1536,6 +1588,7 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       decodeImage: async () => ({ kind: 'decoded-texture' }),
+      opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine: async () => ({ setScene: vi.fn() }),
     })).resolves.toMatchObject({
       backend: 'pt-webgl2',
@@ -1576,6 +1629,7 @@ describe('loadGltfForEngine', () => {
       compatibilityMode: 'reject-degraded',
       textureSourceExtensions: ['EXT_texture_webp'],
       decodeImage: async () => ({ kind: 'decoded-webp' }),
+      opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine: async () => ({ setScene: vi.fn() }),
     })).resolves.toMatchObject({
       backend: 'pt-webgl2',
@@ -1598,6 +1652,7 @@ describe('loadGltfForEngine', () => {
       compatibilityMode: 'reject-degraded',
       textureSourceExtensions: ['KHR_texture_basisu'],
       decodeImage: async () => ({ kind: 'decoded-texture' }),
+      opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine: async () => ({ setScene: vi.fn() }),
     })).resolves.toMatchObject({
       backend: 'pt-webgl2',

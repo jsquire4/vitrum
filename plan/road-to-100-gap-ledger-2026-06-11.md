@@ -1269,6 +1269,12 @@ Closure:
   returns that backend and reruns strict compatibility against it before
   calling `setScene()`. Factory fallback can still proceed in best-effort mode,
   but strict mode no longer validates against one backend and attaches another.
+- Strict bridge modes now consume converter diagnostics and texture-readiness
+  reports as well as compatibility rows. Structural skips (`missing-position`,
+  unresolved compression, unreadable attributes/indices, unsupported primitive
+  modes, empty triangulation) reject before engine construction; opaque texture
+  handles reject under `reject-degraded` unless the host asserts backend
+  readiness with `opaqueTextureHandlesReady`.
 
 ### GLTF-API-04 - animation playback/update orchestration
 

@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (glTF engine bridge, 2026-06-15)
 
 - **Actual-backend strict compatibility:** `loadGltfForEngine()` now reads `engine.backendId` from existing or factory-created engines, reports that actual backend in the bridge result, and reruns strict compatibility against it before `setScene()`. Best-effort mode can still tolerate factory fallback, but strict loads can no longer validate against one backend and silently attach another.
+- **Strict import diagnostics and texture readiness:** `loadGltfForEngine()` now folds structural converter diagnostics and backend texture-readiness rows into `reject-unsupported` / `reject-degraded`. Skipped geometry such as missing `POSITION`, unresolved compression, unreadable indices, and unsupported primitive modes reject before engine construction, while opaque texture handles reject in `reject-degraded` unless the host explicitly opts in with `opaqueTextureHandlesReady`.
 
 ### Fixed (walkaround ReSTIR-DI material parity, 2026-06-15)
 
