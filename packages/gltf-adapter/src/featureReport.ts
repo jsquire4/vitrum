@@ -660,6 +660,9 @@ function extensionRequiresHostHook(
   required: readonly string[],
 ): boolean {
   if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
+  if (ext === 'EXT_meshopt_compression') {
+    return meshoptCompressionRequiresHostHook(gltf, required.includes(ext));
+  }
   if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
 
   // Required texture-source extensions cannot be safely ignored. Optional
@@ -671,6 +674,27 @@ function extensionRequiresHostHook(
     texture.source === undefined &&
     textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
   );
+}
+
+function meshoptCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean): boolean {
+  if (isRequired) return true;
+
+  for (const bufferView of gltf.bufferViews ?? []) {
+    if (bufferView.extensions?.EXT_meshopt_compression === undefined) continue;
+    if (!meshoptBufferViewHasRealFallback(gltf, bufferView.buffer)) return true;
+  }
+
+  return false;
+}
+
+function meshoptBufferViewHasRealFallback(gltf: GltfJson, bufferIndex: number): boolean {
+  const buffer = gltf.buffers?.[bufferIndex];
+  if (!buffer) return false;
+  const meshoptExt = buffer.extensions?.EXT_meshopt_compression;
+  if (meshoptExt == null || typeof meshoptExt !== 'object' || Array.isArray(meshoptExt)) {
+    return true;
+  }
+  return (meshoptExt as { readonly fallback?: unknown }).fallback !== true;
 }
 
 function textureSourceExtensionHasImageSource(value: unknown): boolean {
