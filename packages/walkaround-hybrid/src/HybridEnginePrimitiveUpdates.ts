@@ -1042,6 +1042,10 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'lightMap',
   'specularColorMap',
   'specularIntensityMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(

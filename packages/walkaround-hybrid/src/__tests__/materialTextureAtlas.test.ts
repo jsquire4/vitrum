@@ -407,6 +407,63 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.atlasData[intensityLayerBase + 3]).toBeCloseTo(128 / 255, 5);
   });
 
+  it('packs clearcoat and sheen texture maps into atlas metadata with glTF channels', () => {
+    const clearcoatHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 0, 0, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const clearcoatRoughnessHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([0, 192, 0, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const sheenColorHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([64, 128, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+    };
+    const sheenRoughnessHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([0, 0, 0, 96]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      clearcoatMap: { handle: clearcoatHandle },
+      clearcoatRoughnessMap: { handle: clearcoatRoughnessHandle, texCoord: 1 },
+      sheenColorMap: { handle: sheenColorHandle },
+      sheenRoughnessMap: { handle: sheenRoughnessHandle, texCoord: 1 },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableClearcoatLayerCount).toBe(1);
+    expect(atlas.readableClearcoatRoughnessLayerCount).toBe(1);
+    expect(atlas.readableSheenColorLayerCount).toBe(1);
+    expect(atlas.readableSheenRoughnessLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[112]).toBe(0); // clearcoatMap layer
+    expect(atlas.baseColorMetaData[120]).toBe(1); // clearcoatRoughnessMap layer
+    expect(atlas.baseColorMetaData[121]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[128]).toBe(2); // sheenColorMap layer
+    expect(atlas.baseColorMetaData[136]).toBe(3); // sheenRoughnessMap layer
+    expect(atlas.baseColorMetaData[137]).toBe(16); // uv1 selector
+    expect(atlas.atlasData[0]).toBeCloseTo(128 / 255, 5);
+    expect(atlas.atlasData[4 + 1]).toBeCloseTo(192 / 255, 5);
+    const sheenColorLayerBase = 8;
+    expect(atlas.atlasData[sheenColorLayerBase]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+    expect(atlas.atlasData[sheenColorLayerBase + 1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+    expect(atlas.atlasData[sheenColorLayerBase + 2]).toBeCloseTo(1, 5);
+    const sheenRoughnessLayerBase = 12;
+    expect(atlas.atlasData[sheenRoughnessLayerBase + 3]).toBeCloseTo(96 / 255, 5);
+  });
+
   it('packs scalar clearcoat controls into per-triangle material metadata', () => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -452,7 +509,7 @@ describe('walkaround materialTextureAtlas', () => {
   });
 
   it('shade and traversal sample material maps from the shared atlas module', () => {
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 28u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 36u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
@@ -466,6 +523,10 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
@@ -483,9 +544,9 @@ describe('walkaround materialTextureAtlas', () => {
       'let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);',
     );
     expect(SHADE_WGSL).toContain('let specular = sampleSpecularControls(primaryHit.indices.w, primaryHit.uv, uv1);');
-    expect(SHADE_WGSL).toContain('let clearcoat = sampleClearcoatControls(primaryHit.indices.w);');
-    expect(SHADE_WGSL).toContain('let sheen = sampleSheenControls(primaryHit.indices.w);');
-    expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w);');
+    expect(SHADE_WGSL).toContain('let clearcoat = sampleClearcoatControls(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('let sheen = sampleSheenControls(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
     );

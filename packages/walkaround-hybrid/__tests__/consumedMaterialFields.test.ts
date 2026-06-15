@@ -162,6 +162,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'thickness', 'ior', 'extensions', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
       'specularColorMap', 'specularIntensityMap',
+      'clearcoatMap', 'clearcoatRoughnessMap', 'sheenColorMap', 'sheenRoughnessMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
@@ -173,8 +174,8 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
   it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
       'thicknessMap',
-      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
-      'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
+      'clearcoatNormalMap',
+      'iridescenceMap',
       'iridescenceThicknessMap', 'anisotropyMap', 'bumpMap', 'displacementMap',
     ];
     for (const field of textureMaps) {

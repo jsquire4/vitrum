@@ -90,6 +90,10 @@
  *  clearcoatRoughness    same scalar clearcoat metadata path; approximate
  *                           because ReSTIR candidate PDFs/payloads and maps
  *                           still use the base-lobe path.
+ *  clearcoatMap          readable linear maps multiply scalar `clearcoat`
+ *                           from their red channel before top-coat evaluation.
+ *  clearcoatRoughnessMap readable linear maps multiply scalar
+ *                           `clearcoatRoughness` from their green channel.
  *  sheen                 stored in material atlas metadata and added as a
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
  *                           direct, analytic, sun, and specular-indirect paths.
@@ -97,10 +101,14 @@
  *                           ReSTIR candidate PDFs/payloads and maps still use
  *                           the base-lobe path.
  *  sheenRoughness        same scalar sheen metadata path.
+ *  sheenColorMap         readable sRGB maps multiply scalar `sheenColor`.
+ *  sheenRoughnessMap     readable linear maps multiply scalar
+ *                           `sheenRoughness` from their alpha channel.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
- * transmissionMap / lightMap, remaining Disney BSDF scalars, spectral curves,
+ * transmissionMap / lightMap / specular maps / clearcoat factor maps / sheen
+ * maps, remaining Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and extension
  * maps — is IGNORED.
  */
@@ -122,9 +130,13 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'specularIntensityMap',
   'clearcoat',
   'clearcoatRoughness',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
   'sheen',
   'sheenColor',
   'sheenRoughness',
+  'sheenColorMap',
+  'sheenRoughnessMap',
   'alphaMode',
   'alphaCutoff',
   'opacity',

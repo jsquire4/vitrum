@@ -305,9 +305,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);
   let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);
   let specular = sampleSpecularControls(primaryHit.indices.w, primaryHit.uv, uv1);
-  let clearcoat = sampleClearcoatControls(primaryHit.indices.w);
-  let sheen = sampleSheenControls(primaryHit.indices.w);
-  let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w);
+  let clearcoat = sampleClearcoatControls(primaryHit.indices.w, primaryHit.uv, uv1);
+  let sheen = sampleSheenControls(primaryHit.indices.w, primaryHit.uv, uv1);
+  let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);
   let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:

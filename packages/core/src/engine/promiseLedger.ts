@@ -397,12 +397,17 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMap: 'approximate',
   aoMap: 'approximate',
   aoMapIntensity: 'approximate',
-  clearcoatMap: 'unsupported',
-  clearcoatRoughnessMap: 'unsupported',
+  // Readable clearcoat factor/roughness maps modulate the shade-owned top-coat
+  // lobe. ReSTIR candidate PDFs/payloads and clearcoatNormalMap remain base-lobe
+  // only, so this is approximate rather than native.
+  clearcoatMap: 'approximate',
+  clearcoatRoughnessMap: 'approximate',
   clearcoatNormalMap: 'unsupported',
   clearcoatNormalScale: 'unsupported',
-  sheenColorMap: 'unsupported',
-  sheenRoughnessMap: 'unsupported',
+  // Readable sheen maps modulate the shade-owned Charlie sheen lobe; ReSTIR
+  // candidate PDFs/payloads remain base-lobe only.
+  sheenColorMap: 'approximate',
+  sheenRoughnessMap: 'approximate',
   iridescenceMap: 'unsupported',
   iridescenceThicknessMap: 'unsupported',
   anisotropyMap: 'unsupported',

@@ -347,6 +347,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   scalar specular intensity by the linear alpha map. The promise ledger promotes
   both rows to `approximate`, not `native`, because ReSTIR candidate PDFs and
   payloads remain scalar/specular-map unaware.
+- Walkaround-hybrid Phase-3E clearcoat/sheen map follow-up (2026-06-14):
+  readable `clearcoatMap`, `clearcoatRoughnessMap`, `sheenColorMap`, and
+  `sheenRoughnessMap` handles now use the material atlas with per-map uv0/uv1,
+  wrap, and texture-transform metadata. Shade-owned top-coat and Charlie sheen
+  paths multiply scalar controls by glTF R/G/RGB/A channels respectively. The
+  promise ledger promotes these rows to `approximate`, not `native`, because
+  ReSTIR candidate PDFs/payloads and `clearcoatNormalMap` remain base-lobe-only.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

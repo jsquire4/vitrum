@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 28u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 36u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -27,6 +27,10 @@ const MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
 const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
 const MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
 const MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
+const MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;
+const MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;
+const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
+const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -190,16 +194,29 @@ fn sampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   return vec4f(color, intensity);
 }
 
-fn sampleClearcoatControls(triIndex: u32) -> vec2f {
+fn sampleClearcoatControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
   let cc = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET),
     0,
   );
-  return clamp(cc.xy, vec2f(0.0), vec2f(1.0));
+  var factor = clamp(cc.x, 0.0, 1.0);
+  var roughness = clamp(cc.y, 0.0, 1.0);
+
+  let clearcoatMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET, uv0, uv1);
+  if (clearcoatMap.x >= 0.0) {
+    factor = clamp(factor * clearcoatMap.r, 0.0, 1.0);
+  }
+
+  let roughnessMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.g, 0.0, 1.0);
+  }
+
+  return vec2f(factor, roughness);
 }
 
-fn sampleSheenControls(triIndex: u32) -> vec4f {
+fn sampleSheenControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   let scalars = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET),
@@ -210,16 +227,29 @@ fn sampleSheenControls(triIndex: u32) -> vec4f {
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET),
     0,
   );
-  return vec4f(clamp(color.rgb, vec3f(0.0), vec3f(1.0)), clamp(scalars.z, 0.0, 1.0));
+  var sheenColor = clamp(color.rgb, vec3f(0.0), vec3f(1.0));
+  var sheen = clamp(scalars.z, 0.0, 1.0);
+
+  let colorMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    sheenColor = clamp(sheenColor * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+
+  return vec4f(sheenColor, sheen);
 }
 
-fn sampleSheenRoughness(triIndex: u32) -> f32 {
+fn sampleSheenRoughness(triIndex: u32, uv0: vec2f, uv1: vec2f) -> f32 {
   let scalars = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET),
     0,
   );
-  return clamp(scalars.w, 0.0, 1.0);
+  var roughness = clamp(scalars.w, 0.0, 1.0);
+  let roughnessMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
+  }
+  return roughness;
 }
 
 fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {

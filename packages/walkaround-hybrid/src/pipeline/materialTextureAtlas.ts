@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 28;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 36;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -14,7 +14,11 @@ type AtlasMapField =
   | 'transmissionMap'
   | 'lightMap'
   | 'specularColorMap'
-  | 'specularIntensityMap';
+  | 'specularIntensityMap'
+  | 'clearcoatMap'
+  | 'clearcoatRoughnessMap'
+  | 'sheenColorMap'
+  | 'sheenRoughnessMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -29,6 +33,10 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'lightMap', colorSpace: 'linear' },
   { field: 'specularColorMap', colorSpace: 'srgb' },
   { field: 'specularIntensityMap', colorSpace: 'linear' },
+  { field: 'clearcoatMap', colorSpace: 'linear' },
+  { field: 'clearcoatRoughnessMap', colorSpace: 'linear' },
+  { field: 'sheenColorMap', colorSpace: 'srgb' },
+  { field: 'sheenRoughnessMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -49,6 +57,10 @@ export interface MaterialTextureAtlasPayload {
   readonly readableLightLayerCount: number;
   readonly readableSpecularColorLayerCount: number;
   readonly readableSpecularIntensityLayerCount: number;
+  readonly readableClearcoatLayerCount: number;
+  readonly readableClearcoatRoughnessLayerCount: number;
+  readonly readableSheenColorLayerCount: number;
+  readonly readableSheenRoughnessLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -251,6 +263,10 @@ export function packMaterialTextureAtlas(
     lightMap: new Set<number>(),
     specularColorMap: new Set<number>(),
     specularIntensityMap: new Set<number>(),
+    clearcoatMap: new Set<number>(),
+    clearcoatRoughnessMap: new Set<number>(),
+    sheenColorMap: new Set<number>(),
+    sheenRoughnessMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -409,6 +425,10 @@ export function packMaterialTextureAtlas(
     writeSheenColorMeta(mat, baseTexel + 23);
     writeMapMeta(mat, 'specularColorMap', 'srgb', baseTexel + 24);
     writeMapMeta(mat, 'specularIntensityMap', 'linear', baseTexel + 26);
+    writeMapMeta(mat, 'clearcoatMap', 'linear', baseTexel + 28);
+    writeMapMeta(mat, 'clearcoatRoughnessMap', 'linear', baseTexel + 30);
+    writeMapMeta(mat, 'sheenColorMap', 'srgb', baseTexel + 32);
+    writeMapMeta(mat, 'sheenRoughnessMap', 'linear', baseTexel + 34);
   }
 
   return {
@@ -429,6 +449,10 @@ export function packMaterialTextureAtlas(
     readableLightLayerCount: fieldLayers.lightMap.size,
     readableSpecularColorLayerCount: fieldLayers.specularColorMap.size,
     readableSpecularIntensityLayerCount: fieldLayers.specularIntensityMap.size,
+    readableClearcoatLayerCount: fieldLayers.clearcoatMap.size,
+    readableClearcoatRoughnessLayerCount: fieldLayers.clearcoatRoughnessMap.size,
+    readableSheenColorLayerCount: fieldLayers.sheenColorMap.size,
+    readableSheenRoughnessLayerCount: fieldLayers.sheenRoughnessMap.size,
   };
 }
 
