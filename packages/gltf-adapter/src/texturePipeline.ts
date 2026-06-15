@@ -192,6 +192,7 @@ const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'specularIntensityMap',
   'clearcoatMap',
   'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
   'sheenColorMap',
   'sheenRoughnessMap',
 ]);

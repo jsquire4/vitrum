@@ -134,6 +134,7 @@ const WALKAROUND_OPAQUE_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'specularIntensityMap',
   'clearcoatMap',
   'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
   'sheenColorMap',
   'sheenRoughnessMap',
 ]);

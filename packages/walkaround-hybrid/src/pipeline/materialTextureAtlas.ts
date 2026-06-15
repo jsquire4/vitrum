@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 36;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 39;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -17,6 +17,7 @@ type AtlasMapField =
   | 'specularIntensityMap'
   | 'clearcoatMap'
   | 'clearcoatRoughnessMap'
+  | 'clearcoatNormalMap'
   | 'sheenColorMap'
   | 'sheenRoughnessMap';
 type AtlasColorSpace = 'srgb' | 'linear';
@@ -35,6 +36,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'specularIntensityMap', colorSpace: 'linear' },
   { field: 'clearcoatMap', colorSpace: 'linear' },
   { field: 'clearcoatRoughnessMap', colorSpace: 'linear' },
+  { field: 'clearcoatNormalMap', colorSpace: 'linear' },
   { field: 'sheenColorMap', colorSpace: 'srgb' },
   { field: 'sheenRoughnessMap', colorSpace: 'linear' },
 ];
@@ -59,6 +61,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableSpecularIntensityLayerCount: number;
   readonly readableClearcoatLayerCount: number;
   readonly readableClearcoatRoughnessLayerCount: number;
+  readonly readableClearcoatNormalLayerCount: number;
   readonly readableSheenColorLayerCount: number;
   readonly readableSheenRoughnessLayerCount: number;
 }
@@ -265,6 +268,7 @@ export function packMaterialTextureAtlas(
     specularIntensityMap: new Set<number>(),
     clearcoatMap: new Set<number>(),
     clearcoatRoughnessMap: new Set<number>(),
+    clearcoatNormalMap: new Set<number>(),
     sheenColorMap: new Set<number>(),
     sheenRoughnessMap: new Set<number>(),
   };
@@ -371,6 +375,16 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeClearcoatNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = Number.isFinite(mat?.clearcoatNormalScale)
+      ? Math.max(0, mat?.clearcoatNormalScale ?? 1)
+      : 1;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   const writeLightMapIntensityMeta = (mat: MaterialSpec | undefined, texel: number): void => {
     const b = texel * 4;
     baseColorMetaData[b] = Number.isFinite(mat?.lightMapIntensity)
@@ -429,6 +443,8 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'clearcoatRoughnessMap', 'linear', baseTexel + 30);
     writeMapMeta(mat, 'sheenColorMap', 'srgb', baseTexel + 32);
     writeMapMeta(mat, 'sheenRoughnessMap', 'linear', baseTexel + 34);
+    writeMapMeta(mat, 'clearcoatNormalMap', 'linear', baseTexel + 36);
+    writeClearcoatNormalScaleMeta(mat, baseTexel + 38);
   }
 
   return {
@@ -451,6 +467,7 @@ export function packMaterialTextureAtlas(
     readableSpecularIntensityLayerCount: fieldLayers.specularIntensityMap.size,
     readableClearcoatLayerCount: fieldLayers.clearcoatMap.size,
     readableClearcoatRoughnessLayerCount: fieldLayers.clearcoatRoughnessMap.size,
+    readableClearcoatNormalLayerCount: fieldLayers.clearcoatNormalMap.size,
     readableSheenColorLayerCount: fieldLayers.sheenColorMap.size,
     readableSheenRoughnessLayerCount: fieldLayers.sheenRoughnessMap.size,
   };

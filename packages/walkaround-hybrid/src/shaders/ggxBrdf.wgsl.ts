@@ -137,11 +137,12 @@ fn evalGGXWithSpecularClearcoatSheen(
   sheenRoughness: f32,
   sheenColor: vec3f,
   n: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi)
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
 
@@ -271,11 +272,12 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   sheenRoughness: f32,
   sheenColor: vec3f,
   n: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi)
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
 

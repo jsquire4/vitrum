@@ -94,6 +94,9 @@
  *                           from their red channel before top-coat evaluation.
  *  clearcoatRoughnessMap readable linear maps multiply scalar
  *                           `clearcoatRoughness` from their green channel.
+ *  clearcoatNormalMap    readable normal maps perturb only the shade-owned
+ *                           clearcoat lobe through the derived-TBN atlas path.
+ *  clearcoatNormalScale  metadata scale for `clearcoatNormalMap`.
  *  sheen                 stored in material atlas metadata and added as a
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
  *                           direct, analytic, sun, and specular-indirect paths.
@@ -107,8 +110,8 @@
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
- * transmissionMap / lightMap / specular maps / clearcoat factor maps / sheen
- * maps, remaining Disney BSDF scalars, spectral curves,
+ * transmissionMap / lightMap / specular maps / clearcoat maps / sheen maps,
+ * remaining Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and extension
  * maps — is IGNORED.
  */
@@ -132,6 +135,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'clearcoatRoughness',
   'clearcoatMap',
   'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatNormalScale',
   'sheen',
   'sheenColor',
   'sheenRoughness',

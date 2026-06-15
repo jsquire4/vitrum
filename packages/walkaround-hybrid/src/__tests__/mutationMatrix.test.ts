@@ -337,6 +337,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           specularIntensityMap: { handle: baseColorMapHandle(240), texCoord: 1 },
           clearcoatMap: { handle: baseColorMapHandle(192), wrapS: 'clamp-to-edge' },
           clearcoatRoughnessMap: { handle: baseColorMapHandle(208), texCoord: 1 },
+          clearcoatNormalMap: { handle: baseColorMapHandle(144), texCoord: 1 },
+          clearcoatNormalScale: 0.25,
           sheenColorMap: { handle: baseColorMapHandle(176), wrapT: 'mirrored-repeat' },
           sheenRoughnessMap: { handle: baseColorMapHandle(160), texCoord: 1 },
         },
@@ -359,6 +361,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableSpecularIntensityLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableClearcoatLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableClearcoatRoughnessLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableClearcoatNormalLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableSheenColorLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableSheenRoughnessLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
@@ -377,6 +380,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           specularIntensityMap?: unknown;
           clearcoatMap?: unknown;
           clearcoatRoughnessMap?: unknown;
+          clearcoatNormalMap?: unknown;
+          clearcoatNormalScale?: unknown;
           sheenColorMap?: unknown;
           sheenRoughnessMap?: unknown;
         };
@@ -395,6 +400,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(material.specularIntensityMap).toBeDefined();
       expect(material.clearcoatMap).toBeDefined();
       expect(material.clearcoatRoughnessMap).toBeDefined();
+      expect(material.clearcoatNormalMap).toBeDefined();
+      expect(material.clearcoatNormalScale).toBe(0.25);
       expect(material.sheenColorMap).toBeDefined();
       expect(material.sheenRoughnessMap).toBeDefined();
     } finally {

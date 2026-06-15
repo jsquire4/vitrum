@@ -402,8 +402,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // only, so this is approximate rather than native.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
-  clearcoatNormalMap: 'unsupported',
-  clearcoatNormalScale: 'unsupported',
+  // Clearcoat normal maps reuse walkaround's derived-TBN atlas normal path and
+  // feed only the shade-owned clearcoat lobe. Authored tangents and ReSTIR
+  // candidate PDFs/payloads remain base-lobe-only.
+  clearcoatNormalMap: 'approximate',
+  clearcoatNormalScale: 'approximate',
   // Readable sheen maps modulate the shade-owned Charlie sheen lobe; ReSTIR
   // candidate PDFs/payloads remain base-lobe only.
   sheenColorMap: 'approximate',

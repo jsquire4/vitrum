@@ -109,7 +109,8 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
       'specularColorMap', 'specularIntensityMap',
-      'clearcoatMap', 'clearcoatRoughnessMap', 'sheenColorMap', 'sheenRoughnessMap',
+      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
+      'sheenColorMap', 'sheenRoughnessMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -137,7 +138,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'displacementMap',
       'displacementScale',
       'displacementBias',
-      'clearcoatNormalMap',
       'bumpMap',
       'frontLayer',
       'backLayer',
@@ -202,6 +202,8 @@ describe('collectUnconsumedMaterialFields', () => {
           specularIntensityMap: { handle: 'specIntensity' },
           clearcoatMap: { handle: 'clearcoat' },
           clearcoatRoughnessMap: { handle: 'clearcoatRoughness' },
+          clearcoatNormalMap: { handle: 'clearcoatNormal' },
+          clearcoatNormalScale: 0.5,
           sheenColorMap: { handle: 'sheenColor' },
           sheenRoughnessMap: { handle: 'sheenRoughness' },
           frontLayer: { transmission: [1, 0.5, 0.25] },

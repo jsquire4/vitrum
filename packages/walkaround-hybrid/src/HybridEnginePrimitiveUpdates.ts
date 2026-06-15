@@ -1044,6 +1044,7 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'specularIntensityMap',
   'clearcoatMap',
   'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
   'sheenColorMap',
   'sheenRoughnessMap',
 ] as const;
@@ -1105,6 +1106,9 @@ function materialAtlasPatchRequiresFullRebuild(
   const normalScaleChanged =
     (prev?.normalMap != null || next?.normalMap != null) &&
     (prev?.normalScale ?? 1) !== (next?.normalScale ?? 1);
+  const clearcoatNormalScaleChanged =
+    (prev?.clearcoatNormalMap != null || next?.clearcoatNormalMap != null) &&
+    (prev?.clearcoatNormalScale ?? 1) !== (next?.clearcoatNormalScale ?? 1);
   const lightMapIntensityChanged =
     (prev?.lightMap != null || next?.lightMap != null) &&
     (prev?.lightMapIntensity ?? 1) !== (next?.lightMapIntensity ?? 1);
@@ -1129,7 +1133,13 @@ function materialAtlasPatchRequiresFullRebuild(
     colorUnit(prev, 'sheenColor', 0, 0) !== colorUnit(next, 'sheenColor', 0, 0) ||
     colorUnit(prev, 'sheenColor', 1, 0) !== colorUnit(next, 'sheenColor', 1, 0) ||
     colorUnit(prev, 'sheenColor', 2, 0) !== colorUnit(next, 'sheenColor', 2, 0);
-  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged || clearcoatChanged || sheenChanged;
+  return normalScaleChanged ||
+    clearcoatNormalScaleChanged ||
+    lightMapIntensityChanged ||
+    alphaCoverageChanged ||
+    specularChanged ||
+    clearcoatChanged ||
+    sheenChanged;
 }
 
 /**

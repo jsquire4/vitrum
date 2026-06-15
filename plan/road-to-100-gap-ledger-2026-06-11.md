@@ -353,7 +353,15 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   wrap, and texture-transform metadata. Shade-owned top-coat and Charlie sheen
   paths multiply scalar controls by glTF R/G/RGB/A channels respectively. The
   promise ledger promotes these rows to `approximate`, not `native`, because
-  ReSTIR candidate PDFs/payloads and `clearcoatNormalMap` remain base-lobe-only.
+  ReSTIR candidate PDFs/payloads remain base-lobe-only.
+- Walkaround-hybrid Phase-3E clearcoat-normal follow-up (2026-06-14):
+  readable `clearcoatNormalMap` handles now use the same material atlas and
+  derived-TBN normal-map path as base normal maps, with `clearcoatNormalScale`
+  stored in per-triangle metadata. Shade-owned top-coat direct, analytic, sun,
+  and glossy-indirect paths receive a separate clearcoat normal. The promise
+  ledger promotes `clearcoatNormalMap` / `clearcoatNormalScale` to
+  `approximate`, not `native`, because authored tangents and ReSTIR candidate
+  PDFs/payloads remain base-lobe-only.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

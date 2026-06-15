@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 36u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 39u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -31,6 +31,8 @@ const MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;
 const MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;
 const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
 const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
+const MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;
+const MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -262,28 +264,34 @@ fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   return b * inverseSqrt(len2);
 }
 
-fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+fn applyNormalMapAtOffsetForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackNormal: vec3f,
+  normalMapOffset: u32,
+  normalScaleOffset: u32,
+) -> vec3f {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_NORMAL_TEXEL_OFFSET;
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
   if (i32(meta0.x) < 0) {
-    return baseNormal;
+    return fallbackNormal;
   }
 
   let uv1 = materialAtlasUv1ForHit(hit);
   let texelColor = sampleMaterialAtlasRawAtOffset(
     triIndex,
-    MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
+    normalMapOffset,
     hit.uv,
     uv1,
   );
   if (texelColor.x < 0.0) {
-    return baseNormal;
+    return fallbackNormal;
   }
 
   let scaleMeta = textureLoad(
     baseColorMapMeta,
-    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET),
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
     0,
   );
   let normalScale = max(scaleMeta.x, 0.0);
@@ -317,31 +325,51 @@ fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
   let duv2 = tc - ta;
   let det = duv1.x * duv2.y - duv1.y * duv2.x;
   var tangent = dp1;
-  var bitangent = fallbackBitangentForNormal(baseNormal, tangent);
+  var bitangent = fallbackBitangentForNormal(frameNormal, tangent);
   if (abs(det) > 1e-8) {
     let invDet = 1.0 / det;
     tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
     bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
   }
 
-  tangent = tangent - baseNormal * dot(baseNormal, tangent);
+  tangent = tangent - frameNormal * dot(frameNormal, tangent);
   let tLen2 = dot(tangent, tangent);
   if (tLen2 < 1e-8) {
-    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(baseNormal.y) > 0.95);
-    tangent = normalize(cross(up, baseNormal));
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(frameNormal.y) > 0.95);
+    tangent = normalize(cross(up, frameNormal));
   } else {
     tangent = tangent * inverseSqrt(tLen2);
   }
-  bitangent = bitangent - baseNormal * dot(baseNormal, bitangent) - tangent * dot(tangent, bitangent);
+  bitangent = bitangent - frameNormal * dot(frameNormal, bitangent) - tangent * dot(tangent, bitangent);
   let bLen2 = dot(bitangent, bitangent);
   if (bLen2 < 1e-8) {
-    bitangent = fallbackBitangentForNormal(baseNormal, tangent);
+    bitangent = fallbackBitangentForNormal(frameNormal, tangent);
   } else {
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  let perturbed = normalize(tangent * tangentSample.x + bitangent * tangentSample.y + baseNormal * tangentSample.z);
-  return select(-perturbed, perturbed, dot(perturbed, baseNormal) >= 0.0);
+  let perturbed = normalize(tangent * tangentSample.x + bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
+}
+
+fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  return applyNormalMapAtOffsetForHit(
+    hit,
+    baseNormal,
+    baseNormal,
+    MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
+    MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
+  );
+}
+
+fn applyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  return applyNormalMapAtOffsetForHit(
+    hit,
+    frameNormal,
+    fallbackNormal,
+    MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET,
+    MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET,
+  );
 }
 
 fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {
