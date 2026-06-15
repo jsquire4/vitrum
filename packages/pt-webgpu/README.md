@@ -39,7 +39,8 @@ not baseline correctness. What's implemented:
 - CPU-built BVH with GPU BVH traversal; CPU TLAS build via `buildSceneTlas()` (`scene/tlasBridge.ts`) for multi-instance follow-up
 - Multi-bounce sampling (clamped by `maxBounces`)
 - Material-driven diffuse/specular/emissive shading with an experimental transmission/refraction branch
-- Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**23 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, 32 spectral samples, and the WS4 volumetric absorption coefficient σ_a derived from `attenuationColor`/`attenuationDistance`)
+- Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**29 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, 32 spectral samples, WS4 volumetric absorption coefficient σ_a, Disney/KHR scalar lobes, Jakob-Hanika spectral reflectance coefficients, `KHR_materials_specular`, and KHR volume thickness)
+- Full-tier material texture path for readable `TextureRef` handles: base color/emissive sRGB maps, normal/bump with authored/generated tangent frames, roughness/metallic/AO/light/alpha/transmission/thickness maps, per-map UV set/transform/wrap metadata, and clearcoat/sheen/iridescence/specular extension-lobe maps. See the promise ledger for native vs approximate rows.
 - Procedural-sky environment lighting controls (scene-driven tint/sun direction)
 - HDRI environment importance sampling when CPU-side HDRI payload provides `width`, `height`, and float RGB texel data
 - Direct lighting for bounded **arrays** of emitters (counts in uniform `FrameParams`, payloads in storage buffers):
@@ -62,9 +63,11 @@ not baseline correctness. What's implemented:
 **If you have a normal discrete GPU, you already get the full path.** Nothing is
 “turned off” in code — the engine calls `resolvePtWebgpuTraceTier(device)` at
 construction and picks **`full`** whenever the device reports
-`maxStorageBuffersPerShaderStage ≥ 23` and `maxStorageTexturesPerShaderStage ≥ 5`.
+`maxStorageBuffersPerShaderStage ≥ 34` and `maxStorageTexturesPerShaderStage ≥ 5`
+(`restirPtReuse` raises the buffer floor to 38).
 That layout includes TLAS, analytic shapes, HDRI, point/spot/rect/mesh area lights,
-motion vectors, variance moments, and caustic strategies. Check the browser console
+motion vectors, variance moments, caustic strategies, and full-tier material texture
+arrays/descriptors. Check the browser console
 for `[vitrum/pt-webgpu] Full trace tier: …` on startup.
 
 Caustic truthfulness: `causticStrategy: 'manifold-nee'` is the **validated
@@ -93,7 +96,7 @@ When the device cannot satisfy the full layout, the factory automatically select
 
 | Tier | Limits | Features |
 |------|--------|----------|
-| **full** | ≥10 buffers/group, ≥5 textures | TLAS, analytics, HDRI, all emitter arrays, motion vectors, variance moments, caustics (3 bind groups) |
+| **full** | ≥34 storage buffers/stage, ≥5 storage textures/stage | TLAS, analytics, HDRI, all emitter arrays, material texture arrays/descriptors, motion vectors, variance moments, caustics (4 bind groups) |
 | **lite** | ≥8 buffers, ≥4 textures | Merged-mesh BVH, directional + procedural sky, core G-buffer aux |
 
 Host device acquisition should use `ptWebgpuRequiredLimitsForAdapter(adapter)` (not the
@@ -125,17 +128,21 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 ## Known limitations
 
 - **BEHAVIOR CHANGE (2026-06-10):** this backend previously returned raw linear HDR in `primaryRadiance`. The contract default (`aces` tonemap @ exposure 1.0 @ sRGB output) now applies. Adjoint/OIDN readbacks remain linear. To get raw HDR: `quality: { tonemap: 'none', outputColorSpace: 'linear' }`.
-- **Lite tier** disables TLAS, analytic shapes, HDRI texel buffers, point/spot/area lights,
-  motion vectors, and caustic strategies regardless of scene content.
+- **Lite tier** disables TLAS, analytic shapes, full-tier material texture bindings,
+  HDRI texel buffers, point/spot/area lights, motion vectors, and caustic strategies
+  regardless of scene content. The lite support matrix reports those material-map rows
+  as unsupported so strict glTF compatibility can reject before render.
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` (same vertex count) patch in place; vertex/index-count and instance-count changes are absorbed via a targeted BLAS/TLAS repack (`incrementalPatchSupport.topology: true`).
-- **No texture maps on pt-webgpu:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling in pt-webgpu — textured PBR is a road-to-100 item for this backend. Note: `@vitrum/pt-webgl2` *does* have a native texture atlas (`texturesArray.ts`, `sampler2DArray`); the two backends are not yet at texture-map parity.
+- **Material-lobe proof boundary:** full-tier texture-map plumbing is implemented, but some
+  extension-lobe rows remain graded `approximate` until inverse/adjoint gradients and
+  material-furnace/reference A/B prove the same texture-modulated parameters across the
+  sampled eye, ReSTIR-PT, and BDPT paths.
 - **`denoiser: 'oidn-final'` is NOT turnkey** — vitrum ships neither of the two required host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`, e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer dep installed in the host application. Missing either produces a clear error at construction time.
 ## Polish commands
 
 ```bash
 npm run benchmark:gap-closure-mechanical
-npm run benchmark:gap-closure-gpu --workspace @vitrum/benchmark-runner   # refresh smoke baselines
-npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner    # PR-D6 PNG dirs (hybrid GPU)
+npm run benchmark:gap-closure   # WebGPU-capable host; refreshes the active gap-closure verification suite
 ```
