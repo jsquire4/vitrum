@@ -18,11 +18,14 @@
  *
  * This helper provides:
  *   `createSizingGpuDevice(minSizeTable?)` — a mock GPUDevice that:
- *     - `createBuffer({ size, usage })` → records {size, usage}; asserts size>0
- *       and 4-byte alignment.  Returns a stub with a `.label` and `.destroy()`.
- *     - `createBindGroup({ layout, entries })` → if a `minSizeTable` is
- *       supplied, iterates buffer entries and asserts each buffer's effective
- *       binding size ≥ the declared minimum.  Returns a stub object.
+ *     - `createBuffer({ size, usage })` → records {size, usage}; asserts size>0,
+ *       usage>0, integer usage, and 4-byte alignment.  Returns a stub with a
+ *       `.label`, `.size`, `.usage`, and `.destroy()`.
+ *     - `createBindGroupLayout({ entries })` → stores the layout entries on the
+ *       returned token.
+ *     - `createBindGroup({ layout, entries })` → validates required/missing
+ *       binding indices, buffer binding ranges, minBindingSize, and required
+ *       UNIFORM/STORAGE usage bits for buffer entries.  Returns a stub object.
  *
  * All recorded allocations are accessible via `device.allocations` for
  * assertions in tests.
@@ -32,6 +35,16 @@ interface RecordedBuffer {
   label: string;
   size: number;
   usage: number;
+}
+
+interface RecordedBindGroupLayout {
+  label: string;
+  entries: GPUBindGroupLayoutEntry[];
+}
+
+interface RecordedBindGroup {
+  label: string;
+  entries: GPUBindGroupEntry[];
 }
 
 interface BindGroupValidationError {
@@ -51,6 +64,10 @@ export type MinBindingSizeTable = Record<number, number>;
 export interface SizingGpuDevice {
   /** All createBuffer calls in order. */
   allocations: RecordedBuffer[];
+  /** All createBindGroupLayout calls in order. */
+  bindGroupLayouts: RecordedBindGroupLayout[];
+  /** All successfully-created createBindGroup calls in order. */
+  bindGroups: RecordedBindGroup[];
   /** Validation errors from createBindGroup calls (empty on success). */
   bindGroupErrors: BindGroupValidationError[];
 
@@ -82,10 +99,16 @@ export function createSizingGpuDevice(
   minSizeTable: MinBindingSizeTable = {},
 ): SizingGpuDevice {
   const allocations: RecordedBuffer[] = [];
+  const bindGroupLayouts: RecordedBindGroupLayout[] = [];
+  const bindGroups: RecordedBindGroup[] = [];
   const bindGroupErrors: BindGroupValidationError[] = [];
 
   /** Map from stub buffer identity → its declared size (for binding validation). */
   const bufferSizes = new WeakMap<object, number>();
+  /** Map from stub buffer identity → its usage flags (for binding validation). */
+  const bufferUsages = new WeakMap<object, number>();
+  /** Map from stub layout identity → its layout entries. */
+  const layoutEntries = new WeakMap<object, GPUBindGroupLayoutEntry[]>();
 
   function createBuffer(desc: {
     label?: string;
@@ -106,6 +129,11 @@ export function createSizingGpuDevice(
         `[sizingGpuDevice] createBuffer size must be 4-byte aligned, got ${size} (label: ${label})`,
       );
     }
+    if (!Number.isFinite(usage) || usage <= 0 || Math.floor(usage) !== usage) {
+      throw new RangeError(
+        `[sizingGpuDevice] createBuffer usage must be a positive integer, got ${usage} (label: ${label})`,
+      );
+    }
 
     const stub = {
       label,
@@ -117,6 +145,7 @@ export function createSizingGpuDevice(
     } as unknown as GPUBuffer;
 
     bufferSizes.set(stub as object, size);
+    bufferUsages.set(stub as object, usage);
     allocations.push({ label, size, usage });
     return stub;
   }
@@ -126,44 +155,59 @@ export function createSizingGpuDevice(
     layout: GPUBindGroupLayout;
     entries: Iterable<{ binding: number; resource: unknown }>;
   }): GPUBindGroup {
-    for (const entry of desc.entries) {
-      const minSize = minSizeTable[entry.binding];
-      if (minSize == null) continue;
+    const entries = Array.from(desc.entries);
+    const layout = desc.layout as object;
+    const expectedEntries = layoutEntries.get(layout) ?? [];
+    validateBindGroupBindings(desc.label, expectedEntries, entries);
 
-      // Entries whose resource is a buffer binding are objects with a `buffer` key.
-      const resource = entry.resource as { buffer?: object; offset?: number; size?: number };
-      if (resource == null || typeof resource !== 'object' || !('buffer' in resource)) {
-        continue; // sampler / texture view — not a buffer
+    for (const entry of entries) {
+      const layoutEntry = expectedEntries.find((candidate) => candidate.binding === entry.binding);
+      const minSize = Math.max(
+        minSizeTable[entry.binding] ?? 0,
+        layoutEntry?.buffer?.minBindingSize ?? 0,
+      );
+
+      if (layoutEntry?.buffer == null && minSize === 0) {
+        assertNonBufferResource(desc.label, layoutEntry, entry);
+        continue;
       }
 
-      const buf = resource.buffer as object;
-      const bufSize = bufferSizes.get(buf) ?? 0;
-      // Effective binding size = explicit `size` field if present, else full buffer.
-      const effectiveSize = resource.size ?? bufSize;
-
-      if (effectiveSize < minSize) {
-        const err: BindGroupValidationError = {
-          binding: entry.binding,
-          actualSize: effectiveSize,
-          minBindingSize: minSize,
-        };
-        bindGroupErrors.push(err);
-        throw new RangeError(
-          `[sizingGpuDevice] createBindGroup: binding ${entry.binding} effective size ` +
-          `${effectiveSize} < minBindingSize ${minSize} (label: ${desc.label ?? '<unlabeled>'})`,
+      // Entries whose resource is a buffer binding are objects with a `buffer` key
+      // or a raw GPUBuffer-like object that carries size/usage fields.
+      const resource = entry.resource as { buffer?: object; offset?: number; size?: number };
+      const rawBufferLike = resource as unknown as { size?: number; usage?: number };
+      const buffer = resource != null && typeof resource === 'object' && 'buffer' in resource
+        ? resource.buffer
+        : rawBufferLike != null && typeof rawBufferLike === 'object' && 'size' in rawBufferLike
+          ? rawBufferLike as object
+          : null;
+      if (buffer == null) {
+        throw new TypeError(
+          `[sizingGpuDevice] createBindGroup: binding ${entry.binding} expected a buffer resource ` +
+          `(label: ${desc.label ?? '<unlabeled>'})`,
         );
       }
+
+      const bufSize = bufferSizes.get(buffer) ?? Number((buffer as { size?: number }).size ?? 0);
+      const bufUsage = bufferUsages.get(buffer) ?? Number((buffer as { usage?: number }).usage ?? 0);
+      validateBufferBinding(desc.label, entry.binding, resource, bufSize, bufUsage, minSize, layoutEntry, bindGroupErrors);
     }
 
-    return {} as GPUBindGroup;
+    const bindGroup = { label: desc.label ?? '<unlabeled>', entries } as unknown as GPUBindGroup;
+    bindGroups.push({ label: desc.label ?? '<unlabeled>', entries: entries as GPUBindGroupEntry[] });
+    return bindGroup;
   }
 
   function createBindGroupLayout(desc: {
     label?: string;
     entries: Iterable<GPUBindGroupLayoutEntry>;
   }): GPUBindGroupLayout {
-    void desc; // structural stub — layout compatibility isn't checked here
-    return {} as GPUBindGroupLayout;
+    const entries = Array.from(desc.entries, (entry) => ({ ...entry }));
+    assertUniqueLayoutBindings(desc.label, entries);
+    const layout = { label: desc.label ?? '<unlabeled>', entries } as unknown as GPUBindGroupLayout;
+    layoutEntries.set(layout as object, entries);
+    bindGroupLayouts.push({ label: desc.label ?? '<unlabeled>', entries });
+    return layout;
   }
 
   function createSampler(_desc?: GPUSamplerDescriptor): GPUSampler {
@@ -185,6 +229,8 @@ export function createSizingGpuDevice(
 
   const device: SizingGpuDevice = {
     allocations,
+    bindGroupLayouts,
+    bindGroups,
     bindGroupErrors,
     createBuffer,
     createBindGroup,
@@ -195,4 +241,146 @@ export function createSizingGpuDevice(
   };
 
   return device;
+}
+
+function assertUniqueLayoutBindings(label: string | undefined, entries: GPUBindGroupLayoutEntry[]): void {
+  const seen = new Set<number>();
+  for (const entry of entries) {
+    if (seen.has(entry.binding)) {
+      throw new RangeError(
+        `[sizingGpuDevice] createBindGroupLayout: duplicate binding ${entry.binding} ` +
+        `(label: ${label ?? '<unlabeled>'})`,
+      );
+    }
+    seen.add(entry.binding);
+  }
+}
+
+function validateBindGroupBindings(
+  label: string | undefined,
+  layoutEntries: GPUBindGroupLayoutEntry[],
+  entries: Array<{ binding: number; resource: unknown }>,
+): void {
+  if (layoutEntries.length === 0) return;
+
+  const expected = new Set(layoutEntries.map((entry) => entry.binding));
+  const seen = new Set<number>();
+  for (const entry of entries) {
+    if (seen.has(entry.binding)) {
+      throw new RangeError(
+        `[sizingGpuDevice] createBindGroup: duplicate binding ${entry.binding} ` +
+        `(label: ${label ?? '<unlabeled>'})`,
+      );
+    }
+    if (!expected.has(entry.binding)) {
+      throw new RangeError(
+        `[sizingGpuDevice] createBindGroup: binding ${entry.binding} is not present in layout ` +
+        `(label: ${label ?? '<unlabeled>'})`,
+      );
+    }
+    seen.add(entry.binding);
+  }
+
+  for (const binding of expected) {
+    if (!seen.has(binding)) {
+      throw new RangeError(
+        `[sizingGpuDevice] createBindGroup: missing required binding ${binding} ` +
+        `(label: ${label ?? '<unlabeled>'})`,
+      );
+    }
+  }
+}
+
+function assertNonBufferResource(
+  label: string | undefined,
+  layoutEntry: GPUBindGroupLayoutEntry | undefined,
+  entry: { binding: number; resource: unknown },
+): void {
+  if (layoutEntry?.texture == null && layoutEntry?.storageTexture == null && layoutEntry?.sampler == null) {
+    return;
+  }
+  const resource = entry.resource;
+  if (resource != null && typeof resource === 'object' && ('buffer' in resource || 'usage' in resource)) {
+    throw new TypeError(
+      `[sizingGpuDevice] createBindGroup: binding ${entry.binding} expected a non-buffer resource ` +
+      `(label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+}
+
+function validateBufferBinding(
+  label: string | undefined,
+  binding: number,
+  resource: { offset?: number; size?: number },
+  bufferSize: number,
+  bufferUsage: number,
+  minBindingSize: number,
+  layoutEntry: GPUBindGroupLayoutEntry | undefined,
+  bindGroupErrors: BindGroupValidationError[],
+): void {
+  if (!Number.isFinite(bufferSize) || bufferSize <= 0) {
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} references an unknown or invalid buffer ` +
+      `(label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+
+  const offset = resource.offset ?? 0;
+  if (!Number.isFinite(offset) || offset < 0 || Math.floor(offset) !== offset) {
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} has invalid offset ${offset} ` +
+      `(label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+  if (offset >= bufferSize) {
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} offset ${offset} leaves no bindable range ` +
+      `in buffer size ${bufferSize} (label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+
+  const effectiveSize = resource.size ?? (bufferSize - offset);
+  if (!Number.isFinite(effectiveSize) || effectiveSize <= 0 || Math.floor(effectiveSize) !== effectiveSize) {
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} has invalid effective size ${effectiveSize} ` +
+      `(label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+  if (offset + effectiveSize > bufferSize) {
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} range ${offset}+${effectiveSize} ` +
+      `exceeds buffer size ${bufferSize} (label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+
+  if (effectiveSize < minBindingSize) {
+    const err: BindGroupValidationError = {
+      binding,
+      actualSize: effectiveSize,
+      minBindingSize,
+    };
+    bindGroupErrors.push(err);
+    throw new RangeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} effective size ` +
+      `${effectiveSize} < minBindingSize ${minBindingSize} (label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+
+  const bufferType = layoutEntry?.buffer?.type ?? 'read-only-storage';
+  const requiredUsage = bufferType === 'uniform'
+    ? bufferUsageFlag('UNIFORM')
+    : bufferUsageFlag('STORAGE');
+  if ((bufferUsage & requiredUsage) === 0) {
+    const expected = bufferType === 'uniform' ? 'UNIFORM' : 'STORAGE';
+    throw new TypeError(
+      `[sizingGpuDevice] createBindGroup: binding ${binding} buffer usage ${bufferUsage} ` +
+      `does not include GPUBufferUsage.${expected} (label: ${label ?? '<unlabeled>'})`,
+    );
+  }
+}
+
+function bufferUsageFlag(name: 'UNIFORM' | 'STORAGE'): number {
+  const usage = (globalThis as { GPUBufferUsage?: { UNIFORM?: number; STORAGE?: number } }).GPUBufferUsage;
+  if (name === 'UNIFORM') return usage?.UNIFORM ?? 0x40;
+  return usage?.STORAGE ?? 0x80;
 }

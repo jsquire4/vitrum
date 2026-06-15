@@ -231,7 +231,11 @@ buckets that the A–D framing was missing:**
   so mock devices now reject impossible buffer/texture descriptors, invalid buffer
   usage flags, bind-group range overflows, missing `UNIFORM`/`STORAGE` usage bits, and
   `minBindingSize` violations; the SPPM resource guard proves it does not allocate past
-  an artificial `maxBufferSize`. The H55 proof-gate residue is narrowed as well:
+  an artificial `maxBufferSize`. The walkaround-specific sizing stub is now hardened
+  too: `dummyBufferSizing.test.ts` proves it rejects invalid buffer usage, layout-derived
+  `minBindingSize` failures, missing/duplicate/unknown layout entries, buffer range
+  overflows, texture-slot buffer resources, and missing `UNIFORM`/`STORAGE` usage bits.
+  The H55 proof-gate residue is narrowed as well:
   `frameParamsSlotCrossCheck.test.ts` derives TS slot offsets from the WGSL struct, and
   `cpuTracerDriftTripwire.test.ts` now uses literal frozen WGSL function-body hashes
   rather than live-computed "frozen" values. `oidnFinalDenoiser.test.ts` now pins

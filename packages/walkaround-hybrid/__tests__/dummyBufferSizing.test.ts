@@ -66,6 +66,14 @@ describe('sizingGpuDevice — meta-checks', () => {
     expect(device.allocations.length).toBe(2);
   });
 
+  it('rejects invalid buffer usage flags at createBuffer', () => {
+    const device = createSizingGpuDevice();
+    expect(() => device.createBuffer({ size: 16, usage: 0 }))
+      .toThrow(/usage must be a positive integer/);
+    expect(() => device.createBuffer({ size: 16, usage: 1.5 }))
+      .toThrow(/usage must be a positive integer/);
+  });
+
   it('records each createBuffer call in allocations', () => {
     const device = createSizingGpuDevice();
     device.createBuffer({ label: 'test-buf-A', size: 64, usage: 0x80 });
@@ -159,6 +167,135 @@ describe('createDummyStorageBuffer — ReSTIR scene BGL', () => {
     expect(device.bindGroupErrors).toHaveLength(1);
     expect(device.bindGroupErrors[0]!.binding).toBe(SCENE_TLAS_NODES_BINDING);
     expect(device.bindGroupErrors[0]!.actualSize).toBe(16);
+  });
+
+  it('validates layout-derived minBindingSize without a manual min-size table', () => {
+    const device = createSizingGpuDevice();
+    const smallUniform = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM });
+    const layout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'uniform', minBindingSize: 32 },
+      }],
+    });
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: smallUniform } }],
+      }),
+    ).toThrow(/minBindingSize 32/);
+  });
+
+  it('validates buffer usage bits against the layout buffer type', () => {
+    const device = createSizingGpuDevice();
+    const storageOnly = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE });
+    const uniformLayout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'uniform', minBindingSize: 16 },
+      }],
+    });
+
+    expect(() =>
+      device.createBindGroup({
+        layout: uniformLayout,
+        entries: [{ binding: 0, resource: { buffer: storageOnly } }],
+      }),
+    ).toThrow(/GPUBufferUsage\.UNIFORM/);
+  });
+
+  it('rejects bind-group buffer ranges that overflow or leave no bindable range', () => {
+    const device = createSizingGpuDevice();
+    const storage = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE });
+    const layout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'read-only-storage', minBindingSize: 16 },
+      }],
+    });
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: storage, offset: 60, size: 8 } }],
+      }),
+    ).toThrow(/exceeds buffer size/);
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: storage, offset: 64 } }],
+      }),
+    ).toThrow(/leaves no bindable range/);
+  });
+
+  it('rejects missing, duplicate, and unknown bind-group entries against the layout', () => {
+    const device = createSizingGpuDevice();
+    const storage = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE });
+    const layout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage', minBindingSize: 16 },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage', minBindingSize: 16 },
+        },
+      ],
+    });
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: storage } }],
+      }),
+    ).toThrow(/missing required binding 1/);
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: storage } },
+          { binding: 0, resource: { buffer: storage } },
+        ],
+      }),
+    ).toThrow(/duplicate binding 0/);
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: storage } },
+          { binding: 2, resource: { buffer: storage } },
+        ],
+      }),
+    ).toThrow(/binding 2 is not present in layout/);
+  });
+
+  it('rejects buffer resources bound into texture/sampler slots', () => {
+    const device = createSizingGpuDevice();
+    const storage = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE });
+    const layout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      }],
+    });
+
+    expect(() =>
+      device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: storage } }],
+      }),
+    ).toThrow(/expected a non-buffer resource/);
   });
 });
 
