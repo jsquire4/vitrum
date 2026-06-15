@@ -25,6 +25,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate -- --self-test
 
+# Focus a label subset while developing one lane:
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run behavioral-gate -- --filter gltf
+
 # H32 standalone oracle: TLAS shadow rays skip glass but still hit opaque geometry.
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
@@ -32,7 +36,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 
 ## What it covers
 
-### pt-webgpu configs (17)
+### pt-webgpu configs (24)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -41,11 +45,13 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/bdpt` | `bdpt:true` | bidirectional PT |
 | `pt/caustic-manifold` | `causticStrategy:'manifold-nee'` | MNEE manifold caustics |
 | `pt/caustic-photon` | `causticStrategy:'photon-map'` | SPPM photon map |
+| `pt/spectral+photon` | `spectral:true, causticStrategy:'photon-map'` | spectral SPPM combo |
 | `pt/lite-tier` | `traceTier:'lite'` | lite binding budget |
 | `pt/restirPtReuse` | `restirPtReuse:true` | ReSTIR-PT (wired, off-default) |
 | `pt/skinned-mesh` | — | scene with skinned-mesh primitive |
 | `pt/analytic-sphere` | — | scene with analytic sphere primitive |
 | `pt/point-light` | — | point emitter only |
+| `pt/disc-light` | — | analytic disc emitter |
 | `pt/spot-light` | — | spot emitter only |
 | `pt/directional-2` | — | 2 directional emitters |
 | `pt/hdri-env` | — | synthetic flat-white HDRI environment |
@@ -53,8 +59,20 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/spectral+bdpt` | `spectral:true, bdpt:true` | combo |
 | `pt/lite+hdri` | `traceTier:'lite'` | lite + HDRI |
 | `pt/lite+point-light` | `traceTier:'lite'` | lite + point light |
+| `pt/gltf-unlit` | — | glTF `KHR_materials_unlit` import + render boot |
+| `pt/gltf-textured-pbr` | — | glTF baseColorTexture decode hook + render boot |
+| `pt/gltf-transmission` | — | glTF `KHR_materials_transmission` import + render boot |
+| `pt/gltf-skinned-animation` | — | glTF skin + animation channel import + render boot |
+| `pt/gltf-draco-mock` | — | glTF `KHR_draco_mesh_compression` mock decoder + render boot |
 
-### walkaround-hybrid configs (8)
+The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
+adapter preserves the named feature, boots the selected engine, uploads the scene,
+and produces finite non-black output. On lavapipe's WSL adapter, `pt-webgpu`
+auto-selects the lite tier because the adapter exposes only the lite WebGPU storage
+limits; full material-lobe fidelity remains covered by the renderer fidelity matrix
+and package-level material tests.
+
+### walkaround-hybrid configs (10)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -66,6 +84,8 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `wh/skinned-mesh` | — | scene with skinned-mesh primitive |
 | `wh/hdri-env` | — | synthetic flat-white HDRI environment |
 | `wh/rect-area-emitter` | — | rect-area ceiling light |
+| `wh/directional-sun` | `primaryLightDir, primaryLightIntensity` | direct sun NEE |
+| `wh/glass-gi` | — | refracted GI through glass |
 
 ## Assertions per config
 
@@ -96,12 +116,13 @@ fix landed without the table being updated; update the table in the same commit 
 
 ### Current known-residuals
 
-| Config | Plan item | Reason |
-|--------|-----------|--------|
-| `pt/caustic-photon` | R7a-3 | SPPM GPU validation errors; progressive fix in flight |
-| `pt/procedural-sky` | R7a-4 | Procedural-sky radiometric wiring gap (Preetham-bake path) |
-| `pt/restirPtReuse` | R7b | ReSTIR-PT compositing not yet wired into beauty image |
-| `wh/rcEnabled` | R7a-2 | rcEnabled GPU validation errors; RC binding fix in flight |
+None. Every config in `EXPECTATION_TABLE` is currently expected to return `ok`.
+
+Local WSL/Deno note: Deno 2.8.1's WebGPU GLES path can panic in wgpu-hal on
+this adapter while running the existing walkaround-hybrid configs, including
+`wh/default`. The focused `--filter gltf` lane is currently a pt-webgpu lane and
+passes on WSL lavapipe; walkaround render-gate promotion should be re-enabled
+after that Deno/WebGPU harness issue is cleared.
 
 ## Naga gap patches
 

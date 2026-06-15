@@ -20,6 +20,9 @@
  * Self-test mode (injects a black config and verifies detection):
  *   ... behavioral-gate -- --self-test
  *
+ * Focused subset:
+ *   ... behavioral-gate -- --filter gltf
+ *
  * Exit codes:
  *   0 — all configs passed their expectations
  *   1 — one or more configs failed
@@ -52,10 +55,19 @@
 import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
+import { gltfToScene } from "@vitrum/gltf-adapter";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
+function readFlagValue(name) {
+  const eq = Deno.args.find((a) => a.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const i = Deno.args.indexOf(name);
+  if (i >= 0) return Deno.args[i + 1] ?? "";
+  return "";
+}
+const labelFilter = readFlagValue("--filter");
 
 // ── Expectation table ─────────────────────────────────────────────────────────
 // keyed by config label; missing entry defaults to { expected: 'ok' }.
@@ -83,6 +95,11 @@ const EXPECTATION_TABLE = {
   "pt/spectral+bdpt":     { expected: "ok" },
   "pt/lite+hdri":         { expected: "ok" },
   "pt/lite+point-light":  { expected: "ok" },
+  "pt/gltf-unlit":        { expected: "ok" },
+  "pt/gltf-textured-pbr": { expected: "ok" },
+  "pt/gltf-transmission": { expected: "ok" },
+  "pt/gltf-skinned-animation": { expected: "ok" },
+  "pt/gltf-draco-mock":   { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -146,6 +163,11 @@ const PT_CONFIGS = [
   { label: "pt/lite+point-light", eng: { traceTier: "lite" },                 scene: {
     emitters: [{ kind: "point", id: "pt-light", position: [0, 0.8, 0], color: [1,1,1], intensity: 4.0 }],
   }},
+  { label: "pt/gltf-unlit",        eng: {},                                    scene: { gltf: "unlit" } },
+  { label: "pt/gltf-textured-pbr", eng: {},                                    scene: { gltf: "textured-pbr" } },
+  { label: "pt/gltf-transmission", eng: {},                                    scene: { gltf: "transmission" } },
+  { label: "pt/gltf-skinned-animation", eng: {},                               scene: { gltf: "skinned-animation" } },
+  { label: "pt/gltf-draco-mock",   eng: {},                                    scene: { gltf: "draco-mock" } },
 ];
 
 const WH_CONFIGS = [
@@ -270,6 +292,286 @@ function buildCornellScene(opts = {}) {
   }
 
   return { primitives, emitters, environment };
+}
+
+// ── glTF fixture builder ─────────────────────────────────────────────────────
+
+function exactArrayBuffer(view) {
+  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
+function createGltfBufferBuilder() {
+  const buffers = new Map();
+  const gltf = {
+    asset: { version: "2.0" },
+    buffers: [],
+    bufferViews: [],
+    accessors: [],
+    materials: [],
+    meshes: [],
+    nodes: [],
+    scenes: [],
+    scene: 0,
+  };
+
+  function addBufferView(view) {
+    const data = view instanceof ArrayBuffer
+      ? view
+      : exactArrayBuffer(view);
+    const bufferIndex = gltf.buffers.length;
+    buffers.set(bufferIndex, data);
+    gltf.buffers.push({ byteLength: data.byteLength });
+    gltf.bufferViews.push({ buffer: bufferIndex, byteOffset: 0, byteLength: data.byteLength });
+    return gltf.bufferViews.length - 1;
+  }
+
+  function addAccessor(view, type, componentType, componentCount, extra = {}) {
+    const bufferView = addBufferView(view);
+    gltf.accessors.push({
+      bufferView,
+      componentType,
+      count: Math.floor(view.length / componentCount),
+      type,
+      ...extra,
+    });
+    return gltf.accessors.length - 1;
+  }
+
+  return { gltf, buffers, addBufferView, addAccessor };
+}
+
+const GLTF_QUAD = {
+  positions: new Float32Array([
+    -0.75, -0.65, 0,
+     0.75, -0.65, 0,
+     0.75,  0.65, 0,
+    -0.75,  0.65, 0,
+  ]),
+  normals: new Float32Array([
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+  ]),
+  uvs: new Float32Array([
+    0, 0,
+    1, 0,
+    1, 1,
+    0, 1,
+  ]),
+  indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+};
+
+function addQuadMesh(builder, materialIndex, extraAttributes = {}) {
+  const position = builder.addAccessor(GLTF_QUAD.positions, "VEC3", 5126, 3, {
+    min: [-0.75, -0.65, 0],
+    max: [0.75, 0.65, 0],
+  });
+  const normal = builder.addAccessor(GLTF_QUAD.normals, "VEC3", 5126, 3);
+  const uv = builder.addAccessor(GLTF_QUAD.uvs, "VEC2", 5126, 2);
+  const indices = builder.addAccessor(GLTF_QUAD.indices, "SCALAR", 5123, 1);
+  builder.gltf.meshes.push({
+    primitives: [{
+      attributes: { POSITION: position, NORMAL: normal, TEXCOORD_0: uv, ...extraAttributes },
+      indices,
+      material: materialIndex,
+    }],
+  });
+  return builder.gltf.meshes.length - 1;
+}
+
+function finalizeSingleMeshGltf(builder, meshIndex, nodeExtra = {}) {
+  builder.gltf.nodes.push({ mesh: meshIndex, ...nodeExtra });
+  builder.gltf.scenes.push({ nodes: [0] });
+  builder.gltf.scene = 0;
+  return { gltf: builder.gltf, buffers: builder.buffers };
+}
+
+function makeQuadGltfFixture(kind) {
+  const builder = createGltfBufferBuilder();
+  const material = {
+    pbrMetallicRoughness: {
+      baseColorFactor: [0.9, 0.45, 0.18, 1],
+      roughnessFactor: 0.65,
+      metallicFactor: 0,
+    },
+  };
+  let decodeImage;
+
+  if (kind === "unlit") {
+    builder.gltf.extensionsUsed = ["KHR_materials_unlit"];
+    material.extensions = { KHR_materials_unlit: {} };
+    material.pbrMetallicRoughness.baseColorFactor = [0.85, 0.25, 0.05, 1];
+  }
+
+  if (kind === "textured-pbr") {
+    const imageView = builder.addBufferView(new Uint8Array([0x76, 0x74, 0x72, 0x6d]));
+    builder.gltf.images = [{ bufferView: imageView, mimeType: "image/x-vitrum-test" }];
+    builder.gltf.samplers = [{ wrapS: 10497, wrapT: 10497, magFilter: 9728, minFilter: 9728 }];
+    builder.gltf.textures = [{ source: 0, sampler: 0 }];
+    material.pbrMetallicRoughness.baseColorTexture = { index: 0 };
+    decodeImage = async () => ({
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        255, 48, 48, 255,
+        48, 255, 48, 255,
+        48, 48, 255, 255,
+        255, 255, 48, 255,
+      ]),
+    });
+  }
+
+  if (kind === "transmission") {
+    builder.gltf.extensionsUsed = ["KHR_materials_transmission"];
+    material.extensions = { KHR_materials_transmission: { transmissionFactor: 0.85 } };
+    material.pbrMetallicRoughness.baseColorFactor = [0.9, 0.95, 1.0, 0.55];
+    material.pbrMetallicRoughness.roughnessFactor = 0.05;
+    material.alphaMode = "BLEND";
+  }
+
+  builder.gltf.materials.push(material);
+  const mesh = addQuadMesh(builder, 0);
+  return { ...finalizeSingleMeshGltf(builder, mesh), decodeImage };
+}
+
+function makeSkinnedAnimationGltfFixture() {
+  const builder = createGltfBufferBuilder();
+  builder.gltf.materials.push({
+    pbrMetallicRoughness: {
+      baseColorFactor: [0.35, 0.45, 0.95, 1],
+      roughnessFactor: 0.55,
+      metallicFactor: 0,
+    },
+  });
+  const joints = builder.addAccessor(new Uint16Array([
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+  ]), "VEC4", 5123, 4);
+  const weights = builder.addAccessor(new Float32Array([
+    1, 0, 0, 0,
+    1, 0, 0, 0,
+    1, 0, 0, 0,
+    1, 0, 0, 0,
+  ]), "VEC4", 5126, 4);
+  const mesh = addQuadMesh(builder, 0, { JOINTS_0: joints, WEIGHTS_0: weights });
+  const ibm = builder.addAccessor(new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]), "MAT4", 5126, 16);
+  const times = builder.addAccessor(new Float32Array([0, 1]), "SCALAR", 5126, 1);
+  const rotations = builder.addAccessor(new Float32Array([
+    0, 0, 0, 1,
+    0, 0, 0.38268343, 0.92387953,
+  ]), "VEC4", 5126, 4);
+  builder.gltf.nodes.push({ mesh, skin: 0 }, { name: "joint0" });
+  builder.gltf.skins = [{ joints: [1], inverseBindMatrices: ibm }];
+  builder.gltf.animations = [{
+    samplers: [{ input: times, output: rotations, interpolation: "LINEAR" }],
+    channels: [{ sampler: 0, target: { node: 1, path: "rotation" } }],
+  }];
+  builder.gltf.scenes.push({ nodes: [0] });
+  builder.gltf.scene = 0;
+  return { gltf: builder.gltf, buffers: builder.buffers };
+}
+
+function makeDracoMockGltfFixture() {
+  const builder = createGltfBufferBuilder();
+  const compressedView = builder.addBufferView(new Uint8Array([0xde, 0xc0, 0xde, 0x01]));
+  builder.gltf.extensionsUsed = ["KHR_draco_mesh_compression"];
+  builder.gltf.extensionsRequired = ["KHR_draco_mesh_compression"];
+  builder.gltf.materials.push({
+    pbrMetallicRoughness: {
+      baseColorFactor: [0.95, 0.65, 0.15, 1],
+      roughnessFactor: 0.5,
+      metallicFactor: 0,
+    },
+  });
+  builder.gltf.accessors.push(
+    { componentType: 5126, count: 4, type: "VEC3" },
+    { componentType: 5126, count: 4, type: "VEC3" },
+    { componentType: 5126, count: 4, type: "VEC2" },
+    { componentType: 5123, count: 6, type: "SCALAR" },
+  );
+  builder.gltf.meshes.push({
+    primitives: [{
+      attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
+      indices: 3,
+      material: 0,
+      extensions: {
+        KHR_draco_mesh_compression: {
+          bufferView: compressedView,
+          attributes: { POSITION: 10, NORMAL: 11, TEXCOORD_0: 12 },
+        },
+      },
+    }],
+  });
+  const dracoDecode = (_bytes, attributeIds) => {
+    if (attributeIds.POSITION !== 10 || attributeIds.NORMAL !== 11 || attributeIds.TEXCOORD_0 !== 12) {
+      throw new Error("unexpected Draco attribute id map");
+    }
+    return {
+      attributes: {
+        POSITION: GLTF_QUAD.positions,
+        NORMAL: GLTF_QUAD.normals,
+        TEXCOORD_0: GLTF_QUAD.uvs,
+      },
+      indices: GLTF_QUAD.indices,
+    };
+  };
+  return { ...finalizeSingleMeshGltf(builder, 0), dracoDecode };
+}
+
+async function buildGltfFixtureScene(kind) {
+  const fixture =
+    kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
+      : kind === "draco-mock" ? makeDracoMockGltfFixture()
+      : makeQuadGltfFixture(kind);
+  const result = await gltfToScene(fixture.gltf, {
+    buffers: fixture.buffers,
+    ...(fixture.decodeImage ? { decodeImage: fixture.decodeImage } : {}),
+    ...(fixture.dracoDecode ? { dracoDecode: fixture.dracoDecode } : {}),
+  });
+  if (result.scene.primitives.length === 0) {
+    throw new Error(`glTF fixture "${kind}" imported no primitives`);
+  }
+  const first = result.scene.primitives[0];
+  if (kind === "unlit" && first.material?.shadingModel !== "unlit") {
+    throw new Error("glTF unlit fixture lost KHR_materials_unlit");
+  }
+  if (kind === "textured-pbr" && first.material?.baseColorMap == null) {
+    throw new Error("glTF textured-pbr fixture lost baseColorTexture");
+  }
+  if (kind === "transmission" && (first.material?.transmission ?? 0) <= 0) {
+    throw new Error("glTF transmission fixture lost KHR_materials_transmission");
+  }
+  if (kind === "skinned-animation") {
+    if (first.kind !== "skinned-mesh") throw new Error("glTF skinned fixture did not import a SkinnedMeshPrimitive");
+    if ((result.animations?.length ?? 0) === 0) throw new Error("glTF skinned fixture lost animation channels");
+  }
+  if (kind === "draco-mock" && result.warnings.some((w) => w.includes("KHR_draco_mesh_compression"))) {
+    throw new Error(`glTF Draco mock emitted compression warning: ${result.warnings.join(" | ")}`);
+  }
+
+  return {
+    ...result.scene,
+    emitters: [{
+      kind: "rect-area", id: "gltf-gate-light",
+      position: [0, 0.85, 0.45],
+      uAxis: [0.25, 0, 0], vAxis: [0, 0.25, 0],
+      color: [1, 1, 1], intensity: 14.0,
+    }],
+    environment: { kind: "procedural-sky", sunDirection: [0.4, 1.0, 0.25] },
+  };
+}
+
+async function buildGateScene(opts = {}) {
+  if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
+  return buildCornellScene(opts);
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -604,7 +906,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       ...engineOpts,
     });
 
-    const scene = buildCornellScene(sceneOpts);
+    const scene = await buildGateScene(sceneOpts);
     engine.setScene(scene);
 
     let frameOutput = null;
@@ -688,7 +990,7 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
       ...engineOpts,
     });
 
-    const scene = buildCornellScene(sceneOpts);
+    const scene = await buildGateScene(sceneOpts);
     engine.setScene(scene);
 
     // Poll until ready (state machine: uninitialized → initializing → ready)
@@ -766,12 +1068,19 @@ console.log("=== behavioral-gate ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
 if (selfTest) console.log("Mode: --self-test");
+if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
 const results = [];
+const ptConfigs = labelFilter ? PT_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)) : PT_CONFIGS;
+const whConfigs = labelFilter ? WH_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)) : WH_CONFIGS;
+if (labelFilter && ptConfigs.length + whConfigs.length === 0) {
+  console.error(`No behavioral-gate configs matched --filter=${labelFilter}`);
+  Deno.exit(1);
+}
 
 console.log("── pt-webgpu ──");
-for (const cfg of PT_CONFIGS) {
+for (const cfg of ptConfigs) {
   const r = await runPtConfig(cfg.label, cfg.eng, cfg.scene);
   results.push(r);
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
@@ -786,7 +1095,7 @@ for (const cfg of PT_CONFIGS) {
 
 console.log("");
 console.log("── walkaround-hybrid ──");
-for (const cfg of WH_CONFIGS) {
+for (const cfg of whConfigs) {
   const r = await runWhConfig(cfg.label, cfg.eng, cfg.scene);
   results.push(r);
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);

@@ -882,7 +882,26 @@ WSL GPU/browser harness.
 
 #### 5E — Behavioral gate expansion
 
-Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit, textured PBR, transmission glass, skinned animated, Draco (with mock decoder).
+✅ CLOSED (Wave 10): behavioral gate now includes five adapter-backed glTF
+fixtures on the runnable `pt-webgpu` lane: unlit (`KHR_materials_unlit`),
+textured PBR (`baseColorTexture` through the decode hook), transmission glass
+(`KHR_materials_transmission`), skinned animation (skin + animation channel
+import), and Draco (mock `KHR_draco_mesh_compression` decoder).
+`tools/behavioral-gate/gate.mjs` asserts the imported feature survived
+conversion before booting the engine, uploading the scene, and requiring finite
+non-black output. `--filter gltf` provides the focused lane.
+
+Honesty boundary: on the WSL lavapipe adapter this lane runs through
+`pt-webgpu`'s lite tier because the adapter exposes 8 storage buffers / 4 storage
+textures per shader stage, below the full-tier 34 / 5 requirement. The gate proves
+adapter-to-engine boot/render for these glTF features; full material-lobe fidelity
+promotion remains owned by the renderer fidelity matrix and package material
+oracles.
+
+Validation note: the walkaround-hybrid Deno behavioral lane currently panics in
+Deno 2.8.1 / wgpu-hal on this WSL adapter even for the pre-existing
+`wh/default` config, so walkaround glTF render-gate promotion requires the
+separate Deno/WebGPU harness issue to be cleared first.
 
 ---
 
