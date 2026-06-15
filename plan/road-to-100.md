@@ -397,7 +397,7 @@ buckets that the A–D framing was missing:**
 | **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic unsupported rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
 | **GATE-02** | Per `native` material row: one test that packs + shader string pin OR readback oracle | Byte-identity SHA tests can be green while both sides share a bug |
 | **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; WGSL/PASS_ORDER parse gate is source-verified present as root `npm run shader-gate` and CI-backed with lavapipe (51 production modules + self-test). Keep it explicit rather than default `npm test` because that path needs a WebGPU adapter. | WGSL string tests don't compile shaders; pipeline-layout creation remains a stronger future proof gate |
-| **GATE-GLTF** | `gltfKhronosSweep.test.ts` — `analyzeGltfAsset` only, no network in CI (fixtures vendored) | Live URL tests flake in CI |
+| **GATE-GLTF** | ✅ CLOSED — `gltfKhronosSweep.test.ts` exercises representative Khronos-style JSON fixtures through `analyzeGltfAsset` + compatibility ranking only: scalar mesh, textured PBR, extension glass, skin/morph/animation, compression hooks, source-path diagnostics, and full-vs-lite WebGPU profile differences. | Live URL tests stay out of CI; render-based glTF sweep remains a later proof gate. |
 
 #### 0.3 V28-B baseline recapture (restored 2026-06-12 — was dropped from this addendum)
 
