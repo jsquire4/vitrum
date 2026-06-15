@@ -24,8 +24,8 @@
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
  *    (`dFrDielectric_dIor`) — the only differentiable `ior` dependence in the
- *    forward kernel (the opaque-reflective F0 is a fixed 0.04, so
- *    `∂evaluateBrdf/∂ior ≡ 0`; see the CPU oracle doc for the consumption caveat).
+ *    forward kernel (opaque F0 is controlled by KHR_materials_specular/baseColor,
+ *    so `∂evaluateBrdf/∂ior ≡ 0`; see the CPU oracle doc for the consumption caveat).
  * These are the GPU twins of the CPU oracle in `../../inverse/brdfAdjoint.ts`;
  * the two are hand-verified line-for-line and the codegen-shape tests pin that
  * they keep emitting the same arithmetic.
@@ -62,6 +62,20 @@ export const PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL = /* wgsl */ `
 // the adjoint and the NRC trainer share one fixed-point convention.
 const ADJOINT_GRAD_FP = ${ADJOINT_GRAD_FP};
 
+fn adjointMaterialSpecularF0(
+  baseColor: vec3f,
+  metallic: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  let dielectricF0 = clamp(
+    vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0),
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  return mix(dielectricF0, baseColor, metallic);
+}
+
 // ── analytic ∂(evaluateBrdf)_c / ∂baseColor_c (diagonal Jacobian) ───────────
 // Mirror of inverse/brdfAdjoint.ts:dBrdf_dBaseColor. f0 mixes baseColor with
 // metallic, so baseColor perturbs BOTH the diffuse term and (through f0) the
@@ -69,6 +83,15 @@ const ADJOINT_GRAD_FP = ${ADJOINT_GRAD_FP};
 fn dBrdf_dBaseColor(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
+) -> vec3f {
+  return dBrdf_dBaseColorWithSpecular(
+    baseColor, roughness, metallic, normal, wo, wi, vec3f(1.0), 1.0,
+  );
+}
+fn dBrdf_dBaseColorWithSpecular(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
@@ -87,7 +110,8 @@ fn dBrdf_dBaseColor(
   var outv = vec3f(0.0);
   for (var c: u32 = 0u; c < 3u; c = c + 1u) {
     let bc = baseColor[c];
-    let f0c = 0.04 + (bc - 0.04) * metallic;
+    let dielectricF0 = clamp(0.04 * clamp(specularColor[c], 0.0, 1.0) * clamp(specularIntensity, 0.0, 1.0), 0.0, 1.0);
+    let f0c = dielectricF0 + (bc - dielectricF0) * metallic;
     let fc = f0c + (1.0 - f0c) * m5;
     let dfc = (1.0 - m5) * metallic;               // df_c/dbaseColor_c
     let dDiff = kd0 * INV_PI * ((1.0 - fc) + bc * (-dfc));
@@ -104,13 +128,22 @@ fn dBrdf_dRoughness(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
 ) -> vec3f {
+  return dBrdf_dRoughnessWithSpecular(
+    baseColor, roughness, metallic, normal, wo, wi, vec3f(1.0), 1.0,
+  );
+}
+fn dBrdf_dRoughnessWithSpecular(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let f0 = mix(vec3f(0.04), baseColor, metallic);
+  let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let f = fresnelSchlick(vDotH, f0);
 
   let alpha = max(roughness * roughness, 1e-3);
@@ -142,6 +175,45 @@ fn dBrdf_dRoughness(
   return f * dSpecScale;
 }
 
+// ── analytic KHR_materials_specular partials ───────────────────────────────
+fn dBrdf_dSpecularF0(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  dF0: vec3f,
+) -> vec3f {
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  let alpha = max(roughness * roughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
+  let kd0 = 1.0 - metallic;
+  let m = clamp(1.0 - vDotH, 0.0, 1.0);
+  let m2 = m * m;
+  let m5 = m2 * m2 * m;
+  return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);
+}
+fn dBrdf_dSpecularColor(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+) -> vec3f {
+  let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+}
+fn dBrdf_dSpecularIntensity(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f,
+) -> vec3f {
+  let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+}
+
 // ── analytic ∂(contribution)_c / ∂emissive_c (diagonal identity) ────────────
 // Mirror of inverse/brdfAdjoint.ts:dContribution_dEmissive. Emission is an
 // additive Le, NOT a BSDF term: ∂(throughput·emissive_packed)/∂emissive_param =
@@ -153,8 +225,9 @@ fn dContribution_dEmissive(throughput: vec3f, emissiveIntensity: f32) -> vec3f {
 
 // ── analytic ∂(frDielectric)/∂ior (scalar) ──────────────────────────────────
 // Mirror of inverse/brdfAdjoint.ts:dFrDielectric_dIor. The ONLY differentiable
-// ior dependence in the forward kernel (opaque-reflective F0 is a fixed 0.04, so
-// ∂evaluateBrdf/∂ior ≡ 0). eta = ior (front) or 1/ior (back); TIR / grazing
+// ior dependence in the forward kernel (opaque F0 is controlled by
+// KHR_materials_specular/baseColor, so ∂evaluateBrdf/∂ior ≡ 0). eta = ior
+// (front) or 1/ior (back); TIR / grazing
 // return 0 (frozen-discontinuity convention). NOT yet wired into an end-to-end
 // gradient — the Phase-1 pass does not trace the transmissive partition.
 fn dFrDielectric_dIor(cosThetaI_in: f32, ior: f32) -> f32 {

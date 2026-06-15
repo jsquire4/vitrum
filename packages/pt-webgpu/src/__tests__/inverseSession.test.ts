@@ -353,6 +353,99 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('degrades to finite-difference when a path-replay material uses unsupported lobes or maps', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                clearcoat: 0.4,
+                baseColorMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it('degrades to finite-difference when scene lighting is outside the adjoint pass scope', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it('resolves KHR_materials_specular controls to path-replay when the adjoint hook is present', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+        { path: 'materials.panel.specularIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([1, 1, 1]);
+    expect(session.currentValues()[1]).toEqual([1]);
+    session.dispose();
+  });
+
+  it('passes specular adjoint params to the hook with the expected flat offsets', async () => {
+    const fake = makeFakeEngine();
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.1, 0.2, 0.3, 0.4]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+        { path: 'materials.panel.specularIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    const result = await session.step();
+    const req = captured as AdjointGradientRequest | null;
+    expect(req).not.toBeNull();
+    expect(req!.gradientLength).toBe(4);
+    expect(req!.params).toEqual([
+      { domain: 'materials', id: 'panel', field: 'specularColor', offset: 0, length: 3 },
+      { domain: 'materials', id: 'panel', field: 'specularIntensity', offset: 3, length: 1 },
+    ]);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0.1, 6), expect.closeTo(0.2, 6), expect.closeTo(0.3, 6)],
+      [expect.closeTo(0.4, 6)],
+    ]);
+    session.dispose();
+  });
+
   it('step() calls the hook with dLoss_dRendered + uses its gradient (one render, no FD probes)', async () => {
     const fake = makeFakeEngine();
     let captured: AdjointGradientRequest | null = null;

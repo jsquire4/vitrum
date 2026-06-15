@@ -10,7 +10,8 @@
 // Subtlety this file documents (and the math respects):
 //  - `emissive` is NOT a BSDF term: its partial is a CONTRIBUTION-level identity
 //    (× emissiveIntensity), so it is `dContribution_dEmissive`, not `dBrdf_*`.
-//  - `ior` does NOT enter `evaluateBrdf` (opaque-reflective F0 is a fixed 0.04),
+//  - `ior` does NOT enter `evaluateBrdf` (opaque F0 comes from
+//    KHR_materials_specular/baseColor),
 //    so `∂evaluateBrdf/∂ior ≡ 0`. The only differentiable ior dependence in the
 //    forward is `frDielectric`; `dFrDielectric_dIor` differentiates THAT.
 

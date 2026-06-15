@@ -23,6 +23,8 @@ import {
   ADJOINT_FIELD_BASECOLOR,
   ADJOINT_FIELD_ROUGHNESS,
   ADJOINT_FIELD_EMISSIVE,
+  ADJOINT_FIELD_SPECULAR_COLOR,
+  ADJOINT_FIELD_SPECULAR_INTENSITY,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -118,7 +120,11 @@ export class AdjointPass {
           ? ADJOINT_FIELD_ROUGHNESS
           : p.field === 'emissive'
             ? ADJOINT_FIELD_EMISSIVE
-            : ADJOINT_FIELD_BASECOLOR;
+            : p.field === 'specularColor'
+              ? ADJOINT_FIELD_SPECULAR_COLOR
+              : p.field === 'specularIntensity'
+                ? ADJOINT_FIELD_SPECULAR_INTENSITY
+                : ADJOINT_FIELD_BASECOLOR;
       descs[i * 4 + 0] = matId >>> 0;
       descs[i * 4 + 1] = fieldCode;
       descs[i * 4 + 2] = p.offset >>> 0;

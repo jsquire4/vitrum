@@ -17,9 +17,11 @@
  * oracle in `brdfAdjoint.ts`). The two adjoint stages are GPU-validated on
  * lavapipe (V24): the partials match the FD oracle to f32 precision, and the
  * chain rule + fixed-point accumulation match an on-device finite-difference.
- * The session requests 'path-replay' only when the engine provides the hook AND
- * every parameter is in the adjoint-differentiable set
- * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive); any
+ * The session requests 'path-replay' only when the engine provides the hook,
+ * every parameter is in the adjoint-differentiable set, and every target
+ * material stays within the direct-light base/specular domain this pass mirrors
+ * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
+ * specularColor / specularIntensity); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
@@ -84,8 +86,10 @@ export interface InverseEngineHooks {
    * and accumulating `∂loss/∂θ` (the chain rule GPU-validated vs on-device FD) —
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
-   * hook exists AND every parameter is adjoint-eligible (`ADJOINT_ELIGIBLE_FIELDS`:
-   * material baseColor / roughness / emissive); otherwise it reports + uses
+   * hook exists, every parameter is adjoint-eligible, and every target material
+   * stays inside the adjoint-compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`:
+   * material baseColor / roughness / emissive / specularColor /
+   * specularIntensity); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -135,12 +139,17 @@ export interface AdjointGradientRequest {
  *    inside the NEE loop / without folding the live emissiveIntensity through the
  *    descriptor; the fix scatters it at the primary hit gated by the matId match
  *    and hands the fixed emissiveIntensity in the descriptor `.w` (bitcast f32).
+ *  - `specularColor`, `specularIntensity` — KHR_materials_specular dielectric F0
+ *    controls through the same frozen direct-light BRDF derivative. These affect
+ *    the diffuse/specular partition and the specular Fresnel colour for
+ *    non-metallic and partially-metallic surfaces; fully metallic surfaces still
+ *    source F0 from baseColor and therefore have zero derivative here.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
  * analytic == FD in isolation, `ADJOINT_EMISSIVE_IOR_FD_WGSL`) ready for a future
  * path-replay wire: `∂evaluateBrdf/∂ior ≡ 0` in the current forward
- * (opaque-reflective F0 is a fixed 0.04, not ior-derived), and the single-bounce
+ * (opaque F0 is controlled by KHR_materials_specular/baseColor, not ior), and the single-bounce
  * adjoint doesn't trace the transmissive Fresnel partition where ior IS
  * differentiable.
  *
@@ -148,9 +157,16 @@ export interface AdjointGradientRequest {
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient — GPU-VALIDATED BY A CONVERGING INVERSE FIT, not just an in-isolation
  * partial — or the result is a silently-wrong gradient. A field only graduates
- * here once its end-to-end fit converges (baseColor / roughness / emissive have).
+ * here once its end-to-end fit converges (baseColor / roughness / emissive /
+ * specularColor / specularIntensity have).
  */
-const ADJOINT_ELIGIBLE_FIELDS = new Set(['baseColor', 'roughness', 'emissive']);
+const ADJOINT_ELIGIBLE_FIELDS = new Set([
+  'baseColor',
+  'roughness',
+  'emissive',
+  'specularColor',
+  'specularIntensity',
+]);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -239,15 +255,20 @@ export class PtWebgpuInverseSession implements InverseSession {
 
     // Resolve the EFFECTIVE gradient method from the request + backend capability
     // (InverseSessionOptions.method contract). 'path-replay' requires the engine
-    // to provide the adjoint hook AND every parameter to be in the
-    // adjoint-differentiable set (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor /
-    // roughness / emissive — see its doc for the ior exclusion). Any shortfall
+    // to provide the adjoint hook, every parameter to be in the
+    // adjoint-differentiable set, and every target material to stay in the
+    // compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`: material
+    // baseColor / roughness / emissive / specularColor / specularIntensity —
+    // see its doc for the ior exclusion). Any shortfall
     // degrades to finite-difference and is reported via `method`, so the host
     // never receives a silently-wrong gradient. The two adjoint stages
     // the hook relies on (partials; chain rule + accumulation) are GPU-validated
     // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
     const allEligible = this.#slots.every(
-      (s) => s.target.domain === 'materials' && ADJOINT_ELIGIBLE_FIELDS.has(s.target.field),
+      (s) =>
+        s.target.domain === 'materials' &&
+        ADJOINT_ELIGIBLE_FIELDS.has(s.target.field) &&
+        isPathReplayCompatibleTarget(scene, s.target),
     );
     this.#method =
       requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
@@ -396,6 +417,70 @@ export class PtWebgpuInverseSession implements InverseSession {
       }
     }
   }
+}
+
+function isPathReplayCompatibleTarget(scene: Scene, target: ResolvedParamTarget): boolean {
+  const prim = findPrimitive(scene, target.id);
+  if (prim == null) return false;
+  const m = prim.material;
+  if (target.field === 'emissive') {
+    return isPathReplayCompatibleEmissiveMaterial(m);
+  }
+  return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);
+}
+
+function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {
+  if (m.shadingModel === 'unlit') return false;
+  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
+  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.transmission ?? 0) > 1e-6) return false;
+  return m.emissiveMap == null && m.alphaMap == null;
+}
+
+function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
+  if (m.shadingModel === 'unlit') return false;
+  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
+  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.transmission ?? 0) > 1e-6) return false;
+  if ((m.clearcoat ?? 0) > 1e-6 || (m.sheen ?? 0) > 1e-6 || (m.iridescence ?? 0) > 1e-6) return false;
+  if ((m.anisotropy ?? 0) > 1e-6) return false;
+  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
+  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
+  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
+  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
+  return !hasPathReplayUnsupportedMap(m);
+}
+
+function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
+  return (
+    m.baseColorMap != null ||
+    m.normalMap != null ||
+    m.roughnessMap != null ||
+    m.metallicMap != null ||
+    m.transmissionMap != null ||
+    m.thicknessMap != null ||
+    m.emissiveMap != null ||
+    m.alphaMap != null ||
+    m.aoMap != null ||
+    m.clearcoatMap != null ||
+    m.clearcoatRoughnessMap != null ||
+    m.clearcoatNormalMap != null ||
+    m.sheenColorMap != null ||
+    m.sheenRoughnessMap != null ||
+    m.iridescenceMap != null ||
+    m.iridescenceThicknessMap != null ||
+    m.anisotropyMap != null ||
+    m.specularColorMap != null ||
+    m.specularIntensityMap != null ||
+    m.bumpMap != null ||
+    m.displacementMap != null ||
+    m.lightMap != null
+  );
+}
+
+function isPathReplayCompatibleLighting(scene: Scene): boolean {
+  if ((scene.environment?.kind ?? 'none') !== 'none') return false;
+  return scene.emitters.every((e) => e.kind === 'point' || e.kind === 'rect-area');
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

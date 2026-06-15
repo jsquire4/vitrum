@@ -21,13 +21,15 @@
  *  - the additive emission term `Le` w.r.t. `emissive` (rgb) — emission is NOT
  *    a BRDF term, so its partial is a CONTRIBUTION-level identity, not a
  *    `dBrdf_*`. See `dContribution_dEmissive` for the derivation.
+ *  - KHR_materials_specular dielectric F0 controls (`specularColor` and
+ *    `specularIntensity`) through the same frozen direct-light BRDF partial.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
- *    NOTE: `ior` does NOT enter `evaluateBrdf` — the opaque-reflective F0 is a
- *    fixed `mix(0.04, baseColor, metallic)` (mirror of `bsdf.wgsl.ts:29` /
- *    `kernel.wgsl.ts:334`), so `∂evaluateBrdf/∂ior ≡ 0`. The only differentiable
- *    `ior` dependence in the forward kernel is `frDielectric` (the transmissive
- *    reflect/refract Fresnel partition). `dFrDielectric_dIor` provides that
- *    partial; see its doc for the (large) caveat on end-to-end consumption.
+ *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
+ *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
+ *    so `∂evaluateBrdf/∂ior ≡ 0`. The only differentiable `ior` dependence in
+ *    the forward kernel is `frDielectric` (the transmissive reflect/refract
+ *    Fresnel partition). `dFrDielectric_dIor` provides that partial; see its doc
+ *    for the (large) caveat on end-to-end consumption.
  *
  * Ref: Vicini, Speierer, Jakob, "Path Replay Backpropagation of Light
  *      Transport," ACM TOG 40(4), SIGGRAPH 2021.
@@ -64,6 +66,29 @@ function fresnelSchlick(cosTheta: number, f0: Vec3): Vec3 {
     f0[0] + (1.0 - f0[0]) * m5,
     f0[1] + (1.0 - f0[1]) * m5,
     f0[2] + (1.0 - f0[2]) * m5,
+  ];
+}
+
+function clamp01(x: number): number {
+  return Math.min(Math.max(x, 0), 1);
+}
+
+function materialSpecularF0(
+  baseColor: Vec3,
+  metallic: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const si = clamp01(specularIntensity);
+  const dielectricF0: Vec3 = [
+    clamp01(0.04 * clamp01(specularColor[0]) * si),
+    clamp01(0.04 * clamp01(specularColor[1]) * si),
+    clamp01(0.04 * clamp01(specularColor[2]) * si),
+  ];
+  return [
+    dielectricF0[0] + (baseColor[0] - dielectricF0[0]) * metallic,
+    dielectricF0[1] + (baseColor[1] - dielectricF0[1]) * metallic,
+    dielectricF0[2] + (baseColor[2] - dielectricF0[2]) * metallic,
   ];
 }
 
@@ -121,6 +146,8 @@ export function evaluateBrdf(
   normal: Vec3,
   wo: Vec3,
   wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
 ): Vec3 {
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
@@ -128,11 +155,7 @@ export function evaluateBrdf(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
-  const f0: Vec3 = [
-    0.04 + (baseColor[0] - 0.04) * metallic,
-    0.04 + (baseColor[1] - 0.04) * metallic,
-    0.04 + (baseColor[2] - 0.04) * metallic,
-  ];
+  const f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   const f = fresnelSchlick(vDotH, f0);
   const alpha = Math.max(roughness * roughness, 1e-3);
   const d = ggxD(nDotH, alpha);
@@ -165,6 +188,8 @@ export function dBrdf_dBaseColor(
   normal: Vec3,
   wo: Vec3,
   wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
 ): Vec3 {
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
@@ -192,7 +217,8 @@ export function dBrdf_dBaseColor(
   //   d(spec_c)/dbaseColor_c = specScale·df_c/dbaseColor_c.
   const out: [number, number, number] = [0, 0, 0];
   for (let c = 0; c < 3; c++) {
-    const f0c = 0.04 + (baseColor[c]! - 0.04) * metallic;
+    const dielectricF0 = clamp01(0.04 * clamp01(specularColor[c]!) * clamp01(specularIntensity));
+    const f0c = dielectricF0 + (baseColor[c]! - dielectricF0) * metallic;
     const fc = f0c + (1.0 - f0c) * m5;
     const dfc = (1.0 - m5) * metallic;
     const dDiff = kd0 * INV_PI * ((1.0 - fc) + baseColor[c]! * -dfc);
@@ -219,6 +245,8 @@ export function dBrdf_dRoughness(
   normal: Vec3,
   wo: Vec3,
   wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
 ): Vec3 {
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
@@ -226,11 +254,7 @@ export function dBrdf_dRoughness(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
-  const f0: Vec3 = [
-    0.04 + (baseColor[0] - 0.04) * metallic,
-    0.04 + (baseColor[1] - 0.04) * metallic,
-    0.04 + (baseColor[2] - 0.04) * metallic,
-  ];
+  const f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   const f = fresnelSchlick(vDotH, f0);
 
   const alpha = Math.max(roughness * roughness, 1e-3);
@@ -274,6 +298,76 @@ export function dBrdf_dRoughness(
 }
 
 /**
+ * Analytic ∂(evaluateBrdf)_c / ∂specularColor_c for KHR_materials_specular.
+ * The optimizer clamps this field to [0,1], and the derivative below is for the
+ * smooth unclamped interior. The dielectric specular controls fade out as
+ * metallic approaches 1 because metallic F0 is authored by baseColor.
+ */
+export function dBrdf_dSpecularColor(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  void specularColor;
+  const dF0 = 0.04 * clamp01(specularIntensity) * (1.0 - metallic);
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [dF0, dF0, dF0]);
+}
+
+/**
+ * Analytic ∂(evaluateBrdf)_c / ∂specularIntensity for KHR_materials_specular.
+ */
+export function dBrdf_dSpecularIntensity(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+): Vec3 {
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
+    0.04 * clamp01(specularColor[0]) * (1.0 - metallic),
+    0.04 * clamp01(specularColor[1]) * (1.0 - metallic),
+    0.04 * clamp01(specularColor[2]) * (1.0 - metallic),
+  ]);
+}
+
+function dBrdf_dSpecularF0(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  dF0: Vec3,
+): Vec3 {
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const alpha = Math.max(roughness * roughness, 1e-3);
+  const d = ggxD(nDotH, alpha);
+  const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  const kd0 = 1.0 - metallic;
+  const m = Math.min(Math.max(1.0 - vDotH, 0.0), 1.0);
+  const m2 = m * m;
+  const m5 = m2 * m2 * m;
+  return [
+    dF0[0] * (1.0 - m5) * (specScale - kd0 * baseColor[0] * INV_PI),
+    dF0[1] * (1.0 - m5) * (specScale - kd0 * baseColor[1] * INV_PI),
+    dF0[2] * (1.0 - m5) * (specScale - kd0 * baseColor[2] * INV_PI),
+  ];
+}
+
+/**
  * Analytic ∂(contribution)_c / ∂(emissive_c) — the emissive-on-hit partial.
  *
  * Emission is NOT a BSDF term: in the rendering equation it is an ADDITIVE
@@ -309,8 +403,9 @@ export function dContribution_dEmissive(
  * Analytic ∂(frDielectric)/∂ior — the scalar partial of the dielectric Fresnel
  * reflectance w.r.t. the index of refraction, evaluated at a frozen incident
  * cosine. This is the ONLY differentiable `ior` dependence in the current
- * forward kernel (the opaque-reflective F0 is a fixed 0.04 — see the file
- * header), so it is the honest `ior` partial.
+ * forward kernel (opaque dielectric F0 is controlled by KHR_materials_specular,
+ * and metallic F0 by baseColor — see the file header), so it is the honest
+ * `ior` partial.
  *
  * Forward (mirror of `frDielectric` above / material.wgsl.ts:502):
  *   eta = ior (front face) or 1/ior (back face);  cosI = |cosThetaI|;

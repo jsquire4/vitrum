@@ -19,6 +19,8 @@ import {
   ADJOINT_FIELD_BASECOLOR,
   ADJOINT_FIELD_ROUGHNESS,
   ADJOINT_FIELD_EMISSIVE,
+  ADJOINT_FIELD_SPECULAR_COLOR,
+  ADJOINT_FIELD_SPECULAR_INTENSITY,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
@@ -75,9 +77,15 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn closestHit');                   // brute-force intersect
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn anyHit');                        // shadow rays
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0)'); // faceforward
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u]');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights');                  // rect-area NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x * invReplaySamples)'); // per-param scatter
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
     // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
@@ -87,5 +95,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
     expect(ADJOINT_FIELD_ROUGHNESS).toBe(1);
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
+    expect(ADJOINT_FIELD_SPECULAR_COLOR).toBe(3);
+    expect(ADJOINT_FIELD_SPECULAR_INTENSITY).toBe(4);
   });
 });

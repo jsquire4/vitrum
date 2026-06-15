@@ -49,6 +49,8 @@ export const ADJOINT_FIELD_ROUGHNESS = 1;
  *  needs no light. The descriptor carries the (fixed) emissiveIntensity in `.w`
  *  (bitcast f32), because the packed material folds intensity INTO emissive.rgb. */
 export const ADJOINT_FIELD_EMISSIVE = 2;
+export const ADJOINT_FIELD_SPECULAR_COLOR = 3;
+export const ADJOINT_FIELD_SPECULAR_INTENSITY = 4;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 2×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16;
@@ -217,9 +219,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let matId = triMaterialIds[hit.tri];
     let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
     let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
+    let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
     let baseColor = m0.rgb;
     let roughness = clamp(m0.w, 0.02, 1.0);
     let metallic = clamp(m1.w, 0.0, 1.0);
+    let specularColor = m27.rgb;
+    let specularIntensity = clamp(m27.w, 0.0, 1.0);
 
     let idx = indices[hit.tri];
     let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
@@ -245,6 +250,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
     var gBaseColor = vec3f(0.0);
     var gRough = 0.0;
+    var gSpecularColor = vec3f(0.0);
+    var gSpecularIntensity = 0.0;
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
       let lp = pointLights[pi * 3u].xyz;
       let rad = pointLights[pi * 3u + 1u].rgb;
@@ -262,9 +269,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
       let Li = rad * attenuation;
       // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
-      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
+      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColorWithSpecular(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li;
       // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
-      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li);
+      gSpecularColor = gSpecularColor + dLoss_dR * dBrdf_dSpecularColor(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li;
+      gSpecularIntensity = gSpecularIntensity + dot(dLoss_dR, dBrdf_dSpecularIntensity(
+        baseColor, roughness, metallic, n, wo, wi, specularColor,
+      ) * nDotL * Li);
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -290,8 +307,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
       let area = max(4.0 * length(cross(ru, rv)), 1e-6);
       let Li = rad * (cosLight * area / dist2);
-      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
-      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColorWithSpecular(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li;
+      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li);
+      gSpecularColor = gSpecularColor + dLoss_dR * dBrdf_dSpecularColor(
+        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+      ) * nDotL * Li;
+      gSpecularIntensity = gSpecularIntensity + dot(dLoss_dR, dBrdf_dSpecularIntensity(
+        baseColor, roughness, metallic, n, wo, wi, specularColor,
+      ) * nDotL * Li);
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -308,6 +335,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gBaseColor.x * invReplaySamples);
         adjointScatter(gradOffset + 1u, gBaseColor.y * invReplaySamples);
         adjointScatter(gradOffset + 2u, gBaseColor.z * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_SPECULAR_COLOR}u) {
+        adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gSpecularColor.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gSpecularColor.z * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_SPECULAR_INTENSITY}u) {
+        adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed

@@ -14,6 +14,8 @@ import {
   evaluateBrdf,
   dBrdf_dBaseColor,
   dBrdf_dRoughness,
+  dBrdf_dSpecularColor,
+  dBrdf_dSpecularIntensity,
 } from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -119,6 +121,61 @@ describe('BRDF adjoint — analytic dBrdf/dRoughness == finite difference', () =
   });
 });
 
+describe('BRDF adjoint — analytic KHR_materials_specular partials == finite difference', () => {
+  const cfg = {
+    baseColor: [0.55, 0.32, 0.18] as V3,
+    roughness: 0.46,
+    metallic: 0.25,
+    normal: normalize([0.1, 0.2, 1]),
+    wo: normalize([0.25, -0.1, 1]),
+    wi: normalize([-0.35, 0.25, 1]),
+    specularColor: [0.7, 0.45, 0.9] as V3,
+    specularIntensity: 0.62,
+  };
+
+  it('matches FD for specularColor over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dSpecularColor(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let j = 0; j < 3; j++) {
+      const sp = perturb(cfg.specularColor, j, h);
+      const sm = perturb(cfg.specularColor, j, -h);
+      const fp = evaluateBrdf(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        sp, cfg.specularIntensity,
+      );
+      const fm = evaluateBrdf(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        sm, cfg.specularIntensity,
+      );
+      const fd = (fp[j]! - fm[j]!) / (2 * h);
+      expect(Math.abs(analytic[j]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('matches FD for specularIntensity over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dSpecularIntensity(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.specularColor,
+    );
+    const fp = evaluateBrdf(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.specularColor, cfg.specularIntensity + h,
+    );
+    const fm = evaluateBrdf(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.specularColor, cfg.specularIntensity - h,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+});
+
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
   it('dBrdf/dBaseColor of a pure-diffuse (metallic=0) surface ≈ (1-F)/π on the diagonal', () => {
     // For metallic=0: f0 = 0.04 everywhere, F is achromatic, diffuse term
@@ -146,6 +203,8 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
   it('emits both partial functions with the frozen-wi signature', () => {
     expect(wgsl).toContain('fn dBrdf_dBaseColor(');
     expect(wgsl).toContain('fn dBrdf_dRoughness(');
+    expect(wgsl).toContain('fn dBrdf_dSpecularColor(');
+    expect(wgsl).toContain('fn dBrdf_dSpecularIntensity(');
     // wi is an INPUT, never sampled inside — path-replay freezes it.
     expect(wgsl).not.toContain('rand_f32');
     expect(wgsl).not.toContain('cosineHemisphereSample');
@@ -161,6 +220,13 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
     expect(wgsl).toContain('let dk_dRough = (roughness + 1.0) * 0.25;');
     // alpha clamp boundary handled (derivative 0 below roughness²<1e-3).
     expect(wgsl).toContain('let dAlpha_dRough = select(2.0 * roughness, 0.0, alphaClamped);');
+  });
+
+  it('specular partials use the KHR_materials_specular dielectric F0 derivative', () => {
+    expect(wgsl).toContain('fn adjointMaterialSpecularF0(');
+    expect(wgsl).toContain('let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));');
+    expect(wgsl).toContain('let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);');
+    expect(wgsl).toContain('return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);');
   });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {
