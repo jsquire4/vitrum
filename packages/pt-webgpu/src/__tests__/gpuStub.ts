@@ -12,7 +12,7 @@ type SizeValidatingStubLimits = Partial<
 
 export interface SizeValidatingGpuStub {
   device: GPUDevice;
-  buffers: Array<{ label: string | undefined; size: number; destroy: ReturnType<typeof vi.fn> }>;
+  buffers: Array<{ label: string | undefined; size: number; usage: number; destroy: ReturnType<typeof vi.fn> }>;
   textures: Array<{
     label: string | undefined;
     width: number;
@@ -20,8 +20,12 @@ export interface SizeValidatingGpuStub {
     depthOrArrayLayers: number;
     destroy: ReturnType<typeof vi.fn>;
   }>;
+  bindGroupLayouts: Array<{ label: string | undefined; entries: readonly GPUBindGroupLayoutEntry[] }>;
+  bindGroups: Array<{ label: string | undefined; entries: readonly GPUBindGroupEntry[] }>;
   createBuffer: unknown;
   createTexture: unknown;
+  createBindGroupLayout: unknown;
+  createBindGroup: unknown;
 }
 
 /** Install the WebGPU constant globals the upload path reads. Idempotent. */
@@ -80,6 +84,13 @@ function finitePositiveInt(value: number, name: string): number {
   return value;
 }
 
+function finiteNonNegativeInt(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0 || Math.floor(value) !== value) {
+    throw new Error(`GPU stub rejected invalid ${name}: ${value}`);
+  }
+  return value;
+}
+
 export function createSizeValidatingGpuDeviceStub(
   limits: SizeValidatingStubLimits = {},
 ): SizeValidatingGpuStub {
@@ -94,16 +105,22 @@ export function createSizeValidatingGpuDeviceStub(
   };
   const buffers: SizeValidatingGpuStub['buffers'] = [];
   const textures: SizeValidatingGpuStub['textures'] = [];
+  const bindGroupLayouts: SizeValidatingGpuStub['bindGroupLayouts'] = [];
+  const bindGroups: SizeValidatingGpuStub['bindGroups'] = [];
 
   const createBuffer = vi.fn((desc: GPUBufferDescriptor) => {
     const size = finitePositiveInt(Number(desc.size), 'buffer size');
+    const usage = Number(desc.usage);
+    if (!Number.isFinite(usage) || usage <= 0 || Math.floor(usage) !== usage) {
+      throw new Error(`GPU stub rejected buffer "${desc.label ?? '<unlabeled>'}" with invalid usage ${String(desc.usage)}`);
+    }
     if (size > resolvedLimits.maxBufferSize) {
       throw new Error(
         `GPU stub rejected buffer "${desc.label ?? '<unlabeled>'}" size ${size}; ` +
           `maxBufferSize=${resolvedLimits.maxBufferSize}`,
       );
     }
-    const buffer = { label: desc.label, size, destroy: vi.fn() };
+    const buffer = { label: desc.label, size, usage, destroy: vi.fn() };
     buffers.push(buffer);
     return buffer;
   });
@@ -145,15 +162,105 @@ export function createSizeValidatingGpuDeviceStub(
     return texture;
   });
 
+  const createBindGroupLayout = vi.fn((desc: GPUBindGroupLayoutDescriptor) => {
+    const layout = {
+      label: desc.label,
+      entries: Array.from(desc.entries, (entry: GPUBindGroupLayoutEntry) => ({ ...entry })),
+    };
+    bindGroupLayouts.push(layout);
+    return layout;
+  });
+
+  const createBindGroup = vi.fn((desc: GPUBindGroupDescriptor) => {
+    const layout = desc.layout as unknown as { entries?: readonly GPUBindGroupLayoutEntry[]; label?: string };
+    const layoutEntries = layout.entries ?? [];
+    for (const entry of desc.entries) {
+      const layoutEntry = layoutEntries.find((candidate) => candidate.binding === entry.binding);
+      if (layoutEntry?.buffer == null) continue;
+      const resource = entry.resource as GPUBufferBinding | GPUBuffer;
+      const binding = bufferBindingFromResource(resource);
+      if (binding === null) continue;
+      validateBufferBinding(binding, layoutEntry, entry.binding);
+    }
+    const bindGroup = {
+      label: desc.label,
+      entries: Array.from(desc.entries, (entry: GPUBindGroupEntry) => ({ ...entry })),
+    };
+    bindGroups.push(bindGroup);
+    return bindGroup;
+  });
+
   const encoder = { clearBuffer: vi.fn(), finish: vi.fn(() => ({})) };
   const device = {
     limits: resolvedLimits,
     createBuffer,
     createTexture,
+    createBindGroupLayout,
+    createBindGroup,
     createSampler: vi.fn(() => ({})),
     createCommandEncoder: vi.fn(() => encoder),
     queue: { submit: vi.fn(), writeBuffer: vi.fn(), writeTexture: vi.fn() },
   } as unknown as GPUDevice;
 
-  return { device, buffers, textures, createBuffer, createTexture };
+  return {
+    device,
+    buffers,
+    textures,
+    bindGroupLayouts,
+    bindGroups,
+    createBuffer,
+    createTexture,
+    createBindGroupLayout,
+    createBindGroup,
+  };
+}
+
+function bufferBindingFromResource(resource: GPUBufferBinding | GPUBuffer): GPUBufferBinding | null {
+  if (typeof resource !== 'object' || resource === null) return null;
+  if ('buffer' in resource) return resource as GPUBufferBinding;
+  if ('size' in resource) return { buffer: resource as GPUBuffer };
+  return null;
+}
+
+function validateBufferBinding(
+  binding: GPUBufferBinding,
+  layoutEntry: GPUBindGroupLayoutEntry,
+  bindingIndex: number,
+): void {
+  const buffer = binding.buffer as unknown as { label?: string; size?: number; usage?: number };
+  const bufferSize = finitePositiveInt(Number(buffer.size), `bindGroup buffer binding ${bindingIndex} size`);
+  const offset = finiteNonNegativeInt(Number(binding.offset ?? 0), `bindGroup buffer binding ${bindingIndex} offset`);
+  if (offset >= bufferSize) {
+    throw new Error(
+      `GPU stub rejected bind group binding ${bindingIndex}: offset ${offset} leaves no bindable range in ` +
+        `buffer "${buffer.label ?? '<unlabeled>'}" size ${bufferSize}`,
+    );
+  }
+  const size = binding.size === undefined
+    ? bufferSize - offset
+    : finitePositiveInt(Number(binding.size), `bindGroup buffer binding ${bindingIndex} range size`);
+  if (offset + size > bufferSize) {
+    throw new Error(
+      `GPU stub rejected bind group binding ${bindingIndex}: range ${offset}+${size} exceeds ` +
+        `buffer "${buffer.label ?? '<unlabeled>'}" size ${bufferSize}`,
+    );
+  }
+  const minBindingSize = layoutEntry.buffer?.minBindingSize ?? 0;
+  if (minBindingSize > 0 && size < minBindingSize) {
+    throw new Error(
+      `GPU stub rejected bind group binding ${bindingIndex}: range size ${size} is smaller than ` +
+        `layout minBindingSize=${minBindingSize}`,
+    );
+  }
+  const bufferType = layoutEntry.buffer?.type ?? 'uniform';
+  const requiredUsage = bufferType === 'uniform'
+    ? GPUBufferUsage.UNIFORM
+    : GPUBufferUsage.STORAGE;
+  if (((buffer.usage ?? 0) & requiredUsage) === 0) {
+    const expected = requiredUsage === GPUBufferUsage.UNIFORM ? 'UNIFORM' : 'STORAGE';
+    throw new Error(
+      `GPU stub rejected bind group binding ${bindingIndex}: buffer "${buffer.label ?? '<unlabeled>'}" ` +
+        `usage ${String(buffer.usage)} does not include GPUBufferUsage.${expected}`,
+    );
+  }
 }

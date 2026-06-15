@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Tests (WebGPU stub validation, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` GPU stub hardening:** the size-validating mock `GPUDevice` now records buffer usage flags and bind-group layouts, rejects zero/invalid usage, validates bind-group buffer ranges, enforces `minBindingSize`, and checks that uniform/storage bindings carry the required `GPUBufferUsage` bit. This closes the pt-webgpu side of the H53 dummy-buffer recurrence class; adapter-backed WebGPU shader/PASS_ORDER gates remain tracked separately.
+
 ### Fixed (glTF spec-gloss texture alpha, 2026-06-15)
 
 - **`@vitrum/gltf-adapter` archived specular-glossiness texture bake:** `loadGltfAndDecodeTextures()` / `decodeSceneTextures(target:'cpu-linear')` now synthesize a linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` alpha using `roughness = 1 - glossinessFactor * alpha`, preserving texCoord, `KHR_texture_transform`, and sampler wrap metadata. Pre-decode planning still reports the legacy extension as approximate because a host pixel decoder is required for the bake.

@@ -227,12 +227,14 @@ buckets that the A–D framing was missing:**
   injected-error self-test (`@vitrum/shader-gate`); the first strict run exposed and
   fixed pt-webgl2's SSS GLSL helper holes (`sampleExponential` / `sampleHG_glsl` /
   `hg_phase`) that unit string tests had missed. The size-validating GPU test stub is
-  also landed in `pt-webgpu` (`gpuStub.test.ts`, `gpuResourcesUsage.test.ts`) so mock
-  devices now reject impossible buffer/texture descriptors and the SPPM resource guard
-  proves it does not allocate past an artificial `maxBufferSize`. Remaining D10
-  infrastructure work: the WebGPU WGSL/PASS_ORDER shader gate still stays explicit
-  because it needs a WebGPU adapter (items H53–H56 list ten, prioritized). M effort
-  total; this is what stops the next H1 from shipping green.
+  also landed and hardened in `pt-webgpu` (`gpuStub.test.ts`, `gpuResourcesUsage.test.ts`)
+  so mock devices now reject impossible buffer/texture descriptors, invalid buffer
+  usage flags, bind-group range overflows, missing `UNIFORM`/`STORAGE` usage bits, and
+  `minBindingSize` violations; the SPPM resource guard proves it does not allocate past
+  an artificial `maxBufferSize`. Remaining D10 infrastructure work: the WebGPU
+  WGSL/PASS_ORDER shader gate still stays explicit because it needs a WebGPU adapter
+  (items H53–H56 list the current priorities). M effort total; this is what stops the
+  next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
   casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b
