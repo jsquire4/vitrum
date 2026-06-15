@@ -116,6 +116,8 @@ export interface DecodeSceneTextureDiagnostic {
   readonly width?: number;
   readonly height?: number;
   readonly maxTextureSize?: number;
+  readonly resizedWidth?: number;
+  readonly resizedHeight?: number;
   readonly wrapS?: TextureWrapMode;
   readonly wrapT?: TextureWrapMode;
 }
@@ -136,6 +138,12 @@ export interface DecodeSceneTexturesResult {
   readonly unchangedCount: number;
   readonly diagnostics: readonly DecodeSceneTextureDiagnostic[];
   readonly warnings: readonly string[];
+}
+
+interface DecodedTextureCacheEntry {
+  readonly handle: GltfCpuLinearTextureHandle;
+  readonly originalWidth: number;
+  readonly originalHeight: number;
 }
 
 const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
@@ -233,7 +241,7 @@ export async function decodeSceneTextures(
 ): Promise<DecodeSceneTexturesResult> {
   const warnings: string[] = [];
   const diagnostics: DecodeSceneTextureDiagnostic[] = [];
-  const decoded = new Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>();
+  const decoded = new Map<unknown, Map<GltfTextureColorSpace, DecodedTextureCacheEntry>>();
   let decodedCount = 0;
   let unchangedCount = 0;
 
@@ -316,7 +324,7 @@ async function decodeTextureRef(
     readonly primitiveId: string;
     readonly primitiveIndex: number;
     readonly options: DecodeSceneTexturesOptions;
-    readonly decoded: Map<unknown, Map<GltfTextureColorSpace, GltfCpuLinearTextureHandle>>;
+    readonly decoded: Map<unknown, Map<GltfTextureColorSpace, DecodedTextureCacheEntry>>;
     readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   },
 ): Promise<TextureRef> {
@@ -358,8 +366,8 @@ async function decodeTextureRef(
     perSpace = new Map();
     context.decoded.set(ref.handle, perSpace);
   }
-  let handle = perSpace.get(colorSpace);
-  if (handle == null) {
+  let entry = perSpace.get(colorSpace);
+  if (entry == null) {
     const pixels = await context.options.decodePixels(ref.handle as RawImageHandle, {
       materialField: context.field,
       path: context.path,
@@ -367,15 +375,20 @@ async function decodeTextureRef(
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
     });
-    handle = normalizeDecodedPixels(pixels, colorSpace);
-    perSpace.set(colorSpace, handle);
+    const normalized = normalizeDecodedPixels(pixels, colorSpace);
+    entry = {
+      handle: resizeDecodedTextureToMaxSize(normalized, context.options.maxTextureSize),
+      originalWidth: normalized.width,
+      originalHeight: normalized.height,
+    };
+    perSpace.set(colorSpace, entry);
   }
-  emitDecodedTextureDiagnostics(handle, ref, context);
-  return { ...ref, handle };
+  emitDecodedTextureDiagnostics(entry, ref, context);
+  return { ...ref, handle: entry.handle };
 }
 
 function emitDecodedTextureDiagnostics(
-  handle: GltfCpuLinearTextureHandle,
+  entry: DecodedTextureCacheEntry,
   ref: TextureRef,
   context: {
     readonly field: GltfMaterialTextureField;
@@ -386,9 +399,10 @@ function emitDecodedTextureDiagnostics(
     readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   },
 ): void {
+  const handle = entry.handle;
   const maxTextureSize = context.options.maxTextureSize;
   if (typeof maxTextureSize === 'number' && maxTextureSize > 0 &&
-      (handle.width > maxTextureSize || handle.height > maxTextureSize)) {
+      (entry.originalWidth > maxTextureSize || entry.originalHeight > maxTextureSize)) {
     context.diagnostic({
       severity: 'warning',
       code: 'decoded-texture-exceeds-max-size',
@@ -396,12 +410,14 @@ function emitDecodedTextureDiagnostics(
       materialField: context.field,
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
-      width: handle.width,
-      height: handle.height,
+      width: entry.originalWidth,
+      height: entry.originalHeight,
       maxTextureSize,
-      message: `[vitrum/gltf-adapter] ${context.path} decoded to ${handle.width}x${handle.height}, ` +
-        `which exceeds maxTextureSize=${maxTextureSize}. Texture left at decoded size; downsample before upload ` +
-        'or choose a backend/device that can accept it.',
+      resizedWidth: handle.width,
+      resizedHeight: handle.height,
+      message: `[vitrum/gltf-adapter] ${context.path} decoded to ${entry.originalWidth}x${entry.originalHeight}, ` +
+        `which exceeds maxTextureSize=${maxTextureSize}. Texture was resized to ${handle.width}x${handle.height} ` +
+        'during CPU-linear decode before backend upload.',
     });
   }
 
@@ -456,6 +472,39 @@ function normalizeDecodedPixels(
     width,
     height,
     data: out,
+    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+  };
+}
+
+function resizeDecodedTextureToMaxSize(
+  handle: GltfCpuLinearTextureHandle,
+  maxTextureSize: number | undefined,
+): GltfCpuLinearTextureHandle {
+  if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0) return handle;
+  if (handle.width <= maxTextureSize && handle.height <= maxTextureSize) return handle;
+
+  const scale = maxTextureSize / Math.max(handle.width, handle.height);
+  const width = Math.max(1, Math.round(handle.width * scale));
+  const height = Math.max(1, Math.round(handle.height * scale));
+  const data = new Float32Array(width * height * 4);
+
+  for (let y = 0; y < height; y += 1) {
+    const sy = Math.min(handle.height - 1, Math.floor((y * handle.height) / height));
+    for (let x = 0; x < width; x += 1) {
+      const sx = Math.min(handle.width - 1, Math.floor((x * handle.width) / width));
+      const src = (sy * handle.width + sx) * 4;
+      const dst = (y * width + x) * 4;
+      data[dst] = handle.data[src]!;
+      data[dst + 1] = handle.data[src + 1]!;
+      data[dst + 2] = handle.data[src + 2]!;
+      data[dst + 3] = handle.data[src + 3]!;
+    }
+  }
+
+  return {
+    width,
+    height,
+    data,
     __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
   };
 }

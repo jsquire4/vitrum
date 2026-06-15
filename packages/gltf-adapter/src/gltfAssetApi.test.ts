@@ -536,19 +536,25 @@ describe('decodeSceneTextures', () => {
     expect(result.report.rawImageCount).toBe(1);
   });
 
-  it('emits structured size and NPOT-repeat diagnostics after host decoding', async () => {
+  it('resizes decoded textures to maxTextureSize before backend upload', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const asset = await loadGltfAsset(gltf, { buffers });
     const diagnostics: unknown[] = [];
+    const pixels = new Float32Array(4 * 2 * 4);
+    for (let p = 0; p < 8; p += 1) {
+      pixels[p * 4] = p / 10;
+      pixels[p * 4 + 1] = 0.25;
+      pixels[p * 4 + 2] = 0.5;
+      pixels[p * 4 + 3] = 1;
+    }
 
     const result = await decodeSceneTextures(asset.scene, {
       target: 'cpu-linear',
       maxTextureSize: 2,
-      warnOnNpotRepeatWrap: true,
       decodePixels: () => ({
-        width: 3,
-        height: 5,
-        data: new Float32Array(3 * 5 * 4).fill(1),
+        width: 4,
+        height: 2,
+        data: pixels,
         channels: 4,
         dataType: 'float32',
         colorSpace: 'linear',
@@ -566,10 +572,53 @@ describe('decodeSceneTextures', () => {
         materialField: 'baseColorMap',
         primitiveId: 'gltf-prim-0',
         primitiveIndex: 0,
+        width: 4,
+        height: 2,
+        maxTextureSize: 2,
+        resizedWidth: 2,
+        resizedHeight: 1,
+      }),
+    ]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('exceeds maxTextureSize=2');
+    expect(result.warnings[0]).toContain('resized to 2x1');
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const handle = (primitive.material.baseColorMap as TextureRef).handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+    };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(1);
+    expect(handle.data[0]).toBeCloseTo(0);
+    expect(handle.data[1]).toBeCloseTo(0.25);
+    expect(handle.data[2]).toBeCloseTo(0.5);
+    expect(handle.data[3]).toBeCloseTo(1);
+    expect(handle.data[4]).toBeCloseTo(0.2);
+    expect(handle.data[5]).toBeCloseTo(0.25);
+    expect(handle.data[6]).toBeCloseTo(0.5);
+    expect(handle.data[7]).toBeCloseTo(1);
+  });
+
+  it('emits structured NPOT-repeat diagnostics after host decoding', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'cpu-linear',
+      warnOnNpotRepeatWrap: true,
+      decodePixels: () => ({
         width: 3,
         height: 5,
-        maxTextureSize: 2,
+        data: new Float32Array(3 * 5 * 4).fill(1),
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
       }),
+    });
+
+    expect(result.diagnostics).toEqual([
       expect.objectContaining({
         severity: 'warning',
         code: 'decoded-texture-npot-repeat-wrap',
@@ -583,9 +632,9 @@ describe('decodeSceneTextures', () => {
         wrapT: 'repeat',
       }),
     ]);
-    expect(result.warnings).toHaveLength(2);
-    expect(result.warnings[0]).toContain('exceeds maxTextureSize=2');
-    expect(result.warnings[1]).toContain('NPOT 3x5');
+    expect(result.warnings).toEqual([
+      expect.stringContaining('NPOT 3x5'),
+    ]);
   });
 
   it('leaves texture handles unchanged for the webgpu target', async () => {

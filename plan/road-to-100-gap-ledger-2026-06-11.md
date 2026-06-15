@@ -1026,6 +1026,9 @@ Status:
 - Converter-owned import degradations now return structured
   `GltfImportDiagnostic` entries with stable codes and glTF source paths
   alongside the legacy string `warnings` array.
+- `decodeSceneTextures(target:'cpu-linear', { maxTextureSize })` now resizes
+  oversized decoded raw-image payloads before backend upload and reports the
+  original/resized dimensions in structured diagnostics.
 - Abort signals and deterministic fetch/base-URI errors are wired.
 
 Closure:
