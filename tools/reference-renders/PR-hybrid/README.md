@@ -2,6 +2,12 @@
 
 Primary-release hybrid benchmarks (`plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`).
 
+**Status: archive/provenance set.** The old PR-hybrid benchmark scripts were
+removed during the reference-render tooling cleanup. Keep these PNGs and
+`manifest.json` as historical WSL-GPU/dzn captures; use `npm run validate:gpu:smoke`
+for the current hybrid GPU smoke and the `benchmark:gap-closure` capture-adapter
+flow for new visual captures.
+
 ## Scenarios
 
 | Directory | Source | Capture |
@@ -15,32 +21,10 @@ Primary-release hybrid benchmarks (`plan/primary-release-and-webgpu-pt-parity-20
 `walkaround-hybrid` needs **≥16** storage buffers and **≥8** storage textures per shader stage.
 After a successful GPU bench, perf JSON is copied to `perf/latest.json` and merged into `manifest.json`.
 
-**One-shot capture (hardware GPU):**
+## Current validation path
 
-```bash
-npm run benchmark:pr-hybrid-gpu
-# WSL → Windows host:
-npm run benchmark:pr-hybrid-gpu-windows
-```
+- GPU smoke / traversal oracles: `npm run validate:gpu:smoke`.
+- New capture sessions: follow `tools/reference-renders/README.md` with a running
+  capture-capable example and `capture-adapter-playwright.mjs`.
 
-SwiftShader (10 / 4) cannot run hybrid; `npm run benchmark:pr-hybrid` **skips** GPU scenarios on
-such hosts unless `VITRUM_PR_REQUIRE_GPU=1` (then the run fails). Use `npm run benchmark:pr-mechanical` on CPU-only CI.
-
-## Capture workflow (GPU host)
-
-```bash
-# Terminal A
-npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port 5175
-
-# Terminal B — records JSON + optional canvas PNG from bench harness
-VITRUM_PR_START_SERVER=1 VITRUM_PR_SCENARIO=PR-hybrid-200k-static npm run benchmark:pr-hybrid
-```
-
-Automated smoke capture:
-
-```bash
-npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner
-```
-
-Writes `tlas-on/`, `material-edit/`, `200k-static/` PNGs + `manifest.json` (SHA-256 per file).
-Manual review still recommended before treating as golden references.
+Manual review is still required before treating new PNGs as golden references.

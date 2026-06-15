@@ -1,6 +1,12 @@
 # Reference render baselines
 
-Cornell + hero quick captures (`session-20260527`, 512×512 / 64 SPP) live here as `cornell-*.png` and `hero-*.png`. Regenerate via `npm run capture:refs:quick`, then `scripts/promote-ref-baseline.sh session-20260527`.
+Cornell + hero quick captures (`session-20260527`, 512×512 / 64 SPP) live here as `cornell-*.png` and `hero-*.png`.
+
+Use the current fail-closed capture flow documented in `../README.md`:
+
+1. Start a capture-capable example such as `npm run dev --workspace @vitrum-examples/pt-webgl2-direct`.
+2. Run `npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner` with `VITRUM_GPU_CAPTURE=1`, `VITRUM_CAPTURE_CMD`, and `VITRUM_CAPTURE_URL` set.
+3. After visual review, promote the approved session with `bash scripts/promote-ref-baseline.sh session-YYYYMMDD`.
 
 ## Gap-closure (WG-0.2)
 
@@ -9,19 +15,21 @@ PNG baselines for `tools/benchmark-runner/run-gap-closure-verification.mjs`.
 ## Generate (WebGPU + Playwright required)
 
 ```bash
-# Terminal A — not needed when using auto-start below
-npm run dev --workspace @vitrum-examples/two-engines-one-scene
+# Terminal A
+npm run dev --workspace @vitrum-examples/pt-webgpu-direct
 
 # Terminal B — seed pt-webgpu parity baseline (smoke resolution when VITRUM_CAPTURE_SMOKE=1)
 #
 # Requires a WebGPU adapter with full pt-webgpu tier (≥10 storage buffers/stage
 # and ≥5 storage textures; split bind groups). SwiftShader only gets lite tier —
-# use a hardware-GPU machine (or `npm run benchmark:gpu-windows -- run-seed-wg0-baselines.mjs`).
+# use a hardware-GPU machine.
 VITRUM_GPU_CAPTURE=1 \
 VITRUM_ALLOW_BASELINE_GEN=1 \
 VITRUM_GAP_SCENARIOS=ptwgpu-parity-material-fields \
+VITRUM_CAPTURE_CMD="node ./tools/benchmark-runner/capture-adapter-playwright.mjs" \
+VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
 VITRUM_CAPTURE_SMOKE=1 \
-npm run benchmark:seed-wg0 --workspace @vitrum/benchmark-runner
+npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
 
 Or with an already-running dev server:

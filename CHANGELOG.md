@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Structured texture/HDRI ingestion warnings:** `@vitrum/pt-webgl2` now routes unreadable material texture handles, unreadable HDRI payloads, and ambiguous texture pixel strides through the public `EngineWarning` channel during `setScene()` and the `updateEnvironment()` fast path, while preserving standalone packer `console.warn` behavior. This closes the old H7 silent-drop diagnostic gap for pt-webgl2 texture/environment ingestion.
 - **Road ledger reconciliation:** source-verified and struck stale pt-webgl2 H7 residuals for pinned internal trace flags, honest caustic-strategy approximation labeling, and lite-tier behavior, and updated `@vitrum/dev` README to reflect the shipped `MaterialInspector` click-to-pick path.
+- **Reference-render tooling docs:** stale reference-render READMEs and the PR-hybrid manifest no longer advertise removed `capture:refs:*`, `seed-wg0`, or `pr-hybrid` workflows; they now point at the live `benchmark:gap-closure` capture-adapter flow, `validate:gpu:smoke`, or explicitly mark old artifacts as archive/provenance.
 
 ### Tests (glTF behavioral gate, 2026-06-15)
 

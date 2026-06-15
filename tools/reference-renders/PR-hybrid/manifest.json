@@ -1,6 +1,6 @@
 {
   "generatedAt": "2026-05-27T06:19:13.085Z",
-  "note": "Perf: npm run benchmark:pr-hybrid-gpu. PNGs RE-CAPTURED 2026-06-04 via wsl-gpu on dzn (RTX 4090) after the F-TLAS1 fix (items_to_fix F-TLAS1) — the old Chrome benchmark:pr-hybrid-refs captures encoded the bug, and Chrome can't reach a >=16-storage-buffer adapter in WSL. Re-run: wsl-gpu scripts/capture-ftlas1-refs.ts. These hashes are wsl-gpu/dzn captures (provenance only; asserted by nothing).",
+  "note": "Archive/provenance set. PNGs were re-captured 2026-06-04 via the external wsl-gpu harness on dzn (RTX 4090) after the F-TLAS1 fix (items_to_fix F-TLAS1). Earlier Chrome captures encoded the bug, and Chrome could not reach a >=16-storage-buffer adapter in WSL. These hashes are wsl-gpu/dzn captures for provenance only; no live npm script asserts them.",
   "latestPerf": "perf/latest.json",
   "manifest": [
     {
