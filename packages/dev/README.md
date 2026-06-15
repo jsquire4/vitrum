@@ -9,7 +9,7 @@ Dev-only debug overlay components for `@vitrum` engines. Add as a **devDependenc
 - `<DDGIAtlasViewer>` — live irradiance + visibility atlas readback via GPU copyTextureToBuffer + canvas blit at ~10 Hz (HybridEngine only).
 - `<BVHVisualizer>` — BVH depth histogram + node-count / leaf-count stats panel, polled at 2 Hz via `engine.debug.bvhNodes()`. (A camera-projected AABB overlay would need view/proj matrices on the debug surface — future work.)
 - `<GISignalSplit>` — 2×2 quadrant view of direct / indirect / AO / total HDR textures via the shared `startGpuTextureBlit` helper.
-- `<MaterialInspector>` — UI panel that live-edits the selected primitive's MaterialSpec via `engine.updatePrimitive`. Click-to-pick is a future addition (requires `engine.debug.pickPrimitive`); hosts wire the selection state by passing `selectedPrimitiveId` as a prop.
+- `<MaterialInspector>` — UI panel that live-edits the selected primitive's MaterialSpec via `engine.updatePrimitive`. Pass the render `canvas` to enable built-in click-to-pick when the engine exposes `engine.debug.pickPrimitive`; hosts can also drive selection explicitly with `selectedPrimitiveId`.
 
 ## Vanilla harness
 
