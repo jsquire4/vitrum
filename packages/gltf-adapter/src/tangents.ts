@@ -1,9 +1,11 @@
-// tangents.ts — MikkTSpace-style fallback tangent generation for glTF meshes.
+// tangents.ts — fallback tangent generation for glTF meshes.
 //
 // glTF recommends authored TANGENT for normal mapped assets, but many assets
-// omit it. Backends can derive tangents privately, but the adapter should hand
-// downstream engines a predictable core Scene when POSITION/NORMAL/TEXCOORD_0
-// are available.
+// omit it. This fallback accumulates per-triangle tangent frames and
+// Gram-Schmidt orthonormalizes against vertex normals; it is intentionally not a
+// full MikkTSpace implementation. Backends can derive tangents privately, but
+// the adapter should hand downstream engines a predictable core Scene when
+// POSITION/NORMAL/TEXCOORD_0 are available.
 
 /**
  * Generate per-vertex xyzw tangents from positions, normals, UV0 and triangles.
