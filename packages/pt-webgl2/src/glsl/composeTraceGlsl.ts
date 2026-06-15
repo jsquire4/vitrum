@@ -795,7 +795,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							if (
 								getSurfaceRecord(
 									material, materialIndex, surfaceHit, attributesArray,
-									state.accumulatedRoughness, int( state.depth ),
+									state.accumulatedRoughness, int( state.depth ), state.wavelength,
 									surf
 								) == SKIP_SURFACE
 							) {

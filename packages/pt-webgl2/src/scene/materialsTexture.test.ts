@@ -6,22 +6,28 @@
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
-import { MATERIAL_WRAP_TEXEL_OFFSET, packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
+import { evaluateSpectrum } from '@vitrum/shared-samplers';
+import {
+  MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
+  MATERIAL_WRAP_TEXEL_OFFSET,
+  packMaterialsTexture,
+  MATERIAL_PIXELS,
+} from './materialsTexture.js';
 
 /** Float offset of pixel `s`, channel `c` (0=r,1=g,2=b,3=a) within material `mi`. */
 function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 111px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
     // at 93/94 + anisotropyMap transform at 95/96 + thickness payload/transform
-    // at 97..99 + per-map wrap modes at 100..110.
+    // at 97..99 + per-map wrap modes at 100..110 + spectral reflectance at 111.
     // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
     // — see materialStrideParity.test.ts for the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(111);
+    expect(MATERIAL_PIXELS).toBe(112);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -43,7 +49,7 @@ describe('packMaterialsTexture — 111px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(111)) = 11 → backing data is 11*11*4 = 484 floats.
+    // dim = ceil(sqrt(112)) = 11 → backing data is 11*11*4 = 484 floats.
     expect(out.dim).toBe(11);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
@@ -250,6 +256,24 @@ describe('packMaterialsTexture — 111px RGBA32F byte layout', () => {
     expect(d[texel(0, 20, 0)]).toBeCloseTo(0.0, 6);
     // sample 27.a = last grid sample (t=1 → value 1).
     expect(d[texel(0, 27, 3)]).toBeCloseTo(1.0, 6);
+  });
+
+  it('packs per-material Jakob-Hanika spectral reflectance coefficients', () => {
+    const red: MaterialSpec = {
+      baseColor: [1, 0, 0],
+      roughness: 0.5,
+      metallic: 0,
+    };
+    const d = packMaterialsTexture([red]).data;
+    const offset = MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET;
+    const coeffs: [number, number, number] = [
+      d[texel(0, offset, 0)]!,
+      d[texel(0, offset, 1)]!,
+      d[texel(0, offset, 2)]!,
+    ];
+
+    expect(d[texel(0, offset, 3)]).toBe(1);
+    expect(evaluateSpectrum(coeffs, 680)).toBeGreaterThan(evaluateSpectrum(coeffs, 450));
   });
 
   // H49 — specularColor and specularIntensity (glTF KHR_materials_specular).

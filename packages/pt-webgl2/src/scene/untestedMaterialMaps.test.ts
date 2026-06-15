@@ -269,11 +269,12 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
   // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
   // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
 
-  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform and wrap-mode texels', () => {
+  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform, wrap, and spectral texels', () => {
     // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
     // texels 95/96 carry anisotropyMapTransform; texel 97 carries thickness;
-    // texels 98/99 carry thicknessMapTransform; texels 100..110 carry per-map wrap modes.
-    expect(MATERIAL_PIXELS).toBe(111);
+    // texels 98/99 carry thicknessMapTransform; texels 100..110 carry per-map wrap modes;
+    // texel 111 carries per-material spectral reflectance coefficients.
+    expect(MATERIAL_PIXELS).toBe(112);
   });
 
   it('packer writes non-zero bitmask when any map has texCoord:1', () => {

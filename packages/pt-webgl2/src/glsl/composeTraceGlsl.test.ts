@@ -99,6 +99,13 @@ describe('composeTraceGlsl', () => {
     expect(bsdfFns).toBeLessThan(renderMain);
   });
 
+  it('threads per-material spectral reflectance through surface decoding', () => {
+    expect(src).toContain('vec3 spectralReflectanceCoeffs;');
+    expect(src).toContain('bool hasSpectralReflectance;');
+    expect(src).toContain('evalSpectrum( material.spectralReflectanceCoeffs, heroWavelength )');
+    expect(src).toContain('state.accumulatedRoughness, int( state.depth ), state.wavelength');
+  });
+
   it('orders the uniform declarations before main() reads them', () => {
     const uniformDecls = idx('uniform BVH bvh;');
     const mainEntry = idx('void main() {');
@@ -246,9 +253,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-	it('D10.4: RENDER_MAIN_SECTIONS join length pin 30349', () => {
+	it('D10.4: RENDER_MAIN_SECTIONS join length pin 30367', () => {
 		const assembled = RENDER_MAIN_SECTIONS.join('');
-		expect(assembled).toHaveLength(30349);
+		expect(assembled).toHaveLength(30367);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

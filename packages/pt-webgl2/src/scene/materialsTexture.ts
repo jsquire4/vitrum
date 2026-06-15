@@ -14,12 +14,14 @@
 // CREDITS.md attributes the absorbed fork.
 
 import type { MaterialSpec, TextureWrapMode, Vec3 } from '@vitrum/core';
+import { rgbToSpectralCoefficients } from '@vitrum/shared-samplers';
 import type { MaterialsTextureData } from './sceneTextures.js';
 import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 
 import {
   MATERIAL_MAP_FIELD_ORDER,
   MATERIAL_PIXELS,
+  MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
   UV_SET_BIT,
 } from '../glsl/shader/structs/materialStride.js';
@@ -28,8 +30,13 @@ import {
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
  *  texels 85..92 + alphaMap transform texels 93..94 + anisotropyMap transform
  *  texels 95..96 + thickness payload/transform texels 97..99 + wrap texels
- *  100..110). Re-exported for tests and parity guards. */
-export { MATERIAL_MAP_FIELD_ORDER, MATERIAL_PIXELS, MATERIAL_WRAP_TEXEL_OFFSET };
+ *  100..110 + spectral reflectance texel 111). Re-exported for tests and parity guards. */
+export {
+  MATERIAL_MAP_FIELD_ORDER,
+  MATERIAL_PIXELS,
+  MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
+  MATERIAL_WRAP_TEXEL_OFFSET,
+};
 /** Floats per material (MATERIAL_PIXELS px × 4 channels). */
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 
@@ -58,6 +65,10 @@ const THIN_FILM_LAYER_LIMIT = 35;
 /** ceil(sqrt(n)) — the square dimension that holds `n` texels row-major (mirrors fork). */
 function squareDim(texelCount: number): number {
   return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, texelCount))));
+}
+
+function finiteOr(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Number(value) : fallback;
 }
 
 /**
@@ -582,6 +593,24 @@ function packTextureTransforms(
   }
 }
 
+function packSpectralReflectance(
+  data: Float32Array,
+  base: number,
+  m: MaterialSpec,
+): void {
+  const baseColor = m.baseColor ?? [1, 1, 1];
+  const [c0, c1, c2] = rgbToSpectralCoefficients(
+    finiteOr(baseColor[0], 1),
+    finiteOr(baseColor[1], 1),
+    finiteOr(baseColor[2], 1),
+  );
+  const offset = base + MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET * 4;
+  data[offset] = finiteOr(c0, 0);
+  data[offset + 1] = finiteOr(c1, 0);
+  data[offset + 2] = finiteOr(c2, 0);
+  data[offset + 3] = 1;
+}
+
 export function packMaterialsTexture(
   materials: readonly MaterialSpec[],
   layerOf?: TextureLayerLookup,
@@ -610,6 +639,8 @@ export function packMaterialsTexture(
     index = packThinFilm(data, index, m);
     // samples 55..92: texture-transform mat3s + D3 ao/light/bump auxiliary block
     packTextureTransforms(data, base, m, ids);
+    // sample 111: per-material Jakob-Hanika spectral reflectance coefficients.
+    packSpectralReflectance(data, base, m);
 
     index = base + MATERIAL_STRIDE;
   }

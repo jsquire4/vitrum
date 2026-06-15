@@ -12,7 +12,7 @@ export const get_surface_record_function = /* glsl */`
 
 	int getSurfaceRecord(
 		Material material, uint materialIndex, SurfaceHit surfaceHit, sampler2DArray attributesArray,
-		float accumulatedRoughness, int pathDepth,
+		float accumulatedRoughness, int pathDepth, float heroWavelength,
 		inout SurfaceRecord surf
 	) {
 
@@ -27,6 +27,8 @@ export const get_surface_record_function = /* glsl */`
 			fogSurface.normal = normal;
 			fogSurface.faceNormal = normal;
 			fogSurface.clearcoatNormal = normal;
+			fogSurface.spectralReflectanceCoeffs = vec3( 0.0 );
+			fogSurface.hasSpectralReflectance = false;
 			// Sprint 4: fog particle — only diffuse lobe; never liteMode.
 			fogSurface.lobeMask = 1u;
 			fogSurface.liteMode = false;
@@ -448,8 +450,13 @@ export const get_surface_record_function = /* glsl */`
 		surf.faceNormal = surfaceHit.faceNormal;
 		surf.normal = normal;
 
+		vec3 surfaceColor = albedo.rgb;
+		if ( uSpectralRendering == 1 && material.hasSpectralReflectance ) {
+			surfaceColor = vec3( evalSpectrum( material.spectralReflectanceCoeffs, heroWavelength ) );
+		}
+
 		surf.metalness = metalness;
-		surf.color = albedo.rgb;
+		surf.color = surfaceColor;
 		surf.emission = emission;
 
 		surf.ior = material.ior;
@@ -486,6 +493,8 @@ export const get_surface_record_function = /* glsl */`
 		surf.specularIntensity = specularIntensity;
 		surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );
 		surf.anisotropyRotation = anisotropyRotation;
+		surf.spectralReflectanceCoeffs = material.spectralReflectanceCoeffs;
+		surf.hasSpectralReflectance = material.hasSpectralReflectance;
 		surf.envMapIntensity = max( material.envMapIntensity, 0.0 );
 
 		// apply perceptual roughness factor from gltf. sheen perceptual roughness is

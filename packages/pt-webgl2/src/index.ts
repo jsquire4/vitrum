@@ -67,11 +67,9 @@ const BDPT_MAX_LIGHT_BOUNCES = 3;
 //     the GLSL `cauchyEnabled` fast-path (no dispersion), which is the non-spectral
 //     and the no-dispersion default → byte-identical when spectral:false.
 //   • jakobCoeffs: stays the flat (0,0,0) ⇒ S≡½ no-op. u_jakobCoeffs is a SINGLE
-//     global reflectance the GLSL uses only for the representative MEDIUM albedo
-//     (volume single-scatter / SSS); a non-flat global value would tint EVERY
-//     medium, which is wrong for a multi-material scene. Real per-material spectral
-//     reflectance needs a materials-texture lane + a Jakob solve per material at
-//     scene build — tracked as the H2 per-material follow-up (road-to-100 A3-adjacent).
+//     global reflectance the GLSL uses only for representative MEDIUM albedo
+//     (volume single-scatter / SSS); baseColor reflectance is per-material via
+//     the materials texture, solved once at scene build.
 const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
   CAUCHY_CROWN_GLASS.A,
   CAUCHY_CROWN_GLASS.B,

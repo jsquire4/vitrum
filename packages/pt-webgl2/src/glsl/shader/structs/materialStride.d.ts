@@ -1,6 +1,7 @@
 export declare const MATERIAL_PIXELS: number;
 export declare const MATERIAL_WRAP_TEXEL_OFFSET: number;
 export declare const MATERIAL_WRAP_TEXELS: number;
+export declare const MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET: number;
 export declare const MATERIAL_MAP_FIELD_ORDER: readonly string[];
 
 /** UV-set bitmask assignments: bit k set = map k samples uv1 (ATTR_UV1).

@@ -1,4 +1,7 @@
-import { MATERIAL_PIXELS } from './materialStride.js';
+import {
+	MATERIAL_PIXELS,
+	MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
+} from './materialStride.js';
 
 /** @public — dynamic-access test-load-bearing; accessed via namespace import in untestedMaterialMaps.test.ts */
 export const material_struct = /* glsl */ `
@@ -90,6 +93,8 @@ export const material_struct = /* glsl */ `
 		vec3 backLayerTransmission;
 		float backLayerRoughness;
 		bool hasBackLayer;
+		vec3 spectralReflectanceCoeffs;
+		bool hasSpectralReflectance;
 
 		// D3 — reserved-field consumption: ambient-occlusion / baked light / bump maps
 		// + per-material env-IBL scale. Layout: texels 85..92 (after the 30 transform
@@ -212,12 +217,13 @@ export const material_struct = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		// D3 — stride bumped 85 → 111 (single-sourced from materialStride.js; the
+		// D3 — stride bumped 85 → ${MATERIAL_PIXELS} (single-sourced from materialStride.js; the
 		// packer imports the same constant): texels 85/86 carry ao/light/bump map
 		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
 		// texels 93/94 carry alphaMapTransform; texels 95/96 carry anisotropyMapTransform;
 		// texel 97 carries volume thickness + thicknessMap; texels 98/99 carry
-		// thicknessMapTransform; texels 100..110 carry per-map wrap.
+		// thicknessMapTransform; texels 100..110 carry per-map wrap; texel 111
+		// carries per-material Jakob-Hanika spectral reflectance coefficients.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
@@ -241,6 +247,7 @@ export const material_struct = /* glsl */ `
 		vec4 s18 = texelFetch1D( tex, i + 18u );
 		vec4 s19 = texelFetch1D( tex, i + 19u );
 		vec4 s22 = texelFetch1D( tex, i + 97u );
+		vec4 sSpectralReflectance = texelFetch1D( tex, i + ${MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET}u );
 
 		Material m;
 		m.color = s0.rgb;
@@ -328,6 +335,8 @@ export const material_struct = /* glsl */ `
 		m.frontLayerRoughness = s18.a;
 		m.backLayerTransmission = s19.rgb;
 		m.backLayerRoughness = s19.a;
+		m.spectralReflectanceCoeffs = sSpectralReflectance.xyz;
+		m.hasSpectralReflectance = sSpectralReflectance.w > 0.5;
 
 		// D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity.
 		vec4 s20 = texelFetch1D( tex, i + 85u );

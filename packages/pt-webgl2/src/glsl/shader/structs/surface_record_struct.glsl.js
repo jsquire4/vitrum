@@ -67,6 +67,8 @@ export const surface_record_struct = /* glsl */`
 		float specularIntensity;
 		float anisotropy;
 		float anisotropyRotation;
+		vec3 spectralReflectanceCoeffs;
+		bool hasSpectralReflectance;
 
 		// D3 — per-material environment-IBL scale (default 1). Applied to BOTH MIS
 		// halves of the env estimator (NEE in directLightContribution + the forward
