@@ -76,9 +76,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // spot spExtra.z / rect texel-0 .w). Lite directional NEE reads the UBO
     // lightDir mirror (no flag — documented 'approximate' on the ledger row).
     // Default (flag-less) scenes are behaviorally identical (all lanes pack 0.0).
-    // Re-pinned 2026-06-11 (PTWG-LITE-01): lite rect/disc analytic records use
-    // one-sided area NEE because connectLite has no BSDF->area-light complement.
-    // RENDER-CHANGING for lite rect/disc scenes; CPU oracle pins unbiased mean.
+    // Re-pinned 2026-06-15 (PTWG-LITE-01): lite rect/disc analytic records now
+    // use paired MIS. kernelLite applies the light-sampled power heuristic and
+    // connectLite intersects BSDF-sampled directions against the same liteLightTex
+    // rect/disc records. RENDER-CHANGING for lite rect/disc scenes; CPU oracle
+    // pins the paired-share mean.
     // Re-pinned 2026-06-11 (PTWG-MAT-01 partial): lite direct/env paths and
     // BSDF-env connection route scalar clearcoat/sheen/iridescence fields
     // through evaluateBrdfFull/brdfDirectionalPdfFull, with anisotropy forced
@@ -102,8 +104,8 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // still has no material texture bindings; this is render-neutral for lite.
     // Re-pinned 2026-06-15: shared scalar material payload gained KHR volume
     // thickness and lite Beer-Lambert fallback clamps to it when authored.
-    expect(digest).toBe('f8dc076a95295abfa58da2001b1c6bb34dd108938b43db6caee2fb9a6f41d3a1');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(148686);
+    expect(digest).toBe('90e6fd9f33ec90459483db660964492bdf7a758c491049fa4d2aa0c05375db29');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(152066);
   });
 });
 
@@ -123,6 +125,17 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.clearcoatRoughness,');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('0.0, 0.0);');
+  });
+
+  it('pairs lite rect/disc NEE with a BSDF-to-area-light connection', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn intersectLiteRectAreaLightRay(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn liteRectLightBase() -> u32');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let misWeight = powerHeuristic(lightPdf, brdfPdf);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0).rgb');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toMatch(
+      /_ = throughputAtVertex;\s+return vec3f\(0\.0\);\s+}\s+fn bsdfEnvironmentConnectionContribution/,
+    );
   });
 
   it('passes scalar clearcoat and sheen into the lite main bounce sampler', () => {

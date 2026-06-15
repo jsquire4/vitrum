@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu lite area-light MIS, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` lite rect/disc area-light MIS:** the lite trace now pairs rect/disc next-event estimation with a BSDF-sampled ray-light connection against the same `liteLightTex` records. `kernelLite` restores the light-sampled power heuristic, `connectLite` intersects BSDF directions against packed rect/disc records, and `oracle.liteRectMis.test.ts` now proves the paired light-sampled + BSDF-sampled shares recover the independent solid-angle ground truth.
+
 ### Fixed (pt-webgpu directional lights, 2026-06-15)
 
 - **`@vitrum/pt-webgpu` in-medium directional NEE:** volumetric single-scatter NEE now loops the packed N-directional light buffer instead of the legacy scalar `params.lightDir.w` mirror, preserving RGB irradiance, multiple directionals, and `castShadow:false` for directional emitters. `volumetricSss.test.ts` pins the no-scalar-regression path, and `npm run shader-gate` compiles the updated full/composite trace shaders.

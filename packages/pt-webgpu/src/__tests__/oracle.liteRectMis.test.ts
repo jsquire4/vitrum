@@ -1,16 +1,15 @@
 /**
  * PTWG-LITE-01 — independent CPU oracle for the lite-tier rect/disc area-light
- * one-sided MIS (plan/road-to-100-gap-ledger-2026-06-11.md §PTWG-LITE-01).
+ * paired MIS (plan/road-to-100-gap-ledger-2026-06-11.md §PTWG-LITE-01).
  *
- * THE SUSPECTED STRUCTURE (verified by code read):
- *   - kernelLite.wgsl.ts:251-296 — rect/disc NEE samples a point on the light
+ * THE HISTORICAL FAILURE STRUCTURE (kept as a regression proof):
+ *   - kernelLite.wgsl.ts rect/disc NEE sampled a point on the light
  *     (area measure), converts to a solid-angle pdf
- *       lightPdf = dist² / (cosLight·area)                 [L284]
- *     and weights the contribution by the POWER HEURISTIC against the BSDF pdf
- *       misWeight = powerHeuristic(lightPdf, brdfPdf)      [L286]
- *       directLi  = throughput·brdf·nDotL·Le·misWeight/lightPdf  [L290]
- *   - connectLite.wgsl.ts:136-159 — the complementary BSDF→area-light
- *     connection (`bsdfAreaLightConnectionContribution`) is a ZERO STUB, and
+ *       lightPdf = dist² / (cosLight·area)
+ *     and weighted the contribution by the POWER HEURISTIC against the BSDF pdf
+ *       misWeight = powerHeuristic(lightPdf, brdfPdf)
+ *   - connectLite.wgsl.ts returned zero for the complementary BSDF→area-light
+ *     connection (`bsdfAreaLightConnectionContribution`), and
  *     lite rect/disc lights are ANALYTIC records (liteLightTex), not scene
  *     geometry, so a BSDF-sampled bounce ray can never pick up their emission
  *     by intersection either.
@@ -33,9 +32,9 @@
  *   The BSDF evaluator (evaluateBrdf, bsdf.wgsl.ts:634-654 + LUTs) is shared
  *   by both sides so the comparison isolates the ESTIMATOR, not the BRDF.
  *
- * VERDICT ENCODING: confirmed deficit pinned per material case; sibling
- * it.skip expects ratio ≈ 1 once the complementary connection (or a non-MIS
- * NEE weight) lands.
+ * VERDICT ENCODING: confirmed historical deficit pinned per material case; the
+ * current paired estimator adds an independently integrated BSDF-weighted share
+ * and must recover the full solid-angle ground truth.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -254,10 +253,9 @@ function liteNeeSample(m: MaterialCase, x1: number, x2: number, historicalMis = 
   // shadow ray L287-288: unoccluded scene → always passes
   // L290: directLi = throughput·brdf·nDotL·Le·misWeight/lightPdf
   return scale(mulv(brdf, Le), (nDotL * misWeight) / Math.max(lightPdf, 1e-6));
-  // The complementary BSDF-sampled half is bsdfAreaLightConnectionContribution
-  // == vec3f(0) (connectLite.wgsl.ts:136-159), and lite rect lights are not
-  // geometry, so NOTHING else adds rect-light energy: the per-vertex direct
-  // light is exactly the value above.
+  // With historicalMis=true this is the historical light-sampled half that
+  // used to be unpaired. The current shader adds the complementary BSDF-sampled
+  // half in connectLite.wgsl.ts; see the final regression below.
 }
 
 // ── (b) ground truth: fresh solid-angle MC, independent measure ─────────────
@@ -290,6 +288,36 @@ function groundTruth(m: MaterialCase, nSamples: number, seed: number): V3 {
   return scale(acc, 1 / nSamples);
 }
 
+// Independent solid-angle estimate of the BSDF-sampled MIS share:
+// ∫ Le·f·cosE·w_bsdf dω, where w_bsdf = brdfPdf²/(lightPdf²+brdfPdf²).
+function bsdfComplementTruth(m: MaterialCase, nSamples: number, seed: number): V3 {
+  const rng = mulberry32(seed);
+  const acc: V3 = [0, 0, 0];
+  for (let i = 0; i < nSamples; i++) {
+    const u1 = rng();
+    const u2 = rng();
+    const r = Math.sqrt(u1);
+    const phi = 2 * PI * u2;
+    const wi: V3 = [r * Math.cos(phi), Math.sqrt(Math.max(0, 1 - u1)), r * Math.sin(phi)];
+    if (wi[1] <= 1e-9) continue;
+    const t = (rpos[1] - hitPos[1]) / wi[1];
+    const px = hitPos[0] + wi[0] * t;
+    const pz = hitPos[2] + wi[2] * t;
+    if (Math.abs(px - rpos[0]) > 1 || Math.abs(pz - rpos[2]) > 1) continue;
+    const f = evaluateBrdf(m.baseColor, m.roughness, m.metallic, normal, wo, wi);
+    const dist2 = Math.max(t * t, 1e-6);
+    const cosLight = Math.max(dot(lightNormal, scale(wi, -1)), 0);
+    if (cosLight <= 0) continue;
+    const lightPdf = dist2 / Math.max(cosLight * area, 1e-6);
+    const brdfPdf = brdfDirectionalPdf(m.baseColor, m.roughness, m.metallic, 0, normal, wo, wi);
+    const misWeight = powerHeuristic(brdfPdf, lightPdf);
+    acc[0] += PI * Le[0] * f[0] * misWeight;
+    acc[1] += PI * Le[1] * f[1] * misWeight;
+    acc[2] += PI * Le[2] * f[2] * misWeight;
+  }
+  return scale(acc, 1 / nSamples);
+}
+
 function measureLite(m: MaterialCase, nSamples: number, seed: number, historicalMis = false): V3 {
   const rng = mulberry32(seed);
   const acc: V3 = [0, 0, 0];
@@ -304,7 +332,7 @@ function measureLite(m: MaterialCase, nSamples: number, seed: number, historical
 
 const lum = (c: V3) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 
-describe('PTWG-LITE-01 oracle — lite rect area-light one-sided MIS deficit', () => {
+describe('PTWG-LITE-01 oracle — lite rect area-light paired MIS', () => {
   it('transcription sanity: dropping misWeight recovers the unbiased area-NEE estimator', () => {
     // With misWeight forced to 1 the transcribed estimator is the standard
     // area-measure NEE estimator, which must agree with the independent
@@ -358,9 +386,11 @@ describe('PTWG-LITE-01 oracle — lite rect area-light one-sided MIS deficit', (
     });
   }
 
-  it('REGRESSION PTWG-LITE-01: lite rect direct light matches ground truth', () => {
+  it('REGRESSION PTWG-LITE-01: paired light-sampled and BSDF-sampled shares match ground truth', () => {
     for (const m of CASES) {
-      const measured = measureLite(m, 1_000_000, 1337);
+      const lightShare = measureLite(m, 1_000_000, 1337, true);
+      const bsdfShare = bsdfComplementTruth(m, 2_000_000, 9001);
+      const measured = add(lightShare, bsdfShare);
       const truth = groundTruth(m, 2_000_000, 7331);
       const ratio = lum(measured) / lum(truth);
       expect(ratio, m.name).toBeGreaterThan(0.97);

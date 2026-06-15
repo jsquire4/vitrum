@@ -11,13 +11,11 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
  * the code returns black no-environment radiance. Procedural sky is CPU-baked to
  * the HDRI/CDF path before this shader runs.
  *
- * Area-light BSDF→light MIS (`bsdfAreaLightConnectionContribution`) is a zero stub:
- * rect-area lights fire via the NEE loop in kernelLite only (analytic contribution),
- * not via the BSDF→light reconnection path (which would require iterating all rect
- * lights on a direction-sampled bounce — that would add a loop here that the lite
- * kernel isn't structured for, and the full-tier uses its own connect.wgsl.ts path
- * for that).  Area-light energy on the lite tier therefore comes from NEE only (same
- * estimator as point/spot lights).
+ * Area-light BSDF→light MIS is paired with the NEE loop in kernelLite: the NEE
+ * half samples a point on the packed rect/disc light, and this module intersects
+ * the BSDF-sampled direction against the same `liteLightTex` records.  That keeps
+ * lite rect/disc records in the same matched Veach MIS family as the full tier
+ * without binding the full rectAreaLights storage buffer.
  */
 export const PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL}
@@ -119,13 +117,56 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   return result;
 }
 
-// Area-light BSDF→light MIS: zero stub on the lite tier.
-// Rect-area lights are sampled via the NEE loop in kernelLite only (analytic NEE
-// from the liteLightTex).  The BSDF-sampled direction that happens to hit a rect
-// light is not reconnected here; kernelLite therefore uses a one-sided area-NEE
-// estimator for rect/disc records instead of applying an unmatched MIS weight.
-// Implementing the rect intersect here would require iterating all rect lights
-// for every bounce on the lite tier and is deferred.
+fn liteRectLightBase() -> u32 {
+  return params.pointLightCount * 3u + params.spotLightCount * 4u;
+}
+
+// Intersect the BSDF-sampled ray against a packed lite rect/disc record.
+// Layout mirrors kernelLite.wgsl.ts: rpos, u axis, v axis, emission+shape.
+fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
+  let rb = liteRectLightBase() + li * 4u;
+  let rectPos = textureLoad(liteLightTex, vec2i(i32(rb), 0), 0).xyz;
+  let uAxis = textureLoad(liteLightTex, vec2i(i32(rb + 1u), 0), 0).xyz;
+  let vAxis = textureLoad(liteLightTex, vec2i(i32(rb + 2u), 0), 0).xyz;
+  let rshape = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0);
+  let isDisc = abs(rshape.w - 1.0) < 0.5;
+  let lightNormal = safe_normalize(cross(uAxis, vAxis));
+  let denom = dot(lightNormal, rayDir);
+  if (abs(denom) < 1e-6) {
+    return false;
+  }
+  let t = dot(lightNormal, rectPos - rayOrigin) / denom;
+  if (t <= 1e-4) {
+    return false;
+  }
+  let p = rayOrigin + rayDir * t;
+  let rel = p - rectPos;
+  let uLen2 = max(dot(uAxis, uAxis), 1e-6);
+  let vLen2 = max(dot(vAxis, vAxis), 1e-6);
+  let uCoord = dot(rel, uAxis) / uLen2;
+  let vCoord = dot(rel, vAxis) / vLen2;
+  let inside = select(
+    abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
+    uCoord * uCoord + vCoord * vCoord <= 1.0,
+    isDisc,
+  );
+  if (!inside) {
+    return false;
+  }
+  let cosLight = max(dot(lightNormal, -rayDir), 0.0);
+  if (cosLight <= 0.0) {
+    return false;
+  }
+  let area = select(
+    max(4.0 * length(cross(uAxis, vAxis)), 1e-6),
+    max(PI * dot(uAxis, uAxis), 1e-6),
+    isDisc,
+  );
+  *distOut = t;
+  *lightPdfOut = (t * t) / max(cosLight * area, 1e-6);
+  return true;
+}
+
 fn bsdfAreaLightConnectionContribution(
   hitPos: vec3f,
   normal: vec3f,
@@ -148,29 +189,55 @@ fn bsdfAreaLightConnectionContribution(
   specularColor: vec3f,
   specularIntensity: f32,
   throughputAtVertex: vec3f,
+  heroLambda: f32,
 ) -> vec3f {
-  _ = hitPos;
-  _ = normal;
-  _ = wo;
-  _ = wi;
-  _ = baseColor;
-  _ = roughness;
-  _ = metallic;
-  _ = transmission;
-  _ = ior;
-  _ = clearcoat;
-  _ = clearcoatRoughness;
-  _ = sheen;
-  _ = sheenRoughness;
-  _ = sheenColor;
-  _ = iridescence;
-  _ = iridescenceIor;
-  _ = iridescenceThicknessMin;
-  _ = iridescenceThicknessMax;
-  _ = specularColor;
-  _ = specularIntensity;
-  _ = throughputAtVertex;
-  return vec3f(0.0);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5) {
+    return vec3f(0.0);
+  }
+  let bsdfPdf = brdfDirectionalPdfFullSampled(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    0.0, 0.0,
+  );
+  if (bsdfPdf <= 1e-6) {
+    return vec3f(0.0);
+  }
+
+  let offsetOrigin = hitPos + normal * 1e-3;
+  var bestDist = INFINITY;
+  var bestLightPdf = 0.0;
+  var bestEmission = vec3f(0.0);
+  for (var li = 0u; li < params.rectAreaLightCount; li = li + 1u) {
+    var rectDist = INFINITY;
+    var rectPdf = 0.0;
+    if (intersectLiteRectAreaLightRay(li, offsetOrigin, wi, &rectDist, &rectPdf)) {
+      let rb = liteRectLightBase() + li * 4u;
+      let rectShadowDisabled = textureLoad(liteLightTex, vec2i(i32(rb), 0), 0).w > 0.5;
+      let shadowRay = Ray(offsetOrigin, wi);
+      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3))) && rectDist < bestDist) {
+        bestDist = rectDist;
+        bestLightPdf = rectPdf;
+        bestEmission = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0).rgb;
+      }
+    }
+  }
+  if (bestDist >= INFINITY || bestLightPdf <= 1e-6) {
+    return vec3f(0.0);
+  }
+
+  let brdf = evaluateBrdfFull(
+    baseColor, roughness, metallic, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    0.0, 0.0,
+  );
+  let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
+  let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
+  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / max(bsdfPdf, 1e-6);
 }
 
 fn bsdfEnvironmentConnectionContribution(

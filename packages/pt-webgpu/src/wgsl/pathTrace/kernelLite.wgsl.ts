@@ -259,10 +259,10 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       // B12 — rect/disc-area lights (area; stride 4 texels: rpos, ru, rv, rshape).
       // Shape discriminator in rshape.w: ≈ 0 → rect, ≈ 1 → analytic disc.
       // Disc sampling uses the concentric-disc map (Shirley & Chiu 1997); area = π·|u|².
-      // Lite rect/disc lights are analytic records, not scene geometry, and
-      // connectLite's BSDF->area-light path is intentionally a zero stub. Use
-      // the one-sided area-NEE estimator here; applying a power heuristic would
-      // discard the unmatched BSDF-side share.
+      // Lite rect/disc lights are analytic records, not scene geometry. The
+      // paired BSDF->area-light half lives in connectLite and intersects the
+      // same liteLightTex records, so this NEE half applies the matching MIS
+      // weight just like the full tier.
       // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
       // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
       for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
@@ -303,12 +303,18 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
+              let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                mat.specularColor, mat.specularIntensity,
+                0.0, 0.0);
+              let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               // SHADOW-01 — rect record texel 0 .w carries castShadowDisabled.
               let rectShadowDisabledL = textureLoad(liteLightTex, vec2i(i32(rb2), 0), 0).w > 0.5;
               if (rectShadowDisabledL || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
-                directLi = throughput * brdf * nDotL * rrOut / max(lightPdf, 1e-6);
+                directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6);
               }
             }
           }
@@ -445,6 +451,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.specularColor,
         mat.specularIntensity,
         throughputAtVertex,
+        heroLambda,
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(
         hitPos,

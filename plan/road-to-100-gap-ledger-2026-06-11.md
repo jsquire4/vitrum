@@ -1108,18 +1108,20 @@ Closure:
 - Add material-furnace and lobe-specific tests plus reference A/B before
   promoting these rows from approximate/experimental.
 
-### PTWG-LITE-01 - Lite rect/disc area MIS is one-sided
+### PTWG-LITE-01 - CLOSED 2026-06-15 - Lite rect/disc area MIS is paired
 
 Evidence:
-- Lite rect/disc NEE now uses a one-sided area estimator because
-  `connectLite` intentionally has no complementary BSDF-to-area-light path.
-- Complementary BSDF-to-area-light connection still returns zero by policy.
+- Lite rect/disc NEE now uses a matched power-heuristic estimator, and
+  `connectLite` intersects BSDF-sampled directions against the same packed
+  `liteLightTex` rect/disc records.
+- The old one-sided half-MIS deficit remains pinned as a historical regression
+  proof, while the current oracle adds the independently integrated
+  BSDF-weighted share and recovers solid-angle ground truth.
 
 Closure:
-- Closed for the current lite contract by the non-MIS one-sided estimator and
-  CPU oracle coverage.
-- Optional future promotion: implement lite rect/disc ray-light connection and
-  reintroduce matched MIS with rect/disc reference tests.
+- Implemented in `kernelLite.wgsl.ts` and `connectLite.wgsl.ts`.
+- Guarded by `oracle.liteRectMis.test.ts`, `wgslLiteContract.test.ts`, and
+  root `npm run shader-gate` (51 shaders, 28 pipeline gates).
 
 ## P4 glTF and asset ingestion completeness
 
