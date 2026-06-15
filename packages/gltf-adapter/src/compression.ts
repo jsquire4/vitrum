@@ -476,6 +476,17 @@ function _handleDracoNoHook(
     accessorIndices.length > 0 &&
     accessorIndices.every((ai) => gltf.accessors?.[ai]?.bufferView !== undefined);
 
+  if (isRequired) {
+    throw new Error(
+      '[vitrum/gltf-adapter] KHR_draco_mesh_compression is listed in extensionsRequired ' +
+        `but no opts.dracoDecode hook was supplied for mesh "${label}". ` +
+        (hasFallback
+          ? 'The primitive has uncompressed fallback accessors, but required Draco assets must decode the required extension. '
+          : 'The primitive also has no uncompressed fallback accessors. ') +
+        'Supply a decode hook (e.g. via draco3d — see the README ' +
+        '"Compressed geometry" section).',
+    );
+  }
   if (hasFallback) {
     warnings.push(
       `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression but no ` +
@@ -484,14 +495,6 @@ function _handleDracoNoHook(
     );
     _stripExtension(prim, DRACO_EXT);
     return;
-  }
-  if (isRequired) {
-    throw new Error(
-      '[vitrum/gltf-adapter] KHR_draco_mesh_compression is listed in extensionsRequired ' +
-        `but no opts.dracoDecode hook was supplied and mesh "${label}" has no uncompressed ` +
-        'fallback accessors. Supply a decode hook (e.g. via draco3d — see the README ' +
-        '"Compressed geometry" section).',
-    );
   }
   warnings.push(
     `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression with no ` +

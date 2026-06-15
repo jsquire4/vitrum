@@ -326,6 +326,16 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
     await expect(gltfToScene(gltf, { buffers })).rejects.toThrow(/extensionsRequired/);
   });
 
+  it('no hook + extensionsRequired + uncompressed fallback still throws', async () => {
+    const { gltf, buffers } = makeDracoGltf({
+      extensionsRequired: ['KHR_draco_mesh_compression'],
+      withFallback: true,
+    });
+    await expect(gltfToScene(gltf, { buffers })).rejects.toThrow(
+      /required Draco assets must decode the required extension/,
+    );
+  });
+
   it('no hook + optional + no fallback → warn + primitive skipped', async () => {
     const { gltf, buffers } = makeDracoGltf();
     const { scene, warnings } = await gltfToScene(gltf, { buffers });
