@@ -22,6 +22,67 @@ import {
   MNEE_HARNESS_INPUT_FLOATS,
 } from '../wgsl/pathTrace/mneeNewton.harness.wgsl.js';
 
+type Vec3 = readonly [number, number, number];
+
+const VEC3_ZERO: Vec3 = [0, 0, 0];
+const VEC3_Z: Vec3 = [0, 0, 1];
+const VEC3_X: Vec3 = [1, 0, 0];
+const VEC3_Y: Vec3 = [0, 1, 0];
+
+function add3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+function sub3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function scale3(v: Vec3, s: number): Vec3 {
+  return [v[0] * s, v[1] * s, v[2] * s];
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function length3(v: Vec3): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+function normalize3(v: Vec3): Vec3 {
+  const len = length3(v);
+  if (len < 1e-12) return VEC3_ZERO;
+  return scale3(v, 1 / len);
+}
+
+function mneeHalfVectorResidualReference(
+  v: Vec3,
+  recv: Vec3,
+  light: Vec3,
+  nm: Vec3,
+  tu: Vec3,
+  tv: Vec3,
+  etaI: number,
+  etaT: number,
+): readonly [number, number] {
+  const wi = normalize3(sub3(light, v));
+  const wo = normalize3(sub3(recv, v));
+  const h = normalize3(add3(scale3(wi, etaI), scale3(wo, etaT)));
+  const hTan = sub3(h, scale3(nm, dot3(h, nm)));
+  return [dot3(hTan, tu), dot3(hTan, tv)];
+}
+
+function residualLength2(r: readonly [number, number]): number {
+  return Math.hypot(r[0], r[1]);
+}
+
+function analyticMirrorVertexOnZPlane(recv: Vec3, light: Vec3): Vec3 {
+  const mirroredLight: Vec3 = [light[0], light[1], -light[2]];
+  const line = sub3(mirroredLight, recv);
+  const t = -recv[2] / line[2];
+  return add3(recv, scale3(line, t));
+}
+
 describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
   it('packs a config into the 12-float vec4-aligned record', () => {
     const r = packMneeHarnessInput([0, 0, 1], [1, 0, 1], [0, 0, 0]); // etaI/etaT default 1
@@ -32,6 +93,25 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     // Refraction: distinct etas land in the .w slots.
     expect(packMneeHarnessInput([0, 0, 1], [0, 0, -1], [0, 0, 0], 1.5, 1).slice(0, 8))
       .toEqual([0, 0, 1, 1.5, 0, 0, -1, 1]);
+  });
+
+  it('CPU oracle: the analytic flat-mirror vertex zeros the reflection half-vector residual', () => {
+    for (const [recv, light] of [
+      [[0, 0, 1], [1, 0, 1]],
+      [[-0.4, 0.25, 1.6], [0.8, -0.35, 0.9]],
+      [[0.2, -0.7, 2.1], [-1.1, 0.4, 0.6]],
+    ] as const satisfies readonly (readonly [Vec3, Vec3])[]) {
+      const v = analyticMirrorVertexOnZPlane(recv, light);
+      expect(v[2]).toBeCloseTo(0, 12);
+      expect(residualLength2(
+        mneeHalfVectorResidualReference(v, recv, light, VEC3_Z, VEC3_X, VEC3_Y, 1, 1),
+      )).toBeLessThan(1e-12);
+
+      const shifted = add3(v, [0.125, -0.075, 0]);
+      expect(residualLength2(
+        mneeHalfVectorResidualReference(shifted, recv, light, VEC3_Z, VEC3_X, VEC3_Y, 1, 1),
+      )).toBeGreaterThan(1e-3);
+    }
   });
 
   it('the solve is an ETA-GENERALIZED half-vector Newton iteration (analytic Jacobian)', () => {

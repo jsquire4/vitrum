@@ -251,6 +251,9 @@ buckets that the A–D framing was missing:**
   pt-webgpu oracle for volume-thickness vec4 #28 packing,
   `materialAttenuationDistance`, negative-segment handling, and finite
   Beer-Lambert absorption for an infinite ray segment through an authored slab.
+  `mneeNewton.test.ts` now adds a flat-mirror analytic CPU oracle proving the
+  mirror-image intersection zeroes the MNEE half-vector residual while a shifted
+  vertex remains nonzero.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
