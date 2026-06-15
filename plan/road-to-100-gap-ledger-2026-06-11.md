@@ -882,32 +882,43 @@ Closure:
 These are the areas where source review found real suspicion, but the right fix
 requires an independent oracle or reference-render A/B.
 
-### HYB-GI-01 - Direct ReSTIR selected `xi` is not used consistently
+### HYB-GI-01 - CLOSED 2026-06-14 - Direct ReSTIR uses selected `xi`
 
-Evidence:
-- Reservoir stores selected emitter `xi` and visibility reconstructs the sampled
-  emitter point from `r.xi`.
-- Final emitter pHat uses centroid behavior.
-- `lo_direct` samples a fresh random point instead of the selected reservoir point.
+Verified closure:
+- `reservoirDi.wgsl.ts` stores the winning candidate `xi` in every reservoir.
+- `restirPHat.wgsl.ts` evaluates `restir_di_compute_phat_xi(lid, xi, surf)`,
+  sampling finite emitters at the reservoir point instead of the centroid and
+  decoding the env sentinel direction from `xi`.
+- `ris.wgsl.ts` finalizes both finite-emitter and env winners with
+  `restir_di_compute_phat_xi(lid, r.xi, surf)`.
+- `temporal.wgsl.ts` and `spatial.wgsl.ts` also call the xi-aware helper when
+  re-evaluating neighbour/current reservoirs.
+- `shadingTerms.wgsl.ts` `lo_direct()` shades finite-emitter winners with
+  `sampleEmitterPoint(e, r.xi)` rather than a fresh random point.
+- `oracle.restirDiEstimator.test.ts` keeps the historical centroid/fresh-xi
+  characterization and pins the selected-xi regression at ≈1.0 vs brute force.
 
-Closure:
-- Evaluate final pHat and direct shading at the selected `r.xi` point.
-- Add an area-light plus occluder oracle where centroid/fresh-random and selected
-  point differ.
+Residual:
+- GPU/reference A/B for the render-changing 2026-06-12 oracle wave is still a
+  validation task, but the source-level estimator defect is closed.
 
-### HYB-GI-02 - DI RIS candidate accounting likely undercounts skipped proposals
+### HYB-GI-02 - CLOSED 2026-06-14 - DI RIS support-family `M` accounting
 
-Evidence:
-- `updateReservoirDI()` increments `M` only when called.
-- Emitter, BRDF, and env loops can `continue` before calling it.
-- Final reservoir weight divides by `r.M`.
-- Source comments claim skipped env candidates still increment `M`, but code does
-  not do that.
+Verified closure:
+- `ris.wgsl.ts` tracks `mAreaSupport` and `mEnvSupport` separately.
+- Finite-emitter and BSDF-to-emitter proposals increment area support only after
+  they enter the reservoir; env proposals increment env support only after they
+  enter the reservoir.
+- Finalization sets `r.M` and `r.W` using the selected candidate's support
+  family (`max(1u, mAreaSupport)` for finite emitters, `max(1u, mEnvSupport)`
+  for env), so a single HDRI candidate is no longer divided by the 64+1 finite
+  candidate budget.
+- The CPU oracle demonstrates that skipped zero/degenerate proposals are not the
+  bias source and pins env-only plus mixed scenes at ≈1.0 vs brute force.
 
-Closure:
-- Build a CPU oracle for mixed emitter/BRDF/env candidate families.
-- Either increment `M` for zero-weight proposals, or prove/test that conditional
-  `M` is intentional and unbiased.
+Residual:
+- Same as HYB-GI-01: render-reference recapture remains validation evidence, not
+  an open source implementation gap.
 
 ### HYB-DDGI-01 - DDGI no-hit visibility moments may poison visibility
 

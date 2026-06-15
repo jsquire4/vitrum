@@ -15,8 +15,9 @@
  *   Default `false` = biased clamped-Jacobian reuse (Sprint-17), retained
  *   for the realtime frame budget. Bias sources: B1 Jacobian clamp [0.1,10]
  *   (jacobianShift.wgsl.ts), B2 no reconnection-visibility ray (OFF variants
- *   of spatialGi/temporalGi), B3 no full-GBH MIS (OFF combine weights), B4
- *   centroid p̂ (restirPHat.wgsl.ts, shared ON/OFF).
+ *   of spatialGi/temporalGi), and B3 no full-GBH MIS (OFF combine weights).
+ *   The old B4 centroid-p̂ note is stale: direct ReSTIR now stores selected xi
+ *   and `restirPHat.wgsl.ts` re-evaluates the xi-aware target.
  *   `true` = unbiased GRIS (Phase-1 reconnection shift + Phase-2 full-GBH MIS),
  *   compile-time gated (adds @group(1) scene BVH group to GI passes).
  */

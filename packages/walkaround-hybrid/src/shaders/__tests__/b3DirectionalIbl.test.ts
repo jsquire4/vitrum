@@ -82,6 +82,19 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('restir_di_compute_phat_xi(');
   });
 
+  it('ris finalizes DI reservoirs with selected xi and support-family M', () => {
+    const src = composeWgsl(RIS_MODULE, WGSL_MODULES);
+    expect(src).toContain('var mAreaSupport = 0u;');
+    expect(src).toContain('var mEnvSupport = 0u;');
+    expect(src).toContain('mAreaSupport = mAreaSupport + 1u;');
+    expect(src).toContain('mEnvSupport = mEnvSupport + 1u;');
+    expect(src).toContain('let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);');
+    expect(src).toContain('let supportM = max(1u, mEnvSupport);');
+    expect(src).toContain('let supportM = max(1u, mAreaSupport);');
+    expect(src).toContain('r.M = supportM;');
+    expect(countOccurrences(src, 'restir_di_compute_phat_from_surface(')).toBe(1);
+  });
+
   it('shade lo_direct handles ENV_SAMPLE_SENTINEL via envDirFromXi + envRadiance', () => {
     const src = composeWgsl(SHADE_MODULE, WGSL_MODULES);
     // The sentinel branch must be present in lo_direct.
@@ -90,6 +103,9 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('envDirFromXi(');
     // Evaluate env radiance.
     expect(src).toContain('envColor');
+    // Finite emitters must shade the selected reservoir sample, not a fresh xi.
+    expect(src).toContain('let ls = sampleEmitterPoint(e, r.xi);');
+    expect(src).not.toContain('sampleEmitterPoint(e, rand2');
   });
 
   it('temporal and spatial reuse call restir_di_compute_phat_xi (not the old wrapper)', () => {
