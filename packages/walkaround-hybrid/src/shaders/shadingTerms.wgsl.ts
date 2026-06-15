@@ -85,6 +85,7 @@ fn lo_emit(
   normal:           vec3f,
   isGlass:          bool,
   uv:               vec2f,
+  uv1:              vec2f,
   matColorPacked:   u32,
   triIndex:         u32,
 ) -> vec3f {
@@ -97,11 +98,12 @@ fn lo_emit(
   // WS1 — beer is a texture now: map the triangle index to a texel.
   let beerCoord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
   let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-  let beerAlbedo = vec3f(
+  var beerAlbedo = vec3f(
     f32((beerPacked >> 24u) & 0xFFu) / 255.0,
     f32((beerPacked >> 16u) & 0xFFu) / 255.0,
     f32((beerPacked >>  8u) & 0xFFu) / 255.0,
   );
+  beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
   return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
 }
 
@@ -613,6 +615,8 @@ fn lo_transmittedGI(
   matColor:     vec4f,
   isGlass:      bool,
   triIndex:     u32,
+  uv:           vec2f,
+  uv1:          vec2f,
 ) -> vec3f {
   if (!isGlass) { return vec3f(0.0); }
   let halfDims = dims / 2u;
@@ -650,11 +654,12 @@ fn lo_transmittedGI(
   // Beer-Lambert tint (same bvh_beer read as lo_emit).
   let beerCoord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
   let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-  let beerAlbedo = vec3f(
+  var beerAlbedo = vec3f(
     f32((beerPacked >> 24u) & 0xFFu) / 255.0,
     f32((beerPacked >> 16u) & 0xFFu) / 255.0,
     f32((beerPacked >>  8u) & 0xFFu) / 255.0,
   );
+  beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
 
   // GI contribution: Lo from the diffuse wall × Lambertian cosine response at
   // the post-glass surface × W, then multiplied by the Fresnel transmission and

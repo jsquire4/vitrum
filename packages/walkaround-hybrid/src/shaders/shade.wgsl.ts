@@ -331,7 +331,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Locals are named identically to their helper outputs (Lo_emit, Lo_direct,
   // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
   // tests in sprint18-indirectCombine.test.ts continue to match.
-  let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.indices.w);
+  let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, uv1, primaryHit.matColorPacked, primaryHit.indices.w);
   // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
   let Lo_emitterGlow = sampleEmissiveMap(
     primaryHit.indices.w,
@@ -363,7 +363,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Beer-Lambert tint. Joins the DIRECT channel (see directRadiance below) —
   // it is not albedo-demodulated because its tint is the glass transmittance,
   // not the diffuse wall's baseColor (which was already folded into Lo by risGi).
-  let Lo_transmittedGI = lo_transmittedGI(pix, dims, pos, normal, wo, matColor, isGlass, primaryHit.indices.w);
+  let Lo_transmittedGI = lo_transmittedGI(pix, dims, pos, normal, wo, matColor, isGlass, primaryHit.indices.w, primaryHit.uv, uv1);
   // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
   // reservoir sample. UN-demodulated (joins the direct channel below); fires only
   // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
@@ -480,10 +480,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 /** W1-R6 — declarative include-graph entry.
- *  Order mirrors the historical concat `COMMON_WGSL + SURFACE_TEXTURES_WGSL +
- *  DDGI_SAMPLE_WGSL + SHADE_WGSL` — surfaceTextures requires common, so the
- *  composer emits {common, surfaceTextures, ddgiSample, ...} which is
- *  byte-equivalent to that pre-R6 string.
+ *  The shade pass now consumes materialAtlas helpers directly and surfaceTextures
+ *  also depends on materialAtlas for tinted visibility. The composer emits
+ *  {common, materialAtlas, surfaceTextures, ddgiSample, ...} with shared deps
+ *  deduplicated.
  *
  *  T5 — `stainedGlassShade` (lo_sg_caustic / lo_sg_aperture) is appended after
  *  `sampleCascadeC0`. It requires only `common` (already emitted by the time
@@ -494,5 +494,5 @@ export const SHADE_MODULE: WgslModule = {
   source: SHADE_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint).
-  requires: ['common', 'surfaceTextures', 'materialAtlas', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
+  requires: ['common', 'materialAtlas', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
 };

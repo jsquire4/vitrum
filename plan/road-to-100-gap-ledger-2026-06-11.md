@@ -1235,8 +1235,9 @@ Evidence:
 - `KHR_materials_volume.thicknessTexture` now maps to the core
   `MaterialSpec.thicknessMap` field, and compatibility scoring reports
   `thicknessMap` through each backend's material support matrix. pt-webgl2 and
-  pt-webgpu now consume it approximately as a Beer-Lambert distance clamp;
-  walkaround-hybrid still reports unsupported.
+  pt-webgpu now consume it approximately as a Beer-Lambert distance clamp, and
+  walkaround-hybrid consumes readable thickness maps approximately by sampling
+  glTF G and exponentiating its pre-baked Beer-Lambert tint.
 - Morph-target `TANGENT` deltas are preserved on the core primitive contract and
   are compatibility-scored as approximate backend tangent-space shading data
   rather than silently ignored primitive data.
@@ -1250,8 +1251,7 @@ Closure:
   or reject with a structured compatibility error.
 - High-priority remaining implementations: optional texture-bake parity for
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
-  glossiness-in-alpha, plus walkaround parity for `MaterialSpec.thicknessMap`
-  if that profile needs volume-thickness support.
+  glossiness-in-alpha if exact legacy parity is required.
 - Add core fields only when at least one backend consumes them or the
   compatibility report can honestly say they are imported-but-unsupported.
 - Continue adding real-world sample sweeps for supported/approximate required
@@ -1388,8 +1388,8 @@ Closure:
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
   parity is required, walkaround fractional blend plus the remaining atlas map
-  families (thickness/extension/bump/displacement
-  policy), walkaround `thicknessMap` parity, and backend material-consumption
+  families (extension/bump/displacement
+  policy), and backend material-consumption
   parity.
 
 ## P5 validation and promotion gates

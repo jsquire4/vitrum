@@ -251,7 +251,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + DDGI_GRID_UBO_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + STAINED_GLASS_SHADE_WGSL + SHADE_WGSL', () => {
+  it('shade: COMMON_WGSL + MATERIAL_ATLAS_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + DDGI_GRID_UBO_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + STAINED_GLASS_SHADE_WGSL + SHADE_WGSL', () => {
     // W8 Phase 3 (2026-05-18) — original shade composition.
     //
     // T5 (2026-05-28) — SHADE_MODULE.requires ends with 'stainedGlassShade'.
@@ -262,10 +262,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     // composition now emits ddgiSample (no deps) then ddgiGridUbo (DDGIGridUBO
     // struct + binding(3) + sampleDDGIAtPoint) before the cascade/stainedGlass
     // modules and shade body. common is emitted once via dedup.
+    // Volume thickness maps make surfaceTextures depend on materialAtlas too,
+    // so materialAtlas now appears before surfaceTextures in the topological order.
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL +
-      SURFACE_TEXTURES_WGSL +
       MATERIAL_ATLAS_WGSL +
+      SURFACE_TEXTURES_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +
       OCTAHEDRAL_CORE_WGSL +

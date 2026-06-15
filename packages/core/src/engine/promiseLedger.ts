@@ -368,7 +368,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // u8-quantized [1,3] lane (B1-ior-per-tri) + DDGI material entry.
   ior: 'approximate',
   // Beer-Lambert tint PRE-BAKED per triangle at pack time (bvh_beer lane) with
-  // `thickness` as a fixed slab — not per-ray path length.
+  // `thickness` as a fixed slab; readable thicknessMap multiplies that slab
+  // approximately by exponentiating the tint with thicknessTexture.g at hit UV.
   attenuationColor: 'approximate',
   attenuationDistance: 'approximate',
   thickness: 'approximate',
@@ -393,7 +394,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   normalMap: 'approximate',
   normalScale: 'approximate',
   transmissionMap: 'approximate',
-  thicknessMap: 'unsupported',
+  thicknessMap: 'approximate',
   emissiveMap: 'approximate',
   alphaMap: 'approximate',
   aoMap: 'approximate',

@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 47;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 49;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -22,7 +22,8 @@ type AtlasMapField =
   | 'sheenRoughnessMap'
   | 'anisotropyMap'
   | 'iridescenceMap'
-  | 'iridescenceThicknessMap';
+  | 'iridescenceThicknessMap'
+  | 'thicknessMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -45,6 +46,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'anisotropyMap', colorSpace: 'linear' },
   { field: 'iridescenceMap', colorSpace: 'linear' },
   { field: 'iridescenceThicknessMap', colorSpace: 'linear' },
+  { field: 'thicknessMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -73,6 +75,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableAnisotropyLayerCount: number;
   readonly readableIridescenceLayerCount: number;
   readonly readableIridescenceThicknessLayerCount: number;
+  readonly readableThicknessLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -283,6 +286,7 @@ export function packMaterialTextureAtlas(
     anisotropyMap: new Set<number>(),
     iridescenceMap: new Set<number>(),
     iridescenceThicknessMap: new Set<number>(),
+    thicknessMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -487,6 +491,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'iridescenceMap', 'linear', baseTexel + 42);
     writeMapMeta(mat, 'iridescenceThicknessMap', 'linear', baseTexel + 44);
     writeIridescenceMeta(mat, baseTexel + 46);
+    writeMapMeta(mat, 'thicknessMap', 'linear', baseTexel + 47);
   }
 
   return {
@@ -515,6 +520,7 @@ export function packMaterialTextureAtlas(
     readableAnisotropyLayerCount: fieldLayers.anisotropyMap.size,
     readableIridescenceLayerCount: fieldLayers.iridescenceMap.size,
     readableIridescenceThicknessLayerCount: fieldLayers.iridescenceThicknessMap.size,
+    readableThicknessLayerCount: fieldLayers.thicknessMap.size,
   };
 }
 

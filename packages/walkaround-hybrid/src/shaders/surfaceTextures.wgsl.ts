@@ -221,9 +221,14 @@ fn _bvhTintedTriAccumulate(
     let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
     let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
     let uvAt = bw * uvA + u * uvB + v * uvC;
+    let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
+    let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);
+    let uv1C = materialAtlasPackedUvFromVec4(bvh_normal[idx.z]);
+    let uv1At = bw * uv1A + u * uv1B + v * uv1C;
     let texId = decodeSurfaceTextureId(idxEntry.w);
     let texMod = surfaceTextureMod(uvAt, texId);
-    let perHitFactor = sqrt(max(vec3f(1e-8), beerColor * matCol.a * texMod));
+    let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
+    let perHitFactor = sqrt(max(vec3f(1e-8), beerTint * matCol.a * texMod));
     *visibility = (*visibility) * perHitFactor;
   } else {
     // Opaque hit — fully shadowed.
@@ -454,5 +459,5 @@ fn bvhTraceTintedVisibility(
 export const SURFACE_TEXTURES_MODULE: WgslModule = {
   name: 'surfaceTextures',
   source: SURFACE_TEXTURES_WGSL,
-  requires: ['common'],
+  requires: ['common', 'materialAtlas'],
 };

@@ -170,6 +170,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'iridescenceMap', 'iridescenceThicknessMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
+      'thicknessMap',
       'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
@@ -178,7 +179,6 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
 
   it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
-      'thicknessMap',
       'bumpMap', 'displacementMap',
     ];
     for (const field of textureMaps) {

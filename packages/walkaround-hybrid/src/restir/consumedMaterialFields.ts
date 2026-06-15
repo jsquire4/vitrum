@@ -42,6 +42,9 @@
  *                           (bvh_beer buffer)
  *  attenuationDistance    same Beer-Lambert path
  *  thickness              same Beer-Lambert path
+ *  thicknessMap           materialAtlas.wgsl samples readable linear KHR
+ *                           volume maps from G and exponentiates the scalar
+ *                           Beer-Lambert tint by thicknessTexture.g.
  *  ior                    shared-bvh coreMaterialToMaterialEntry →
  *                           ddgi/probeUpdateMaterials.ts (DDGI material upload)
  *  extensions             materialSpecSurfaceTextureId (extensions.surfaceTextureId
@@ -123,8 +126,8 @@
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
- * transmissionMap / lightMap / specular maps / clearcoat maps / sheen maps /
- * anisotropyMap / iridescence maps, remaining layered BSDF scalars, spectral
+ * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
+ * sheen maps / anisotropyMap / iridescence maps, remaining layered BSDF scalars, spectral
  * curves, volume scattering, thin-film stacks, layered BSDF, and extension
  * maps — is IGNORED.
  */
@@ -171,6 +174,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'attenuationColor',
   'attenuationDistance',
   'thickness',
+  'thicknessMap',
   'ior',
   'extensions',
   'baseColorMap',

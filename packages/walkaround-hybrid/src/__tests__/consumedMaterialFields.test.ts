@@ -103,7 +103,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
     for (const f of [
       'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
-      'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
+      'attenuationColor', 'attenuationDistance', 'thickness', 'thicknessMap', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
@@ -137,7 +137,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
 
   it('does NOT contain texture-map fields', () => {
     for (const f of [
-      'thicknessMap',
       'displacementMap',
       'displacementScale',
       'displacementBias',

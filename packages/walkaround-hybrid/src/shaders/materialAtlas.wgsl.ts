@@ -10,7 +10,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 47u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 49u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -39,6 +39,7 @@ const MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
 const MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
 const MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
 const MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
+const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -308,6 +309,19 @@ fn sampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   }
 
   return vec4f(factor, ior, thicknessMin, thicknessMax);
+}
+
+fn applyThicknessMapToBeerTint(triIndex: u32, uv0: vec2f, uv1: vec2f, beerAlbedo: vec3f) -> vec3f {
+  let thicknessMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_THICKNESS_TEXEL_OFFSET, uv0, uv1);
+  if (thicknessMap.x < 0.0) {
+    return beerAlbedo;
+  }
+  // KHR_materials_volume.thicknessTexture stores thickness in G. The host's
+  // bvh_beer lane already holds attenuationColor^(thicknessFactor / distance),
+  // so exponentiating it by the sampled G channel applies the map without
+  // adding another per-triangle attenuation-distance buffer.
+  let thicknessFactor = clamp(thicknessMap.g, 0.0, 1.0);
+  return pow(max(beerAlbedo, vec3f(1e-6)), vec3f(thicknessFactor));
 }
 
 fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {

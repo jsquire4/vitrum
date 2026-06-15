@@ -1050,6 +1050,7 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'anisotropyMap',
   'iridescenceMap',
   'iridescenceThicknessMap',
+  'thicknessMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(

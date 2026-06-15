@@ -143,7 +143,7 @@ asset's feature report.
 | `KHR_materials_transmission.transmissionTexture` | `transmissionMap` |
 | `KHR_materials_ior.ior` | `ior` |
 | `KHR_materials_volume.thicknessFactor` | `thickness` |
-| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (pt-webgl2 approximate; backend support varies) |
+| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (pt-webgl2, pt-webgpu, and walkaround-hybrid approximate; backend exactness varies) |
 | `KHR_materials_volume.attenuationDistance` | `attenuationDistance` |
 | `KHR_materials_volume.attenuationColor` | `attenuationColor` |
 | `KHR_materials_specular.specularFactor` | `specularIntensity` |
@@ -210,9 +210,9 @@ frame and pushes the results:
   compatibility reports current backend tangent-space shading as approximate until
   solvers/renderers consume those deltas directly.
 - **`KHR_materials_volume.thicknessTexture`**: imported as `thicknessMap`;
-  pt-webgl2 consumes it approximately as a Beer-Lambert distance clamp, while
-  compatibility reports surface unsupported targets for backends that do not
-  consume it.
+  pt-webgl2 and pt-webgpu consume it approximately as Beer-Lambert distance
+  clamps, while walkaround-hybrid samples readable maps approximately by
+  exponentiating its scalar Beer tint with `thicknessTexture.g`.
 - **Low-level URI-based buffers / images**: `gltfToScene` does not fetch. Use
   `loadGltfAsset` for URL/base-URI loading, or pre-load and supply
   `opts.buffers` / `opts.imageBytes`.
