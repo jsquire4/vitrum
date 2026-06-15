@@ -31,6 +31,47 @@ function codeOnly(src: string): string {
     .join('\n');
 }
 
+interface TemporalReuseWeightsInput {
+  readonly cCur: number;
+  readonly cPrev: number;
+  readonly pHatCurNative: number;
+  readonly pHatPrevAtCurSample: number;
+  readonly pHatPrevAtCur: number;
+  readonly pHatPrevNative: number;
+  readonly rCurW: number;
+  readonly rPrevW: number;
+  readonly shiftJacobian: number;
+}
+
+function restirPtTemporalWeightsReference(input: TemporalReuseWeightsInput): {
+  readonly mCur: number;
+  readonly mPrev: number;
+  readonly wCur: number;
+  readonly wPrev: number;
+} {
+  const denomCur = input.cCur * input.pHatCurNative + input.cPrev * input.pHatPrevAtCurSample;
+  const mCur = denomCur > 1e-12 ? (input.cCur * input.pHatCurNative) / denomCur : 1;
+  const denomPrev = input.cCur * input.pHatPrevAtCur + input.cPrev * input.pHatPrevNative;
+  const mPrev = denomPrev > 1e-12 ? (input.cPrev * input.pHatPrevNative) / denomPrev : 0;
+  return {
+    mCur,
+    mPrev,
+    wCur: mCur * input.pHatCurNative * input.rCurW,
+    wPrev: mPrev * input.pHatPrevAtCur * input.rPrevW * input.shiftJacobian,
+  };
+}
+
+function finaliseReservoirPTWGrisReference(opts: {
+  readonly M: number;
+  readonly wSum: number;
+  readonly pHat: number;
+  readonly wCap: number;
+}): number {
+  if (opts.M <= 0) return 0;
+  const raw = opts.pHat > 1e-9 ? opts.wSum / opts.pHat : 0;
+  return Math.min(raw, opts.wCap);
+}
+
 describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
   it('declares all four @compute entry points exactly once each', () => {
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtProduce\(/g) ?? []).length).toBe(1);
@@ -172,6 +213,42 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
     const rhs = (m![1] ?? '').trim();
     expect(rhs).toBe('m_cur * pHatCur_native * rCur.W');
     expect(rhs.includes('/')).toBe(false);
+  });
+
+  it('CPU oracle: temporal reuse weights are pairwise-GRIS and pdfSrc-independent', () => {
+    const input: TemporalReuseWeightsInput = {
+      cCur: 3,
+      cPrev: 5,
+      pHatCurNative: 2.0,
+      pHatPrevAtCurSample: 4.0,
+      pHatPrevAtCur: 1.5,
+      pHatPrevNative: 3.5,
+      rCurW: 0.75,
+      rPrevW: 0.4,
+      shiftJacobian: 0.6,
+    };
+    const weights = restirPtTemporalWeightsReference(input);
+
+    expect(weights.mCur).toBeCloseTo((3 * 2.0) / (3 * 2.0 + 5 * 4.0), 12);
+    expect(weights.mPrev).toBeCloseTo((5 * 3.5) / (3 * 1.5 + 5 * 3.5), 12);
+    expect(weights.wCur).toBeCloseTo(weights.mCur * input.pHatCurNative * input.rCurW, 12);
+    expect(weights.wPrev).toBeCloseTo(
+      weights.mPrev * input.pHatPrevAtCur * input.rPrevW * input.shiftJacobian,
+      12,
+    );
+
+    for (const pdfSrc of [0.01, 0.25, 16, 1024]) {
+      expect(weights.wPrev / pdfSrc).not.toBeCloseTo(weights.wPrev, 6);
+      expect(restirPtTemporalWeightsReference({ ...input }).wPrev).toBeCloseTo(weights.wPrev, 12);
+    }
+  });
+
+  it('CPU oracle: GRIS final W is w_sum / pHat, capped, with no M normalization', () => {
+    expect(finaliseReservoirPTWGrisReference({ M: 1, wSum: 12, pHat: 3, wCap: 100 })).toBe(4);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3, wCap: 100 })).toBe(4);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3, wCap: 2.5 })).toBe(2.5);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 0, wCap: 100 })).toBe(0);
+    expect(finaliseReservoirPTWGrisReference({ M: 0, wSum: 12, pHat: 3, wCap: 100 })).toBe(0);
   });
 });
 

@@ -253,7 +253,9 @@ buckets that the A–D framing was missing:**
   Beer-Lambert absorption for an infinite ray segment through an authored slab.
   `mneeNewton.test.ts` now adds a flat-mirror analytic CPU oracle proving the
   mirror-image intersection zeroes the MNEE half-vector residual while a shifted
-  vertex remains nonzero.
+  vertex remains nonzero. `restirPtReuseContract.test.ts` now adds numeric
+  pairwise-GRIS temporal weight oracles, including reused-reservoir
+  `pdfSrc`-independence and final `W = w_sum / pHat` without `M` normalization.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
