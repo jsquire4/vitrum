@@ -756,6 +756,12 @@ Closure:
 - pt-webgpu, pt-webgl2, and walkaround-hybrid now preserve existing
   `console.warn` output while also emitting structured warnings for the
   audited contract-affecting construction, scene, mutation, and viewport paths.
+- The pt-webgl2 scene upload packers now route previously packer-local
+  unreadable texture/HDRI and ambiguous texture-stride diagnostics through the
+  engine warning channel as `pt-webgl2.texture-unreadable`,
+  `pt-webgl2.hdri-unreadable`, and
+  `pt-webgl2.texture-ambiguous-pixel-stride` during both `setScene()` and the
+  `updateEnvironment()` fast path.
 - Internal debug/resource chatter remains console-only by design; it is not a
   contract-affecting degradation.
 

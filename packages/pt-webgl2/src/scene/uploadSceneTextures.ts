@@ -17,7 +17,7 @@
 // will exist at integration. Their return shapes are the `sceneTextures.ts`
 // contracts (`MaterialsTextureData` / `LightsTextureData` / `EnvTextureData`).
 
-import type { EngineCapabilities, Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineCapabilities, EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
 import { mergeWorldSpaceFromCore, mergeUv1FromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
@@ -36,6 +36,7 @@ export interface SceneTexturesBuild {
   readonly textures: UploadedSceneTextures;
   readonly merged: WorldSpaceMergeResult;
   readonly warnings: string[];
+  readonly structuredWarnings: readonly EngineWarning[];
   /** The capability-filtered scene (H7: returned so callers reuse this single
    *  partition instead of running `partitionSceneBySupport` a second time). */
   readonly supported: Scene;
@@ -55,6 +56,12 @@ export function buildSceneTextures(
 ): SceneTexturesBuild {
   // (1) capability filter
   const { supported, warnings } = partitionSceneBySupport(scene, caps);
+  const structuredWarnings: EngineWarning[] = [];
+  const warningOptions = {
+    onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
+    warningPhase: 'setScene',
+    warningMethod: 'setScene',
+  };
 
   // (1b) fold `mesh-area` emitter radiance back onto its surface material's
   //      emissive — three-bindings strips it for NEE backends, but the fork
@@ -84,7 +91,7 @@ export function buildSceneTextures(
 
   // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
   //      and a handle→layer map (null when the scene has no usable textures).
-  const atlas = packTextureAtlas(merged.materials);
+  const atlas = packTextureAtlas(merged.materials, warningOptions);
   const textures2DArray = atlas != null ? uploadTextureAtlas(gl, atlas) : null;
 
   // (4b) materials — the merged result already dedups the scene's unique
@@ -107,7 +114,7 @@ export function buildSceneTextures(
     meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
 
   // (6) environment importance-sampling (null for non-HDRI scenes).
-  const env = buildEquirectInfo(supported.environment);
+  const env = buildEquirectInfo(supported.environment, warningOptions);
   const envMap = env.map ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map') : null;
   const envMarginal = env.marginal
     ? uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF')
@@ -178,7 +185,7 @@ export function buildSceneTextures(
     },
   };
 
-  return { textures, merged, warnings, supported };
+  return { textures, merged, warnings, structuredWarnings, supported };
 }
 
 type MeshLikePrimitive = Extract<

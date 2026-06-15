@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 diagnostics, 2026-06-15)
+
+- **Structured texture/HDRI ingestion warnings:** `@vitrum/pt-webgl2` now routes unreadable material texture handles, unreadable HDRI payloads, and ambiguous texture pixel strides through the public `EngineWarning` channel during `setScene()` and the `updateEnvironment()` fast path, while preserving standalone packer `console.warn` behavior. This closes the old H7 silent-drop diagnostic gap for pt-webgl2 texture/environment ingestion.
+
 ### Tests (glTF behavioral gate, 2026-06-15)
 
 - **One-call decoded glTF render gate:** `tools/behavioral-gate` now forces the `pt/gltf-textured-pbr` fixture through `loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear', decodePixels })`, asserts decoded texture counts and a backend-ready `textureDecodeReport`, verifies the engine attaches the decoded controller scene, and renders the decoded pt-webgpu asset.

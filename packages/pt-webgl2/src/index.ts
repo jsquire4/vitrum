@@ -444,6 +444,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         details: { warning: w },
       });
     }
+    for (const warning of built.structuredWarnings) {
+      this.#warn(warning);
+    }
     this.#sceneTextures?.destroy();
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
@@ -766,6 +769,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // ── internals ──────────────────────────────────────────────────────────────
 
   #commitMutationSwap(scene: Scene, swap: WebGl2MutationSwap): void {
+    for (const warning of swap.structuredWarnings ?? []) {
+      this.#warn(warning);
+    }
     this.#sceneTextures = swap.textures;
     if (swap.geoPack != null) this.#geoPack = swap.geoPack;
     this.#scene = scene;

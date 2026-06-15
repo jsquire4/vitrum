@@ -164,6 +164,74 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.triangleCount).toBe(2);
   });
 
+  it('emits structured warnings for unreadable material textures and HDRIs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const base = triScene();
+      const prim = base.primitives[0] as MeshPrimitive;
+      const scene: Scene = {
+        ...base,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            baseColorMap: { handle: { id: 'unreadable-map' } },
+          },
+        }],
+        environment: { kind: 'hdri', hdri: { mock: true }, intensity: 1 },
+      };
+      e.setScene(scene);
+
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.texture-unreadable' &&
+        w.phase === 'setScene' &&
+        w.method === 'setScene' &&
+        w.details?.colorSpace === 'srgb',
+      )).toBe(true);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.hdri-unreadable' &&
+        w.phase === 'setScene' &&
+        w.method === 'setScene' &&
+        w.details?.width === 0 &&
+        w.details?.height === 0,
+      )).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) => m.includes('texture handle is not readable'))).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) => m.includes('HDRI environment is present'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('emits structured HDRI warnings on the updateEnvironment fast path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      structured.length = 0;
+      warn.mockClear();
+
+      e.updateEnvironment?.({ kind: 'hdri', hdri: { mock: true }, intensity: 1 });
+
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.hdri-unreadable' &&
+        w.phase === 'mutation' &&
+        w.method === 'updateEnvironment',
+      )).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) => m.includes('HDRI environment is present'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('warns when displacement material fields are supplied', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

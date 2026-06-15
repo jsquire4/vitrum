@@ -12,7 +12,7 @@
 // All layers share one dimension (sampler2DArray requirement): the max source dim,
 // nearest-neighbour resampled. Provenance: gkjohnson/three-gpu-pathtracer (MIT).
 
-import type { MaterialSpec } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec } from '@vitrum/core';
 
 /** The material-map fields the fork GLSL samples (others are inert until wired).
  *  D3 (Wave C) added the clearcoat/sheen/iridescence/specular maps — the fork
@@ -87,6 +87,33 @@ export interface TextureAtlas {
   readonly layerOfByColorSpace: TextureAtlasLayerMap;
 }
 
+export interface TextureAtlasBuildOptions {
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: string;
+  readonly warningMethod?: string;
+}
+
+function handleType(handle: unknown): string {
+  return handle == null ? 'null' : Object.prototype.toString.call(handle);
+}
+
+function emitTextureWarning(
+  options: TextureAtlasBuildOptions | undefined,
+  warning: Omit<EngineWarning, 'backend' | 'phase' | 'method'>,
+): void {
+  const routed: EngineWarning = {
+    ...warning,
+    backend: 'pt-webgl2',
+    phase: options?.warningPhase ?? 'scene-upload',
+    ...(options?.warningMethod != null ? { method: options.warningMethod } : {}),
+  };
+  if (options?.onWarning != null) {
+    options.onWarning(routed);
+  } else {
+    console.warn(routed.message);
+  }
+}
+
 const SRGB_MAP_KEYS = new Set<keyof MaterialSpec>([
   'baseColorMap',
   'emissiveMap',
@@ -118,7 +145,10 @@ function srgbToLinear(v: number): number {
  *  handle itself implementing TextureHandleHint) provides explicit channels/dataType to
  *  avoid the stride heuristic. A console.warn is emitted when the stride is ambiguous
  *  (not 1 or 4) and no hint is present, so hosts know to supply a hint. */
-function readHandlePixels(handle: unknown): RawPixels | null {
+function readHandlePixels(
+  handle: unknown,
+  options?: TextureAtlasBuildOptions,
+): RawPixels | null {
   const h = handle as {
     width?: number; height?: number; data?: ArrayLike<number>;
     image?: { width?: number; height?: number; data?: ArrayLike<number> };
@@ -156,10 +186,20 @@ function readHandlePixels(handle: unknown): RawPixels | null {
   // Warn on ambiguous stride (2 or 3 channels) without a hint — the heuristic
   // cannot distinguish 2-channel (RG) from a 2x oversized RGBA, for example.
   if (hint == null && stride !== 1 && stride !== 4) {
-    console.warn(
-      `[pt-webgl2] texture handle has ambiguous pixel stride ${stride} (${src.length} values / ${width}×${height} pixels). ` +
-      'Attach a __vitrum_hint__ = { channels: N } to the handle to resolve it deterministically.',
-    );
+    emitTextureWarning(options, {
+      code: 'pt-webgl2.texture-ambiguous-pixel-stride',
+      message:
+        `[pt-webgl2] texture handle has ambiguous pixel stride ${stride} ` +
+        `(${src.length} values / ${width}×${height} pixels). ` +
+        'Attach a __vitrum_hint__ = { channels: N } to the handle to resolve it deterministically.',
+      details: {
+        stride,
+        valueCount: src.length,
+        width,
+        height,
+        handleType: handleType(handle),
+      },
+    });
   }
 
   const isHalf = src instanceof Uint16Array;
@@ -219,7 +259,10 @@ function blitLayer(
  * scene materials, resample each to a common dim, and assign a layer index. Returns
  * `null` (no atlas → all map ids stay -1) when no readable textures exist.
  */
-export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtlas | null {
+export function packTextureAtlas(
+  materials: readonly MaterialSpec[],
+  options?: TextureAtlasBuildOptions,
+): TextureAtlas | null {
   // unique (handle, color-space role) pairs in first-seen order
   const handles: { handle: unknown; colorSpace: TextureSampleColorSpace }[] = [];
   const seen = new Map<unknown, Set<TextureSampleColorSpace>>();
@@ -248,15 +291,22 @@ export function packTextureAtlas(materials: readonly MaterialSpec[]): TextureAtl
   // will use the default (flat/no texture) for the corresponding map.
   const pixels: { handle: unknown; colorSpace: TextureSampleColorSpace; px: RawPixels }[] = [];
   for (const { handle, colorSpace } of handles) {
-    const px = readHandlePixels(handle);
+    const px = readHandlePixels(handle, options);
     if (px != null) {
       pixels.push({ handle, colorSpace, px });
     } else {
-      console.warn(
-        '[pt-webgl2] texture handle is not readable (no raw {width,height,data} or DataTexture-shaped image); ' +
+      emitTextureWarning(options, {
+        code: 'pt-webgl2.texture-unreadable',
+        message:
+          '[pt-webgl2] texture handle is not readable (no raw {width,height,data} or DataTexture-shaped image); ' +
           'the texture map will be ignored and the material will render without it. ' +
           `Handle: ${String(handle)}`,
-      );
+        details: {
+          colorSpace,
+          handleType: handleType(handle),
+          handle: String(handle),
+        },
+      });
     }
   }
   if (pixels.length === 0) return null;

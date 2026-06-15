@@ -19,7 +19,7 @@
 // solid-angle (sin θ) term — the fork carries a TODO to add it but does not. We
 // match the fork so the GLSL `equirect_sampling` decoder behaves identically.
 
-import type { SceneEnvironment } from '@vitrum/core';
+import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
 import { bakePreethamSkyEquirect } from '@vitrum/shared-samplers';
 import type { EnvTextureData } from './sceneTextures.js';
 
@@ -38,6 +38,29 @@ interface EquirectSource {
   readonly height: number;
   readonly data: ArrayLike<number> | undefined;
   readonly channels: 3 | 4;
+}
+
+export interface EquirectInfoBuildOptions {
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: string;
+  readonly warningMethod?: string;
+}
+
+function emitEnvironmentWarning(
+  options: EquirectInfoBuildOptions | undefined,
+  warning: Omit<EngineWarning, 'backend' | 'phase' | 'method'>,
+): void {
+  const routed: EngineWarning = {
+    ...warning,
+    backend: 'pt-webgl2',
+    phase: options?.warningPhase ?? 'scene-upload',
+    ...(options?.warningMethod != null ? { method: options.warningMethod } : {}),
+  };
+  if (options?.onWarning != null) {
+    options.onWarning(routed);
+  } else {
+    console.warn(routed.message);
+  }
 }
 
 function colorToLuminance(r: number, g: number, b: number): number {
@@ -82,7 +105,10 @@ const EMPTY_ENV: EnvTextureData = {
  * HDRI and procedural-sky environments. Procedural skies are baked through the
  * shared Preetham model and then use the same equirect sampling path as HDRI.
  */
-export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
+export function buildEquirectInfo(
+  env: SceneEnvironment,
+  options?: EquirectInfoBuildOptions,
+): EnvTextureData {
   if (env.kind === 'none') {
     return EMPTY_ENV;
   }
@@ -127,15 +153,27 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
     // Without this, a missing/incorrectly-shaped HDRI payload results in a
     // flat-black environment with no error signal (a frequent source of
     // confusion during host integration).
-    console.warn(
+    const message =
       '[pt-webgl2] HDRI environment is present (kind="hdri") but has no usable CPU pixel data. ' +
         'pt-webgl2 requires a raw {width, height, data} RGB float payload (or use the ' +
         'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
         'The environment will be ignored (EMPTY_ENV fallback). ' +
         // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic warning; [object Object] output is acceptable here
         `Received hdri handle: ${String(hdriHandleForDiagnostic)}, width=${width}, height=${height}, ` +
-        `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`,
-    );
+        `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`;
+    emitEnvironmentWarning(options, {
+      code: 'pt-webgl2.hdri-unreadable',
+      message,
+      details: {
+        width,
+        height,
+        sourceType: src == null ? 'null' : Object.prototype.toString.call(src),
+        handleType: hdriHandleForDiagnostic == null
+          ? 'null'
+          : Object.prototype.toString.call(hdriHandleForDiagnostic),
+        handle: String(hdriHandleForDiagnostic),
+      },
+    });
     return EMPTY_ENV;
   }
 

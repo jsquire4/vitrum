@@ -1,4 +1,4 @@
-import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
@@ -40,6 +40,7 @@ export interface WebGl2MutationSwap {
   readonly textures: UploadedSceneTextures;
   readonly geoPack?: WorldSpaceMergeResult;
   readonly deleteOldTextures: readonly (WebGLTexture | null)[];
+  readonly structuredWarnings?: readonly EngineWarning[];
 }
 
 function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
@@ -242,7 +243,12 @@ export function fastPathEnvironmentMutation(
   nextScene: Scene,
 ): WebGl2MutationSwap | null {
   if (current == null) return null;
-  const env = buildEquirectInfo(nextScene.environment);
+  const structuredWarnings: EngineWarning[] = [];
+  const env = buildEquirectInfo(nextScene.environment, {
+    onWarning: (warning) => structuredWarnings.push(warning),
+    warningPhase: 'mutation',
+    warningMethod: 'updateEnvironment',
+  });
   const envMap = env.map
     ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map')
     : null;
@@ -262,5 +268,6 @@ export function fastPathEnvironmentMutation(
       envHeight: env.map?.height ?? 0,
     }),
     deleteOldTextures: [current.envMap, current.envMarginal, current.envConditional],
+    structuredWarnings,
   };
 }
