@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu material PDFs, 2026-06-15)
+
+- **Layered transmissive BSDF source/PDF coherence:** `@vitrum/pt-webgpu` transmissive dielectric materials now share the same normalized base/clearcoat/sheen sampled-density model as opaque materials. The base lobe remains the Fresnel reflect/refract dielectric partition, while clearcoat and sheen can now be sampled as same-side reflection lobes on glass; `brdfDirectionalPdfFullSampledWithClearcoatNormal()` no longer drops transmissive materials to a base-only PDF. This is render-changing for glass materials with clearcoat/sheen and still needs reference A/B promotion evidence.
+
 ### Fixed (glTF strict runtime profile, 2026-06-15)
 
 - **`@vitrum/engine/gltf` runtime lite-profile enforcement:** strict one-call glTF loads now evaluate the actual runtime `pt-webgpu-lite` compatibility row before constructing an engine. `reject-unsupported` rejects lite-tier assets with unsupported rows, `reject-degraded` rejects any unsatisfied non-native lite row, best-effort remains non-blocking, and decoded spec-gloss roughness bakes / required host hooks are honored before deciding whether a lite-row issue is still active.

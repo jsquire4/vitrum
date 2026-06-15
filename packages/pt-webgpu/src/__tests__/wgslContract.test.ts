@@ -253,8 +253,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-15: BDPT light-side material payload sampling now mirrors
     // the shade prologue's layer, thin-film, spectral reflectance, and Cauchy IOR
     // transforms.
-    expect(digest).toBe('c21973a214c2c79c9a4d5483039bab42347bb90d67cd91cebe807311e5a847df');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(368800);
+    // Re-pinned 2026-06-15: transmissive dielectrics now share the normalized
+    // base/clearcoat/sheen sampled-density helper instead of returning a
+    // base-only PDF/sampler before extension lobes can participate.
+    expect(digest).toBe('e44abd8f31f854b586c8c8bcbd3962ff35f42ec92553efea0c9bcaad18945742');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(370454);
   });
 });
 
@@ -308,6 +311,29 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+  });
+
+  it('keeps transmissive dielectric source sampling aligned with the full sampled pdf', () => {
+    const pdfStart = PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    const pdfEnd = PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullSampled(', pdfStart + 1);
+    const pdfHelper = PT_WEBGPU_TRACE_WGSL.slice(pdfStart, pdfEnd);
+    expect(pdfHelper).not.toContain('if (transmission > 0.0 && metallic == 0.0)');
+    expect(pdfHelper).toContain(') / brdfExtensionLobeWeightSum(clearcoat, sheen);');
+
+    const branchStart = PT_WEBGPU_TRACE_WGSL.indexOf('// Transmissive (dielectric) surface');
+    const branchEnd = PT_WEBGPU_TRACE_WGSL.indexOf('// Non-transmissive surface', branchStart);
+    const branch = PT_WEBGPU_TRACE_WGSL.slice(branchStart, branchEnd);
+    expect(branch).toContain('let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);');
+    expect(branch).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
+    expect(branch).toContain('let xiBase = xiLobe;');
+    expect(branch).toContain('result.throughputMul = fresnel * g1Wi * msBoost * lobeWeightSum / max(R, 1e-4);');
+    expect(branch).toContain(
+      'result.throughputMul = baseColor * thinFilmTransmitTint * lobeWeightSum / max(1.0 - R, 1e-4);',
+    );
+    expect(branch).toContain(
+      'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
+    );
+    expect(branch).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
   });
 
   it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {

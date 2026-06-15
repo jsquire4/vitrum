@@ -743,15 +743,6 @@ fn brdfDirectionalPdfFullSampledWithClearcoatNormal(
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> f32 {
-  // The transmissive dielectric branch in sampleNextBounceDirection is still the
-  // delta reflection/refraction sampler. Keep its density base-only until the
-  // layered glass sampler grows a real clearcoat/sheen/refraction mixture.
-  if (transmission > 0.0 && metallic == 0.0) {
-    return brdfDirectionalPdf(
-      baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
-      specularColor, specularIntensity,
-    );
-  }
   return brdfDirectionalPdfFullWithClearcoatNormal(
     baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
@@ -1070,90 +1061,125 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   //      https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF
   // -----------------------------------------------------------------------
   if (transmission > 0.0 && metallic == 0.0) {
-    let cosThetaI = abs(dot(-incomingDir, normal));
-    let R = frDielectric(cosThetaI, ior);  // PBR4e §9.3 FrDielectric
-    let xi = rand_f32(rng);
-    let frontFace = dot(incomingDir, hitNormal) < 0.0;
-    if (xi < R) {
-      // Fresnel-weighted specular reflection branch.
-      // frDielectric returns 1.0 for TIR, so TIR is handled automatically
-      // (the refract branch is never taken when R == 1).
-      let wo = -incomingDir; // eye-side direction
-      result.newRayOrigin = hitPos + normal * 1e-3;
-      // Item 7 — use anisotropic sampler when anisotropy > 0.
-      var bs: BsdfSample;
-      if (anisotropy > 1e-4) {
-        bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+    let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
+    let clearcoatWeight = max(clearcoat, 0.0);
+    let sheenWeight = max(sheen, 0.0);
+    // Transmissive dielectrics use the same normalized source-lobe mixture as
+    // opaque materials: the base lobe is the Fresnel reflect/refract partition,
+    // while clearcoat and sheen remain additive same-side reflection lobes.
+    let xiLobe = rand_f32(rng) * lobeWeightSum;
+    if (xiLobe < 1.0) {
+      let cosThetaI = abs(dot(-incomingDir, normal));
+      let R = frDielectric(cosThetaI, ior);  // PBR4e §9.3 FrDielectric
+      let xiBase = xiLobe;
+      let frontFace = dot(incomingDir, hitNormal) < 0.0;
+      if (xiBase < R) {
+        // Fresnel-weighted specular reflection branch.
+        // frDielectric returns 1.0 for TIR, so TIR is handled automatically
+        // (the refract branch is never taken when R == 1).
+        let wo = -incomingDir; // eye-side direction
+        result.newRayOrigin = hitPos + normal * 1e-3;
+        // Item 7 — use anisotropic sampler when anisotropy > 0.
+        var bs: BsdfSample;
+        if (anisotropy > 1e-4) {
+          bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+        } else {
+          bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+        }
+        result.sampledDir = bs.wi;
+        result.newRayDir = bs.wi;
+        result.sampleAllowsAreaMis = true;
+        // MC estimator for VNDF sampling of the GGX BRDF (Heitz 2018):
+        //   f·cosθ / p_VNDF = [D·G·F / (4·NdotV·NdotL)] · NdotL
+        //                    / [D·G1(wo) / (4·NdotV)]
+        //                    = F · G1(wi)
+        // MC estimator: F · G1(wi) / R (same derivation for iso and aniso paths;
+        // only the G1 function differs). nDotL = dot(n, wi).
+        let nDotL = max(dot(normal, result.sampledDir), 0.0);
+        var g1Wi: f32;
+        if (anisotropy > 1e-4) {
+          let axes = computeAnisotropicAxes(max(roughness * roughness, 1e-3), anisotropy);
+          let wiT = dot(result.sampledDir, tanT);
+          let wiB = dot(result.sampledDir, tanB);
+          g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), axes.x, axes.y);
+        } else {
+          g1Wi = smithG1(nDotL, roughness);
+        }
+        // B9 — multiscatter energy boost on the sampled specular reflection. The
+        // VNDF sampler covers single-scatter only; scale by the Kulla-Conty factor
+        // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
+        // multi-bounce energy (1 at low roughness → unchanged smooth surfaces).
+        let nDotVcc = max(dot(normal, wo), 0.0);
+        let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
+        result.throughputMul = fresnel * g1Wi * msBoost * lobeWeightSum / max(R, 1e-4);
       } else {
-        bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+        // Fresnel-weighted refraction branch — the only branch that crosses the
+        // surface, so it is where the volumetric random walk enters / exits the
+        // medium (WS4). A front-face refraction of a translucent dielectric
+        // enters the medium; a back-face refraction exits it.
+        let eta = select(ior, 1.0 / ior, frontFace);
+        let refr = refract(incomingDir, normal, eta);
+        let outDir = safe_normalize(refr);
+        let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
+        result.newRayOrigin = hitPos + offsetN * 1e-3;
+        result.sampledDir = outDir;
+        result.newRayDir = outDir;
+        // B10 — physical refraction transmittance. The energy partition is already
+        // Fresnel-consistent: the refraction branch carries probability (1 − R) and
+        // the throughput divides by it, so a clear (white) dielectric transmits 1·
+        // (1 − R)/(1 − R) = 1 — no arbitrary tint. The SURFACE transmittance colour
+        // is the material's baseColor (the dielectric's interface transmission
+        // colour, e.g. tinted glass) — NOT the old phenomenological
+        // mix(vec3(1), baseColor, 0.15) which faded any glass 85 % toward white and
+        // hid its colour. Bulk Beer-Lambert μ(λ) absorption (the physically-correct
+        // path-length-dependent colouring of a participating medium) is applied
+        // SEPARATELY in the kernel's transmissive block / volumetric walk; this
+        // factor is the thin-interface transmittance only. In spectral mode
+        // baseColor is the scalar Jakob-Hanika reflectance S(λ), so the surface
+        // transmittance is genuinely wavelength-resolved here too.
+        //
+        // η² radiance scaling: the symmetric BSDF (light/eye) requires the radiance
+        // to scale by (η_t/η_i)² across a refraction (PBR4e §9.5.2, eq. 9.13 — the
+        // "non-symmetry due to refraction" factor). We DELIBERATELY OMIT it: this is
+        // a UNIDIRECTIONAL eye-path tracer where the camera measures radiance and
+        // the radiance-scaling factor cancels for a closed light↔eye round trip
+        // through equal media (entering then exiting the same glass), which is the
+        // overwhelmingly common case (a glass object in air). Including it on only
+        // one crossing would over/under-brighten enclosed glass; the BDPT light
+        // subpath (the bidirectional consumer that WOULD need it) has its own
+        // medium accounting. Ref: PBR4e §9.5.2; Veach 1997 §5 (importance vs.
+        // radiance transport asymmetry). This is the same decision the pt-webgl2
+        // and walkaround dielectric BSDFs make.
+        result.throughputMul = baseColor * thinFilmTransmitTint * lobeWeightSum / max(1.0 - R, 1e-4);
+        result.enteredMedium = isTranslucent && frontFace;
+        result.exitedMedium = isTranslucent && !frontFace;
       }
+    } else if (xiLobe < 1.0 + clearcoatWeight) {
+      let wo = -incomingDir;
+      var ccTanT: vec3f;
+      var ccTanB: vec3f;
+      buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
+      result.newRayOrigin = hitPos + clearcoatNormal * 1e-3;
+      let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
+      result.sampledDir = bsCc.wi;
+      result.newRayDir = bsCc.wi;
+      result.sampleAllowsAreaMis = true;
+      let nDotCc = max(dot(clearcoatNormal, result.sampledDir), 0.0);
+      let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
+      let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;
+      let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
+      result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
+    } else {
+      result.newRayOrigin = hitPos + normal * 1e-3;
+      let bs = cosineHemisphereSample(rng, normal);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
       result.sampleAllowsAreaMis = true;
-      // MC estimator for VNDF sampling of the GGX BRDF (Heitz 2018):
-      //   f·cosθ / p_VNDF = [D·G·F / (4·NdotV·NdotL)] · NdotL
-      //                    / [D·G1(wo) / (4·NdotV)]
-      //                    = F · G1(wi)
-      // MC estimator: F · G1(wi) / R (same derivation for iso and aniso paths;
-      // only the G1 function differs). nDotL = dot(n, wi).
-      let nDotL = max(dot(normal, result.sampledDir), 0.0);
-      var g1Wi: f32;
-      if (anisotropy > 1e-4) {
-        let axes = computeAnisotropicAxes(max(roughness * roughness, 1e-3), anisotropy);
-        let wiT = dot(result.sampledDir, tanT);
-        let wiB = dot(result.sampledDir, tanB);
-        g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), axes.x, axes.y);
-      } else {
-        g1Wi = smithG1(nDotL, roughness);
-      }
-      // B9 — multiscatter energy boost on the sampled specular reflection. The
-      // VNDF sampler covers single-scatter only; scale by the Kulla-Conty factor
-      // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
-      // multi-bounce energy (1 at low roughness → unchanged smooth surfaces).
-      let nDotVcc = max(dot(normal, wo), 0.0);
-      let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
-      result.throughputMul = fresnel * g1Wi * msBoost / max(R, 1e-4);
-    } else {
-      // Fresnel-weighted refraction branch — the only branch that crosses the
-      // surface, so it is where the volumetric random walk enters / exits the
-      // medium (WS4). A front-face refraction of a translucent dielectric
-      // enters the medium; a back-face refraction exits it.
-      let eta = select(ior, 1.0 / ior, frontFace);
-      let refr = refract(incomingDir, normal, eta);
-      let outDir = safe_normalize(refr);
-      let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
-      result.newRayOrigin = hitPos + offsetN * 1e-3;
-      result.sampledDir = outDir;
-      result.newRayDir = outDir;
-      // B10 — physical refraction transmittance. The energy partition is already
-      // Fresnel-consistent: the refraction branch carries probability (1 − R) and
-      // the throughput divides by it, so a clear (white) dielectric transmits 1·
-      // (1 − R)/(1 − R) = 1 — no arbitrary tint. The SURFACE transmittance colour
-      // is the material's baseColor (the dielectric's interface transmission
-      // colour, e.g. tinted glass) — NOT the old phenomenological
-      // mix(vec3(1), baseColor, 0.15) which faded any glass 85 % toward white and
-      // hid its colour. Bulk Beer-Lambert μ(λ) absorption (the physically-correct
-      // path-length-dependent colouring of a participating medium) is applied
-      // SEPARATELY in the kernel's transmissive block / volumetric walk; this
-      // factor is the thin-interface transmittance only. In spectral mode
-      // baseColor is the scalar Jakob-Hanika reflectance S(λ), so the surface
-      // transmittance is genuinely wavelength-resolved here too.
-      //
-      // η² radiance scaling: the symmetric BSDF (light/eye) requires the radiance
-      // to scale by (η_t/η_i)² across a refraction (PBR4e §9.5.2, eq. 9.13 — the
-      // "non-symmetry due to refraction" factor). We DELIBERATELY OMIT it: this is
-      // a UNIDIRECTIONAL eye-path tracer where the camera measures radiance and
-      // the radiance-scaling factor cancels for a closed light↔eye round trip
-      // through equal media (entering then exiting the same glass), which is the
-      // overwhelmingly common case (a glass object in air). Including it on only
-      // one crossing would over/under-brighten enclosed glass; the BDPT light
-      // subpath (the bidirectional consumer that WOULD need it) has its own
-      // medium accounting. Ref: PBR4e §9.5.2; Veach 1997 §5 (importance vs.
-      // radiance transport asymmetry). This is the same decision the pt-webgl2
-      // and walkaround dielectric BSDFs make.
-      result.throughputMul = baseColor * thinFilmTransmitTint / max(1.0 - R, 1e-4);
-      result.enteredMedium = isTranslucent && frontFace;
-      result.exitedMedium = isTranslucent && !frontFace;
+      let nDotSh = max(dot(normal, result.sampledDir), 0.0);
+      let shPdf = bs.pdf;
+      let shDensity = (sheenWeight / lobeWeightSum) * shPdf;
+      let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);
+      result.throughputMul = shBrdf * nDotSh / max(shDensity, 1e-8);
     }
     return result;
   }
