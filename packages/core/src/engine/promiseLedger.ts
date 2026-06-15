@@ -716,10 +716,10 @@ const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
 
 /** pt-webgl2 — primitive castShadow rides the fork integrator's shadow-ray
  *  continuation gate (castShadow:false surfaces are transparent to shadow
- *  rays) → 'native'. Emitter castShadow is honored for every analytic NEE
- *  light (rect/disc/spot/point/directional via the s5.g lane); the mesh-area
- *  triangle-light NEE strategy and the forward/BDPT paths do not consume it →
- *  'approximate'. */
+ *  rays) → 'native'. Emitter castShadow is honored for analytic NEE lights
+ *  (rect/disc/spot/point/directional via the s5.g lane) and mesh-area
+ *  triangle-light NEE (uMeshLights s5.g); the off-default forward/BDPT paths
+ *  do not consume it → 'approximate'. */
 const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'approximate',

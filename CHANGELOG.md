@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 mesh-area emitter shadows, 2026-06-15)
+
+- **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. The promise ledger remains `approximate` until forward/BDPT residual paths consume the same flag.
+
 ### Added (walkaround bump maps, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` bump-map visible-normal perturbation:** readable `bumpMap` handles now ride the material atlas as linear height fields with uv0/uv1, wrap, and texture-transform metadata preserved. `bumpScale` is stored in atlas metadata, and `shade.wgsl` applies a finite-difference height-gradient perturbation after normal-map application. The promise ledger grades these rows `approximate`, not `native`, because ReSTIR/GI candidate PDFs and payloads still use the base visible-normal path.

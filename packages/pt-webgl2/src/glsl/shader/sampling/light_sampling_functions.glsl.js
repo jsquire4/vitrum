@@ -35,8 +35,7 @@ export const light_sampling_functions = /* glsl */`
 		// P(chosen light | NEE chose the discrete lights branch). Uniform sampling uses 1/count.
 		float discretePdf;
 		// SHADOW-01 — 1.0 when the source emitter set castShadow:false (skip the
-		// NEE shadow test for this light); 0.0 default. Mesh-area triangle lights
-		// always carry 0.0 (flag not represented in the uMeshLights slot).
+		// NEE shadow test for this light); 0.0 default.
 		float castShadowDisabled;
 
 	};
@@ -178,7 +177,8 @@ export const light_sampling_functions = /* glsl */`
 	//   s1 = (radiance.rgb, 0)
 	//   s2 = (v1.xyz, 0)
 	//   s3 = (v2.xyz, triArea)
-	struct MeshTriLight { vec3 v0; vec3 v1; vec3 v2; vec3 radiance; float area; };
+	//   s5.g = castShadowDisabled
+	struct MeshTriLight { vec3 v0; vec3 v1; vec3 v2; vec3 radiance; float area; float castShadowDisabled; };
 
 	MeshTriLight readMeshTriLight( sampler2D tex, uint index ) {
 		uint i = index * 6u;
@@ -186,12 +186,14 @@ export const light_sampling_functions = /* glsl */`
 		vec4 s1 = texelFetch1D( tex, i + 1u );
 		vec4 s2 = texelFetch1D( tex, i + 2u );
 		vec4 s3 = texelFetch1D( tex, i + 3u );
+		vec4 s5 = texelFetch1D( tex, i + 5u );
 		MeshTriLight t;
 		t.v0 = s0.xyz;
 		t.radiance = s1.rgb;
 		t.v1 = s2.xyz;
 		t.v2 = s3.xyz;
 		t.area = s3.a;
+		t.castShadowDisabled = s5.g;
 		return t;
 	}
 
@@ -208,8 +210,6 @@ export const light_sampling_functions = /* glsl */`
 		rec.pdf = 0.0;
 		rec.discretePdf = 1.0;
 		rec.type = TRI_AREA_LIGHT_TYPE;
-		// SHADOW-01 — mesh-area emitter castShadow is NOT represented in the
-		// uMeshLights slot (documented 'approximate' on the ledger row): always 0.
 		rec.castShadowDisabled = 0.0;
 		if ( meshLightCount == 0u || totalEmissiveArea <= 0.0 ) return rec;
 
@@ -223,6 +223,7 @@ export const light_sampling_functions = /* glsl */`
 		}
 
 		MeshTriLight tri = readMeshTriLight( meshLights, chosen );
+		rec.castShadowDisabled = tri.castShadowDisabled;
 
 		// Uniform-area barycentric sample on the chosen triangle.
 		float su = sqrt( max( ruv.y, 0.0 ) );

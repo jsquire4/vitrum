@@ -35,7 +35,8 @@
 //   s1 = (radiance.rgb = color*intensity, 0)
 //   s2 = (v1.xyz, 0)
 //   s3 = (v2.xyz, triArea)          — geometric area |(v1-v0)×(v2-v0)|/2
-// (s4/s5 unused — TRI_AREA reads only s0..s3, like rect/disc.)
+//   s4 = (0, 0, 0, 0)
+//   s5 = (0, castShadowDisabled, 0, 0) — s5.g mirrors analytic light slots
 
 import type { Scene, SceneNodeId, Vec3 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
@@ -78,14 +79,20 @@ function length(a: Vec3): number {
  * @param scene   the capability-filtered scene (its `mesh-area` emitters drive this)
  * @param merged  the world-space merged tri stream (geometry source via meshVertexRanges)
  */
-export function packMeshAreaLights(scene: Scene, merged: WorldSpaceMergeResult): MeshAreaLightsData {
-  const radianceByMesh = new Map<SceneNodeId, Vec3>();
+export function packMeshAreaLights(
+  scene: Scene,
+  merged: WorldSpaceMergeResult,
+): MeshAreaLightsData {
+  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }>();
   for (const e of scene.emitters) {
     if (e.kind === 'mesh-area') {
-      radianceByMesh.set(e.meshId, [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity]);
+      emitterByMesh.set(e.meshId, {
+        radiance: [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity],
+        castShadowDisabled: e.castShadow === false ? 1 : 0,
+      });
     }
   }
-  if (radianceByMesh.size === 0) {
+  if (emitterByMesh.size === 0) {
     return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0 };
   }
 
@@ -93,12 +100,19 @@ export function packMeshAreaLights(scene: Scene, merged: WorldSpaceMergeResult):
   const idx = merged.mergedIndices;
   const pos = merged.positions;
 
-  // Collect (v0,v1,v2,radiance,area) for every triangle of every emissive mesh.
-  const tris: { v0: Vec3; v1: Vec3; v2: Vec3; rad: Vec3; area: number }[] = [];
+  // Collect (v0,v1,v2,radiance,area,shadow flag) for every triangle of every emissive mesh.
+  const tris: {
+    v0: Vec3;
+    v1: Vec3;
+    v2: Vec3;
+    rad: Vec3;
+    area: number;
+    castShadowDisabled: number;
+  }[] = [];
   let totalEmissiveArea = 0;
   for (const range of merged.meshVertexRanges) {
-    const rad = radianceByMesh.get(range.name);
-    if (rad == null) continue;
+    const emitter = emitterByMesh.get(range.name);
+    if (emitter == null) continue;
     for (let t = 0; t < range.triCount; t += 1) {
       const tri = range.triStart + t;
       const i0 = idx[tri * 3] ?? 0;
@@ -109,7 +123,14 @@ export function packMeshAreaLights(scene: Scene, merged: WorldSpaceMergeResult):
       const v2 = v3(pos, i2, stride);
       const area = 0.5 * length(cross(sub(v1, v0), sub(v2, v0)));
       if (area <= 0) continue; // degenerate triangle — contributes no light
-      tris.push({ v0, v1, v2, rad, area });
+      tris.push({
+        v0,
+        v1,
+        v2,
+        rad: emitter.radiance,
+        area,
+        castShadowDisabled: emitter.castShadowDisabled,
+      });
       totalEmissiveArea += area;
     }
   }
@@ -122,16 +143,30 @@ export function packMeshAreaLights(scene: Scene, merged: WorldSpaceMergeResult):
   const dim = Math.ceil(Math.sqrt(pixelCount));
   const data = new Float32Array(dim * dim * 4);
   for (let i = 0; i < tris.length; i += 1) {
-    const { v0, v1, v2, rad, area } = tris[i]!;
+    const { v0, v1, v2, rad, area, castShadowDisabled } = tris[i]!;
     const base = i * TRI_LIGHT_PIXELS * 4;
     // s0: v0 / type
-    data[base + 0] = v0[0]; data[base + 1] = v0[1]; data[base + 2] = v0[2]; data[base + 3] = TRI_AREA_LIGHT_TYPE;
+    data[base + 0] = v0[0];
+    data[base + 1] = v0[1];
+    data[base + 2] = v0[2];
+    data[base + 3] = TRI_AREA_LIGHT_TYPE;
     // s1: radiance / 0
-    data[base + 4] = rad[0]; data[base + 5] = rad[1]; data[base + 6] = rad[2]; data[base + 7] = 0;
+    data[base + 4] = rad[0];
+    data[base + 5] = rad[1];
+    data[base + 6] = rad[2];
+    data[base + 7] = 0;
     // s2: v1 / 0
-    data[base + 8] = v1[0]; data[base + 9] = v1[1]; data[base + 10] = v1[2]; data[base + 11] = 0;
+    data[base + 8] = v1[0];
+    data[base + 9] = v1[1];
+    data[base + 10] = v1[2];
+    data[base + 11] = 0;
     // s3: v2 / triArea
-    data[base + 12] = v2[0]; data[base + 13] = v2[1]; data[base + 14] = v2[2]; data[base + 15] = area;
+    data[base + 12] = v2[0];
+    data[base + 13] = v2[1];
+    data[base + 14] = v2[2];
+    data[base + 15] = area;
+    // s5.g: castShadowDisabled (s4 and other s5 channels remain zero).
+    data[base + 21] = castShadowDisabled;
   }
 
   return { data, dim, triLightCount: tris.length, totalEmissiveArea };

@@ -155,6 +155,12 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('float meshAreaLightForwardPdf(');
     // The forward-emission MIS site and the NEE branch both reference the count gate.
     expect(src).toContain('uMeshLightCount != 0u');
+    // Mesh-area emitters use the same s5.g shadow-disable lane as analytic lights.
+    expect(src).toContain('t.castShadowDisabled = s5.g;');
+    expect(src).toContain('rec.castShadowDisabled = tri.castShadowDisabled;');
+    expect(src).toContain(
+      '( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor ) )',
+    );
   });
 
   it('D11: global homogeneous-medium uniforms and march branch are not in the active shader', () => {

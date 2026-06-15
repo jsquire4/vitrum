@@ -92,4 +92,31 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.dim).toBeGreaterThanOrEqual(4);
     expect(out.data!.length).toBe(out.dim * out.dim * 4);
   });
+
+  it('packs mesh-area emitter castShadow:false into the shared s5.g shadow-disable lane', () => {
+    const out = packMeshAreaLights(
+      sceneWith([
+        {
+          kind: 'mesh-area',
+          id: 'm',
+          meshId: 'panel',
+          color: [1, 1, 1],
+          intensity: 1,
+          castShadow: false,
+        },
+      ]),
+      fakeMerged(),
+    );
+    expect(out.triLightCount).toBe(2);
+    const d = out.data!;
+    expect(d[21]).toBe(1);
+    expect(d[TRI_LIGHT_PIXELS * 4 + 21]).toBe(1);
+
+    const defaultOut = packMeshAreaLights(
+      sceneWith([{ kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 1 }]),
+      fakeMerged(),
+    );
+    expect(defaultOut.data![21]).toBe(0);
+    expect(defaultOut.data![TRI_LIGHT_PIXELS * 4 + 21]).toBe(0);
+  });
 });

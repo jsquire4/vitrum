@@ -87,11 +87,11 @@ export const direct_light_contribution_function = /*glsl*/`
 			Ray lightRay;
 			lightRay.origin = rayOrigin;
 			lightRay.direction = lightRec.direction;
-			vec3 attenuatedColor;
+			vec3 attenuatedColor = vec3( 1.0 );
 			if (
 				lightRec.pdf > 0.0 &&
 				isDirectionValid( lightRec.direction, surf.normal, surf.faceNormal ) &&
-				! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor )
+				( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor ) )
 			) {
 
 				vec3 sampleColor;
