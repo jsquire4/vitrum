@@ -364,6 +364,31 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning for fractional alpha blend approximation', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const transparentMaterial = {
+        baseColor: [0.6, 0.6, 0.6] as [number, number, number],
+        roughness: 0.35,
+        metallic: 0,
+        alphaMode: 'blend' as const,
+        opacity: 0.5,
+      };
+
+      engine.updatePrimitive('mesh-a', { material: transparentMaterial });
+      engine.updatePrimitive('mesh-a', { material: transparentMaterial });
+
+      const alphaWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation',
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
+      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

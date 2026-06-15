@@ -840,6 +840,27 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnApproximateAlphaBlendPrimitiveIds(
+    primitiveIds: readonly string[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveIds.length === 0) return;
+    const key = primitiveIds.join(',');
+    if (this._warnedAlphaBlendApproximationIds.has(key)) return;
+    this._warnedAlphaBlendApproximationIds.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.alpha-blend-approximation',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: fractional alphaMode:'blend' ` +
+        `is approximated with deterministic stochastic alpha coverage; sorted ` +
+        `or weighted transparent composition remains unsupported; primitives: ${primitiveIds.join(', ')}.`,
+      details: { primitiveIds },
+    });
+  }
+
   /**
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
@@ -895,23 +916,7 @@ export class HybridEngine implements Engine {
         readonly material?: Record<string, unknown>;
       }>,
     );
-    if (alphaBlendApproxIds.length > 0) {
-      const key = alphaBlendApproxIds.join(',');
-      if (!this._warnedAlphaBlendApproximationIds.has(key)) {
-        this._warnedAlphaBlendApproximationIds.add(key);
-        this._warn({
-          code: 'walkaround-hybrid.alpha-blend-approximation',
-          backend: 'walkaround-hybrid',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/walkaround-hybrid] setScene: fractional alphaMode:'blend' ` +
-            `is approximated with deterministic stochastic alpha coverage; sorted ` +
-            `or weighted transparent composition remains unsupported; primitives: ${alphaBlendApproxIds.join(', ')}.`,
-          details: { primitiveIds: alphaBlendApproxIds },
-        });
-      }
-    }
+    this._warnApproximateAlphaBlendPrimitiveIds(alphaBlendApproxIds, 'setScene');
 
     // SHADOW-01 — primitive castShadow remains approximate because GI-side
     // occlusion rays still see castShadow:false geometry. Emitter castShadow is
@@ -1229,6 +1234,9 @@ export class HybridEngine implements Engine {
       coreSceneSuppliesMeshes: this._coreSceneSuppliesMeshes(),
       warnUnconsumedMaterialFields: (fields) => {
         this._warnUnconsumedMaterialFields(fields, 'updatePrimitive');
+      },
+      warnApproximateAlphaBlendPrimitiveIds: (primitiveIds) => {
+        this._warnApproximateAlphaBlendPrimitiveIds(primitiveIds, 'updatePrimitive');
       },
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {

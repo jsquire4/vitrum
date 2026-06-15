@@ -85,7 +85,10 @@ import {
   packBVHEmissiveLeFromCore,
   packBVHRoughMetalFromCore,
 } from './restir/packingHelpers.js';
-import { collectUnconsumedMaterialFieldsForMaterial } from './restir/consumedMaterialFields.js';
+import {
+  collectApproximateAlphaBlendPrimitiveIds,
+  collectUnconsumedMaterialFieldsForMaterial,
+} from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
@@ -376,6 +379,8 @@ export interface PrimitiveUpdateContext {
   /** Emits backend-honesty warnings for material-only patches that carry fields
    *  the walkaround material packer does not consume. */
   readonly warnUnconsumedMaterialFields?: (fields: readonly string[]) => void;
+  /** Emits backend-honesty warnings for fractional alpha-blend material patches. */
+  readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -1217,8 +1222,17 @@ export function materialPatch(
     );
   }
   const nextMaterial = patch.material;
+  const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
+  const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
   ctx.warnUnconsumedMaterialFields?.(
     collectUnconsumedMaterialFieldsForMaterial(nextMaterial as unknown as Record<string, unknown>),
+  );
+  ctx.warnApproximateAlphaBlendPrimitiveIds?.(
+    collectApproximateAlphaBlendPrimitiveIds([{
+      id,
+      kind: prevPrim?.kind ?? 'mesh',
+      material: nextMaterial as unknown as Record<string, unknown>,
+    }]),
   );
 
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
@@ -1234,8 +1248,6 @@ export function materialPatch(
     );
   }
 
-  const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
-  const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
   const prevMaterial =
     prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
   const prevTransmission = vitrumMaterialTransmission(prevMaterial);

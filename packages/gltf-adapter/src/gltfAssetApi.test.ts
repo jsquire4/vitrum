@@ -1410,6 +1410,70 @@ describe('loadGltfForEngine', () => {
     expect(message).not.toContain('specularGlossinessTexture.glossinessAlpha');
   });
 
+  it('attaches the decoded spec-gloss roughness bake to the engine scene in best-effort mode', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn() };
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 2,
+      height: 1,
+      data: new Uint8Array([
+        255, 0, 0, 128,
+        0, 255, 0, 64,
+      ]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+      decodePixels,
+    });
+
+    expect(result.attached).toBe(true);
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(2);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeReport.entries.map((entry) => entry.materialField).sort()).toEqual([
+      'roughnessMap',
+      'specularColorMap',
+    ]);
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
+    expect(engine.setScene).toHaveBeenCalledWith(result.controller.scene);
+
+    const attachedScene = engine.setScene.mock.calls[0]![0] as Scene;
+    const primitive = attachedScene.primitives[0] as MeshPrimitive;
+    const specular = primitive.material.specularColorMap as TextureRef;
+    const roughness = primitive.material.roughnessMap as TextureRef;
+    expect(roughness.handle).not.toBe(specular.handle);
+    expect(roughness.texCoord).toBe(1);
+    expect(roughness.transform).toEqual({
+      offset: [0.25, 0.5],
+      scale: [2, 3],
+      rotation: 0.125,
+    });
+
+    const handle = roughness.handle as { data: Float32Array; __vitrum_hint__: unknown };
+    const first = 1 - 0.5 * (128 / 255);
+    const second = 1 - 0.5 * (64 / 255);
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(Array.from(handle.data.slice(0, 4))).toEqual([
+      expect.closeTo(first),
+      expect.closeTo(first),
+      expect.closeTo(first),
+      1,
+    ]);
+    expect(Array.from(handle.data.slice(4, 8))).toEqual([
+      expect.closeTo(second),
+      expect.closeTo(second),
+      expect.closeTo(second),
+      1,
+    ]);
+  });
+
   it('rejects unsupported point/line primitive modes before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {

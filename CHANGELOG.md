@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Tests (glTF behavioral gate, 2026-06-15)
 
 - **One-call decoded glTF render gate:** `tools/behavioral-gate` now forces the `pt/gltf-textured-pbr` fixture through `loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear', decodePixels })`, asserts decoded texture counts and a backend-ready `textureDecodeReport`, verifies the engine attaches the decoded controller scene, and renders the decoded pt-webgpu asset.
+- **Spec-gloss roughness bake bridge pin:** `loadGltfForEngine()` now has a focused best-effort regression proving decoded `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.a` creates a generated CPU-linear `roughnessMap` and attaches that decoded scene to the engine, matching the existing direct `loadGltfAndDecodeTextures()` bake coverage.
 
 ### Added (glTF sampler metadata, 2026-06-15)
 
@@ -30,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (walkaround material diagnostics, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` unsupported material-field diagnostics:** analytic primitives now participate in the unconsumed-material scan before their render-scene mesh fallback, and `updatePrimitive(id, { material })` runs the same structured `walkaround-hybrid.unconsumed-material-fields` warning path as `setScene()`. Unsupported displacement fields remain unsupported, but no longer slip through analytic or material-only mutation paths silently.
+- **`@vitrum/walkaround-hybrid` fractional alpha-blend mutation diagnostics:** `updatePrimitive(id, { material })` now emits the same structured `walkaround-hybrid.alpha-blend-approximation` warning as `setScene()` when a material patch introduces fractional `alphaMode:'blend'`, so incremental material edits cannot silently bypass the sorted/weighted-transparency limitation.
 
 ### Tests (mutation observability, 2026-06-15)
 

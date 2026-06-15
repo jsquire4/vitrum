@@ -1364,7 +1364,10 @@ Evidence:
   NRC GI paths. The shared cast-shadow mask still skips scalar bit 2 for
   occlusion rays; fractional blend uses deterministic stochastic coverage and
   still emits `walkaround-hybrid.alpha-blend-approximation` because sorted or
-  weighted transparent composition remains open.
+  weighted transparent composition remains open. 2026-06-15 follow-up: the same
+  structured warning now fires for `updatePrimitive(id, { material })` patches
+  that mutate a primitive into fractional blend, so incremental glTF/controller
+  material edits cannot bypass the approximation diagnostic.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
   packs emissive maps as sRGB-decoded atlas layers with per-map
@@ -1508,9 +1511,15 @@ Closure:
   and backend-readiness diagnostics across the same material-map family. The
   follow-up fixed walkaround `thicknessMap` readiness drift and added a
   source-pathed `KHR_materials_dispersion` unsupported compatibility assertion.
+- The specular-glossiness texture-alpha bake is closed: the CPU-linear decode
+  path derives a `roughnessMap` from
+  `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.a` using
+  `1 - glossinessFactor * alpha`, preserves texCoord / transform / wrap
+  metadata, suppresses only the now-satisfied `glossinessAlpha` compatibility
+  issue, and now has both direct decode and `loadGltfForEngine()` attachment
+  tests.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
-  texture-bake handling for specular-glossiness texture alpha if exact legacy
-  parity is required, walkaround sorted/weighted transparent composition plus
+  walkaround sorted/weighted transparent composition plus
   displacement/spectral/layered/scattering promotion if those ever become
   walkaround goals, and backend material-consumption parity.
 
@@ -1572,7 +1581,9 @@ Status:
   and resize mutations; transform/positions/topology/add/remove still use
   rebuild-style behavior.
 - walkaround-hybrid now has a focused non-GPU seam test for transform, material,
-  emitter, environment, lighting, and resize behavior.
+  emitter, environment, lighting, resize behavior, unsupported material-field
+  diagnostics, and fractional alpha-blend diagnostics on incremental material
+  mutation.
 
 Remaining:
 - Full GPU/resource mutation matrix promotion still needs end-to-end tests where
