@@ -336,6 +336,52 @@ describe('loadGltfAsset', () => {
       }),
     ]);
   });
+
+  it('loadGltfAndDecodeTextures normalizes raw images when a pixel decoder is supplied', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 64, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(decodePixels.mock.calls[0]?.[1]).toMatchObject({
+      materialField: 'baseColorMap',
+      path: 'scene.primitives[0].material.baseColorMap',
+      colorSpace: 'srgb',
+      primitiveId: 'gltf-prim-0',
+      primitiveIndex: 0,
+    });
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeWarnings).toEqual([]);
+    expect(result.textureDecodeReport).toMatchObject({
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      rawImageCount: 0,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 1,
+    });
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const ref = primitive.material.baseColorMap as TextureRef;
+    const handle = ref.handle as { data: Float32Array; __vitrum_hint__: { colorSpace: string } };
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+    expect(handle.data[2]).toBeCloseTo(1);
+    expect(handle.data[3]).toBeCloseTo(128 / 255);
+  });
 });
 
 describe('decodeSceneTextures', () => {

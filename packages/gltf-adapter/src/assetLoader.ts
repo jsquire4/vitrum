@@ -19,6 +19,10 @@ import {
 } from './featureReport.js';
 import {
   buildTextureDecodeReport,
+  decodeSceneTextures,
+  type DecodeGltfTexturePixelsFn,
+  type DecodeSceneTextureDiagnostic,
+  type DecodeSceneTexturesOptions,
   type GltfTextureDecodeReport,
 } from './texturePipeline.js';
 import {
@@ -69,6 +73,22 @@ export interface GltfAssetResult extends GltfToSceneResult {
   readonly textureDecodeReport: GltfTextureDecodeReport;
 }
 
+export interface LoadGltfAndDecodeTexturesOptions extends LoadGltfAssetOptions {
+  readonly textureTarget?: DecodeSceneTexturesOptions['target'];
+  readonly decodePixels?: DecodeGltfTexturePixelsFn;
+  readonly maxTextureSize?: number;
+  readonly warnOnNpotRepeatWrap?: boolean;
+  readonly onTextureDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+  readonly onTextureWarning?: (message: string) => void;
+}
+
+export interface GltfDecodedAssetResult extends GltfAssetResult {
+  readonly decodedTextureCount: number;
+  readonly unchangedTextureCount: number;
+  readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[];
+  readonly textureDecodeWarnings: readonly string[];
+}
+
 interface ParsedInput {
   readonly gltf: GltfJson;
   readonly baseUri?: string;
@@ -117,9 +137,26 @@ export async function loadGltfAsset(
 
 export async function loadGltfAndDecodeTextures(
   input: GltfAssetInput,
-  options: LoadGltfAssetOptions = {},
-): Promise<GltfAssetResult> {
-  return loadGltfAsset(input, options);
+  options: LoadGltfAndDecodeTexturesOptions = {},
+): Promise<GltfDecodedAssetResult> {
+  const asset = await loadGltfAsset(input, options);
+  const decoded = await decodeSceneTextures(asset.scene, {
+    target: options.textureTarget ?? 'cpu-linear',
+    ...(options.decodePixels ? { decodePixels: options.decodePixels } : {}),
+    ...(options.maxTextureSize !== undefined ? { maxTextureSize: options.maxTextureSize } : {}),
+    ...(options.warnOnNpotRepeatWrap !== undefined ? { warnOnNpotRepeatWrap: options.warnOnNpotRepeatWrap } : {}),
+    ...(options.onTextureDiagnostic ? { onDiagnostic: options.onTextureDiagnostic } : {}),
+    ...(options.onTextureWarning ? { onWarning: options.onTextureWarning } : {}),
+  });
+  return {
+    ...asset,
+    scene: decoded.scene,
+    textureDecodeReport: decoded.report,
+    decodedTextureCount: decoded.decodedCount,
+    unchangedTextureCount: decoded.unchangedCount,
+    textureDecodeDiagnostics: decoded.diagnostics,
+    textureDecodeWarnings: decoded.warnings,
+  };
 }
 
 async function parseInput(

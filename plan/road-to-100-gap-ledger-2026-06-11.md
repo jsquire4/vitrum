@@ -352,6 +352,12 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   target preserves opaque handles for backend upload. Built-in image transcoders,
   automatic downsampling/mip generation, and remaining backend map consumption are
   still tracked outside this API bridge.
+  Follow-up closure (2026-06-14): `loadGltfAndDecodeTextures()` now calls
+  `decodeSceneTextures()` directly when a host `decodePixels` hook is supplied
+  and returns `decodedTextureCount`, `unchangedTextureCount`,
+  `textureDecodeDiagnostics`, `textureDecodeWarnings`, and the refreshed
+  `textureDecodeReport`; it is no longer a report-only alias for
+  `loadGltfAsset()`.
 - The seventeenth arbitrary-glTF geometry slice landed in `@vitrum/gltf-adapter`:
   normal/bump/clearcoat-normal mapped primitives that omit authored `TANGENT`
   now synthesize per-vertex xyzw tangents from POSITION/NORMAL/TEXCOORD_0 during
@@ -752,16 +758,23 @@ engineContract.test.ts):
   pt-webgpu off-default-integrator coverage, mesh-area emitter flag on
   pt-webgl2 — promote rows with renderer A/B evidence when implemented.
 
-### WEBGL2-02 - pt-webgl2 procedural sky is unsupported
+### WEBGL2-02 - CLOSED 2026-06-14 - pt-webgl2 procedural sky is approximate, not unsupported
 
-Evidence:
-- Core has `procedural-sky`.
-- pt-webgl2 capability set lists only `none` and `hdri`.
-- Non-HDRI environment builds an empty environment payload.
+Verified closure:
+- `packages/pt-webgl2/src/scene/equirectHdrInfo.ts` imports
+  `bakePreethamSkyEquirect()` and converts `env.kind === 'procedural-sky'`
+  into the existing equirect HDRI/CDF path.
+- `packages/pt-webgl2/src/capabilities.ts` lists `procedural-sky` in
+  `PT_WEBGL2_SUPPORT.supportedEnvironmentKinds`.
+- `packages/core/src/engine/promiseLedger.ts` grades pt-webgl2
+  `supportDetails.environments['procedural-sky']` as `approximate`.
+- `packages/pt-webgl2/src/scene/equirectHdrInfo.test.ts` pins the procedural
+  bake path, zero-intensity black output, and sun-direction maximum.
 
-Closure:
-- Implement procedural sky sampling or bake procedural sky to an env map.
-- Advertise support only after reference renders pass.
+Residual:
+- The backend uses a finite baked Preetham equirect atlas rather than analytic
+  sky evaluation in the tracing shader, so the correct ledger grade remains
+  `approximate` until/unless an analytic shader path lands.
 
 ### WEBGL2-03 - pt-webgl2 denoiser option degrades to no denoise — CODE CLOSED
 

@@ -20,6 +20,8 @@ export type {
   GltfAssetFetchResponse,
   GltfAssetInput,
   GltfAssetResult,
+  GltfDecodedAssetResult,
+  LoadGltfAndDecodeTexturesOptions,
   LoadGltfAssetOptions,
 } from './assetLoader.js';
 export {

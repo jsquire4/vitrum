@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added (glTF proof coverage, 2026-06-14)
 
 - **`@vitrum/engine` + `@vitrum/gltf-adapter`:** progressive glTF loading tests now assert `textureDecodeReport` and warning passthrough, while the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()` without losing material-map report entries.
+- **`@vitrum/gltf-adapter`:** `loadGltfAndDecodeTextures()` now invokes `decodeSceneTextures()` when a host `decodePixels` hook is supplied, returning decoded/unchanged texture counts, structured diagnostics/warnings, and a refreshed backend-readiness report instead of acting as a report-only alias.
 
 ### Added (pt-webgl2 resize API, 2026-06-14)
 

@@ -68,7 +68,7 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 | ----------------------------- | ------------------------------------------------------ |
 | `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath), `CameraLike` |
 | `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats`, `EngineError` types; `Engine.onError`, `Engine.captureFrame`, `Engine.pickPrimitive` |
-| `@vitrum/gltf-adapter`        | `gltfToScene(buffer, opts?)→Promise<GltfToSceneResult>` — glTF 2.0 / GLB ingestion, zero deps |
+| `@vitrum/gltf-adapter`        | `gltfToScene`, `loadGltfAsset`, `loadGltfAndDecodeTextures`, `analyzeGltfAsset` / backend ranking, `decodeSceneTextures`, `loadGltfForEngine`, `GltfSceneController` — glTF 2.0 / GLB ingestion, compatibility planning, texture decode diagnostics, and runtime animation/variant patches |
 | `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
 
 Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
