@@ -1399,6 +1399,14 @@ Closure:
   work, not helper plumbing: inverse/adjoint gradients and reference A/B /
   material-furnace promotion gates.
 
+Behavioral glTF proof note:
+- `tools/behavioral-gate/gate.mjs --filter gltf` now exercises the public
+  `loadGltfForEngine()` bridge for unlit, textured PBR, transmission, skinned
+  animation, and Draco mock fixtures before rendering them on the real
+  `pt-webgpu` lane. The injected patch-target asserts controller attachment via
+  `setScene()`, and the skinned-animation fixture now advances the controller
+  and requires an observable `updatePrimitive()` patch before render.
+
 ### GLTF-02 - Draco and meshopt compressed primitives
 
 Status:

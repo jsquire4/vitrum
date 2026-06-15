@@ -55,7 +55,7 @@
 import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-import { gltfToScene } from "@vitrum/gltf-adapter";
+import { loadGltfForEngine } from "@vitrum/gltf-adapter";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
@@ -468,7 +468,7 @@ function makeSkinnedAnimationGltfFixture() {
     0, 0, 0, 1,
     0, 0, 0.38268343, 0.92387953,
   ]), "VEC4", 5126, 4);
-  builder.gltf.nodes.push({ mesh, skin: 0 }, { name: "joint0" });
+  builder.gltf.nodes.push({ mesh, skin: 0, children: [1] }, { name: "joint0" });
   builder.gltf.skins = [{ joints: [1], inverseBindMatrices: ibm }];
   builder.gltf.animations = [{
     samplers: [{ input: times, output: rotations, interpolation: "LINEAR" }],
@@ -531,15 +531,40 @@ async function buildGltfFixtureScene(kind) {
     kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
       : kind === "draco-mock" ? makeDracoMockGltfFixture()
       : makeQuadGltfFixture(kind);
-  const result = await gltfToScene(fixture.gltf, {
+  const preparedScenes = [];
+  const primitivePatches = [];
+  const patchTarget = {
+    setScene(scene) {
+      preparedScenes.push(scene);
+    },
+    updatePrimitive(id, patch) {
+      primitivePatches.push({ id, patch });
+    },
+  };
+  const createEngine = async ({ scene, backend, asset }) => {
+    if (backend !== "pt-webgpu") {
+      throw new Error(`glTF behavioral gate selected unexpected backend "${backend}"`);
+    }
+    if (scene !== asset.scene) {
+      throw new Error("glTF behavioral gate createEngine received a scene that does not match asset.scene");
+    }
+    return patchTarget;
+  };
+  const result = await loadGltfForEngine(fixture.gltf, {
     buffers: fixture.buffers,
+    backend: "pt-webgpu",
+    createEngine,
     ...(fixture.decodeImage ? { decodeImage: fixture.decodeImage } : {}),
     ...(fixture.dracoDecode ? { dracoDecode: fixture.dracoDecode } : {}),
   });
-  if (result.scene.primitives.length === 0) {
+  if (!result.attached || preparedScenes.length !== 1) {
+    throw new Error("glTF behavioral gate did not exercise controller.attachEngine/setScene");
+  }
+  const importedScene = result.controller.scene;
+  if (importedScene.primitives.length === 0) {
     throw new Error(`glTF fixture "${kind}" imported no primitives`);
   }
-  const first = result.scene.primitives[0];
+  const first = importedScene.primitives[0];
   if (kind === "unlit" && first.material?.shadingModel !== "unlit") {
     throw new Error("glTF unlit fixture lost KHR_materials_unlit");
   }
@@ -551,14 +576,18 @@ async function buildGltfFixtureScene(kind) {
   }
   if (kind === "skinned-animation") {
     if (first.kind !== "skinned-mesh") throw new Error("glTF skinned fixture did not import a SkinnedMeshPrimitive");
-    if ((result.animations?.length ?? 0) === 0) throw new Error("glTF skinned fixture lost animation channels");
+    if ((result.asset.animations?.length ?? 0) === 0) throw new Error("glTF skinned fixture lost animation channels");
+    const frame = result.controller.advance(0.5);
+    if (frame.primitivePatches.length === 0 || primitivePatches.length === 0) {
+      throw new Error("glTF skinned fixture controller advance did not patch the attached engine");
+    }
   }
-  if (kind === "draco-mock" && result.warnings.some((w) => w.includes("KHR_draco_mesh_compression"))) {
-    throw new Error(`glTF Draco mock emitted compression warning: ${result.warnings.join(" | ")}`);
+  if (kind === "draco-mock" && result.asset.warnings.some((w) => w.includes("KHR_draco_mesh_compression"))) {
+    throw new Error(`glTF Draco mock emitted compression warning: ${result.asset.warnings.join(" | ")}`);
   }
 
   return {
-    ...result.scene,
+    ...result.controller.scene,
     emitters: [{
       kind: "rect-area", id: "gltf-gate-light",
       position: [0, 0.85, 0.45],

@@ -912,9 +912,12 @@ fixtures on the runnable `pt-webgpu` lane: unlit (`KHR_materials_unlit`),
 textured PBR (`baseColorTexture` through the decode hook), transmission glass
 (`KHR_materials_transmission`), skinned animation (skin + animation channel
 import), and Draco (mock `KHR_draco_mesh_compression` decoder).
-`tools/behavioral-gate/gate.mjs` asserts the imported feature survived
-conversion before booting the engine, uploading the scene, and requiring finite
-non-black output. `--filter gltf` provides the focused lane.
+`tools/behavioral-gate/gate.mjs` now prepares those fixtures through
+`loadGltfForEngine()` with an injected patch-target engine, asserts the
+controller attached and called `setScene()`, advances the skinned-animation
+controller and requires an `updatePrimitive()` patch, then boots the real
+renderer with the prepared scene and requires finite non-black output.
+`--filter gltf` provides the focused lane.
 
 Honesty boundary: on the WSL lavapipe adapter this lane runs through
 `pt-webgpu`'s lite tier because the adapter exposes 8 storage buffers / 4 storage
