@@ -505,6 +505,19 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     ]));
   });
 
+  it('scores KHR_materials_emissive_strength as supported scalar emissiveIntensity on every backend profile', () => {
+    const report = reportFor(extensionGlass());
+
+    expect(report.materials.materialFields).toContain('emissiveIntensity');
+    for (const profile of ['pt-webgl2', 'pt-webgpu', 'pt-webgpu-lite', 'walkaround-hybrid'] as const) {
+      const compatibility = evaluateGltfBackendProfileCompatibility(report, profile);
+      expect(compatibility.issues.some((issue) =>
+        issue.category === 'material' &&
+        issue.name === 'emissiveIntensity',
+      ), profile).toBe(false);
+    }
+  });
+
   it('detects skin, morph tangent, vertex color, uv1, and animation paths before import', () => {
     const report = reportFor(skinMorphAnimation());
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');

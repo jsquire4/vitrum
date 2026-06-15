@@ -30,6 +30,8 @@ import {
  * so the camera-visible glow Le and the NEE-sampled emitter radiance share one
  * source. Deliberately EXCLUDES the transmissive "sun-attenuated secondary
  * emitter" branch — that lives in {@link classifyTriangleEmitterCore}.
+ * A missing `emissiveIntensity` defaults to ×1, matching the core material
+ * entry adapter and the path-tracing backends.
  *
  * @param material a core `MaterialSpec`.
  * @returns `[r, g, b]` HDR radiance, or `null` for a non-emissive surface.
@@ -39,8 +41,8 @@ export function materialSpecEmissiveLe(
 ): [number, number, number] | null {
   const em = material.emissive;
   if (!em) return null;
-  const ei = material.emissiveIntensity;
-  if (!(ei !== undefined && ei > 0)) return null;
+  const ei = material.emissiveIntensity ?? 1;
+  if (!(ei > 0)) return null;
   if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
   return [em[0] * ei, em[1] * ei, em[2] * ei];
 }
