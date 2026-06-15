@@ -320,6 +320,45 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     expect(secondOut).not.toBeNull();
     expect(secondOut).not.toBe(hdr); // it's now the owned denoised texture
   });
+
+  it('falls back to raw HDR, reports a retryable failed state, and retries after dispatch-time OIDN failure', async () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+
+    const encoder = fakeEncoder();
+    const hdr = fakeTexture();
+    const ctx = fakeDispatchCtx(device, encoder, hdr, fakeTexture(), fakeTexture());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      denoiseFinal
+        .mockRejectedValueOnce(new Error('mock OIDN dispatch failure'))
+        .mockImplementationOnce(async (inputs: { color: Float32Array }) => new Float32Array(inputs.color));
+
+      const firstOut = d.dispatch(ctx);
+      expect(firstOut).toBe(hdr);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(d.state()).toEqual({
+        status: 'failed',
+        reason: 'OIDN inference cycle failed: mock OIDN dispatch failure',
+        retryable: true,
+      });
+      expect(device.queue.writeTexture).not.toHaveBeenCalled();
+
+      const retryOut = d.dispatch(ctx);
+      expect(retryOut).toBe(hdr);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(denoiseFinal).toHaveBeenCalledTimes(2);
+      expect(d.state()).toEqual({ status: 'ready' });
+      expect(device.queue.writeTexture).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe('OIDNFinalDenoiser.dispose', () => {

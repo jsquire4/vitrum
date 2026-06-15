@@ -234,10 +234,12 @@ buckets that the A–D framing was missing:**
   an artificial `maxBufferSize`. The H55 proof-gate residue is narrowed as well:
   `frameParamsSlotCrossCheck.test.ts` derives TS slot offsets from the WGSL struct, and
   `cpuTracerDriftTripwire.test.ts` now uses literal frozen WGSL function-body hashes
-  rather than live-computed "frozen" values. Remaining D10 infrastructure work: the
-  WebGPU WGSL/PASS_ORDER shader gate still stays explicit because it needs a WebGPU
-  adapter (items H53–H56 list the current priorities). M effort total; this is what
-  stops the next H1 from shipping green.
+  rather than live-computed "frozen" values. `oidnFinalDenoiser.test.ts` now pins
+  dispatch-time OIDN failure degradation on walkaround: raw HDR fallback remains visible,
+  state becomes retryable `failed`, and the next dispatch retries successfully. Remaining
+  D10 infrastructure work: the WebGPU WGSL/PASS_ORDER shader gate still stays explicit
+  because it needs a WebGPU adapter (items H53–H56 list the current priorities). M effort
+  total; this is what stops the next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
   casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b

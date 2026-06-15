@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/pt-webgpu` GPU stub hardening:** the size-validating mock `GPUDevice` now records buffer usage flags and bind-group layouts, rejects zero/invalid usage, validates bind-group buffer ranges, enforces `minBindingSize`, and checks that uniform/storage bindings carry the required `GPUBufferUsage` bit. This closes the pt-webgpu side of the H53 dummy-buffer recurrence class; adapter-backed WebGPU shader/PASS_ORDER gates remain tracked separately.
 - **`@vitrum/pt-webgpu` cpuTracer drift tripwire:** `cpuTracerDriftTripwire.test.ts` now stores literal frozen hashes for the mirrored WGSL function bodies instead of deriving its "frozen" table from live shader strings at module load. Shader edits to the mirrored functions now fail unless the CPU mirror and hash pins are updated together.
+- **`@vitrum/walkaround-hybrid` OIDN failure degradation proof:** `oidnFinalDenoiser.test.ts` now pins dispatch-time `denoiseFinal()` failure behavior: the denoiser falls back to raw HDR, reports a retryable `failed` state with the OIDN error reason, and retries successfully on the next dispatch.
 
 ### Fixed (glTF spec-gloss texture alpha, 2026-06-15)
 
