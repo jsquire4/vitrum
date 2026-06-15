@@ -78,7 +78,9 @@ export interface FrameParamsSceneInputs {
   readonly lightTreeNodeCount: number;
   readonly directionalLight: readonly [number, number, number];
   readonly directionalIrradiance: readonly [number, number, number];
-  /** D3 — soft-sun angular diameter in radians (0 = perfect delta directional).
+  /** D3/SHADOW-01 — signed soft-sun angular diameter in radians (0 = perfect
+   *  delta directional; negative means first directional has castShadow:false,
+   *  encoded as `-1 - angularDiameter`).
    *  Written to the frame UBO's `cameraPos.w` lane (previously a constant 1, never
    *  read by any shader). 0 keeps the historical exact directional path. */
   readonly directionalAngularDiameter: number;
@@ -213,8 +215,9 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
   paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
   paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-  // D3 — soft-sun angular diameter (radians) in the previously-constant cameraPos.w
-  // lane (no shader reads cameraPos.w; only .xyz is used). 0 ⇒ exact directional.
+  // D3/SHADOW-01 — signed soft-sun angular diameter mirror in cameraPos.w.
+  // Negative values mean the first directional has castShadow:false, encoded as
+  // -1 - angularDiameter; lite-tier direct lighting decodes this flag.
   paramsF32[FrameParamsSlot.cameraPos + 3] = sb.directionalAngularDiameter;
   paramsF32[FrameParamsSlot.lightDir] = sb.directionalLight[0];
   paramsF32[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];

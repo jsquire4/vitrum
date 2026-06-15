@@ -741,13 +741,12 @@ const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
  *  MNEE/caustic legs) → 'native'. Note: contract-level `AnalyticPrimitive` has
  *  no castShadow field, so analytic shapes always occlude. Emitter castShadow
  *  is honored by the default kernel/kernelLite NEE loops + the connect.wgsl
- *  BSDF-MIS area-light connections for all 6 emitter kinds. ReSTIR-PT suffix
- *  direct lighting also consumes the point/spot/rect/disc/mesh packed lanes.
- *  The remaining off-default paths (flag-less directional UBO mirror in
- *  ReSTIR-PT/in-medium NEE, BDPT light subpath, and MNEE/SPPM caustic legs)
- *  still shadow-test → 'approximate'.
- *  (Lite-tier directional NEE reads the UBO lightDir mirror, which carries no
- *  flag — lite directional emitters always shadow-test.) */
+ *  BSDF-MIS area-light connections for all 6 emitter kinds. Lite-tier
+ *  directional NEE decodes the signed `cameraPos.w` mirror for the first
+ *  directional flag. ReSTIR-PT suffix direct lighting also consumes the packed
+ *  point/spot/rect/disc/mesh lanes and the packed N-directional records.
+ *  The remaining off-default promotion proof (BDPT light subpath and MNEE/SPPM
+ *  caustic legs/source treatment) is still incomplete → 'approximate'. */
 const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'approximate',

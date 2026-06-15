@@ -1119,7 +1119,9 @@ interface MutableSceneBuffers {
   meshAreaLightCount: number;
   directionalLight: readonly [number, number, number];
   directionalIrradiance: readonly [number, number, number];
-  /** D3 — Item 2d: angular diameter must be kept in sync on incremental emitter patches. */
+  /** D3/SHADOW-01 — signed angular-diameter mirror must be kept in sync on
+   *  incremental emitter patches; negative encodes first directional
+   *  castShadow:false for the lite-tier UBO path. */
   directionalAngularDiameter: number;
 
   // ── Environment fields (incremental environment patches) ─────────────────
@@ -1209,7 +1211,8 @@ export function applyEmitterCountMutation(
     readonly meshAreaLightCount: number;
     readonly directionalLight: readonly [number, number, number];
     readonly directionalIrradiance: readonly [number, number, number];
-    /** Item 2d — D3 soft-sun angular diameter in radians (0 = delta directional). */
+    /** Item 2d + SHADOW-01 — signed D3 soft-sun angular diameter mirror
+     *  (0 = delta directional; negative encodes castShadow:false). */
     readonly directionalAngularDiameter: number;
   },
 ): void {
@@ -1221,8 +1224,9 @@ export function applyEmitterCountMutation(
   mutable.meshAreaLightCount = next.meshAreaLightCount;
   mutable.directionalLight = next.directionalLight;
   mutable.directionalIrradiance = next.directionalIrradiance;
-  // Item 2d — angular diameter must be kept in sync so frameParamsPacker packs
-  // the correct value after an incremental directional-emitter patch.
+  // Item 2d / SHADOW-01 — angular diameter + castShadow mirror must be kept in
+  // sync so frameParamsPacker packs the correct value after an incremental
+  // directional-emitter patch.
   mutable.directionalAngularDiameter = next.directionalAngularDiameter;
 }
 

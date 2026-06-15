@@ -94,8 +94,9 @@ function reconstructExpected(
   f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
   f[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
   f[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-  // D3 — cameraPos.w now carries the soft-sun angular diameter (was constant 1,
-  // never read by any shader; 0 = exact delta directional).
+  // D3/SHADOW-01 — cameraPos.w carries the signed soft-sun angular diameter
+  // mirror (was constant 1; 0 = exact delta directional; negative =
+  // first-directional castShadow:false encoded as -1 - angularDiameter).
   f[FrameParamsSlot.cameraPos + 3] = sb.directionalAngularDiameter;
   f[FrameParamsSlot.lightDir] = sb.directionalLight[0];
   f[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
@@ -324,6 +325,18 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.environmentTint + 3]).toBeCloseTo(rotY, 6);
   });
 
+  it('SHADOW-01 preserves signed directional angular-diameter mirror for lite', () => {
+    const ab = packFrameParams(
+      makeConfig({ traceTier: 'lite' }),
+      makeSceneInputs({ directionalAngularDiameter: -1.25 }),
+      makeInput(),
+      800,
+      600,
+    );
+    const f = new Float32Array(ab);
+    expect(f[FrameParamsSlot.cameraPos + 3]).toBeCloseTo(-1.25, 6);
+  });
+
   it('item 24 — lite tier writes analyticCount=0 regardless of sb.analyticCount', () => {
     // The lite kernel has no analytic-primitive path; writing the real analyticCount
     // would leave a phantom count that a future lite-kernel change could misread.
@@ -394,7 +407,8 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);
-    // D3 — cameraPos.w = directionalAngularDiameter (0 in the canonical input).
+    // D3/SHADOW-01 — cameraPos.w = signed directionalAngularDiameter mirror
+    // (0 in the canonical input).
     expect(f[FrameParamsSlot.cameraPos + 3]).toBe(0);
     expect(f[FrameParamsSlot.lightDir + 3]).toBeCloseTo((1.2 + 0.8 + 0.5) / 3, 6);
     expect(f[FrameParamsSlot.environmentSun + 3]).toBe(3.5);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
 import { luminance } from '@vitrum/shared-samplers';
-import { buildLightTreeInputForScene } from '../scene/emitterPacking.js';
+import { buildLightTreeInputForScene, defaultDirectionalAngularDiameter } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
 function baseScene(): Scene {
@@ -276,6 +276,7 @@ describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
     // directional — sign-encoded angularDiameter (stride 8 floats / light).
     expect(packed.directionalLightsData[3]).toBeCloseTo(-1.25, 6);  // -1 - 0.25
     expect(packed.directionalLightsData[8 + 3]).toBeCloseTo(0.25, 6);
+    expect(defaultDirectionalAngularDiameter(scene)).toBeCloseTo(-1.25, 6);
 
     // point — stride 12, lane 10.
     expect(packed.pointLightsData[10]).toBe(1);
@@ -308,9 +309,22 @@ describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
     };
     const packed = buildPackedScene(scene);
     expect(packed.directionalLightsData[3]).toBe(0);   // no angularDiameter → 0, non-negative
+    expect(defaultDirectionalAngularDiameter(scene)).toBe(0);
     expect(packed.pointLightsData[10]).toBe(0);
     expect(packed.spotLightsData[14]).toBe(0);
     expect(packed.rectAreaLightsData[3]).toBe(0);
     expect(packed.meshAreaLightsData[15]).toBe(0);
+  });
+
+  it('keeps first-directional angularDiameter non-negative when castShadow is enabled', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [
+        { kind: 'directional', id: 'd', direction: [0, -1, 0], color: [1, 1, 1], intensity: 1, angularDiameter: 0.125 },
+      ],
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.directionalLightsData[3]).toBeCloseTo(0.125, 6);
+    expect(defaultDirectionalAngularDiameter(scene)).toBeCloseTo(0.125, 6);
   });
 });

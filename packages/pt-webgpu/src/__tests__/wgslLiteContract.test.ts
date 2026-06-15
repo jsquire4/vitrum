@@ -73,8 +73,8 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-11 (SHADOW-01): primitive castShadow any-hit gate in the
     // shared intersectionCore (traceMeshBvh !closest skip via triShadowCastDisabled)
     // + emitter castShadowDisabled gates in the lite NEE loops (point extra.z /
-    // spot spExtra.z / rect texel-0 .w). Lite directional NEE reads the UBO
-    // lightDir mirror (no flag — documented 'approximate' on the ledger row).
+    // spot spExtra.z / rect texel-0 .w). Lite directional NEE decodes the
+    // sign-encoded cameraPos.w mirror for the first directional flag.
     // Default (flag-less) scenes are behaviorally identical (all lanes pack 0.0).
     // Re-pinned 2026-06-15 (PTWG-LITE-01): lite rect/disc analytic records now
     // use paired MIS. kernelLite applies the light-sampled power heuristic and
@@ -104,8 +104,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // still has no material texture bindings; this is render-neutral for lite.
     // Re-pinned 2026-06-15: shared scalar material payload gained KHR volume
     // thickness and lite Beer-Lambert fallback clamps to it when authored.
-    expect(digest).toBe('90e6fd9f33ec90459483db660964492bdf7a758c491049fa4d2aa0c05375db29');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(152066);
+    // Re-pinned 2026-06-15 (SHADOW-01 lite directional): lite directional NEE
+    // decodes the signed cameraPos.w mirror so first-directional castShadow:false
+    // skips the visibility ray without adding a storage-buffer binding.
+    expect(digest).toBe('427d912e3dd8ce489f665b20eab80e0d8b58611aa5484a69a8daf0910ba78118');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(154022);
   });
 });
 
@@ -153,6 +156,8 @@ describe('pt-webgpu lite WGSL contract', () => {
   it('keeps mesh BVH trace and directional direct lighting', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn traceMeshBvh');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('params.lightDir.w');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = params.cameraPos.w < 0.0;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY))');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
   });
 

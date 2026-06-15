@@ -22,9 +22,11 @@ import {
  *   byte-identical to the pre-SHADOW-01 layout.
  *
  * Directional[0] is ALSO mirrored into the frame-UBO lightDir/cameraPos.w lanes for
- * backward compatibility with the single-directional path read by in-medium NEE.
- * For N > 1, lights [1..N-1] are read ONLY from this storage buffer; the kernel
- * loops params.directionalLightCount records.
+ * backward compatibility with lite-tier single-directional direct lighting.
+ * The cameraPos.w mirror uses the SAME sign-encoded angularDiameter convention
+ * as the storage-buffer lane so lite can honor castShadow:false without adding
+ * a storage-buffer binding. For N > 1, lights [1..N-1] are read ONLY from this
+ * storage buffer; the full kernel loops params.directionalLightCount records.
  */
 export const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
 
@@ -256,19 +258,23 @@ export function defaultDirectionalIrradiance(scene: Scene): readonly [number, nu
 }
 
 /**
- * D3 — soft-sun angular diameter (radians) for the scene's directional emitter.
+ * D3/SHADOW-01 — signed soft-sun angular diameter mirror for the scene's first
+ * directional emitter.
  * 0 (the default, and when no directional emitter is present) = a perfect delta
  * directional, the historical exact path (byte-identical). A positive value turns
  * the directional NEE into a cone sampler over the sun's solid angle for soft
- * shadows. Carried in the frame UBO's `cameraPos.w` lane (a previously-unused
- * `.w` slot — see frameParamsPacker) so no UBO byte-size/layout change is needed.
+ * shadows. If the first directional has `castShadow:false`, the returned mirror
+ * is sign-encoded as `-1 - angularDiameter`, matching the storage-buffer lane.
+ * Carried in the frame UBO's `cameraPos.w` lane (a previously-unused `.w` slot
+ * — see frameParamsPacker) so no UBO byte-size/layout change is needed.
  * Ref: DirectionalEmitter.angularDiameter (core contract).
  */
 export function defaultDirectionalAngularDiameter(scene: Scene): number {
   const directional = scene.emitters.find((e) => e.kind === 'directional');
   if (directional == null) return 0;
   const ad = directional.angularDiameter;
-  return ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+  const angularDiameter = ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
+  return directional.castShadow === false ? -1 - angularDiameter : angularDiameter;
 }
 
 function packMeshAreaTriangles(
@@ -421,7 +427,7 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
 
   // N-directional packing — all directional emitters go into a flat storage-buffer
   // array. The first directional[0] is ALSO mirrored into the frame-UBO lightDir
-  // and cameraPos.w lanes by frameParamsPacker.ts (backward-compat, in-medium NEE).
+  // and signed cameraPos.w lanes by frameParamsPacker.ts (backward-compat lite NEE).
   const directionalLights: number[] = [];
   let directionalLightCount = 0;
   for (const e of scene.emitters) {

@@ -169,7 +169,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         if (current == picked) {
           let lightDir = safe_normalize(params.lightDir.xyz);
           let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
-          if (!traceAny(shadowRay, 1e-4, INFINITY)) {
+          // SHADOW-01 — lite has no group(1) directional storage binding, so
+          // the first directional's castShadow:false flag is sign-encoded into
+          // the existing cameraPos.w angular-diameter mirror.
+          let dirShadowDisabled = params.cameraPos.w < 0.0;
+          if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, lightDir));
             let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,

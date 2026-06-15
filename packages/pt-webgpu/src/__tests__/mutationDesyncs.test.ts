@@ -409,6 +409,32 @@ describe('applyEmitterCountMutation — Item 2d: directionalAngularDiameter sync
     const mutable = stubSb as unknown as { directionalAngularDiameter: number };
     expect(mutable.directionalAngularDiameter).toBe(0);
   });
+
+  it('preserves the signed castShadow:false mirror value', () => {
+    const stubSb = {
+      pointLightCount: 0,
+      spotLightCount: 0,
+      rectAreaLightCount: 0,
+      meshAreaLightCount: 0,
+      directionalLight: [0, 1, 0] as const,
+      directionalIrradiance: [0, 0, 0] as const,
+      directionalAngularDiameter: 0,
+    } as unknown as UploadedSceneBuffers;
+
+    applyEmitterCountMutation(stubSb, {
+      directionalLightCount: 1,
+      pointLightCount: 0,
+      spotLightCount: 0,
+      rectAreaLightCount: 0,
+      meshAreaLightCount: 0,
+      directionalLight: [0, 1, 0],
+      directionalIrradiance: [1, 1, 1],
+      directionalAngularDiameter: -1.009271,
+    });
+
+    const mutable = stubSb as unknown as { directionalAngularDiameter: number };
+    expect(mutable.directionalAngularDiameter).toBeCloseTo(-1.009271, 5);
+  });
 });
 
 // ─── 2e: clearReservoirBuffers clears allocated buffers ───────────────────────
@@ -599,6 +625,9 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     // have been updated via applyEmitterCountMutation.
     const mutable = sceneBuffers as unknown as { directionalAngularDiameter: number };
     expect(mutable.directionalAngularDiameter).toBeCloseTo(0.009271, 4);
+
+    router.updateEmitter('sun', { castShadow: false });
+    expect(mutable.directionalAngularDiameter).toBeCloseTo(-1.009271, 4);
   });
 });
 

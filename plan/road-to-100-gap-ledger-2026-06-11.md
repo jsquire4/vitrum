@@ -858,10 +858,11 @@ engineContract.test.ts):
     angularDiameter; point/spot extra .z; rect/disc center .w; mesh-area
     radiance .w) consumed by the default kernel/kernelLite NEE loops + the
     connect.wgsl BSDF-MIS area connections. ReSTIR-PT suffix direct lighting
-    now also consumes the point/spot/rect/disc/mesh packed lanes. Remaining
-    residuals: the flag-less directional UBO mirror in ReSTIR-PT/in-medium NEE,
-    BDPT light subpath, and MNEE/SPPM caustic legs still shadow-test; lite
-    directional rides the same flag-less mirror.
+    now also consumes the point/spot/rect/disc/mesh packed lanes and the packed
+    N-directional records. Lite directional NEE decodes the signed
+    `cameraPos.w` mirror for the first directional `castShadow:false` flag.
+    Remaining promotion proof: BDPT light subpath and MNEE/SPPM caustic
+    legs/source treatment still need explicit shadow-flag oracles.
   - walkaround-hybrid `native` (2026-06-13 follow-up): analytic point/spot
     payloads pack binding-13 lane `[13]`; shared `EmitterTri` packs lane `[19]`;
     ReSTIR-DI candidate visibility + shade visibility gate on
