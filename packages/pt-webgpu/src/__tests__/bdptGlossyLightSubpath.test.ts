@@ -15,6 +15,173 @@ import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 import { BdptLightPathBufferWebGPU } from '../bdpt/bdptLightPathBufferWebGPU.js';
 
+const FRONT_FACE_BIT = 0x80000000 >>> 0;
+const TRI_INDEX_MASK = 0x7fffffff >>> 0;
+
+type Vec3 = readonly [number, number, number];
+
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+function mul3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
+}
+
+function scale3(a: Vec3, s: number): Vec3 {
+  return [a[0] * s, a[1] * s, a[2] * s];
+}
+
+function clamp3(a: Vec3, lo = 0, hi = 1): Vec3 {
+  return [clamp(a[0], lo, hi), clamp(a[1], lo, hi), clamp(a[2], lo, hi)];
+}
+
+function mix3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return [
+    a[0] * (1 - t) + b[0] * t,
+    a[1] * (1 - t) + b[1] * t,
+    a[2] * (1 - t) + b[2] * t,
+  ];
+}
+
+function expectVecClose(actual: Vec3, expected: Vec3, precision = 6): void {
+  expect(actual[0]).toBeCloseTo(expected[0], precision);
+  expect(actual[1]).toBeCloseTo(expected[1], precision);
+  expect(actual[2]).toBeCloseTo(expected[2], precision);
+}
+
+function packBdptPayloadTriWord(triIndex: number, isFrontFace: boolean): number {
+  return (((triIndex >>> 0) & TRI_INDEX_MASK) | (isFrontFace ? FRONT_FACE_BIT : 0)) >>> 0;
+}
+
+function unpackBdptPayloadTriWord(word: number): { triIndex: number; isFrontFace: boolean } {
+  const raw = word >>> 0;
+  return {
+    triIndex: (raw & TRI_INDEX_MASK) >>> 0,
+    isFrontFace: (raw & FRONT_FACE_BIT) !== 0,
+  };
+}
+
+function cauchyIorAtLambdaOracle(lambdaNm: number, baseIor: number, abbeV: number): number {
+  if (abbeV < 1) {
+    return baseIor;
+  }
+  const lambdaUm = lambdaNm * 0.001;
+  const lam2 = lambdaUm * lambdaUm;
+  const lamF = 0.4861;
+  const lamC = 0.6563;
+  const denom = 1 / (lamF * lamF) - 1 / (lamC * lamC);
+  const B = (baseIor - 1) / Math.max(abbeV, 1) / Math.max(denom, 1e-6);
+  return baseIor + B / lam2;
+}
+
+function jakobHanikaReflectanceOracle(coeffs: Vec3, lambdaNm: number): number {
+  const x = coeffs[0] + coeffs[1] * lambdaNm + coeffs[2] * lambdaNm * lambdaNm;
+  return 0.5 + x / (2 * Math.sqrt(1 + x * x));
+}
+
+interface BdptPayloadMaterialFixture {
+  baseColor: Vec3;
+  vertexColor: Vec3;
+  baseColorTex: Vec3;
+  ao: number;
+  roughness: number;
+  metallic: number;
+  orm: Vec3;
+  transmission: number;
+  transmissionTex: number;
+  ior: number;
+  dispersionAbbe: number;
+  clearcoat: number;
+  clearcoatTex: number;
+  clearcoatRoughness: number;
+  clearcoatRoughnessTex: number;
+  sheen: number;
+  sheenRoughness: number;
+  sheenRoughnessTex: number;
+  sheenColor: Vec3;
+  sheenColorTex: Vec3;
+  iridescence: number;
+  iridescenceTex: number;
+  iridescenceThicknessMin: number;
+  iridescenceThicknessMax: number;
+  iridescenceThicknessTex: number;
+  specularColor: Vec3;
+  specularColorTex: Vec3;
+  specularIntensity: number;
+  specularIntensityTex: number;
+  anisotropy: number;
+  anisotropyRotation: number;
+  frontLayerTx: Vec3;
+  frontLayerRoughness: number;
+  backLayerTx: Vec3;
+  backLayerRoughness: number;
+  thinFilmLayerCount: number;
+  thinFilmReflectTint: Vec3;
+  spectralReflCoeffs: Vec3;
+  hasSpectralReflectance: boolean;
+}
+
+function sampleBdptPayloadMaterialOracle(
+  mat: BdptPayloadMaterialFixture,
+  opts: { isFrontFace: boolean; spectralEnabled: boolean; heroLambdaNm: number; thinFilmEnabled: boolean },
+) {
+  let baseColor = scale3(mul3(mul3(mat.baseColor, mat.vertexColor), mat.baseColorTex), mat.ao);
+  const roughnessFromOrm = clamp(mat.roughness * mat.orm[1], 0.02, 1);
+  const metallic = clamp(mat.metallic * mat.orm[2], 0, 1);
+  const transmission = clamp(mat.transmission * mat.transmissionTex, 0, 1);
+  const ior =
+    opts.spectralEnabled && mat.dispersionAbbe >= 1
+      ? cauchyIorAtLambdaOracle(opts.heroLambdaNm, mat.ior, mat.dispersionAbbe)
+      : mat.ior;
+  const clearcoat = clamp(mat.clearcoat * mat.clearcoatTex, 0, 1);
+  const clearcoatRoughness = clamp(mat.clearcoatRoughness * mat.clearcoatRoughnessTex, 0, 1);
+  const sheenRoughness = clamp(mat.sheenRoughness * mat.sheenRoughnessTex, 0, 1);
+  const sheenColor = clamp3(mul3(mat.sheenColor, mat.sheenColorTex));
+  const iridescence = clamp(mat.iridescence * mat.iridescenceTex, 0, 1);
+  const iridescenceThickness = mat.iridescenceThicknessTex >= 0
+    ? mat.iridescenceThicknessMin +
+      (mat.iridescenceThicknessMax - mat.iridescenceThicknessMin) * mat.iridescenceThicknessTex
+    : mat.iridescenceThicknessMin;
+  const specularColor = clamp3(mul3(mat.specularColor, mat.specularColorTex));
+  const specularIntensity = clamp(mat.specularIntensity * mat.specularIntensityTex, 0, 1);
+  const layerTx = clamp3(opts.isFrontFace ? mat.frontLayerTx : mat.backLayerTx);
+  const layerRoughness = opts.isFrontFace ? mat.frontLayerRoughness : mat.backLayerRoughness;
+  const roughness = layerRoughness >= 0 ? clamp(layerRoughness, 0.02, 1) : roughnessFromOrm;
+  baseColor = mul3(baseColor, layerTx);
+  if (opts.thinFilmEnabled) {
+    const layerStrength = clamp(0.12 + 0.06 * mat.thinFilmLayerCount, 0, 0.55);
+    const filmStrength = clamp(layerStrength * (1 - roughness), 0, 0.6);
+    baseColor = mix3(baseColor, mul3(baseColor, clamp3(mat.thinFilmReflectTint)), filmStrength);
+  }
+  if (opts.spectralEnabled) {
+    const refl = mat.hasSpectralReflectance
+      ? jakobHanikaReflectanceOracle(mat.spectralReflCoeffs, opts.heroLambdaNm)
+      : Math.max(baseColor[0] * 0.2126 + baseColor[1] * 0.7152 + baseColor[2] * 0.0722, 0);
+    baseColor = [refl, refl, refl];
+  }
+
+  return {
+    baseColor,
+    roughness,
+    metallic,
+    transmission,
+    ior,
+    clearcoat,
+    clearcoatRoughness,
+    sheen: mat.sheen,
+    sheenRoughness,
+    sheenColor,
+    iridescence,
+    iridescenceThicknessMin: iridescenceThickness,
+    iridescenceThicknessMax: iridescenceThickness,
+    specularColor,
+    specularIntensity,
+    anisotropy: mat.anisotropy,
+    anisotropyRotation: mat.anisotropyRotation,
+  };
+}
+
 describe('A9 — glossy/specular BDPT light subpath', () => {
   it('samples the REAL BSDF (glossy partition + cosine diffuse), not Lambertian-only', () => {
     // BDPT light-subpath estimator coherence (2026-06-10): the scatter direction
@@ -100,6 +267,29 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let isFrontFace = (triWord & 0x80000000u) != 0u;');
   });
 
+  it('numeric oracle pins row-4 tri/front-face payload packing', () => {
+    const front = packBdptPayloadTriWord(123_456, true);
+    expect(front).toBe(0x8001e240);
+    expect(unpackBdptPayloadTriWord(front)).toEqual({
+      triIndex: 123_456,
+      isFrontFace: true,
+    });
+
+    const back = packBdptPayloadTriWord(123_456, false);
+    expect(back).toBe(0x0001e240);
+    expect(unpackBdptPayloadTriWord(back)).toEqual({
+      triIndex: 123_456,
+      isFrontFace: false,
+    });
+
+    const masked = packBdptPayloadTriWord(0xffffffff, false);
+    expect(masked).toBe(TRI_INDEX_MASK);
+    expect(unpackBdptPayloadTriWord(masked)).toEqual({
+      triIndex: TRI_INDEX_MASK,
+      isFrontFace: false,
+    });
+  });
+
   it('samples texture-map material payloads before BDPT light-subpath scatter', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'out.baseColor = mat.baseColor * sampleVertexColor(triIndex, baryVW).rgb * sampleBaseColorTexture(matId, triIndex, baryVW).rgb;',
@@ -124,6 +314,84 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     );
   });
 
+  it('numeric oracle pins mapped material payload transforms used by BDPT light vertices', () => {
+    const fixture: BdptPayloadMaterialFixture = {
+      baseColor: [0.9, 0.6, 0.3],
+      vertexColor: [0.5, 0.25, 0.75],
+      baseColorTex: [0.8, 0.5, 0.25],
+      ao: 0.4,
+      roughness: 0.7,
+      metallic: 0.8,
+      orm: [0.2, 0.5, 1.25],
+      transmission: 0.6,
+      transmissionTex: 0.5,
+      ior: 1.5,
+      dispersionAbbe: 50,
+      clearcoat: 0.75,
+      clearcoatTex: 1.4,
+      clearcoatRoughness: 0.9,
+      clearcoatRoughnessTex: 0.2,
+      sheen: 0.65,
+      sheenRoughness: 0.5,
+      sheenRoughnessTex: 3,
+      sheenColor: [0.9, 0.7, 0.5],
+      sheenColorTex: [0.5, 2, 0.25],
+      iridescence: 0.9,
+      iridescenceTex: 0.5,
+      iridescenceThicknessMin: 100,
+      iridescenceThicknessMax: 500,
+      iridescenceThicknessTex: 0.25,
+      specularColor: [0.9, 0.6, 0.2],
+      specularColorTex: [0.5, 0.25, 2],
+      specularIntensity: 0.8,
+      specularIntensityTex: 1.5,
+      anisotropy: 0.35,
+      anisotropyRotation: 0.7,
+      frontLayerTx: [0.5, 0.75, 1.25],
+      frontLayerRoughness: 0.01,
+      backLayerTx: [0.2, 0.3, 0.4],
+      backLayerRoughness: 0.6,
+      thinFilmLayerCount: 4,
+      thinFilmReflectTint: [0.25, 0.5, 1],
+      spectralReflCoeffs: [-3, 0.01, -0.000005],
+      hasSpectralReflectance: true,
+    };
+
+    const sampled = sampleBdptPayloadMaterialOracle(fixture, {
+      isFrontFace: true,
+      spectralEnabled: false,
+      heroLambdaNm: 510,
+      thinFilmEnabled: true,
+    });
+
+    expectVecClose(sampled.baseColor, [0.0529488, 0.018531, 0.0225]);
+    expect(sampled.roughness).toBeCloseTo(0.02, 8);
+    expect(sampled.metallic).toBeCloseTo(1, 8);
+    expect(sampled.transmission).toBeCloseTo(0.3, 8);
+    expect(sampled.ior).toBeCloseTo(1.5, 8);
+    expect(sampled.clearcoat).toBeCloseTo(1, 8);
+    expect(sampled.clearcoatRoughness).toBeCloseTo(0.18, 8);
+    expect(sampled.sheen).toBeCloseTo(0.65, 8);
+    expect(sampled.sheenRoughness).toBeCloseTo(1, 8);
+    expectVecClose(sampled.sheenColor, [0.45, 1, 0.125]);
+    expect(sampled.iridescence).toBeCloseTo(0.45, 8);
+    expect(sampled.iridescenceThicknessMin).toBeCloseTo(200, 8);
+    expect(sampled.iridescenceThicknessMax).toBeCloseTo(200, 8);
+    expectVecClose(sampled.specularColor, [0.45, 0.15, 0.4]);
+    expect(sampled.specularIntensity).toBeCloseTo(1, 8);
+    expect(sampled.anisotropy).toBeCloseTo(0.35, 8);
+    expect(sampled.anisotropyRotation).toBeCloseTo(0.7, 8);
+
+    const backSide = sampleBdptPayloadMaterialOracle(fixture, {
+      isFrontFace: false,
+      spectralEnabled: false,
+      heroLambdaNm: 510,
+      thinFilmEnabled: false,
+    });
+    expectVecClose(backSide.baseColor, [0.0288, 0.009, 0.009]);
+    expect(backSide.roughness).toBeCloseTo(0.6, 8);
+  });
+
   it('applies layer, thin-film, spectral albedo, and Cauchy IOR to BDPT light-side material payloads', () => {
     for (const line of [
       'out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);',
@@ -138,6 +406,60 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     ]) {
       expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(line);
     }
+  });
+
+  it('numeric oracle pins spectral Cauchy IOR and Jakob-Hanika override on BDPT light vertices', () => {
+    const fixture: BdptPayloadMaterialFixture = {
+      baseColor: [0.9, 0.6, 0.3],
+      vertexColor: [0.5, 0.25, 0.75],
+      baseColorTex: [0.8, 0.5, 0.25],
+      ao: 0.4,
+      roughness: 0.7,
+      metallic: 0.8,
+      orm: [0.2, 0.5, 1.25],
+      transmission: 0.6,
+      transmissionTex: 0.5,
+      ior: 1.5,
+      dispersionAbbe: 50,
+      clearcoat: 0.75,
+      clearcoatTex: 1.4,
+      clearcoatRoughness: 0.9,
+      clearcoatRoughnessTex: 0.2,
+      sheen: 0.65,
+      sheenRoughness: 0.5,
+      sheenRoughnessTex: 3,
+      sheenColor: [0.9, 0.7, 0.5],
+      sheenColorTex: [0.5, 2, 0.25],
+      iridescence: 0.9,
+      iridescenceTex: 0.5,
+      iridescenceThicknessMin: 100,
+      iridescenceThicknessMax: 500,
+      iridescenceThicknessTex: 0.25,
+      specularColor: [0.9, 0.6, 0.2],
+      specularColorTex: [0.5, 0.25, 2],
+      specularIntensity: 0.8,
+      specularIntensityTex: 1.5,
+      anisotropy: 0.35,
+      anisotropyRotation: 0.7,
+      frontLayerTx: [0.5, 0.75, 1.25],
+      frontLayerRoughness: 0.01,
+      backLayerTx: [0.2, 0.3, 0.4],
+      backLayerRoughness: 0.6,
+      thinFilmLayerCount: 4,
+      thinFilmReflectTint: [0.25, 0.5, 1],
+      spectralReflCoeffs: [-3, 0.01, -0.000005],
+      hasSpectralReflectance: true,
+    };
+
+    const sampled = sampleBdptPayloadMaterialOracle(fixture, {
+      isFrontFace: true,
+      spectralEnabled: true,
+      heroLambdaNm: 510,
+      thinFilmEnabled: true,
+    });
+
+    expect(sampled.ior).toBeCloseTo(1.52012509542473, 10);
+    expectVecClose(sampled.baseColor, [0.8122284453397484, 0.8122284453397484, 0.8122284453397484], 10);
   });
 
   it('the §10.3 connection evaluates the REAL light-vertex BSDF + pdfs for a surface vertex', () => {
