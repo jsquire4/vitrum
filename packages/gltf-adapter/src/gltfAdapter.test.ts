@@ -937,8 +937,29 @@ describe('out-of-scope feature warnings', () => {
   it('warns about skins (rest pose; host drives the pose)', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.skins = [{ joints: [0] }];
-    const { warnings } = await gltfToScene(gltf, { buffers });
+    const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.toLowerCase().includes('skin'))).toBe(true);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'skin-rest-pose',
+        path: 'skins',
+      }),
+    ]);
+  });
+
+  it('surfaces ignored cameras as structured import diagnostics', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.cameras = [{ type: 'perspective' }];
+    const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
+    expect(warnings.some(w => w.includes('Camera nodes are present but ignored'))).toBe(true);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'ignored-camera',
+        path: 'cameras',
+      }),
+    ]);
   });
 });
 

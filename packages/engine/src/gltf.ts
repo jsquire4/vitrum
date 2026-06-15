@@ -12,6 +12,7 @@ import type {
   GltfEngineSelection,
   GltfCompatibilityMode,
   GltfForEngineResult,
+  GltfImportDiagnostic,
   GltfSceneController,
   GltfTextureDecodeReport,
   LoadGltfForEngineOptions,
@@ -36,6 +37,7 @@ export type {
   GltfCompatibilityMode,
   GltfEngineSelection,
   GltfForEngineResult,
+  GltfImportDiagnostic,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
 
@@ -69,6 +71,7 @@ export interface GltfProgressiveEngineResult {
   readonly attached: true;
   readonly textureDecodeReport: GltfTextureDecodeReport;
   readonly warnings: readonly string[];
+  readonly diagnostics: readonly GltfImportDiagnostic[];
 }
 
 export async function loadGltfWithEngine(
@@ -115,6 +118,7 @@ export async function loadGltfWithProgressiveEngine(
     attached: true,
     textureDecodeReport: loaded.textureDecodeReport,
     warnings: loaded.warnings,
+    diagnostics: loaded.diagnostics,
   };
 }
 

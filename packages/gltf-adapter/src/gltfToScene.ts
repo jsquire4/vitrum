@@ -246,6 +246,10 @@ export interface GltfToSceneResult {
   /** Non-fatal issues encountered during conversion. Inspect these for skipped
    *  primitives, unsupported extensions, missing buffers, sparse patches, etc. */
   readonly warnings: string[];
+  /** Structured form of converter-owned warnings. Existing string warnings are
+   *  preserved for compatibility; diagnostics give hosts stable codes and
+   *  source paths for filtering, UI, and compatibility reports. */
+  readonly diagnostics: readonly GltfImportDiagnostic[];
 }
 
 export interface GltfMaterialVariantBinding {
@@ -253,6 +257,35 @@ export interface GltfMaterialVariantBinding {
   readonly meshIndex: number;
   readonly primitiveIndex: number;
   readonly baseMaterialIndex?: number;
+}
+
+export type GltfImportDiagnosticCode =
+  | 'unsupported-version'
+  | 'ignored-camera'
+  | 'skin-rest-pose'
+  | 'scene-not-found'
+  | 'ignored-gpu-instancing'
+  | 'unsupported-primitive-mode'
+  | 'unresolved-compression'
+  | 'missing-position'
+  | 'unreadable-position'
+  | 'unreadable-indices'
+  | 'empty-triangulated-primitive';
+
+export interface GltfImportDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfImportDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+}
+
+function emitImportDiagnostic(
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  diagnostic: GltfImportDiagnostic,
+): void {
+  diagnostics.push(diagnostic);
+  warnings.push(diagnostic.message);
 }
 
 /**
@@ -307,13 +340,19 @@ export async function gltfToScene(
     gltf = input;
   }
 
+  const diagnostics: GltfImportDiagnostic[] = [];
+
   // ── 2. Validate version ────────────────────────────────────────────────────
   const version = gltf.asset?.version;
   if (version && !version.startsWith('2.')) {
-    warnings.push(
-      `[vitrum/gltf-adapter] glTF asset version is "${version}"; only 2.x is supported. ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unsupported-version',
+      path: 'asset.version',
+      message:
+        `[vitrum/gltf-adapter] glTF asset version is "${version}"; only 2.x is supported. ` +
         'Conversion will proceed but results may be incorrect.',
-    );
+    });
   }
 
   for (const ext of gltf.extensionsRequired ?? []) {
@@ -327,19 +366,27 @@ export async function gltfToScene(
 
   // ── 3. Warn on out-of-scope top-level features ─────────────────────────────
   if (gltf.cameras && (gltf.cameras).length > 0) {
-    warnings.push(
-      '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-camera',
+      path: 'cameras',
+      message:
+        '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
         '@vitrum/core Scene contract; pass camera data via FrameInput instead).',
-    );
+    });
   }
   if (gltf.skins && gltf.skins.length > 0) {
-    warnings.push(
-      `[vitrum/gltf-adapter] This glTF has ${gltf.skins.length} skin(s). ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'skin-rest-pose',
+      path: 'skins',
+      message:
+        `[vitrum/gltf-adapter] This glTF has ${gltf.skins.length} skin(s). ` +
         'Skinned nodes are imported as SkinnedMeshPrimitive at rest pose. ' +
         'The engine does not advance clips itself: drive the pose host-side by ' +
         'sampling the imported animations (sampleAnimationClip), rebuilding bone ' +
         'matrices, and re-running solveSkin.',
-    );
+    });
   }
 
   const extUsed = gltf.extensionsUsed ?? [];
@@ -383,10 +430,14 @@ export async function gltfToScene(
   const rootNodes = gltfScene?.nodes ?? [];
 
   if (gltf.scenes && !gltfScene) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Scene index ${sceneIndex} not found (total: ${gltf.scenes.length}). ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'scene-not-found',
+      path: `scenes[${sceneIndex}]`,
+      message:
+        `[vitrum/gltf-adapter] Scene index ${sceneIndex} not found (total: ${gltf.scenes.length}). ` +
         'Falling back to an empty scene.',
-    );
+    });
   }
 
   // ── 7. Build world transforms for all nodes ────────────────────────────────
@@ -406,11 +457,15 @@ export async function gltfToScene(
     const node = gltfNodes[nodeIdx];
     if (!node || node.mesh === undefined) continue;
     if (node.extensions?.EXT_mesh_gpu_instancing !== undefined) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing, ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'ignored-gpu-instancing',
+        path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
+        message:
+          `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing, ` +
           'but this adapter does not import accessor-driven instance transforms yet. ' +
           'The base mesh is imported once with the node transform; instance attributes are ignored.',
-      );
+      });
     }
 
     const mesh = gltfMeshes[node.mesh];
@@ -438,12 +493,16 @@ export async function gltfToScene(
         const modeNames: Record<number, string> = {
           0: 'POINTS', 1: 'LINES', 2: 'LINE_LOOP', 3: 'LINE_STRIP',
         };
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'unsupported-primitive-mode',
+          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
             `mode ${mode} (${modeNames[mode] ?? 'UNKNOWN'}). Only TRIANGLES (4), ` +
             'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6) are supported (core has no ' +
             'point/line primitive). This primitive is SKIPPED.',
-        );
+        });
         continue;
       }
 
@@ -451,21 +510,29 @@ export async function gltfToScene(
       // fallback, or the decode hook failed) — skip honestly.
       const primExtKeys = Object.keys(prim.extensions ?? {});
       if (primExtKeys.includes('KHR_draco_mesh_compression')) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'unresolved-compression',
+          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].extensions.KHR_draco_mesh_compression`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
             'KHR_draco_mesh_compression geometry (no opts.dracoDecode hook / decode failed, ' +
             'and no uncompressed fallback). Primitive SKIPPED.',
-        );
+        });
         continue;
       }
 
       // ── Unpack attributes ──────────────────────────────────────────────────
       const posIdx = prim.attributes['POSITION'];
       if (posIdx === undefined) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'missing-position',
+          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION ` +
             'attribute. Primitive SKIPPED.',
-        );
+        });
         continue;
       }
 
@@ -473,10 +540,14 @@ export async function gltfToScene(
       try {
         positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings);
       } catch (e) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'unreadable-position',
+          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
+          message:
+            `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ` +
             String(e) + ' Primitive SKIPPED.',
-        );
+        });
         continue;
       }
 
@@ -486,10 +557,14 @@ export async function gltfToScene(
         try {
           indices = unpackAccessorUint32(gltf, buffers, prim.indices);
         } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ` +
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'unreadable-indices',
+            path: `meshes[${node.mesh}].primitives[${primitiveIndex}].indices`,
+            message:
+              `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ` +
               String(e) + ' Primitive SKIPPED.',
-          );
+          });
           continue;
         }
       }
@@ -501,11 +576,15 @@ export async function gltfToScene(
         const src = indices ?? sequentialIndices(positions.length / 3);
         const tris = triangulateTopology(src, mode);
         if (tris.length === 0) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'empty-triangulated-primitive',
+            path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
               `${mode === GLTF_MODE_TRIANGLE_STRIP ? 'TRIANGLE_STRIP' : 'TRIANGLE_FAN'} primitive ` +
               'yields no non-degenerate triangles. Primitive SKIPPED.',
-          );
+          });
           continue;
         }
         indices = tris;
@@ -752,6 +831,7 @@ export async function gltfToScene(
     convertedMaterials: coreMaterials,
     materialVariantBindings,
     warnings,
+    diagnostics,
   };
 }
 

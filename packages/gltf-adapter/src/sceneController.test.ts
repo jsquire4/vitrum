@@ -180,6 +180,7 @@ function manualSkinnedInput(): {
   animations: readonly AnimationClip[];
   animationTargets: Record<string, readonly string[]>;
   warnings: string[];
+  diagnostics: [];
 } {
   const identity = identityMat4();
   const skinIndices = new Uint32Array(12);
@@ -227,6 +228,7 @@ function manualSkinnedInput(): {
     }],
     animationTargets: { 'gltf-node-0': ['skin-prim'] },
     warnings: [],
+    diagnostics: [],
   };
 }
 

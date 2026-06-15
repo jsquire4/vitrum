@@ -8,6 +8,8 @@
 
 export { gltfToScene } from './gltfToScene.js';
 export type {
+  GltfImportDiagnostic,
+  GltfImportDiagnosticCode,
   GltfMaterialVariantBinding,
   GltfToSceneOptions,
   GltfToSceneResult,

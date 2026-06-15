@@ -55,18 +55,24 @@ describe('POINTS / line primitive policy', () => {
     expect(compatibility.isCompatible).toBe(false);
   });
 
-  it('warns once per unsupported topology and skips every primitive', async () => {
-    const { scene, warnings } = await gltfToScene(makePointLineModeGltf());
+  it('warns once per unsupported topology, emits diagnostics, and skips every primitive', async () => {
+    const { scene, warnings, diagnostics } = await gltfToScene(makePointLineModeGltf());
 
     expect(scene.primitives).toHaveLength(0);
-    for (const { mode, name } of POINT_LINE_MODES) {
+    for (const [primitiveIndex, { mode, name }] of POINT_LINE_MODES.entries()) {
       expect(warnings).toContain(
         `[vitrum/gltf-adapter] Mesh "unsupported-topologies" primitive has unsupported ` +
           `mode ${mode} (${name}). Only TRIANGLES (4), TRIANGLE_STRIP (5) and ` +
           'TRIANGLE_FAN (6) are supported (core has no point/line primitive). ' +
           'This primitive is SKIPPED.',
       );
+      expect(diagnostics).toContainEqual(expect.objectContaining({
+        severity: 'warning',
+        code: 'unsupported-primitive-mode',
+        path: `meshes[0].primitives[${primitiveIndex}].mode`,
+      }));
     }
     expect(warnings).toHaveLength(POINT_LINE_MODES.length);
+    expect(diagnostics).toHaveLength(POINT_LINE_MODES.length);
   });
 });

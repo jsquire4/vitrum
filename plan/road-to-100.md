@@ -316,7 +316,7 @@ buckets that the A–D framing was missing:**
 
 | Target | Done when |
 |--------|-----------|
-| **glTF** | `loadGltfAsset` → `loadGltfForEngine` handles URL/GLB/JSON+external resources; `analyzeGltfAsset` + `rankGltfBackends` are complete; `GltfSceneController` drives skin/morph/TRS; every extension in `REQUIRED_EXTENSION_SUPPORT` (`featureReport.ts:124-145`) has import + compatibility + test; zero silent `console.warn` in adapter (warnings in return value only). |
+| **glTF** | `loadGltfAsset` → `loadGltfForEngine` handles URL/GLB/JSON+external resources; `analyzeGltfAsset` + `rankGltfBackends` are complete; `GltfSceneController` drives skin/morph/TRS; every extension in `REQUIRED_EXTENSION_SUPPORT` (`featureReport.ts:124-145`) has import + compatibility + test; zero silent `console.warn` in adapter (string warnings in return values, plus structured import diagnostics for converter-owned degradations). |
 | **Walkaround** | Every `MaterialSpec` key graded `native`/`approximate` in `WALKAROUND_MATERIALS` is consumed in GPU shaders; `CONSUMED_MATERIAL_FIELDS` (`consumedMaterialFields.ts`) matches ledger exactly; emitter/environment/shadow grades match runtime; P0 walkaround bugs (W-HYB-01..03, H25-H29) closed. |
 | **Arbitrary glTF** | For any asset in Khronos sample set + internal hero fixtures: `loadGltfAsset` succeeds or throws structurally; `evaluateGltfBackendCompatibility(selectedBackend).unsupportedCount === 0` for used features OR `compatibilityMode` rejects before render; rendered output passes material-furnace + reference gate on **recommended** backend; `prefer:'auto'` uses feature report, not triangle count alone. |
 
@@ -716,7 +716,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 
 | Mode | When to throw |
 |------|----------------|
-| `best-effort` | Never; warnings in `GltfAssetResult.warnings` + `Engine.onWarning` |
+| `best-effort` | Never; converter degradations in `GltfAssetResult.warnings` plus `GltfAssetResult.diagnostics`; runtime/controller/backend warnings still surface through controller result warnings and `Engine.onWarning` |
 | `reject-unsupported` | Any used field `unsupported` on selected backend |
 | `reject-degraded` | Any non-`native` issue including `approximate`, `requires-hook` without hook |
 

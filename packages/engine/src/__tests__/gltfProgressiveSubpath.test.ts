@@ -89,6 +89,13 @@ describe('@vitrum/engine/gltf progressive helper', () => {
       expect.stringContaining('No decodeImage callback provided'),
       expect.stringContaining('Camera nodes are present but ignored'),
     ]));
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'ignored-camera',
+        path: 'cameras',
+      }),
+    ]));
     expect(createProgressiveEngineMock).toHaveBeenCalledTimes(1);
     expect(createProgressiveEngineMock.mock.calls[0]![0]).toEqual(expect.objectContaining({
       canvas,

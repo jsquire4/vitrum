@@ -1023,6 +1023,9 @@ Status:
 - External image bytes are plumbed into `gltfToScene()` through `imageBytes`;
   embedded GLB images, `data:` URI images, and bufferView images still use the
   existing path.
+- Converter-owned import degradations now return structured
+  `GltfImportDiagnostic` entries with stable codes and glTF source paths
+  alongside the legacy string `warnings` array.
 - Abort signals and deterministic fetch/base-URI errors are wired.
 
 Closure:
@@ -1253,8 +1256,10 @@ Status:
 - TRIANGLES imports directly.
 - TRIANGLE_STRIP and TRIANGLE_FAN are triangulated into indexed triangle lists.
 - POINTS/LINES/LINE_LOOP/LINE_STRIP still warn and skip because core has no
-  point/line primitive; this is now structured in compatibility reporting as
-  `mode:<n>` unsupported primitive issues.
+  point/line primitive; this is now structured in both compatibility reporting
+  as `mode:<n>` unsupported primitive issues and import diagnostics as
+  `unsupported-primitive-mode` entries with `meshes[n].primitives[m].mode`
+  paths.
 
 Closure:
 - Treat strip/fan as closed.
@@ -1359,7 +1364,9 @@ Do not carry these as open gaps unless the code regresses again.
   buffers, merged RC in-place refit, and rebuild fallback.
 - pt-webgl2 `castShadow` missing: stale. pt-webgl2 packs and checks castShadow.
 - pt-webgl2 HDRI intensity/rotation missing: stale. These feed frame uniforms.
-- glTF adapter console diagnostics missing: stale. The adapter returns warnings.
+- glTF adapter console diagnostics missing: stale. The adapter returns warnings,
+  and converter-owned import degradations now also return structured diagnostics
+  with stable codes/source paths.
 - pt-webgpu procedural-sky missing: stale. pt-webgpu now bakes Preetham sky to an
   importance-sampled HDRI path.
 - shared-bvh attenuation/thickness fingerprint omission: stale. Current
