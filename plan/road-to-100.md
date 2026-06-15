@@ -244,6 +244,10 @@ buckets that the A–D framing was missing:**
   `sprint9-10a-welford.test.ts` now adds an independent two-pass arithmetic oracle for
   Welford mean/M2 variance plus sample-budget first-frame and threshold tier behavior,
   so that formerly string-only adaptive-sampling path has executable numeric coverage.
+  `gtaoQuarterRes.test.ts` now adds an independent CPU oracle for the GTAO
+  per-channel bilateral upsample: equal-surface taps average per channel, depth
+  edges prefer matching low-res cells, and zero bilateral weight falls back to the
+  per-channel 2x2 average.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,

@@ -31,6 +31,101 @@ import type { PassDispatchContext } from '../src/pipeline/Pass.js';
 
 installWebGPUPolyfills();
 
+type Vec3 = readonly [number, number, number];
+
+interface NormalDepthSample {
+  normal: Vec3;
+  depth: number;
+}
+
+function add3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+function scale3(v: Vec3, s: number): Vec3 {
+  return [v[0] * s, v[1] * s, v[2] * s];
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function clamp01Vec3(v: Vec3): Vec3 {
+  return [
+    Math.min(1, Math.max(0, v[0])),
+    Math.min(1, Math.max(0, v[1])),
+    Math.min(1, Math.max(0, v[2])),
+  ];
+}
+
+function normalDepthAt(grid: readonly NormalDepthSample[][], x: number, y: number): NormalDepthSample {
+  return grid[y]![x]!;
+}
+
+function aoAt(grid: readonly Vec3[][], x: number, y: number): Vec3 {
+  return grid[y]![x]!;
+}
+
+function gtaoSimilarityWeight(
+  centerDepth: number,
+  centerNormal: Vec3,
+  sampleDepth: number,
+  sampleNormal: Vec3,
+  bilateralDepthSigma: number,
+): number {
+  const depthDelta = Math.abs(centerDepth - sampleDepth);
+  const sigma = Math.max(1e-6, bilateralDepthSigma);
+  const depthW = Math.exp(-depthDelta / (2 * sigma * sigma));
+  const nDot = Math.max(0, dot3(centerNormal, sampleNormal));
+  return depthW * nDot ** 16;
+}
+
+function gtaoUpsampleReference(params: {
+  fullX: number;
+  fullY: number;
+  fullWidth: number;
+  fullHeight: number;
+  downscale: number;
+  normalDepth: readonly NormalDepthSample[][];
+  aoHalf: readonly Vec3[][];
+  bilateralDepthSigma: number;
+}): Vec3 {
+  const { fullX, fullY, fullWidth, fullHeight, downscale, normalDepth, aoHalf, bilateralDepthSigma } = params;
+  const ds = Math.max(1, Math.trunc(downscale));
+  const halfWidth = Math.trunc(fullWidth / ds);
+  const halfHeight = Math.trunc(fullHeight / ds);
+  const center = normalDepthAt(normalDepth, fullX, fullY);
+
+  if (center.depth < 1e-4) return [1, 1, 1];
+
+  const halfX = Math.trunc(fullX / ds);
+  const halfY = Math.trunc(fullY / ds);
+  let sumAO: Vec3 = [0, 0, 0];
+  let sumW = 0;
+
+  for (let dy = 0; dy < 2; dy += 1) {
+    for (let dx = 0; dx < 2; dx += 1) {
+      const sampleHalfX = Math.min(halfX + dx, halfWidth - 1);
+      const sampleHalfY = Math.min(halfY + dy, halfHeight - 1);
+      const sampleFullX = Math.min(sampleHalfX * ds + Math.trunc(ds / 2), fullWidth - 1);
+      const sampleFullY = Math.min(sampleHalfY * ds + Math.trunc(ds / 2), fullHeight - 1);
+      const sample = normalDepthAt(normalDepth, sampleFullX, sampleFullY);
+      const w = gtaoSimilarityWeight(center.depth, center.normal, sample.depth, sample.normal, bilateralDepthSigma);
+      sumAO = add3(sumAO, scale3(aoAt(aoHalf, sampleHalfX, sampleHalfY), w));
+      sumW += w;
+    }
+  }
+
+  if (sumW > 1e-4) return clamp01Vec3(scale3(sumAO, 1 / sumW));
+
+  const sx1 = Math.min(halfX + 1, halfWidth - 1);
+  const sy1 = Math.min(halfY + 1, halfHeight - 1);
+  return clamp01Vec3(scale3(add3(
+    add3(aoAt(aoHalf, halfX, halfY), aoAt(aoHalf, sx1, halfY)),
+    add3(aoAt(aoHalf, halfX, sy1), aoAt(aoHalf, sx1, sy1)),
+  ), 0.25));
+}
+
 // ── Size-capturing mock device ──────────────────────────────────────────────
 //
 // Returns texture mocks that reflect the createTexture descriptor's
@@ -267,6 +362,84 @@ describe('GTAOPass.dispatch — resolution + UBO downscale', () => {
     new GTAOPass({} as unknown as GPUComputePipeline).dispatch(makeDispatchCtx(256, 256, 2, captured, ubo));
     const dv = new DataView(ubo.bytes!);
     expect(dv.getFloat32(20, true)).toBe(2);
+  });
+});
+
+// ── GTAO upsample — independent per-channel bilateral oracle ────────────────
+
+describe('gtaoUpsample reference behavior — per-channel bilateral reconstruction', () => {
+  const aoHalf: Vec3[][] = [
+    [[0.2, 0.4, 0.8], [0.8, 0.4, 0.2]],
+    [[0.1, 0.7, 0.3], [0.9, 0.2, 0.6]],
+  ];
+
+  function flatNormalDepth(width: number, height: number): NormalDepthSample[][] {
+    return Array.from({ length: height }, () =>
+      Array.from({ length: width }, () => ({ normal: [0, 0, 1] as Vec3, depth: 1 })),
+    );
+  }
+
+  it('reduces to an unweighted per-channel 2x2 average when all taps match the surface', () => {
+    const normalDepth = flatNormalDepth(4, 4);
+    const ao = gtaoUpsampleReference({
+      fullX: 0,
+      fullY: 0,
+      fullWidth: 4,
+      fullHeight: 4,
+      downscale: 2,
+      normalDepth,
+      aoHalf,
+      bilateralDepthSigma: 1,
+    });
+
+    expect(ao[0]).toBeCloseTo((0.2 + 0.8 + 0.1 + 0.9) / 4, 12);
+    expect(ao[1]).toBeCloseTo((0.4 + 0.4 + 0.7 + 0.2) / 4, 12);
+    expect(ao[2]).toBeCloseTo((0.8 + 0.2 + 0.3 + 0.6) / 4, 12);
+  });
+
+  it('preserves a depth edge by weighting the matching low-res cell over distant neighbors', () => {
+    const normalDepth = flatNormalDepth(4, 4);
+    normalDepth[1]![3] = { normal: [0, 0, 1], depth: 50 };
+    normalDepth[3]![1] = { normal: [0, 0, 1], depth: 50 };
+    normalDepth[3]![3] = { normal: [0, 0, 1], depth: 50 };
+
+    const ao = gtaoUpsampleReference({
+      fullX: 1,
+      fullY: 1,
+      fullWidth: 4,
+      fullHeight: 4,
+      downscale: 2,
+      normalDepth,
+      aoHalf,
+      bilateralDepthSigma: 0.01,
+    });
+
+    expect(ao[0]).toBeCloseTo(0.2, 12);
+    expect(ao[1]).toBeCloseTo(0.4, 12);
+    expect(ao[2]).toBeCloseTo(0.8, 12);
+  });
+
+  it('falls back to the per-channel 2x2 average when every bilateral weight is rejected', () => {
+    const normalDepth = flatNormalDepth(4, 4);
+    normalDepth[1]![1] = { normal: [1, 0, 0], depth: 1 };
+    normalDepth[1]![3] = { normal: [1, 0, 0], depth: 1 };
+    normalDepth[3]![1] = { normal: [1, 0, 0], depth: 1 };
+    normalDepth[3]![3] = { normal: [1, 0, 0], depth: 1 };
+
+    const ao = gtaoUpsampleReference({
+      fullX: 0,
+      fullY: 0,
+      fullWidth: 4,
+      fullHeight: 4,
+      downscale: 2,
+      normalDepth,
+      aoHalf,
+      bilateralDepthSigma: 1,
+    });
+
+    expect(ao[0]).toBeCloseTo((0.2 + 0.8 + 0.1 + 0.9) / 4, 12);
+    expect(ao[1]).toBeCloseTo((0.4 + 0.4 + 0.7 + 0.2) / 4, 12);
+    expect(ao[2]).toBeCloseTo((0.8 + 0.2 + 0.3 + 0.6) / 4, 12);
   });
 });
 
