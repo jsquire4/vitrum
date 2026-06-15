@@ -401,6 +401,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
             lightMapIntensity: 1,
             specularColor: [1, 1, 1],
             specularIntensity: 1,
+            clearcoat: 0,
+            clearcoatRoughness: 0,
           },
         },
         ...base.primitives.slice(1),
@@ -421,6 +423,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           lightMapIntensity: 3,
           specularColor: [0.25, 0.5, 0.75],
           specularIntensity: 0.4,
+          clearcoat: 0.6,
+          clearcoatRoughness: 0.2,
         },
       });
 

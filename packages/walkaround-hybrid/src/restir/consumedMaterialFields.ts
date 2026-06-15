@@ -80,12 +80,18 @@
  *                           analytic, sun, and specular-indirect paths.
  *  specularIntensity      same scalar specular metadata path; approximate
  *                           because ReSTIR candidate PDFs still use default F0.
+ *  clearcoat             stored in material atlas metadata and added as a
+ *                           fixed-F0 GGX top-coat lobe in shade-owned direct,
+ *                           analytic, sun, and specular-indirect paths.
+ *  clearcoatRoughness    same scalar clearcoat metadata path; approximate
+ *                           because ReSTIR candidate PDFs/payloads and maps
+ *                           still use the base-lobe path.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
- * transmissionMap / lightMap, Disney BSDF scalars, spectral curves,
- * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
- * extension maps — is IGNORED.
+ * transmissionMap / lightMap, other Disney BSDF scalars, spectral curves,
+ * volume scattering, thin-film stacks, layered BSDF, anisotropy, and extension
+ * maps — is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -101,6 +107,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'lightMapIntensity',
   'specularColor',
   'specularIntensity',
+  'clearcoat',
+  'clearcoatRoughness',
   'alphaMode',
   'alphaCutoff',
   'opacity',

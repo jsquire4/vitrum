@@ -2,8 +2,8 @@
  * Tests for the material-field consumption warning (Wave 2, §3 item 1).
  *
  * Pins:
- *   (a) A scene supplying baseColorMap + normalMap + clearcoat warns only for
- *       clearcoat because normalMap now has a walkaround texture path.
+ *   (a) A scene supplying baseColorMap + normalMap + sheen warns only for
+ *       sheen because normalMap now has a walkaround texture path.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -83,39 +83,39 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('normalMap');
   });
 
-  it('names clearcoat when supplied', () => {
+  it('names sheen when supplied', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      clearcoat: 1.0,
+      sheen: 1.0,
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
-    expect(result).toContain('clearcoat');
+    expect(result).toContain('sheen');
   });
 
-  it('(pin a) names clearcoat while baseColorMap + normalMap are consumed', () => {
+  it('(pin a) names sheen while baseColorMap + normalMap are consumed', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
       baseColorMap: { handle: stubTextureRef() },
       normalMap: stubTextureRef(),
-      clearcoat: 1.0,
+      sheen: 1.0,
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
     // Result is sorted alphabetically.
-    expect(result).toEqual(['clearcoat']);
+    expect(result).toEqual(['sheen']);
   });
 
   it('dedupes unconsumed fields across multiple primitives', () => {
     const prims: PrimLike[] = [
-      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, clearcoat: 1 } },
-      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, clearcoat: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, sheen: 1 } },
+      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, sheen: 0.5 } },
     ];
     const result = collectUnconsumedMaterialFields(prims);
-    // clearcoat should appear exactly once.
-    expect(result.filter((f) => f === 'clearcoat')).toHaveLength(1);
+    // sheen should appear exactly once.
+    expect(result.filter((f) => f === 'sheen')).toHaveLength(1);
   });
 
   it('skips non-mesh primitives', () => {
@@ -159,7 +159,8 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColor', 'roughness', 'metallic',
       'emissive', 'emissiveIntensity',
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
-      'thickness', 'ior', 'extensions', 'baseColorMap', 'roughnessMap', 'metallicMap',
+      'thickness', 'ior', 'extensions', 'clearcoat', 'clearcoatRoughness',
+      'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
     ]) {

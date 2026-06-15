@@ -80,6 +80,41 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
   return evalGGXWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
 }
 
+fn evalClearcoatLobe(clearcoat: f32, clearcoatRoughness: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let cc = clamp(clearcoat, 0.0, 1.0);
+  if (cc < 1e-4) { return vec3f(0.0); }
+  let h = safe_normalize(wo + wi);
+  let NdotL = max(0.0, dot(n, wi));
+  let NdotV = max(1e-4, dot(n, wo));
+  let NdotH = max(0.0, dot(n, h));
+  let VdotH = max(0.0, dot(wo, h));
+  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+
+  // KHR_materials_clearcoat uses a dielectric top coat at IOR 1.5 (F0 ≈ 0.04).
+  let rough = max(0.01, clamp(clearcoatRoughness, 0.0, 1.0));
+  let F = fresnelSchlick(VdotH, vec3f(0.04));
+  let D = distributionGGX(NdotH, rough);
+  let G = geometrySmith(NdotV, NdotL, rough);
+  let specular = (D * G * F) / (4.0 * NdotV * NdotL);
+  return cc * specular * NdotL;
+}
+
+fn evalGGXWithSpecularAndClearcoat(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi);
+}
+
 // ── B9 (road-to-100) — Kulla-Conty multiple-scattering energy compensation ───
 //
 // Single-scattering GGX (the D·G·F lobe above) loses energy at high roughness
@@ -192,6 +227,22 @@ fn evalGGXSpecularOnlyWithSpecular(
 
 fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
+}
+
+fn evalGGXSpecularOnlyWithSpecularAndClearcoat(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi);
 }
 
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────

@@ -418,8 +418,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheen: 'unsupported',
   sheenColor: 'unsupported',
   sheenRoughness: 'unsupported',
-  clearcoat: 'unsupported',
-  clearcoatRoughness: 'unsupported',
+  // Scalar clearcoat rides material atlas metadata and adds a fixed-F0 GGX top
+  // coat in shade-owned direct/analytic/sun/specular-indirect paths. ReSTIR
+  // candidate PDFs/payloads and clearcoat maps remain base-lobe-only.
+  clearcoat: 'approximate',
+  clearcoatRoughness: 'approximate',
   iridescence: 'unsupported',
   iridescenceIor: 'unsupported',
   iridescenceThicknessRange: 'unsupported',

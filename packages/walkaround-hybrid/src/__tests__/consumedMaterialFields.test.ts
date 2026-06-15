@@ -73,7 +73,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + `clearcoat` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + `sheen` (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -87,7 +87,7 @@ function unconsumedFieldsScene(): Scene {
           roughness: 0.3,
           metallic: 0,
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
-          clearcoat: 0.8,                      // unconsumed
+          sheen: 0.8,                          // unconsumed
         },
       } as unknown as ScenePrimitive,
     ],
@@ -106,7 +106,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
-      'specularColor', 'specularIntensity',
+      'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -162,7 +162,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['clearcoat']);
+    expect(result).toEqual(['sheen']);
   });
 
   it('skips non-mesh kinds (analytic kind is not scanned)', () => {
@@ -263,7 +263,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for clearcoat when baseColorMap is also supplied', () => {
+  it('warns only for sheen when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -275,12 +275,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
       expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('clearcoat');
+      expect(materialWarn).toContain('sheen');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
         !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('clearcoat'),
+        w.details.fields.includes('sheen'),
       )).toBe(true);
     } finally {
       engine.dispose();

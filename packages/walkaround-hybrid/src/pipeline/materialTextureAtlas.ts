@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 22;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 23;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -364,6 +364,14 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = clampedUnit(mat?.specularIntensity, 1);
   };
 
+  const writeClearcoatMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = clampedUnit(mat?.clearcoat, 0);
+    baseColorMetaData[b + 1] = clampedUnit(mat?.clearcoatRoughness, 0);
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -380,6 +388,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'lightMap', 'linear', baseTexel + 18);
     writeLightMapIntensityMeta(mat, baseTexel + 20);
     writeSpecularMeta(mat, baseTexel + 21);
+    writeClearcoatMeta(mat, baseTexel + 22);
   }
 
   return {

@@ -1112,7 +1112,10 @@ function materialAtlasPatchRequiresFullRebuild(
     specularColorUnit(prev, 1) !== specularColorUnit(next, 1) ||
     specularColorUnit(prev, 2) !== specularColorUnit(next, 2) ||
     alphaAtlasUnit(prev?.specularIntensity, 1) !== alphaAtlasUnit(next?.specularIntensity, 1);
-  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged;
+  const clearcoatChanged =
+    alphaAtlasUnit(prev?.clearcoat, 0) !== alphaAtlasUnit(next?.clearcoat, 0) ||
+    alphaAtlasUnit(prev?.clearcoatRoughness, 0) !== alphaAtlasUnit(next?.clearcoatRoughness, 0);
+  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged || clearcoatChanged;
 }
 
 /**

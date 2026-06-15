@@ -663,7 +663,7 @@ paths still use scalar packed lanes, and the rest of the texture-map family is s
 
 #### 3E — Extension lobes on walkaround (clearcoat, sheen, iridescence, specular, anisotropy)
 
-Scalar `specularColor` / `specularIntensity` are now code-closed as approximate: material-atlas metadata stores the scalar controls and shade-owned direct, analytic, sun, and glossy-indirect GGX paths modulate dielectric F0. Remaining 3E work is clearcoat, sheen, iridescence, anisotropy, specular maps, and any ReSTIR/GI payload/PDF parity needed for promotion beyond approximate.
+Scalar `specularColor` / `specularIntensity` and scalar `clearcoat` / `clearcoatRoughness` are now code-closed as approximate: material-atlas metadata stores the scalar controls and shade-owned direct, analytic, sun, and glossy-indirect GGX paths consume them. Remaining 3E work is sheen, iridescence, anisotropy, specular maps, clearcoat maps/normal maps, and any ReSTIR/GI payload/PDF parity needed for promotion beyond approximate.
 
 **Footgun:** Walkaround is not a path tracer — clearcoat/sheen are approximations. Grade `approximate` unless energy conservation verified; planner must surface this.
 
@@ -818,7 +818,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override and DDGI material-emissive direct probe hits closed; remaining scalar work belongs to atlas/lobe parity rows |
 | Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend composite remains open |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
-| Disney scalars | sheen*, clearcoat*, iridescence*, anisotropy*, specular maps | 3E; scalar `specularColor`/`specularIntensity` are approximate in shade-owned GGX paths |
+| Disney scalars | sheen*, iridescence*, anisotropy*, specular maps, clearcoat maps | 3E; scalar `specularColor`/`specularIntensity` and scalar `clearcoat`/`clearcoatRoughness` are approximate in shade-owned GGX paths |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends |
 
