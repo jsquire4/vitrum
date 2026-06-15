@@ -40,6 +40,24 @@ function sceneWithPointLight(): Scene {
 function sceneNoEmitters(): Scene {
   return { primitives: [tri('tri')], emitters: [], environment: { kind: 'none' } };
 }
+function sceneWithHdri(intensity = 1): Scene {
+  return {
+    primitives: [tri('tri')],
+    emitters: [],
+    environment: {
+      kind: 'hdri',
+      intensity,
+      hdri: {
+        width: 2,
+        height: 1,
+        data: new Float32Array([
+          1, 0, 0,
+          0, 2, 0,
+        ]),
+      },
+    },
+  };
+}
 function sceneWithMeshAreaLight(): Scene {
   // A separate emissive panel mesh referenced by a mesh-area emitter (B4 NEE).
   const panel: MeshPrimitive = {
@@ -149,6 +167,18 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     const rec = await renderAndRecord(sceneNoEmitters());
     expect(rec.has('backgroundAlpha')).toBe(true);
     expect(rec.get('backgroundAlpha')).toBe(1);
+  });
+
+  it('env-none: totalSum and environmentIntensity both stay zero', async () => {
+    const none = await renderAndRecord(sceneNoEmitters());
+    expect(none.has('envMapInfo.totalSum')).toBe(true);
+    expect(none.get('envMapInfo.totalSum')).toBe(0);
+    expect(none.has('environmentIntensity')).toBe(true);
+    expect(none.get('environmentIntensity')).toBe(0);
+
+    const hdri = await renderAndRecord(sceneWithHdri(2));
+    expect(hdri.get('envMapInfo.totalSum')).toBeGreaterThan(0);
+    expect(hdri.get('environmentIntensity')).toBe(2);
   });
 
   it('B4: mesh-area NEE uniforms are uploaded (count + Σ area) for an emissive mesh', async () => {
