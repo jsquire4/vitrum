@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GltfJson } from '@vitrum/gltf-adapter';
+import type { MeshPrimitive, TextureRef } from '@vitrum/core';
 
 const createProgressiveEngineMock = vi.hoisted(() => vi.fn());
 
@@ -61,6 +62,17 @@ describe('@vitrum/engine/gltf progressive helper', () => {
 
     const options: LoadGltfWithProgressiveEngineOptions = {
       buffers,
+      decodeTextures: true,
+      decodeImage: async (data: Uint8Array, mimeType: string) => ({ kind: 'raw-image', mimeType, data }),
+      decodePixels: (_handle, context) => ({
+        width: 4,
+        height: 2,
+        channels: 4,
+        dataType: 'uint8',
+        colorSpace: context.colorSpace,
+        data: new Uint8Array(4 * 2 * 4).fill(255),
+      }),
+      maxTextureSize: 2,
       engineOptions: {
         canvas,
         seedFromRealtime: false,
@@ -74,19 +86,33 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.textureDecodeReport).toBe(result.asset.textureDecodeReport);
     expect(result.textureDecodeReport).toMatchObject({
       mapCount: 1,
-      rawImageCount: 1,
-      rawImageRefs: [
+      rawImageCount: 0,
+      cpuReadableCount: 1,
+      entries: [
         expect.objectContaining({
           primitiveId: 'gltf-prim-0',
           materialField: 'baseColorMap',
           path: 'scene.primitives[0].material.baseColorMap',
           colorSpace: 'srgb',
-          handleKind: 'raw-image',
+          handleKind: 'pixel-data',
         }),
       ],
     });
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decoded-texture-exceeds-max-size',
+        path: 'scene.primitives[0].material.baseColorMap',
+        resizedWidth: 2,
+        resizedHeight: 1,
+      }),
+    ]);
+    expect(result.textureDecodeWarnings).toEqual([
+      expect.stringContaining('exceeds maxTextureSize=2'),
+    ]);
     expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining('No decodeImage callback provided'),
+      expect.stringContaining('exceeds maxTextureSize=2'),
       expect.stringContaining('Camera nodes are present but ignored'),
     ]));
     expect(result.diagnostics).toEqual(expect.arrayContaining([
@@ -103,5 +129,14 @@ describe('@vitrum/engine/gltf progressive helper', () => {
       scene: result.asset.scene,
       controller: result.controller,
     }));
+    const primitive = createProgressiveEngineMock.mock.calls[0]![0].scene.primitives[0] as MeshPrimitive;
+    const textureHandle = (primitive.material.baseColorMap as TextureRef).handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+    };
+    expect(textureHandle.width).toBe(2);
+    expect(textureHandle.height).toBe(1);
+    expect(textureHandle.data).toBeInstanceOf(Float32Array);
   });
 });

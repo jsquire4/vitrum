@@ -7,12 +7,14 @@
 
 import type { BackendId, Scene } from '@vitrum/core';
 import {
+  loadGltfAndDecodeTextures,
   loadGltfAsset,
   type GltfAssetInput,
   type GltfAssetResult,
-  type LoadGltfAssetOptions,
+  type GltfDecodedAssetResult,
+  type LoadGltfAndDecodeTexturesOptions,
 } from './assetLoader.js';
-import type { GltfTextureDecodeReport } from './texturePipeline.js';
+import type { DecodeSceneTextureDiagnostic, GltfTextureDecodeReport } from './texturePipeline.js';
 import type { GltfImportDiagnostic } from './gltfToScene.js';
 import {
   createGltfSceneController,
@@ -39,7 +41,17 @@ export type GltfEngineFactory<
 export interface LoadGltfForEngineOptions<
   TEngine extends GltfScenePatchTarget = GltfScenePatchTarget,
   TFactoryOptions extends object = Record<string, never>,
-> extends LoadGltfAssetOptions {
+> extends LoadGltfAndDecodeTexturesOptions {
+  /**
+   * Run the CPU texture decode bridge before engine construction/attachment.
+   * This promotes raw-image `TextureRef` handles into backend-ready CPU-linear
+   * handles and surfaces `textureDecodeDiagnostics` / `textureDecodeWarnings` on
+   * the returned bridge result. It defaults to false unless a decode-specific
+   * option such as `decodePixels`, `textureTarget`, `maxTextureSize`, or
+   * `warnOnNpotRepeatWrap` is supplied.
+   */
+  readonly decodeTextures?: boolean;
+
   /**
    * Existing engine to attach the loaded scene/controller to. Mutually useful
    * with `createEngine`: pass one or the other. If both are supplied,
@@ -79,6 +91,10 @@ export interface GltfForEngineResult<TEngine extends GltfScenePatchTarget = Gltf
   readonly controller: GltfSceneController;
   readonly attached: boolean;
   readonly textureDecodeReport: GltfTextureDecodeReport;
+  readonly decodedTextureCount: number;
+  readonly unchangedTextureCount: number;
+  readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[];
+  readonly textureDecodeWarnings: readonly string[];
   readonly warnings: readonly string[];
   readonly diagnostics: readonly GltfImportDiagnostic[];
 }
@@ -90,7 +106,9 @@ export async function loadGltfForEngine<
   input: GltfAssetInput,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions> = {},
 ): Promise<GltfForEngineResult<TEngine>> {
-  const asset = await loadGltfAsset(input, options);
+  const asset = shouldDecodeTextures(options)
+    ? await loadGltfAndDecodeTextures(input, options)
+    : await loadGltfAsset(input, options);
   const backend = selectBackend(asset, options.backend ?? 'recommended');
   enforceCompatibility(asset, backend, options.compatibilityMode ?? 'best-effort', options);
 
@@ -130,9 +148,48 @@ export async function loadGltfForEngine<
     controller,
     attached,
     textureDecodeReport: asset.textureDecodeReport,
-    warnings: [...asset.warnings, ...controller.warnings],
+    decodedTextureCount: decodedTextureCount(asset),
+    unchangedTextureCount: unchangedTextureCount(asset),
+    textureDecodeDiagnostics: textureDecodeDiagnostics(asset),
+    textureDecodeWarnings: textureDecodeWarnings(asset),
+    warnings: [...asset.warnings, ...textureDecodeWarnings(asset), ...controller.warnings],
     diagnostics: asset.diagnostics,
   };
+}
+
+function shouldDecodeTextures<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>): boolean {
+  return options.decodeTextures === true ||
+    options.textureTarget !== undefined ||
+    options.decodePixels !== undefined ||
+    options.maxTextureSize !== undefined ||
+    options.warnOnNpotRepeatWrap !== undefined ||
+    options.onTextureDiagnostic !== undefined ||
+    options.onTextureWarning !== undefined;
+}
+
+function isDecodedAsset(asset: GltfAssetResult | GltfDecodedAssetResult): asset is GltfDecodedAssetResult {
+  return 'textureDecodeDiagnostics' in asset;
+}
+
+function decodedTextureCount(asset: GltfAssetResult | GltfDecodedAssetResult): number {
+  return isDecodedAsset(asset) ? asset.decodedTextureCount : 0;
+}
+
+function unchangedTextureCount(asset: GltfAssetResult | GltfDecodedAssetResult): number {
+  return isDecodedAsset(asset) ? asset.unchangedTextureCount : 0;
+}
+
+function textureDecodeDiagnostics(
+  asset: GltfAssetResult | GltfDecodedAssetResult,
+): readonly DecodeSceneTextureDiagnostic[] {
+  return isDecodedAsset(asset) ? asset.textureDecodeDiagnostics : [];
+}
+
+function textureDecodeWarnings(asset: GltfAssetResult | GltfDecodedAssetResult): readonly string[] {
+  return isDecodedAsset(asset) ? asset.textureDecodeWarnings : [];
 }
 
 function selectBackend(asset: GltfAssetResult, selection: GltfEngineSelection): BackendId {

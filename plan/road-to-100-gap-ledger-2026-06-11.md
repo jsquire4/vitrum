@@ -1187,6 +1187,12 @@ Status:
 - `decodeSceneTextures(target:'cpu-linear', { maxTextureSize })` now resizes
   oversized decoded raw-image payloads before backend upload and reports the
   original/resized dimensions in structured diagnostics.
+- `loadGltfForEngine()` and the `@vitrum/engine/gltf` one-call helpers now expose
+  the decode bridge directly: `decodeTextures` / `decodePixels` /
+  `textureTarget` / `maxTextureSize` options route through
+  `loadGltfAndDecodeTextures()` before engine construction or attachment, and the
+  result carries decoded counts, `textureDecodeDiagnostics`, and
+  `textureDecodeWarnings`.
 - Abort signals and deterministic fetch/base-URI errors are wired.
 
 Closure:
@@ -1229,6 +1235,11 @@ Closure:
   `reject-degraded` guard that refuses `pt-webgpu` when `probeAdapterProfile()`
   reports a non-full trace tier. This closes the one-call strict-mode lite
   downgrade path.
+- The engine bridge is no longer report-only for texture decoding: the same
+  adapter-owned `loadGltfForEngine()` result now carries decoded-scene
+  `textureDecodeReport`, decode counts, decode diagnostics, and decode warnings
+  when decode options are supplied, and both engine one-call helpers forward that
+  surface.
 - The generic adapter now distinguishes pt-webgpu full and lite before engine
   construction: compatibility rows carry `profileId` and `traceTier`, and
   `rankGltfBackends()` emits both `pt-webgpu` and `pt-webgpu-lite` rows while

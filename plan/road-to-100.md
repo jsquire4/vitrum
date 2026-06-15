@@ -760,8 +760,8 @@ Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersio
 #### 4A — Single host path
 
 ```
-loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
-  → textureDecodePass()
+loadGltfForEngine(url, { fetch, dracoDecode, meshoptDecode, decodeImage, decodeTextures, decodePixels })
+  → optional CPU-linear textureDecodePass()
   → rankGltfBackends(report, policy)
   → createEngine({ prefer, scene, gltfAsset: result })  // NEW: optional gltfAsset
   → controller.attachEngine(engine)
@@ -775,6 +775,7 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 | ~~`VitrumCanvas` `gltf` prop~~ ✅ DONE | `VitrumCanvas.tsx` now accepts `gltf` + `gltfOptions`, loads via `loadGltfAsset`, forwards the imported scene to `attachVitrum`, passes the `gltfAsset` recommendation through the lifecycle into `createEngine`, and recreates on `gltf` / `gltfOptions` identity changes. Tests: `vitrumCanvasMount.test.tsx`, `attachVitrumLoop.test.ts`. | Direct `scene` remains supported; `gltf` is the creation-time alternative. |
 | ~~`ProgressiveHandoffCoordinator` + glTF~~ ✅ DONE | `progressiveHandoff.ts`, `createProgressiveEngine.ts`, `progressiveHandoff.test.ts` | Structural `controller` option advances once per `frame()` (default 1/60s or host delta callback) and receives a synthetic patch target that forwards `setScene` / `updatePrimitive` to both engines through the coordinator's existing scene-authority/reset path. Empty-animation glTF controllers are skipped safely; `createProgressiveEngine` forwards the controller options. |
 | ~~Shared-device handoff one-call helper~~ ✅ CODE CLOSED | `@vitrum/engine/gltf` now exports `loadGltfWithProgressiveEngine()`, which loads the asset, targets the `pt-webgpu` compatibility profile, builds the glTF controller, and passes that controller plus the imported scene into `createProgressiveEngine()`; test: `gltfProgressiveSubpath.test.ts` | Texture transcoding/upload policy still follows the adapter/backend handles; built-in Basis/GPU texture transcoding remains the separate `KHR_texture_basisu` row |
+| ~~One-call CPU texture decode bridge~~ ✅ CODE CLOSED | `loadGltfForEngine()` / `loadGltfWithEngine()` / `loadGltfWithProgressiveEngine()` accept `decodeTextures`, `decodePixels`, `textureTarget`, `maxTextureSize`, and NPOT warning options. When decode is requested, the bridge calls `loadGltfAndDecodeTextures()` before engine construction/attachment and returns `decodedTextureCount`, `unchangedTextureCount`, `textureDecodeDiagnostics`, and `textureDecodeWarnings` beside the decoded-scene `textureDecodeReport`. Tests: `gltfAssetApi.test.ts`, `gltfSubpathExport.test.ts`, `gltfProgressiveSubpath.test.ts`. | Default remains report-only unless decode-specific options are supplied, preserving existing host behavior. |
 | ~~Examples~~ ✅ DONE | `examples/gltf-viewer/` | Self-contained Vite app now exercises `loadGltfWithEngine()`, backend recommendation, `textureDecodeReport`, controller attachment, and the capture protocol. |
 
 #### 4B — Compatibility enforcement
@@ -797,6 +798,14 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 
 ✅ **DONE (2026-06-13):** `@vitrum/gltf-adapter` exports `decodeSceneTextures(scene, { target: 'cpu-linear' | 'webgpu', decodePixels })`.
 The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, height, data: Float32Array }` RGBA linear payloads with a Vitrum hint, applies the adapter's per-field sRGB-vs-linear policy, keeps alpha linear, emits source-path warnings when a raw image cannot be decoded, downsamples decoded payloads that exceed `maxTextureSize`, returns structured diagnostics for missing decoders / unsupported handles / max-size resize / NPOT-repeat hazards, and returns a fresh `textureDecodeReport`. The `webgpu` target intentionally preserves handles for the WebGPU upload path. Host image decoding/transcoding is still injected; built-in PNG/Basis transcoders, automatic mip generation, and broader backend map consumption remain separate Road rows.
+
+✅ **FOLLOW-UP (2026-06-15):** the engine bridge now exposes that decode path
+through the one-call APIs. `loadGltfForEngine()` chooses
+`loadGltfAndDecodeTextures()` when `decodeTextures` or any decode-specific option
+is supplied, attaches/constructs the engine with the decoded scene, and returns
+decode counts, diagnostics, and warnings. `@vitrum/engine/gltf` forwards the same
+surface through both `loadGltfWithEngine()` and
+`loadGltfWithProgressiveEngine()`.
 
 ✅ **FOLLOW-UP (2026-06-15):** walkaround-hybrid textured alpha traversal now multiplies baseColorMap `.a` with optional `alphaMap.r`, so glTF assets that store MASK/BLEND coverage in `pbrMetallicRoughness.baseColorTexture.a` are honored without adapter-side fake `alphaMap` aliases. Tests: `gltfAdapter.test.ts` verifies the glTF boundary and `materialTextureAtlas.test.ts` verifies atlas/shader coverage.
 

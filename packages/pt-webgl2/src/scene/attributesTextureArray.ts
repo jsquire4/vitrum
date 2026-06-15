@@ -13,8 +13,8 @@
 // ── Source of the per-vertex attributes ─────────────────────────────────────
 //
 // `mergeWorldSpaceFromCore` (the THREE-free merged world-space stream) emits
-// `positions`, `normals`, `uvs`, and `tangents` aligned to the merged vertex
-// order. It still does not emit vertex colors. So:
+// `positions`, `normals`, `uvs`, `colors`, and `tangents` aligned to the merged
+// vertex order. So:
 //   • layer 0 (normal)  ← merged.normals          (the merged world-space normal).
 //   • layer 1 (tangent) ← merged.tangents when nonzero; otherwise derived here
 //                         from positions + uvs (standard per-triangle accumulate
@@ -46,15 +46,13 @@ export const ATTR_LAYER_UV1 = 4;
 export const ATTR_LAYER_COUNT = 5;
 
 /**
- * A `WorldSpaceMergeResult` that additionally carries an optional per-vertex
- * `colors` array and an optional `uv1` array (stride 2, same vertex order as
- * `merged.uvs`). When `uv1` is absent, layer 4 (ATTR_UV1) falls back to `uvs`
- * (uv0) per vertex. The caller is responsible for building `uv1` from the source
- * primitives aligned with the merged vertex order (see `buildMergedUv1` in
- * `uploadSceneTextures.ts`).
+ * A `WorldSpaceMergeResult` that additionally carries an optional `uv1` array
+ * (stride 2, same vertex order as `merged.uvs`). When `uv1` is absent, layer 4
+ * (ATTR_UV1) falls back to `uvs` (uv0) per vertex. The caller is responsible for
+ * building `uv1` from the source primitives aligned with the merged vertex order
+ * (see `buildMergedUv1` in `uploadSceneTextures.ts`).
  */
 interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
-  readonly colors?: Float32Array;
   /** Per-vertex uv1, stride 2 (same vertex order as `merged.uvs`). Optional;
    *  when absent layer 4 (ATTR_UV1) copies uv0 per vertex. */
   readonly uv1?: Float32Array;

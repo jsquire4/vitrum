@@ -1255,6 +1255,62 @@ describe('loadGltfForEngine', () => {
     expect(engine.setScene).not.toHaveBeenCalled();
   });
 
+  it('can decode textures before engine attachment and surface decode diagnostics', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const engine = { setScene: vi.fn() };
+    const decodePixels = vi.fn((
+      _handle: Parameters<DecodeGltfTexturePixelsFn>[0],
+      context: Parameters<DecodeGltfTexturePixelsFn>[1],
+    ) => ({
+      width: 4,
+      height: 2,
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+      data: new Uint8Array(4 * 2 * 4).fill(255),
+    }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      decodeTextures: true,
+      decodeImage: async (data: Uint8Array, mimeType: string) => ({ kind: 'raw-image', mimeType, data }),
+      decodePixels,
+      maxTextureSize: 2,
+    });
+
+    expect(result.attached).toBe(true);
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeReport.cpuReadableCount).toBe(1);
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decoded-texture-exceeds-max-size',
+        path: 'scene.primitives[0].material.baseColorMap',
+        materialField: 'baseColorMap',
+        resizedWidth: 2,
+        resizedHeight: 1,
+      }),
+    ]);
+    expect(result.textureDecodeWarnings).toEqual([
+      expect.stringContaining('exceeds maxTextureSize=2'),
+    ]);
+    expect(result.warnings).toEqual(expect.arrayContaining([...result.textureDecodeWarnings]));
+
+    const attachedScene = engine.setScene.mock.calls[0]![0] as Scene;
+    const primitive = attachedScene.primitives[0] as MeshPrimitive;
+    const handle = (primitive.material.baseColorMap as TextureRef).handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+    };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(1);
+    expect(handle.data).toBeInstanceOf(Float32Array);
+    expect(result.asset.scene).toBe(attachedScene);
+  });
+
   it('preserves KHR_materials_variants metadata on bridge-created controllers', async () => {
     const { gltf, buffers } = makeInlineMaterialVariantGltf();
     const engine = { setScene: vi.fn(), updatePrimitive: vi.fn() };

@@ -117,6 +117,36 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards texture decode options into the adapter-owned bridge', async () => {
+    const decodePixels = vi.fn(() => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 255]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    }));
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        decodeTextures: true,
+        decodePixels,
+        maxTextureSize: 256,
+        warnOnNpotRepeatWrap: true,
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        decodeTextures: true,
+        decodePixels,
+        maxTextureSize: 256,
+        warnOnNpotRepeatWrap: true,
+      }),
+    );
+  });
+
   it('allows reject-degraded pt-webgpu glTF loads on full tier adapters', async () => {
     mocks.probeAdapterProfile.mockResolvedValueOnce({
       hasWebGPU: true,

@@ -11,9 +11,19 @@ describe('@vitrum/engine/gltf subpath', () => {
   it('exports the adapter bridge and createEngine-backed convenience wrapper', () => {
     const opts: LoadGltfWithEngineOptions = {
       compatibilityMode: 'best-effort',
+      decodeTextures: true,
+      decodePixels: () => ({
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 255, 255, 255]),
+        channels: 4,
+        dataType: 'uint8',
+        colorSpace: 'srgb',
+      }),
     };
 
     expect(opts.compatibilityMode).toBe('best-effort');
+    expect(opts.decodeTextures).toBe(true);
     expect(typeof loadGltfForEngine).toBe('function');
     expect(typeof loadGltfWithEngine).toBe('function');
     expect(typeof loadGltfWithProgressiveEngine).toBe('function');

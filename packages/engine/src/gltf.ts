@@ -14,6 +14,7 @@ import type {
   GltfForEngineResult,
   GltfImportDiagnostic,
   GltfSceneController,
+  DecodeSceneTextureDiagnostic,
   GltfTextureDecodeReport,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
@@ -70,6 +71,10 @@ export interface GltfProgressiveEngineResult {
   readonly controller: GltfSceneController;
   readonly attached: true;
   readonly textureDecodeReport: GltfTextureDecodeReport;
+  readonly decodedTextureCount: number;
+  readonly unchangedTextureCount: number;
+  readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[];
+  readonly textureDecodeWarnings: readonly string[];
   readonly warnings: readonly string[];
   readonly diagnostics: readonly GltfImportDiagnostic[];
 }
@@ -117,6 +122,10 @@ export async function loadGltfWithProgressiveEngine(
     controller: loaded.controller,
     attached: true,
     textureDecodeReport: loaded.textureDecodeReport,
+    decodedTextureCount: loaded.decodedTextureCount,
+    unchangedTextureCount: loaded.unchangedTextureCount,
+    textureDecodeDiagnostics: loaded.textureDecodeDiagnostics,
+    textureDecodeWarnings: loaded.textureDecodeWarnings,
     warnings: loaded.warnings,
     diagnostics: loaded.diagnostics,
   };
