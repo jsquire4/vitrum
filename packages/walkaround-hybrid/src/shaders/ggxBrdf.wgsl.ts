@@ -99,7 +99,33 @@ fn evalClearcoatLobe(clearcoat: f32, clearcoatRoughness: f32, n: vec3f, wo: vec3
   return cc * specular * NdotL;
 }
 
-fn evalGGXWithSpecularAndClearcoat(
+// KHR_materials_sheen: Charlie distribution plus Neubelt-Pettineo visibility.
+// This returns the full lobe contribution including NdotL, matching evalGGX().
+fn charlieD(nDotH: f32, alpha: f32) -> f32 {
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * PI);
+}
+
+fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
+  return 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+}
+
+fn evalSheenLobe(sheen: f32, sheenRoughness: f32, sheenColor: vec3f, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let sh = clamp(sheen, 0.0, 1.0);
+  if (sh < 1e-4) { return vec3f(0.0); }
+  let NdotL = max(0.0, dot(n, wi));
+  let NdotV = max(0.0, dot(n, wo));
+  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let h = safe_normalize(wo + wi);
+  let NdotH = max(0.0, dot(n, h));
+  let alpha = max(clamp(sheenRoughness, 0.0, 1.0) * clamp(sheenRoughness, 0.0, 1.0), 1e-3);
+  let D = charlieD(NdotH, alpha);
+  let V = sheenVisibility(NdotL, NdotV);
+  return sh * clamp(sheenColor, vec3f(0.0), vec3f(1.0)) * D * V * NdotL;
+}
+
+fn evalGGXWithSpecularClearcoatSheen(
   albedo: vec3f,
   rough: f32,
   metal: f32,
@@ -107,12 +133,16 @@ fn evalGGXWithSpecularAndClearcoat(
   specularIntensity: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
   n: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi);
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi)
+       + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
 
 // ── B9 (road-to-100) — Kulla-Conty multiple-scattering energy compensation ───
@@ -229,7 +259,7 @@ fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3
   return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
 }
 
-fn evalGGXSpecularOnlyWithSpecularAndClearcoat(
+fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   albedo: vec3f,
   rough: f32,
   metal: f32,
@@ -237,12 +267,16 @@ fn evalGGXSpecularOnlyWithSpecularAndClearcoat(
   specularIntensity: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
   n: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi);
+       + evalClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi)
+       + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
 
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────

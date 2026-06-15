@@ -1078,12 +1078,14 @@ function alphaAtlasUnit(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
-function specularColorUnit(
+function colorUnit(
   material: MaterialSpec | undefined,
+  field: 'specularColor' | 'sheenColor',
   index: 0 | 1 | 2,
+  fallback: number,
 ): number {
-  const value = material?.specularColor?.[index];
-  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? 1)) : 1;
+  const value = material?.[field]?.[index];
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
 function materialAtlasPatchRequiresFullRebuild(
@@ -1108,14 +1110,20 @@ function materialAtlasPatchRequiresFullRebuild(
       alphaAtlasUnit(prev?.alphaCutoff, 0.5) !== alphaAtlasUnit(next?.alphaCutoff, 0.5)
     );
   const specularChanged =
-    specularColorUnit(prev, 0) !== specularColorUnit(next, 0) ||
-    specularColorUnit(prev, 1) !== specularColorUnit(next, 1) ||
-    specularColorUnit(prev, 2) !== specularColorUnit(next, 2) ||
+    colorUnit(prev, 'specularColor', 0, 1) !== colorUnit(next, 'specularColor', 0, 1) ||
+    colorUnit(prev, 'specularColor', 1, 1) !== colorUnit(next, 'specularColor', 1, 1) ||
+    colorUnit(prev, 'specularColor', 2, 1) !== colorUnit(next, 'specularColor', 2, 1) ||
     alphaAtlasUnit(prev?.specularIntensity, 1) !== alphaAtlasUnit(next?.specularIntensity, 1);
   const clearcoatChanged =
     alphaAtlasUnit(prev?.clearcoat, 0) !== alphaAtlasUnit(next?.clearcoat, 0) ||
     alphaAtlasUnit(prev?.clearcoatRoughness, 0) !== alphaAtlasUnit(next?.clearcoatRoughness, 0);
-  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged || clearcoatChanged;
+  const sheenChanged =
+    alphaAtlasUnit(prev?.sheen, 0) !== alphaAtlasUnit(next?.sheen, 0) ||
+    alphaAtlasUnit(prev?.sheenRoughness, 0) !== alphaAtlasUnit(next?.sheenRoughness, 0) ||
+    colorUnit(prev, 'sheenColor', 0, 0) !== colorUnit(next, 'sheenColor', 0, 0) ||
+    colorUnit(prev, 'sheenColor', 1, 0) !== colorUnit(next, 'sheenColor', 1, 0) ||
+    colorUnit(prev, 'sheenColor', 2, 0) !== colorUnit(next, 'sheenColor', 2, 0);
+  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged || clearcoatChanged || sheenChanged;
 }
 
 /**

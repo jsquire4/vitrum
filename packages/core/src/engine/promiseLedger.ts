@@ -415,9 +415,12 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   displacementBias: 'unsupported',
   lightMap: 'approximate',
   lightMapIntensity: 'approximate',
-  sheen: 'unsupported',
-  sheenColor: 'unsupported',
-  sheenRoughness: 'unsupported',
+  // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
+  // Pettineo lobe in shade-owned direct/analytic/sun/specular-indirect paths.
+  // ReSTIR candidate PDFs/payloads and sheen maps remain base-lobe-only.
+  sheen: 'approximate',
+  sheenColor: 'approximate',
+  sheenRoughness: 'approximate',
   // Scalar clearcoat rides material atlas metadata and adds a fixed-F0 GGX top
   // coat in shade-owned direct/analytic/sun/specular-indirect paths. ReSTIR
   // candidate PDFs/payloads and clearcoat maps remain base-lobe-only.

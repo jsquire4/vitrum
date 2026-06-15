@@ -332,6 +332,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   promotes scalar `clearcoat` / `clearcoatRoughness` to `approximate`, not
   `native`, because ReSTIR candidate PDFs/payloads and clearcoat texture/normal
   maps remain base-lobe-only.
+- Walkaround-hybrid Phase-3E scalar-sheen follow-up (2026-06-14):
+  the material atlas now stores scalar `sheen`, `sheenRoughness`, and
+  `sheenColor.rgb`; `materialAtlas.wgsl.ts` exposes scalar sheen controls, and
+  shade-owned direct, analytic, sun, and glossy-indirect paths add a
+  Charlie/Neubelt-Pettineo sheen lobe. The promise ledger promotes scalar
+  `sheen` / `sheenColor` / `sheenRoughness` to `approximate`, not `native`,
+  because ReSTIR candidate PDFs/payloads and sheen texture maps remain
+  base-lobe-only.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

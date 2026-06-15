@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 23;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 24;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -220,9 +220,10 @@ function clampedUnit(value: number | undefined, fallback: number): number {
 function clampedColorComponent(
   color: readonly [number, number, number] | undefined,
   index: 0 | 1 | 2,
+  fallback = 1,
 ): number {
   const value = color?.[index];
-  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? 1)) : 1;
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
 export function packMaterialTextureAtlas(
@@ -368,7 +369,15 @@ export function packMaterialTextureAtlas(
     const b = texel * 4;
     baseColorMetaData[b] = clampedUnit(mat?.clearcoat, 0);
     baseColorMetaData[b + 1] = clampedUnit(mat?.clearcoatRoughness, 0);
-    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 2] = clampedUnit(mat?.sheen, 0);
+    baseColorMetaData[b + 3] = clampedUnit(mat?.sheenRoughness, 0);
+  };
+
+  const writeSheenColorMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = clampedColorComponent(mat?.sheenColor, 0, 0);
+    baseColorMetaData[b + 1] = clampedColorComponent(mat?.sheenColor, 1, 0);
+    baseColorMetaData[b + 2] = clampedColorComponent(mat?.sheenColor, 2, 0);
     baseColorMetaData[b + 3] = 0;
   };
 
@@ -389,6 +398,7 @@ export function packMaterialTextureAtlas(
     writeLightMapIntensityMeta(mat, baseTexel + 20);
     writeSpecularMeta(mat, baseTexel + 21);
     writeClearcoatMeta(mat, baseTexel + 22);
+    writeSheenColorMeta(mat, baseTexel + 23);
   }
 
   return {

@@ -98,24 +98,26 @@ describe('B1 — glossy/metal specular indirect term', () => {
   it('ggxBrdf exposes evalGGXSpecularOnly (specular lobe, conductor F0)', () => {
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnly(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecular(');
-    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularAndClearcoat(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecular(');
-    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularAndClearcoat(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheen(');
     expect(GGX_BRDF_WGSL).toContain('fn evalClearcoatLobe(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalSheenLobe(');
+    expect(GGX_BRDF_WGSL).toContain('fn charlieD(');
     expect(GGX_BRDF_WGSL).toContain('fn materialF0(');
   });
 
   it('shade computes lo_indirectSpecular and folds it into the un-demodulated direct channel', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
-    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularAndClearcoat(albedo, rough, metal, specular.rgb, specular.a, clearcoat.x, clearcoat.y, normal, wo, wi)');
+    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
     // It joins directRadiance (NOT the demodulated indirect channel).
     expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);
   });
 
   it('specular indirect is gated off for default-diffuse surfaces (invariant)', () => {
-    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat == 0 -> zero (default rough 0.85).
-    expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4)');
+    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat == 0 && sheen == 0 -> zero.
+    expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4)');
   });
 });
 

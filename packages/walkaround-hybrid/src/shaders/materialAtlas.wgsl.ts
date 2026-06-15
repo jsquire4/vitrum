@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 23u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 24u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -24,6 +24,7 @@ const MATERIAL_MAP_LIGHT_TEXEL_OFFSET: u32 = 18u;
 const MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET: u32 = 20u;
 const MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
 const MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
+const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -181,6 +182,29 @@ fn sampleClearcoatControls(triIndex: u32) -> vec2f {
     0,
   );
   return clamp(cc.xy, vec2f(0.0), vec2f(1.0));
+}
+
+fn sampleSheenControls(triIndex: u32) -> vec4f {
+  let scalars = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET),
+    0,
+  );
+  let color = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET),
+    0,
+  );
+  return vec4f(clamp(color.rgb, vec3f(0.0), vec3f(1.0)), clamp(scalars.z, 0.0, 1.0));
+}
+
+fn sampleSheenRoughness(triIndex: u32) -> f32 {
+  let scalars = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET),
+    0,
+  );
+  return clamp(scalars.w, 0.0, 1.0);
 }
 
 fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {

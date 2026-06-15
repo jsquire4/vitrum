@@ -128,13 +128,13 @@ describe('backend promise ledger', () => {
     const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials;
     const gpu = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials;
 
-    // walkaround: quantized scalar model plus first baseColorMap atlas slice;
-    // other image maps and Disney lobes remain unsupported.
+    // walkaround: quantized scalar model plus atlas-backed approximate lobes;
+    // remaining image maps and Disney lobes stay unsupported.
     expect(wa.baseColor).toBe('approximate');
     expect(wa.emissive).toBe('native');
     expect(wa.shadingModel).toBe('approximate');
     expect(wa.baseColorMap).toBe('approximate');
-    expect(wa.sheen).toBe('unsupported');
+    expect(wa.sheen).toBe('approximate');
     expect(wa.extensions).toBe('native');
 
     // pt-webgl2: scalar anisotropy plus KHR_materials_anisotropy map are packed/sampled.

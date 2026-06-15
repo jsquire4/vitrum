@@ -73,7 +73,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + `sheen` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + `anisotropy` (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -87,7 +87,7 @@ function unconsumedFieldsScene(): Scene {
           roughness: 0.3,
           metallic: 0,
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
-          sheen: 0.8,                          // unconsumed
+          anisotropy: 0.8,                     // unconsumed
         },
       } as unknown as ScenePrimitive,
     ],
@@ -107,6 +107,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
+      'sheen', 'sheenColor', 'sheenRoughness',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -162,7 +163,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['sheen']);
+    expect(result).toEqual(['anisotropy']);
   });
 
   it('skips non-mesh kinds (analytic kind is not scanned)', () => {
@@ -175,10 +176,10 @@ describe('collectUnconsumedMaterialFields', () => {
 
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
-      { kind: 'mesh', material: { baseColor: [1, 0, 0], sheenColor: [0.5, 0.5, 0.5] } },
-      { kind: 'mesh', material: { baseColor: [0, 1, 0], sheenColor: [0.2, 0.2, 0.2], anisotropy: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [1, 0, 0], iridescence: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [0, 1, 0], iridescence: 0.2, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'sheenColor']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'iridescence']);
   });
 
   it('surfaces representative specular, layered, thin-film, and anisotropy drops', () => {
@@ -263,7 +264,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for sheen when baseColorMap is also supplied', () => {
+  it('warns only for anisotropy when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -275,12 +276,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
       expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('sheen');
+      expect(materialWarn).toContain('anisotropy');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
         !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('sheen'),
+        w.details.fields.includes('anisotropy'),
       )).toBe(true);
     } finally {
       engine.dispose();

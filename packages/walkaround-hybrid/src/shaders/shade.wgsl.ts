@@ -306,6 +306,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);
   let specular = sampleSpecularControls(primaryHit.indices.w);
   let clearcoat = sampleClearcoatControls(primaryHit.indices.w);
+  let sheen = sampleSheenControls(primaryHit.indices.w);
+  let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w);
   let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
@@ -337,14 +339,14 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Baked camera-visible outgoing radiance. Like the PT backends, this is
   // first-hit only and additive; it does not feed ReSTIR emitter power or GI.
   let Lo_lightMap = sampleLightMap(primaryHit.indices.w, primaryHit.uv, uv1);
-  let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, specular, clearcoat, isGlass, isMetal, &rng);
+  let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, specular, clearcoat, sheen, sheenRoughness, isGlass, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
-  let Lo_analyticNEE = lo_analyticNEE(pos, normal, geoNormal, albedo, rough, metal, specular, clearcoat, wo, isGlass, isMetal);
+  let Lo_analyticNEE = lo_analyticNEE(pos, normal, geoNormal, albedo, rough, metal, specular, clearcoat, sheen, sheenRoughness, wo, isGlass, isMetal);
   // item 4 (2026-06-10) — direct sun NEE: deterministic shadow ray toward the sun,
   // full BRDF (diffuse + GGX specular). Default-ON for opaque surfaces; glass skips.
   // See lo_sunNEE above for the no-double-count argument re: DDGI indirect vs direct.
-  let Lo_sunNEE = lo_sunNEE(pix, pos, normal, geoNormal, albedo, rough, metal, specular, clearcoat, wo, isGlass);
+  let Lo_sunNEE = lo_sunNEE(pix, pos, normal, geoNormal, albedo, rough, metal, specular, clearcoat, sheen, sheenRoughness, wo, isGlass);
   // T5 — stained-glass-specific terms now live in stainedGlassShade.wgsl.ts
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
   // ubo.stainedGlassFlags bit is set (default OFF — generic scenes get zero
@@ -362,7 +364,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
   // reservoir sample. UN-demodulated (joins the direct channel below); fires only
   // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
-  let Lo_indirectSpec = lo_indirectSpecular(pix, dims, pos, normal, wo, albedo, rough, metal, specular, clearcoat, isGlass);
+  let Lo_indirectSpec = lo_indirectSpecular(pix, dims, pos, normal, wo, albedo, rough, metal, specular, clearcoat, sheen, sheenRoughness, isGlass);
 
   // Active terms (current pipeline state):
   //   Lo_emit           glass primary hit, deterministic per pixel
