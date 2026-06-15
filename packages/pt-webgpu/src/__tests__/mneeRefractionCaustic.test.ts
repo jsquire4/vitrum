@@ -94,6 +94,23 @@ describe('MNEE refraction caustic — kernel wiring (Phase I.1 sibling)', () => 
     );
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('anisotropy, anisotropyRotation,');
   });
+
+  it('legacy transmissive cone-search uses packed RGB directional records', () => {
+    const code = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    expect(code).toContain(
+      'for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u)',
+    );
+    expect(code).toContain('let dDirAD = directionalLights[dBase];');
+    expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
+    expect(code).toContain('let dirShadowDisabled = dDirAD.w < 0.0;');
+    expect(code).toContain('let lightRadiance = dIrrMean.rgb * align;');
+    expect(code).not.toContain('let lightRadiance = vec3f(params.lightDir.w) * align;');
+    expect(code).not.toContain('params.lightDir.w <= 1e-6');
+  });
 });
 
 describe('MNEE refraction caustic — trace-kernel composition', () => {

@@ -551,7 +551,11 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 > emission. ✅ **ReSTIR-PT `rptDirectAtVertex` CLOSED (2026-06-15):** suffix
 > direct lighting now loops packed N-directional RGB records and honors the
 > directional shadow-disable sign bit; `restirPtReuseContract.test.ts` pins the
-> no-`params.lightDir.w` regression. Also in scope: BDPT's hardcoded 50-unit
+> no-`params.lightDir.w` regression. ✅ **MNEE cone-search fallback CLOSED
+> (2026-06-15):** the legacy transmissive cone-search approximation now loops
+> packed N-directional RGB records and honors the directional shadow-disable
+> sign bit; `mneeRefractionCaustic.test.ts` pins the no-scalar regression. Also
+> in scope: BDPT's hardcoded 50-unit
 > emitter placement radius
 > (`bdptLightSubpath.wgsl.ts` `emitPos = -lightDir * 50.0`) — derive from scene
 > bounds. ✅ **environment:'none' phantom skylight CLOSED (2026-06-12):**

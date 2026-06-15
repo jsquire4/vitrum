@@ -931,61 +931,70 @@ fn manifoldNeeContribution(
     throughput,
   );
 
-  // Legacy transmissive (glass) cone-search APPROXIMATION — DIRECTIONAL light only.
+  // Legacy transmissive (glass) cone-search APPROXIMATION — directional lights only.
   // Promoting this onto the validated mneeNewtonSolveChain2 is Phase I.1 step 4
   // (gated behind a caustic render-A/B, per the validation discipline).
-  if (transmission <= 1e-4 || params.lightDir.w <= 1e-6) {
+  if (transmission <= 1e-4 || params.directionalLightCount == 0u) {
     return total;
   }
   let mneeSteps = clamp(params.mneeMaxIterations, 1u, 8u);
   let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
-  let baseLightDir = safe_normalize(params.lightDir.xyz);
   let coneAngle = mix(0.01, 0.12, clamp(roughness, 0.0, 1.0));
   var transmissiveContribution = vec3f(0.0);
-  for (var step = 0u; step < 8u; step = step + 1u) {
-    if (step >= mneeSteps) {
-      break;
-    }
-    let jitter = vec2f(rand_f32(rng), rand_f32(rng));
-    let candidateDir = perturbAroundDirection(baseLightDir, jitter, coneAngle);
-    let nDotL = max(dot(normal, candidateDir), 0.0);
-    if (nDotL <= 1e-5) {
+  for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u) {
+    let dBase = dirIdx * 2u;
+    let dDirAD = directionalLights[dBase];
+    let dIrrMean = directionalLights[dBase + 1u];
+    if (dIrrMean.w <= 1e-6) {
       continue;
     }
-    var exitPos = vec3f(0.0);
-    var exitDir = vec3f(0.0, 1.0, 0.0);
-    var chainAtt = vec3f(1.0);
-    if (!traceSpecularTransmissiveChain(hitPos, normal, candidateDir, maxChain, &exitPos, &exitDir, &chainAtt)) {
-      continue;
+    let baseLightDir = safe_normalize(dDirAD.xyz);
+    let dirShadowDisabled = dDirAD.w < 0.0;
+    for (var step = 0u; step < 8u; step = step + 1u) {
+      if (step >= mneeSteps) {
+        break;
+      }
+      let jitter = vec2f(rand_f32(rng), rand_f32(rng));
+      let candidateDir = perturbAroundDirection(baseLightDir, jitter, coneAngle);
+      let nDotL = max(dot(normal, candidateDir), 0.0);
+      if (nDotL <= 1e-5) {
+        continue;
+      }
+      var exitPos = vec3f(0.0);
+      var exitDir = vec3f(0.0, 1.0, 0.0);
+      var chainAtt = vec3f(1.0);
+      if (!traceSpecularTransmissiveChain(hitPos, normal, candidateDir, maxChain, &exitPos, &exitDir, &chainAtt)) {
+        continue;
+      }
+      let align = max(dot(exitDir, baseLightDir), 0.0);
+      if (align <= 0.75) {
+        continue;
+      }
+      let visibilityRay = Ray(exitPos + exitDir * 1e-3, baseLightDir);
+      if (!dirShadowDisabled && traceAny(visibilityRay, 1e-4, INFINITY)) {
+        continue;
+      }
+      let brdf = evaluateBrdfFull(
+        baseColor, roughness, metallic, normal, wo, candidateDir,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        specularColor, specularIntensity,
+        anisotropy, anisotropyRotation,
+      );
+      let brdfPdf = brdfDirectionalPdfFullSampled(
+        baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        specularColor, specularIntensity,
+        anisotropy, anisotropyRotation,
+      );
+      let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
+      let samplePdf = conePdf / f32(mneeSteps);
+      let misWeight = powerHeuristic(samplePdf, brdfPdf);
+      let lightRadiance = dIrrMean.rgb * align;
+      transmissiveContribution = transmissiveContribution +
+        throughput * chainAtt * brdf * nDotL * lightRadiance * misWeight / max(samplePdf, 1e-6);
     }
-    let align = max(dot(exitDir, baseLightDir), 0.0);
-    if (align <= 0.75) {
-      continue;
-    }
-    let visibilityRay = Ray(exitPos + exitDir * 1e-3, baseLightDir);
-    if (traceAny(visibilityRay, 1e-4, INFINITY)) {
-      continue;
-    }
-    let brdf = evaluateBrdfFull(
-      baseColor, roughness, metallic, normal, wo, candidateDir,
-      clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
-      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
-      anisotropy, anisotropyRotation,
-    );
-    let brdfPdf = brdfDirectionalPdfFullSampled(
-      baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir,
-      clearcoat, clearcoatRoughness, sheen, sheenRoughness,
-      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
-      anisotropy, anisotropyRotation,
-    );
-    let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
-    let samplePdf = conePdf / f32(mneeSteps);
-    let misWeight = powerHeuristic(samplePdf, brdfPdf);
-    let lightRadiance = vec3f(params.lightDir.w) * align;
-    transmissiveContribution = transmissiveContribution +
-      throughput * chainAtt * brdf * nDotL * lightRadiance * misWeight / max(samplePdf, 1e-6);
   }
   return total + transmissiveContribution;
 }
