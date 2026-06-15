@@ -1,6 +1,14 @@
 // texturePipeline.ts — scene-level diagnostics for decoded glTF texture handles.
 
-import type { MaterialSpec, Scene, ScenePrimitive, TextureRef, TextureWrapMode } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  Scene,
+  ScenePrimitive,
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureRef,
+  TextureWrapMode,
+} from '@vitrum/core';
 import type { RawImageHandle } from './textures.js';
 
 export type GltfMaterialTextureField =
@@ -48,6 +56,10 @@ export interface GltfTextureDecodeReportEntry {
   readonly hasTransform: boolean;
   readonly wrapS: TextureWrapMode;
   readonly wrapT: TextureWrapMode;
+  readonly magFilter?: TextureFilterMode;
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
+  readonly usesMipmaps?: boolean;
   readonly colorSpace: GltfTextureColorSpace;
   readonly handleKind: GltfTextureHandleKind;
   readonly backendReadiness: {
@@ -218,6 +230,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       if (!ref) continue;
       uniqueHandles.add(ref.handle);
       const handleKind = classifyTextureHandle(ref.handle);
+      const samplerFields = textureSamplerReportFields(ref);
       entries.push({
         primitiveId: String(primitive.id),
         primitiveKind: primitive.kind,
@@ -228,6 +241,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         hasTransform: ref.transform !== undefined,
         wrapS: ref.wrapS ?? 'repeat',
         wrapT: ref.wrapT ?? 'repeat',
+        ...samplerFields,
         colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
         backendReadiness: backendReadinessForHandle(field, handleKind),
@@ -247,6 +261,23 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
     rawImageRefs,
     entries,
   };
+}
+
+function textureSamplerReportFields(
+  ref: TextureRef,
+): Pick<GltfTextureDecodeReportEntry, 'magFilter' | 'minFilter' | 'mipFilter' | 'usesMipmaps'> {
+  type SamplerReportFields = Pick<
+    GltfTextureDecodeReportEntry,
+    'magFilter' | 'minFilter' | 'mipFilter' | 'usesMipmaps'
+  >;
+  const fields: { -readonly [K in keyof SamplerReportFields]?: SamplerReportFields[K] } = {};
+  if (ref.magFilter !== undefined) fields.magFilter = ref.magFilter;
+  if (ref.minFilter !== undefined) fields.minFilter = ref.minFilter;
+  if (ref.mipFilter !== undefined) {
+    fields.mipFilter = ref.mipFilter;
+    fields.usesMipmaps = ref.mipFilter !== 'none';
+  }
+  return fields;
 }
 
 export async function decodeSceneTextures(

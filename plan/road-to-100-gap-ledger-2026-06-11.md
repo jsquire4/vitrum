@@ -190,7 +190,17 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   preservation, including the shared metallic-roughness ORM texture mapping to
   both `roughnessMap` and `metallicMap`. The same sweep now pins
   `KHR_materials_volume.thicknessTexture` import through the reserved
-  `MaterialSpec.thicknessMap` field. The glTF adapter suite is now 135 tests.
+  `MaterialSpec.thicknessMap` field.
+- Follow-up 2026-06-15: glTF sampler filter intent no longer drops at the
+  `TextureRef` boundary. Core `TextureRef` now carries authored
+  `magFilter`/`minFilter`/`mipFilter`, the adapter maps all glTF sampler
+  minification/magnification constants into those fields, and
+  `textureDecodeReport` exposes the same sampler policy plus `usesMipmaps`.
+  The existing texture sweep now proves every imported base/KHR material map
+  preserves handle, UV channel, transform, wrap, and sampler filter/mipmap
+  intent; the current full glTF adapter suite is 197 tests. Backend per-texture
+  filter/mipmap enforcement remains a renderer policy gap rather than an
+  import/data-loss gap.
 - The pt-webgpu material texture backend consumption slice landed after that
   adapter import work: `materialTextures.ts` packs per-map UV metadata for every
   map the backend currently samples (baseColor, emissive, normal, roughnessMap,

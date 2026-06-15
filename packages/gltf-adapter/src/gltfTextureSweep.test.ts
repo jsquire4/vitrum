@@ -6,6 +6,7 @@
 //   - the effective UV set (`TextureRef.texCoord`), including the
 //     KHR_texture_transform-level `texCoord` OVERRIDE (757477d4 fix), and
 //   - the KHR_texture_transform offset / scale / rotation fields,
+//   - authored sampler wrap/filter/mipmap policy,
 // end-to-end through gltfToScene() into the core MaterialSpec.
 //
 // The imported map list is enumerated from materials.ts/textures.ts call
@@ -19,7 +20,13 @@ import { gltfToScene } from './gltfToScene.js';
 import { loadGltfAsset, type GltfTextureSourceExtension } from './index.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
 import { gltfTextureColorSpaceForField, type GltfMaterialTextureField } from './texturePipeline.js';
-import type { MaterialSpec, MeshPrimitive, TextureRef } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  MeshPrimitive,
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureRef,
+} from '@vitrum/core';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -61,11 +68,48 @@ function expectedWrap(i: number): { wrapS: 'repeat' | 'clamp-to-edge' | 'mirrore
   };
 }
 
-function samplerForOrdinal(i: number): { wrapS?: number; wrapT?: number } {
+function expectedFilter(i: number): {
+  magFilter: TextureFilterMode;
+  minFilter: TextureFilterMode;
+  mipFilter: TextureMipFilterMode;
+  usesMipmaps: boolean;
+} {
+  const magCodes = [9728, 9729] as const;
+  const minCodes = [9728, 9729, 9984, 9985, 9986, 9987] as const;
+  const magCode = magCodes[i % magCodes.length]!;
+  const minCode = minCodes[i % minCodes.length]!;
+  const magFilter = magCode === 9728 ? 'nearest' : 'linear';
+  switch (minCode) {
+    case 9728:
+      return { magFilter, minFilter: 'nearest', mipFilter: 'none', usesMipmaps: false };
+    case 9729:
+      return { magFilter, minFilter: 'linear', mipFilter: 'none', usesMipmaps: false };
+    case 9984:
+      return { magFilter, minFilter: 'nearest', mipFilter: 'nearest', usesMipmaps: true };
+    case 9985:
+      return { magFilter, minFilter: 'linear', mipFilter: 'nearest', usesMipmaps: true };
+    case 9986:
+      return { magFilter, minFilter: 'nearest', mipFilter: 'linear', usesMipmaps: true };
+    case 9987:
+      return { magFilter, minFilter: 'linear', mipFilter: 'linear', usesMipmaps: true };
+  }
+}
+
+function samplerForOrdinal(i: number): {
+  wrapS?: number;
+  wrapT?: number;
+  magFilter: number;
+  minFilter: number;
+} {
   const { wrapS, wrapT } = expectedWrap(i);
   const code = (mode: 'repeat' | 'clamp-to-edge' | 'mirrored-repeat'): number | undefined =>
     mode === 'repeat' ? undefined : mode === 'clamp-to-edge' ? 33071 : 33648;
-  const sampler: { wrapS?: number; wrapT?: number } = {};
+  const magCodes = [9728, 9729] as const;
+  const minCodes = [9728, 9729, 9984, 9985, 9986, 9987] as const;
+  const sampler: { wrapS?: number; wrapT?: number; magFilter: number; minFilter: number } = {
+    magFilter: magCodes[i % magCodes.length]!,
+    minFilter: minCodes[i % minCodes.length]!,
+  };
   const wrapSCode = code(wrapS);
   const wrapTCode = code(wrapT);
   if (wrapSCode !== undefined) sampler.wrapS = wrapSCode;
@@ -284,7 +328,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
   }
 
   it.each(SWEEP_MAPS.map(([field, ordinal]) => ({ field, ordinal })))(
-    '$field preserves handle + texCoord override + KHR_texture_transform',
+    '$field preserves handle + texCoord override + KHR_texture_transform + sampler policy',
     async ({ field, ordinal }) => {
       const { mat, handle } = await importSweepMaterial();
       const ref = mat[field] as TextureRef | undefined;
@@ -299,6 +343,10 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       const wrap = expectedWrap(ordinal);
       expect(ref!.wrapS ?? 'repeat').toBe(wrap.wrapS);
       expect(ref!.wrapT ?? 'repeat').toBe(wrap.wrapT);
+      const filter = expectedFilter(ordinal);
+      expect(ref!.magFilter).toBe(filter.magFilter);
+      expect(ref!.minFilter).toBe(filter.minFilter);
+      expect(ref!.mipFilter).toBe(filter.mipFilter);
     },
   );
 
@@ -332,6 +380,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       expect(entry, `${String(field)} missing from textureDecodeReport`).toBeDefined();
       const transform = expectedTransform(ordinal);
       const wrap = expectedWrap(ordinal);
+      const filter = expectedFilter(ordinal);
       expect(entry).toMatchObject({
         primitiveId: 'gltf-prim-0',
         primitiveKind: 'mesh',
@@ -342,6 +391,10 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         hasTransform: true,
         wrapS: wrap.wrapS,
         wrapT: wrap.wrapT,
+        magFilter: filter.magFilter,
+        minFilter: filter.minFilter,
+        mipFilter: filter.mipFilter,
+        usesMipmaps: filter.usesMipmaps,
         colorSpace: SRGB_SWEEP_FIELDS.has(field) ? 'srgb' : 'linear',
         handleKind: 'opaque',
         backendReadiness: {

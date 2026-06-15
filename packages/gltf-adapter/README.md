@@ -360,6 +360,26 @@ The adapter passes bytes as-is. **The backend is responsible for colorspace-corr
 - `baseColorMap`, `emissiveMap` → **sRGB** (backends must use `sRGB` texture format or gamma-decode in shader).
 - `normalMap`, `roughnessMap` (ORM), `aoMap`, `lightMap`, `bumpMap`, `anisotropyMap` → **linear** (must NOT sRGB-decode).
 
+`decodeSceneTextures(target: 'cpu-linear')` is the opt-in exception: when a
+host supplies `decodePixels`, raw image handles are converted to linear
+`Float32Array` RGBA payloads using this same color/data policy before backend
+upload.
+
+### Sampler metadata
+
+`TextureRef` preserves glTF sampler address and filter intent:
+
+- `wrapS` / `wrapT` carry repeat, clamp-to-edge, or mirrored-repeat.
+- `magFilter` and `minFilter` carry authored nearest/linear filtering.
+- `mipFilter` carries authored mip policy (`none`, `nearest`, or `linear`).
+
+`textureDecodeReport.entries[]` includes the same sampler fields plus
+`usesMipmaps` when the asset authored a mipmapped minification mode. Current
+backends already consume per-map UV, transform, and wrap metadata where their
+material map rows are supported; per-texture filter/mipmap enforcement remains
+backend policy and should be checked through compatibility/capability details
+instead of inferred from import success.
+
 ### ORM texture
 
 glTF stores roughness and metallic in a single combined texture

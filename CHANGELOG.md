@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (glTF sampler metadata, 2026-06-15)
+
+- **`@vitrum/core` + `@vitrum/gltf-adapter` sampler intent preservation:** `TextureRef` now carries authored `magFilter`, `minFilter`, and `mipFilter` metadata in addition to UV channel, `KHR_texture_transform`, and wrap modes. The glTF adapter maps all six glTF minification constants plus NEAREST/LINEAR magnification into those fields, and `textureDecodeReport` exposes the same sampler policy with `usesMipmaps` for authored mipmapped modes. Backend per-texture filter/mipmap enforcement remains a separate renderer policy rather than silently implied by import success.
+
 ### Added (pt-webgl2 OIDN final-pass, 2026-06-15)
 
 - **`@vitrum/pt-webgl2` OIDN final denoiser:** `denoiser: 'oidn-final'` now has a real async final-pass path instead of degrading to disabled. The backend reads linear HDR plus full-tier albedo/normal MRT aux into OIDN RGB tensors, runs the shared OIDN dispatcher once converged, reports `FrameStats.denoiserState`, exposes `getLatestDenoised()`, invalidates on reset, and releases cache state on dispose. The promise ledger now marks pt-webgl2 `oidn-final` as `native`; realtime denoisers still warn/degrade as unsupported.

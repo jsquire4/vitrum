@@ -19,7 +19,13 @@
 
 import type { GltfJson } from './gltfTypes.js';
 import type { GltfTexture } from './gltfTypes.js';
-import type { TextureRef, TextureWrapMode, UvTransform } from '@vitrum/core';
+import type {
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureRef,
+  TextureWrapMode,
+  UvTransform,
+} from '@vitrum/core';
 
 export type GltfTextureSourceExtension =
   | 'KHR_texture_basisu'
@@ -268,6 +274,34 @@ function textureWrapMode(value: number | undefined): TextureWrapMode {
   return 'repeat';
 }
 
+function textureMagFilterMode(value: number | undefined): TextureFilterMode | undefined {
+  if (value === 9728) return 'nearest';
+  if (value === 9729) return 'linear';
+  return undefined;
+}
+
+function textureMinFilterModes(value: number | undefined): {
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
+} {
+  switch (value) {
+    case 9728:
+      return { minFilter: 'nearest', mipFilter: 'none' };
+    case 9729:
+      return { minFilter: 'linear', mipFilter: 'none' };
+    case 9984:
+      return { minFilter: 'nearest', mipFilter: 'nearest' };
+    case 9985:
+      return { minFilter: 'linear', mipFilter: 'nearest' };
+    case 9986:
+      return { minFilter: 'nearest', mipFilter: 'linear' };
+    case 9987:
+      return { minFilter: 'linear', mipFilter: 'linear' };
+    default:
+      return {};
+  }
+}
+
 /**
  * Resolve a GltfTextureInfo to a TextureRef, given the decoded handle map.
  * Returns undefined if the texture is missing or its image failed to decode.
@@ -290,6 +324,8 @@ export function resolveTextureRef(
   const sampler = samplerIdx !== undefined ? gltf?.samplers?.[samplerIdx] : undefined;
   const wrapS = textureWrapMode(sampler?.wrapS);
   const wrapT = textureWrapMode(sampler?.wrapT);
+  const magFilter = textureMagFilterMode(sampler?.magFilter);
+  const { minFilter, mipFilter } = textureMinFilterModes(sampler?.minFilter);
 
   const ref: TextureRef = {
     handle,
@@ -297,6 +333,9 @@ export function resolveTextureRef(
     ...(transform ? { transform } : {}),
     ...(wrapS !== 'repeat' ? { wrapS } : {}),
     ...(wrapT !== 'repeat' ? { wrapT } : {}),
+    ...(magFilter !== undefined ? { magFilter } : {}),
+    ...(minFilter !== undefined ? { minFilter } : {}),
+    ...(mipFilter !== undefined ? { mipFilter } : {}),
   };
   return ref;
 }

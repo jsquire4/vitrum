@@ -1008,6 +1008,9 @@ function textureRefLike(value: unknown): {
   };
   readonly wrapS?: string;
   readonly wrapT?: string;
+  readonly magFilter?: string;
+  readonly minFilter?: string;
+  readonly mipFilter?: string;
 } | null {
   if (value == null || typeof value !== 'object') return null;
   if ('handle' in value) {
@@ -1021,6 +1024,9 @@ function textureRefLike(value: unknown): {
       };
       readonly wrapS?: string;
       readonly wrapT?: string;
+      readonly magFilter?: string;
+      readonly minFilter?: string;
+      readonly mipFilter?: string;
     };
   }
   return { handle: value };
@@ -1070,6 +1076,9 @@ function textureMapPatchRequiresFullRebuild(
   if ((a.texCoord ?? 0) !== (b.texCoord ?? 0)) return true;
   if ((a.wrapS ?? 'repeat') !== (b.wrapS ?? 'repeat')) return true;
   if ((a.wrapT ?? 'repeat') !== (b.wrapT ?? 'repeat')) return true;
+  if ((a.magFilter ?? 'unspecified') !== (b.magFilter ?? 'unspecified')) return true;
+  if ((a.minFilter ?? 'unspecified') !== (b.minFilter ?? 'unspecified')) return true;
+  if ((a.mipFilter ?? 'unspecified') !== (b.mipFilter ?? 'unspecified')) return true;
   const at = a.transform;
   const bt = b.transform;
   if (uv2Component(at?.offset, 0, 0) !== uv2Component(bt?.offset, 0, 0)) return true;

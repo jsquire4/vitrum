@@ -477,6 +477,12 @@ export interface UvTransform {
  *  `repeat` (10497), `clamp-to-edge` (33071), and `mirrored-repeat` (33648). */
 export type TextureWrapMode = 'repeat' | 'clamp-to-edge' | 'mirrored-repeat';
 
+/** Texture minification/magnification filter. Mirrors glTF sampler NEAREST/LINEAR. */
+export type TextureFilterMode = 'nearest' | 'linear';
+
+/** Texture mip filter derived from glTF sampler minFilter. `none` means no mip lookup. */
+export type TextureMipFilterMode = 'none' | 'nearest' | 'linear';
+
 /**
  * Texture reference. `handle` is the opaque backend/binding payload (a
  * `WebGLTexture` + metadata, a `GPUTexture`, a `Uint8Array` + descriptor, …) —
@@ -484,10 +490,13 @@ export type TextureWrapMode = 'repeat' | 'clamp-to-edge' | 'mirrored-repeat';
  * (0 = `MeshPrimitive.uvs`, 1 = `MeshPrimitive.uv1`); default 0. `transform`
  * carries `KHR_texture_transform`. `wrapS` / `wrapT` carry sampler address
  * modes so host adapters do not silently drop glTF sampler semantics; omitted
- * means `repeat`, matching the glTF default.
+ * means `repeat`, matching the glTF default. `magFilter`, `minFilter`, and
+ * `mipFilter` preserve authored sampler intent; omitted means the source asset
+ * did not specify that sampler field, so a backend may use its documented
+ * default filter policy.
  *
  * Host adapters construct these; backends read `.handle` to upload/sample and
- * `.texCoord`/`.transform`/wrap modes to resolve UVs. Use
+ * `.texCoord`/`.transform`/sampler metadata to resolve UVs. Use
  * `asTextureRef(handle)` for the common no-transform/default-wrap case.
  */
 export interface TextureRef {
@@ -496,6 +505,9 @@ export interface TextureRef {
   readonly transform?: UvTransform;
   readonly wrapS?: TextureWrapMode;
   readonly wrapT?: TextureWrapMode;
+  readonly magFilter?: TextureFilterMode;
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
 }
 
 /** Wrap an opaque handle as a `TextureRef` (channel 0, identity transform). */
