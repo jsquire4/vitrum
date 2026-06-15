@@ -5,7 +5,10 @@ In-repo shader compile gate.  Two scripts:
 - **`gate.mjs`** — WGSL gate (WebGPU + naga/Tint).  Enumerates every composed WGSL shader
   across `@vitrum/pt-webgpu`, `@vitrum/walkaround-hybrid`, and `@vitrum/shared-denoisers`,
   feeds each one through `createShaderModule` + `getCompilationInfo`, and fails on any
-  `'error'`-severity message from the driver's shader compiler.
+  `'error'`-severity message from the driver's shader compiler.  It then creates
+  adapter-backed compute pipelines for named entry points and walks
+  `@vitrum/walkaround-hybrid`'s production `compilePipelines()` variants so binding
+  layouts, stage visibility, and optional pass layouts are validated too.
 - **`glslGate.mjs`** — GLSL ES 3.00 gate (`glslangValidator`).  Composes the full
   production GLSL program (preamble + compat defines + body) for every production-reachable
   feature-flag combination of `@vitrum/pt-webgl2` and validates each one with
@@ -32,6 +35,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run shader-gate -- --self-test
 
+# Debug only: compile shader modules but skip the pipeline-creation phase:
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run shader-gate -- --no-pipeline-gate
+
 # Run the GLSL gate (no Vulkan required — glslangValidator is a CPU-only binary):
 npm run shader-gate:glsl
 
@@ -39,8 +46,9 @@ npm run shader-gate:glsl
 npm run shader-gate:glsl -- --self-test
 ```
 
-On the dev rig the WGSL gate compiles **47 shaders** (47 OK, 0 FAILED) and the GLSL
-gate compiles **6 feature combinations** (6 OK, 0 FAILED).
+On the dev rig the WGSL gate compiles **51 shaders** (51 OK, 0 FAILED), creates
+**28 pipeline variants** (28 OK, 0 FAILED), and the GLSL gate compiles **6 feature
+combinations** (6 OK, 0 FAILED).
 
 The underlying npm scripts are:
 
@@ -74,6 +82,19 @@ The `composeWgsl` walkaround-hybrid shaders are transformed by `nagaFix.mjs`
 before compilation.  The transforms handle the naga/wgpu gap around
 `ptr<storage>` function parameters, which are valid in Tint/Dawn but rejected
 by naga.  See comments in `nagaFix.mjs` for the full list of transforms.
+
+After shader-module compilation, `gate.mjs` creates compute pipelines for every
+named compute entry in the pt-webgpu, shared-denoiser, and walkaround-rc inventory.
+It also calls walkaround-hybrid's production `compilePipelines()` with the same
+explicit bind-group layouts used by the engine for these variants:
+
+| Production pipeline-layout variant | What is validated |
+|------------------------------------|-------------------|
+| `walkaround-hybrid/production-default` | always-on RIS/temporal/spatial/shade/GTAO/GI/indirect/composite layout set |
+| `walkaround-hybrid/production-gris` | GRIS/ReSTIR-PT reuse temporal+spatial GI two-group layouts |
+| `walkaround-hybrid/production-ppg` | PPG update pipeline and guided-sampling tree layout |
+| `walkaround-hybrid/production-regir` | ReGIR grid-build read/write layout |
+| `walkaround-hybrid/production-nrc` | NRC fifth bind group when the adapter reports `maxBindGroups >= 5` |
 
 ### GLSL (glslGate.mjs)
 
@@ -136,9 +157,9 @@ a shader compiler error.
 
 ## Relationship to the behavioral gate
 
-The shader gate is **static**: it compiles WGSL/GLSL source strings but never boots an
-engine or renders a frame.  It cannot catch engine factory crashes, UBO upload gaps, or
-total-black renders caused by unbound resources.
+The shader gate is **static**: it compiles WGSL/GLSL source strings and creates WebGPU
+pipeline objects, but never boots an engine or renders a frame.  It cannot catch engine
+factory crashes, UBO upload gaps, or total-black renders caused by unbound resources.
 
 The **`tools/behavioral-gate/`** fills that gap: it boots the real `createPTEngine_WebGPU`
 and `createWalkaroundEngine_Hybrid` factory functions, renders a Cornell-box scene for

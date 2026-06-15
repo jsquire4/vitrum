@@ -249,10 +249,14 @@ buckets that the A–D framing was missing:**
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
   walkaround PASS_ORDER roots including NRC when the adapter supports it,
   shared-denoisers, and walkaround-rc), and `--self-test` catches an injected
-  broken shader. Remaining D10 infrastructure work is narrower: a stronger
-  adapter-backed pipeline-layout creation gate for lite/optional variants plus
-  the non-mirrored WGSL behavior oracles. M effort total; this is what stops
-  the next H1 from shipping green.
+  broken shader. Follow-up reconciliation on 2026-06-15 strengthened the WGSL
+  gate from parse-only to adapter-backed pipeline creation: the same command now
+  creates 28 compute/production pipeline variants, including pt-webgpu full,
+  lite, ReSTIR-PT, and SPPM entries; shared-denoiser and walkaround-rc kernels;
+  and walkaround production default, GRIS, PPG, ReGIR, and NRC-capable layouts
+  via `compilePipelines()`. Remaining D10/H55 proof work is now the non-mirrored
+  WGSL behavior-oracle class, not missing shader or pipeline creation gates.
+  M effort total; this is what stops the next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
   casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b

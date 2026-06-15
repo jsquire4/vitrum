@@ -30,6 +30,7 @@ import { applyNagaFix } from "./nagaFix.mjs";
 
 // ── Parse flags ──────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
+const noPipelineGate = Deno.args.includes("--no-pipeline-gate");
 
 // ── Acquire the WebGPU device ─────────────────────────────────────────────────
 const adapter = await navigator.gpu.requestAdapter();
@@ -53,8 +54,9 @@ const device = await adapter.requestDevice(
 );
 
 // ── Shader inventory ──────────────────────────────────────────────────────────
-// Each entry: { name, wgsl, entryPoint? }
-// entryPoint is optional metadata only — getCompilationInfo does not need it.
+// Each entry: { name, wgsl, entryPoint?, entryPoints? }
+// entryPoint(s) are optional for shader-module compilation, but when present
+// the gate also asks the adapter to create a compute pipeline for that entry.
 const shaders = [];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +301,7 @@ const shaders = [];
   shaders.push({
     name: "walkaround-hybrid/ppgUpdate",
     wgsl: applyNagaFix(`${WH_LUMINANCE_WGSL}\n${PPG_TREE_LAYOUT_WGSL}\n${buildPpgUpdateWgsl(341)}`),
+    entryPoint: "ppgUpdateMain",
   });
 
   // NRC GI-RIS variant — compiled only when nrcEnabled.  We use a representative
@@ -325,6 +328,7 @@ const shaders = [];
     shaders.push({
       name: "walkaround-hybrid/risGiNrc",
       wgsl: applyNagaFix(composeWgsl(nrcModule, WGSL_MODULES)),
+      entryPoint: "risGiMain",
     });
   } else {
     console.log(`[shader-gate] SKIP  walkaround-hybrid/risGiNrc  (requires maxBindGroups>=5; adapter has ${adapterMaxBG})`);
@@ -364,13 +368,17 @@ const shaders = [];
   // walkaround-hybrid/atrous entry above (compiled with its full include-graph) covers it.
   // shaders.push({ name: "shared-denoisers/atrous-raw", wgsl: ATROUS_WGSL });
   // (kept as a skipped comment so the inventory is explicit)
-  shaders.push({ name: "shared-denoisers/temporalAccum", wgsl: TEMPORAL_ACCUM_WGSL });
-  shaders.push({ name: "shared-denoisers/atrousVariance-standalone", wgsl: ATROUS_VARIANCE_WGSL });
-  shaders.push({ name: "shared-denoisers/svgfReprojection-standalone", wgsl: SVGF_REPROJECTION_WGSL });
-  shaders.push({ name: "shared-denoisers/svgfVarianceFromMoments-standalone", wgsl: SVGF_VARIANCE_FROM_MOMENTS_WGSL });
-  shaders.push({ name: "shared-denoisers/svgf7x7SpatialFallback-standalone", wgsl: SVGF_7X7_SPATIAL_FALLBACK_WGSL });
-  shaders.push({ name: "shared-denoisers/bmfr-standalone", wgsl: BMFR_WGSL });
-  shaders.push({ name: "shared-denoisers/hdrLuminanceBilateral", wgsl: HDR_LUMINANCE_BILATERAL_WGSL });
+  shaders.push({ name: "shared-denoisers/temporalAccum", wgsl: TEMPORAL_ACCUM_WGSL, entryPoint: "temporalAccumMain" });
+  shaders.push({
+    name: "shared-denoisers/atrousVariance-standalone",
+    wgsl: ATROUS_VARIANCE_WGSL,
+    entryPoints: ["svgfVarianceMain", "svgfAtrousMain"],
+  });
+  shaders.push({ name: "shared-denoisers/svgfReprojection-standalone", wgsl: SVGF_REPROJECTION_WGSL, entryPoint: "svgfReprojMain" });
+  shaders.push({ name: "shared-denoisers/svgfVarianceFromMoments-standalone", wgsl: SVGF_VARIANCE_FROM_MOMENTS_WGSL, entryPoint: "svgfVarianceFromMomentsMain" });
+  shaders.push({ name: "shared-denoisers/svgf7x7SpatialFallback-standalone", wgsl: SVGF_7X7_SPATIAL_FALLBACK_WGSL, entryPoint: "svgf7x7FallbackMain" });
+  shaders.push({ name: "shared-denoisers/bmfr-standalone", wgsl: BMFR_WGSL, entryPoint: "bmfrMain" });
+  shaders.push({ name: "shared-denoisers/hdrLuminanceBilateral", wgsl: HDR_LUMINANCE_BILATERAL_WGSL, entryPoint: "hdrLuminanceBilateralMain" });
   shaders.push({ name: "shared-denoisers/welfordVariance-fragment", wgsl: WELFORD_VARIANCE_WGSL });
 }
 
@@ -428,6 +436,7 @@ fn main() {
 let passed = 0;
 let failed = 0;
 const errors = [];
+const pipelineEntries = [];
 
 for (const entry of shaders) {
   const { name, wgsl } = entry;
@@ -451,31 +460,160 @@ for (const entry of shaders) {
     passed++;
     console.log(`[shader-gate] OK    ${name}`);
   }
+  const entryPoints = entry.entryPoints ?? (entry.entryPoint ? [entry.entryPoint] : []);
+  for (const entryPoint of entryPoints) {
+    if (hasComputeEntry(wgsl, entryPoint)) {
+      pipelineEntries.push({ name, wgsl, entryPoint });
+    }
+  }
 }
 
-// ── Summary ───────────────────────────────────────────────────────────────────
 const total = passed + failed;
 console.log("");
 console.log(`[shader-gate] ${total} shader(s) compiled — ${passed} OK, ${failed} FAILED`);
 
+const brokenSelfTest = errors.find((e) => e.name === "__self-test/intentionally-broken");
+const realCompileFailures = errors.filter((e) => e.name !== "__self-test/intentionally-broken");
 if (selfTest) {
   // In self-test mode, exactly 1 failure is expected (the injected broken shader).
-  const broken = errors.find((e) => e.name === "__self-test/intentionally-broken");
-  if (!broken) {
+  if (!brokenSelfTest) {
     console.error("[shader-gate] --self-test FAILED: injected broken shader was NOT detected!");
     Deno.exit(1);
   }
-  const realFailures = errors.filter((e) => e.name !== "__self-test/intentionally-broken");
-  if (realFailures.length > 0) {
+  if (realCompileFailures.length > 0) {
     console.error("[shader-gate] --self-test ABORTED: production shaders also failed:");
-    for (const e of realFailures) console.error(`  ${e.name}`);
+    for (const e of realCompileFailures) console.error(`  ${e.name}`);
     Deno.exit(1);
   }
-  console.log("[shader-gate] --self-test PASSED: injected error was correctly detected.");
-  Deno.exit(0);
 }
 
-if (failed > 0) {
+if (!selfTest && failed > 0) {
   Deno.exit(1);
 }
+
+if (!noPipelineGate) {
+  await runPipelineCreationGates();
+}
+
+if (selfTest) {
+  console.log("[shader-gate] --self-test PASSED: injected error was correctly detected.");
+}
 Deno.exit(0);
+
+function hasComputeEntry(wgsl, entryPoint) {
+  const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`@compute[\\s\\S]{0,240}?fn\\s+${escaped}\\b`);
+  return re.test(wgsl);
+}
+
+async function runPipelineCreationGates() {
+  let pipelinePassed = 0;
+  let pipelineFailed = 0;
+  const pipelineErrors = [];
+
+  for (const entry of pipelineEntries) {
+    try {
+      const module = device.createShaderModule({
+        label: `${entry.name}/${entry.entryPoint}/pipeline`,
+        code: entry.wgsl,
+      });
+      await device.createComputePipelineAsync({
+        label: `${entry.name}/${entry.entryPoint}`,
+        layout: "auto",
+        compute: { module, entryPoint: entry.entryPoint },
+      });
+      pipelinePassed++;
+      console.log(`[shader-gate] PIPE  ${entry.name}::${entry.entryPoint}`);
+    } catch (err) {
+      pipelineFailed++;
+      const message = String(err?.message ?? err);
+      console.error(`[shader-gate] PFAIL ${entry.name}::${entry.entryPoint}\n    ${message}`);
+      pipelineErrors.push({ name: entry.name, entryPoint: entry.entryPoint, message });
+    }
+  }
+
+  const productionVariants = await runWalkaroundProductionPipelineGate();
+  pipelinePassed += productionVariants.passed;
+  pipelineFailed += productionVariants.failed;
+  pipelineErrors.push(...productionVariants.errors);
+
+  console.log("");
+  console.log(`[shader-gate] ${pipelinePassed + pipelineFailed} pipeline gate(s) — ${pipelinePassed} OK, ${pipelineFailed} FAILED`);
+
+  if (pipelineFailed > 0) {
+    console.error("[shader-gate] Pipeline creation failures:");
+    for (const e of pipelineErrors) {
+      console.error(`  ${e.name}${e.entryPoint ? `::${e.entryPoint}` : ""}: ${e.message.split("\n")[0]}`);
+    }
+    Deno.exit(1);
+  }
+}
+
+async function runWalkaroundProductionPipelineGate() {
+  const { compilePipelines } = await import(
+    "../../packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts"
+  );
+
+  const nrcCfg = {
+    levels: 16,
+    featuresPerEntry: 2,
+    oneBlobBins: 4,
+    width: 64,
+    outWidth: 3,
+    hidden: 5,
+  };
+  const variants = [
+    { name: "walkaround-hybrid/production-default", opts: {} },
+    { name: "walkaround-hybrid/production-gris", opts: { restirPtReuse: true } },
+    { name: "walkaround-hybrid/production-ppg", opts: { ppgEnabled: true } },
+    { name: "walkaround-hybrid/production-regir", opts: { regirEnabled: true } },
+  ];
+  if (adapterMaxBG >= 5) {
+    variants.push({ name: "walkaround-hybrid/production-nrc", opts: { nrcConfig: nrcCfg } });
+  } else {
+    console.log(`[shader-gate] PSKIP walkaround-hybrid/production-nrc (requires maxBindGroups>=5; adapter has ${adapterMaxBG})`);
+  }
+
+  const pipelineDevice = makeNagaPatchedPipelineDevice(device);
+  let passed = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const variant of variants) {
+    try {
+      await compilePipelines(pipelineDevice, {}, "rgba8unorm", variant.opts);
+      passed++;
+      console.log(`[shader-gate] PIPE  ${variant.name}`);
+    } catch (err) {
+      failed++;
+      const message = String(err?.message ?? err);
+      console.error(`[shader-gate] PFAIL ${variant.name}\n    ${message}`);
+      errors.push({ name: variant.name, message });
+    }
+  }
+
+  return { passed, failed, errors };
+}
+
+function makeNagaPatchedPipelineDevice(realDevice) {
+  return {
+    createShaderModule(desc) {
+      return realDevice.createShaderModule({
+        ...desc,
+        code: typeof desc?.code === "string" ? applyNagaFix(desc.code) : desc?.code,
+      });
+    },
+    createBindGroupLayout(desc) {
+      return realDevice.createBindGroupLayout(desc);
+    },
+    createPipelineLayout(desc) {
+      return realDevice.createPipelineLayout(desc);
+    },
+    createComputePipelineAsync(desc) {
+      return realDevice.createComputePipelineAsync(desc);
+    },
+    createRenderPipelineAsync(desc) {
+      return realDevice.createRenderPipelineAsync(desc);
+    },
+  };
+}
