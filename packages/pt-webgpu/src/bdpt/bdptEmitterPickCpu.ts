@@ -15,6 +15,7 @@ import {
 } from './flatEmitterWalk.js';
 
 const PI = Math.PI;
+const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 function bdptLightLuminance(rgb: readonly [number, number, number]): number {
@@ -26,8 +27,7 @@ function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
   if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
     return true;
   }
-  const irr = sb.directionalIrradiance;
-  return irr[0] + irr[1] + irr[2] > 1e-6 || sb.environmentSunStrength > 1e-6;
+  return sb.environmentSunStrength > 1e-6;
 }
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
@@ -38,21 +38,51 @@ function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
       return Math.max(sb.environmentMapCdf[count]!, 1e-20);
     }
   }
-  const sunW = sb.environmentSunStrength > 1e-6
-    ? sb.environmentSunStrength
-    : sb.directionalIrradiance[0] + sb.directionalIrradiance[1] + sb.directionalIrradiance[2];
-  if (sunW > 1e-6) {
-    return Math.max(sunW, 1e-20) * (4 * PI);
+  if (sb.environmentSunStrength > 1e-6) {
+    return Math.max(sb.environmentSunStrength, 1e-20) * (4 * PI);
   }
   return 1e-20;
 }
 
-export function bdptEmitterCount(sb: UploadedSceneBuffers): number {
-  let n = 0;
-  const irr = sb.directionalIrradiance;
-  if (irr[0] + irr[1] + irr[2] > 1e-6) {
-    n += 1;
+function directionalRecord(
+  sb: UploadedSceneBuffers,
+  index: number,
+): { readonly dir: [number, number, number]; readonly irradiance: [number, number, number] } | null {
+  const base = index * DIRECTIONAL_LIGHT_FLOAT_STRIDE;
+  if (sb.directionalLightsData.length < base + DIRECTIONAL_LIGHT_FLOAT_STRIDE) {
+    return null;
   }
+  const dir = normalize3([
+    sb.directionalLightsData[base] ?? 0,
+    sb.directionalLightsData[base + 1] ?? 1,
+    sb.directionalLightsData[base + 2] ?? 0,
+  ]);
+  return {
+    dir,
+    irradiance: [
+      sb.directionalLightsData[base + 4] ?? 0,
+      sb.directionalLightsData[base + 5] ?? 0,
+      sb.directionalLightsData[base + 6] ?? 0,
+    ],
+  };
+}
+
+function distantEmitterPosition(
+  sb: UploadedSceneBuffers,
+  dir: readonly [number, number, number],
+): [number, number, number] {
+  const center = sb.sceneCenter ?? [0, 0, 0];
+  const radius = Number.isFinite(sb.sceneRadius) ? Math.max(1e-3, sb.sceneRadius) : 1;
+  const dist = Math.max(radius * 4, 1);
+  return [
+    center[0] - dir[0] * dist,
+    center[1] - dir[1] * dist,
+    center[2] - dir[2] * dist,
+  ];
+}
+
+export function bdptEmitterCount(sb: UploadedSceneBuffers): number {
+  let n = sb.directionalLightCount;
   n += sb.pointLightCount;
   n += sb.spotLightCount;
   n += sb.rectAreaLightCount;
@@ -86,10 +116,10 @@ function positionalEmitterPower(e: PositionalEmitter): number {
 
 export function bdptEmitterPower(sb: UploadedSceneBuffers, flatIdx: number): number {
   let cur = 0;
-  const irr = sb.directionalIrradiance;
-  if (irr[0] + irr[1] + irr[2] > 1e-6) {
+  for (let di = 0; di < sb.directionalLightCount; di += 1) {
     if (cur === flatIdx) {
-      return bdptLightLuminance([irr[0], irr[1], irr[2]]);
+      const record = directionalRecord(sb, di);
+      return record ? bdptLightLuminance(record.irradiance) : 1e-20;
     }
     cur += 1;
   }
@@ -236,15 +266,14 @@ export function sampleBdptBounce0Cpu(
   };
 
   let cur = 0;
-  const irr = sb.directionalIrradiance;
-  if (irr[0] + irr[1] + irr[2] > 1e-6) {
+  for (let di = 0; di < sb.directionalLightCount; di += 1) {
     if (cur === flat) {
-      const len = Math.hypot(irr[0], irr[1], irr[2]) || 1;
-      const lightDir: [number, number, number] = [irr[0] / len, irr[1] / len, irr[2] / len];
+      const record = directionalRecord(sb, di);
+      if (!record) return null;
       return finish(
-        [-lightDir[0] * 50, -lightDir[1] * 50, -lightDir[2] * 50],
-        lightDir,
-        [irr[0], irr[1], irr[2]],
+        distantEmitterPosition(sb, record.dir),
+        record.dir,
+        record.irradiance,
         discretePdf,
       );
     }
@@ -369,22 +398,18 @@ export function sampleBdptBounce0Cpu(
         ];
         const pdf = Math.max(sb.environmentMapTexels[t + 3]!, 1e-8);
         const pdfLight = discretePdf * pdf;
-        return finish([-dir[0] * 50, -dir[1] * 50, -dir[2] * 50], dir, value, pdfLight);
+        return finish(distantEmitterPosition(sb, dir), dir, value, pdfLight);
       }
     }
-    if (sb.environmentSunStrength > 1e-6 || irr[0] + irr[1] + irr[2] > 1e-6) {
+    if (sb.environmentSunStrength > 1e-6) {
       const sd = sb.environmentSunDirection;
       const sunDir =
         Math.hypot(sd[0], sd[1], sd[2]) > 1e-6
           ? normalize3([sd[0], sd[1], sd[2]])
-          : normalize3([
-              sb.directionalLight[0],
-              sb.directionalLight[1],
-              sb.directionalLight[2],
-            ]);
-      const w = sb.environmentSunStrength > 1e-6 ? sb.environmentSunStrength : irr[0] + irr[1] + irr[2];
+          : [0, 1, 0] as [number, number, number];
+      const w = sb.environmentSunStrength;
       return finish(
-        [-sunDir[0] * 50, -sunDir[1] * 50, -sunDir[2] * 50],
+        distantEmitterPosition(sb, sunDir),
         sunDir,
         [w, w, w],
         discretePdf,

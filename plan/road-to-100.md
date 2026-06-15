@@ -554,11 +554,14 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 > no-`params.lightDir.w` regression. ✅ **MNEE cone-search fallback CLOSED
 > (2026-06-15):** the legacy transmissive cone-search approximation now loops
 > packed N-directional RGB records and honors the directional shadow-disable
-> sign bit; `mneeRefractionCaustic.test.ts` pins the no-scalar regression. Also
-> in scope: BDPT's hardcoded 50-unit
-> emitter placement radius
-> (`bdptLightSubpath.wgsl.ts` `emitPos = -lightDir * 50.0`) — derive from scene
-> bounds. ✅ **environment:'none' phantom skylight CLOSED (2026-06-12):**
+> sign bit; `mneeRefractionCaustic.test.ts` pins the no-scalar regression.
+> ✅ **BDPT bounce-0 directional shortcut CLOSED (2026-06-15):** BDPT light
+> subpath emitter count/power/write now loops packed N-directional RGB records,
+> and pseudo-distant directional/environment vertices use packed
+> `sceneCenterX/Y/Z + sceneRadius` instead of `emitPos = -lightDir * 50.0`.
+> `bdptGlossyLightSubpath.test.ts`, `bdptEmitterPickCpu.test.ts`,
+> `scenePack.test.ts`, and FrameParams layout tests pin the no-scalar/no-fixed
+> radius path. ✅ **environment:'none' phantom skylight CLOSED (2026-06-12):**
 > full + lite no-map env lookups now return black radiance and zero env pdf
 > (`connect.wgsl.ts`, `connectLite.wgsl.ts`); procedural sky remains lit through
 > the CPU-baked HDRI path, and `environmentPacking.test.ts` pins kind:none.

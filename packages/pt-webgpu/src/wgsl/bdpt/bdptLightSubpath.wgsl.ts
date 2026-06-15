@@ -29,11 +29,14 @@ fn bdptEnvironmentPower() -> f32 {
   return 1e-20;
 }
 
+fn bdptDistantEmitterPosition(lightDir: vec3f) -> vec3f {
+  let center = vec3f(params.sceneCenterX, params.sceneCenterY, params.sceneCenterZ);
+  let dist = max(params.sceneRadius * 4.0, 1.0);
+  return center - lightDir * dist;
+}
+
 fn bdptEmitterCount() -> u32 {
-  var n = 0u;
-  if (params.lightDir.w > 1e-6) {
-    n = n + 1u;
-  }
+  var n = params.directionalLightCount;
   n = n + params.pointLightCount;
   n = n + params.spotLightCount;
   n = n + params.rectAreaLightCount;
@@ -46,9 +49,11 @@ fn bdptEmitterCount() -> u32 {
 
 fn bdptEmitterPower(flatIdx: u32) -> f32 {
   var cur = 0u;
-  if (params.lightDir.w > 1e-6) {
+  for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
     if (cur == flatIdx) {
-      return bdptLightLuminance(vec3f(params.lightDir.w));
+      let dBase = di * 2u;
+      let dIrrMean = directionalLights[dBase + 1u];
+      return bdptLightLuminance(dIrrMean.rgb);
     }
     cur = cur + 1u;
   }
@@ -225,12 +230,14 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
   let discretePdf = bdptEmitterPower(flat) / max(totalPower, 1e-20);
 
   var cur = 0u;
-  if (params.lightDir.w > 1e-6) {
+  for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
     if (cur == flat) {
-      let lightDir = safe_normalize(params.lightDir.xyz);
-      let emitPos = -lightDir * 50.0;
-      let irr = params.lightDir.w;
-      bdptFinishBounce0(col, emitPos, lightDir, vec3f(irr), discretePdf, rng);
+      let dBase = di * 2u;
+      let dDirAD = directionalLights[dBase];
+      let dIrrMean = directionalLights[dBase + 1u];
+      let lightDir = safe_normalize(dDirAD.xyz);
+      let emitPos = bdptDistantEmitterPosition(lightDir);
+      bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, rng);
       return;
     }
     cur = cur + 1u;
@@ -329,13 +336,13 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
     if (envSample.pdf > 1e-8) {
       let pdfLight = discretePdf * envSample.pdf;
       let emitDir = envSample.wi;
-      let emitPos = -emitDir * 50.0;
+      let emitPos = bdptDistantEmitterPosition(emitDir);
       bdptFinishBounce0(col, emitPos, emitDir, envSample.value, pdfLight, rng);
       return;
     }
     if (params.environmentSun.w > 1e-6) {
       let sunDir = safe_normalize(params.environmentSun.xyz);
-      let emitPos = -sunDir * 50.0;
+      let emitPos = bdptDistantEmitterPosition(sunDir);
       bdptFinishBounce0(col, emitPos, sunDir, vec3f(params.environmentSun.w), discretePdf, rng);
       return;
     }

@@ -56,6 +56,22 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
   });
 
+  it('directional bounce-0 uses packed RGB records and scene-scaled pseudo distance', () => {
+    const code = PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    expect(code).toContain('var n = params.directionalLightCount;');
+    expect(code).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
+    expect(code).toContain('let dDirAD = directionalLights[dBase];');
+    expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
+    expect(code).toContain('bdptDistantEmitterPosition(lightDir)');
+    expect(code).toContain('bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, rng);');
+    expect(code).not.toContain('params.lightDir.w');
+    expect(code).not.toContain('* 50.0');
+  });
+
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptWriteLvBsdf(col, f32(matIdx), woLp);');
     // The emitter vertex is marked with the sentinel matId < 0 (Lambertian/emission).

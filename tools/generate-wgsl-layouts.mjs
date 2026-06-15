@@ -49,6 +49,12 @@ const FRAME_FIELDS = [
   // N-directional emitters (d67f0a3): kernel loops this many records from the
   // directionalLights storage buffer. APPENDED LAST so no earlier lane shifts.
   ['directionalLightCount', 'u32'],
+  // BDPT pseudo-distant emitters are placed relative to the current scene bounds
+  // instead of a Cornell-scale hardcoded radius.
+  ['sceneCenterX', 'f32'],
+  ['sceneCenterY', 'f32'],
+  ['sceneCenterZ', 'f32'],
+  ['sceneRadius', 'f32'],
 ];
 
 const SIZE_BYTES = { u32: 4, f32: 4, vec4f: 16, mat4x4f: 64 };

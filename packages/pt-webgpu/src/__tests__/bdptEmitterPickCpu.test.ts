@@ -11,6 +11,10 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
   const base = {
     directionalLight: [0, -1, 0],
     directionalIrradiance: [0, 0, 0],
+    directionalLightCount: 0,
+    directionalLightsData: new Float32Array(0),
+    sceneCenter: [0, 0, 0],
+    sceneRadius: 1,
     pointLightCount: 0,
     spotLightCount: 0,
     rectAreaLightCount: 0,
@@ -71,7 +75,8 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
 describe('bdptEmitterPickCpu', () => {
   it('counts directional + point + spot + rect + mesh + env', () => {
     const sb = stubScene({
-      directionalIrradiance: [1, 1, 1],
+      directionalLightCount: 1,
+      directionalLightsData: new Float32Array([0, -1, 0, 0, 1, 1, 1, 1]),
       pointLightCount: 1,
       spotLightCount: 1,
       rectAreaLightCount: 1,
@@ -166,7 +171,10 @@ describe('bdptEmitterPickCpu', () => {
     const mesh = new Float32Array(16);
     mesh.set([0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 16, 17, 18], 0);
     const sb = stubScene({
-      directionalIrradiance: [0.9, 0.8, 0.7],
+      directionalLightCount: 1,
+      directionalLightsData: new Float32Array([0, -1, 0, 0, 0.9, 0.8, 0.7, 0.8]),
+      sceneCenter: [10, 20, 30],
+      sceneRadius: 5,
       pointLightCount: 1,
       spotLightCount: 1,
       rectAreaLightCount: 1,
@@ -182,7 +190,7 @@ describe('bdptEmitterPickCpu', () => {
     expect(bdptEmitterCount(sb)).toBe(6);
 
     const goldenPowers = [
-      0.8140400000000001,
+      0.8140400025963783,
       4.8595999999999995,
       10.8596,
       332.63039999999995,
@@ -195,14 +203,14 @@ describe('bdptEmitterPickCpu', () => {
 
     // Sampled bounce-0 vertices, one per flat index (discretePdf=0.5, uHemi=0.37).
     const goldenSamples = [
-      { emitPos: [-32.30811713779822, -28.718326344709528, -25.128535551620836], emitNormal: [0.6461623427559644, 0.5743665268941905, 0.5025707110324167], pdfHemi: 0.2526506396086754 },
+      { emitPos: [10, 40, 30], emitNormal: [0, -1, 0], pdfHemi: 0.2526506396086754 },
       // A9 — point emitter is ISOTROPIC (uniform sphere): emitNormal = sampled sphere
       // dir, pdfHemi = 1/(4π) = 0.0795774715… (was cosine-up about [0,1,0]).
       { emitPos: [1, 2, 3], emitNormal: [-0.5316159505093274, 0.566113487883891, -0.6299999999999999], pdfHemi: 0.07957747154594767 },
       { emitPos: [7, 8, 9], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
       { emitPos: [-0.52, 5, 0.78], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
       { emitPos: [0.9914902924386096, 0.22506221362103418, 0], emitNormal: [0, 0, 1], pdfHemi: 0.25265063960867545 },
-      { emitPos: [0, -50, 0], emitNormal: [0, 1, 0], pdfHemi: 0.25265063960867545 },
+      { emitPos: [10, 0, 30], emitNormal: [0, 1, 0], pdfHemi: 0.25265063960867545 },
     ] as const;
     for (let i = 0; i < goldenSamples.length; i += 1) {
       const s = sampleBdptBounce0Cpu(sb, i, 0.5, 0.37);

@@ -85,6 +85,10 @@ function reconstructExpected(
   u[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
   // N-directional: kernel loops this many records from the directionalLights storage buffer.
   u[FrameParamsSlot.directionalLightCount] = sb.directionalLightCount >>> 0;
+  f[FrameParamsSlot.sceneCenterX] = sb.sceneCenter[0];
+  f[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
+  f[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
+  f[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
   // H14-E: HDRI intensity in its own slot (slot 31), separate from environmentSun.w.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
@@ -136,6 +140,8 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     directionalLight: [0.1, -0.9, 0.3],
     directionalIrradiance: [1.2, 0.8, 0.5],
     directionalAngularDiameter: 0,
+    sceneCenter: [4, 5, 6],
+    sceneRadius: 7,
     environmentTint: [0.95, 0.97, 1.0],
     environmentSunDirection: [0.0, 1.0, 0.0],
     environmentSunStrength: 3.5,
@@ -381,6 +387,10 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(u[FrameParamsSlot.lightTreeNodeCount]).toBe(9);
     // N-directional: directionalLightCount was set to 1 in makeSceneInputs.
     expect(u[FrameParamsSlot.directionalLightCount]).toBe(1);
+    expect(f[FrameParamsSlot.sceneCenterX]).toBe(4);
+    expect(f[FrameParamsSlot.sceneCenterY]).toBe(5);
+    expect(f[FrameParamsSlot.sceneCenterZ]).toBe(6);
+    expect(f[FrameParamsSlot.sceneRadius]).toBe(7);
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);

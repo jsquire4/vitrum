@@ -17,7 +17,7 @@ import type { PtWebgpuTraceTier } from './traceTier.js';
 //
 // The buffer is always allocated as 512 bytes (128 u32/f32 slots, indices 0..127).
 // FRAME_PARAMS_BYTE_SIZE is the WGSL-derived padded size of the struct
-// (auto-generated; currently 400 bytes = 100 slots).  If the generator
+// (auto-generated; currently 416 bytes = 104 slots).  If the generator
 // adds fields and the struct grows past 512 bytes, writes at slot ≥ 128 would
 // silently go out of bounds.  Fail loudly here at module load instead.
 //
@@ -41,11 +41,12 @@ const _highestSlot = Math.max(...(Object.values(FrameParamsSlot) as number[]));
 //   invViewProj at slot 48, mat4x4f = 16 slots → last slot 63
 //   prevViewProj at slot 80, mat4x4f = 16 slots → last slot 95
 //   directionalLightCount at slot 96, u32 = 1 slot → last slot 96
-// The last slot actually WRITTEN is directionalLightCount = 96. The mat fields
-// span slots [48..95]; the highest written slot index is 96.
+//   sceneCenterX/Y/Z + sceneRadius at slots 97..100 → last slot 100
+// The last slot actually WRITTEN is sceneRadius = 100. The mat fields span
+// slots [48..95].
 // We let the generator-derived FRAME_PARAMS_BYTE_SIZE / 4 give us the effective
 // slot count (accounting for trailing struct padding):
-const _effectiveSlots = FRAME_PARAMS_BYTE_SIZE / 4; // e.g. 400/4 = 100
+const _effectiveSlots = FRAME_PARAMS_BYTE_SIZE / 4; // e.g. 416/4 = 104
 if (_effectiveSlots > FRAME_PARAMS_MAX_SLOT + 1) {
   throw new Error(
     `frameParamsPacker: FRAME_PARAMS_BYTE_SIZE implies ${_effectiveSlots} slots but ` +
@@ -81,6 +82,10 @@ export interface FrameParamsSceneInputs {
    *  Written to the frame UBO's `cameraPos.w` lane (previously a constant 1, never
    *  read by any shader). 0 keeps the historical exact directional path. */
   readonly directionalAngularDiameter: number;
+  /** Current scene bounds center, used by BDPT pseudo-distant emitters. */
+  readonly sceneCenter: readonly [number, number, number];
+  /** Half diagonal of current scene bounds, used to scale BDPT pseudo-distant emitters. */
+  readonly sceneRadius: number;
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
@@ -197,6 +202,10 @@ export function packFrameParams(
   paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
   // N-directional: kernel loops this many records from the directionalLights storage buffer.
   paramsU32[FrameParamsSlot.directionalLightCount] = sb.directionalLightCount >>> 0;
+  paramsF32[FrameParamsSlot.sceneCenterX] = sb.sceneCenter[0];
+  paramsF32[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
+  paramsF32[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
+  paramsF32[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
   // H14-E: HDRI intensity lives in its own f32 slot (slot 31 = environmentHdriIntensity),
   // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
   // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).

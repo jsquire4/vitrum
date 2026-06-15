@@ -95,6 +95,10 @@ interface PackedSceneData {
   readonly directionalLightCount: number;
   /** N-directional: packed flat array, DIRECTIONAL_LIGHT_FLOAT_STRIDE (8) floats per entry. */
   readonly directionalLightsData: Float32Array;
+  /** Current scene bounds center, used to place pseudo-distant BDPT emitters. */
+  readonly sceneCenter: readonly [number, number, number];
+  /** Current scene half-diagonal radius, used to scale pseudo-distant BDPT emitters. */
+  readonly sceneRadius: number;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
@@ -495,6 +499,49 @@ function packMergedMaterial(
   return materialToPackedVec4s(material, { castShadow: material.castShadow });
 }
 
+function finiteRootBoundsFromFloatWords(words: ArrayLike<number>): {
+  readonly center: readonly [number, number, number];
+  readonly radius: number;
+} | null {
+  if (words.length < BVH_NODE_FLOATS) return null;
+  const minX = words[0] ?? 0;
+  const minY = words[1] ?? 0;
+  const minZ = words[2] ?? 0;
+  const maxX = words[3] ?? 0;
+  const maxY = words[4] ?? 0;
+  const maxZ = words[5] ?? 0;
+  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) return null;
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+  const dx = maxX - minX;
+  const dy = maxY - minY;
+  const dz = maxZ - minZ;
+  return {
+    center: [cx, cy, cz],
+    radius: Math.max(1e-3, 0.5 * Math.hypot(dx, dy, dz)),
+  };
+}
+
+function sceneCenterRadiusFromPack(
+  pack: Pick<ScenePackResult, 'bvhNodes'> & Partial<Pick<ScenePackResult, 'tlasNodes'>>,
+): {
+  readonly center: readonly [number, number, number];
+  readonly radius: number;
+} {
+  if (pack.tlasNodes && pack.tlasNodes.length >= BVH_NODE_FLOATS) {
+    const tlasWords = new Float32Array(
+      pack.tlasNodes.buffer,
+      pack.tlasNodes.byteOffset,
+      pack.tlasNodes.length,
+    );
+    const bounds = finiteRootBoundsFromFloatWords(tlasWords);
+    if (bounds) return bounds;
+  }
+  const bounds = finiteRootBoundsFromFloatWords(pack.bvhNodes);
+  return bounds ?? { center: [0, 0, 0], radius: 1 };
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
@@ -618,6 +665,7 @@ export function buildPackedScene(
   const texCollection = collectMaterialTextures(materialSpecs);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
+  const sceneBounds = sceneCenterRadiusFromPack(geo);
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);
 
@@ -681,6 +729,8 @@ export function buildPackedScene(
     directionalAngularDiameter: defaultDirectionalAngularDiameter(scene),
     directionalLightCount: emitArrays.directionalLightCount,
     directionalLightsData: emitArrays.directionalLightsData,
+    sceneCenter: sceneBounds.center,
+    sceneRadius: sceneBounds.radius,
     pointLightCount: emitArrays.pointLightCount,
     spotLightCount: emitArrays.spotLightCount,
     rectAreaLightCount: emitArrays.rectAreaLightCount,
@@ -1016,6 +1066,8 @@ interface MutableSceneBuffers {
   tlasNodeCount: number;
   triangleCount: number;
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  sceneCenter: readonly [number, number, number];
+  sceneRadius: number;
 
   // ── TLAS GPU handles + CPU mirrors (realloc'd on instance-count change) ──
   tlasNodesBuffer: GPUBuffer;
@@ -1106,12 +1158,14 @@ function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBuffers {
  * - `triangleCount` present → updates `triangleCount` (BLAS uploads).
  * - `tlasNodeCount` present → updates `tlasNodeCount` (TLAS uploads).
  * - `primitiveTlasBindings` always required (every upload variant refreshes it).
+ * - root TLAS/BLAS bounds refresh `sceneCenter` + `sceneRadius` when present.
  */
 function applyScenePackCounts(
   sb: UploadedSceneBuffers,
   pack: {
     readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
     readonly bvhNodes?: Float32Array;
+    readonly tlasNodes?: Uint32Array;
     readonly triangleCount?: number;
     readonly tlasNodeCount?: number;
   },
@@ -1125,6 +1179,21 @@ function applyScenePackCounts(
   }
   if (pack.tlasNodeCount !== undefined) {
     mutable.tlasNodeCount = pack.tlasNodeCount;
+  }
+  if (pack.bvhNodes !== undefined) {
+    const bounds = sceneCenterRadiusFromPack({
+      bvhNodes: pack.bvhNodes,
+      ...(pack.tlasNodes !== undefined ? { tlasNodes: pack.tlasNodes } : {}),
+    });
+    mutable.sceneCenter = bounds.center;
+    mutable.sceneRadius = bounds.radius;
+  } else if (pack.tlasNodes !== undefined) {
+    const bounds = sceneCenterRadiusFromPack({
+      bvhNodes: sb.bvhNodes,
+      tlasNodes: pack.tlasNodes,
+    });
+    mutable.sceneCenter = bounds.center;
+    mutable.sceneRadius = bounds.radius;
   }
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }

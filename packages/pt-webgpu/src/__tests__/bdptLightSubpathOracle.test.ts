@@ -10,6 +10,10 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
   const base = {
     directionalLight: [0, -1, 0],
     directionalIrradiance: [0, 0, 0],
+    directionalLightCount: 0,
+    directionalLightsData: new Float32Array(0),
+    sceneCenter: [0, 0, 0],
+    sceneRadius: 1,
     pointLightCount: 0,
     spotLightCount: 0,
     rectAreaLightCount: 0,

@@ -87,6 +87,12 @@ struct FrameParams {
   // directionalLightCount=1 and directionalLights[0] byte-identical to the old
   // lightDir single path (gate unchanged).
   directionalLightCount: u32,
+  // BDPT pseudo-distant emitters use current scene bounds instead of a fixed
+  // Cornell-scale 50-unit offset.
+  sceneCenterX: f32,
+  sceneCenterY: f32,
+  sceneCenterZ: f32,
+  sceneRadius: f32,
 };
 
 @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;

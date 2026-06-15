@@ -188,6 +188,12 @@ describe('buildPackedScene core packing', () => {
     expect(packed.tlasBlasRoots[0]).toBe(0);
     expect(packed.tlasInstanceLocalToWorld[12]).toBeCloseTo(3, 5);
     expect(packed.tlasInstanceWorldToLocal[12]).toBeCloseTo(-3, 5);
+    // BDPT pseudo-distant emitters use world-space scene bounds, not the local
+    // BLAS root around the origin.
+    expect(packed.sceneCenter[0]).toBeCloseTo(3.5, 5);
+    expect(packed.sceneCenter[1]).toBeCloseTo(0.5, 5);
+    expect(packed.sceneCenter[2]).toBeCloseTo(0, 5);
+    expect(packed.sceneRadius).toBeCloseTo(Math.SQRT2 * 0.5, 5);
   });
 
   it('packs lite merged geometry as one world-space BLAS for multi-mesh scenes', () => {

@@ -115,8 +115,14 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'viewProj: mat4x4f',
       'prevViewProj: mat4x4f',
       // N-directional: packed directional count field added after prevViewProj.
-      // Slot 96 (byte 384 + 4 = 388), the first scalar after the three mat4x4f blocks.
+      // Slot 96, the first scalar after the three mat4x4f blocks.
       'directionalLightCount: u32',
+      // BDPT pseudo-distant emitter placement uses scene bounds, packed into
+      // the existing scalar tail after directionalLightCount.
+      'sceneCenterX: f32',
+      'sceneCenterY: f32',
+      'sceneCenterZ: f32',
+      'sceneRadius: f32',
     ]);
   });
 
