@@ -118,6 +118,7 @@ struct RptSuffixMaterial {
   metallic: f32,
   emissive: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   transmission: f32,
   ior: f32,
   clearcoat: f32,
@@ -179,6 +180,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   out.normal = select(-hit.normal, hit.normal, isFrontFace);
   out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
   out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
+  out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
 
   out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
   out.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
@@ -262,6 +264,7 @@ fn rptDirectAtVertex(
   rng: ptr<function, u32>,
   pos: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   baseColor: vec3f,
   roughness: f32,
@@ -296,8 +299,8 @@ fn rptDirectAtVertex(
         let dirShadowDisabled = dDirAD.w < 0.0;
         let shadowRay = Ray(pos + normal * 1e-3, lightDir);
         if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
-          let brdf = evaluateBrdfFull(
-            baseColor, roughness, metallic, normal, wo, lightDir,
+          let brdf = evaluateBrdfFullWithClearcoatNormal(
+            baseColor, roughness, metallic, normal, clearcoatNormal, wo, lightDir,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
@@ -354,8 +357,8 @@ fn rptDirectAtVertex(
         let lightPdf = dist2 / max(cosLight * area, 1e-6);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
         if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-          let brdf = evaluateBrdfFull(
-            baseColor, roughness, metallic, normal, wo, wi,
+          let brdf = evaluateBrdfFullWithClearcoatNormal(
+            baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
@@ -386,8 +389,8 @@ fn rptDirectAtVertex(
       let shadowRay = Ray(pos + normal * 1e-3, wi);
       if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
         let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
-        let brdf = evaluateBrdfFull(
-          baseColor, roughness, metallic, normal, wo, wi,
+        let brdf = evaluateBrdfFullWithClearcoatNormal(
+          baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
@@ -425,8 +428,8 @@ fn rptDirectAtVertex(
         if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
           let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
           let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
-          let brdf = evaluateBrdfFull(
-            baseColor, roughness, metallic, normal, wo, wi,
+          let brdf = evaluateBrdfFullWithClearcoatNormal(
+            baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
@@ -466,8 +469,8 @@ fn rptDirectAtVertex(
         let lightPdf = dist2 / max(cosLight * area, 1e-6);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
         if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-          let brdf = evaluateBrdfFull(
-            baseColor, roughness, metallic, normal, wo, wi,
+          let brdf = evaluateBrdfFullWithClearcoatNormal(
+            baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
@@ -498,15 +501,15 @@ fn rptDirectAtVertex(
     if (nDotL > 1e-6) {
       let shadowRay = Ray(pos + normal * 1e-3, envDir);
       if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-        let brdf = evaluateBrdfFull(
-          baseColor, roughness, metallic, normal, wo, envDir,
+        let brdf = evaluateBrdfFullWithClearcoatNormal(
+          baseColor, roughness, metallic, normal, clearcoatNormal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
           anisotropy, anisotropyRotation,
         );
-        let brdfPdf = brdfDirectionalPdfFullSampled(
-          baseColor, roughness, metallic, 0.0, 1.0, normal, wo, envDir,
+        let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+          baseColor, roughness, metallic, 0.0, 1.0, normal, clearcoatNormal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
@@ -572,7 +575,7 @@ fn rptComputeLoAtReconnection(
     }
     // Direct lighting (NEE) at this suffix vertex.
     Lo = Lo + rptDirectAtVertex(
-      rng, pos, normal, wo, baseColor, roughness, metallic,
+      rng, pos, normal, sm.clearcoatNormal, wo, baseColor, roughness, metallic,
       sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
       sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
       sm.specularColor, sm.specularIntensity,
@@ -602,8 +605,8 @@ fn rptComputeLoAtReconnection(
     // (ratio 1.000 ∀ wo angle) vs dense-quadrature in wsl-gpu/scripts/
     // restir-pt-onward-jsmodel.ts. evaluateBrdf also folds the small onward
     // specular response in, matching the megakernel's onward transport.
-    let fOnward = evaluateBrdfFull(
-      baseColor, roughness, metallic, normal, wo, nextDir,
+    let fOnward = evaluateBrdfFullWithClearcoatNormal(
+      baseColor, roughness, metallic, normal, sm.clearcoatNormal, wo, nextDir,
       sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
       sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
       sm.specularColor, sm.specularIntensity,
@@ -641,6 +644,7 @@ fn rptSampleSourceReconnectionDirection(
   rng: ptr<function, u32>,
   wo: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   tanT: vec3f,
   tanB: vec3f,
   roughness: f32,
@@ -671,7 +675,10 @@ fn rptSampleSourceReconnectionDirection(
     return bs.wi;
   }
   if (xiSource < 1.0 + max(clearcoat, 0.0)) {
-    let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);
+    var ccTanT: vec3f;
+    var ccTanB: vec3f;
+    buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
+    let bs = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
     return bs.wi;
   }
   let bs = cosineHemisphereSample(rng, normal);
@@ -685,6 +692,7 @@ fn rptSourceDirectionalPdfFull(
   transmission: f32,
   ior: f32,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   clearcoat: f32,
@@ -700,8 +708,8 @@ fn rptSourceDirectionalPdfFull(
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> f32 {
-  return brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+  return brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
@@ -745,6 +753,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   var nv = select(-vHit.normal, vHit.normal, vIsFront);
   nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
+  let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   let woV = -primaryRay.direction; // eye-side direction at xv
   var baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;
   baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);
@@ -853,6 +862,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     &rng,
     woV,
     nv,
+    clearcoatNormalV,
     tanT,
     tanB,
     roughnessV,
@@ -878,7 +888,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // ~0 anyway), so dropping the single frame's sample is the correct, unbiased
   // choice; the temporal history is re-seeded the next non-degenerate frame.
   let pdfSrc = rptSourceDirectionalPdfFull(
-    baseColorV, roughnessV, metallicV, 0.0, iorV, nv, woV, wiRecon,
+    baseColorV, roughnessV, metallicV, 0.0, iorV, nv, clearcoatNormalV, woV, wiRecon,
     clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
     specularColorV, specularIntensityV,
@@ -928,6 +938,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // ── Seed a 1-sample RIS reservoir, finalise, store ──
   var r = emptyReservoirPTHero();
   r.xv = xv; r.nv = nv;
+  r.clearcoatNormalV = clearcoatNormalV;
   r.albV = baseColorV; r.roughnessV = roughnessV; r.metalV = metallicV;
   r.clearcoatV = clearcoatV;
   r.clearcoatRoughnessV = clearcoatRoughnessV;

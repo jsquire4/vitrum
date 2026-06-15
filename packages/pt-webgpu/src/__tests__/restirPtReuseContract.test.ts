@@ -155,7 +155,8 @@ describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finaliz
     const targetBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn restirPtTargetAt('),
     ).split('\n').slice(0, 42).join('\n');
-    expect(targetBody).toContain('evaluateBrdfFull(');
+    expect(targetBody).toContain('evaluateBrdfFullWithClearcoatNormal(');
+    expect(targetBody).toContain('clearcoatNormalV, wo, wi,');
     expect(targetBody).toContain('clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,');
     expect(targetBody).toContain('specularColorV, specularIntensityV,');
     expect(targetBody).toContain('anisotropyV, anisotropyRotationV,');
@@ -268,8 +269,9 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'fn rptSampleSourceReconnectionDirection(',
       'let xiSource = rand_f32(rng) * lobeWeightSum;',
       'if (xiSource < 1.0 + max(clearcoat, 0.0)) {',
-      'let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, clearcoatRoughness);',
-      'return brdfDirectionalPdfFullSampled(',
+      'buildOnb(clearcoatNormal, &ccTanT, &ccTanB);',
+      'let bs = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
+      'return brdfDirectionalPdfFullSampledWithClearcoatNormal(',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -277,10 +279,11 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('evaluates suffix Lo direct lighting and onward throughput with extension-aware BRDF helpers', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptDirectAtVertex(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatNormal: vec3f,');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatRoughness: f32,');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateBrdfFull(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFull(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFullWithClearcoatNormal(');
   });
 
   it('covers spot and mesh-area emitters in the suffix direct-lighting producer', () => {
@@ -353,6 +356,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
       'nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
       'nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
+      'let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
       'clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
       'clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
       'sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));',
@@ -404,6 +408,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
       'out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
       'out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
+      'out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
       'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
       'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));',
       'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
@@ -438,7 +443,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
     const directCallIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = Lo + rptDirectAtVertex(');
     const directAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', directCallIdx);
-    const onwardIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fOnward = evaluateBrdfFull(');
+    const onwardIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fOnward = evaluateBrdfFullWithClearcoatNormal(');
     const onwardAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', onwardIdx);
     expect(directCallIdx).toBeGreaterThanOrEqual(0);
     expect(directAnisoIdx).toBeGreaterThan(directCallIdx);
@@ -477,7 +482,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
 describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy target)', () => {
   it('evaluates the full visible-vertex BRDF and forms f·cos·Lo·W', () => {
-    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let fBsdf = evaluateBrdfFull(');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let fBsdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.nv, r.clearcoatNormalV, wo, wiRecon,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.specularColorV, r.specularIntensityV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.anisotropyV, r.anisotropyRotationV,');
@@ -491,8 +497,8 @@ describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy t
 
 describe('ReSTIR-PT reservoir — visible-material payload is serialized with the reservoir', () => {
   it('bumps the reservoir stride and stores scalar extension-lobe fields', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 208 bytes = 52 × u32');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 52u;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 224 bytes = 56 × u32');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 56u;');
     for (const line of [
       'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
       'buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);',
@@ -504,7 +510,9 @@ describe('ReSTIR-PT reservoir — visible-material payload is serialized with th
       'buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);',
       'buf[b + 44u] = bitcast<u32>(r.specularColorV.x);',
       'buf[b + 47u] = bitcast<u32>(r.specularIntensityV);',
-      'buf[b + 51u] = r._padHybrid;',
+      'buf[b + 48u] = bitcast<u32>(r.clearcoatNormalV.x);',
+      'buf[b + 51u] = bitcast<u32>(r._padClearcoatNormalV);',
+      'buf[b + 55u] = r._padHybrid;',
     ]) {
       expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
     }
@@ -515,6 +523,7 @@ describe('ReSTIR-PT reservoir — visible-material payload is serialized with th
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).clearcoatV = src.clearcoatV;');
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).specularColorV = src.specularColorV;');
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).specularIntensityV = src.specularIntensityV;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).clearcoatNormalV = src.clearcoatNormalV;');
     expect(RESERVOIR_PT_HERO_WGSL).toContain('(*dst).anisotropyRotationV = src.anisotropyRotationV;');
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rGris, rCur);');
     expect(RESTIR_PT_SPATIAL_WGSL).toContain('copyReservoirPTVisibleDomain(&rOut, rCenter);');
