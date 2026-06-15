@@ -93,6 +93,12 @@ export interface WorldSpaceMergeResult {
    *  {@link positionStrideFloats}. */
   readonly normals: Float32Array;
 
+  /** Merged world-space tangents. Stride = {@link positionStrideFloats};
+   *  xyz is the transformed tangent direction, w is the bitangent handedness.
+   *  Vertices without authored/generated tangents are encoded as 0,0,0,0 so
+   *  consumers can fall back to a UV-gradient frame. */
+  readonly tangents: Float32Array;
+
   /** Merged per-vertex texture coords (stride 2, merge/vertex order — same order as
    *  {@link positions}/{@link normals}; the BVH reorders triangles not vertices).
    *  (0,0) for vertices whose source primitive carries no UVs. */
@@ -279,6 +285,23 @@ function applyNormalMatrix(
   return [nx / len, ny / len, nz / len];
 }
 
+/** Transform a tangent/vector direction by the upper-left 3×3 of a column-major
+ * matrix and normalize it. Unlike normals, tangents are ordinary directions, so
+ * they use the direct linear transform rather than the inverse-transpose. */
+function applyDirectionMatrix4(
+  m: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
+  const tx = (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[8] ?? 0) * z;
+  const ty = (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[9] ?? 0) * z;
+  const tz = (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[10] ?? 0) * z;
+  const len = Math.sqrt(tx * tx + ty * ty + tz * tz);
+  if (len <= 1e-12) return [0, 0, 0];
+  return [tx / len, ty / len, tz / len];
+}
+
 /** Full 4×4 determinant of a column-major matrix — = THREE's
  *  `Matrix4.determinant()` (used to detect the winding flip). */
 function determinant4(m: ArrayLike<number>): number {
@@ -428,6 +451,7 @@ export function mergeWorldSpaceFromCore(
   // BVH-reordered). `mergedIndices` is stride-3 (3 u32 / triangle).
   const positions: number[] = [];
   const normals: number[] = [];
+  const tangents: number[] = [];
   const uvs: number[] = []; // per-vertex texture coords (stride 2, merge order, untransformed)
   const mergedIndices: number[] = [];
   const mergedTriMaterialId: number[] = [];
@@ -477,8 +501,10 @@ export function mergeWorldSpaceFromCore(
 
     const basePositions = primitive.positions;
     const baseNormals = primitive.normals;
+    const baseTangents = primitive.tangents;
     const baseUvs = primitive.uvs; // optional; (0,0) per vertex when absent
     const localVertexCount = Math.floor(basePositions.length / 3);
+    const hasCompleteTangents = baseTangents != null && baseTangents.length >= localVertexCount * 4;
     if (localVertexCount < 3) continue;
 
     // Sequential index when the primitive carries none (triangle-list), matching
@@ -516,6 +542,19 @@ export function mergeWorldSpaceFromCore(
         const [nx, ny, nz] = applyNormalMatrix(normalMatrix, lnx, lny, lnz);
         normals.push(nx, ny, nz);
         if (stride === 4) normals.push(0);
+
+        if (hasCompleteTangents) {
+          const ltx = baseTangents[i * 4] ?? 0;
+          const lty = baseTangents[i * 4 + 1] ?? 0;
+          const ltz = baseTangents[i * 4 + 2] ?? 0;
+          const handedness = (baseTangents[i * 4 + 3] ?? 1) * (flip ? -1 : 1);
+          const [tx, ty, tz] = applyDirectionMatrix4(m, ltx, lty, ltz);
+          tangents.push(tx, ty, tz);
+          if (stride === 4) tangents.push(handedness);
+        } else {
+          tangents.push(0, 0, 0);
+          if (stride === 4) tangents.push(0);
+        }
 
         // UVs are 2D texture coords — transform-invariant (no world-matrix applied).
         uvs.push(baseUvs?.[i * 2] ?? 0, baseUvs?.[i * 2 + 1] ?? 0);
@@ -565,6 +604,7 @@ export function mergeWorldSpaceFromCore(
       bvhIndexStride: 3,
       triMaterialId: new Uint32Array(1),
       normals: new Float32Array(stride === 4 ? 12 : 9),
+      tangents: new Float32Array(stride === 4 ? 12 : 9),
       uvs: new Float32Array(6),
       mergedIndices: new Uint32Array([0, 1, 2]),
       mergedTriMaterialId: new Uint32Array(1),
@@ -578,6 +618,7 @@ export function mergeWorldSpaceFromCore(
 
   const packedPositions = new Float32Array(positions);
   const packedNormals = new Float32Array(normals);
+  const packedTangents = new Float32Array(tangents);
   const packedUvs = new Float32Array(uvs);
   const packedMergedIndices = new Uint32Array(mergedIndices);
   const packedMergedTriMaterialId = new Uint32Array(mergedTriMaterialId);
@@ -598,6 +639,7 @@ export function mergeWorldSpaceFromCore(
     bvhIndexStride: 3,
     triMaterialId: bvh.reorderedTriMaterialIds,
     normals: packedNormals,
+    tangents: packedTangents,
     uvs: packedUvs,
     mergedIndices: packedMergedIndices,
     mergedTriMaterialId: packedMergedTriMaterialId,

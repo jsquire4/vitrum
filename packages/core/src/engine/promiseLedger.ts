@@ -378,15 +378,16 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // packed color path and the rest of the texture-map family is not sampled.
   baseColorMap: 'approximate',
   // Phase-3D map slice: normalMap perturbs the camera-visible smooth normal
-  // through a derived per-triangle tangent frame; roughness/metallic sample glTF
-  // G/B channels in shade for visible BRDF terms; AO samples the glTF R channel
-  // and multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
+  // through authored/generated tangent.xyzw when present, falling back to a
+  // derived per-triangle tangent frame. roughness/metallic sample glTF G/B
+  // channels in shade for visible BRDF terms; AO samples the glTF R channel and
+  // multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
   // cutout traversal; emissiveMap modulates camera-visible emitter glow;
   // transmissionMap modulates shade/RIS/GI glass gating; lightMap adds
-  // first-hit baked outgoing radiance. Approximate because authored tangents are
-  // not consumed, upstream reservoir/candidate PDFs, emitter power, and GI
-  // payloads still use scalar packed lanes, lightMap is camera-visible only, and
-  // alpha blend has no OIT path.
+  // first-hit baked outgoing radiance. Approximate because upstream
+  // reservoir/candidate PDFs, emitter power, and GI payloads still use scalar
+  // packed lanes, lightMap is camera-visible only, and alpha blend has no OIT
+  // path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',
@@ -402,9 +403,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // only, so this is approximate rather than native.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
-  // Clearcoat normal maps reuse walkaround's derived-TBN atlas normal path and
-  // feed only the shade-owned clearcoat lobe. Authored tangents and ReSTIR
-  // candidate PDFs/payloads remain base-lobe-only.
+  // Clearcoat normal maps reuse walkaround's authored-tangent-aware atlas
+  // normal path and feed only the shade-owned clearcoat lobe. ReSTIR candidate
+  // PDFs/payloads remain base-lobe-only.
   clearcoatNormalMap: 'approximate',
   clearcoatNormalScale: 'approximate',
   // Readable sheen maps modulate the shade-owned Charlie sheen lobe; ReSTIR
@@ -418,7 +419,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescenceThicknessMap: 'approximate',
   // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
   // anisotropic GGX branch (B = strength, RG = direction). ReSTIR candidate
-  // PDFs/payloads and authored tangents are still not anisotropy-complete.
+  // PDFs/payloads are still not anisotropy-complete.
   anisotropyMap: 'approximate',
   // Readable specular maps ride the material atlas and modulate shade-owned
   // scalar specular controls. ReSTIR candidate PDFs/payloads remain scalar.

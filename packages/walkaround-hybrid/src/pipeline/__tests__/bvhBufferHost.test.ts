@@ -56,6 +56,14 @@ vi.mock('../materialTextureAtlas.js', () => ({
   })),
 }));
 
+vi.mock('../bvhTangentTexture.js', () => ({
+  uploadTangentTexture: vi.fn(() => ({
+    texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+    width: 4096,
+    height: 1,
+  })),
+}));
+
 vi.mock('../analyticLightsTexture.js', () => ({
   uploadAnalyticLightsTexture: vi.fn(() => ({
     texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
@@ -105,6 +113,7 @@ function makeSceneBvhBuffers(emitterCount = 1): SceneBVHBuffers {
     bvhEmissiveLe: buf,
     bvhRoughMetal: buf,
     bvhNormals: buf,
+    bvhTangents: buf,
     bvhPositions: buf,
     emitters,
     emitterCdf,
@@ -128,6 +137,7 @@ describe('BvhBufferHost', () => {
     expect(r.tlasNodesBuffer).toBeDefined();
     expect(r2.bvhBeerTextureView).toBe(r.bvhBeerTextureView);
     expect(r2.bvhEmissiveTextureView).toBe(r.bvhEmissiveTextureView);
+    expect(r2.bvhTangentTextureView).toBe(r.bvhTangentTextureView);
     expect(host.lightTreeBuffer()).toBeDefined();
     const mem = host.gpuMemorySections().staticScene;
     if (mem == null) throw new Error('expected staticScene memory section');
@@ -136,6 +146,7 @@ describe('BvhBufferHost', () => {
     expect(mem['tlasNodesBuffer']).toMatchObject({ size: 16, usage: 0x80 });
     expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
     expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
+    expect(mem['bvhTangentTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
     expect(mem['materialTextureAtlas']).toMatchObject({ width: 1, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
     expect(mem['baseColorMapMetaTexture']).toMatchObject({ width: 2, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
     host.dispose();

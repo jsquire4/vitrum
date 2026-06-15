@@ -27,6 +27,14 @@ function translate(x: number): Mat4 {
   return asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1]));
 }
 
+function rotateZ90(): Mat4 {
+  return asMat4(new Float32Array([0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+}
+
+function mirrorX(): Mat4 {
+  return asMat4(new Float32Array([-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+}
+
 function unitTriMesh(id: string, transform?: Mat4): Scene['primitives'][number] {
   return {
     kind: 'mesh',
@@ -100,6 +108,44 @@ describe('packSceneFromCore (SP-*)', () => {
       1, 1, 0, -1,
     ]);
     expect(Array.from(packed.tangents.slice(12, 24))).toEqual(new Array(12).fill(0));
+  });
+
+  it('mergeWorldSpaceFromCore carries transformed tangent.xyzw and flips handedness for mirrored transforms', () => {
+    const tangentTri = (id: string, transform: Mat4): Scene['primitives'][number] => ({
+      kind: 'mesh',
+      id,
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      tangents: new Float32Array([
+        1, 0, 0, 1,
+        1, 0, 0, 1,
+        1, 0, 0, 1,
+      ]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      transform,
+    });
+    const scene: Scene = {
+      primitives: [
+        tangentTri('rot', rotateZ90()),
+        tangentTri('mirror', mirrorX()),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
+
+    expect(merged.tangents.length).toBe(merged.positions.length);
+    expect(merged.tangents[0]).toBeCloseTo(0, 6);
+    expect(merged.tangents[1]).toBeCloseTo(1, 6);
+    expect(merged.tangents[2]).toBeCloseTo(0, 6);
+    expect(merged.tangents[3]).toBe(1);
+
+    const mirrorBase = 3 * 4;
+    expect(merged.tangents[mirrorBase]).toBeCloseTo(-1, 6);
+    expect(merged.tangents[mirrorBase + 1]).toBeCloseTo(0, 6);
+    expect(merged.tangents[mirrorBase + 2]).toBeCloseTo(0, 6);
+    expect(merged.tangents[mirrorBase + 3]).toBe(-1);
   });
 
   it('packs COLOR_0 vertex colors as rgba and defaults missing colors to white', () => {

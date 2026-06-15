@@ -45,6 +45,7 @@ function makeBvh(): SceneBVHBuffers {
     bvhEmissiveLe: zeroBuf,
     bvhRoughMetal: zeroBuf,
     bvhNormals: zeroBuf,
+    bvhTangents: zeroBuf,
     bvhPositions: vertBuf,
     emitters: zeroBuf,
     emitterCdf: zeroBuf,

@@ -40,6 +40,11 @@ export interface SceneBVHBuffers {
    *  packingHelpers.packBVHRoughMetal for the diffuse-default invariant. */
   bvhRoughMetal: StorageBufferHandle;
   bvhNormals: StorageBufferHandle;
+  /** Per-vertex authored/generated tangents, vec4f stride. Uploaded as a
+   *  texture binding (not storage) so the scene bind group stays within the
+   *  WebGPU storage-buffer floor. xyz = tangent, w = bitangent handedness;
+   *  0,0,0,0 means derive a UV-gradient frame in WGSL. */
+  bvhTangents: StorageBufferHandle;
   emitters: StorageBufferHandle;
   emitterCdf: StorageBufferHandle;
   emitterCount: number;

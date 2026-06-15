@@ -13,13 +13,12 @@
 // ── Source of the per-vertex attributes ─────────────────────────────────────
 //
 // `mergeWorldSpaceFromCore` (the THREE-free merged world-space stream) emits
-// `positions` + `normals` (both stride `positionStrideFloats`) but — verified by
-// reading `WorldSpaceMergeResult` (`shared-bvh/src/worldSpaceMerge.ts:93-157`) —
-// it does NOT emit `uvs` OR vertex `colors`. So:
+// `positions`, `normals`, `uvs`, and `tangents` aligned to the merged vertex
+// order. It still does not emit vertex colors. So:
 //   • layer 0 (normal)  ← merged.normals          (the merged world-space normal).
-//   • layer 1 (tangent) ← DERIVED here from positions + uvs (standard per-triangle
-//                         accumulate → orthonormalize-against-normal) when no
-//                         authored tangent stream is supplied by the caller.
+//   • layer 1 (tangent) ← merged.tangents when nonzero; otherwise derived here
+//                         from positions + uvs (standard per-triangle accumulate
+//                         → orthonormalize-against-normal).
 //   • layer 2 (uv)      ← merged UVs (uv0) in `.xy` when present; (0,0,0,0) otherwise.
 //   • layer 3 (color)   ← per-vertex colors when present; (1,1,1,1) otherwise.
 //   • layer 4 (uv1)     ← per-vertex uv1 passed from the scene primitives (via the
@@ -56,8 +55,6 @@ export const ATTR_LAYER_COUNT = 5;
  */
 interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
   readonly colors?: Float32Array;
-  /** Per-vertex tangent stream, xyzw stride 4, same vertex order as merged.positions. */
-  readonly tangents?: Float32Array;
   /** Per-vertex uv1, stride 2 (same vertex order as `merged.uvs`). Optional;
    *  when absent layer 4 (ATTR_UV1) copies uv0 per vertex. */
   readonly uv1?: Float32Array;

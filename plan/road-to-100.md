@@ -634,9 +634,11 @@ metadata, multiplies visible albedo by `baseColorMap`, and overrides visible
 BRDF roughness/metallic from the glTF G/B channels. AO samples the glTF R
 channel and applies `aoMapIntensity` via the glTF occlusion-strength formula
 before multiplying the runtime GTAO factor. Normal maps perturb the visible
-smooth normal through a derived per-triangle tangent frame and `normalScale`,
-but do not yet consume authored tangent buffers. Alpha maps cut out primary/RIS/GI
-hits, emissive maps modulate camera-visible emitter glow, transmission maps modulate shade/RIS/GI glass gating, and light maps add first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_FIELDS` and the
+smooth normal through authored/generated tangent.xyzw when present, falling back
+to a derived per-triangle tangent frame, with `normalScale` applied. Alpha maps
+cut out primary/RIS/GI hits, emissive maps modulate camera-visible emitter glow,
+transmission maps modulate shade/RIS/GI glass gating, and light maps add
+first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_FIELDS` and the
 core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `lightMap`, `lightMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission tint,
@@ -647,8 +649,8 @@ paths still use scalar packed lanes, and bump, thickness, and displacement map f
 |-----------|---------|-------|
 | Atlas build | ✅ THIRD SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap`, `emissiveMap`, specular-color, and sheen-color raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, `lightMap`, specular-intensity, clearcoat, clearcoat-roughness, clearcoat-normal, sheen-roughness, anisotropy, iridescence, and iridescence-thickness maps are packed as linear map layers and sampled from their glTF channels. Remaining maps still need atlas rows/channel policy or explicit unsupported routing. |
 | UV buffer | ✅ FIRST SLICE: `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | uv0 rides `bvh_position.w`; uv1 rides `bvh_normal.w` using the same packed 16:16 unorm convention. |
-| Tangent buffer | ◑ DERIVED-TBN SLICE: `materialAtlas.wgsl.ts` | Normal maps currently derive a per-triangle frame from positions + uv0/uv1; authored/generated tangent.xyzw is still not bound, so the ledger row stays approximate. |
-| Bind group | ✅ SECOND SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-21 add a shared material-map atlas + metadata as textures, not storage buffers, preserving the storage-buffer budget. |
+| Tangent buffer | ✅ FOURTH SLICE: `shared-bvh/worldSpaceMerge.ts`, `restir/bvhCore.ts`, `pipeline/bvhTangentTexture.ts`, `materialAtlas.wgsl.ts` | TLAS packs forward `packSceneFromCore().tangents`; merged-world packs transform authored/generated tangent directions and flips handedness for mirrored transforms; walkaround uploads the vec4 stream as scene binding 22 (`rgba32float` texture) and the normal/clearcoat-normal TBN path prefers it before falling back to UV-gradient derivation. Ledger rows stay approximate for reservoir/GI/PDF scope, not because tangent data is dropped. |
+| Bind group | ✅ FOURTH SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-22 add a shared material-map atlas + metadata + tangent texture as textures, not storage buffers, preserving the storage-buffer budget. |
 | Material index per tri | ✅ THIRD SLICE: metadata texture keyed by triangle index | `baseColorMap`, `normalMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `emissiveMap`, `transmissionMap`, and `lightMap` use `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |
 | `materialPatch` fast path | ✅ THIRD SLICE: `HybridEnginePrimitiveUpdates.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `alphaMode` / `opacity` / `alphaCutoff` when a relevant map exists) also rebuild so metadata cannot go stale. A narrower atlas refresh remains an optimization follow-up. |
 | Ledger | ✅ THIRD SLICE: `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | `baseColorMap`, `normalMap`, `normalScale`, `roughnessMap`, `metallicMap`, `aoMap`, `aoMapIntensity`, `alphaMap`, `emissiveMap`, `transmissionMap`, `lightMap`, `lightMapIntensity`, specular maps, clearcoat factor/roughness/normal maps, sheen color/roughness maps, anisotropy controls/maps, and iridescence controls/maps promoted to `approximate` with tests. Remaining maps remain unsupported until each has shader consumption or explicit routing. |
@@ -818,7 +820,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override and DDGI material-emissive direct probe hits closed; remaining scalar work belongs to atlas/lobe parity rows |
 | Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend composite remains open |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
-| Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate in shade-owned GGX paths; native promotion still needs ReSTIR/GI payload/PDF parity and authored tangent parity where applicable |
+| Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate in shade-owned GGX paths; native promotion still needs ReSTIR/GI payload/PDF parity where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends |
 

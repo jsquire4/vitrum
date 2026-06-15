@@ -31,6 +31,7 @@ import { SCENE_TRAVERSAL_WGSL } from '../sceneTraversal.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../restirCastPrimary.wgsl.js';
 import { TEMPORAL_MODULE } from '../temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../spatial.wgsl.js';
+import { MATERIAL_ATLAS_WGSL } from '../materialAtlas.wgsl.js';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from '../../skin/gpuSkinBvh.wgsl.js';
 import { BIND_GROUP_TABLE } from '../../pipeline/bindGroupDescriptors.js';
 import { SHADE_MODULE } from '../shade.wgsl.js';
@@ -151,6 +152,10 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
   });
 
+  it.each(composedNormalBindingPasses)('composed %s declares bvh_tangent as a texture at @group(1) @binding(22)', (_name, src) => {
+    expect(src).toMatch(/@group\(1\)\s*@binding\(22\)\s*var\s+bvh_tangent\s*:\s*texture_2d<f32>/);
+  });
+
   it.each(passes)('%s actually CONSUMES the smooth normal (calls smoothShadingNormal)', (_name, src) => {
     // No computed-but-unconsumed: every pass that declares bvh_normal must use it.
     expect(src).toMatch(/smoothShadingNormal\s*\(/);
@@ -236,13 +241,16 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
 // ── 3. Scene bind-group storage-buffer budget (≤ 16 floor) ───────────────────
 
 describe('WS1 scene bind-group storage budget', () => {
-  it('scene group has bvh_normal as storage and bvh_beer as a uint texture', () => {
+  it('scene group has bvh_normal as storage and bvh_beer/bvh_tangent as textures', () => {
     const scene = BIND_GROUP_TABLE.find((e) => e.id === 'scene')!;
     const beer = scene.entries.find((e) => e.binding === 5)!;
     const normal = scene.entries.find((e) => e.binding === 11)!;
+    const tangent = scene.entries.find((e) => e.binding === 22)!;
     expect(beer.kind).toBe('tex:uint');
     expect(normal.kind).toBe('storage-ro');
     expect(normal.note).toMatch(/normal/i);
+    expect(tangent.kind).toBe('tex');
+    expect(tangent.note).toMatch(/tangent/i);
   });
 
   it('scene group stays at or below the 16 storage-buffer floor', () => {
@@ -254,6 +262,16 @@ describe('WS1 scene bind-group storage budget', () => {
     // storage buffers → 12 + 4 = 16, exactly the WebGPU storage-buffer floor.
     // H41 (analytic-NEE binding 13) raised the scene-group count from 11→12.
     expect(storageCount).toBeLessThanOrEqual(12);
+  });
+});
+
+describe('WS1 authored tangent texture path', () => {
+  it('normal-map TBN prefers authored tangent.xyzw and handedness when present', () => {
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/fn\s+bvhTangentTexel\s*\(/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/textureLoad\(bvh_tangent/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/preferAuthoredTangentFrameForHit\s*\(/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/cross\(frameNormal,\s*tangent\)\s*\*\s*select\(-1\.0,\s*1\.0,\s*authoredHandedness\s*>=\s*0\.0\)/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/tangentHandednessForLocalToWorld/);
   });
 });
 

@@ -72,7 +72,8 @@ export function buildPerFrameBindGroups(
   // order — a missing entry is a stale-binding bug: the memoized group keeps
   // referencing a DESTROYED buffer/texture after an update path swaps it.
   // The Wave A/B additions (analytic lights @13, rough-metal @14, env @15-19,
-  // material texture atlas @20-21, beer @5, emissive @12, normals @11) recreate their resources in
+  // material texture atlas @20-21, tangent texture @22, beer @5, emissive @12,
+  // normals @11) recreate their resources in
   // `updateAnalyticLights` / `updateEmitters` / `updateEnvironment`
   // (BvhBufferHost) — destroy() + fresh upload changes identity, so listing
   // them here makes those refresh paths auto-invalidate the scene group on the
@@ -102,6 +103,7 @@ export function buildPerFrameBindGroups(
     scene.envParamsBuffer,           // 19
     scene.materialTextureAtlasView,  // 20 — Phase-3D baseColorMap atlas
     scene.baseColorMapMetaTextureView, // 21
+    scene.bvhTangentTextureView,     // 22 — authored/generated tangent.xyzw
   ] as const;
   return {
     frame: resourceCache?.bindGroup('per-frame:frame', [

@@ -6,6 +6,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 // sampler-free and preserves the scene group's storage-buffer budget.
 @group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
+@group(1) @binding(22) var bvh_tangent: texture_2d<f32>;
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
@@ -319,6 +320,84 @@ fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   return b * inverseSqrt(len2);
 }
 
+fn bvhTangentTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(bvh_tangent);
+  let width = u32(dims.x);
+  let height = u32(dims.y);
+  if (width == 0u || height == 0u) {
+    return vec4f(0.0);
+  }
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(0.0);
+  }
+  return textureLoad(bvh_tangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn transformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
+  return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
+}
+
+fn tangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
+  let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
+  return select(-1.0, 1.0, det >= 0.0);
+}
+
+struct MaterialTangentFrame {
+  tangent: vec3f,
+  bitangent: vec3f,
+};
+
+fn preferAuthoredTangentFrameForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackTangent: vec3f,
+  fallbackBitangent: vec3f,
+) -> MaterialTangentFrame {
+  var tangent = fallbackTangent;
+  var bitangent = fallbackBitangent;
+
+  let ta = bvhTangentTexel(hit.indices.x);
+  let tb = bvhTangentTexel(hit.indices.y);
+  let tc = bvhTangentTexel(hit.indices.z);
+  var authoredTangent =
+    hit.barycoord.x * ta.xyz +
+    hit.barycoord.y * tb.xyz +
+    hit.barycoord.z * tc.xyz;
+  var authoredHandedness =
+    hit.barycoord.x * ta.w +
+    hit.barycoord.y * tb.w +
+    hit.barycoord.z * tc.w;
+
+  if (length(authoredTangent) > 1e-8 && abs(authoredHandedness) > 0.5) {
+    let isTlas = ubo.bvhMode == 1u;
+    let tBase = hit.instanceIndex * 4u;
+    let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceLocalToWorld);
+    if (tOk) {
+      authoredTangent = transformDirectionCols(
+        tlasInstanceLocalToWorld[tBase],
+        tlasInstanceLocalToWorld[tBase + 1u],
+        tlasInstanceLocalToWorld[tBase + 2u],
+        authoredTangent,
+      );
+      authoredHandedness = authoredHandedness * tangentHandednessForLocalToWorld(
+        tlasInstanceLocalToWorld[tBase],
+        tlasInstanceLocalToWorld[tBase + 1u],
+        tlasInstanceLocalToWorld[tBase + 2u],
+      );
+    }
+
+    authoredTangent = authoredTangent - frameNormal * dot(frameNormal, authoredTangent);
+    let tLen2 = dot(authoredTangent, authoredTangent);
+    if (tLen2 > 1e-8) {
+      tangent = authoredTangent * inverseSqrt(tLen2);
+      bitangent = cross(frameNormal, tangent) * select(-1.0, 1.0, authoredHandedness >= 0.0);
+    }
+  }
+
+  return MaterialTangentFrame(tangent, bitangent);
+}
+
 fn applyNormalMapAtOffsetForHit(
   hit: IntersectionResult,
   frameNormal: vec3f,
@@ -403,7 +482,8 @@ fn applyNormalMapAtOffsetForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  let perturbed = normalize(tangent * tangentSample.x + bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  let frame = preferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 

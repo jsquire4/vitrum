@@ -143,6 +143,8 @@ interface SceneBindGroupResources {
   bvhBeerTextureView: GPUTextureView;
   /** WS1 — per-vertex world-space normals storage buffer (binding 11). */
   bvhNormalBuffer: GPUBuffer;
+  /** Per-vertex authored/generated tangent.xyzw texture (binding 22). */
+  bvhTangentTextureView: GPUTextureView;
   /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
    *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
   bvhEmissiveTextureView: GPUTextureView;
@@ -195,6 +197,7 @@ export function buildSceneBindGroup(
     { buffer: r.envParamsBuffer },                  // 19 B3 EnvParams uniform
     r.materialTextureAtlasView,                     // 20 Phase-3D material-map texture_2d_array
     r.baseColorMapMetaTextureView,                  // 21 Phase-3D per-triangle map metadata
+    r.bvhTangentTextureView,                         // 22 authored/generated tangent.xyzw texture
   ]);
 }
 

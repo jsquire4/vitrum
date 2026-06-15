@@ -214,11 +214,16 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   payload lanes remain scalar.
 - Follow-up 2026-06-14: walkaround readable `normalMap` handles now pack into
   the same material texture atlas as linear tangent-space RGB with uv0/uv1,
-  wrap-mode, `KHR_texture_transform`, and `normalScale` metadata. `shade.wgsl`
-  derives a per-triangle TBN from positions + UVs and perturbs the visible
-  smooth normal before G-buffer/lighting writes. The ledger grades
-  `normalMap`/`normalScale` `approximate` because authored tangent.xyzw buffers
-  and reservoir/GI material payload parity are still open.
+  wrap-mode, `KHR_texture_transform`, and `normalScale` metadata.
+- Follow-up 2026-06-15: walkaround now carries authored/generated tangent.xyzw
+  through both BVH modes. TLAS uses `packSceneFromCore().tangents`; merged-world
+  transforms tangent directions and flips handedness for mirrored transforms;
+  `BvhBufferHost` uploads the vec4 stream as `bvh_tangent` scene binding 22
+  (`rgba32float` texture); `materialAtlas.wgsl` prefers it for normal and
+  clearcoat-normal TBN reconstruction before falling back to UV-gradient
+  derivation. The ledger still grades `normalMap`/`normalScale` `approximate`
+  because reservoir/GI material payload parity is open, not because tangents
+  are dropped.
 - Follow-up 2026-06-14: walkaround readable `lightMap` handles now pack into
   the material texture atlas as linear RGB layers with uv0/uv1, wrap-mode,
   `KHR_texture_transform`, and `lightMapIntensity` metadata. `shade.wgsl`
@@ -356,19 +361,19 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   ReSTIR candidate PDFs/payloads remain base-lobe-only.
 - Walkaround-hybrid Phase-3E clearcoat-normal follow-up (2026-06-14):
   readable `clearcoatNormalMap` handles now use the same material atlas and
-  derived-TBN normal-map path as base normal maps, with `clearcoatNormalScale`
-  stored in per-triangle metadata. Shade-owned top-coat direct, analytic, sun,
-  and glossy-indirect paths receive a separate clearcoat normal. The promise
-  ledger promotes `clearcoatNormalMap` / `clearcoatNormalScale` to
-  `approximate`, not `native`, because authored tangents and ReSTIR candidate
-  PDFs/payloads remain base-lobe-only.
+  authored-tangent-aware normal-map path as base normal maps, with
+  `clearcoatNormalScale` stored in per-triangle metadata. Shade-owned top-coat
+  direct, analytic, sun, and glossy-indirect paths receive a separate clearcoat
+  normal. The promise ledger promotes `clearcoatNormalMap` /
+  `clearcoatNormalScale` to `approximate`, not `native`, because ReSTIR
+  candidate PDFs/payloads remain base-lobe-only.
 - Walkaround-hybrid Phase-3E anisotropy follow-up (2026-06-14): scalar
   `anisotropy` / `anisotropyRotation` and readable `anisotropyMap` handles now
   ride the material atlas. The shader samples glTF B-channel strength and RG
   direction, then uses a guarded anisotropic GGX branch for shade-owned direct,
   analytic, sun, and glossy-indirect paths. The promise ledger promotes these
-  rows to `approximate`, not `native`, because authored tangent consumption and
-  ReSTIR/GI reservoir PDFs/payloads remain isotropic.
+  rows to `approximate`, not `native`, because ReSTIR/GI reservoir PDFs/payloads
+  remain isotropic.
 - Walkaround-hybrid Phase-3E iridescence follow-up (2026-06-14): scalar
   `iridescence` / `iridescenceIor` / `iridescenceThicknessRange` and readable
   `iridescenceMap` / `iridescenceThicknessMap` handles now ride the material

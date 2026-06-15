@@ -23,6 +23,7 @@ function fakeMerged(overrides: Partial<WorldSpaceMergeResult> = {}): WorldSpaceM
     bvhIndexStride: 3,
     triMaterialId: new Uint32Array([0, 0]),
     normals: new Float32Array(positions.length),
+    tangents: new Float32Array(positions.length),
     uvs: new Float32Array(8),
     mergedIndices,
     mergedTriMaterialId: new Uint32Array([0, 0]),
