@@ -406,8 +406,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescenceMap: 'unsupported',
   iridescenceThicknessMap: 'unsupported',
   anisotropyMap: 'unsupported',
-  specularColorMap: 'unsupported',
-  specularIntensityMap: 'unsupported',
+  // Readable specular maps ride the material atlas and modulate shade-owned
+  // scalar specular controls. ReSTIR candidate PDFs/payloads remain scalar.
+  specularColorMap: 'approximate',
+  specularIntensityMap: 'approximate',
   bumpMap: 'unsupported',
   bumpScale: 'unsupported',
   displacementMap: 'unsupported',

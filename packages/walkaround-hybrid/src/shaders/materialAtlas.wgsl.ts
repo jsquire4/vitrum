@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 24u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 28u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -25,6 +25,8 @@ const MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET: u32 = 20u;
 const MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
 const MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
 const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
+const MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
+const MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -166,13 +168,26 @@ fn sampleLightMap(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec3f {
   return texelColor.rgb * max(intensityMeta.x, 0.0);
 }
 
-fn sampleSpecularControls(triIndex: u32) -> vec4f {
+fn sampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   let spec = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_SPECULAR_TEXEL_OFFSET),
     0,
   );
-  return vec4f(clamp(spec.rgb, vec3f(0.0), vec3f(1.0)), clamp(spec.a, 0.0, 1.0));
+  var color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+  var intensity = clamp(spec.a, 0.0, 1.0);
+
+  let colorMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+
+  let intensityMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
+  if (intensityMap.x >= 0.0) {
+    intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
+  }
+
+  return vec4f(color, intensity);
 }
 
 fn sampleClearcoatControls(triIndex: u32) -> vec2f {

@@ -108,6 +108,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
+      'specularColorMap', 'specularIntensityMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -135,8 +136,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'displacementMap',
       'displacementScale',
       'displacementBias',
-      'specularColorMap',
-      'specularIntensityMap',
       'bumpMap',
       'frontLayer',
       'backLayer',
@@ -197,6 +196,8 @@ describe('collectUnconsumedMaterialFields', () => {
           normalScale: 0.5,
           specularColor: [0.8, 0.7, 0.6],
           specularIntensity: 0.4,
+          specularColorMap: { handle: 'specColor' },
+          specularIntensityMap: { handle: 'specIntensity' },
           frontLayer: { transmission: [1, 0.5, 0.25] },
           backLayer: { transmission: [0.25, 0.5, 1] },
           thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },

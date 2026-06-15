@@ -121,6 +121,19 @@ const SRGB_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'sheenColorMap',
 ]);
 
+const WALKAROUND_OPAQUE_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
+  'baseColorMap',
+  'normalMap',
+  'roughnessMap',
+  'metallicMap',
+  'aoMap',
+  'alphaMap',
+  'emissiveMap',
+  'transmissionMap',
+  'specularColorMap',
+  'specularIntensityMap',
+]);
+
 function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
   const imageBytes = new Uint8Array(PNG_MAGIC);
@@ -325,10 +338,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         backendReadiness: {
           ptWebgl2: 'opaque',
           ptWebgpu: 'opaque',
-          walkaroundHybrid:
-            field === 'baseColorMap' || field === 'normalMap' || field === 'roughnessMap' || field === 'metallicMap' || field === 'aoMap' || field === 'alphaMap' || field === 'emissiveMap' || field === 'transmissionMap'
-              ? 'opaque'
-              : 'ignored',
+          walkaroundHybrid: WALKAROUND_OPAQUE_SWEEP_FIELDS.has(field) ? 'opaque' : 'ignored',
         },
       });
       expect(transform.rotation).toBeGreaterThan(0);

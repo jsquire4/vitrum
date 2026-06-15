@@ -340,6 +340,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `sheen` / `sheenColor` / `sheenRoughness` to `approximate`, not `native`,
   because ReSTIR candidate PDFs/payloads and sheen texture maps remain
   base-lobe-only.
+- Walkaround-hybrid Phase-3E specular-map follow-up (2026-06-14):
+  readable `specularColorMap` and `specularIntensityMap` handles now use the
+  material atlas with per-map uv0/uv1, wrap, and texture-transform metadata.
+  Shade-owned GGX paths multiply scalar specular color by the sRGB RGB map and
+  scalar specular intensity by the linear alpha map. The promise ledger promotes
+  both rows to `approximate`, not `native`, because ReSTIR candidate PDFs and
+  payloads remain scalar/specular-map unaware.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

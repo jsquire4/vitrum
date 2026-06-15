@@ -12,7 +12,7 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
 - **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
 - **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; sTree + dTree on CPU with WGSL update training plus inline gi-ris guided sampling under `src/ppg/`. Directional flux training is live; spatial sTree never splits (single global cell — road-to-100).
-- **Approximate scalar material lobes** — atlas-backed scalar `specular`, `clearcoat`, and `sheen` controls feed shade-owned direct, analytic, sun, and glossy-indirect lighting. These rows remain approximate because upstream ReSTIR candidate PDFs/payloads and the corresponding texture maps are not lobe-complete.
+- **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, and `sheen` controls feed shade-owned direct, analytic, sun, and glossy-indirect lighting; readable specular color/intensity maps multiply the scalar specular controls. These rows remain approximate because upstream ReSTIR candidate PDFs/payloads and the remaining lobe texture maps are not lobe-complete.
 
 ## Denoisers
 

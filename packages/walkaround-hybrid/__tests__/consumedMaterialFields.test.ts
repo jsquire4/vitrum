@@ -161,6 +161,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'shadingModel', 'transmission', 'attenuationColor', 'attenuationDistance',
       'thickness', 'ior', 'extensions', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
+      'specularColorMap', 'specularIntensityMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
@@ -174,8 +175,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'thicknessMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
       'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
-      'iridescenceThicknessMap', 'anisotropyMap', 'specularColorMap',
-      'specularIntensityMap', 'bumpMap', 'displacementMap',
+      'iridescenceThicknessMap', 'anisotropyMap', 'bumpMap', 'displacementMap',
     ];
     for (const field of textureMaps) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(false);

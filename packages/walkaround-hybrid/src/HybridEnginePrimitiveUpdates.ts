@@ -1040,6 +1040,8 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'emissiveMap',
   'transmissionMap',
   'lightMap',
+  'specularColorMap',
+  'specularIntensityMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(

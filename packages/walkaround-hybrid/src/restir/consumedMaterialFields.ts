@@ -80,6 +80,10 @@
  *                           analytic, sun, and specular-indirect paths.
  *  specularIntensity      same scalar specular metadata path; approximate
  *                           because ReSTIR candidate PDFs still use default F0.
+ *  specularColorMap      readable sRGB maps multiply scalar `specularColor`
+ *                           before shade-owned GGX evaluation.
+ *  specularIntensityMap  readable linear maps multiply scalar
+ *                           `specularIntensity` from their alpha channel.
  *  clearcoat             stored in material atlas metadata and added as a
  *                           fixed-F0 GGX top-coat lobe in shade-owned direct,
  *                           analytic, sun, and specular-indirect paths.
@@ -114,6 +118,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'lightMapIntensity',
   'specularColor',
   'specularIntensity',
+  'specularColorMap',
+  'specularIntensityMap',
   'clearcoat',
   'clearcoatRoughness',
   'sheen',

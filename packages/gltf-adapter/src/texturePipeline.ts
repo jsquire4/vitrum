@@ -188,6 +188,8 @@ const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'emissiveMap',
   'transmissionMap',
   'lightMap',
+  'specularColorMap',
+  'specularIntensityMap',
 ]);
 
 export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): GltfTextureColorSpace {

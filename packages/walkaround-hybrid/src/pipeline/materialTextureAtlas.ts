@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 24;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 28;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -12,7 +12,9 @@ type AtlasMapField =
   | 'alphaMap'
   | 'emissiveMap'
   | 'transmissionMap'
-  | 'lightMap';
+  | 'lightMap'
+  | 'specularColorMap'
+  | 'specularIntensityMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -25,6 +27,8 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'emissiveMap', colorSpace: 'srgb' },
   { field: 'transmissionMap', colorSpace: 'linear' },
   { field: 'lightMap', colorSpace: 'linear' },
+  { field: 'specularColorMap', colorSpace: 'srgb' },
+  { field: 'specularIntensityMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -43,6 +47,8 @@ export interface MaterialTextureAtlasPayload {
   readonly readableEmissiveLayerCount: number;
   readonly readableTransmissionLayerCount: number;
   readonly readableLightLayerCount: number;
+  readonly readableSpecularColorLayerCount: number;
+  readonly readableSpecularIntensityLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -243,6 +249,8 @@ export function packMaterialTextureAtlas(
     emissiveMap: new Set<number>(),
     transmissionMap: new Set<number>(),
     lightMap: new Set<number>(),
+    specularColorMap: new Set<number>(),
+    specularIntensityMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -399,6 +407,8 @@ export function packMaterialTextureAtlas(
     writeSpecularMeta(mat, baseTexel + 21);
     writeClearcoatMeta(mat, baseTexel + 22);
     writeSheenColorMeta(mat, baseTexel + 23);
+    writeMapMeta(mat, 'specularColorMap', 'srgb', baseTexel + 24);
+    writeMapMeta(mat, 'specularIntensityMap', 'linear', baseTexel + 26);
   }
 
   return {
@@ -417,6 +427,8 @@ export function packMaterialTextureAtlas(
     readableEmissiveLayerCount: fieldLayers.emissiveMap.size,
     readableTransmissionLayerCount: fieldLayers.transmissionMap.size,
     readableLightLayerCount: fieldLayers.lightMap.size,
+    readableSpecularColorLayerCount: fieldLayers.specularColorMap.size,
+    readableSpecularIntensityLayerCount: fieldLayers.specularIntensityMap.size,
   };
 }
 

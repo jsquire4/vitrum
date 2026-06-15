@@ -333,6 +333,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           transmissionMap: { handle: baseColorMapHandle(4), wrapS: 'clamp-to-edge' },
           lightMap: { handle: baseColorMapHandle(2), texCoord: 1 },
           lightMapIntensity: 2,
+          specularColorMap: { handle: baseColorMapHandle(224), wrapS: 'mirrored-repeat' },
+          specularIntensityMap: { handle: baseColorMapHandle(240), texCoord: 1 },
         },
       });
 
@@ -349,6 +351,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableEmissiveLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableTransmissionLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableSpecularColorLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableSpecularIntensityLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
@@ -361,6 +365,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           transmissionMap?: unknown;
           lightMap?: unknown;
           lightMapIntensity?: unknown;
+          specularColorMap?: unknown;
+          specularIntensityMap?: unknown;
         };
       }).material;
       expect(material.baseColorMap).toBeDefined();
@@ -373,6 +379,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(material.transmissionMap).toBeDefined();
       expect(material.lightMap).toBeDefined();
       expect(material.lightMapIntensity).toBe(2);
+      expect(material.specularColorMap).toBeDefined();
+      expect(material.specularIntensityMap).toBeDefined();
     } finally {
       engine.dispose();
     }
