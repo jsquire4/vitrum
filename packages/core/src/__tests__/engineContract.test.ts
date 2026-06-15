@@ -325,9 +325,8 @@ describe('backend promise ledger', () => {
       // in RIS, HDRI in DDGI probe misses + risGiNrc + RC, runtime CDF rebuild
       // on updateEnvironment. Radiometric A/B pending V28-B.
       hdri: 'native',
-      // procedural-sky degrades to scalar tint via resolveHybridEnvironment
-      // (mode: 'procedural-sky-approx'; turbidity/rayleigh/mie ignored; warn emitted).
-      // 'approximate' reflects the degraded-but-functional reality. Item 18c.
+      // procedural-sky bakes through resolveHybridEnvironment into a finite
+      // Preetham equirect/CDF; approximate reflects model/resolution limits.
       'procedural-sky': 'approximate',
     });
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual([

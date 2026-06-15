@@ -3,6 +3,7 @@ import type {
   HdriEnvironment,
   SceneEnvironment,
 } from '@vitrum/core';
+import { bakePreethamSkyEquirect } from '@vitrum/shared-samplers';
 import { buildDirectionalEnv, type DirectionalEnvData } from './equirectDirectional.js';
 
 type HybridSkyVec3 = [number, number, number];
@@ -12,7 +13,7 @@ type HybridEnvironmentResolveMode =
   | 'hdri-intensity-only'
   | 'hdri-raw-average'
   | 'hdri-extension-resolver'
-  | 'procedural-sky-approx';
+  | 'procedural-sky-baked';
 
 export interface HybridResolvedEnvironment {
   readonly mode: HybridEnvironmentResolveMode;
@@ -28,7 +29,8 @@ export interface HybridResolvedEnvironment {
    * sky-miss / GI-escape paths sample the ACTUAL map by direction; the
    * `skyTint`/`skyIrradiance` scalars above remain the fallback for backends/
    * scenes without directional data (the existing contract — unchanged). Absent
-   * for opaque handles, procedural sky, and all-black maps.
+   * for opaque handles and all-black maps. Procedural sky fills this with the
+   * shared finite Preetham equirect bake.
    */
   readonly directional?: DirectionalEnvData;
   /** HDRI Y-axis rotation in radians (H6 convention). 0 when not an HDRI. */
@@ -104,9 +106,7 @@ export function resolveHybridEnvironment(
 function resolveProceduralSkyEnvironment(
   env: Extract<SceneEnvironment, { kind: 'procedural-sky' }>,
 ): HybridResolvedEnvironment {
-  const warnings: string[] = [
-    'procedural-sky is approximated as diffuse sky scalars; turbidity, rayleigh, mieDirectionalG, and directional sky distribution are not sampled by walkaround-hybrid.',
-  ];
+  const warnings: string[] = [];
   const skyIrradiance = finiteNonNegativeScalar(
     env.intensity,
     1,
@@ -119,14 +119,34 @@ function resolveProceduralSkyEnvironment(
     warnings,
     'procedural-sky sunDirection',
   );
-  const tintBoost = Math.max(0.2, 1 - Math.max(0, env.mieCoefficient) * 10);
+  const baked = bakePreethamSkyEquirect({
+    sunDirection,
+    turbidity: finiteScalarInRange(env.turbidity, 2, 1.5, 30, warnings, 'procedural-sky turbidity'),
+    rayleigh: finiteScalarInRange(env.rayleigh, 1, 0, Number.POSITIVE_INFINITY, warnings, 'procedural-sky rayleigh'),
+    mieCoefficient: finiteScalarInRange(env.mieCoefficient, 0.005, 0, Number.POSITIVE_INFINITY, warnings, 'procedural-sky mieCoefficient'),
+    mieDirectionalG: finiteScalarInRange(env.mieDirectionalG, 0.8, -0.9999, 0.9999, warnings, 'procedural-sky mieDirectionalG'),
+    intensity: skyIrradiance,
+  });
+  const payload: RawNumericHdriPayload = {
+    width: baked.width,
+    height: baked.height,
+    data: baked.texels,
+    stride: 4,
+  };
+  const average = averageRawRadiancePayload(payload, 1, warnings, 'procedural-sky bake');
+  const directional = buildDirectionalEnv(payload) ?? undefined;
   return {
-    mode: 'procedural-sky-approx',
-    skyTint: [0.9 * tintBoost, 0.95, 1],
-    skyIrradiance,
-    proceduralSunDirection: sunDirection,
-    proceduralSunIntensity: skyIrradiance,
+    mode: 'procedural-sky-baked',
+    skyTint: average.skyTint,
+    skyIrradiance: average.skyIrradiance,
+    proceduralSunDirection: baked.sunDirection as HybridSkyVec3,
+    // The baked equirect already contains the sun disk/corona and is sampled
+    // through the env CDF, so do not request a second scalar procedural sun.
+    proceduralSunIntensity: 0,
     warnings,
+    ...(directional !== undefined
+      ? { directional, rotationY: 0, directionalIntensity: 1 }
+      : {}),
   };
 }
 
@@ -228,33 +248,7 @@ function resolveRawHdriAverage(
   // pixels; additive to the scalar skyTint/skyIrradiance below (which stay the
   // fallback). Null for an all-black map (the scalar path then yields 0 irradiance).
   const directional = buildDirectionalEnv(payload) ?? undefined;
-  const sum: HybridSkyVec3 = [0, 0, 0];
-  let weightSum = 0;
-  let clampedSamples = 0;
-
-  for (let y = 0; y < payload.height; y += 1) {
-    const theta = ((y + 0.5) / payload.height) * Math.PI;
-    const rowWeight = Math.sin(theta);
-    for (let x = 0; x < payload.width; x += 1) {
-      const sampleOffset = (y * payload.width + x) * payload.stride;
-      const r = finiteRadianceSample(payload.data[sampleOffset]);
-      const g = finiteRadianceSample(payload.data[sampleOffset + 1]);
-      const b = finiteRadianceSample(payload.data[sampleOffset + 2]);
-      if (r.clamped) clampedSamples += 1;
-      if (g.clamped) clampedSamples += 1;
-      if (b.clamped) clampedSamples += 1;
-      sum[0] += r.value * rowWeight;
-      sum[1] += g.value * rowWeight;
-      sum[2] += b.value * rowWeight;
-      weightSum += rowWeight;
-    }
-  }
-
-  if (clampedSamples > 0) {
-    warnings.push(
-      `HDRI raw payload had ${clampedSamples} non-finite or negative radiance sample(s); clamped them to 0.`,
-    );
-  }
+  const average = averageRawRadiancePayload(payload, intensity, warnings, 'HDRI raw payload');
   if (directional !== undefined) {
     warnings.push(
       'HDRI raw payload resolved to a directional IBL map (equirect + importance CDFs); the skyTint/skyIrradiance scalars below are the no-directional fallback only.',
@@ -265,38 +259,10 @@ function resolveRawHdriAverage(
     );
   }
 
-  if (weightSum <= 0) {
-    return {
-      mode: 'hdri-raw-average',
-      skyTint: whiteSkyTint(),
-      skyIrradiance: 0,
-      warnings,
-    };
-  }
-
-  const average: HybridSkyVec3 = [
-    sum[0] / weightSum,
-    sum[1] / weightSum,
-    sum[2] / weightSum,
-  ];
-  const maxChannel = Math.max(average[0], average[1], average[2], 0);
-  if (maxChannel <= 1e-12) {
-    return {
-      mode: 'hdri-raw-average',
-      skyTint: whiteSkyTint(),
-      skyIrradiance: 0,
-      warnings,
-    };
-  }
-
   return {
     mode: 'hdri-raw-average',
-    skyTint: [
-      average[0] / maxChannel,
-      average[1] / maxChannel,
-      average[2] / maxChannel,
-    ],
-    skyIrradiance: maxChannel * intensity,
+    skyTint: average.skyTint,
+    skyIrradiance: average.skyIrradiance,
     warnings,
     ...(directional !== undefined
       ? { directional, rotationY, directionalIntensity: intensity }
@@ -395,6 +361,86 @@ function finiteNonNegativeScalar(
     return 0;
   }
   return value;
+}
+
+function finiteScalarInRange(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  warnings: string[],
+  label: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value)) {
+    warnings.push(`${label} is not finite; defaulting to ${fallback}.`);
+    return fallback;
+  }
+  if (value < min) {
+    warnings.push(`${label} is below ${min}; clamping to ${min}.`);
+    return min;
+  }
+  if (value > max) {
+    warnings.push(`${label} is above ${max}; clamping to ${max}.`);
+    return max;
+  }
+  return value;
+}
+
+function averageRawRadiancePayload(
+  payload: RawNumericHdriPayload,
+  intensity: number,
+  warnings: string[],
+  label: string,
+): { skyTint: HybridSkyVec3; skyIrradiance: number } {
+  const sum: HybridSkyVec3 = [0, 0, 0];
+  let weightSum = 0;
+  let clampedSamples = 0;
+
+  for (let y = 0; y < payload.height; y += 1) {
+    const theta = ((y + 0.5) / payload.height) * Math.PI;
+    const rowWeight = Math.sin(theta);
+    for (let x = 0; x < payload.width; x += 1) {
+      const sampleOffset = (y * payload.width + x) * payload.stride;
+      const r = finiteRadianceSample(payload.data[sampleOffset]);
+      const g = finiteRadianceSample(payload.data[sampleOffset + 1]);
+      const b = finiteRadianceSample(payload.data[sampleOffset + 2]);
+      if (r.clamped) clampedSamples += 1;
+      if (g.clamped) clampedSamples += 1;
+      if (b.clamped) clampedSamples += 1;
+      sum[0] += r.value * rowWeight;
+      sum[1] += g.value * rowWeight;
+      sum[2] += b.value * rowWeight;
+      weightSum += rowWeight;
+    }
+  }
+
+  if (clampedSamples > 0) {
+    warnings.push(
+      `${label} had ${clampedSamples} non-finite or negative radiance sample(s); clamped them to 0.`,
+    );
+  }
+  if (weightSum <= 0) {
+    return { skyTint: whiteSkyTint(), skyIrradiance: 0 };
+  }
+
+  const average: HybridSkyVec3 = [
+    sum[0] / weightSum,
+    sum[1] / weightSum,
+    sum[2] / weightSum,
+  ];
+  const maxChannel = Math.max(average[0], average[1], average[2], 0);
+  if (maxChannel <= 1e-12) {
+    return { skyTint: whiteSkyTint(), skyIrradiance: 0 };
+  }
+  return {
+    skyTint: [
+      average[0] / maxChannel,
+      average[1] / maxChannel,
+      average[2] / maxChannel,
+    ],
+    skyIrradiance: maxChannel * intensity,
+  };
 }
 
 function finiteVec3(

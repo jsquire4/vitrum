@@ -874,10 +874,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // by setting the DDGI sun-intensity multiplier to 1. ReSTIR-DI harvests no
     // directional emitter, so there is no DI double-count.
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
-    // procedural-sky degrades to a scalar tint + irradiance via resolveHybridEnvironment
-    // (mode: 'procedural-sky-approx'; turbidity/rayleigh/mieDirectionalG are ignored;
-    // a warn is emitted). Promoted 'unsupported' → 'approximate' so the ledger matches
-    // what the code actually does (silent degrade with warn ≠ hard drop).
+    // procedural-sky bakes through resolveHybridEnvironment into a finite
+    // Preetham equirect + CDF. Approximate means model/resolution limits, not
+    // scalar-only data loss.
     supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'swapchain-required',
@@ -900,10 +899,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         // CDFs at runtime via resolveHybridEnvironment → updateDirectionalEnvironment.
         // Promoted approximate→native. Radiometric A/B pending V28-B.
         hdri: 'native',
-        // resolveHybridEnvironment handles procedural-sky (mode: 'procedural-sky-approx'):
-        // turbidity/rayleigh/mieDirectionalG are not sampled; skyTint + skyIrradiance scalars
-        // are derived from the sun direction + mieCoefficient heuristic; a warn is emitted.
-        // 'approximate' is the honest grade — the backend degrades with signal, not silently.
+        // resolveHybridEnvironment handles procedural-sky by baking the shared
+        // Preetham model to an equirect/CDF and preserving scalar sky as fallback.
+        // 'approximate' is the honest grade for a finite baked model.
         'procedural-sky': 'approximate',
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,

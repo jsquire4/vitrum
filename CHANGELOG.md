@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (walkaround procedural sky bake, 2026-06-15)
+
+- **`@vitrum/walkaround-hybrid` Preetham procedural sky:** `procedural-sky` environments now bake through the shared Preetham equirect helper into the same directional IBL map/CDF path used by raw HDRI payloads. Runtime `updateEnvironment()` uploads the baked 256x128 sky, threads it to DDGI probe misses when env bindings are available, and keeps scalar `skyTint`/`skyIrradiance` only as a fallback average. The ledger remains `approximate` for finite bake/model limits rather than scalar-only data loss.
+
 ### Added (walkaround authored tangent consumption, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` authored/generated tangent TBN:** walkaround now carries tangent.xyzw through both BVH modes. `packSceneFromCore()` tangents feed TLAS scenes, `mergeWorldSpaceFromCore()` transforms merged-world tangents and flips handedness for mirrored transforms, `BvhBufferHost` uploads the stream as a scene-bound `rgba32float` tangent texture, and `materialAtlas.wgsl` prefers authored/generated tangents for normal and clearcoat-normal maps before falling back to UV-gradient derivation. The affected material rows remain `approximate` only because ReSTIR/GI payload/PDF parity is still narrower than visible shade-owned lobes.

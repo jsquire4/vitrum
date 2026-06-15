@@ -734,10 +734,9 @@ export class HybridEngine implements Engine {
         'spot',
         'mesh-area',
       ]),
-      // procedural-sky degrades via resolveHybridEnvironment to scalar tint (mode:
-      // 'procedural-sky-approx'); turbidity/rayleigh/mie are not sampled (warn emitted).
-      // 'approximate' grade in the ledger; included here so the ledger→capabilities
-      // consistency check passes. Item 18c.
+      // procedural-sky bakes through resolveHybridEnvironment into a finite
+      // Preetham equirect + CDF. It remains approximate due model/resolution
+      // limits, not because turbidity/rayleigh/mie are dropped.
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
       presentationMode:          'swapchain-required',
       supportDetails:            BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails,
@@ -1555,16 +1554,12 @@ export class HybridEngine implements Engine {
    * and materials are untouched. That is the whole point of an env-only fast
    * path (cf. `setScene`, which tears the pipeline down).
    *
-   * **Known limitation (HDRI directionality).** Because there is no baker, an
-   * opaque `hdri` handle is not directionally sampled by this backend. The
-   * resolver can still derive diffuse sky tint/energy from raw numeric
-   * RGB/RGBA payloads, or from
-   * `extensions['walkaround-hybrid'].resolveEnvironmentMap` when a host supplies
-   * a precomputed average for opaque handles. Rotation and directional sky
-   * distribution remain unsupported here; full environment-map sampling is a
-   * converged-PT backend capability. A `procedural-sky` env is accepted with
-   * 'approximate' grade (Item 18c, ledger update) — degraded to diffuse sky scalars
-   * via resolveHybridEnvironment (turbidity/rayleigh/mie not sampled; warn emitted).
+   * **Known limitation (opaque HDRI directionality).** Opaque `hdri` handles are
+   * not directionally sampled unless a host resolver supplies CPU-visible data.
+   * Raw numeric RGB/RGBA HDRI payloads and procedural skies do feed the same
+   * directional equirect/CDF path. Procedural skies are still graded
+   * 'approximate' because they use a finite Preetham bake rather than an analytic
+   * infinite-resolution sky model.
    *
    * After {@link dispose} this is a safe no-op (matches the runtime-update
    * siblings + the `@vitrum/engine` facade's `'noop'` disposed-behaviour for
@@ -1631,10 +1626,9 @@ export class HybridEngine implements Engine {
    *  - `hdri` → raw numeric payloads / host extension resolvers can provide
    *    diffuse `skyTint` + `skyIrradiance`; opaque handles without a resolver
    *    fall back to intensity-only.
-   *  - `procedural-sky` → 'approximate' grade (grade promoted from 'unsupported',
-   *    Item 18c): skyTint/skyIrradiance derived from sun direction + mieCoefficient
-   *    heuristic via resolveHybridEnvironment (mode: 'procedural-sky-approx');
-   *    turbidity/rayleigh/mie are NOT sampled; a one-time console.warn is emitted.
+   *  - `procedural-sky` → 'approximate' grade: resolveHybridEnvironment bakes
+   *    turbidity/rayleigh/mie/sunDirection into a finite Preetham equirect and
+   *    returns scalar skyTint/skyIrradiance as the no-directional fallback.
    */
   private _skyScalarsFromEnvironment(
     env: SceneEnvironment,
@@ -1664,9 +1658,9 @@ export class HybridEngine implements Engine {
   /**
    * B3 — resolve the directional IBL payload (PBRT 2D distribution) from the
    * environment and push it to the pipeline's scene-group env resources. A
-   * raw pixel-backed HDRI yields the directional map+CDFs; everything else
-   * (opaque handle, procedural sky, none, all-black map) resets the pipeline
-   * to the no-HDRI placeholder so the WGSL scalar-sky fallback runs (no-HDRI
+   * raw pixel-backed HDRI or procedural sky yields the directional map+CDFs;
+   * everything else (opaque handle, none, all-black map) resets the pipeline to
+   * the no-HDRI placeholder so the WGSL scalar-sky fallback runs (no-HDRI
    * byte-identity). No-op when the pipeline is not yet initialized — setScene's
    * init path calls this AFTER the pipeline exists.
    */
@@ -1683,7 +1677,7 @@ export class HybridEngine implements Engine {
       );
       // Wave 4 (2026-06-10) — HDRI into DDGI probe misses: hand the equirect
       // radiance view to the probe-update pass so probe-ray misses sample the
-      // real map (procedural-sky fallback stays when no env is bound).
+      // real map / finite procedural-sky bake when a directional env is bound.
       const envBindings = this._pipeline.getEnvBindings();
       if (envBindings != null) {
         this._ddgi.setEnvironment(

@@ -136,7 +136,7 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.warnings.join('\n')).toContain('shorter than width * height * 3');
   });
 
-  it('approximates procedural-sky with diffuse sky scalars and procedural sun fields', () => {
+  it('bakes procedural-sky into directional IBL data with scalar fallback averages', () => {
     const env: SceneEnvironment = {
       kind: 'procedural-sky',
       sunDirection: [0, 2, 0],
@@ -149,12 +149,37 @@ describe('resolveHybridEnvironment', () => {
 
     const resolved = resolveHybridEnvironment(env);
 
-    expect(resolved.mode).toBe('procedural-sky-approx');
-    expectVecClose(resolved.skyTint, [0.855, 0.95, 1]);
-    expect(resolved.skyIrradiance).toBe(1.7);
+    expect(resolved.mode).toBe('procedural-sky-baked');
+    expect(resolved.skyTint).toBeDefined();
+    expect(resolved.skyTint!.every((c) => c >= 0 && c <= 1)).toBe(true);
+    expect(resolved.skyIrradiance).toBeGreaterThan(0);
     expect(resolved.proceduralSunDirection).toEqual([0, 1, 0]);
-    expect(resolved.proceduralSunIntensity).toBe(1.7);
-    expect(resolved.warnings.join('\n')).toContain('approximated');
+    expect(resolved.proceduralSunIntensity).toBe(0);
+    expect(resolved.directional).toBeDefined();
+    expect(resolved.directional!.width).toBe(256);
+    expect(resolved.directional!.height).toBe(128);
+    expect(resolved.directional!.totalWeight).toBeGreaterThan(0);
+    expect(resolved.directionalIntensity).toBe(1);
+    expect(resolved.rotationY).toBe(0);
+    expect(resolved.warnings).toEqual([]);
+  });
+
+  it('keeps zero-intensity procedural-sky finite and disables directional sampling', () => {
+    const resolved = resolveHybridEnvironment({
+      kind: 'procedural-sky',
+      sunDirection: [0, 1, 0],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 0,
+    });
+
+    expect(resolved.mode).toBe('procedural-sky-baked');
+    expect(resolved.skyTint).toEqual([1, 1, 1]);
+    expect(resolved.skyIrradiance).toBe(0);
+    expect(resolved.directional).toBeUndefined();
+    expect(resolved.warnings).toEqual([]);
   });
 
   it('uses the extension resolver for opaque HDRI handles and applies SceneEnvironment intensity', () => {

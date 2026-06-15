@@ -95,7 +95,7 @@ function makePipeline() {
     updateEmitters: vi.fn(),
     updateAnalyticLights: vi.fn(),
     updateDirectionalEnvironment: vi.fn(),
-    getEnvBindings: vi.fn(() => null),
+    getEnvBindings: vi.fn((): { textureView: GPUTextureView; sampler: GPUSampler } | null => null),
     requestAccumReset: vi.fn(),
     resize: vi.fn(),
   };
@@ -532,8 +532,14 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updateEnvironment warns for procedural-sky fallback, stores the env, resets directional IBL, invalidates DDGI, and resets accumulation', () => {
+  it('updateEnvironment bakes procedural-sky, stores the env, updates directional IBL, invalidates DDGI, and resets accumulation', () => {
     const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const envTextureView = {} as GPUTextureView;
+    const envSampler = {} as GPUSampler;
+    pipeline.getEnvBindings.mockReturnValue({
+      textureView: envTextureView,
+      sampler: envSampler,
+    });
     try {
       engine.updateEnvironment({
         kind: 'procedural-sky',
@@ -545,14 +551,17 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         intensity: 3,
       });
 
-      expect(warnings.map((w) => w.code)).toContain('walkaround-hybrid.environment-approximation');
-      expect(warnings[0]?.method).toBe('updateEnvironment');
+      expect(warnings).toHaveLength(0);
       expect(storedScene(engine).environment.kind).toBe('procedural-sky');
-      expect(ddgi.setSkyParams).toHaveBeenCalledWith(expect.any(Array), 3);
+      expect(ddgi.setSkyParams).toHaveBeenCalledWith(expect.any(Array), expect.any(Number));
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
-      expect(pipeline.updateDirectionalEnvironment).toHaveBeenCalledWith(null, 0, 0);
-      expect(ddgi.setEnvironment).toHaveBeenCalledWith(null, null, 0, 0, false);
+      expect(pipeline.updateDirectionalEnvironment).toHaveBeenCalledWith(
+        expect.objectContaining({ width: 256, height: 128 }),
+        0,
+        1,
+      );
+      expect(ddgi.setEnvironment).toHaveBeenCalledWith(envTextureView, envSampler, 0, 1, true);
     } finally {
       engine.dispose();
     }

@@ -996,18 +996,28 @@ Remaining:
 - GPU/reference A/B for full DDGI scenes is still a promotion gate, but the
   source-level visibility-moment defect is closed by the CPU oracle.
 
-### HYB-SKY-01 - walkaround procedural sky remains approximate
+### HYB-SKY-01 - CLOSED 2026-06-15 - walkaround procedural sky uses the directional Preetham bake
 
 Evidence:
 - Core procedural sky includes turbidity, Rayleigh, Mie coefficient, Mie g, and
   sun direction.
-- walkaround accepts procedural-sky but paths still degrade much of it to scalar
-  sky/environment approximations.
-- pt-webgpu is not part of this gap; it now has a Preetham bake-to-HDRI path.
+- walkaround now calls the shared `bakePreethamSkyEquirect()` helper from
+  `resolveHybridEnvironment.ts`, feeds the baked texels through
+  `buildDirectionalEnv()`, and returns the same directional map/CDF payload used
+  for raw HDRI payloads.
+- `HybridEngine.updateEnvironment()` uploads that payload through
+  `updateDirectionalEnvironment()` and forwards the env bindings to DDGI probe
+  misses when available. Scalar `skyTint`/`skyIrradiance` remain only the
+  no-directional fallback average.
+- The public grade remains `approximate`, but now for finite 256x128 Preetham
+  bake/model limits rather than silent scalar-only loss of turbidity/Rayleigh/Mie
+  fields.
 
 Closure:
-- Bring walkaround procedural sky to the same analytic/baked environment model,
-  or downgrade support details to approximate and test the diagnostic.
+- Closed by code. Tests: `resolveHybridEnvironment.test.ts` pins baked
+  directional data, zero-intensity finite fallback, and no warning for valid
+  procedural skies; `mutationMatrix.test.ts` pins runtime update/upload/DDGI
+  routing.
 
 ### PTWG-BDPT-01 - BDPT needs an independent radiometric oracle
 
