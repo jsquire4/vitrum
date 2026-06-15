@@ -864,28 +864,34 @@ Residual:
   sky evaluation in the tracing shader, so the correct ledger grade remains
   `approximate` until/unless an analytic shader path lands.
 
-### WEBGL2-03 - pt-webgl2 denoiser option degrades to no denoise — CODE CLOSED
+### WEBGL2-03 - pt-webgl2 denoiser option honesty + OIDN final-pass — CODE CLOSED
 
 Evidence:
-- pt-webgl2 has no denoiser pipeline and still intentionally degrades denoiser
-  requests to no-denoise, but this is no longer discoverable only through
-  console text.
+- pt-webgl2 now implements `denoiser: 'oidn-final'` as a real async final-pass
+  path. It reads the linear HDR accumulator plus full-tier MRT albedo/normal aux
+  through `GlResources.readOidnInputsRgba32f()`, kicks the shared
+  `OIDNDispatcherCore` once the PT accumulation reaches the requested SPP target,
+  exposes `getLatestDenoised()`, reports `FrameStats.denoiserState`, invalidates
+  on reset/scene changes, and releases the OIDN cache on dispose.
 - `BackendSupportDetails.denoisers` is now first-class and exhaustive over
   every `EngineOptions.denoiser` mode. The pt-webgl2 ledger/capability row
-  reports `none:native` and every real denoiser mode (`atrous`,
-  `atrous-variance`, `svgf-real`, `bmfr`, `oidn-final`, `neural`) as
+  reports `none:native`, `oidn-final:native`, and the realtime/incompatible
+  denoiser modes (`atrous`, `atrous-variance`, `svgf-real`, `bmfr`, `neural`) as
   `unsupported`.
 - `createPTEngine_WebGL2` still emits the structured
-  `pt-webgl2.unsupported-denoiser` warning and per-frame telemetry still reports
-  `denoiserState: disabled`, matching the new capability row.
+  `pt-webgl2.unsupported-denoiser` warning for unsupported denoiser modes, but
+  `oidn-final` requires host `oidn: { modelUrl }` config instead of degrading.
 
 Closure:
-- Closed by first-class capability/ledger reporting rather than by implementing a
-  WebGL2 denoiser pipeline.
+- Closed by first-class capability/ledger reporting for unsupported realtime
+  denoisers plus an implemented WebGL2 OIDN final-pass bridge.
 - Tests: `packages/core/src/__tests__/engineContract.test.ts` pins exhaustive
-  denoiser rows across backends; `packages/pt-webgl2/src/__tests__/engineContract.test.ts`
-  pins the runtime pt-webgl2 capability matrix and existing structured warning
-  behavior.
+  denoiser rows across backends; `packages/core/src/__tests__/ledgerVsCapabilities.test.ts`
+  pins ledger/capability alignment; `packages/pt-webgl2/src/__tests__/engineContract.test.ts`
+  pins the runtime pt-webgl2 capability matrix and structured warning behavior;
+  `packages/pt-webgl2/src/__tests__/oidnFinal.test.ts` and
+  `packages/pt-webgl2/src/denoise/rgba32fReadback.test.ts` pin the OIDN kick,
+  telemetry, cache, invalidation, and WebGL readback conversion behavior.
 
 ### WEBGL2-04 - pt-webgl2 material texture edge cases remain
 

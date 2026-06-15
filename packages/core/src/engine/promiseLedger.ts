@@ -765,7 +765,7 @@ const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   'atrous-variance': 'unsupported',
   'svgf-real': 'unsupported',
   bmfr: 'unsupported',
-  'oidn-final': 'unsupported',
+  'oidn-final': 'native',
   neural: 'unsupported',
 });
 

@@ -34,6 +34,10 @@ import {
 } from '@vitrum/shared-samplers';
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
 import { PresentPass } from './PresentPass.js';
+import {
+  readOidnInputsFromWebGlFbos,
+  type WebGlOidnReadbackResult,
+} from '../denoise/rgba32fReadback.js';
 
 // ── D10.2: SCENE_TEXTURE_BINDINGS table ──────────────────────────────────────
 // Typed table that drives #bindSceneTextures. Each entry describes:
@@ -482,6 +486,32 @@ export class GlResources {
     return this.#accum?.albedo ?? null;
   }
 
+  /**
+   * Read the linear-HDR accumulator plus optional MRT aux attachments into the
+   * CPU RGB layout consumed by the shared OIDN final-pass dispatcher.
+   */
+  readOidnInputsRgba32f(): WebGlOidnReadbackResult | null {
+    const w = this.#accumWidth;
+    const h = this.#accumHeight;
+    if (w <= 0 || h <= 0) return null;
+    const colorFbo = this.#linearReadFbo();
+    const accum = this.#accum;
+    const auxFbo = accum?.fbo ?? null;
+    const hasAux = this.#auxBuffers && accum?.normalDepth != null && accum.albedo != null;
+    return readOidnInputsFromWebGlFbos(this.#gl, {
+      colorFbo,
+      auxFbo,
+      width: w,
+      height: h,
+      ...(hasAux
+        ? {
+            normalDepthAttachment: this.#gl.COLOR_ATTACHMENT1,
+            albedoAttachment: this.#gl.COLOR_ATTACHMENT2,
+          }
+        : {}),
+    });
+  }
+
   dispose(): void {
     const gl = this.#gl;
     this.#destroyTargets();
@@ -640,6 +670,14 @@ export class GlResources {
     this.#blendReadIndex = 0;
   }
 
+  #linearReadFbo(): WebGLFramebuffer | null {
+    if (this.#blend != null) {
+      const [a, b] = this.#blend;
+      return (this.#blendReadIndex === 0 ? a : b).fbo;
+    }
+    return this.#accum?.fbo ?? null;
+  }
+
   /**
    * CPU readback of the HDR accumulation or present FBO, row-flipped to
    * top-left origin (WebGL uses bottom-left, so row 0 in `readPixels` is the
@@ -668,18 +706,7 @@ export class GlResources {
     if (w <= 0 || h <= 0) return null;
     const gl = this.#gl;
 
-    let fbo: WebGLFramebuffer | null = null;
-    if (source === 'output') {
-      fbo = this.#presentPass.fbo;
-    } else {
-      // 'linear': use the ping-pong read slot (Regime 2) or the primary accum FBO.
-      if (this.#blend != null) {
-        const [a, b] = this.#blend;
-        fbo = (this.#blendReadIndex === 0 ? a : b).fbo;
-      } else {
-        fbo = this.#accum?.fbo ?? null;
-      }
-    }
+    const fbo = source === 'output' ? this.#presentPass.fbo : this.#linearReadFbo();
     if (fbo == null) return null;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);

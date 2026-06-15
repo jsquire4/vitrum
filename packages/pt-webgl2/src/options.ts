@@ -1,5 +1,9 @@
 import type { EngineOptions } from '@vitrum/core';
 import type { WebGl2TraceTier } from './traceTier.js';
+import type {
+  OIDNBridgeLoader,
+  OidnReadbackFn,
+} from './denoise/oidnFinalDispatcher.js';
 
 // `WebGl2TraceTier` is owned by ./traceTier.ts (the tier-selection module);
 // re-exported here so consumers of the options surface keep importing it from
@@ -90,4 +94,22 @@ export interface PTEngineWebGL2Options extends EngineOptions {
     /** Anamorphic squeeze ratio (1 = spherical, default 1). */
     readonly anamorphicRatio?: number;
   };
+  /**
+   * Intel Open Image Denoise final-pass config. Required when
+   * `denoiser: 'oidn-final'`.
+   *
+   * The host must provide both the ONNX model asset and the optional
+   * `onnxruntime-web` peer dependency. The backend reads its linear HDR
+   * accumulator plus available MRT aux buffers into CPU Float32 tensors and
+   * runs the shared OIDN bridge asynchronously once the PT accumulation
+   * reaches the requested SPP target.
+   */
+  readonly oidn?: {
+    readonly modelUrl: string;
+    readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+  };
+  /** Test-only: inject a mock OIDN bridge. */
+  readonly oidnBridgeLoader?: OIDNBridgeLoader;
+  /** Test-only: override the WebGL attachment readback before OIDN inference. */
+  readonly oidnReadbackFn?: OidnReadbackFn;
 }

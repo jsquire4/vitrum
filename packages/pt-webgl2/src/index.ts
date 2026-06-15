@@ -40,6 +40,10 @@ import { invertMat4, makeRotationYMat4 } from './mat4.js';
 import { CAUCHY_CROWN_GLASS, TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
+import {
+  OIDNFinalDispatcher,
+  type DenoisedFrame,
+} from './denoise/oidnFinalDispatcher.js';
 
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -126,6 +130,10 @@ const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
 const DEFAULT_SPP_TARGET = 16;
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function emitWebgl2Warning(
   opts: Pick<PTEngineWebGL2Options, 'onWarning'>,
   warning: EngineWarning,
@@ -144,6 +152,8 @@ export interface PTEngineWebGL2Surface {
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
   /** @internal The retained scene texture summary (for tests/inspection). */
   readonly _debugSceneTex: { envMap: boolean; envTotalSum: number; envWidth: number; envHeight: number; lightCount: number } | null;
+  /** Latest completed OIDN final-pass CPU result for `denoiser: 'oidn-final'`. */
+  getLatestDenoised(): DenoisedFrame | null;
 }
 
 /**
@@ -172,6 +182,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
   readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
+  readonly #postDenoiser: OIDNFinalDispatcher | null;
 
   // ── Camera + optics ───────────────────────────────────────────────────────
   readonly #cameraType: 0 | 1 | 2;
@@ -235,6 +246,43 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#supportsAuxBuffers = traceTier === 'full';
     this.#regime = PTEngineWebGL2.#resolveRegime(opts.device, this.#backgroundAlpha);
     this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
+    if (opts.denoiser === 'oidn-final') {
+      const modelUrl = opts.oidn?.modelUrl;
+      const eps = opts.oidn?.executionProviders?.filter(
+        (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
+      );
+      if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
+        throw new Error(
+          "createPTEngine_WebGL2: denoiser: 'oidn-final' is not turnkey - it " +
+            'requires TWO host-provided assets that vitrum does not ship: ' +
+            '(1) oidn: { modelUrl } - a non-empty URL to an OIDN ONNX model ' +
+            '(use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux); ' +
+            "and (2) the 'onnxruntime-web' optional peer dependency installed in " +
+            'the host. Omit the `denoiser` option to render without a final denoise.',
+        );
+      }
+      const dispatcherOpts =
+        eps !== undefined && eps.length > 0
+          ? { modelUrl, executionProviders: eps }
+          : { modelUrl };
+      this.#postDenoiser = new OIDNFinalDispatcher(
+        dispatcherOpts,
+        opts.oidnBridgeLoader,
+        opts.oidnReadbackFn,
+        {
+          onError: (err) => {
+            this.#emitError({
+              kind: 'denoiser',
+              message: `[vitrum/pt-webgl2] OIDN final denoiser failed: ${errorMessage(err)}`,
+              fatal: false,
+              raw: err,
+            });
+          },
+        },
+      );
+    } else {
+      this.#postDenoiser = null;
+    }
 
     // ── Context-loss listeners ────────────────────────────────────────────────
     // Per the WebGL spec, calling `preventDefault()` on the `webglcontextlost`
@@ -290,7 +338,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#maxBouncesLimit,
       this.#maxSamplesLimit,
       this.#supportsAuxBuffers,
-      { bdpt: this.#bdpt, spectral: this.#spectralEnabled },
+      { bdpt: this.#bdpt, spectral: this.#spectralEnabled, oidn: this.#postDenoiser != null },
     );
   }
 
@@ -539,8 +587,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
     const tex = this.#gpu.resultTexture();
     if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    const isConverged = this.#samplesAccumulated >= targetSpp;
+    if (this.#postDenoiser != null && isConverged && this.#samplesAccumulated > 0) {
+      const readback = this.#gpu.readOidnInputsRgba32f();
+      if (readback != null) this.#postDenoiser.kickIfReady(readback);
+    }
     const frameTimeMs = performance.now() - t0;
-    return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp, frameTimeMs);
+    return this.#frameRendered(tex, this.#samplesAccumulated, isConverged, targetSpp, frameTimeMs);
   }
 
   /**
@@ -578,6 +631,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   reset(): void {
     this.#samplesAccumulated = 0;
     this.#gpu.clearAccum();
+    this.#postDenoiser?.invalidate();
   }
 
   pause(): void {
@@ -600,6 +654,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       canvas.removeEventListener('webglcontextrestored', this.#onContextRestored);
     }
     this.#gpu.dispose();
+    this.#postDenoiser?.dispose();
     this.#sceneTextures?.destroy();
     this.#sceneTextures = null;
     this.#scene = null;
@@ -630,6 +685,20 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   onWarning(cb: (warning: EngineWarning) => void): () => void {
     this.#onWarningSubs.add(cb);
     return () => this.#onWarningSubs.delete(cb);
+  }
+
+  getLatestDenoised(): DenoisedFrame | null {
+    return this.#postDenoiser?.getLatestDenoised() ?? null;
+  }
+
+  #emitError(error: EngineError): void {
+    for (const cb of this.#onErrorSubs) {
+      try {
+        cb(error);
+      } catch {
+        // Error subscribers must not break engine lifecycle.
+      }
+    }
   }
 
   #emitWarning(warning: EngineWarning): void {
@@ -742,8 +811,10 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fraction = target > 0 ? Math.min(samples / target, 1) : 1;
     for (const cb of this.#onProgressSubs) cb({ kind: 'pt-spp', current: samples, target, fraction });
-    // pt-webgl2 does not have a per-frame denoiser pipeline; always report 'disabled'.
-    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples, denoiserState: { status: 'disabled', reason: null } });
+    const denoiserState = this.#postDenoiser != null
+      ? this.#postDenoiser.getState()
+      : { status: 'disabled' as const, reason: null };
+    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples, denoiserState });
     return out;
   }
 
@@ -801,19 +872,18 @@ export const createPTEngine_WebGL2: EngineFactory<
       `createPTEngine_WebGL2: backgroundBlur must be a finite number >= 0 (got ${opts.backgroundBlur})`,
     );
   }
-  // H-denoiser: pt-webgl2 has no denoiser pipeline (no OIDN/SVGF passes wired).
-  // Any non-null, non-'none' denoiser request degrades to no-denoiser with a clear
-  // warn so the host is not silently surprised. Mirrors the pt-webgpu warn pattern
-  // (packages/pt-webgpu/src/index.ts — `opts.denoiser != null && !== 'none'`).
-  if (opts.denoiser != null && opts.denoiser !== 'none') {
+  // Unsupported realtime denoisers still degrade to no-denoise with a clear
+  // warning. `oidn-final` is handled by the engine constructor because it is a
+  // real asynchronous final-pass path that requires host-provided model config.
+  if (opts.denoiser != null && opts.denoiser !== 'none' && opts.denoiser !== 'oidn-final') {
     emitWebgl2Warning(opts, {
       code: 'pt-webgl2.unsupported-denoiser',
       backend: 'pt-webgl2',
       phase: 'construction',
       method: 'createPTEngine_WebGL2',
       message:
-        `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 has no denoiser pipeline. ` +
-        'There are no OIDN, SVGF, or any other post-process denoiser passes wired in this backend. ' +
+        `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 only supports ` +
+        '`none` and the asynchronous final-pass `oidn-final` denoiser. ' +
         'Degrading to no-denoise (denoiserState will report "disabled").',
       details: { requested: opts.denoiser },
     });
@@ -852,5 +922,10 @@ export const createPTEngine_WebGL2: EngineFactory<
 };
 
 export type { PTEngineWebGL2Options } from './options.js';
+export type {
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+} from './denoise/oidnFinalDispatcher.js';
 export { PT_WEBGL2_SUPPORT } from './capabilities.js';
 export { packBvhTextureData, uploadBvhTextures } from './scene/bvhTextureAdapter.js';

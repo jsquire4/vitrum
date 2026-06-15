@@ -1,0 +1,94 @@
+import {
+  OIDNDispatcherCore,
+  oidnDefaultLoader,
+} from '@vitrum/shared-denoisers';
+import type {
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+  OIDNFinalDispatcherOptions,
+  ReadbackResult,
+} from '@vitrum/shared-denoisers';
+import type { WebGlOidnReadbackResult } from './rgba32fReadback.js';
+
+export type {
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+  OIDNFinalDispatcherOptions,
+} from '@vitrum/shared-denoisers';
+
+export type OidnReadbackFn = (
+  input: WebGlOidnReadbackResult,
+) => Promise<ReadbackResult | null> | ReadbackResult | null;
+
+export interface OIDNFinalDispatcherRuntimeHooks {
+  readonly onError?: (err: unknown) => void;
+}
+
+/**
+ * OIDN final-pass dispatcher for `@vitrum/pt-webgl2`.
+ *
+ * WebGL readback is synchronous, so the engine reads RGBA32F attachments before
+ * kicking this dispatcher. The shared core still owns the cohort state machine,
+ * async bridge load, error dedupe, cache lifetime, and latest-result surface.
+ */
+export class OIDNFinalDispatcher {
+  readonly #core: OIDNDispatcherCore<WebGlOidnReadbackResult>;
+
+  constructor(
+    opts: OIDNFinalDispatcherOptions,
+    loader?: OIDNBridgeLoader,
+    readback?: OidnReadbackFn,
+    hooks?: OIDNFinalDispatcherRuntimeHooks,
+  ) {
+    if (opts.modelUrl === undefined || opts.modelUrl.length === 0) {
+      throw new Error(
+        '[vitrum/pt-webgl2 OIDNFinalDispatcher] modelUrl is required. ' +
+          "Pass oidn: { modelUrl } with denoiser: 'oidn-final'.",
+      );
+    }
+    const resolvedReadback = readback ?? ((input: WebGlOidnReadbackResult) => input);
+    this.#core = new OIDNDispatcherCore<WebGlOidnReadbackResult>({
+      dispatcherOptions: opts,
+      loader: loader ?? oidnDefaultLoader,
+      readback: async (input) => resolvedReadback(input),
+      preloadOnBridgeInit: false,
+      ...(hooks?.onError != null ? { onError: hooks.onError } : {}),
+    });
+  }
+
+  getLatestDenoised(): DenoisedFrame | null {
+    return this.#core.getLatestDenoised();
+  }
+
+  isInFlight(): boolean {
+    return this.#core.isInFlight();
+  }
+
+  getState(): { status: 'ready' | 'in-flight' | 'fallback' | 'failed'; reason: string | null; retryable?: boolean } {
+    const lastError = this.#core.getLastError();
+    if (lastError !== null) {
+      return { status: 'failed', reason: lastError, retryable: true };
+    }
+    if (this.#core.isInFlight()) {
+      return { status: 'in-flight', reason: null };
+    }
+    if (this.#core.getLatestDenoised() !== null) {
+      return { status: 'ready', reason: null };
+    }
+    return { status: 'fallback', reason: 'waiting for first OIDN inference' };
+  }
+
+  invalidate(): void {
+    this.#core.invalidate();
+  }
+
+  kickIfReady(input: WebGlOidnReadbackResult): void {
+    this.#core.kickIfReady(input, input.width, input.height);
+  }
+
+  dispose(): void {
+    this.#core.dispose();
+  }
+}

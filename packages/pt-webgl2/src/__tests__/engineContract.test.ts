@@ -116,7 +116,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
       bmfr: 'unsupported',
-      'oidn-final': 'unsupported',
+      'oidn-final': 'native',
       neural: 'unsupported',
     });
   });
@@ -429,7 +429,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   // Contract-honesty: EngineOptions.denoiser must not be silently ignored.
-  // pt-webgl2 has no denoiser pipeline; non-null non-'none' values must warn once.
+  // Unsupported non-null non-'none' values warn once; oidn-final is a real
+  // final-pass path and requires explicit host model config.
   it("denoiser: 'none' and absent denoiser are both silent", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -444,25 +445,31 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it("denoiser: 'oidn-final' emits exactly one console.warn naming the value", async () => {
+  it("denoiser: 'oidn-final' requires model config and is not reported as unsupported", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
-      await createPTEngine_WebGL2({
+      await expect(createPTEngine_WebGL2({
         ...opts(),
         denoiser: 'oidn-final',
         onWarning: (w) => structured.push(w),
+      })).rejects.toThrow(/oidn: \{ modelUrl \}/);
+      await createPTEngine_WebGL2({
+        ...opts(),
+        denoiser: 'oidn-final',
+        oidn: { modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' },
+        oidnBridgeLoader: async () => ({
+          denoiseFinal: async (inputs) => new Float32Array(inputs.color.length),
+        }),
+        onWarning: (w) => structured.push(w),
       });
       const denoiserWarns = warn.mock.calls.filter((args) =>
-        String(args[0]).includes('denoiser'),
+        String(args[0]).includes('unsupported-denoiser'),
       );
-      expect(denoiserWarns).toHaveLength(1);
-      expect(String(denoiserWarns[0]![0])).toContain('oidn-final');
-      expect(String(denoiserWarns[0]![0])).toContain('pt-webgl2');
+      expect(denoiserWarns).toHaveLength(0);
       expect(structured.some((w) =>
-        w.code === 'pt-webgl2.unsupported-denoiser' &&
-        w.details?.requested === 'oidn-final',
-      )).toBe(true);
+        w.code === 'pt-webgl2.unsupported-denoiser',
+      )).toBe(false);
     } finally {
       warn.mockRestore();
     }

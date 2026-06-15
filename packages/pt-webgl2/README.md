@@ -44,10 +44,12 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
 | Caustic strategy `'manifold-nee'` | Heuristic refraction-walk (NOT Newton-solve MNEE — see options.ts) |
 | Caustic strategy `'photon-map'` | Deterministic cone-traced estimate (known ~21% energy approximation) |
+| Denoiser `oidn-final` | Supported as an async final-pass CPU result. Requires host `oidn: { modelUrl }` and optional `onnxruntime-web`; full tier supplies HDR + albedo + normal aux, lite tier supplies HDR color. Retrieve with `getLatestDenoised()` and observe state via `FrameStats.denoiserState`. |
 
 ## Known gaps
 
 - **BDPT** (`bdpt: true`): BDPT is implemented and host-driven (A5). No ANGLE-specific gating exists — there is no `EXT_disjoint_timer_query` gate and no driver detection path. Pass `bdpt: true` to enable; any conformant WebGL2 driver runs full BDPT.
+- **Realtime denoisers**: `atrous`, `atrous-variance`, `svgf-real`, `bmfr`, and `neural` remain unsupported on this converged WebGL2 backend and warn/degrade to no-denoise. Use `oidn-final` for final-pass denoising.
 - **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid also consumes `rotationY` (HybridEngine.ts:2061,2072 pass it through to DDGI and DDGI-probe-update; `environmentSample.wgsl.ts` applies `envRotateYNeg`).
 - **Mesh-area NEE**: mesh-area emitters are sampled via explicit triangle-light NEE (B4, 2026-06-10) — area-weighted random triangle selection with shadow ray. Also visible via emissive fold on direct camera hits.
 - **Spectral: achromatic-flat**: spectral mode traces the hero-wavelength path and reconstructs RGB via CIE CMF tables (H2 fix), but Jakob–Hanika material coefficients are not yet uploaded so spectral reflectance is a uniform tint over RGB. Tracked in road-to-100.

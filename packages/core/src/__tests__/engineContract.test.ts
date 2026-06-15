@@ -228,7 +228,7 @@ describe('backend promise ledger', () => {
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
       bmfr: 'unsupported',
-      'oidn-final': 'unsupported',
+      'oidn-final': 'native',
       neural: 'unsupported',
     });
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['oidn-final']).toBe(

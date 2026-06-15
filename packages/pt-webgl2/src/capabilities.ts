@@ -45,7 +45,7 @@ export function buildCapabilities(
   maxBounces: number,
   maxSamplesPerPixel: number,
   supportsAuxBuffers: boolean,
-  experimental?: { bdpt?: boolean; spectral?: boolean },
+  experimental?: { bdpt?: boolean; spectral?: boolean; oidn?: boolean },
 ): EngineCapabilities {
   // experimentalFeatures advertises OFF-default research paths that are HOST-DRIVEN
   // and live (not inert). A5 (2026-06-10): pt-webgl2-bdpt is added only when bdpt:true
@@ -55,6 +55,7 @@ export function buildCapabilities(
   const features = new Set<string>();
   if (experimental?.bdpt === true) features.add('pt-webgl2-bdpt');
   if (experimental?.spectral === true) features.add('pt-webgl2-spectral');
+  if (experimental?.oidn === true) features.add('pt-webgl2-oidn-final');
   return {
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
