@@ -725,8 +725,10 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain('let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('let coverage = opacity * baseColorAlpha * alphaMapCoverage;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < cutoff;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaBlendCoverageHash(hit: IntersectionResult) -> f32');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < 1.0 && materialAlphaBlendCoverageHash(hit) >= coverage;');
     expect(SHADE_WGSL).toContain(
       'let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);',
     );

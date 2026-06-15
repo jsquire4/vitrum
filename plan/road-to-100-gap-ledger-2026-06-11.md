@@ -1331,9 +1331,9 @@ Evidence:
   `traceSceneFirstHitAlphaMaskTextured` applies `opacity * alphaMap.r <
   alphaCutoff` in RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and
   NRC GI paths. The shared cast-shadow mask still skips scalar bit 2 for
-  occlusion rays; fractional blend emits
-  `walkaround-hybrid.alpha-blend-approximation` and real blend composition
-  remains open.
+  occlusion rays; fractional blend uses deterministic stochastic coverage and
+  still emits `walkaround-hybrid.alpha-blend-approximation` because sorted or
+  weighted transparent composition remains open.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow: `materialTextureAtlas.ts` packs emissive maps as
   sRGB-decoded atlas layers with per-map UV/transform/wrap metadata, and
@@ -1451,8 +1451,8 @@ Closure:
   imported base/KHR material map.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   texture-bake handling for specular-glossiness texture alpha if exact legacy
-  parity is required, walkaround fractional blend plus the remaining atlas map
-  families (extension/bump/displacement
+  parity is required, walkaround sorted/weighted transparent composition plus
+  the remaining atlas map families (extension/bump/displacement
   policy), and backend material-consumption
   parity.
 

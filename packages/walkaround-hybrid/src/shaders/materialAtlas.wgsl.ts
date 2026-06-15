@@ -601,6 +601,32 @@ fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {
   return (materialWord & 4u) != 0u;
 }
 
+fn materialAlphaBlendCoverageHash(hit: IntersectionResult) -> f32 {
+  let uvSeed = vec2u(
+    u32(clamp(hit.uv.x, 0.0, 1.0) * 65535.0),
+    u32(clamp(hit.uv.y, 0.0, 1.0) * 65535.0),
+  );
+  let barySeed = vec3u(
+    u32(clamp(hit.barycoord.x, 0.0, 1.0) * 65535.0),
+    u32(clamp(hit.barycoord.y, 0.0, 1.0) * 65535.0),
+    u32(clamp(hit.barycoord.z, 0.0, 1.0) * 65535.0),
+  );
+  var seed =
+    hit.indices.x * 73856093u ^
+    hit.indices.y * 19349663u ^
+    hit.indices.z * 83492791u ^
+    hit.indices.w * 2654435761u ^
+    hit.instanceIndex * 1597334677u ^
+    uvSeed.x * 3812015801u ^
+    uvSeed.y * 2798796415u ^
+    barySeed.x * 1103515245u ^
+    barySeed.y * 12345u ^
+    barySeed.z * 374761393u;
+  seed = seed * 747796405u + 2891336453u;
+  let word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+  return f32((word >> 22u) ^ word) / 4294967296.0;
+}
+
 fn materialAlphaDiscardedForHit(
   hit: IntersectionResult,
   materialWord: u32,
@@ -626,9 +652,12 @@ fn materialAlphaDiscardedForHit(
   let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   let cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  let coverage = opacity * baseColorAlpha * alphaMapCoverage;
+  let coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
   if (mode == 1u) {
     return coverage < cutoff;
+  }
+  if (mode == 2u) {
+    return coverage < 1.0 && materialAlphaBlendCoverageHash(hit) >= coverage;
   }
   return coverage <= 0.0;
 }

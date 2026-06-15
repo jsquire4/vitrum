@@ -906,8 +906,8 @@ export class HybridEngine implements Engine {
           method: 'setScene',
           message:
             `[vitrum/walkaround-hybrid] setScene: fractional alphaMode:'blend' ` +
-            `is approximated as opaque scalar coverage until the texture-atlas / ` +
-            `order-independent composite path lands; primitives: ${alphaBlendApproxIds.join(', ')}.`,
+            `is approximated with deterministic stochastic alpha coverage; sorted ` +
+            `or weighted transparent composition remains unsupported; primitives: ${alphaBlendApproxIds.join(', ')}.`,
           details: { primitiveIds: alphaBlendApproxIds },
         });
       }
