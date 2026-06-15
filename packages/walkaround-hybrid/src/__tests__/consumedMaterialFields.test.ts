@@ -73,7 +73,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + `iridescence` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + `frontLayer` (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -87,7 +87,7 @@ function unconsumedFieldsScene(): Scene {
           roughness: 0.3,
           metallic: 0,
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
-          iridescence: 0.8,                    // unconsumed
+          frontLayer: { transmission: [1, 0.5, 0.25] }, // unconsumed
         },
       } as unknown as ScenePrimitive,
     ],
@@ -112,6 +112,8 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
       'sheenColorMap', 'sheenRoughnessMap',
       'anisotropy', 'anisotropyRotation', 'anisotropyMap',
+      'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
+      'iridescenceMap', 'iridescenceThicknessMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -163,7 +165,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['iridescence']);
+    expect(result).toEqual(['frontLayer']);
   });
 
   it('skips non-mesh kinds (analytic kind is not scanned)', () => {
@@ -176,13 +178,13 @@ describe('collectUnconsumedMaterialFields', () => {
 
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
-      { kind: 'mesh', material: { baseColor: [1, 0, 0], iridescence: 0.5 } },
-      { kind: 'mesh', material: { baseColor: [0, 1, 0], iridescenceMap: { handle: 'iridescence' }, anisotropy: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1] } } },
+      { kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['iridescence', 'iridescenceMap']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['frontLayer', 'thinFilmStack']);
   });
 
-  it('surfaces representative layered, thin-film, and iridescence drops', () => {
+  it('surfaces representative layered and thin-film drops while iridescence is consumed', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         kind: 'mesh',
@@ -208,7 +210,11 @@ describe('collectUnconsumedMaterialFields', () => {
           anisotropy: 0.5,
           anisotropyRotation: 0.25,
           anisotropyMap: { handle: 'anisotropy' },
+          iridescence: 0.5,
+          iridescenceIor: 2,
+          iridescenceThicknessRange: [200, 800],
           iridescenceMap: { handle: 'iridescence' },
+          iridescenceThicknessMap: { handle: 'iridescenceThickness' },
           frontLayer: { transmission: [1, 0.5, 0.25] },
           backLayer: { transmission: [0.25, 0.5, 1] },
           thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
@@ -218,7 +224,6 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(collectUnconsumedMaterialFields(prims)).toEqual([
       'backLayer',
       'frontLayer',
-      'iridescenceMap',
       'thinFilmStack',
     ]);
   });
@@ -275,7 +280,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for iridescence when baseColorMap is also supplied', () => {
+  it('warns only for frontLayer when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -287,12 +292,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
       expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('iridescence');
+      expect(materialWarn).toContain('frontLayer');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
         !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('iridescence'),
+        w.details.fields.includes('frontLayer'),
       )).toBe(true);
     } finally {
       engine.dispose();

@@ -411,8 +411,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // candidate PDFs/payloads remain base-lobe only.
   sheenColorMap: 'approximate',
   sheenRoughnessMap: 'approximate',
-  iridescenceMap: 'unsupported',
-  iridescenceThicknessMap: 'unsupported',
+  // Readable KHR_materials_iridescence maps modulate the shade-owned thin-film
+  // F0 approximation. ReSTIR/GI candidate PDFs and payloads still use the base
+  // lobe, so these rows remain approximate rather than native.
+  iridescenceMap: 'approximate',
+  iridescenceThicknessMap: 'approximate',
   // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
   // anisotropic GGX branch (B = strength, RG = direction). ReSTIR candidate
   // PDFs/payloads and authored tangents are still not anisotropy-complete.
@@ -439,9 +442,12 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // candidate PDFs/payloads and clearcoat maps remain base-lobe-only.
   clearcoat: 'approximate',
   clearcoatRoughness: 'approximate',
-  iridescence: 'unsupported',
-  iridescenceIor: 'unsupported',
-  iridescenceThicknessRange: 'unsupported',
+  // Scalar KHR_materials_iridescence rides material atlas metadata and modifies
+  // shade-owned GGX F0 in direct/analytic/sun/specular-indirect paths. ReSTIR
+  // candidate PDFs/payloads remain base-lobe only.
+  iridescence: 'approximate',
+  iridescenceIor: 'approximate',
+  iridescenceThicknessRange: 'approximate',
   // Scalar KHR_materials_specular controls ride the material atlas metadata and
   // modulate dielectric F0 in shade-owned direct/analytic/sun/specular-indirect
   // paths. ReSTIR candidate PDFs still use default F0, so this stays approximate.

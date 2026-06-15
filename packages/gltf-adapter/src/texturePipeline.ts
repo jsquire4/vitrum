@@ -196,6 +196,8 @@ const WALKAROUND_ATLAS_TEXTURE_FIELDS = new Set<GltfMaterialTextureField>([
   'sheenColorMap',
   'sheenRoughnessMap',
   'anisotropyMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
 ]);
 
 export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): GltfTextureColorSpace {

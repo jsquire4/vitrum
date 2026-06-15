@@ -109,15 +109,15 @@ describe('B1 — glossy/metal specular indirect term', () => {
 
   it('shade computes lo_indirectSpecular and folds it into the un-demodulated direct channel', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
-    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi)');
+    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
     // It joins directRadiance (NOT the demodulated indirect channel).
     expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);
   });
 
   it('specular indirect is gated off for default-diffuse surfaces (invariant)', () => {
-    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat == 0 && sheen == 0 -> zero.
-    expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4)');
+    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat == 0 && sheen == 0 && iridescence == 0 -> zero.
+    expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4)');
   });
 });
 

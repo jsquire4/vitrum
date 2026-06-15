@@ -47,6 +47,112 @@ fn materialF0(albedo: vec3f, metal: f32, specularColor: vec3f, specularIntensity
   return mix(dielectricF0, albedo, clamp(metal, 0.0, 1.0));
 }
 
+// KHR_materials_iridescence approximation for walkaround's shade-owned GGX
+// evaluations. Iridescence modifies the existing base F0; it is not a separate
+// sampled lobe in this backend, so ReSTIR candidate PDFs remain base-lobe only.
+// Ported by convention from pt-webgpu's Belcour/Barla 2017 helper.
+fn iridXyzToRec709(xyz: vec3f) -> vec3f {
+  return vec3f(
+     3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
+    -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
+     0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z,
+  );
+}
+
+fn iridFresnel0ToIor(f0: vec3f) -> vec3f {
+  let sqrtF0 = sqrt(clamp(f0, vec3f(0.0), vec3f(0.9999)));
+  return (vec3f(1.0) + sqrtF0) / (vec3f(1.0) - sqrtF0);
+}
+
+fn iridIorToFresnel0Scalar(transmittedIor: f32, incidentIor: f32) -> f32 {
+  let r = (transmittedIor - incidentIor) / (transmittedIor + incidentIor);
+  return r * r;
+}
+
+fn iridIorToFresnel0Vec(transmittedIor: vec3f, incidentIor: f32) -> vec3f {
+  let r = (transmittedIor - vec3f(incidentIor)) / (transmittedIor + vec3f(incidentIor));
+  return r * r;
+}
+
+fn iridSchlickScalar(cosTheta: f32, f0: f32) -> f32 {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (1.0 - f0) * m2 * m2 * m;
+}
+
+fn iridSchlickVec(cosTheta: f32, f0: vec3f) -> vec3f {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (vec3f(1.0) - f0) * m2 * m2 * m;
+}
+
+fn iridEvalSensitivity(OPD: f32, shift: vec3f) -> vec3f {
+  let phase = 2.0 * PI * OPD * 1.0e-9;
+  let val = vec3f(5.4856e-13, 4.4201e-13, 5.2481e-13);
+  let pos = vec3f(1.6810e+06, 1.7953e+06, 2.2084e+06);
+  let vari = vec3f(4.3278e+09, 9.3046e+09, 6.6121e+09);
+  var xyz = val * sqrt(2.0 * PI * vari) * cos(pos * phase + shift) * exp(-phase * phase * vari);
+  xyz.x = xyz.x + 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09)
+      * cos(2.2399e+06 * phase + shift.x) * exp(-4.5282e+09 * phase * phase);
+  xyz = xyz / 1.0685e-7;
+  return iridXyzToRec709(xyz);
+}
+
+fn evalIridescence(
+  outsideIOR: f32,
+  eta2: f32,
+  cosTheta1: f32,
+  thicknessNm: f32,
+  baseF0: vec3f,
+) -> vec3f {
+  let iridescenceIor = mix(outsideIOR, eta2, smoothstep(0.0, 0.03, thicknessNm));
+  let sinTheta2Sq = (outsideIOR / iridescenceIor) * (outsideIOR / iridescenceIor)
+      * max(0.0, 1.0 - cosTheta1 * cosTheta1);
+  let cosTheta2Sq = 1.0 - sinTheta2Sq;
+  if (cosTheta2Sq < 0.0) { return vec3f(1.0); }
+  let cosTheta2 = sqrt(cosTheta2Sq);
+
+  let R0_scalar = iridIorToFresnel0Scalar(iridescenceIor, outsideIOR);
+  let R12 = iridSchlickScalar(cosTheta1, R0_scalar);
+  let T121 = 1.0 - R12;
+  let phi12 = select(0.0, PI, iridescenceIor < outsideIOR);
+  let phi21 = PI - phi12;
+
+  let baseIOR = iridFresnel0ToIor(clamp(baseF0, vec3f(0.0), vec3f(0.9999)));
+  let R1_vec = iridIorToFresnel0Vec(baseIOR, iridescenceIor);
+  let R23 = iridSchlickVec(cosTheta2, R1_vec);
+  var phi23 = vec3f(0.0);
+  phi23.x = select(0.0, PI, baseIOR.x < iridescenceIor);
+  phi23.y = select(0.0, PI, baseIOR.y < iridescenceIor);
+  phi23.z = select(0.0, PI, baseIOR.z < iridescenceIor);
+
+  let OPD = 2.0 * iridescenceIor * thicknessNm * cosTheta2;
+  let phi = vec3f(phi21) + phi23;
+  let R123 = clamp(R12 * R23, vec3f(1e-5), vec3f(0.9999));
+  let r123 = sqrt(R123);
+  let Rs = (T121 * T121) * R23 / (vec3f(1.0) - R123);
+
+  let C0 = vec3f(R12) + Rs;
+  var I = C0;
+  var Cm = Rs - vec3f(T121);
+  for (var m = 1; m <= 2; m = m + 1) {
+    Cm = Cm * r123;
+    let Sm = 2.0 * iridEvalSensitivity(f32(m) * OPD, f32(m) * phi);
+    I = I + Cm * Sm;
+  }
+  return max(I, vec3f(0.0));
+}
+
+fn iridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, cosTheta: f32) -> vec3f {
+  let factor = clamp(iridescence.x, 0.0, 1.0);
+  if (factor < 1e-4) {
+    return baseF0;
+  }
+  let thicknessNm = mix(max(0.0, iridescence.z), max(0.0, iridescence.w), clamp(cosTheta, 0.0, 1.0));
+  let iridF = evalIridescence(1.0, max(1.0, iridescence.y), cosTheta, thicknessNm, baseF0);
+  return mix(baseF0, iridF, factor);
+}
+
 fn anisotropyAxes(rough: f32, anisotropy: f32) -> vec2f {
   let alpha = max(rough * rough, 1e-4);
   let aspect = sqrt(max(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0), 1e-4));
@@ -125,27 +231,36 @@ fn evalGGXWithSpecularAnisotropy(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  iridescence: vec4f,
   n: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   let aniso = clamp(anisotropy, 0.0, 1.0);
-  if (aniso <= 1e-4) {
+  if (aniso <= 1e-4 && iridescence.x <= 1e-4) {
     return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
   }
 
   let h = safe_normalize(wo + wi);
   let NdotL = max(0.0, dot(n, wi));
   let NdotV = max(1e-4, dot(n, wo));
+  let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
   if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
 
-  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
+  let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
-  let frame = anisotropyTangentFrame(n, anisotropyRotation);
-  let axes = anisotropyAxes(max(0.01, rough), aniso);
-  let D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
-  let G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+  var D: f32;
+  var G: f32;
+  if (aniso <= 1e-4) {
+    D = distributionGGX(NdotH, max(0.01, rough));
+    G = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  } else {
+    let frame = anisotropyTangentFrame(n, anisotropyRotation);
+    let axes = anisotropyAxes(max(0.01, rough), aniso);
+    D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
+    G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+  }
 
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let diffuse = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
@@ -209,6 +324,7 @@ fn evalGGXWithSpecularClearcoatSheen(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  iridescence: vec4f,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -219,7 +335,7 @@ fn evalGGXWithSpecularClearcoatSheen(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, n, wo, wi)
+  return evalGGXWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, n, wo, wi)
        + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
@@ -342,27 +458,36 @@ fn evalGGXSpecularOnlyWithSpecularAnisotropy(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  iridescence: vec4f,
   n: vec3f,
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
   let aniso = clamp(anisotropy, 0.0, 1.0);
-  if (aniso <= 1e-4) {
+  if (aniso <= 1e-4 && iridescence.x <= 1e-4) {
     return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
   }
 
   let h = safe_normalize(wo + wi);
   let NdotL = max(0.0, dot(n, wi));
   let NdotV = max(1e-4, dot(n, wo));
+  let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
   if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
 
-  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
+  let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
-  let frame = anisotropyTangentFrame(n, anisotropyRotation);
-  let axes = anisotropyAxes(max(0.01, rough), aniso);
-  let D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
-  let G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+  var D: f32;
+  var G: f32;
+  if (aniso <= 1e-4) {
+    D = distributionGGX(NdotH, max(0.01, rough));
+    G = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  } else {
+    let frame = anisotropyTangentFrame(n, anisotropyRotation);
+    let axes = anisotropyAxes(max(0.01, rough), aniso);
+    D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
+    G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+  }
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let ms = ggxMultiscatter(F0, max(0.01, rough), NdotV, NdotL);
   return (specular + ms) * NdotL;
@@ -380,6 +505,7 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  iridescence: vec4f,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -390,7 +516,7 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXSpecularOnlyWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, n, wo, wi)
+  return evalGGXSpecularOnlyWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, n, wo, wi)
        + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }

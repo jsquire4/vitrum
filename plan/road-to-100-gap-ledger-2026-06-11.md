@@ -369,6 +369,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   analytic, sun, and glossy-indirect paths. The promise ledger promotes these
   rows to `approximate`, not `native`, because authored tangent consumption and
   ReSTIR/GI reservoir PDFs/payloads remain isotropic.
+- Walkaround-hybrid Phase-3E iridescence follow-up (2026-06-14): scalar
+  `iridescence` / `iridescenceIor` / `iridescenceThicknessRange` and readable
+  `iridescenceMap` / `iridescenceThicknessMap` handles now ride the material
+  atlas. The shader samples glTF red-channel iridescence strength and
+  green-channel thickness, then modifies shade-owned GGX F0 with the same
+  Belcour/Barla-style thin-film helper shape used by pt-webgpu. The promise
+  ledger promotes these rows to `approximate`, not `native`, because ReSTIR/GI
+  reservoir PDFs/payloads remain base-lobe-only.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 42;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 47;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -20,7 +20,9 @@ type AtlasMapField =
   | 'clearcoatNormalMap'
   | 'sheenColorMap'
   | 'sheenRoughnessMap'
-  | 'anisotropyMap';
+  | 'anisotropyMap'
+  | 'iridescenceMap'
+  | 'iridescenceThicknessMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -41,6 +43,8 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'sheenColorMap', colorSpace: 'srgb' },
   { field: 'sheenRoughnessMap', colorSpace: 'linear' },
   { field: 'anisotropyMap', colorSpace: 'linear' },
+  { field: 'iridescenceMap', colorSpace: 'linear' },
+  { field: 'iridescenceThicknessMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -67,6 +71,8 @@ export interface MaterialTextureAtlasPayload {
   readonly readableSheenColorLayerCount: number;
   readonly readableSheenRoughnessLayerCount: number;
   readonly readableAnisotropyLayerCount: number;
+  readonly readableIridescenceLayerCount: number;
+  readonly readableIridescenceThicknessLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -275,6 +281,8 @@ export function packMaterialTextureAtlas(
     sheenColorMap: new Set<number>(),
     sheenRoughnessMap: new Set<number>(),
     anisotropyMap: new Set<number>(),
+    iridescenceMap: new Set<number>(),
+    iridescenceThicknessMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -433,6 +441,21 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeIridescenceMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    const range = mat?.iridescenceThicknessRange;
+    baseColorMetaData[b] = clampedUnit(mat?.iridescence, 0);
+    baseColorMetaData[b + 1] = Number.isFinite(mat?.iridescenceIor)
+      ? Math.max(1, mat?.iridescenceIor ?? 1.3)
+      : 1.3;
+    baseColorMetaData[b + 2] = Number.isFinite(range?.[0])
+      ? Math.max(0, range?.[0] ?? 100)
+      : 100;
+    baseColorMetaData[b + 3] = Number.isFinite(range?.[1])
+      ? Math.max(0, range?.[1] ?? 400)
+      : 400;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -461,6 +484,9 @@ export function packMaterialTextureAtlas(
     writeClearcoatNormalScaleMeta(mat, baseTexel + 38);
     writeMapMeta(mat, 'anisotropyMap', 'linear', baseTexel + 39);
     writeAnisotropyMeta(mat, baseTexel + 41);
+    writeMapMeta(mat, 'iridescenceMap', 'linear', baseTexel + 42);
+    writeMapMeta(mat, 'iridescenceThicknessMap', 'linear', baseTexel + 44);
+    writeIridescenceMeta(mat, baseTexel + 46);
   }
 
   return {
@@ -487,6 +513,8 @@ export function packMaterialTextureAtlas(
     readableSheenColorLayerCount: fieldLayers.sheenColorMap.size,
     readableSheenRoughnessLayerCount: fieldLayers.sheenRoughnessMap.size,
     readableAnisotropyLayerCount: fieldLayers.anisotropyMap.size,
+    readableIridescenceLayerCount: fieldLayers.iridescenceMap.size,
+    readableIridescenceThicknessLayerCount: fieldLayers.iridescenceThicknessMap.size,
   };
 }
 

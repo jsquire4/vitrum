@@ -1048,6 +1048,8 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'sheenColorMap',
   'sheenRoughnessMap',
   'anisotropyMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(
@@ -1084,6 +1086,19 @@ function alphaModeAtlasIndex(mode: MaterialSpec['alphaMode'] | undefined): numbe
 
 function alphaAtlasUnit(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
+}
+
+function minClampedUnit(value: number | undefined, min: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(min, value ?? fallback) : fallback;
+}
+
+function iridescenceThicknessBound(
+  material: MaterialSpec | undefined,
+  index: 0 | 1,
+  fallback: number,
+): number {
+  const value = material?.iridescenceThicknessRange?.[index];
+  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
 }
 
 function colorUnit(
@@ -1138,6 +1153,11 @@ function materialAtlasPatchRequiresFullRebuild(
     alphaAtlasUnit(prev?.anisotropy, 0) !== alphaAtlasUnit(next?.anisotropy, 0) ||
     (Number.isFinite(prev?.anisotropyRotation) ? prev?.anisotropyRotation ?? 0 : 0) !==
       (Number.isFinite(next?.anisotropyRotation) ? next?.anisotropyRotation ?? 0 : 0);
+  const iridescenceChanged =
+    alphaAtlasUnit(prev?.iridescence, 0) !== alphaAtlasUnit(next?.iridescence, 0) ||
+    minClampedUnit(prev?.iridescenceIor, 1, 1.3) !== minClampedUnit(next?.iridescenceIor, 1, 1.3) ||
+    iridescenceThicknessBound(prev, 0, 100) !== iridescenceThicknessBound(next, 0, 100) ||
+    iridescenceThicknessBound(prev, 1, 400) !== iridescenceThicknessBound(next, 1, 400);
   return normalScaleChanged ||
     clearcoatNormalScaleChanged ||
     lightMapIntensityChanged ||
@@ -1145,7 +1165,8 @@ function materialAtlasPatchRequiresFullRebuild(
     specularChanged ||
     clearcoatChanged ||
     sheenChanged ||
-    anisotropyChanged;
+    anisotropyChanged ||
+    iridescenceChanged;
 }
 
 /**

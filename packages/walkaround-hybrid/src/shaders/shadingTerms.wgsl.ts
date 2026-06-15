@@ -147,6 +147,7 @@ fn lo_analyticNEE(
   metal:    f32,
   specular: vec4f,
   anisotropy: vec2f,
+  iridescence: vec4f,
   clearcoat: vec2f,
   sheen:    vec4f,
   sheenRoughness: f32,
@@ -215,7 +216,7 @@ fn lo_analyticNEE(
 
     // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
+    let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
     Lo += lightLe * brdf * nDotL * cone * invDist2;
   }
   return Lo;
@@ -242,6 +243,7 @@ fn lo_direct(
   metal:    f32,
   specular: vec4f,
   anisotropy: vec2f,
+  iridescence: vec4f,
   clearcoat: vec2f,
   sheen:    vec4f,
   sheenRoughness: f32,
@@ -271,7 +273,7 @@ fn lo_direct(
     let nDotL = max(0.0, dot(normal, envDir));
     if (nDotL < 1e-6) { return vec3f(0.0); }
     let envColor = envRadiance(envDir);
-    let brdfE = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, envDir);
+    let brdfE = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, envDir);
     return envColor * brdfE * r.W;
   }
 
@@ -304,7 +306,7 @@ fn lo_direct(
     if (occ) { return vec3f(0.0); }
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-  let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
+  let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
   return e.Le * brdf * G * r.W;
 }
 
@@ -366,6 +368,7 @@ fn lo_sunNEE(
   metal:     f32,
   specular:  vec4f,
   anisotropy: vec2f,
+  iridescence: vec4f,
   clearcoat: vec2f,
   sheen:     vec4f,
   sheenRoughness: f32,
@@ -416,7 +419,7 @@ fn lo_sunNEE(
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
   // evalGGX already folds in nDotSun as its NdotL term (returns 0 when NdotL<1e-6).
-  let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, toSun);
+  let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, toSun);
   // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
   // No distance falloff — directional lights have infinite distance.
   return vec3f(ubo.sunIntensity) * brdf;
@@ -699,13 +702,14 @@ fn lo_indirectSpecular(
   metal:  f32,
   specular: vec4f,
   anisotropy: vec2f,
+  iridescence: vec4f,
   clearcoat: vec2f,
   sheen: vec4f,
   sheenRoughness: f32,
   isGlass: bool,
 ) -> vec3f {
   if (isGlass) { return vec3f(0.0); }
-  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4) { return vec3f(0.0); }
+  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4) { return vec3f(0.0); }
   let halfDims = dims / 2u;
   let hx = min(gid.x / 2u, halfDims.x - 1u);
   let hy = min(gid.y / 2u, halfDims.y - 1u);
@@ -717,6 +721,6 @@ fn lo_indirectSpecular(
   if (distS <= 1e-4) { return vec3f(0.0); }
   let wi = toS / distS;
   // evalGGXSpecularOnly already includes the NdotL cosine + conductor F0.
-  let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
+  let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
   return g.Lo * specBrdf * g.W;
 }`;

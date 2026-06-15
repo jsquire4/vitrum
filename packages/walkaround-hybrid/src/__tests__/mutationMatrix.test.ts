@@ -344,6 +344,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           anisotropy: 0.5,
           anisotropyRotation: 0.25,
           anisotropyMap: { handle: baseColorMapHandle(112), texCoord: 1 },
+          iridescence: 0.5,
+          iridescenceIor: 2,
+          iridescenceThicknessRange: [200, 800],
+          iridescenceMap: { handle: baseColorMapHandle(72), wrapT: 'mirrored-repeat' },
+          iridescenceThicknessMap: { handle: baseColorMapHandle(88), texCoord: 1 },
         },
       });
 
@@ -368,6 +373,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(rebuilt.materialTextureAtlas.readableSheenColorLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableSheenRoughnessLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableAnisotropyLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableIridescenceLayerCount).toBe(1);
+      expect(rebuilt.materialTextureAtlas.readableIridescenceThicknessLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
@@ -391,6 +398,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           anisotropy?: unknown;
           anisotropyRotation?: unknown;
           anisotropyMap?: unknown;
+          iridescence?: unknown;
+          iridescenceIor?: unknown;
+          iridescenceThicknessRange?: unknown;
+          iridescenceMap?: unknown;
+          iridescenceThicknessMap?: unknown;
         };
       }).material;
       expect(material.baseColorMap).toBeDefined();
@@ -414,6 +426,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(material.anisotropy).toBe(0.5);
       expect(material.anisotropyRotation).toBe(0.25);
       expect(material.anisotropyMap).toBeDefined();
+      expect(material.iridescence).toBe(0.5);
+      expect(material.iridescenceIor).toBe(2);
+      expect(material.iridescenceThicknessRange).toEqual([200, 800]);
+      expect(material.iridescenceMap).toBeDefined();
+      expect(material.iridescenceThicknessMap).toBeDefined();
     } finally {
       engine.dispose();
     }
@@ -447,6 +464,9 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
             sheen: 0,
             sheenRoughness: 0,
             sheenColor: [0, 0, 0],
+            iridescence: 0,
+            iridescenceIor: 1.3,
+            iridescenceThicknessRange: [100, 400],
           },
         },
         ...base.primitives.slice(1),
@@ -472,6 +492,9 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           sheen: 0.8,
           sheenRoughness: 0.3,
           sheenColor: [0.9, 0.4, 0.2],
+          iridescence: 0.65,
+          iridescenceIor: 2,
+          iridescenceThicknessRange: [250, 750],
         },
       });
 

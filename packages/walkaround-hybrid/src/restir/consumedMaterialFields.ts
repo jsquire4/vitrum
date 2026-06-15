@@ -112,14 +112,21 @@
  *  anisotropyRotation    metadata rotation for the anisotropic GGX frame.
  *  anisotropyMap         readable linear KHR anisotropy maps multiply
  *                           strength from B and direction from RG.
+ *  iridescence           stored in material atlas metadata and modifies
+ *                           shade-owned GGX F0 with a thin-film approximation.
+ *  iridescenceIor        metadata thin-film IOR for the F0 approximation.
+ *  iridescenceThicknessRange metadata min/max thickness in nanometres.
+ *  iridescenceMap        readable linear KHR iridescence maps multiply
+ *                           scalar iridescence from the red channel.
+ *  iridescenceThicknessMap readable linear thickness maps select thickness
+ *                           from the green channel.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / lightMap / specular maps / clearcoat maps / sheen maps /
- * anisotropyMap,
- * remaining Disney BSDF scalars, spectral curves,
- * volume scattering, thin-film stacks, layered BSDF, and extension maps — is
- * IGNORED.
+ * anisotropyMap / iridescence maps, remaining layered BSDF scalars, spectral
+ * curves, volume scattering, thin-film stacks, layered BSDF, and extension
+ * maps — is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -151,6 +158,11 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'anisotropy',
   'anisotropyRotation',
   'anisotropyMap',
+  'iridescence',
+  'iridescenceIor',
+  'iridescenceThicknessRange',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
   'alphaMode',
   'alphaCutoff',
   'opacity',
