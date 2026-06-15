@@ -20,7 +20,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { RESERVOIR_GI_WGSL } from '../src/shaders/reservoirGi.wgsl.js';
+import {
+  buildReservoirGiWgsl,
+  RESERVOIR_GI_WGSL,
+} from '../src/shaders/reservoirGi.wgsl.js';
 
 // ── FROZEN GOLDEN — the original Sprint-16 ReservoirGI 80-byte layout ─────────
 // Field name → u32 index within the reservoir. Transcribed by hand from the
@@ -68,6 +71,36 @@ describe('GRIS Phase-0 — ReservoirPT stride widened to 30 u32 / 120 bytes', ()
   it('renames the struct to ReservoirPT and keeps a ReservoirGI alias', () => {
     expect(RESERVOIR_GI_WGSL).toContain('struct ReservoirPT {');
     expect(RESERVOIR_GI_WGSL).toContain('alias ReservoirGI = ReservoirPT;');
+  });
+});
+
+describe('H24 — default reservoir layout stays compact unless GRIS is structurally enabled', () => {
+  const compact = buildReservoirGiWgsl({ grisCache: false });
+  const full = buildReservoirGiWgsl({ grisCache: true });
+
+  it('compact default declares the 20-u32 Sprint-16/17 stride', () => {
+    expect(compact).toContain('const RESERVOIR_GI_STRIDE: u32 = 20u;');
+    expect(full).toContain('const RESERVOIR_GI_STRIDE: u32 = 30u;');
+  });
+
+  it('compact store helper writes only the shared [0..19] prefix', () => {
+    const store = fnBody(compact, 'storeReservoirGI_rw');
+    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(Math.max(...writes)).toBe(19);
+    expect(store).toContain('Compact default layout: no appended GRIS cache stores.');
+  });
+
+  it('compact load helpers zero appended GRIS fields instead of reading beyond index 19', () => {
+    for (const body of [
+      fnBody(compact, 'loadReservoirGI_rw'),
+      fnBody(compact, 'loadReservoirGI_ro'),
+    ]) {
+      const reads = [...body.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
+      expect(Math.max(...reads)).toBe(19);
+      expect(body).toContain('r.wi_recon = vec3f(0.0);');
+      expect(body).toContain('r.prefixVertexCount = 0u;');
+    }
   });
 });
 

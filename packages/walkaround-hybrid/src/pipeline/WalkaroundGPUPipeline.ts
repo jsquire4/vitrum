@@ -112,7 +112,7 @@ import {
   type TimestampState,
   type PassLabel,
 } from './timestampQueries.js';
-import { RESERVOIR_GI_STRIDE } from '../ppg/ppgConstants.js';
+import { reservoirGiStrideU32ForRestirPtReuse } from '../restir/reservoirGiLayout.js';
 import type { RestirGISnapshot } from '../giStateSnapshot.js';
 
 // D3.5 — PipelineFrame* interfaces extracted to pipelineFrameInputs.ts.
@@ -682,7 +682,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this.#readbackReservoir(device, r.reservoirGiPreviousBuffer),
       this.#readbackReservoir(device, r.reservoirGiSpatialBuffer),
     ]);
-    return { halfW, halfH, strideU32: RESERVOIR_GI_STRIDE, current, previous, spatial };
+    return {
+      halfW,
+      halfH,
+      strideU32: reservoirGiStrideU32ForRestirPtReuse(this._restirPtReuseStructural),
+      current,
+      previous,
+      spatial,
+    };
   }
 
   /**
@@ -701,7 +708,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const r = this._res.restirGI;
     const halfW = Math.max(1, Math.floor(this._width / 2));
     const halfH = Math.max(1, Math.floor(this._height / 2));
-    if (snap.halfW !== halfW || snap.halfH !== halfH || snap.strideU32 !== RESERVOIR_GI_STRIDE) {
+    if (
+      snap.halfW !== halfW ||
+      snap.halfH !== halfH ||
+      snap.strideU32 !== reservoirGiStrideU32ForRestirPtReuse(this._restirPtReuseStructural)
+    ) {
       return false; // grid / stride mismatch — cannot restore into a different reservoir layout
     }
     const expectU32 = r.reservoirGiCurrentBuffer.size / 4;
@@ -1064,18 +1075,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // pipeline's lifetime; resize() reuses the stored `_denoiserMode`.
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
 
+    // ── Resolve the GRIS structural gate BEFORE allocating frame resources ─
+    // restirPtReuse widens the GI reservoir buffers from the compact 20-u32
+    // Sprint-16/17 layout to the 30-u32 GRIS cache layout, and also selects the
+    // GI spatial + temporal shader/layout variants below.
+    this._restirPtReuseStructural = options?.restirPtReuse ?? false;
+
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H, {
       gtaoDownscale: this._gtaoDownscale,
       svgfEnabled: this._denoiserMode === 'svgf-real',
+      restirPtReuse: this._restirPtReuseStructural,
     });
-
-    // ── Resolve the GRIS structural gate BEFORE compiling pipelines ────────
-    // restirPtReuse is a COMPILE-TIME decision: it selects the GI spatial +
-    // temporal pipeline layouts (single-group vs two-group) + shader variants.
-    // Stored so the pass constructors below bind the scene group at @group(1)
-    // iff the GRIS pipeline variant was built.
-    this._restirPtReuseStructural = options?.restirPtReuse ?? false;
 
     // ── Resolve the checkerboard half-res-shading flag ─────────────────────
     // OFF (default) ⇒ shade shades every pixel + ResolvePass passes through
@@ -1489,6 +1500,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // Preserve the init-time SVGF gating (G-P2.6) — the active denoiser is
       // fixed for the pipeline's lifetime, so a resize keeps the same policy.
       svgfEnabled: this._denoiserMode === 'svgf-real',
+      restirPtReuse: this._restirPtReuseStructural,
     });
     // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
     // (unchanged) sTree topology so the new bind groups have valid GPU

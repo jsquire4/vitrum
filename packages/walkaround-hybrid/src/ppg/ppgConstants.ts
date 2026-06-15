@@ -91,14 +91,6 @@ export const PPG_MIS_ALPHA = 0.5;
  */
 export const PPG_FLUX_DECAY = 0.5;
 
-/**
- * ReSTIR-GI reservoir stride — number of u32 elements per reservoir in the
- * flat array<u32> buffer. Single source of truth shared between:
- *   - `createRestirGIFrameResources.ts` (used to compute the buffer byte size)
- *
- * Must stay in lockstep with `const RESERVOIR_GI_STRIDE: u32 = 30u;` in
- * `shaders/reservoirGi.wgsl.ts` (the WGSL side of the same constant).
- * GRIS Phase-0 widened this from 20 → 30 (Sprint-16/17 fields + reconnection
- * shift cache at indices [20..29]). See `shaders/reservoirGi.wgsl.ts` header.
- */
-export const RESERVOIR_GI_STRIDE = 30;
+export {
+  RESERVOIR_GI_GRIS_STRIDE_U32 as RESERVOIR_GI_STRIDE,
+} from '../restir/reservoirGiLayout.js';

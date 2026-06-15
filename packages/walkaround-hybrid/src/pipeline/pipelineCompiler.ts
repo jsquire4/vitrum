@@ -79,6 +79,8 @@ import {
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
+import { buildReservoirGiModule } from '../shaders/reservoirGi.wgsl.js';
+import { reservoirGiStrideU32ForRestirPtReuse } from '../restir/reservoirGiLayout.js';
 import {
   buildPpgUpdateWgsl,
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
@@ -170,6 +172,9 @@ export async function compilePipelines(
   // the GRIS variants and the two-group layout. See spatialGi.wgsl.ts /
   // temporalGi.wgsl.ts headers.
   const grisOn = opts?.restirPtReuse === true;
+  const reservoirGiStrideU32 = reservoirGiStrideU32ForRestirPtReuse(grisOn);
+  const wgslModules = new Map(WGSL_MODULES);
+  wgslModules.set('reservoirGi', buildReservoirGiModule({ grisCache: grisOn }));
   // NRC (Müller et al. 2021) — COMPILE-TIME structural gate, same discipline as
   // GRIS above. When ON the gi-ris pass gains a `@group(4)` NRC group + the
   // inline-MLP-forward variant; when OFF (default) gi-ris is the verbatim
@@ -180,22 +185,22 @@ export async function compilePipelines(
   // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
   // resolves each module's dependency closure exactly once — no hand-rolled
   // `COMMON_WGSL + X_WGSL` concat patterns remain.
-  const risSM      = device.createShaderModule({ label: 'ris',       code: composeWgsl(RIS_MODULE,      WGSL_MODULES) });
-  const temporalSM = device.createShaderModule({ label: 'temporal',  code: composeWgsl(TEMPORAL_MODULE, WGSL_MODULES) });
-  const spatialSM  = device.createShaderModule({ label: 'spatial',   code: composeWgsl(SPATIAL_MODULE,  WGSL_MODULES) });
-  const shadeSM    = device.createShaderModule({ label: 'shade',     code: composeWgsl(SHADE_MODULE,    WGSL_MODULES) });
-  const atrousSM   = device.createShaderModule({ label: 'atrous',    code: composeWgsl(ATROUS_MODULE,   WGSL_MODULES) });
-  const compVertSM = device.createShaderModule({ label: 'comp-vert', code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES) });
-  const compFragSM = device.createShaderModule({ label: 'comp-frag', code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES) });
+  const risSM      = device.createShaderModule({ label: 'ris',       code: composeWgsl(RIS_MODULE,      wgslModules) });
+  const temporalSM = device.createShaderModule({ label: 'temporal',  code: composeWgsl(TEMPORAL_MODULE, wgslModules) });
+  const spatialSM  = device.createShaderModule({ label: 'spatial',   code: composeWgsl(SPATIAL_MODULE,  wgslModules) });
+  const shadeSM    = device.createShaderModule({ label: 'shade',     code: composeWgsl(SHADE_MODULE,    wgslModules) });
+  const atrousSM   = device.createShaderModule({ label: 'atrous',    code: composeWgsl(ATROUS_MODULE,   wgslModules) });
+  const compVertSM = device.createShaderModule({ label: 'comp-vert', code: composeWgsl(COMPOSITE_VERT_MODULE, wgslModules) });
+  const compFragSM = device.createShaderModule({ label: 'comp-frag', code: composeWgsl(COMPOSITE_FRAG_MODULE, wgslModules) });
 
   // Sprint 9 — sample-budget and resolve are standalone compute shaders.
   // sampleBudget.wgsl template-interpolates WELFORD_VARIANCE_WGSL from
   // @vitrum/shared-denoisers into its own source; resolve.wgsl is
   // self-contained. Both modules declare `requires: []`.
-  const sampleBudgetSM  = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE,  WGSL_MODULES) });
-  const resolveSM       = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,        WGSL_MODULES) });
-  const cbPrefillSM     = device.createShaderModule({ label: 'cb-prefill',    code: composeWgsl(CB_PREFILL_MODULE,     WGSL_MODULES) });
-  const motionVectorsSM = device.createShaderModule({ label: 'motion-vectors', code: composeWgsl(MOTION_VECTORS_MODULE, WGSL_MODULES) });
+  const sampleBudgetSM  = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE,  wgslModules) });
+  const resolveSM       = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,        wgslModules) });
+  const cbPrefillSM     = device.createShaderModule({ label: 'cb-prefill',    code: composeWgsl(CB_PREFILL_MODULE,     wgslModules) });
+  const motionVectorsSM = device.createShaderModule({ label: 'motion-vectors', code: composeWgsl(MOTION_VECTORS_MODULE, wgslModules) });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
@@ -311,19 +316,19 @@ export async function compilePipelines(
   });
 
   // Sprint 15 — GTAO shader modules (needed by PIPELINE_SPECS table below).
-  const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, WGSL_MODULES) });
-  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES) });
+  const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, wgslModules) });
+  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: composeWgsl(GTAO_UPSAMPLE_MODULE, wgslModules) });
 
   // Sprint 18 — indirect-combine + indirect-temporal-accum modules.
   const indirectCombineSM = device.createShaderModule({
     label: 'indirectCombine',
-    code: composeWgsl(INDIRECT_COMBINE_MODULE, WGSL_MODULES),
+    code: composeWgsl(INDIRECT_COMBINE_MODULE, wgslModules),
   });
   const indirectTemporalAccumSM = device.createShaderModule({
     label: 'indirectTemporalAccum',
-    code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, WGSL_MODULES),
+    code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, wgslModules),
   });
-  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES) });
+  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, wgslModules) });
 
   /**
    * Always-on compute pipelines (D3.15 extensibility table). Adding an
@@ -377,8 +382,8 @@ export async function compilePipelines(
   const risGiSM = device.createShaderModule({
     label: 'risGi',
     code: nrcOn
-      ? composeWgsl(buildRisGiNrcModule(opts.nrcConfig!), WGSL_MODULES)
-      : composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
+      ? composeWgsl(buildRisGiNrcModule(opts.nrcConfig!), wgslModules)
+      : composeWgsl(RIS_GI_MODULE, wgslModules),
   });
   const risGiLayout = nrcOn
     ? device.createPipelineLayout({
@@ -409,11 +414,11 @@ export async function compilePipelines(
   // pass. The chosen module's bindings MUST match the layout selected above.
   const temporalGiSM = device.createShaderModule({
     label: 'temporalGi',
-    code: composeWgsl(grisOn ? TEMPORAL_GI_GRIS_MODULE : TEMPORAL_GI_MODULE, WGSL_MODULES),
+    code: composeWgsl(grisOn ? TEMPORAL_GI_GRIS_MODULE : TEMPORAL_GI_MODULE, wgslModules),
   });
   const spatialGiSM = device.createShaderModule({
     label: 'spatialGi',
-    code: composeWgsl(grisOn ? SPATIAL_GI_GRIS_MODULE : SPATIAL_GI_MODULE, WGSL_MODULES),
+    code: composeWgsl(grisOn ? SPATIAL_GI_GRIS_MODULE : SPATIAL_GI_MODULE, wgslModules),
   });
   [pipelineDraft['temporalGiPipeline'], pipelineDraft['spatialGiPipeline']] = await Promise.all([
     device.createComputePipelineAsync({
@@ -449,10 +454,10 @@ export async function compilePipelines(
       ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
     const ppgUpdateModule = {
       name: 'ppgUpdate' as const,
-      source: buildPpgUpdateWgsl(ppgMaxDTreeNodesPerCell),
+      source: buildPpgUpdateWgsl(ppgMaxDTreeNodesPerCell, reservoirGiStrideU32),
       requires: ['luminance', 'ppgTreeLayout'] as const,
     };
-    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, WGSL_MODULES) });
+    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, wgslModules) });
     const info = await ppgUpdateSM.getCompilationInfo();
     const errs = info.messages.filter(m => m.type === 'error');
     if (errs.length > 0) {
@@ -475,7 +480,7 @@ export async function compilePipelines(
   if (opts?.regirEnabled) {
     const regirBuildSM = device.createShaderModule({
       label: 'regir-build',
-      code: composeWgsl(REGIR_BUILD_MODULE, WGSL_MODULES),
+      code: composeWgsl(REGIR_BUILD_MODULE, wgslModules),
     });
     const info = await regirBuildSM.getCompilationInfo();
     const errs = info.messages.filter((m) => m.type === 'error');

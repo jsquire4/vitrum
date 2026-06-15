@@ -3,8 +3,10 @@
  *
  * Verifies the RIS_GI_WGSL string contains the expected entry point, bindings,
  * candidate count, and reservoir helpers; the pass layout places `gi-ris`
- * between `spatial-2` and `shade`; and the ReservoirGI byte stride matches
- * the 80-byte / 20 × u32 spec.
+ * between `spatial-2` and `shade`; and the static/common ReservoirGI export
+ * still carries the widened 30-u32 GRIS layout. Runtime compilation selects the
+ * compact 20-u32 default via `compilePipelines`; that gate is covered by
+ * `giStructuralGate.test.ts`.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -81,8 +83,8 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
   });
 });
 
-describe('Sprint 16 — ReservoirGI byte-pack helpers (common.wgsl)', () => {
-  it('declares the 30 × u32 stride constant (GRIS Phase-0 widened 20 → 30)', () => {
+describe('Sprint 16 — ReservoirGI byte-pack helpers (static common.wgsl export)', () => {
+  it('declares the 30 × u32 stride constant on the static GRIS-compatible export', () => {
     // GRIS Phase-0 appended the reconnection-shift cache at indices [20..29],
     // widening the per-pixel reservoir from 20 u32 (80 bytes) to 30 u32
     // (120 bytes). The [0..19] prefix stays byte-identical — see

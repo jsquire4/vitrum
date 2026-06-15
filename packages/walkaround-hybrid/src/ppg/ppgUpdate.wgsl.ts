@@ -49,8 +49,8 @@
 import {
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
   PPG_DEFAULT_SPATIAL_CELLS,
-  RESERVOIR_GI_STRIDE,
 } from './ppgConstants.js';
+import { RESERVOIR_GI_GRIS_STRIDE_U32 } from '../restir/reservoirGiLayout.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 /**
@@ -85,6 +85,7 @@ export { PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL, PPG_DEFAULT_SPATIAL_CELLS };
  */
 export function buildPpgUpdateWgsl(
   maxDTreeNodesPerCell: number = PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+  reservoirGiStrideU32: number = RESERVOIR_GI_GRIS_STRIDE_U32,
 ): string {
   return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
@@ -113,10 +114,12 @@ struct PPGUpdateUBO {
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
 // STREE_HEADER_F32, STREE_NODE_STRIDE). ppgUpdate-specific constant below.
-// H29: MAX_DTREE_NODES_PER_CELL is now single-sourced — pipelineCompiler.ts
-// passes the live allocatePPGResources value to buildPpgUpdateWgsl().
-const MAX_DTREE_NODES_PER_CELL : u32 = ${maxDTreeNodesPerCell}u;
-const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${RESERVOIR_GI_STRIDE}u;
+  // H29: MAX_DTREE_NODES_PER_CELL is now single-sourced — pipelineCompiler.ts
+  // passes the live allocatePPGResources value to buildPpgUpdateWgsl().
+  // H24: RESERVOIR_GI_STRIDE_LOCAL is also single-sourced from the live
+  // restirPtReuse structural gate (20u default, 30u for GRIS/ReSTIR-PT).
+  const MAX_DTREE_NODES_PER_CELL : u32 = ${maxDTreeNodesPerCell}u;
+  const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${reservoirGiStrideU32}u;
 
 // ── Fixed-point encode (1/65536 ULP resolution) ──────────────────────────────
 const FLUX_SCALE: f32 = 65536.0;

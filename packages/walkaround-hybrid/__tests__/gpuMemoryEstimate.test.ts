@@ -34,6 +34,10 @@ import {
   classifyBufferUsage,
   estimateFrameResourcesMemory,
 } from '../src/pipeline/gpuMemoryEstimate.js';
+import {
+  RESERVOIR_GI_BASE_STRIDE_BYTES,
+  RESERVOIR_GI_GRIS_STRIDE_BYTES,
+} from '../src/restir/reservoirGiLayout.js';
 
 // ─── Stub GPU device that records every texture / buffer allocation ─────────
 
@@ -168,6 +172,40 @@ describe('external GPU resource sections', () => {
     expect(withScene.byBufferUsage.storage).toBe((base.byBufferUsage.storage ?? 0) + 256);
     expect(withScene.byTextureFormat.r32uint).toBe((base.byTextureFormat.r32uint ?? 0) + 8 * 2 * 4);
     expect(withScene.total).toBe(base.total + withScene.byCategory.staticScene!);
+  });
+});
+
+describe('H24 ReSTIR-GI reservoir allocation', () => {
+  it('uses compact 20-u32 reservoirs by default and widens only for GRIS/ReSTIR-PT reuse', () => {
+    const device = makeStubDevice();
+    const W = 128;
+    const H = 64;
+    const halfPixels = Math.floor(W / 2) * Math.floor(H / 2);
+
+    const compact = createFrameResources(device, W, H);
+    const gris = createFrameResources(device, W, H, { restirPtReuse: true });
+
+    expect(compact.restirGI.reservoirGiCurrentBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
+    expect(compact.restirGI.reservoirGiPreviousBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
+    expect(compact.restirGI.reservoirGiSpatialBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
+
+    expect(gris.restirGI.reservoirGiCurrentBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
+    expect(gris.restirGI.reservoirGiPreviousBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
+    expect(gris.restirGI.reservoirGiSpatialBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
+  });
+
+  it('reports the exact GRIS memory delta in the restirGI category', () => {
+    const device = makeStubDevice();
+    const W = 128;
+    const H = 64;
+    const halfPixels = Math.floor(W / 2) * Math.floor(H / 2);
+    const expectedDelta = 3 * halfPixels * (RESERVOIR_GI_GRIS_STRIDE_BYTES - RESERVOIR_GI_BASE_STRIDE_BYTES);
+
+    const compact = estimateFrameResourcesMemory(createFrameResources(device, W, H));
+    const gris = estimateFrameResourcesMemory(createFrameResources(device, W, H, { restirPtReuse: true }));
+
+    expect(gris.byCategory.restirGI! - compact.byCategory.restirGI!).toBe(expectedDelta);
+    expect(gris.total - compact.total).toBe(expectedDelta);
   });
 });
 

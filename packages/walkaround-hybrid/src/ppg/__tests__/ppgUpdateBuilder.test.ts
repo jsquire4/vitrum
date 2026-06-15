@@ -45,4 +45,11 @@ describe('buildPpgUpdateWgsl (H29 single-source dTree stride)', () => {
     expect(a).toContain('64u');
     expect(b).toContain('512u');
   });
+
+  it('threads the live ReSTIR-GI reservoir stride into the training kernel', () => {
+    const compact = buildPpgUpdateWgsl(341, 20);
+    const gris = buildPpgUpdateWgsl(341, 30);
+    expect(compact).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*20u/);
+    expect(gris).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*30u/);
+  });
 });

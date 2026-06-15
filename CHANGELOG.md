@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround memory layout, 2026-06-15)
+
+- **`@vitrum/walkaround-hybrid` compact default ReSTIR-GI reservoirs:** the default `restirPtReuse:false` path now allocates and compiles the compact 20-u32 Sprint-16/17 GI reservoir layout instead of paying for the 30-u32 GRIS reconnection cache. Opt-in GRIS/ReSTIR-PT reuse still compiles the widened layout, GI snapshot import/export checks the live stride, and the PPG training kernel bakes the same stride as the active GI reservoir variant.
+
 ### Fixed (pt-webgl2 diagnostics, 2026-06-15)
 
 - **Structured texture/HDRI ingestion warnings:** `@vitrum/pt-webgl2` now routes unreadable material texture handles, unreadable HDRI payloads, and ambiguous texture pixel strides through the public `EngineWarning` channel during `setScene()` and the `updateEnvironment()` fast path, while preserving standalone packer `console.warn` behavior. This closes the old H7 silent-drop diagnostic gap for pt-webgl2 texture/environment ingestion.

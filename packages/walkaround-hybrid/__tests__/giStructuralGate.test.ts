@@ -119,13 +119,21 @@ interface RecordedPipeline {
   bglCount: number;
 }
 
-function recordingDevice(recorded: RecordedPipeline[]): GPUDevice {
+interface RecordedShader {
+  label: string;
+  code: string;
+}
+
+function recordingDevice(recorded: RecordedPipeline[], shaders: RecordedShader[] = []): GPUDevice {
   const makeShaderModule = () => ({
     // No compile errors / warnings — exercises the real success path.
     getCompilationInfo: async () => ({ messages: [] as GPUCompilationMessage[] }),
   });
   const dev: Record<string, unknown> = {
-    createShaderModule: () => makeShaderModule(),
+    createShaderModule: (desc: { label?: string; code: string }) => {
+      shaders.push({ label: desc.label ?? '<unlabeled>', code: desc.code });
+      return makeShaderModule();
+    },
     createBindGroupLayout: () => ({}),
     createPipelineLayout: (desc: { bindGroupLayouts: unknown[] }) =>
       ({ __bglCount: desc.bindGroupLayouts.length }),
@@ -155,6 +163,18 @@ async function compileAndFind(restirPtReuse: boolean): Promise<Record<string, nu
   return byLabel;
 }
 
+async function compileAndRecordShaders(
+  restirPtReuse: boolean,
+  opts: { ppgEnabled?: boolean } = {},
+): Promise<RecordedShader[]> {
+  const recorded: RecordedPipeline[] = [];
+  const shaders: RecordedShader[] = [];
+  const device = recordingDevice(recorded, shaders);
+  const bglCache: BGLCache = {} as BGLCache;
+  await compilePipelines(device, bglCache, 'bgra8unorm', { restirPtReuse, ...opts });
+  return shaders;
+}
+
 describe('GI pass PIPELINE LAYOUT — group count gated at compile time', () => {
   it('default (restirPtReuse OFF): temporalGi + spatialGi use a SINGLE-group layout', async () => {
     const byLabel = await compileAndFind(false);
@@ -166,5 +186,32 @@ describe('GI pass PIPELINE LAYOUT — group count gated at compile time', () => 
     const byLabel = await compileAndFind(true);
     expect(byLabel.temporalGi, 'GRIS temporalGi pipeline must have 2 bind-group layouts').toBe(2);
     expect(byLabel.spatialGi, 'GRIS spatialGi pipeline must have 2 bind-group layouts').toBe(2);
+  });
+});
+
+describe('H24 GI reservoir stride — shader source follows the structural gate', () => {
+  it('default compile path uses the compact 20-u32 reservoir module', async () => {
+    const shaders = await compileAndRecordShaders(false);
+    const risGi = shaders.find((s) => s.label === 'risGi')!.code;
+    expect(risGi).toContain('const RESERVOIR_GI_STRIDE: u32 = 20u;');
+    expect(risGi).toContain('Compact default layout: no appended GRIS cache stores.');
+    expect(risGi).not.toContain('buf[b + 29u] = r._padPT2;');
+  });
+
+  it('GRIS compile path uses the widened 30-u32 reservoir module', async () => {
+    const shaders = await compileAndRecordShaders(true);
+    const risGi = shaders.find((s) => s.label === 'risGi')!.code;
+    expect(risGi).toContain('const RESERVOIR_GI_STRIDE: u32 = 30u;');
+    expect(risGi).toContain('buf[b + 29u] = r._padPT2;');
+  });
+
+  it('PPG update bakes the same reservoir stride as the GI reservoir module', async () => {
+    const offShaders = await compileAndRecordShaders(false, { ppgEnabled: true });
+    const onShaders = await compileAndRecordShaders(true, { ppgEnabled: true });
+
+    const offPpg = offShaders.find((s) => s.label === 'ppg-update')!.code;
+    const onPpg = onShaders.find((s) => s.label === 'ppg-update')!.code;
+    expect(offPpg).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*20u/);
+    expect(onPpg).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*30u/);
   });
 });

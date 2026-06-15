@@ -28,18 +28,19 @@ function makeSnapshot(): GIStateSnapshot {
   };
 }
 
-const RESTIR_GI_STRIDE = 30; // RESERVOIR_GI_STRIDE (u32 per reservoir pixel)
+const RESTIR_GI_GRIS_STRIDE = 30; // GRIS/ReSTIR-PT reservoir stride (u32 per reservoir pixel)
+const RESTIR_GI_COMPACT_STRIDE = 20; // default Sprint-16/17 reservoir stride
 
-function makeRestirSection(): RestirGISnapshot {
+function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot {
   const halfW = 5, halfH = 7;
-  const bufU32Len = halfW * halfH * RESTIR_GI_STRIDE;
+  const bufU32Len = halfW * halfH * strideU32;
   const mk = (salt: number): Uint32Array => {
     const a = new Uint32Array(bufU32Len);
     for (let i = 0; i < a.length; i++) a[i] = (i * 2654435761 + salt) >>> 0; // Knuth-ish fill
     return a;
   };
   return {
-    halfW, halfH, strideU32: RESTIR_GI_STRIDE,
+    halfW, halfH, strideU32,
     current: mk(1), previous: mk(2), spatial: mk(3),
   };
 }
@@ -111,6 +112,18 @@ describe('GI state snapshot serialization', () => {
     expect(back.restirGI).toBeDefined();
     const r = back.restirGI!;
     expect([r.halfW, r.halfH, r.strideU32]).toEqual([s.restirGI.halfW, s.restirGI.halfH, s.restirGI.strideU32]);
+    expect(Array.from(r.current)).toEqual(Array.from(s.restirGI.current));
+    expect(Array.from(r.previous)).toEqual(Array.from(s.restirGI.previous));
+    expect(Array.from(r.spatial)).toEqual(Array.from(s.restirGI.spatial));
+  });
+
+  it('round-trips the compact default ReSTIR-GI reservoir stride losslessly', () => {
+    const s = { ...makeSnapshot(), restirGI: makeRestirSection(RESTIR_GI_COMPACT_STRIDE) };
+    const back = deserializeGIState(serializeGIState(s));
+    expect(back.restirGI).toBeDefined();
+    const r = back.restirGI!;
+    expect(r.strideU32).toBe(RESTIR_GI_COMPACT_STRIDE);
+    expect(r.current.length).toBe(s.restirGI.halfW * s.restirGI.halfH * RESTIR_GI_COMPACT_STRIDE);
     expect(Array.from(r.current)).toEqual(Array.from(s.restirGI.current));
     expect(Array.from(r.previous)).toEqual(Array.from(s.restirGI.previous));
     expect(Array.from(r.spatial)).toEqual(Array.from(s.restirGI.spatial));

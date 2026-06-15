@@ -3,23 +3,27 @@
  */
 
 import type { RestirGIFrameResources } from '../resourceManager.js';
-import { RESERVOIR_GI_STRIDE } from '../../ppg/ppgConstants.js';
+import { reservoirGiStrideBytesForRestirPtReuse } from '../../restir/reservoirGiLayout.js';
 
-// GRIS Phase-0: widened ReservoirGI → ReservoirPT (30 × u32 = 120 bytes).
-// The [0..19] / 80-byte prefix is byte-identical to the Sprint-16/17 layout;
-// indices [20..29] cache the reconnection-shift data read by the GRIS reuse
-// variants of the temporal/spatial GI passes (Lin 2022). RESERVOIR_GI_STRIDE is the single TS source of truth;
-// the WGSL-side const in reservoirGi.wgsl.ts must stay in lockstep with it.
-const RESERVOIR_GI_STRIDE_BYTES = RESERVOIR_GI_STRIDE * 4; // 4 bytes per u32
+export interface RestirGIFrameResourceOptions {
+  /**
+	 * GRIS / ReSTIR-PT reconnection-shift reuse widens each half-res reservoir
+	 * from the base 20-u32 Sprint-16/17 layout to the 30-u32 ReservoirPT layout.
+	 * The appended cache fields are read by the GRIS reuse variants; the default
+	 * path stays compact because those variants are not compiled.
+	 */
+  readonly restirPtReuse?: boolean;
+}
 
 export function createRestirGIFrameResources(
   device: GPUDevice,
   width: number,
   height: number,
+  options?: RestirGIFrameResourceOptions,
 ): RestirGIFrameResources {
   const halfW = Math.max(1, Math.floor(width / 2));
   const halfH = Math.max(1, Math.floor(height / 2));
-  const reservoirGiSize = halfW * halfH * RESERVOIR_GI_STRIDE_BYTES;
+  const reservoirGiSize = halfW * halfH * reservoirGiStrideBytesForRestirPtReuse(options?.restirPtReuse === true);
   const size = Math.max(256, reservoirGiSize);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 

@@ -78,8 +78,20 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import {
+  RESERVOIR_GI_BASE_STRIDE_U32,
+  RESERVOIR_GI_GRIS_STRIDE_U32,
+} from '../restir/reservoirGiLayout.js';
 
-export const RESERVOIR_GI_WGSL = /* wgsl */ `// ============================================================
+export interface ReservoirGiWgslOptions {
+  /** Include the appended GRIS reconnection-shift cache fields on the GPU buffer layout. */
+  readonly grisCache?: boolean;
+}
+
+export function buildReservoirGiWgsl(options?: ReservoirGiWgslOptions): string {
+  const grisCache = options?.grisCache !== false;
+  const strideU32 = grisCache ? RESERVOIR_GI_GRIS_STRIDE_U32 : RESERVOIR_GI_BASE_STRIDE_U32;
+  return /* wgsl */ `// ============================================================
 // PrimarySurface — derived from re-casting the primary ray through the BVH.
 // Replaces the pre-fix placeholder G-buffer reads that returned constant
 // values for all pixels. Shared by temporal and spatial passes; shade.wgsl
@@ -98,12 +110,12 @@ struct PrimarySurface {
 };
 
 // ============================================================
-// ReSTIR-GI / GRIS reservoir (ReservoirPT, 120 bytes, co-located at pixel
-// offset after DI). The Sprint-16/17 fields occupy u32 [0..19] (UNCHANGED —
-// byte-identical to the old ReservoirGI). GRIS Phase-0 fields are appended at
-// u32 [20..29]; see the file header for the Lin 2022 shift-Jacobian role of
-// each. ReservoirGI is kept as a type alias so the existing pass call sites
-// (risGi/temporalGi/spatialGi/shade) compile unchanged.
+// ReSTIR-GI / GRIS reservoir. The Sprint-16/17 fields occupy u32 [0..19]
+// (UNCHANGED — byte-identical to the old ReservoirGI). GRIS fields are appended
+// at u32 [20..29] only in the widened restirPtReuse variant; the default
+// generated shader stores the compact 20-u32 prefix and zeroes appended struct
+// fields on load. ReservoirGI is kept as a type alias so the existing pass call
+// sites (risGi/temporalGi/spatialGi/shade) compile unchanged.
 // ============================================================
 struct ReservoirPT {
   // ── Sprint-16/17 reconnection sample (u32 [0..19], byte-identical) ──
@@ -152,7 +164,7 @@ fn emptyReservoirGI() -> ReservoirPT {
   return r;
 }
 
-// Sprint 16 / GRIS-Phase-0 — ReservoirPT byte layout (120 bytes = 30 × u32):
+// Sprint 16 / GRIS — ReservoirPT byte layout:
 //   [0..2]   xv.xyz       [3]    _pad0
 //   [4..6]   nv.xyz       [7]    W
 //   [8..10]  xs.xyz       [11]   w_sum
@@ -163,10 +175,11 @@ fn emptyReservoirGI() -> ReservoirPT {
 //   [24]     distRecon    [25]   cosReconOut
 //   [26]     prefixVertexCount
 //   [27..29] _padPT0..2
-// Strided storage in array<u32> (4-byte elements) — stride = 30 u32.
+// Strided storage in array<u32> (4-byte elements): default stride = 20 u32,
+// GRIS/restirPtReuse stride = 30 u32.
 // NOTE: indices [0..19] are byte-identical to the pre-GRIS ReservoirGI layout,
 // so all existing temporal/spatial/shade reads are provably unaffected.
-const RESERVOIR_GI_STRIDE: u32 = 30u;
+const RESERVOIR_GI_STRIDE: u32 = ${strideU32}u;
 
 fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirPT {
   let b = pixelIdx * RESERVOIR_GI_STRIDE;
@@ -181,7 +194,7 @@ fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) 
   r.M       = buf[b + 15u];
   r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
   r.lightId = buf[b + 19u];
-  // GRIS Phase-0 cache.
+  ${grisCache ? /* wgsl */ `// GRIS Phase-0 cache.
   r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
   r.pdfReconBsdf      = bitcast<f32>(buf[b + 23u]);
   r.distRecon         = bitcast<f32>(buf[b + 24u]);
@@ -189,7 +202,13 @@ fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) 
   r.prefixVertexCount = buf[b + 26u];
   r._padPT0           = buf[b + 27u];
   r._padPT1           = buf[b + 28u];
-  r._padPT2           = buf[b + 29u];
+  r._padPT2           = buf[b + 29u];` : /* wgsl */ `// Compact default layout: appended GRIS cache is not stored on GPU.
+  r.wi_recon = vec3f(0.0);
+  r.pdfReconBsdf = 0.0;
+  r.distRecon = 0.0;
+  r.cosReconOut = 0.0;
+  r.prefixVertexCount = 0u;
+  r._padPT0 = 0u; r._padPT1 = 0u; r._padPT2 = 0u;`}
   return r;
 }
 
@@ -206,7 +225,7 @@ fn loadReservoirGI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> Res
   r.M       = buf[b + 15u];
   r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
   r.lightId = buf[b + 19u];
-  // GRIS Phase-0 cache.
+  ${grisCache ? /* wgsl */ `// GRIS Phase-0 cache.
   r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
   r.pdfReconBsdf      = bitcast<f32>(buf[b + 23u]);
   r.distRecon         = bitcast<f32>(buf[b + 24u]);
@@ -214,7 +233,13 @@ fn loadReservoirGI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> Res
   r.prefixVertexCount = buf[b + 26u];
   r._padPT0           = buf[b + 27u];
   r._padPT1           = buf[b + 28u];
-  r._padPT2           = buf[b + 29u];
+  r._padPT2           = buf[b + 29u];` : /* wgsl */ `// Compact default layout: appended GRIS cache is not stored on GPU.
+  r.wi_recon = vec3f(0.0);
+  r.pdfReconBsdf = 0.0;
+  r.distRecon = 0.0;
+  r.cosReconOut = 0.0;
+  r.prefixVertexCount = 0u;
+  r._padPT0 = 0u; r._padPT1 = 0u; r._padPT2 = 0u;`}
   return r;
 }
 
@@ -240,7 +265,7 @@ fn storeReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32,
   buf[b + 17u] = bitcast<u32>(r.Lo.y);
   buf[b + 18u] = bitcast<u32>(r.Lo.z);
   buf[b + 19u] = r.lightId;
-  // GRIS Phase-0 cache (written-but-unread in Phase 0).
+  ${grisCache ? /* wgsl */ `// GRIS Phase-0 cache (written by gi-ris; read by GRIS temporal/spatial reuse).
   buf[b + 20u] = bitcast<u32>(r.wi_recon.x);
   buf[b + 21u] = bitcast<u32>(r.wi_recon.y);
   buf[b + 22u] = bitcast<u32>(r.wi_recon.z);
@@ -250,7 +275,7 @@ fn storeReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32,
   buf[b + 26u] = r.prefixVertexCount;
   buf[b + 27u] = r._padPT0;
   buf[b + 28u] = r._padPT1;
-  buf[b + 29u] = r._padPT2;
+  buf[b + 29u] = r._padPT2;` : /* wgsl */ `// Compact default layout: no appended GRIS cache stores.`}
 }
 
 fn updateReservoirGI(
@@ -334,8 +359,19 @@ fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32, gris: bool) {
 }
 
 `;
+}
+
+export const RESERVOIR_GI_WGSL = buildReservoirGiWgsl({ grisCache: true });
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */
+export function buildReservoirGiModule(options?: ReservoirGiWgslOptions): WgslModule {
+  return {
+    name: "reservoirGi",
+    source: buildReservoirGiWgsl(options),
+    requires: [],
+  };
+}
+
 export const RESERVOIR_GI_MODULE: WgslModule = {
   name: "reservoirGi",
   source: RESERVOIR_GI_WGSL,

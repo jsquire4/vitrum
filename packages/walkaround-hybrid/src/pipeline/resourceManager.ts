@@ -157,14 +157,15 @@ export interface RestirDIFrameResources {
 export interface RestirGIFrameResources {
   /**
    * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
-   * Layout: RESERVOIR_GI_STRIDE = 30 u32 (120 bytes) per pixel.
+   * Layout: 20 u32 (80 bytes) per pixel by default; 30 u32 (120 bytes) when
+   * `restirPtReuse` enables the GRIS/ReSTIR-PT reconnection-shift cache.
    *   [0..19] = Sprint-16/17 reconnection sample (byte-identical to the
    *             original 80-byte layout); [20..29] = GRIS reconnection-shift
    *             cache (Lin 2022) — READ by the GRIS reuse variants of the
    *             temporal/spatial GI passes (e.g. temporalGi.wgsl.ts:317 reads
    *             cosReconOut/distRecon); active when built with restirPtReuse
    *             (off by default). See shaders/reservoirGi.wgsl.ts.
-   * Size: (W/2) × (H/2) × 120 bytes. At 2688×1344 → ~87 MB.
+   * Size: (W/2) × (H/2) × stride bytes.
    * Written by `risGiMain`; read by temporal/spatial passes and shade.
    */
   reservoirGiCurrentBuffer: GPUBuffer;
@@ -456,6 +457,8 @@ export interface FrameResourceOptions {
    *  because shade writes it through the shared frame bind group. Defaults to
    *  `true` so callers that omit it keep the legacy full-allocation behavior. */
   readonly svgfEnabled?: boolean;
+  /** Allocate the widened 30-u32 GRIS/ReSTIR-PT GI reservoir layout. */
+  readonly restirPtReuse?: boolean;
 }
 
 /**
@@ -476,7 +479,9 @@ export function createFrameResources(
 ): FrameResources {
   const common = createCommonFrameResources(device, W, H);
   const restirDI = createRestirDIFrameResources(device, W, H);
-  const restirGI = createRestirGIFrameResources(device, W, H);
+  const restirGI = createRestirGIFrameResources(device, W, H, {
+    restirPtReuse: options?.restirPtReuse === true,
+  });
   const gtao = createGtaoFrameResources(device, W, H, options?.gtaoDownscale ?? 2);
   const ddgi = createDdgiFrameResources(device);
   const svgf = createSvgfFrameResources(device, W, H, options?.svgfEnabled ?? true);
