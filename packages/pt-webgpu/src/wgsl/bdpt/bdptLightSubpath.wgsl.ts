@@ -431,32 +431,16 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       scatterDir = hemi.wi;
       pdfScatter = hemi.pdf;
       cosPrev = max(dot(prevNormal, scatterDir), 0.0);
-      // DERIVATION (Item-3 fix, 2026-06-10):
+      // PTWG-BDPT-01 (2026-06-15): finite area emitters are sampled by AREA at
+      // bounce 0, and this extension samples the outgoing direction in SOLID ANGLE.
+      // The rendering-equation estimator therefore needs the usual cos/pdfΩ = π
+      // factor after the first surface hit:
+      //   Le * A/pPick * cos / (cos/π) = Le * A * π / pPick.
       //
-      // The throughput update at line ~456 is:
-      //   newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd
-      //
-      // For a LAMBERTIAN AREA EMITTER the BSDF is f = 1/π (albedo 1 emission
-      // profile).  The cosine hemisphere samples pdf = cos θ / π.  So:
-      //   fPrev * cosPrev / pdfFwd = (1/π) * cos / (cos/π) = 1.0  ✓
-      //
-      // Setting fPrev = INV_PI (the literal BSDF value) makes the general formula
-      // produce the correct result without special-casing the cos/pdf ratio.
-      //
-      // PRIOR BUG: fPrev = vec3f(1.0) caused:
-      //   1.0 * cos / (cos/π) = π — a spurious ×π on every emitter-extension bounce.
-      //
-      // For the ISOTROPIC POINT EMITTER branch (bdptFinishBounce0Isotropic): the
-      // emitter has no surface; prevNormal stores the sampled emission direction.
-      // The extension scatters from that "normal" via cosine hemisphere.  The
-      // point emitter has no BSDF in the traditional sense — the throughput ratio
-      // should still be 1.0 (no extra weighting for an emission-direction scatter).
-      // Using fPrev = INV_PI and pdfScatter = cos/π gives fPrev*cos/pdf = 1.0 ✓,
-      // exactly as for the area emitter.
-      //
-      // pdfFwd = pdfScatter = cos θ / π is kept as-is (the true SA density for the
-      // sampled direction, needed for correct MIS weights in bdptMISWeightFull).
-      fPrev = vec3f(INV_PI);
+      // Legacy pseudo-emitters (directional/spot/env/point sentinels) already bake
+      // their direction-density normalization at bounce 0, so keep their old
+      // INV_PI branch to avoid double-applying π there.
+      fPrev = select(vec3f(INV_PI), vec3f(1.0), prevMatId == BDPT_LV_AREA_EMITTER_MATID);
     } else {
       // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
       // the direction that brought the path to prevPos from its predecessor).

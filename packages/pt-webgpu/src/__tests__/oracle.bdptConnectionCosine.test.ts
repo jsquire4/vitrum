@@ -36,35 +36,19 @@
  *   bdptConnection.wgsl.ts:407, so it cancels in the ratio.)
  *
  * SHADER TRANSCRIPTION (s=1, single rect light, no occlusion):
- *   Light vertex throughput (bdptLightSubpath.wgsl.ts:141-159 bdptFinishBounce0):
- *     pdfHemi    = cosEmit/π                       (cosineHemisphereSample)
- *     pdfJoint   = max(discretePdf · pdfHemi, 1e-8)  [L152]
- *     β_L0       = Le · cosEmit / pdfJoint = π · Le / discretePdf  [L153]
- *     NOTE: the emitter POSITION pdf (1/A for the uniform rect sample drawn at
- *     bdptWriteBounce0, bdptLightSubpath.wgsl.ts:266) is NEVER divided out —
- *     pdfLight passed to bdptFinishBounce0 is the discrete pick pmf only
- *     (bdptLightSubpath.wgsl.ts:269: `bdptFinishBounce0(col, emitPos,
- *     emitNormal, rr, discretePdf, rng)`). Veach's β_L0 = Le / (pdfA·pdfPick)
- *     = Le·A/pdfPick. The shader instead carries π·Le/pdfPick.
+ *   Finite area light vertex throughput:
+ *     β_L0 = Le / (pdfPick · pdfArea) = Le · A / pdfPick
  *   Connection (bdptConnection.wgsl.ts evaluateBdptConnection):
- *     gTerm            = cosX·cosY/d²                       [L99-109]
- *     eyeBsdfCosTheta  = evaluateBrdf(...) · cosEye          [L318-323]
- *     lightBsdfCosTheta= cosLight/π   (emitter, lvMatId < 0) [L324, L335]
- *     contribution     = β_L0 · lightBsdfCosTheta · gTerm ·
- *                        eyeBsdfCosTheta · misW · eyeThroughput  [L406-407]
+ *     gTerm           = cosX·cosY/d²
+ *     eye factor      = evaluateBrdfFull(...), with gTerm owning cosEye
+ *     area endpoint   = 1, with β_L0 + gTerm owning area and cosLight
+ *     contribution    = β_L · endpoint/BSDF factors · gTerm · β_E
  *
- * PREDICTED BIAS LAW (algebra, then verified numerically below):
- *   C_shader(x) / C_correct(x)
- *     = [πLe · (cosL/π) · (cosE·cosL/d²) · f_e·cosE] / [A·Le·f_e·cosE·cosL/d²]
- *     = cosE · cosL / A
- *   i.e. ONE extra receiver cosine, ONE extra emitter cosine (cos² per
- *   connection-edge endpoint: once inside gTerm, once in each side's
- *   bsdfCosTheta term), and a missing emitter-area factor A (the uniform
- *   position pdf 1/A is never divided out of β_L0).
- *
- * VERDICT ENCODING: the confirmed bias is PINNED as a characterization test
- * (so any change to the connection math flips it loudly), and the correct
- * value lives in a sibling `it.skip` that the eventual fix should un-skip.
+ * Additional one-bounce tests below audit the light-subpath extension that turns
+ * L0 into L1. That case samples the finite area emitter position in area measure
+ * and the outgoing direction in solid angle, so the correct post-hit throughput
+ * is β_L1 = Le · A · π / pdfPick. This catches the missing-π error that a direct
+ * emitter-endpoint oracle cannot see.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -286,6 +270,81 @@ function correctConnectionContribution(lightPos: V3): V3 {
   return scale(mulv(Le, f), (rectArea * cosE * cosL) / dist2);
 }
 
+// ─────────── independent one-bounce light-tracing oracle ─────────────────────
+// Fixed path: finite area emitter L0 -> diffuse/glossy light vertex L1 -> eye E.
+// L0 position is sampled uniformly over area A; the actual traced segment L0->L1
+// is sampled from a cosine hemisphere in solid angle. For a given hit at L1:
+//   path integrand prefix = Le · G(L0,L1)
+//   sample density        = (1/A) · (cosL0/π) · cosL1/d01²
+//   quotient              = Le · A · π
+// The quotient is independent of L0/L1 geometry because G cancels the
+// direction-to-area Jacobian. The connection to E then contributes the ordinary
+// light-vertex BSDF, eye BSDF, and G(L1,E).
+const l1Pos: V3 = [0, 0, 0];
+const l1Normal: V3 = [0, 1, 0];
+const eye2Pos: V3 = [0, 1, 1];
+const eye2Normal: V3 = [0, -1, 0];
+const diffuseL1Albedo: V3 = [0.7, 0.6, 0.5];
+const diffuseEyeAlbedo: V3 = [0.4, 0.5, 0.8];
+
+function lambert(albedo: V3): V3 {
+  return scale(albedo, INV_PI);
+}
+
+function geometryTerm(posX: V3, nX: V3, posY: V3, nY: V3): number {
+  const d = sub(posY, posX);
+  const dist2 = dot(d, d);
+  const w = scale(d, 1 / Math.sqrt(dist2));
+  return (Math.abs(dot(nX, w)) * Math.abs(dot(nY, scale(w, -1)))) / dist2;
+}
+
+function correctFiniteAreaThroughputAfterFirstHit(): V3 {
+  return scale(Le, rectArea * PI);
+}
+
+function shaderFiniteAreaThroughputAfterFirstHit(emitterF: number): V3 {
+  const cosL0 = 1;
+  const pdfOmega = cosL0 * INV_PI;
+  return scale(shaderLightVertexThroughput(cosL0), (emitterF * cosL0) / pdfOmega);
+}
+
+function correctOneBounceDiffuseContribution(): V3 {
+  const lightBsdf = lambert(diffuseL1Albedo);
+  const eyeBsdf = lambert(diffuseEyeAlbedo);
+  return mulv(
+    mulv(correctFiniteAreaThroughputAfterFirstHit(), lightBsdf),
+    scale(eyeBsdf, geometryTerm(l1Pos, l1Normal, eye2Pos, eye2Normal)),
+  );
+}
+
+function shaderOneBounceDiffuseContribution(emitterF: number): V3 {
+  const lightThroughput = shaderFiniteAreaThroughputAfterFirstHit(emitterF);
+  return mulv(
+    mulv(lightThroughput, lambert(diffuseL1Albedo)),
+    scale(lambert(diffuseEyeAlbedo), geometryTerm(l1Pos, l1Normal, eye2Pos, eye2Normal)),
+  );
+}
+
+function shaderGlossySurfaceVertexConnection(lightBsdf: V3): V3 {
+  const lightThroughput: V3 = [2.25, 1.5, 0.75];
+  const eyeBsdf: V3 = [0.18, 0.24, 0.3];
+  return mulv(
+    mulv(lightThroughput, lightBsdf),
+    scale(eyeBsdf, geometryTerm(l1Pos, l1Normal, eye2Pos, eye2Normal)),
+  );
+}
+
+function correctGlossySurfaceVertexConnection(lightBsdf: V3): V3 {
+  const lightThroughput: V3 = [2.25, 1.5, 0.75];
+  const eyeBsdf: V3 = [0.18, 0.24, 0.3];
+  const g = geometryTerm(l1Pos, l1Normal, eye2Pos, eye2Normal);
+  return [
+    lightThroughput[0] * lightBsdf[0] * eyeBsdf[0] * g,
+    lightThroughput[1] * lightBsdf[1] * eyeBsdf[1] * g,
+    lightThroughput[2] * lightBsdf[2] * eyeBsdf[2] * g,
+  ];
+}
+
 describe('PTWG-BDPT-01 oracle — BDPT connection cosine/area audit', () => {
   it('transcription sanity: finite-area β_L0 = Le·A for every hemisphere draw', () => {
     for (const cosEmit of [0.05, 0.3, 0.7, 0.99]) {
@@ -326,5 +385,28 @@ describe('PTWG-BDPT-01 oracle — BDPT connection cosine/area audit', () => {
     }
     const ratio = sumShaderLum / sumCorrectLum;
     expect(sumShaderLum / sumCorrectLum).toBeCloseTo(1, 2);
+  });
+
+  it('one-bounce diffuse oracle: finite-area emitter extension carries the π solid-angle factor', () => {
+    const fixed = shaderOneBounceDiffuseContribution(1.0);
+    const correct = correctOneBounceDiffuseContribution();
+    const oldMissingPi = shaderOneBounceDiffuseContribution(INV_PI);
+    for (const ch of [0, 1, 2] as const) {
+      expect(Math.abs(fixed[ch] - correct[ch])).toBeLessThan(1e-12 * Math.max(1, Math.abs(correct[ch])));
+      expect(oldMissingPi[ch] / correct[ch]).toBeCloseTo(INV_PI, 12);
+    }
+  });
+
+  it('glossy light-vertex oracle: surface L_c contributes its BSDF value, not a Lambertian endpoint factor', () => {
+    const glossyBrdf: V3 = [0.9, 0.35, 0.12];
+    const connected = shaderGlossySurfaceVertexConnection(glossyBrdf);
+    const correct = correctGlossySurfaceVertexConnection(glossyBrdf);
+    const legacyLambertEndpoint = shaderGlossySurfaceVertexConnection([INV_PI, INV_PI, INV_PI]);
+    for (const ch of [0, 1, 2] as const) {
+      expect(Math.abs(connected[ch] - correct[ch])).toBeLessThan(1e-12 * Math.max(1, Math.abs(correct[ch])));
+    }
+    expect(legacyLambertEndpoint[0]).not.toBeCloseTo(correct[0], 6);
+    expect(legacyLambertEndpoint[1]).not.toBeCloseTo(correct[1], 6);
+    expect(legacyLambertEndpoint[2]).not.toBeCloseTo(correct[2], 6);
   });
 });

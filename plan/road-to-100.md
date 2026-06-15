@@ -787,7 +787,7 @@ For each fixture in `tools/reference-assets/gltf/`:
 
 | Oracle | File | Regression guard |
 |--------|------|------------------|
-| PTWG-BDPT-01 | `oracle.bdptConnectionCosine.test.ts` | BDPT glTF area lights |
+| ~~PTWG-BDPT-01~~ ✅ code/proof closed | `oracle.bdptConnectionCosine.test.ts`; `bdptGlossyLightSubpath.test.ts` | Finite-area endpoint, one-bounce diffuse light tracing, and non-Lambertian light-vertex connection |
 | HYB-GI-01/02 | `oracle.restirDiEstimator.test.ts` | Env + area DI |
 | HYB-DDGI-01 | `oracle.ddgiVisibilityMoments.test.ts` | Probe visibility |
 | PTWG-LITE-01 | `oracle.liteRectMis.test.ts` | Lite policy |

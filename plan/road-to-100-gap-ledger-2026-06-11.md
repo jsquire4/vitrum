@@ -1019,20 +1019,33 @@ Closure:
   procedural skies; `mutationMatrix.test.ts` pins runtime update/upload/DDGI
   routing.
 
-### PTWG-BDPT-01 - BDPT needs an independent radiometric oracle
+### PTWG-BDPT-01 - BDPT needs an independent radiometric oracle - CLOSED 2026-06-15
 
 Evidence:
-- pt-webgpu BDPT implements geometry terms and MIS, so the stale claim "no
-  cosine/PDF weighting" is rejected.
-- Current CPU oracle mirrors the same assembly as shader code, so it can miss a
-  shared radiometric bias.
-- Source inspection still shows enough cosine/pdf complexity that an independent
-  oracle is required before promotion.
+- `packages/pt-webgpu/src/__tests__/oracle.bdptConnectionCosine.test.ts`
+  now has independent rendering-equation oracles for all requested cases:
+  finite-area emitter endpoint, one-bounce diffuse light tracing, and a
+  non-Lambertian/glossy light-vertex connection. The one-bounce oracle derives
+  `Le * area * pi / pdfPick` from the area-position + solid-angle-direction
+  sampling density rather than mirroring WGSL assembly.
+- That oracle exposed a real finite-area extension bias: the previous
+  `prevMatId < 0` emitter branch used `INV_PI`, leaving one-bounce finite-area
+  light subpaths at exactly `1/pi` of the first-principles estimator.
+- `packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts` now splits the
+  emitter sentinel branch: finite-area emitters (`BDPT_LV_AREA_EMITTER_MATID`)
+  use `fPrev = 1.0`, preserving the required `cos/pdfOmega = pi` factor, while
+  legacy pseudo emitters keep the old `INV_PI` normalization.
+- `packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts` now pins
+  the sentinel split alongside the existing real-BSDF light-vertex connection
+  assertions.
 
 Closure:
-- Add independent radiometric scene oracles for emitter endpoint, one-bounce
-  diffuse, and glossy light-vertex cases.
-- Correct contribution/pdf assembly only if the oracle proves bias.
+- Focused gate: `npm test --workspace @vitrum/pt-webgpu --
+  oracle.bdptConnectionCosine.test.ts bdptGlossyLightSubpath.test.ts
+  bdptLightSubpathOracle.test.ts bdptConnectionMisFull.test.ts` passed
+  (24 tests).
+- Remaining BDPT promotion evidence, such as equal-spp reference A/B scenes, is
+  tracked by the broader fidelity rows and does not reopen this oracle gap.
 
 ### PTWG-MAT-01 - Extension lobes are missing from some pt-webgpu paths
 

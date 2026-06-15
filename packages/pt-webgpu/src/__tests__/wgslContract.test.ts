@@ -194,10 +194,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // sign-encoded angularDiameter; point/spot/rect/mesh lanes) + connect.wgsl
     // BSDF-MIS parity gates. Default (flag-less) scenes are behaviorally
     // identical: every gate reads a lane that packs 0.0 by default.
-    // Re-pinned 2026-06-11 (PTWG-BDPT-01): finite area BDPT emitter vertices
-    // store Le/(pdfPick*pdfArea), use a distinct area-emitter sentinel, and
-    // the connection no longer double-multiplies endpoint cosines. RENDER-
-    // CHANGING for bdpt:true area-light scenes; CPU oracle pins the mean.
+    // Re-pinned 2026-06-15 (PTWG-BDPT-01): finite area BDPT emitter vertices
+    // store Le/(pdfPick*pdfArea), use a distinct area-emitter sentinel, the
+    // first traced finite-area extension keeps the required cos/pdfΩ = π
+    // factor, and the connection no longer double-multiplies endpoint cosines.
+    // RENDER-CHANGING for bdpt:true area-light scenes; CPU oracles pin endpoint
+    // and one-bounce radiometry plus the glossy light-vertex connection.
     // Re-pinned 2026-06-11 (PTWG-MAT-01 partial): full-tier BSDF-side
     // area-light/environment connections now pass decoded extension lobe
     // scalars into connect.wgsl and use evaluateBrdfFull/brdfDirectionalPdfFull.
@@ -243,8 +245,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // hard-coding level 0 in the compute shader.
     // Re-pinned 2026-06-14: full-tier COLOR_0 vertex colors now bind at group(3)
     // binding 11 and multiply baseColor / alpha in material paths.
-    expect(digest).toBe('11cd9a40330e7195dfa5d74fad41e26b9228be4da85368e3cd5b0341cdc596df');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(357898);
+    // Re-pinned 2026-06-15: finite-area BDPT light-subpath extension now keeps
+    // the required cos/pdfΩ = π factor while legacy pseudo emitters keep INV_PI.
+    expect(digest).toBe('dd70bc1f3dfbfb484696b6c20f53bbc54caca20594261ce5099c5246748db47c');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(357108);
   });
 });
 

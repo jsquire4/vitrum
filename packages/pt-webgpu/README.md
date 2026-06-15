@@ -118,7 +118,7 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 
 **Denoisers on pt-webgpu:** `'none'`, `'oidn-final'`. Any other mode (incl. `'svgf-real'`) warns and degrades to no-denoise — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
-**BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–3, optional `engine.bdptAdvanceFrame(view)`; a GPU `bdptExtendLightSubpath` @compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel (CPU fill retained only as a test oracle).
+**BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–8, optional `engine.bdptAdvanceFrame(view)`; a GPU `bdptExtendLightSubpath` @compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel. CPU oracles pin finite-area endpoint radiometry, one-bounce diffuse light tracing, light-vertex BSDF connection, and MIS recurrence.
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`).
 

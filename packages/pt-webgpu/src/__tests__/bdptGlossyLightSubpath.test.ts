@@ -24,9 +24,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // The BSDF is sampled at prevPos through the shared main-path sampler so the
     // scalar clearcoat/sheen source-lobe mixture and sampled PDF stay coherent.
     //
-    // Item-3 fix (2026-06-10): emitter vertex sets fPrev = INV_PI (the Lambertian
-    // BSDF value f = 1/π) so fPrev·cos/pdf = (1/π)·cos/(cos/π) = 1. The prior
-    // fPrev = 1.0 gave 1.0·cos/(cos/π) = π — a spurious ×π on every emitter bounce.
+    // PTWG-BDPT-01 (2026-06-15): finite area emitters need the cos/pdfΩ = π
+    // factor after the first traced hit; legacy pseudo emitters keep the old
+    // INV_PI branch because their bounce-0 normalization already includes the
+    // direction-density term.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirection(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoat,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.sheenRoughness,');
@@ -46,11 +47,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfRevAtPrev = brdfDirectionalPdfFullSampled(prevBcRev, prevRoughRev, prevMetalRev, 0.0,');
   });
 
-  it('emitter-vertex extension uses fPrev = INV_PI (Lambertian f = 1/π, not 1.0)', () => {
-    // Item-3 fix (2026-06-10): fPrev = INV_PI for the prevMatId < 0 branch so
-    // fPrev * cosPrev / pdfFwd = (1/π) * cos / (cos/π) = 1.0 exactly.
-    // Prior fPrev = vec3f(1.0) gave (1.0) * cos / (cos/π) = π — a spurious ×π.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(INV_PI);');
+  it('finite-area emitter extension keeps the needed π factor, legacy pseudo emitters do not double-apply it', () => {
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'fPrev = select(vec3f(INV_PI), vec3f(1.0), prevMatId == BDPT_LV_AREA_EMITTER_MATID);',
+    );
     // Surface vertices still use the real extension-aware BRDF.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFull(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');

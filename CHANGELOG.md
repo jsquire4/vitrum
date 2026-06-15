@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu BDPT finite-area light tracing, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` BDPT finite-area emitter extension:** the light-subpath extension now applies the required `cos/pdfΩ = π` factor after tracing from a finite area emitter sampled in area measure. `oracle.bdptConnectionCosine.test.ts` now contains independent rendering-equation oracles for the emitter endpoint, one-bounce diffuse light tracing, and a non-Lambertian light-vertex connection, closing `PTWG-BDPT-01` without relying on a mirrored shader assembly.
+
 ### Added (walkaround procedural sky bake, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` Preetham procedural sky:** `procedural-sky` environments now bake through the shared Preetham equirect helper into the same directional IBL map/CDF path used by raw HDRI payloads. Runtime `updateEnvironment()` uploads the baked 256x128 sky, threads it to DDGI probe misses when env bindings are available, and keeps scalar `skyTint`/`skyIrradiance` only as a fallback average. The ledger remains `approximate` for finite bake/model limits rather than scalar-only data loss.
