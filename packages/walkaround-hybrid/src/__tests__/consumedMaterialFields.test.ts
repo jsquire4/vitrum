@@ -107,7 +107,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'attenuationColor', 'attenuationDistance', 'thickness', 'thicknessMap', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
       'bumpMap', 'bumpScale',
-      'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
+      'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity', 'envMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
       'specularColorMap', 'specularIntensityMap',
@@ -312,7 +312,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits structured warnings for unsupported displacement and environment intensity fields', () => {
+  it('emits structured warnings for unsupported displacement fields', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -343,7 +343,6 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         'displacementBias',
         'displacementMap',
         'displacementScale',
-        'envMapIntensity',
       ];
       const materialWarn = warnSpy.mock.calls.flat().map(String).find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();

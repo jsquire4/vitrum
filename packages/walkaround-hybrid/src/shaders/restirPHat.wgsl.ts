@@ -52,7 +52,7 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
     let wi = envDirFromXi(xi);
     let nDotL = max(0.0, dot(surf.normal, wi));
     if (nDotL < 1e-6) { return 0.0; }
-    let color = envRadiance(wi);
+    let color = envRadiance(wi) * max(surf.envMapIntensity, 0.0);
     let brdf  = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
     return luminance(color * brdf);
   }

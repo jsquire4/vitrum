@@ -85,6 +85,10 @@
  *                           as camera-visible baked outgoing radiance only.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into
  *                           the camera-visible baked light-map term.
+ *  envMapIntensity        stored in material atlas metadata and applied to
+ *                           shade-owned HDRI ReSTIR-DI environment lighting,
+ *                           including canonical p-hat evaluation for temporal
+ *                           and spatial DI reuse.
  *  specularColor          stored in material atlas metadata and applied to the
  *                           dielectric GGX F0 tint in shade-owned direct,
  *                           analytic, sun, and specular-indirect paths.
@@ -151,6 +155,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'emissiveMap',
   'lightMap',
   'lightMapIntensity',
+  'envMapIntensity',
   'specularColor',
   'specularIntensity',
   'specularColorMap',

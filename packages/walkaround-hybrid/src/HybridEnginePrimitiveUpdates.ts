@@ -1107,6 +1107,10 @@ function minClampedUnit(value: number | undefined, min: number, fallback: number
   return Number.isFinite(value) ? Math.max(min, value ?? fallback) : fallback;
 }
 
+function nonNegativeScalar(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+}
+
 function iridescenceThicknessBound(
   material: MaterialSpec | undefined,
   index: 0 | 1,
@@ -1176,6 +1180,8 @@ function materialAtlasPatchRequiresFullRebuild(
     minClampedUnit(prev?.iridescenceIor, 1, 1.3) !== minClampedUnit(next?.iridescenceIor, 1, 1.3) ||
     iridescenceThicknessBound(prev, 0, 100) !== iridescenceThicknessBound(next, 0, 100) ||
     iridescenceThicknessBound(prev, 1, 400) !== iridescenceThicknessBound(next, 1, 400);
+  const envMapIntensityChanged =
+    nonNegativeScalar(prev?.envMapIntensity, 1) !== nonNegativeScalar(next?.envMapIntensity, 1);
   return normalScaleChanged ||
     clearcoatNormalScaleChanged ||
     bumpScaleChanged ||
@@ -1185,7 +1191,8 @@ function materialAtlasPatchRequiresFullRebuild(
     clearcoatChanged ||
     sheenChanged ||
     anisotropyChanged ||
-    iridescenceChanged;
+    iridescenceChanged ||
+    envMapIntensityChanged;
 }
 
 /**

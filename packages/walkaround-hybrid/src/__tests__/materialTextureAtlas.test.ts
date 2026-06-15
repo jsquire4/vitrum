@@ -680,8 +680,35 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[95]).toBe(0);
   });
 
+  it('packs envMapIntensity as non-negative per-triangle material metadata', () => {
+    const authored: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      envMapIntensity: 2.5,
+    };
+    const defaulted: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+    };
+    const clamped: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      envMapIntensity: -4,
+    };
+
+    expect(packMaterialTextureAtlas([authored], new Uint32Array([0]), 1).baseColorMetaData[208])
+      .toBeCloseTo(2.5, 5);
+    expect(packMaterialTextureAtlas([defaulted], new Uint32Array([0]), 1).baseColorMetaData[208])
+      .toBe(1);
+    expect(packMaterialTextureAtlas([clamped], new Uint32Array([0]), 1).baseColorMetaData[208])
+      .toBe(0);
+  });
+
   it('shade and traversal sample material maps from the shared atlas module', () => {
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 52u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
@@ -709,6 +736,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
@@ -718,6 +746,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSheenRoughness(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleAnisotropyControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleIridescenceControls(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEnvMapIntensity(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyThicknessMapToBeerTint(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
@@ -751,12 +780,14 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let anisotropy = sampleAnisotropyControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let iridescence = sampleIridescenceControls(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
     );
     expect(SHADE_WGSL).toContain('traceSceneFirstHitAlphaMaskTextured(');
     expect(SHADE_WGSL).toContain('let Lo_emitterGlow = sampleEmissiveMap(');
     expect(SHADE_WGSL).toContain('let Lo_lightMap = sampleLightMap(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('envMapIntensity, isGlass, isMetal, &rng)');
     expect(SHADE_WGSL).toContain('sampleTransmissionMapForHit(primaryHit, scalarMatColor.a)');
     expect(SHADE_WGSL).toContain('lo_emit(matColor, normal, isGlass, primaryHit.uv, uv1');
     expect(SHADE_WGSL).toContain('lo_transmittedGI(pix, dims, pos, normal, wo, matColor, isGlass, primaryHit.indices.w, primaryHit.uv, uv1)');

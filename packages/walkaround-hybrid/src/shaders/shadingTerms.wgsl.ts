@@ -249,6 +249,7 @@ fn lo_direct(
   clearcoat: vec2f,
   sheen:    vec4f,
   sheenRoughness: f32,
+  envMapIntensity: f32,
   isGlass:  bool,
   isMetal:  bool,
   rng:      ptr<function, u32>,
@@ -274,7 +275,7 @@ fn lo_direct(
     let envDir = envDirFromXi(r.xi);
     let nDotL = max(0.0, dot(normal, envDir));
     if (nDotL < 1e-6) { return vec3f(0.0); }
-    let envColor = envRadiance(envDir);
+    let envColor = envRadiance(envDir) * max(envMapIntensity, 0.0);
     let brdfE = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, envDir);
     return envColor * brdfE * r.W;
   }

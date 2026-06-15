@@ -57,6 +57,18 @@ const WALKAROUND_EXTENSIONS = evidence('shared-classifier', [
   'packages/walkaround-hybrid/src/restir/packingHelpers.ts',
 ]);
 
+const WALKAROUND_ENV_INTENSITY = evidence('packer+shader', [
+  'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
+], [
+  'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+  'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/ris.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts',
+]);
+
 const PT_WEBGL2_SCALARS = evidence('packer+shader', [
   'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
   'packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts',
@@ -104,6 +116,7 @@ const PT_WEBGPU_TEXTURES = evidence('packer+shader', [
 const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<string, MaterialNativeEvidence>> = {
   'walkaround-hybrid': {
     ...group(['emissive', 'emissiveIntensity'], WALKAROUND_EMISSIVE),
+    envMapIntensity: WALKAROUND_ENV_INTENSITY,
     extensions: WALKAROUND_EXTENSIONS,
   },
   'pt-webgl2': {

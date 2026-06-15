@@ -332,7 +332,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         'displacementBias',
         'displacementMap',
         'displacementScale',
-        'envMapIntensity',
       ]);
     } finally {
       engine.dispose();
@@ -497,6 +496,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
             iridescence: 0,
             iridescenceIor: 1.3,
             iridescenceThicknessRange: [100, 400],
+            envMapIntensity: 1,
           },
         },
         ...base.primitives.slice(1),
@@ -525,6 +525,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           iridescence: 0.65,
           iridescenceIor: 2,
           iridescenceThicknessRange: [250, 750],
+          envMapIntensity: 0.35,
         },
       });
 
@@ -533,6 +534,45 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
       expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
       expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) rebuilds material texture atlas when only envMapIntensity changes', () => {
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            envMapIntensity: 1,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          envMapIntensity: 0.25,
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      expect(rebuilt.materialTextureAtlas.baseColorMetaData[208]).toBeCloseTo(0.25, 5);
     } finally {
       engine.dispose();
     }

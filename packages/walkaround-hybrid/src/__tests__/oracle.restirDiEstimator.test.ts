@@ -319,7 +319,10 @@ const M_ENV = 1; // ris.wgsl.ts:93
 interface SceneCfg {
   emitters: EmitterTri[];
   envHasMap: boolean;
+  envMapIntensity?: number;
 }
+
+const envMapIntensityForCfg = (cfg: SceneCfg): number => Math.max(0, cfg.envMapIntensity ?? 1);
 
 // ── restir_di_compute_phat_xi transcription (restirPHat.wgsl.ts:46-73) ───────
 function computePhatCentroid(cfg: SceneCfg, lid: number): number {
@@ -343,7 +346,7 @@ function computePhatXi(cfg: SceneCfg, lid: number, xi: V2): number {
     const wi = envDirFromXi(xi); // L51
     const nDotL = Math.max(0, dot(normal, wi)); // L52
     if (nDotL < 1e-6) return 0;
-    const color = envRadiance(wi); // L54
+    const color = scale(envRadiance(wi), envMapIntensityForCfg(cfg)); // L54
     const brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi); // L55
     return luminance(mulv(color, brdf)); // L56
   }
@@ -459,7 +462,7 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     const nDotL = Math.max(0, dot(normal, envS.dir));
     if (nDotL < 1e-6) continue; // L379
     const brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir); // L380
-    const pHatE = luminance(mulv(envS.color, brdfE)); // L382 — SA measure, no G
+    const pHatE = luminance(scale(mulv(envS.color, brdfE), envMapIntensityForCfg(cfg))); // L382 — SA measure, no G
     const pXe = Math.max(1e-15, envS.pdf); // L384
     const wE = pHatE > 0 ? pHatE / pXe : 0; // L385
     updateReservoirDI(r, ENV_SENTINEL, envDirToXi(envS.dir), wE, rng); // L388
@@ -491,7 +494,7 @@ function loDirect(cfg: SceneCfg, r: ReservoirDI, rng: () => number, variant: Var
     const envDir = envDirFromXi(r.xi); // L249
     const nDotL = Math.max(0, dot(normal, envDir));
     if (nDotL < 1e-6) return [0, 0, 0];
-    const envColor = envRadiance(envDir); // L252
+    const envColor = scale(envRadiance(envDir), envMapIntensityForCfg(cfg)); // L252
     const brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envDir); // L253
     return scale(mulv(envColor, brdfE), r.W); // L254
   }
@@ -556,7 +559,7 @@ function groundTruthLights(emitters: EmitterTri[], nPerTri: number, seed: number
   }
   return acc;
 }
-function groundTruthEnv(nSamples: number, seed: number): V3 {
+function groundTruthEnv(nSamples: number, seed: number, envMapIntensity = 1): V3 {
   const rng = mulberry32(seed);
   const acc: V3 = [0, 0, 0];
   for (let i = 0; i < nSamples; i++) {
@@ -567,7 +570,7 @@ function groundTruthEnv(nSamples: number, seed: number): V3 {
     const phi = 2 * PI * u2;
     const wi: V3 = [rr * Math.cos(phi), z, rr * Math.sin(phi)];
     const f = evalGGX(albedo, roughness, metalness, normal, wo, wi); // 0 below horizon
-    const integrand = mulv(L_ENV, f);
+    const integrand = scale(mulv(L_ENV, f), Math.max(0, envMapIntensity));
     acc[0] += integrand[0] * 4 * PI;
     acc[1] += integrand[1] * 4 * PI;
     acc[2] += integrand[2] * 4 * PI;
@@ -666,6 +669,19 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     console.log(`[oracle.restirDi] fix-shaped (selected-xi) variant: E/I = ${ratio.toFixed(4)}`);
     expect(ratio).toBeGreaterThan(0.97);
     expect(ratio).toBeLessThan(1.03);
+  });
+
+  it('REGRESSION envMapIntensity: scales only the HDRI p-hat branch', () => {
+    const cfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: true, envMapIntensity: 0.25 };
+    const xiEnv: V2 = [0.5, 0.5];
+    const envScaled = computePhatXi(cfg, ENV_SENTINEL, xiEnv);
+    const envDefault = computePhatXi({ ...cfg, envMapIntensity: 1 }, ENV_SENTINEL, xiEnv);
+    expect(envScaled).toBeCloseTo(envDefault * 0.25, 10);
+
+    const xiLight: V2 = [0.25, 0.75];
+    const lightScaled = computePhatXi(cfg, 0, xiLight);
+    const lightDefault = computePhatXi({ ...cfg, envMapIntensity: 1 }, 0, xiLight);
+    expect(lightScaled).toBeCloseTo(lightDefault, 10);
   });
 
   it('historical HYB-GI-02 characterization: env-only direct light is under-estimated ≈ M× (≈66×)', () => {

@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 52;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -253,6 +253,10 @@ function clampedUnit(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
+function clampedNonNegative(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+}
+
 function clampedColorComponent(
   color: readonly [number, number, number] | undefined,
   index: 0 | 1 | 2,
@@ -474,6 +478,14 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeEnvMapIntensityMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = clampedNonNegative(mat?.envMapIntensity, 1);
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -508,6 +520,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'thicknessMap', 'linear', baseTexel + 47);
     writeMapMeta(mat, 'bumpMap', 'linear', baseTexel + 49);
     writeBumpScaleMeta(mat, baseTexel + 51);
+    writeEnvMapIntensityMeta(mat, baseTexel + 52);
   }
 
   return {

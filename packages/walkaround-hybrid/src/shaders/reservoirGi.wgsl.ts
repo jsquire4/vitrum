@@ -93,6 +93,7 @@ struct PrimarySurface {
   albedo: vec3f,
   rough:  f32,
   metal:  f32,
+  envMapIntensity: f32,
   depth:  f32,
 };
 

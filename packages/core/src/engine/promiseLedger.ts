@@ -458,7 +458,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // paths. ReSTIR candidate PDFs still use default F0, so this stays approximate.
   specularIntensity: 'approximate',
   specularColor: 'approximate',
-  envMapIntensity: 'unsupported',
+  // Material-atlas scalar consumed by the HDRI environment-light path:
+  // RIS candidate scoring, canonical temporal/spatial p-hat reuse, and shade
+  // resolve all apply the same per-surface scale. Finite emitters/sun/analytic
+  // lights are intentionally unaffected.
+  envMapIntensity: 'native',
   spectralAttenuation: 'unsupported',
   dispersionAbbeNumber: 'unsupported',
   scatteringCoefficient: 'unsupported',

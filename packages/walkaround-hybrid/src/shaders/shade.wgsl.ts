@@ -313,6 +313,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);
   let anisotropy = sampleAnisotropyControls(primaryHit.indices.w, primaryHit.uv, uv1);
   let iridescence = sampleIridescenceControls(primaryHit.indices.w, primaryHit.uv, uv1);
+  let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);
   let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
@@ -344,7 +345,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Baked camera-visible outgoing radiance. Like the PT backends, this is
   // first-hit only and additive; it does not feed ReSTIR emitter power or GI.
   let Lo_lightMap = sampleLightMap(primaryHit.indices.w, primaryHit.uv, uv1);
-  let Lo_direct     = lo_direct(pixelIdx, pos, normal, clearcoatNormal, geoNormal, wo, albedo, rough, metal, specular, anisotropy, iridescence, clearcoat, sheen, sheenRoughness, isGlass, isMetal, &rng);
+  let Lo_direct     = lo_direct(pixelIdx, pos, normal, clearcoatNormal, geoNormal, wo, albedo, rough, metal, specular, anisotropy, iridescence, clearcoat, sheen, sheenRoughness, envMapIntensity, isGlass, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
   let Lo_analyticNEE = lo_analyticNEE(pos, normal, clearcoatNormal, geoNormal, albedo, rough, metal, specular, anisotropy, iridescence, clearcoat, sheen, sheenRoughness, wo, isGlass, isMetal);

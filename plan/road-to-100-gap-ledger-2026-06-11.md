@@ -1483,8 +1483,9 @@ Status:
   matrix exhaustive over every public `MaterialSpec` key for every backend.
 - 2026-06-15 follow-up: pt-webgpu now has direct descriptor/WGSL pins for the
   native scalar lanes `aoMapIntensity`, `lightMapIntensity`, and
-  `envMapIntensity`; walkaround-hybrid now has an engine-level structured
-  warning fixture for unsupported displacement fields and `envMapIntensity`.
+  `envMapIntensity`; walkaround-hybrid now consumes `envMapIntensity` through
+  material-atlas metadata plus HDRI ReSTIR-DI p-hat/resolve paths, and keeps an
+  engine-level structured warning fixture for unsupported displacement fields.
 - Keep this gate as a permanent regression guard when adding new material
   fields or promoting backend support rows.
 

@@ -11,7 +11,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 52u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -43,6 +43,7 @@ const MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
 const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
+const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -192,6 +193,15 @@ fn sampleLightMap(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec3f {
     0,
   );
   return texelColor.rgb * max(intensityMeta.x, 0.0);
+}
+
+fn sampleEnvMapIntensity(triIndex: u32) -> f32 {
+  let intensityMeta = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET),
+    0,
+  );
+  return max(intensityMeta.x, 0.0);
 }
 
 fn sampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {

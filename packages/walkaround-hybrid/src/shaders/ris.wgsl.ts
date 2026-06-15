@@ -187,6 +187,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let rm        = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
   let roughness = rm.x;
   let metalness = rm.y;
+  let envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
 
   var r = emptyReservoirDI();
   // Support-aware sample counts for mixed-measure reservoirs. Area emitters and
@@ -392,7 +393,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (nDotL < 1e-6) { continue; }
     let brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir);
     // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
-    let pHatE = luminance(envS.color * brdfE);
+    let pHatE = luminance(envS.color * envMapIntensity * brdfE);
     // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
     let pXe = max(1e-15, envS.pdf);
     let wE = select(0.0, pHatE / pXe, pHatE > 0.0);
@@ -432,6 +433,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         surf.albedo = albedo;
         surf.rough  = roughness;
         surf.metal  = metalness;
+        surf.envMapIntensity = envMapIntensity;
         surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mEnvSupport);
@@ -478,6 +480,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         surf.albedo = albedo;
         surf.rough  = roughness;
         surf.metal  = metalness;
+        surf.envMapIntensity = envMapIntensity;
         surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mAreaSupport);

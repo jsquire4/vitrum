@@ -85,6 +85,7 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   let rm = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
   s.rough  = rm.x;
   s.metal  = rm.y;
+  s.envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
   s.depth  = hit.dist;
   return s;
 }
