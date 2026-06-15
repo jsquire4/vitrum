@@ -1275,6 +1275,9 @@ Closure:
   modes, empty triangulation) reject before engine construction; opaque texture
   handles reject under `reject-degraded` unless the host asserts backend
   readiness with `opaqueTextureHandlesReady`.
+- `createProgressiveEngine()` now seeds `ProgressiveHandoffCoordinator` with the
+  initial scene, so coordinator mutation APIs can use their designed `setScene`
+  fallback when a sub-engine lacks or rejects an incremental patch method.
 
 ### GLTF-API-04 - animation playback/update orchestration
 

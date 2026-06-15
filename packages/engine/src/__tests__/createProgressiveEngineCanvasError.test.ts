@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Engine, FrameInput, Scene } from '@vitrum/core';
+import type { Engine, FrameInput, Scene, ScenePrimitive } from '@vitrum/core';
 
 const constructWalkaroundMock = vi.hoisted(() => vi.fn());
 const constructPathTracerWebGPUMock = vi.hoisted(() => vi.fn());
@@ -12,6 +12,19 @@ vi.mock('../createEngine.js', () => ({
 import { createProgressiveEngine } from '../createProgressiveEngine.js';
 
 const scene: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
+const sceneWithPrimitive: Scene = {
+  primitives: [
+    {
+      kind: 'mesh',
+      id: 'p',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    },
+  ],
+  emitters: [],
+  environment: { kind: 'none' },
+};
 const originalNavigator = globalThis.navigator;
 
 function makeEngine(capability: 'seed-source' | 'seed-sink'): Engine {
@@ -105,6 +118,41 @@ describe('createProgressiveEngine canvas plumbing diagnostics', () => {
       backend: 'walkaround-hybrid',
       recoverable: true,
     });
+
+    handle.dispose();
+  });
+
+  it('seeds the coordinator scene fallback for progressive mutation patches', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: vi.fn(async () => adapter),
+          getPreferredCanvasFormat: () => 'rgba8unorm',
+        },
+      },
+      configurable: true,
+    });
+    const realtime = makeEngine('seed-source');
+    const converged = makeEngine('seed-sink');
+    const realtimeSetScene = realtime.setScene as unknown as ReturnType<typeof vi.fn>;
+    constructWalkaroundMock.mockResolvedValue(realtime);
+    constructPathTracerWebGPUMock.mockResolvedValue(converged);
+    const nextPositions = new Float32Array([2, 0, 0, 1, 0, 0, 0, 1, 0]);
+
+    const handle = await createProgressiveEngine({
+      canvas: makeThrowingConfigureCanvas(new Error('ignored configure failure')),
+      scene: sceneWithPrimitive,
+    });
+
+    handle.coordinator.updatePrimitive('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+
+    expect(realtime.setScene).toHaveBeenCalledTimes(1);
+    expect(converged.setScene).toHaveBeenCalledTimes(1);
+    const patched = realtimeSetScene.mock.calls[0]![0] as Scene;
+    expect((patched.primitives[0] as { positions: Float32Array }).positions).toBe(nextPositions);
+    expect(converged.setScene).toHaveBeenCalledWith(patched);
 
     handle.dispose();
   });

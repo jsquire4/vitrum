@@ -351,6 +351,7 @@ export async function createProgressiveEngine(
     const coordinatorOpts: ProgressiveHandoffOptions = {
       realtime,
       converged,
+      scene: vitrumScene,
       seedFromRealtime: opts.seedFromRealtime ?? true,
       ...(opts.seedWeight != null ? { seedWeight: opts.seedWeight } : {}),
       ...(opts.stillFramesBeforeHandoff != null
