@@ -174,6 +174,15 @@ function identityMat4(): Float32Array {
   ]);
 }
 
+function transformPoint(m: Float32Array | undefined, x: number, y: number, z: number): [number, number, number] {
+  if (!m) return [x, y, z];
+  return [
+    m[0]! * x + m[4]! * y + m[8]! * z + m[12]!,
+    m[1]! * x + m[5]! * y + m[9]! * z + m[13]!,
+    m[2]! * x + m[6]! * y + m[10]! * z + m[14]!,
+  ];
+}
+
 function manualSkinnedInput(): {
   gltf: GltfJson;
   scene: Scene;
@@ -183,6 +192,8 @@ function manualSkinnedInput(): {
   diagnostics: [];
 } {
   const identity = identityMat4();
+  const meshTransform = identityMat4();
+  meshTransform[12] = 5;
   const skinIndices = new Uint32Array(12);
   const skinWeights = new Float32Array(12);
   for (let vertex = 0; vertex < 3; vertex += 1) skinWeights[vertex * 4] = 1;
@@ -192,7 +203,7 @@ function manualSkinnedInput(): {
     positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
     material: MATERIAL,
-    transform: asMat4(new Float32Array(identity)),
+    transform: asMat4(meshTransform),
     skinIndices,
     skinWeights,
     bones: new Float32Array(identity),
@@ -204,7 +215,7 @@ function manualSkinnedInput(): {
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [
-        { mesh: 0, skin: 0, children: [1] },
+        { mesh: 0, skin: 0, children: [1], translation: [5, 0, 0] },
         {},
       ],
       meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
@@ -406,5 +417,14 @@ describe('GltfSceneController', () => {
     };
     expect(patch.bones[12]).toBeCloseTo(1);
     expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+    const world = transformPoint(
+      (controller.scene.primitives[0] as SkinnedMeshPrimitive).transform,
+      patch.positions[0]!,
+      patch.positions[1]!,
+      patch.positions[2]!,
+    );
+    expect(world[0]).toBeCloseTo(6);
+    expect(world[1]).toBeCloseTo(0);
+    expect(world[2]).toBeCloseTo(0);
   });
 });

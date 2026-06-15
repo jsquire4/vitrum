@@ -24,6 +24,7 @@ import { GLTF_DEFAULT_MATERIAL } from './materials.js';
 import {
   IDENTITY_MAT4,
   composeTrsMat4,
+  mat4Invert,
   mat4Mul,
   nodeLocalMatrix,
 } from './transforms.js';
@@ -546,12 +547,22 @@ export class GltfSceneController {
     const base = this.#basePrimitiveById.get(primitiveId);
     if (!isSkinnedMesh(base)) return undefined;
 
+    const meshWorld = worldTransforms.get(binding.meshNodeIndex);
+    const meshWorldInverse = meshWorld ? mat4Invert(meshWorld) : null;
+    if (!meshWorldInverse) {
+      warnings.push(
+        `[vitrum/gltf-adapter] Animation skin patch for primitive "${primitiveId}" ` +
+          'could not invert the skinned mesh node transform; skin channel skipped.',
+      );
+      return undefined;
+    }
+
     const bones = new Float32Array(binding.jointNodeIndices.length * 16);
     for (const [jointOffset, jointNodeIndex] of binding.jointNodeIndices.entries()) {
       const jointWorld = worldTransforms.get(jointNodeIndex);
       const outOffset = jointOffset * 16;
       if (jointWorld) {
-        bones.set(jointWorld, outOffset);
+        bones.set(mat4Mul(meshWorldInverse, jointWorld), outOffset);
       } else {
         bones.set(IDENTITY_MAT4, outOffset);
         warnings.push(

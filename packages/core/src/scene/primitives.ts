@@ -107,7 +107,7 @@ export type AnalyticShape =
  * - `skinWeights` — 4 weights per vertex (Float32Array, length
  *   `vertexCount * 4`). Must sum to 1.0 per vertex per glTF convention;
  *   the adapter does NOT renormalise.
- * - `bones` — bone-local-to-world matrices for the current pose.
+ * - `bones` — bone-local-to-skinning-space matrices for the current pose.
  *   `boneCount` × 16 floats (column-major). Hosts update this each
  *   frame (or whenever the skeleton pose changes); engines use it +
  *   `boneInverses` to compute per-vertex deformed positions:
@@ -116,13 +116,12 @@ export type AnalyticShape =
  *   Captured at bind time; constant for the life of the primitive.
  * - `material` / `transform` mirror `MeshPrimitive`.
  *
- * SPACE CONVENTION: with world-space `bones`, the bare formula above lands in
- * WORLD space — yet consumers apply `transform` once on top. Hosts whose
- * skinned node carries a non-identity `transform` MUST therefore supply
- * `bindMatrix`/`bindMatrixInverse` such that the solve returns MESH-LOCAL
- * positions. For host formats with world-space bone chains, `bindMatrixInverse`
- * should cancel the skinned node transform whenever either bind matrix is
- * non-identity.
+ * SPACE CONVENTION: `solveSkin` must return positions in the same space as
+ * mesh-local primitive geometry because consumers apply `transform` once on top.
+ * Importers can satisfy that either by supplying mesh-node-local bone matrices
+ * (the glTF adapter uses `inverse(meshWorld) · jointWorld`) or, for host APIs
+ * that expose world-space bone chains, by supplying `bindMatrix` /
+ * `bindMatrixInverse` such that the solver's final output is mesh-local.
  *
  * The CPU-side solver (`solveSkin`) lives in `@vitrum/core`; the engine ingests
  * the deformed positions through the existing `HybridEngine.updatePrimitive`
@@ -149,7 +148,7 @@ export interface SkinnedMeshPrimitive {
   readonly skinIndices: Uint32Array;
   /** 4 bone weights per vertex (length `vertexCount * 4`); sum to 1. */
   readonly skinWeights: Float32Array;
-  /** Per-frame bone world matrices: `boneCount * 16` column-major f32s. */
+  /** Per-frame bone matrices in skinning space: `boneCount * 16` column-major f32s. */
   readonly bones: Float32Array;
   /** Inverse bind matrices: `boneCount * 16` column-major f32s. */
   readonly boneInverses: Float32Array;
