@@ -162,6 +162,16 @@ describe('HG importance sampler matches its pdf (IS weight ≈ 1)', () => {
   });
 });
 
+describe('Volumetric in-medium directional NEE WGSL guard', () => {
+  it('uses packed N-directional RGB records instead of the legacy scalar lightDir mirror', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dDirAD = directionalLights[dBase];');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dIrrMean = directionalLights[dBase + 1u];');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + throughputInMedium * dIrrMean.rgb * phaseVal;');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal;');
+  });
+});
+
 describe('Free-flight CDF inversion', () => {
   it('exponential mean free path = 1/σ_t', () => {
     const rng = makeRng(0x5eed);

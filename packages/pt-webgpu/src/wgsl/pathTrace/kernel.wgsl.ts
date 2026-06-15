@@ -102,23 +102,28 @@ export function composePathTraceKernelWgsl(opts: {
           throughput = throughput * singleScatterAlbedo * channelW;
           let throughputInMedium = throughput;
 
-          // In-medium NEE: connect to the directional light through the medium.
-          // The directional light is a DELTA — phase sampling (the medium's
-          // analogue of BSDF sampling) has zero probability of ever hitting it,
-          // so light sampling is the only strategy that can reach it and takes
-          // FULL weight 1.0 (no MIS down-weighting). This mirrors the surface
-          // NEE, which also adds the directional contribution at weight 1. The
-          // earlier powerHeuristic(1, phaseVal) was area-light-style MIS wrongly
-          // applied to a delta light and dimmed in-medium single-scatter from the
-          // sun. The estimator is throughput · L_i · phase(ω_scatter→ω_light); the
-          // single-scatter albedo σ_s/σ_t is already folded into throughputInMedium.
-          if (params.lightDir.w > 1e-6) {
-            let lightDir = safe_normalize(params.lightDir.xyz);
-            let shadowRay = Ray(scatterPos, lightDir);
-            if (!traceAny(shadowRay, 1e-4, INFINITY)) {
-              let cosScatter = dot(ray.direction, lightDir);
-              let phaseVal = hgPhase(cosScatter, mediumG);
-              radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal;
+          // In-medium NEE: connect to every packed directional light through the
+          // medium. Directional lights are DELTA emitters — phase sampling (the
+          // medium's analogue of BSDF sampling) has zero probability of ever
+          // hitting them, so light sampling is the only strategy that can reach
+          // them and takes FULL weight 1.0 (no MIS down-weighting). The estimator
+          // is throughput · L_i · phase(ω_scatter→ω_light); the single-scatter
+          // albedo σ_s/σ_t is already folded into throughputInMedium. This uses
+          // the N-directional storage buffer instead of the legacy scalar
+          // params.lightDir.w mirror, preserving RGB irradiance and >1 sun.
+          for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u) {
+            let dBase = medDi * 2u;
+            let dDirAD = directionalLights[dBase];
+            let dIrrMean = directionalLights[dBase + 1u];
+            if (dIrrMean.w > 1e-6) {
+              let lightDir = safe_normalize(dDirAD.xyz);
+              let dirShadowDisabled = dDirAD.w < 0.0;
+              let shadowRay = Ray(scatterPos, lightDir);
+              if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
+                let cosScatter = dot(ray.direction, lightDir);
+                let phaseVal = hgPhase(cosScatter, mediumG);
+                radiance = radiance + throughputInMedium * dIrrMean.rgb * phaseVal;
+              }
             }
           }
 
@@ -569,8 +574,9 @@ ${transmissiveBlock}
       //   [di*2+0]: towardLight.xyz, angularDiameter
       //   [di*2+1]: irradiance.rgb,  mean_irradiance
       // N-directional: replaces the single "if (params.lightDir.w > 1e-6)" path;
-      // the first directional (di=0) is byte-identical for single-directional scenes
-      // because the packer mirrors directional[0] into lightDir for in-medium NEE.
+      // the first directional (di=0) remains equivalent for single-directional
+      // scenes because the same packed direction/irradiance data drives both
+      // this surface loop and the in-medium NEE loop above.
       for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
         if (current == picked) {
           let dBase = di * 2u;

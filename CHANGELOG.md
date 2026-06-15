@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu volumetric directional lights, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` in-medium directional NEE:** volumetric single-scatter NEE now loops the packed N-directional light buffer instead of the legacy scalar `params.lightDir.w` mirror, preserving RGB irradiance, multiple directionals, and `castShadow:false` for directional emitters. `volumetricSss.test.ts` pins the no-scalar-regression path, and `npm run shader-gate` compiles the updated full/composite trace shaders.
+
 ### Tests (WebGPU stub validation, 2026-06-15)
 
 - **`@vitrum/pt-webgpu` GPU stub hardening:** the size-validating mock `GPUDevice` now records buffer usage flags and bind-group layouts, rejects zero/invalid usage, validates bind-group buffer ranges, enforces `minBindingSize`, and checks that uniform/storage bindings carry the required `GPUBufferUsage` bit. This closes the pt-webgpu side of the H53 dummy-buffer recurrence class; adapter-backed WebGPU shader/PASS_ORDER gates remain tracked separately.

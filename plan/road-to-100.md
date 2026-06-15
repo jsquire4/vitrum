@@ -539,12 +539,16 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 #### 2C — PTWG-MAT-01 integrator audit (mandatory for extension lobes)
 
 > **SCOPE WIDENED (2026-06-12):** the audit is NOT extension-lobes-only. It must
-> also close the **grayscale single-directional shortcut class** — in-medium NEE
-> (`kernel.wgsl.ts` `params.lightDir.w` path), MNEE cone-search
-> (`caustic.wgsl.ts:846,883`), SPPM directional emitter, BDPT bounce-0, and
-> ReSTIR-PT `rptDirectAtVertex` all still light from the mean-gray mirrored
-> directional the megakernel outgrew (chromatic loss + missing light kinds in
-> those paths). Also in scope: BDPT's hardcoded 50-unit emitter placement radius
+> also close the **grayscale single-directional shortcut class** — MNEE
+> cone-search (`caustic.wgsl.ts:846,883`), BDPT bounce-0, and ReSTIR-PT
+> `rptDirectAtVertex` still light from the mean-gray mirrored directional the
+> megakernel outgrew (chromatic loss + missing light kinds in those paths).
+> ✅ **in-medium NEE CLOSED (2026-06-15):** the volumetric random-walk block now
+> loops `directionalLights[]`, preserves RGB irradiance, honors the directional
+> `castShadow:false` sign bit, and `volumetricSss.test.ts` pins the no-scalar
+> `params.lightDir.w` regression. ✅ **SPPM directional emitter was already
+> closed:** `sppmPhotonEmission.test.ts` pins packed N-directional RGB photon
+> emission. Also in scope: BDPT's hardcoded 50-unit emitter placement radius
 > (`bdptLightSubpath.wgsl.ts` `emitPos = -lightDir * 50.0`) — derive from scene
 > bounds. ✅ **environment:'none' phantom skylight CLOSED (2026-06-12):**
 > full + lite no-map env lookups now return black radiance and zero env pdf
