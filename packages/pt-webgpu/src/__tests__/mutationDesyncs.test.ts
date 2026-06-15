@@ -23,6 +23,12 @@ import type { MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import { installGpuConstStubs } from './gpuStub.js';
 
+interface StubGpuBuffer {
+  readonly label: string;
+  readonly size: number;
+  readonly destroy: ReturnType<typeof vi.fn>;
+}
+
 // ─── 2a: canFastPathMaterialPatch rejects TextureRef fields ───────────────────
 
 describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setScene', () => {
@@ -159,44 +165,68 @@ function makeHostWithEmissiveScene(scene: Scene): {
   sceneRef: { current: Scene };
   sceneBuffers: UploadedSceneBuffers;
   meshAreaLightsWriteCalls: Float32Array[];
+  writeBuffer: { readonly mock: { readonly calls: unknown[][] }; mockClear: () => void };
 } {
   const packed = buildPackedScene(scene, {});
   const geoPack = scenePackResultFromPacked(packed);
   const meshAreaLightsData = new Float32Array(packed.meshAreaLightsData);
   const meshAreaLightsWriteCalls: Float32Array[] = [];
-
-  const meshAreaLightsBuffer = {
-    size: Math.max(16, meshAreaLightsData.byteLength),
+  const writeBuffer = vi.fn((
+    buf: unknown,
+    _byteOffset: number,
+    data: ArrayBuffer,
+    srcOffset = 0,
+    length?: number,
+  ) => {
+    if (buf === meshAreaLightsBuffer) {
+      const byteLength = length ?? data.byteLength - srcOffset;
+      meshAreaLightsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(byteLength / 4)));
+    }
+  });
+  const createBuffer = vi.fn((desc: { label?: string; size?: number } | undefined): StubGpuBuffer => ({
+    label: desc?.label ?? '',
+    size: desc?.size ?? 16,
     destroy: vi.fn(),
-  } as unknown as GPUBuffer;
+  }));
+
+  const buffer = (label: string, data?: ArrayBufferView): StubGpuBuffer => ({
+    label,
+    size: Math.max(16, data?.byteLength ?? 16),
+    destroy: vi.fn(),
+  });
+
+  const meshAreaLightsBuffer = buffer('vitrum.pt-webgpu.scene.meshAreaLights', meshAreaLightsData);
 
   const sceneBuffers: UploadedSceneBuffers = {
     ...packed,
     meshAreaLightsData,
-    meshAreaLightsBuffer,
-    positionsBuffer: { size: Math.max(16, packed.positions.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    normalsBuffer: { size: Math.max(16, packed.normals.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    indicesBuffer: { size: Math.max(16, packed.indices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    triMaterialIdsBuffer: { size: Math.max(16, packed.triMaterialIds.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    materialsBuffer: { size: Math.max(16, packed.materials.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    bvhNodesBuffer: { size: Math.max(16, packed.bvhNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    analyticHeadersBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    analyticParamsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    analyticLocalToWorldBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    analyticWorldToLocalBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    environmentMapTexelsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    environmentMapCdfBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    pointLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    spotLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    rectAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    lightTreeBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    tlasNodesBuffer: { size: Math.max(16, packed.tlasNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    tlasInstanceIndicesBuffer: { size: Math.max(16, packed.tlasInstanceIndices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    tlasBlasRootsBuffer: { size: Math.max(16, packed.tlasBlasRoots.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    tlasInstanceWorldToLocalBuffer: { size: Math.max(16, packed.tlasInstanceWorldToLocal.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    tlasInstanceLocalToWorldBuffer: { size: Math.max(16, packed.tlasInstanceLocalToWorld.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-    uvsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-    materialTexDescriptorsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
+    meshAreaLightsBuffer: meshAreaLightsBuffer as unknown as GPUBuffer,
+    positionsBuffer: buffer('vitrum.pt-webgpu.scene.positions', packed.positions) as unknown as GPUBuffer,
+    normalsBuffer: buffer('vitrum.pt-webgpu.scene.normals', packed.normals) as unknown as GPUBuffer,
+    indicesBuffer: buffer('vitrum.pt-webgpu.scene.indices', packed.indices) as unknown as GPUBuffer,
+    triMaterialIdsBuffer: buffer('vitrum.pt-webgpu.scene.triMaterialIds', packed.triMaterialIds) as unknown as GPUBuffer,
+    materialsBuffer: buffer('vitrum.pt-webgpu.scene.materials', packed.materials) as unknown as GPUBuffer,
+    bvhNodesBuffer: buffer('vitrum.pt-webgpu.scene.bvhNodes', packed.bvhNodes) as unknown as GPUBuffer,
+    analyticHeadersBuffer: buffer('vitrum.pt-webgpu.scene.analyticHeaders', packed.analyticHeaders) as unknown as GPUBuffer,
+    analyticParamsBuffer: buffer('vitrum.pt-webgpu.scene.analyticParams', packed.analyticParams) as unknown as GPUBuffer,
+    analyticLocalToWorldBuffer: buffer('vitrum.pt-webgpu.scene.analyticLocalToWorld', packed.analyticLocalToWorld) as unknown as GPUBuffer,
+    analyticWorldToLocalBuffer: buffer('vitrum.pt-webgpu.scene.analyticWorldToLocal', packed.analyticWorldToLocal) as unknown as GPUBuffer,
+    environmentMapTexelsBuffer: buffer('vitrum.pt-webgpu.scene.environmentMapTexels', packed.environmentMapTexels) as unknown as GPUBuffer,
+    environmentMapCdfBuffer: buffer('vitrum.pt-webgpu.scene.environmentMapCdf', packed.environmentMapCdf) as unknown as GPUBuffer,
+    directionalLightsBuffer: buffer('vitrum.pt-webgpu.scene.directionalLights', packed.directionalLightsData) as unknown as GPUBuffer,
+    pointLightsBuffer: buffer('vitrum.pt-webgpu.scene.pointLights', packed.pointLightsData) as unknown as GPUBuffer,
+    spotLightsBuffer: buffer('vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData) as unknown as GPUBuffer,
+    rectAreaLightsBuffer: buffer('vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData) as unknown as GPUBuffer,
+    lightTreeBuffer: buffer('vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes) as unknown as GPUBuffer,
+    tlasNodesBuffer: buffer('vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes) as unknown as GPUBuffer,
+    tlasInstanceIndicesBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices) as unknown as GPUBuffer,
+    tlasBlasRootsBuffer: buffer('vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots) as unknown as GPUBuffer,
+    tlasInstanceWorldToLocalBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal', packed.tlasInstanceWorldToLocal) as unknown as GPUBuffer,
+    tlasInstanceLocalToWorldBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld', packed.tlasInstanceLocalToWorld) as unknown as GPUBuffer,
+    uvsBuffer: buffer('vitrum.pt-webgpu.scene.uvs', packed.uvs) as unknown as GPUBuffer,
+    tangentsBuffer: buffer('vitrum.pt-webgpu.scene.tangents', packed.tangents) as unknown as GPUBuffer,
+    colorsBuffer: buffer('vitrum.pt-webgpu.scene.colors', packed.colors) as unknown as GPUBuffer,
+    materialTexDescriptorsBuffer: buffer('vitrum.pt-webgpu.scene.materialTexDescriptors', packed.materialTexDescriptors) as unknown as GPUBuffer,
     materialTexture: {} as GPUTexture,
     materialTextureView: {} as GPUTextureView,
     materialTextureSampler: {} as GPUSampler,
@@ -213,18 +243,8 @@ function makeHostWithEmissiveScene(scene: Scene): {
 
   const host: MutationHost = {
     device: {
-      createBuffer: vi.fn((desc: { label?: string; size?: number } | undefined) => ({
-        label: desc?.label ?? '',
-        size: desc?.size ?? 16,
-        destroy: vi.fn(),
-      })),
-      queue: {
-        writeBuffer: vi.fn((buf: unknown, _byteOffset: number, data: ArrayBuffer, srcOffset: number, length: number) => {
-          if (buf === meshAreaLightsBuffer) {
-            meshAreaLightsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(length / 4)));
-          }
-        }),
-      },
+      createBuffer,
+      queue: { writeBuffer },
     } as unknown as GPUDevice,
     assertLive: vi.fn(),
     getScene: () => sceneRef.current,
@@ -240,7 +260,7 @@ function makeHostWithEmissiveScene(scene: Scene): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls };
+  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls, writeBuffer };
 }
 
 describe('SceneMutationRouter — Item 2c: emissive-field material patch triggers emitter re-pack', () => {
@@ -579,5 +599,82 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     // have been updated via applyEmitterCountMutation.
     const mutable = sceneBuffers as unknown as { directionalAngularDiameter: number };
     expect(mutable.directionalAngularDiameter).toBeCloseTo(0.009271, 4);
+  });
+});
+
+describe('SceneMutationRouter — Phase 5C mutation observability', () => {
+  it('updateEmitter writes the emitter buffer, commits scene state, and resets accumulation', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'floor',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [
+        {
+          kind: 'point',
+          id: 'lamp',
+          position: [0, 2, 0],
+          color: [1, 0.9, 0.7],
+          intensity: 1,
+        },
+      ],
+      environment: { kind: 'none' },
+    };
+    const { host, writeBuffer, sceneBuffers } = makeHostWithEmissiveScene(scene);
+    const router = new SceneMutationRouter(host);
+    writeBuffer.mockClear();
+
+    router.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] });
+
+    const writtenLabels = writeBuffer.mock.calls.map((c) => (c[0] as StubGpuBuffer | undefined)?.label ?? '');
+    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.pointLights');
+    expect(sceneBuffers.pointLightCount).toBe(1);
+    expect(host.setSceneState).toHaveBeenCalledTimes(1);
+    expect(host.setScene).not.toHaveBeenCalled();
+    expect(host.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('updateEnvironment writes same-sized HDRI buffers, commits scene state, and resets accumulation', () => {
+    const hdri = (scale: number) => ({
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1 * scale, 0.5 * scale, 0.25 * scale,
+        0.25 * scale, 0.5 * scale, 1 * scale,
+      ]),
+    });
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'floor',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'hdri', hdri: hdri(1), intensity: 1, rotationY: 0 },
+    };
+    const { host, writeBuffer, sceneBuffers } = makeHostWithEmissiveScene(scene);
+    const router = new SceneMutationRouter(host);
+    writeBuffer.mockClear();
+
+    router.updateEnvironment({ kind: 'hdri', hdri: hdri(2), intensity: 0.4, rotationY: 0.25 });
+
+    const writtenLabels = writeBuffer.mock.calls.map((c) => (c[0] as StubGpuBuffer | undefined)?.label ?? '');
+    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.environmentMapTexels');
+    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.environmentMapCdf');
+    expect(sceneBuffers.hasEnvironmentMap).toBe(true);
+    expect(sceneBuffers.environmentHdriIntensity).toBe(0.4);
+    expect(sceneBuffers.environmentHdriRotationY).toBe(0.25);
+    expect(host.setSceneState).toHaveBeenCalledTimes(1);
+    expect(host.setScene).not.toHaveBeenCalled();
+    expect(host.reset).toHaveBeenCalledTimes(1);
   });
 });

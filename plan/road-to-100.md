@@ -852,8 +852,20 @@ For each fixture in `tools/reference-assets/gltf/`:
 
 #### 5C — Mutation matrix GPU observability
 
-Extend `walkaround-hybrid/src/__tests__/mutationMatrix.test.ts` + pt-webgpu mutation tests:
-- After `updatePrimitive`/`updateEmitter`/`updateEnvironment`, assert bind group recreation flags, buffer generation counters, or mock `writeBuffer` call counts.
+✅ NON-GPU SEAM CLOSED for the current mutation matrix: `walkaround-hybrid/src/__tests__/mutationMatrix.test.ts`
+pins observable pipeline/DDGI/RC collaborator calls for `updatePrimitive()`,
+`updateEmitter()`, `updateEnvironment()`, `updateLighting()`, and `setSize()`;
+`pt-webgpu/src/__tests__/updatePrimitiveIncremental.test.ts` pins buffer
+create/destroy/write counts for primitive material, geometry, transform,
+topology, instanced, lite fallback, and analytic paths; and
+`pt-webgpu/src/__tests__/mutationDesyncs.test.ts` now pins router-level
+`updateEmitter()` point-light buffer writes plus same-sized HDRI
+`updateEnvironment()` texel/CDF writes, scene-state commit, and accumulation
+reset without falling through to `setScene()`.
+
+Remaining proof is adapter-backed end-to-end promotion: real GPU buffers, cached
+bind groups, denoiser history, and GI propagation observed together under the
+WSL GPU/browser harness.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 

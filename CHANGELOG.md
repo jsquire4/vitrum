@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/walkaround-hybrid` unsupported material-field diagnostics:** analytic primitives now participate in the unconsumed-material scan before their render-scene mesh fallback, and `updatePrimitive(id, { material })` runs the same structured `walkaround-hybrid.unconsumed-material-fields` warning path as `setScene()`. Unsupported displacement fields remain unsupported, but no longer slip through analytic or material-only mutation paths silently.
 
+### Tests (mutation observability, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` mutation matrix observability:** router tests now assert that incremental `updateEmitter()` writes the emitter GPU buffer, commits scene state, and resets accumulation, while same-sized HDRI `updateEnvironment()` writes the environment texel/CDF buffers, updates environment metadata, commits scene state, and resets without falling through to `setScene()`.
+
 ### Fixed (pt-webgpu lite area-light MIS, 2026-06-15)
 
 - **`@vitrum/pt-webgpu` lite rect/disc area-light MIS:** the lite trace now pairs rect/disc next-event estimation with a BSDF-sampled ray-light connection against the same `liteLightTex` records. `kernelLite` restores the light-sampled power heuristic, `connectLite` intersects BSDF directions against packed rect/disc records, and `oracle.liteRectMis.test.ts` now proves the paired light-sampled + BSDF-sampled shares recover the independent solid-angle ground truth.

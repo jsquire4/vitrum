@@ -1465,6 +1465,11 @@ Status:
 - pt-webgpu has broad focused mutation coverage across primitive, emitter,
   environment, add/remove, lite downgrade, emissive stale-light, reservoir, and
   resource paths.
+- 2026-06-15 follow-up: `mutationDesyncs.test.ts` now directly asserts
+  router-level `updateEmitter()` point-light buffer writes, scene-state commit,
+  and accumulation reset, plus same-sized HDRI `updateEnvironment()` texel/CDF
+  writes, environment metadata mutation, scene-state commit, and reset without
+  falling through to `setScene()`.
 - pt-webgl2 fallback mutation behavior is covered as rebuild-style behavior.
 - walkaround-hybrid now has a focused non-GPU seam test for transform, material,
   emitter, environment, lighting, and resize behavior.
