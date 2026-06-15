@@ -123,6 +123,15 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     });
   });
 
+  it('surfaces caustic approximations without advertising native MNEE support', async () => {
+    for (const causticStrategy of ['manifold-nee', 'photon-map'] as const) {
+      const c = (await createPTEngine_WebGL2({ ...opts(), causticStrategy })).capabilities;
+      expect(c.causticStrategy).toBe(causticStrategy);
+      expect(c.experimentalFeatures?.has('pt-webgl2-manifold-nee')).not.toBe(true);
+      expect(c.experimentalFeatures?.has('pt-webgl2-photon-map')).not.toBe(true);
+    }
+  });
+
   it('exposes scene mutation methods', async () => {
     const e = await createPTEngine_WebGL2(opts());
     expect(typeof e.updatePrimitive).toBe('function');
