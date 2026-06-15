@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF diagnostics, 2026-06-15)
+
+- **`@vitrum/gltf-adapter` double-sided material diagnostics:** `gltfToScene()` now emits a structured `double-sided-material` diagnostic with the original `materials[i].doubleSided` path while preserving the flag in `MaterialSpec.extensions.doubleSided`. The adapter README also now reflects current COLOR_0 support: pt-webgl2 and full-tier pt-webgpu consume vertex colors natively, while pt-webgpu lite and walkaround-hybrid report unsupported compatibility rows.
+
 ### Fixed (walkaround material diagnostics, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` unsupported material-field diagnostics:** analytic primitives now participate in the unconsumed-material scan before their render-scene mesh fallback, and `updatePrimitive(id, { material })` runs the same structured `walkaround-hybrid.unconsumed-material-fields` warning path as `setScene()`. Unsupported displacement fields remain unsupported, but no longer slip through analytic or material-only mutation paths silently.

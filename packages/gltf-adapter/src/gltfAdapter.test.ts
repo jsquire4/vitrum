@@ -412,6 +412,32 @@ describe('material field mapping', () => {
     expect(mat.roughness).toBeCloseTo(0.7);
   });
 
+  it('emits a structured diagnostic while preserving doubleSided materials', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      name: 'leaf',
+      doubleSided: true,
+      pbrMetallicRoughness: {
+        baseColorFactor: [0.2, 0.8, 0.3, 1],
+      },
+    });
+
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
+
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.extensions?.doubleSided).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'double-sided-material',
+        path: 'materials[0].doubleSided',
+      }),
+    ]));
+    expect(warnings.some((warning) =>
+      warning.includes('Material "leaf" sets doubleSided=true') &&
+      warning.includes('preserved at MaterialSpec.extensions.doubleSided'),
+    )).toBe(true);
+  });
+
   it('preserves KHR_texture_transform texCoord override on texture refs', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const imageBuf = u8Buffer([0x89, 0x50, 0x4e, 0x47]);

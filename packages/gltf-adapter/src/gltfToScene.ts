@@ -262,6 +262,7 @@ export interface GltfMaterialVariantBinding {
 export type GltfImportDiagnosticCode =
   | 'unsupported-version'
   | 'ignored-camera'
+  | 'double-sided-material'
   | 'skin-rest-pose'
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
@@ -418,6 +419,19 @@ export async function gltfToScene(
   const coreMaterials = (gltf.materials ?? []).map((m) =>
     convertMaterial(m, handleMap, warnings, gltf),
   );
+  for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
+    if (material.doubleSided !== true) continue;
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'double-sided-material',
+      path: `materials[${materialIndex}].doubleSided`,
+      message:
+        `[vitrum/gltf-adapter] Material "${material.name ?? materialIndex}" sets doubleSided=true. ` +
+        'The flag is preserved at MaterialSpec.extensions.doubleSided for host/backend inspection, ' +
+        'but @vitrum/core has no first-class two-sided/backface-normal material contract; ' +
+        'backend compatibility may report an approximate doubleSided row.',
+    });
+  }
   const selectedMaterialVariant = _resolveMaterialVariantSelection(
     gltf,
     opts.materialVariant,
