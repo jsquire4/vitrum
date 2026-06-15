@@ -880,7 +880,7 @@ Add glTF fixtures to behavioral gate configs (currently 29/29): at minimum unlit
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
 | Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate in shade-owned GGX paths; native promotion still needs ReSTIR/GI payload/PDF parity where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
-| Displacement | displacement* | Permanent unsupported all backends |
+| Displacement | displacement* | Permanent unsupported all backends; diagnostics cover setScene, analytic authored materials, and walkaround material-only mutation paths |
 
 **pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `scatteringCoefficientRGB`, `frontLayer`, and `backLayer`; `emitterCastShadow` remains approximate in the shadow matrix.
 

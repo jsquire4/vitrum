@@ -121,11 +121,11 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result.filter((f) => f === 'frontLayer')).toHaveLength(1);
   });
 
-  it('skips non-mesh primitives', () => {
+  it('reports material drops on analytic primitives', () => {
     const prims: PrimLike[] = [
-      { kind: 'analytic', material: { baseColor: [1, 1, 1], roughness: 0, metallic: 0, clearcoat: 1 } },
+      { kind: 'analytic', material: { baseColor: [1, 1, 1], roughness: 0, metallic: 0, thinFilmStack: { layers: [] } } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['thinFilmStack']);
   });
 
   it('does not count undefined or null fields as unconsumed', () => {

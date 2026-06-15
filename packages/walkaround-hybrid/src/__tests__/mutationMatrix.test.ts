@@ -309,6 +309,36 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits structured warnings for unsupported displacement fields', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [0.6, 0.6, 0.6],
+          roughness: 0.35,
+          metallic: 0,
+          displacementMap: { handle: { id: 'height' } },
+          displacementScale: 0.2,
+          displacementBias: -0.1,
+          envMapIntensity: 0.35,
+        },
+      });
+
+      const materialWarning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.unconsumed-material-fields',
+      );
+      expect(materialWarning?.method).toBe('updatePrimitive');
+      expect(materialWarning?.details?.fields).toEqual([
+        'displacementBias',
+        'displacementMap',
+        'displacementScale',
+        'envMapIntensity',
+      ]);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

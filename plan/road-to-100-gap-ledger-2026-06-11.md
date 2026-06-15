@@ -85,7 +85,10 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   `displacementScale`, and `displacementBias` as unsupported on all three
   shipping backends; pt-webgpu and pt-webgl2 emit structured warnings when
   submitted scenes contain them, and walkaround-hybrid pins them through its
-  unconsumed-material allowlist.
+  unconsumed-material allowlist. 2026-06-15 follow-up: walkaround's diagnostic
+  now also scans authored `analytic` primitive materials before mesh fallback
+  and the `updatePrimitive(id, { material })` fast path, so unsupported
+  displacement fields cannot bypass the warning on incremental material edits.
 
 Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
 

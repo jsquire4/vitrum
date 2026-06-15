@@ -2,8 +2,8 @@
  * Allowlist of `MaterialSpec` fields that the walkaround-hybrid package
  * actually reads during scene ingestion (BVH packing, emitter list building,
  * DDGI material upload). Every field NOT in this set is silently dropped —
- * callers get a `console.warn` on the first `setScene` per engine instance
- * that surfaces those fields.
+ * callers get a structured warning the first time an engine instance sees
+ * those fields.
  *
  * Derived by reading the actual ingestion code (2026-06-10):
  *
@@ -196,8 +196,37 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'alphaMap',
 ]);
 
+function materialBearingPrimitiveKind(kind: string): boolean {
+  return (
+    kind === 'mesh' ||
+    kind === 'skinned-mesh' ||
+    kind === 'instanced-mesh' ||
+    kind === 'analytic'
+  );
+}
+
 /**
- * Scan every mesh/skinned-mesh/instanced-mesh primitive's material in `scene`
+ * Scan one material and return the fields that are present but NOT in
+ * {@link CONSUMED_MATERIAL_FIELDS}. The check is per-field-key; a field counts
+ * as "present" when it is defined and non-null.
+ */
+export function collectUnconsumedMaterialFieldsForMaterial(
+  material: Record<string, unknown> | undefined,
+): string[] {
+  if (!material) return [];
+  const supplied = new Set<string>();
+  for (const key of Object.keys(material)) {
+    if (CONSUMED_MATERIAL_FIELDS.has(key)) continue;
+    const val = material[key];
+    if (val !== undefined && val !== null) {
+      supplied.add(key);
+    }
+  }
+  return Array.from(supplied).sort();
+}
+
+/**
+ * Scan every material-bearing primitive's material in `scene`
  * and return the union of fields that are present in the scene but NOT in
  * {@link CONSUMED_MATERIAL_FIELDS}. The check is per-field-key; a field counts
  * as "present" when it is defined and non-null on at least one material.
@@ -212,21 +241,11 @@ export function collectUnconsumedMaterialFields(
 ): string[] {
   const supplied = new Set<string>();
   for (const prim of primitives) {
-    if (
-      prim.kind !== 'mesh' &&
-      prim.kind !== 'skinned-mesh' &&
-      prim.kind !== 'instanced-mesh'
-    ) {
+    if (!materialBearingPrimitiveKind(prim.kind)) {
       continue;
     }
-    const mat = prim.material;
-    if (!mat) continue;
-    for (const key of Object.keys(mat)) {
-      if (CONSUMED_MATERIAL_FIELDS.has(key)) continue;
-      const val = (mat)[key];
-      if (val !== undefined && val !== null) {
-        supplied.add(key);
-      }
+    for (const key of collectUnconsumedMaterialFieldsForMaterial(prim.material)) {
+      supplied.add(key);
     }
   }
   return Array.from(supplied).sort();
@@ -248,11 +267,7 @@ export function collectApproximateAlphaBlendPrimitiveIds(
 ): string[] {
   const ids: string[] = [];
   for (const prim of primitives) {
-    if (
-      prim.kind !== 'mesh' &&
-      prim.kind !== 'skinned-mesh' &&
-      prim.kind !== 'instanced-mesh'
-    ) {
+    if (!materialBearingPrimitiveKind(prim.kind)) {
       continue;
     }
     const mat = prim.material;

@@ -22,6 +22,7 @@ import {
   CONSUMED_MATERIAL_FIELDS,
   collectApproximateAlphaBlendPrimitiveIds,
   collectUnconsumedMaterialFields,
+  collectUnconsumedMaterialFieldsForMaterial,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -167,12 +168,20 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).toEqual(['frontLayer']);
   });
 
-  it('skips non-mesh kinds (analytic kind is not scanned)', () => {
+  it('reports material drops on analytic primitives', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { kind: 'analytic', material: { baseColor: [1, 0, 0], unknownField: 42 } },
     ];
-    // analytic is NOT in the scanned kinds — should be ignored
-    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['unknownField']);
+  });
+
+  it('scans a material patch without needing a primitive wrapper', () => {
+    expect(collectUnconsumedMaterialFieldsForMaterial({
+      baseColor: [1, 1, 1],
+      displacementMap: { handle: 'height' },
+      displacementScale: 0.25,
+      displacementBias: -0.05,
+    })).toEqual(['displacementBias', 'displacementMap', 'displacementScale']);
   });
 
   it('unions across multiple primitives and deduplicates', () => {

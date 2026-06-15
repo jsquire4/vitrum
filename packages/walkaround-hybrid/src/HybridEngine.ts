@@ -818,6 +818,28 @@ export class HybridEngine implements Engine {
 
   // ── Scene management ───────────────────────────────────────────────────
 
+  private _warnUnconsumedMaterialFields(
+    fields: readonly string[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (fields.length === 0) return;
+    const sortedFields = Array.from(fields).sort();
+    const key = sortedFields.join(',');
+    if (this._warnedMaterialFields.has(key)) return;
+    this._warnedMaterialFields.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.unconsumed-material-fields',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: the following material fields are ` +
+        `supplied but not consumed by this backend: ${sortedFields.join(', ')}. ` +
+        `See consumedMaterialFields.ts for the full allowlist.`,
+      details: { fields: sortedFields },
+    });
+  }
+
   /**
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
@@ -856,29 +878,15 @@ export class HybridEngine implements Engine {
     }
 
     // Warn once per distinct set of unconsumed material fields so hosts know
-    // which Material properties this backend silently ignores (e.g. texture
-    // maps, Disney scalars). The warn-once key is the sorted field list so
-    // incremental `setScene` calls with the same ignored set don't spam.
-    const unconsumed = collectUnconsumedMaterialFields(
-      scene.primitives as unknown as ReadonlyArray<{ readonly kind: string; readonly material?: Record<string, unknown> }>,
+    // which Material properties this backend silently ignores. The warn-once
+    // key is the sorted field list so incremental scene/material changes with
+    // the same ignored set don't spam.
+    this._warnUnconsumedMaterialFields(
+      collectUnconsumedMaterialFields(
+        scene.primitives as unknown as ReadonlyArray<{ readonly kind: string; readonly material?: Record<string, unknown> }>,
+      ),
+      'setScene',
     );
-    if (unconsumed.length > 0) {
-      const key = unconsumed.join(',');
-      if (!this._warnedMaterialFields.has(key)) {
-        this._warnedMaterialFields.add(key);
-        this._warn({
-          code: 'walkaround-hybrid.unconsumed-material-fields',
-          backend: 'walkaround-hybrid',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/walkaround-hybrid] setScene: the following material fields are ` +
-          `supplied but not consumed by this backend: ${unconsumed.join(', ')}. ` +
-          `See consumedMaterialFields.ts for the full allowlist.`,
-          details: { fields: unconsumed },
-        });
-      }
-    }
 
     const alphaBlendApproxIds = collectApproximateAlphaBlendPrimitiveIds(
       scene.primitives as unknown as ReadonlyArray<{
@@ -1219,6 +1227,9 @@ export class HybridEngine implements Engine {
       lastScene:             this._lastScene,
       renderScene:           this._renderScene,
       coreSceneSuppliesMeshes: this._coreSceneSuppliesMeshes(),
+      warnUnconsumedMaterialFields: (fields) => {
+        this._warnUnconsumedMaterialFields(fields, 'updatePrimitive');
+      },
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {
       return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };

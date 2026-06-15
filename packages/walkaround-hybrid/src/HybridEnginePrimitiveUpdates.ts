@@ -85,6 +85,7 @@ import {
   packBVHEmissiveLeFromCore,
   packBVHRoughMetalFromCore,
 } from './restir/packingHelpers.js';
+import { collectUnconsumedMaterialFieldsForMaterial } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
@@ -372,6 +373,9 @@ export interface PrimitiveUpdateContext {
   /** Whether the engine's render scene supplies core mesh/skinned/instanced
    *  primitive payloads, allowing incremental emitter rebuilds. */
   readonly coreSceneSuppliesMeshes?: boolean;
+  /** Emits backend-honesty warnings for material-only patches that carry fields
+   *  the walkaround material packer does not consume. */
+  readonly warnUnconsumedMaterialFields?: (fields: readonly string[]) => void;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -1197,6 +1201,9 @@ export function materialPatch(
     );
   }
   const nextMaterial = patch.material;
+  ctx.warnUnconsumedMaterialFields?.(
+    collectUnconsumedMaterialFieldsForMaterial(nextMaterial as unknown as Record<string, unknown>),
+  );
 
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
   if (range == null || range.triCount === 0) {
