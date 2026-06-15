@@ -422,7 +422,8 @@ export function evaluateGltfBackendProfileCompatibility(
       path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTangents', 'meshes'),
       message:
         'glTF morph-target TANGENT deltas are preserved on SkinnedMeshPrimitive.morphTargetTangents, ' +
-        'but shipping backends do not yet apply those deltas to posed tangent-space shading.',
+        'and CPU-solved skinned paths apply them to posed tangent-space shading when rest tangents exist; ' +
+        'GPU-native tangent skinning is still a fallback-to-CPU path.',
     });
   }
 

@@ -264,6 +264,7 @@ export class SceneMutationRouter {
           ...restPatch,
           positions: solved.positions,
           normals: solved.normals,
+          ...(solved.tangents ? { tangents: solved.tangents } : {}),
         };
       } catch (err) {
         warnHost(host, {

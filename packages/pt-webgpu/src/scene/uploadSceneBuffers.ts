@@ -427,12 +427,13 @@ export function packFoldedMaterialEntry(
  * Primitives without bones (or with no skin data) are returned unchanged.
  *
  * morphTargets ARE handled by solveSkin (morph-blend is applied before LBS when
- * morphTargets + morphWeights are present). There is no remaining morphTarget gap
- * for the solver: solveSkin handles both position and normal morph deltas.
+ * morphTargets + morphWeights are present). solveSkin handles position, normal,
+ * and tangent morph deltas; solved tangents are preserved for tangent-space
+ * material maps.
  *
- * Returns a new scene whose skinned-mesh primitives carry solved positions/normals
- * so that packSceneFromCore (which reads primitive.positions directly) uses the
- * correct deformed geometry.
+ * Returns a new scene whose skinned-mesh primitives carry solved
+ * positions/normals/tangents so that packSceneFromCore uses the correct
+ * deformed geometry and tangent frame.
  */
 function applySolveSkinToScene(scene: Scene): Scene {
   let anyChanged = false;
@@ -443,10 +444,15 @@ function applySolveSkinToScene(scene: Scene): Scene {
     try {
       const solved = solveSkin(p);
       anyChanged = true;
-      // Return a structural override: only positions + normals change; all other
-      // fields (uvs, indices, skinIndices, skinWeights, bones, …) are preserved
-      // so downstream packs (emitters, BVH) see the full primitive data.
-      return { ...p, positions: solved.positions, normals: solved.normals };
+      // Return a structural override: only solved vertex attributes change; all
+      // other fields (uvs, indices, skinIndices, skinWeights, bones, …) are
+      // preserved so downstream packs (emitters, BVH) see the full primitive data.
+      return {
+        ...p,
+        positions: solved.positions,
+        normals: solved.normals,
+        ...(solved.tangents ? { tangents: solved.tangents } : {}),
+      };
     } catch (err) {
       console.warn(
         `[vitrum/pt-webgpu] solveSkin failed for primitive "${p.id}"; using rest pose. ${String(err)}`,

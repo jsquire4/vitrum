@@ -2,8 +2,8 @@
  * skinSolver.ts — CPU baseline per-frame linear-blend skinning solver.
  *
  * Reads a SkinnedMeshPrimitive (rest pose + current bones / boneInverses)
- * and produces deformed `positions` + `normals` Float32Arrays that hosts
- * push through `engine.updatePrimitive(id, { positions, normals })`.
+ * and produces deformed `positions` + `normals` (+ optional `tangents`)
+ * Float32Arrays that hosts push through `engine.updatePrimitive(...)`.
  *
  * Algorithm: linear blend skinning (LBS) per glTF 2.0 / three.js convention,
  * preceded by morph-target blending when the primitive carries blend shapes,
@@ -11,6 +11,7 @@
  *
  *   morphedPos[v]    = restPos[v]    + Σ_t morphWeights[t] · morphTargets[t][v]
  *   morphedNormal[v] = restNormal[v] + Σ_t morphWeights[t] · morphTargetNormals[t][v]
+ *   morphedTangent[v]= restTangent[v]+ Σ_t morphWeights[t] · morphTargetTangents[t][v]
  *   skinVertex[v]   = bindMatrix       · morphedPos[v]            (skip if bindMatrix omitted)
  *   skinMatrix[v]   = Σ_k weights[v,k] · ( bones[idx[v,k]] · boneInverses[idx[v,k]] )
  *   skinnedWorld[v] = skinMatrix[v]    · skinVertex[v]            (w=1 transform)
@@ -143,7 +144,8 @@ export function solveSkin(
   prim: SkinnedMeshPrimitive,
   outPositions?: Float32Array,
   outNormals?: Float32Array,
-): { positions: Float32Array; normals: Float32Array } {
+  outTangents?: Float32Array,
+): { positions: Float32Array; normals: Float32Array; tangents?: Float32Array } {
   const vertCount = prim.positions.length / 3;
   if (prim.normals.length !== vertCount * 3) {
     throw new Error(
@@ -197,11 +199,21 @@ export function solveSkin(
 
   const positions = outPositions ?? new Float32Array(vertCount * 3);
   const normals = outNormals ?? new Float32Array(vertCount * 3);
+  const hasTangents = prim.tangents != null;
+  if (hasTangents && prim.tangents!.length !== vertCount * 4) {
+    throw new Error(
+      `solveSkin: tangents length ${prim.tangents!.length} expected ${vertCount * 4}.`,
+    );
+  }
+  const tangents = hasTangents ? (outTangents ?? new Float32Array(vertCount * 4)) : undefined;
   if (positions.length !== vertCount * 3) {
     throw new Error(`solveSkin: outPositions length ${positions.length} expected ${vertCount * 3}.`);
   }
   if (normals.length !== vertCount * 3) {
     throw new Error(`solveSkin: outNormals length ${normals.length} expected ${vertCount * 3}.`);
+  }
+  if (tangents != null && tangents.length !== vertCount * 4) {
+    throw new Error(`solveSkin: outTangents length ${tangents.length} expected ${vertCount * 4}.`);
   }
 
   const combined = combineSkinMatrices(prim.bones, prim.boneInverses, boneCount);
@@ -212,6 +224,7 @@ export function solveSkin(
   // directly from the rest pose to skip the allocation + indirection.
   let morphedPositions: Float32Array | null = null;
   let morphedNormals: Float32Array | null = null;
+  let morphedTangents: Float32Array | null = null;
   if (prim.morphTargets != null && prim.morphWeights != null && prim.morphTargets.length > 0) {
     let anyActive = false;
     for (let t = 0; t < prim.morphWeights.length; t++) {
@@ -261,10 +274,38 @@ export function solveSkin(
           }
         }
       }
+      if (prim.morphTargetTangents != null && prim.tangents != null) {
+        if (prim.morphTargetTangents.length !== tCount) {
+          throw new Error(
+            `solveSkin: morphTargetTangents length ${prim.morphTargetTangents.length} != morphTargets ${tCount}.`,
+          );
+        }
+        const mt = new Float32Array(vertCount * 3);
+        for (let v = 0; v < vertCount; v += 1) {
+          mt[v * 3] = prim.tangents[v * 4]!;
+          mt[v * 3 + 1] = prim.tangents[v * 4 + 1]!;
+          mt[v * 3 + 2] = prim.tangents[v * 4 + 2]!;
+        }
+        morphedTangents = mt;
+        for (let t = 0; t < tCount; t++) {
+          const w = prim.morphWeights[t]!;
+          if (w === 0) continue;
+          const delta = prim.morphTargetTangents[t]!;
+          if (delta.length !== mt.length) {
+            throw new Error(
+              `solveSkin: morphTargetTangents[${t}] length ${delta.length} != tangents ${mt.length}.`,
+            );
+          }
+          for (let i = 0; i < mt.length; i++) {
+            mt[i] = mt[i]! + w * delta[i]!;
+          }
+        }
+      }
     }
   }
   const restPositions = morphedPositions ?? prim.positions;
   const restNormals = morphedNormals ?? prim.normals;
+  const restTangents = morphedTangents;
 
   // Bind-matrix support: when the SkinnedMesh was bound with a non-identity
   // bindMatrix, we must pre-transform rest positions to bind-pose-world
@@ -299,6 +340,10 @@ export function solveSkin(
     const nx = restNormals[v * 3 + 0]!;
     const ny = restNormals[v * 3 + 1]!;
     const nz = restNormals[v * 3 + 2]!;
+    const hasVertexTangent = tangents != null && prim.tangents != null;
+    const tx0 = restTangents?.[v * 3 + 0] ?? prim.tangents?.[v * 4 + 0] ?? 0;
+    const ty0 = restTangents?.[v * 3 + 1] ?? prim.tangents?.[v * 4 + 1] ?? 0;
+    const tz0 = restTangents?.[v * 3 + 2] ?? prim.tangents?.[v * 4 + 2] ?? 0;
 
     // Position in (possibly bind-pre-multiplied) space for the skin transform.
     let bpx = px, bpy = py, bpz = pz;
@@ -398,7 +443,18 @@ export function solveSkin(
     normals[v * 3 + 0] = dnx;
     normals[v * 3 + 1] = dny;
     normals[v * 3 + 2] = dnz;
+    if (hasVertexTangent && tangents != null && prim.tangents != null) {
+      let dtx = linRowMajor[0]! * tx0 + linRowMajor[1]! * ty0 + linRowMajor[2]! * tz0;
+      let dty = linRowMajor[3]! * tx0 + linRowMajor[4]! * ty0 + linRowMajor[5]! * tz0;
+      let dtz = linRowMajor[6]! * tx0 + linRowMajor[7]! * ty0 + linRowMajor[8]! * tz0;
+      const tInvLen = 1 / Math.sqrt(dtx * dtx + dty * dty + dtz * dtz + 1e-20);
+      dtx *= tInvLen; dty *= tInvLen; dtz *= tInvLen;
+      tangents[v * 4 + 0] = dtx;
+      tangents[v * 4 + 1] = dty;
+      tangents[v * 4 + 2] = dtz;
+      tangents[v * 4 + 3] = prim.tangents[v * 4 + 3] ?? 1;
+    }
   }
 
-  return { positions, normals };
+  return tangents != null ? { positions, normals, tangents } : { positions, normals };
 }

@@ -221,6 +221,54 @@ describe('solveSkin', () => {
     expect(positions[2]).toBeCloseTo(0);
   });
 
+  it('skins rest tangents and preserves handedness', () => {
+    const rotZ = new Float32Array([
+      0, 1, 0, 0,
+      -1, 0, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 0, 1]),
+        bonesMatrix: rotZ,
+      }),
+      tangents: new Float32Array([1, 0, 0, -1]),
+    };
+
+    const { tangents } = solveSkin(prim);
+
+    expect(tangents).toBeDefined();
+    expect(tangents![0]).toBeCloseTo(0, 6);
+    expect(tangents![1]).toBeCloseTo(1, 6);
+    expect(tangents![2]).toBeCloseTo(0, 6);
+    expect(tangents![3]).toBe(-1);
+  });
+
+  it('applies morphTargetTangents before skinning', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      tangents: new Float32Array([1, 0, 0, 1]),
+      morphTargets: [new Float32Array([0, 0, 0])],
+      morphTargetTangents: [new Float32Array([0, 1, 0])],
+      morphWeights: new Float32Array([1]),
+    };
+
+    const { tangents } = solveSkin(prim);
+    const invSqrt2 = 1 / Math.sqrt(2);
+
+    expect(tangents).toBeDefined();
+    expect(tangents![0]).toBeCloseTo(invSqrt2, 6);
+    expect(tangents![1]).toBeCloseTo(invSqrt2, 6);
+    expect(tangents![2]).toBeCloseTo(0, 6);
+    expect(tangents![3]).toBe(1);
+  });
+
   it('throws when morphTargetNormals count does not match morphTargets for active morphs', () => {
     const prim: SkinnedMeshPrimitive = {
       ...singleBonePrim({
@@ -252,6 +300,35 @@ describe('solveSkin', () => {
     };
 
     expect(() => solveSkin(prim)).toThrow(/morphTargetNormals\[0\] length 2 != normals 3/);
+  });
+
+  it('throws when morphTargetTangents count or entry length does not match active morphs', () => {
+    const base = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      tangents: new Float32Array([1, 0, 0, 1]),
+      morphTargets: [
+        new Float32Array([1, 0, 0]),
+        new Float32Array([0, 1, 0]),
+      ],
+      morphWeights: new Float32Array([1, 0]),
+    };
+
+    expect(() => solveSkin({
+      ...base,
+      morphTargetTangents: [new Float32Array([0, 0, 1])],
+    })).toThrow(/morphTargetTangents length 1 != morphTargets 2/);
+
+    expect(() => solveSkin({
+      ...base,
+      morphTargetTangents: [
+        new Float32Array([0, 0]),
+        new Float32Array([0, 0, 0]),
+      ],
+    })).toThrow(/morphTargetTangents\[0\] length 2 != tangents 3/);
   });
 
   it('bindMatrix is honored — non-identity bind round-trips to identity skinning', () => {

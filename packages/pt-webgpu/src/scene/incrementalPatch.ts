@@ -118,9 +118,10 @@ export function canFastPathMaterialPatch(
 }
 
 /**
- * Geometry (positions/normals) patch eligible for in-place BLAS refit: only
- * positions/normals touched, vertex counts unchanged, and the primitive is a
- * (skinned-)mesh.
+ * Geometry (positions/normals/tangents) patch eligible for in-place BLAS refit:
+ * only same-count vertex attributes touched, and the primitive is a
+ * (skinned-)mesh. Tangents ride the existing `rebuildPrimitiveBlas` splice path
+ * so skinned/morphed tangent-space shading can update without a full setScene.
  */
 export function canFastPathGeometryPatch(
   primitive: ScenePrimitive,
@@ -130,10 +131,10 @@ export function canFastPathGeometryPatch(
     return false;
   }
   const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
-  if (!keys.every((k) => k === 'positions' || k === 'normals')) {
+  if (!keys.every((k) => k === 'positions' || k === 'normals' || k === 'tangents')) {
     return false;
   }
-  if (!('positions' in patch) && !('normals' in patch)) {
+  if (!('positions' in patch) && !('normals' in patch) && !('tangents' in patch)) {
     return false;
   }
   if ('positions' in patch && patch.positions != null) {
@@ -149,6 +150,15 @@ export function canFastPathGeometryPatch(
       ? primitive.normals
       : null;
     if (cur != null && patch.normals.length !== cur.length) {
+      return false;
+    }
+  }
+  if ('tangents' in patch && patch.tangents != null) {
+    const cur = primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh'
+      ? primitive.tangents
+      : null;
+    const expectedLength = cur?.length ?? Math.floor(primitive.positions.length / 3) * 4;
+    if (patch.tangents.length !== expectedLength) {
       return false;
     }
   }

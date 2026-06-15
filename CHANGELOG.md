@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (skinned morph tangent consumption, 2026-06-15)
+
+- **`@vitrum/core` + skinned backends:** `solveSkin()` now returns a solved `tangents` stream when rest tangents exist, blends glTF `morphTargetTangents` before skinning, and preserves base tangent handedness. `@vitrum/pt-webgpu` carries those solved tangents through initial scene packing and bones/morph-weight mutation fast paths, while `@vitrum/walkaround-hybrid` routes tangent-bearing skinned meshes through the CPU skin fallback until its GPU skin kernel grows tangent writes. glTF compatibility remains `approximate` for GPU-native tangent skinning, not because tangent deltas are dropped.
+
 ### Tests (material contract gates, 2026-06-15)
 
 - **Material promise gate hardening:** added pt-webgpu descriptor/WGSL regression pins for native `aoMapIntensity`, `lightMapIntensity`, and `envMapIntensity` scalar lanes, plus a walkaround-hybrid `setScene` structured-warning fixture for unsupported displacement and environment-intensity material fields.
@@ -76,7 +80,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added (glTF morph target tangent preservation, 2026-06-14)
 
-- **`@vitrum/core` + `@vitrum/gltf-adapter` morph target tangents:** glTF morph-target `TANGENT` VEC3 deltas now import into `SkinnedMeshPrimitive.morphTargetTangents` alongside position/normal deltas and weights. Compatibility reporting now grades these assets as `approximate` rather than data-loss unsupported because shipping renderers preserve the data but do not yet apply tangent deltas to posed tangent-space shading.
+- **`@vitrum/core` + `@vitrum/gltf-adapter` morph target tangents:** glTF morph-target `TANGENT` VEC3 deltas now import into `SkinnedMeshPrimitive.morphTargetTangents` alongside position/normal deltas and weights. Compatibility reporting now grades these assets as `approximate` rather than data-loss unsupported because the data is preserved and consumed by CPU-solved skinned paths, while GPU-native tangent skinning remains a fallback path.
 
 ### Fixed (pt-webgpu lite static multi-primitive packing, 2026-06-14)
 

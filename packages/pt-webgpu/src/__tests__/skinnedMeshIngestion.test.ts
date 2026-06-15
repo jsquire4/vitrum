@@ -146,9 +146,15 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     // Rest triangle in XY-plane; morph target shifts vertex 0 +2 on X.
     const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const restTangents = new Float32Array([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
     // Morph delta: only vertex 0 shifts by (2, 0, 0).
     const morphDelta = new Float32Array([2, 0, 0, 0, 0, 0, 0, 0, 0]);
     const morphNormalDelta = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const morphTangentDelta = new Float32Array([0, 1, 0, 0, 0, 0, 0, 0, 0]);
     const vCount = restPositions.length / 3;
     const skinIndices = new Uint32Array(vCount * 4);
     const skinWeights = new Float32Array(vCount * 4);
@@ -162,8 +168,10 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
       skinWeights,
       bones: ident4(),
       boneInverses: ident4(),
+      tangents: restTangents,
       morphTargets: [morphDelta],
       morphTargetNormals: [morphNormalDelta],
+      morphTargetTangents: [morphTangentDelta],
       morphWeights: new Float32Array([1.0]),
       material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
     };
@@ -178,6 +186,12 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     expect(packed.positions[0]).toBeCloseTo(expected.positions[0]!, 4); // 2
     expect(packed.positions[1]).toBeCloseTo(expected.positions[1]!, 4); // 0
     expect(packed.positions[2]).toBeCloseTo(expected.positions[2]!, 4); // 0
+    expect(expected.tangents).toBeDefined();
+    expect(packed.tangents[0]).toBeCloseTo(expected.tangents![0]!, 4);
+    expect(packed.tangents[1]).toBeCloseTo(expected.tangents![1]!, 4);
+    expect(packed.tangents[2]).toBeCloseTo(expected.tangents![2]!, 4);
+    expect(packed.tangents[3]).toBeCloseTo(1, 4);
+    expect(packed.tangents[1]).toBeGreaterThan(0);
   });
 });
 
@@ -188,14 +202,20 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     host: MutationHost;
     sceneRef: { current: Scene };
     positionsWriteCalls: Float32Array[];
+    tangentsWriteCalls: Float32Array[];
   } {
     const packed = buildPackedScene(scene, {});
     const geoPack = scenePackResultFromPacked(packed);
 
     const positionsWriteCalls: Float32Array[] = [];
+    const tangentsWriteCalls: Float32Array[] = [];
 
     const positionsBuffer = {
       size: Math.max(16, packed.positions.byteLength),
+      destroy: vi.fn(),
+    } as unknown as GPUBuffer;
+    const tangentsBuffer = {
+      size: Math.max(16, packed.tangents.byteLength),
       destroy: vi.fn(),
     } as unknown as GPUBuffer;
 
@@ -224,6 +244,8 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       tlasInstanceLocalToWorldBuffer: { size: Math.max(16, packed.tlasInstanceLocalToWorld.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       lightTreeBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       uvsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
+      tangentsBuffer,
+      colorsBuffer: { size: Math.max(16, packed.colors.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       materialTexDescriptorsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       materialTexture: {} as GPUTexture,
       materialTextureView: {} as GPUTextureView,
@@ -246,6 +268,9 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
             if (buf === positionsBuffer) {
               positionsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(length / 4)));
             }
+            if (buf === tangentsBuffer) {
+              tangentsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(length / 4)));
+            }
           }),
         },
       } as unknown as GPUDevice,
@@ -263,7 +288,7 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       reset: vi.fn(),
     };
 
-    return { host, sceneRef, positionsWriteCalls };
+    return { host, sceneRef, positionsWriteCalls, tangentsWriteCalls };
   }
 
   it('bones-only patch re-solves skin and writes solved positions to GPU', () => {
@@ -318,5 +343,39 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     if (updatedPrim?.kind === 'skinned-mesh') {
       expect(updatedPrim.bones[12]).toBeCloseTo(3, 4); // tx column
     }
+  });
+
+  it('morphWeights patch re-solves morph tangent deltas into the tangent GPU buffer', () => {
+    const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const restTangents = new Float32Array([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      ...makeSkinnedPrim({
+        positions: restPositions,
+        normals: restNormals,
+        bonesMatrix: ident4(),
+      }),
+      tangents: restTangents,
+      morphTargets: [new Float32Array(restPositions.length)],
+      morphTargetTangents: [new Float32Array([0, 1, 0, 0, 0, 0, 0, 0, 0])],
+      morphWeights: new Float32Array([0]),
+    };
+    const scene = makeScene(prim);
+    const { host, tangentsWriteCalls } = makeHostWithSkinnedScene(scene);
+
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('skinned', { morphWeights: new Float32Array([1]) });
+
+    expect(tangentsWriteCalls.length).toBeGreaterThan(0);
+    const written = tangentsWriteCalls[tangentsWriteCalls.length - 1]!;
+    const invSqrt2 = 1 / Math.sqrt(2);
+    expect(written[0]).toBeCloseTo(invSqrt2, 4);
+    expect(written[1]).toBeCloseTo(invSqrt2, 4);
+    expect(written[2]).toBeCloseTo(0, 4);
+    expect(written[3]).toBeCloseTo(1, 4);
   });
 });

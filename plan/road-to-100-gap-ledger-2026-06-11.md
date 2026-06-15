@@ -1359,17 +1359,21 @@ Status:
   core primitive shape; unskinned morphed meshes are promoted through an identity
   skeleton path.
 - TANGENT morph deltas import into `SkinnedMeshPrimitive.morphTargetTangents`.
-  This is still a structured compatibility downgrade for shipping renderers:
+  The shared CPU `solveSkin()` path now blends those deltas into solved
+  tangent.xyz streams, preserves base tangent handedness, and pt-webgpu /
+  walkaround CPU-skin fallbacks upload the solved tangents for tangent-space
+  material maps. This remains a structured compatibility downgrade:
   `analyzeGltfAsset()` reports `hasMorphTargetTangents`,
   `evaluateGltfBackendCompatibility()` emits a source-pathed
   `morphTargetTangents` approximate primitive issue, and
   `gltfAssetApi.test.ts` pins that public API behavior.
 
 Closure:
-- Treat morph-tangent data preservation as closed for the current professional
-  contract: deterministic, source-pathed, and test-covered. Full renderer
-  promotion still requires solver/backend consumption of those tangent deltas,
-  so compatibility remains approximate instead of native.
+- Treat morph-tangent data preservation plus CPU-solved backend consumption as
+  closed for the current professional contract: deterministic, source-pathed,
+  and test-covered. Full renderer promotion still requires GPU-native tangent
+  skinning / broader backend evidence, so compatibility remains approximate
+  instead of native.
 - Controller-side morph playback is closed under `GLTF-API-04`.
 
 ### GLTF-05 - glTF primitive modes

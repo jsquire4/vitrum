@@ -152,13 +152,19 @@ export class GpuSkinningSubsystem {
    * CPU skinning fallback: solve the skin on the CPU and push the solved
    * positions + normals through the standard incremental geometry update.
    *
-   * Used when: preferGpu is false, the mesh has active morph targets, the
-   * bind matrix is non-identity, the pipeline is unavailable, or no vertex
-   * range exists for the primitive.
+   * Used when: preferGpu is false, the mesh has active morph targets or authored
+   * tangents, the bind matrix is non-identity, the pipeline is unavailable, or
+   * no vertex range exists for the primitive. The GPU kernel writes positions +
+   * normals only; tangent-bearing meshes need the CPU solver so normal/bump/
+   * clearcoat-normal maps do not sample stale rest-pose tangents.
    */
   #cpuFallback(host: GpuSkinningHost, prim: SkinnedMeshPrimitive, id: string): void {
-    const { positions, normals } = solveSkin(prim);
-    host.updatePrimitive(id, { positions, normals });
+    const { positions, normals, tangents } = solveSkin(prim);
+    host.updatePrimitive(id, {
+      positions,
+      normals,
+      ...(tangents ? { tangents } : {}),
+    });
   }
 
   #cpuFallbackAll(host: GpuSkinningHost, scene: Scene): void {
@@ -195,6 +201,7 @@ export class GpuSkinningSubsystem {
         (prim.morphTargets?.length ?? 0) > 0 &&
         prim.morphWeights != null &&
         prim.morphWeights.some((w) => w !== 0);
+      const hasTangents = prim.tangents != null;
       // A non-identity bindMatrix must take the CPU `solveSkin` path: the GPU
       // kernel applies only `combineSkinMatrices(bones, boneInverses)` and does
       // NOT wrap by bindMatrix / bindMatrixInverse, so it would skin positions
@@ -202,6 +209,7 @@ export class GpuSkinningSubsystem {
       if (
         !this.#preferGpu ||
         hasMorph ||
+        hasTangents ||
         hasNonIdentityBind(prim) ||
         typeof this.#device.createComputePipeline !== 'function'
       ) {
