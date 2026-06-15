@@ -743,9 +743,10 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 // Extracted to eliminate copy-paste drift between the three backend records.
 // Deep-equal to the prior inline literals (byte-identical ledger output).
 
-/** pt-webgl2 mutations — all fallback-rebuild (no fast path; full scene-texture/
- *  BVH repack on every mutation kind).  resize and lighting are unsupported. */
-const ALL_MUTATIONS_FALLBACK_REBUILD: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
+/** pt-webgl2 mutations — scene/content edits still fallback-rebuild (full
+ *  scene-texture/BVH repack). Resize is native: it reallocates render targets
+ *  and resets accumulation without scene/BVH work. Lighting is unsupported. */
+const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'fallback-rebuild',
   positions: 'fallback-rebuild',
   material: 'fallback-rebuild',
@@ -754,7 +755,7 @@ const ALL_MUTATIONS_FALLBACK_REBUILD: BackendPromiseRecord['supportDetails']['mu
   addPrimitive: 'fallback-rebuild',
   removePrimitive: 'fallback-rebuild',
   environment: 'fallback-rebuild',
-  resize: 'unsupported',
+  resize: 'native',
   lighting: 'unsupported',
 });
 
@@ -978,19 +979,17 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
       denoisers: PT_WEBGL2_DENOISERS,
-      // buildCapabilities() overrides ALL mutation kinds to 'fallback-rebuild'
-      // (a full scene-texture/BVH repack, not a targeted in-place edit).
-      // The incrementalPatchSupport flags above reflect the OUTCOME (patches
-      // are absorbed without error), but the support GRADE is fallback-rebuild
-      // because no fast-path exists in the current slice.
-      mutations: ALL_MUTATIONS_FALLBACK_REBUILD,
+      // buildCapabilities() mirrors this matrix: scene/content edits are
+      // fallback-rebuild (full scene-texture/BVH repack), while resize is a
+      // native render-target realloc/reset path.
+      mutations: PT_WEBGL2_MUTATIONS,
     },
     methodPromises: {
       ...COMMON_METHOD_PROMISES,
       // Context-lost surface: webglcontextlost canvas event. ✓ via spread.
       // GPU→CPU pixel readback: accum FBO (RGBA32F, rows flipped to top-left)
       // for 'linear'; present FBO for 'output'. ✓ via spread.
-      setSize: false,
+      setSize: true,
       updateLighting: false,
       // T3.G #30 — pt-webgl2 exposes debug.pickPrimitive and advertises
       // capabilities.debugSurface=true.

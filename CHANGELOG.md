@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/engine` + `@vitrum/gltf-adapter`:** progressive glTF loading tests now assert `textureDecodeReport` and warning passthrough, while the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()` without losing material-map report entries.
 
+### Added (pt-webgl2 resize API, 2026-06-14)
+
+- **`@vitrum/pt-webgl2`:** added `PTEngineWebGL2.setSize(width, height)` as a native render-target resize path. It stores the explicit host canvas size, reallocates existing accumulation/present targets without scene/BVH rebuild, and resets accumulation; the core promise ledger now advertises pt-webgl2 resize as `native`.
+
 ### Fixed (engine H31 residue, 2026-06-14)
 
 - **`@vitrum/engine` attach/progressive diagnostics:** `attachVitrum()` handles now expose a live `backendId` getter so hosts can see the currently selected backend even after auto-recreate swaps the underlying engine. `createProgressiveEngine()` now has a focused regression test proving final WebGPU canvas `configure()` failures surface through `onError` as `{ phase:'canvas-configure', backend:'walkaround-hybrid', recoverable:true }`.

@@ -109,6 +109,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.supportsAddRemovePrimitive).toBe(true);
     expect(c.supportDetails?.mutations.material).toBe('fallback-rebuild');
     expect(c.supportDetails?.mutations.environment).toBe('fallback-rebuild');
+    expect(c.supportDetails?.mutations.resize).toBe('native');
     expect(c.supportDetails?.denoisers).toEqual({
       none: 'native',
       atrous: 'unsupported',
@@ -333,6 +334,34 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     if (f1.kind === 'rendered') expect(f1.primaryRadiance).toBeDefined();
     const f2 = e.renderFrame(frame(16));
     expect(f2.samplesAccumulated).toBe(2);
+  });
+
+  it('setSize controls render-target dimensions and resets accumulation only on size changes', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    expect(typeof e.setSize).toBe('function');
+    e.setScene(triScene());
+
+    e.setSize!(32, 48);
+    const first = e.renderFrame(frame(16));
+    expect(first.kind).toBe('rendered');
+    expect(first.samplesAccumulated).toBe(1);
+    let captured = await e.captureFrame!();
+    expect(captured?.width).toBe(32);
+    expect(captured?.height).toBe(48);
+
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
+    e.setSize!(32, 48);
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(3);
+
+    e.setSize!(16, 20);
+    const resized = e.renderFrame(frame(16));
+    expect(resized.samplesAccumulated).toBe(1);
+    captured = await e.captureFrame!();
+    expect(captured?.width).toBe(16);
+    expect(captured?.height).toBe(20);
+
+    e.setSize!(0, 20);
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
   });
 
   it('converges at samplesTarget and stops advancing', async () => {

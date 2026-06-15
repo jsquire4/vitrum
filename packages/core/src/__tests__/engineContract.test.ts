@@ -292,21 +292,30 @@ describe('backend promise ledger', () => {
     expect(rec.methodPromises.updateLighting).toBe(true);
   });
 
-  it('pins PT backend resize and lighting as per-frame/offscreen concerns, not optional methods', () => {
-    for (const backendId of ['pt-webgl2', 'pt-webgpu'] as const) {
-      const rec = BACKEND_PROMISE_LEDGER[backendId];
+  it('pins PT backend resize/lighting method promises truthfully', () => {
+    const webgl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'];
+    expect(webgl2.presentationMode).toBe('offscreen-texture');
+    expect(webgl2.frameInputPromises).toEqual({
+      honorsViewportPerFrame: true,
+      requiresSwapChainView: false,
+      honorsPerFrameBounces: true,
+    });
+    expect(webgl2.supportDetails.mutations.resize).toBe('native');
+    expect(webgl2.supportDetails.mutations.lighting).toBe('unsupported');
+    expect(webgl2.methodPromises.setSize).toBe(true);
+    expect(webgl2.methodPromises.updateLighting).toBe(false);
 
-      expect(rec.presentationMode).toBe('offscreen-texture');
-      expect(rec.frameInputPromises).toEqual({
-        honorsViewportPerFrame: true,
-        requiresSwapChainView: false,
-        honorsPerFrameBounces: true,
-      });
-      expect(rec.supportDetails.mutations.resize).toBe('unsupported');
-      expect(rec.supportDetails.mutations.lighting).toBe('unsupported');
-      expect(rec.methodPromises.setSize).toBe(false);
-      expect(rec.methodPromises.updateLighting).toBe(false);
-    }
+    const webgpu = BACKEND_PROMISE_LEDGER['pt-webgpu'];
+    expect(webgpu.presentationMode).toBe('offscreen-texture');
+    expect(webgpu.frameInputPromises).toEqual({
+      honorsViewportPerFrame: true,
+      requiresSwapChainView: false,
+      honorsPerFrameBounces: true,
+    });
+    expect(webgpu.supportDetails.mutations.resize).toBe('unsupported');
+    expect(webgpu.supportDetails.mutations.lighting).toBe('unsupported');
+    expect(webgpu.methodPromises.setSize).toBe(false);
+    expect(webgpu.methodPromises.updateLighting).toBe(false);
   });
 
   it('pins environment fidelity rows for DDGI SH walkaround versus path tracers', () => {

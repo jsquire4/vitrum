@@ -61,12 +61,16 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(ledger.supportedAnalyticShapes).toHaveLength(0);
   });
 
-  it('ledger mutations grade: ALL must be "fallback-rebuild" or "unsupported" (buildCapabilities overrides)', () => {
-    // buildCapabilities() in pt-webgl2/src/capabilities.ts overrides every
-    // mutation kind to 'fallback-rebuild'. The ledger must reflect this.
+  it('ledger mutations grade: resize is native; scene/content edits remain rebuild-or-unsupported', () => {
+    // buildCapabilities() in pt-webgl2/src/capabilities.ts copies the ledger's
+    // native resize grade and overrides scene/content mutation kinds to the
+    // retained-scene fallback rebuild path. This keeps setSize truthful without
+    // over-promoting geometry/material/edit performance.
     const { mutations } = ledger.supportDetails;
+    expect(mutations.resize).toBe('native');
     const acceptableGrades = new Set(['fallback-rebuild', 'unsupported']);
     for (const [key, grade] of Object.entries(mutations) as [string, string][]) {
+      if (key === 'resize') continue;
       expect(
         acceptableGrades.has(grade),
         `mutations.${key} should be fallback-rebuild or unsupported, got '${grade}'`,

@@ -532,7 +532,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | ~~Procedural sky~~ ✅ DONE/approx | pt-webgl2 now bakes `procedural-sky` through shared-samplers' Preetham equirect helper and feeds the existing HDRI/CDF path | Ledger grade is `approximate` for finite 256x128 bake resolution; glTF has no sky |
 | ~~Procedural sky on PT~~ ✅ DONE/approx | Shared `bakePreethamSkyEquirect()` now feeds both pt-webgl2 and pt-webgpu | |
 | Mutations all `fallback-rebuild` | `capabilities.ts:85-92` overrides ledger mutations | Animation via controller causes full repack every frame — **performance footgun**; add fast paths mirroring `sceneMutationRouter.ts` |
-| No `setSize` | Host uses `FrameInput.viewport` | Document in `Engine` JSDoc; optional `setSize` on PT |
+| ~~No `setSize`~~ ✅ DONE (pt-webgl2) | `PTEngineWebGL2.setSize()` stores explicit canvas size, reallocates existing render targets, and resets accumulation without scene/BVH repack | `pt-webgpu` still honors `FrameInput.viewport` per frame and omits `setSize`; pt-webgl2 ledger grades resize `native` |
 | Denoiser | No in-engine path | `compatibilityReport` should note OIDN unavailable on pt-webgl2 |
 | Caustics | Heuristic not MNEE (`options.ts`) | Don't grade `manifold-nee` as native in docs |
 

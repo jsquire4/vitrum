@@ -105,9 +105,9 @@ describe('proxy method exposure follows backend promise ledger', () => {
   }
 });
 
-describe('path-tracer optional method omissions follow unsupported ledger rows', () => {
+describe('path-tracer resize and lighting optional methods follow ledger rows', () => {
   for (const backendId of ['pt-webgl2', 'pt-webgpu'] as const) {
-    it(`omits resize and lighting methods for ${backendId}`, () => {
+    it(`tracks resize and lighting method exposure for ${backendId}`, () => {
       const rec = BACKEND_PROMISE_LEDGER[backendId];
       const engine = makeFakeEngine({
         ...makeBaseCapabilities(),
@@ -123,16 +123,16 @@ describe('path-tracer optional method omissions follow unsupported ledger rows',
         presentationMode: rec.presentationMode,
       });
 
-      delete (engine as Partial<Engine>).setSize;
+      if (!rec.methodPromises.setSize) delete (engine as Partial<Engine>).setSize;
       delete (engine as Partial<Engine>).updateLighting;
 
       const proxy = wrapWithIdempotentDispose(engine, () => {});
 
-      expect(rec.supportDetails.mutations.resize).toBe('unsupported');
+      expect(rec.supportDetails.mutations.resize).toBe(backendId === 'pt-webgl2' ? 'native' : 'unsupported');
       expect(rec.supportDetails.mutations.lighting).toBe('unsupported');
-      expect(rec.methodPromises.setSize).toBe(false);
+      expect(rec.methodPromises.setSize).toBe(backendId === 'pt-webgl2');
       expect(rec.methodPromises.updateLighting).toBe(false);
-      expect(proxy.setSize).toBeUndefined();
+      expect(typeof proxy.setSize === 'function').toBe(backendId === 'pt-webgl2');
       expect(proxy.updateLighting).toBeUndefined();
     });
   }

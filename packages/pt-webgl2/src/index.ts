@@ -192,6 +192,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
   #samplesAccumulated = 0;
+  #requestedSize: { width: number; height: number } | null = null;
+  #resolutionFactor = 1;
   /** Last-frame input retained for the debug click-to-pick surface (T3.G #30). */
   #lastFrameInput: FrameInput | null = null;
 
@@ -463,6 +465,24 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     });
   }
 
+  setSize(width: number, height: number): void {
+    this.#guardLive('setSize');
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+    const next = {
+      width: Math.max(1, Math.floor(width)),
+      height: Math.max(1, Math.floor(height)),
+    };
+    if (this.#requestedSize?.width === next.width && this.#requestedSize.height === next.height) return;
+    this.#requestedSize = next;
+    if (this.#gpu.accumDims.width > 0 && this.#gpu.accumDims.height > 0) {
+      this.#gpu.ensureAccumResources(
+        Math.max(1, Math.floor(next.width * this.#resolutionFactor)),
+        Math.max(1, Math.floor(next.height * this.#resolutionFactor)),
+      );
+    }
+    this.reset();
+  }
+
   renderFrame(input: FrameInput): FrameOutput {
     this.#guardLive('renderFrame');
     // Retain camera for the debug click-to-pick surface (T3.G #30).
@@ -479,9 +499,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const q = input.quality ?? {};
     const activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
     const targetSpp = Math.min(q.samplesTarget ?? DEFAULT_SPP_TARGET, this.#maxSamplesLimit);
-    const res = q.resolutionFactor ?? 1;
-    const w = Math.max(1, Math.floor(input.viewport.width * res));
-    const h = Math.max(1, Math.floor(input.viewport.height * res));
+    const requestedResolutionFactor = q.resolutionFactor ?? 1;
+    const res = Number.isFinite(requestedResolutionFactor) && requestedResolutionFactor > 0
+      ? requestedResolutionFactor
+      : 1;
+    this.#resolutionFactor = res;
+    const baseWidth = this.#requestedSize?.width ?? input.viewport.width;
+    const baseHeight = this.#requestedSize?.height ?? input.viewport.height;
+    const w = Math.max(1, Math.floor(baseWidth * res));
+    const h = Math.max(1, Math.floor(baseHeight * res));
 
     // Paused → return the current accumulation without drawing.
     if (this.#slot.get() === 'paused') {
