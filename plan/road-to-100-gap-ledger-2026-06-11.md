@@ -208,7 +208,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `loadGltfForEngine(..., compatibilityMode:'reject-degraded')` rejects those
   sampler-policy degradations before constructing an engine. This does not
   claim backend sampler enforcement; it makes the non-enforcement visible and
-  gateable. The current full glTF adapter suite is 201 tests.
+  gateable. The current full glTF adapter suite is 202 tests.
+- Follow-up 2026-06-15: walkaround-hybrid now honors ordinary glTF
+  baseColorTexture alpha in textured alpha traversal. `materialAtlas.wgsl.ts`
+  multiplies baseColorMap `.a` by optional `alphaMap.r` and scalar opacity,
+  while `gltfAdapter.test.ts` keeps the adapter contract honest: MASK
+  baseColorTexture assets stay as `baseColorMap` plus `alphaMode`/`alphaCutoff`
+  rather than inventing a backend-specific `alphaMap` alias.
 - The pt-webgpu material texture backend consumption slice landed after that
   adapter import work: `materialTextures.ts` packs per-map UV metadata for every
   map the backend currently samples (baseColor, emissive, normal, roughnessMap,

@@ -232,12 +232,12 @@ export interface MaterialSpec {
    *  @reserved Accepted; not yet consumed by any backend. */
   readonly displacementBias?: number;
   /** Baked diffuse irradiance / light map (additive to emissive).
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by
+   *  walkaround-hybrid's atlas-backed camera-visible shade path. */
   readonly lightMap?: TextureRef;
   /** Light map intensity multiplier. Default 1.
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer. */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by
+   *  walkaround-hybrid's atlas-backed camera-visible shade path. */
   readonly lightMapIntensity?: number;
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────

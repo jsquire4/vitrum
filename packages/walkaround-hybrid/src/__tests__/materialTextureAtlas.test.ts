@@ -224,6 +224,34 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[42]).toBeCloseTo(0.4, 5);
   });
 
+  it('preserves baseColorMap alpha for walkaround alpha coverage without requiring alphaMap', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 64]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      alphaMode: 'mask',
+      alphaCutoff: 0.5,
+      baseColorMap: { handle },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBaseColorLayerCount).toBe(1);
+    expect(atlas.readableAlphaLayerCount).toBe(0);
+    expect(atlas.atlasData[3]).toBeCloseTo(64 / 255, 5);
+    expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.baseColorMetaData[32]).toBe(-1);
+    expect(atlas.baseColorMetaData[40]).toBe(1);
+    expect(atlas.baseColorMetaData[41]).toBeCloseTo(1, 5);
+    expect(atlas.baseColorMetaData[42]).toBeCloseTo(0.5, 5);
+  });
+
   it('packs emissiveMap as an sRGB-decoded atlas slot for visible emitter glow', () => {
     const handle = {
       width: 1,
@@ -695,6 +723,9 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyClearcoatNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let coverage = opacity * baseColorAlpha * alphaMapCoverage;');
     expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < cutoff;');
     expect(SHADE_WGSL).toContain(
       'let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);',

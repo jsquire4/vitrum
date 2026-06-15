@@ -493,6 +493,46 @@ describe('material field mapping', () => {
     expect(ref.transform?.rotation).toBeCloseTo(0.125);
   });
 
+  it('keeps MASK baseColorTexture alpha on baseColorMap instead of inventing alphaMap', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const imageBuf = u8Buffer(PNG_MAGIC);
+    const totalBuf = concatBuffers(posBuf, imageBuf);
+    const handle = { kind: 'decoded-masked-base-color' };
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        alphaMode: 'MASK',
+        alphaCutoff: 0.45,
+        pbrMetallicRoughness: {
+          baseColorTexture: { index: 0 },
+        },
+      }],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: imageBuf.byteLength },
+      ],
+      buffers: [{ byteLength: totalBuf.byteLength }],
+    };
+
+    const { scene } = await gltfToScene(gltf, {
+      buffers: new Map([[0, totalBuf]]),
+      decodeImage: async () => handle,
+    });
+
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.alphaMode).toBe('mask');
+    expect(mat.alphaCutoff).toBeCloseTo(0.45);
+    expect((mat.baseColorMap as TextureRef).handle).toBe(handle);
+    expect(mat.alphaMap).toBeUndefined();
+  });
+
   it('decodes baseColorTexture images embedded as data: URIs', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const handle = { kind: 'decoded-data-uri-texture' };

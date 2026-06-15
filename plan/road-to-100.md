@@ -793,6 +793,8 @@ loadGltfAsset(url, { fetch, dracoDecode, meshoptDecode, decodeImage })
 ✅ **DONE (2026-06-13):** `@vitrum/gltf-adapter` exports `decodeSceneTextures(scene, { target: 'cpu-linear' | 'webgpu', decodePixels })`.
 The `cpu-linear` path normalizes raw-image `TextureRef` handles into `{ width, height, data: Float32Array }` RGBA linear payloads with a Vitrum hint, applies the adapter's per-field sRGB-vs-linear policy, keeps alpha linear, emits source-path warnings when a raw image cannot be decoded, downsamples decoded payloads that exceed `maxTextureSize`, returns structured diagnostics for missing decoders / unsupported handles / max-size resize / NPOT-repeat hazards, and returns a fresh `textureDecodeReport`. The `webgpu` target intentionally preserves handles for the WebGPU upload path. Host image decoding/transcoding is still injected; built-in PNG/Basis transcoders, automatic mip generation, and broader backend map consumption remain separate Road rows.
 
+✅ **FOLLOW-UP (2026-06-15):** walkaround-hybrid textured alpha traversal now multiplies baseColorMap `.a` with optional `alphaMap.r`, so glTF assets that store MASK/BLEND coverage in `pbrMetallicRoughness.baseColorTexture.a` are honored without adapter-side fake `alphaMap` aliases. Tests: `gltfAdapter.test.ts` verifies the glTF boundary and `materialTextureAtlas.test.ts` verifies atlas/shader coverage.
+
 **Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.
 
 #### 4D — Animation + temporal GI

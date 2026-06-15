@@ -78,8 +78,9 @@
  *                           occlusion strength in material-word bits 3-7.
  *  alphaMap               materialAtlas.wgsl samples readable alpha maps in
  *                           primary traversal, RIS, and GI bounce casts; mask
- *                           uses opacity * alphaMap.r < alphaCutoff, while
- *                           blend remains approximate for fractional coverage.
+ *                           uses opacity * baseColorMap.a * alphaMap.r <
+ *                           alphaCutoff, while blend remains approximate for
+ *                           fractional coverage.
  *  lightMap               materialAtlas.wgsl samples readable linear light maps
  *                           as camera-visible baked outgoing radiance only.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into

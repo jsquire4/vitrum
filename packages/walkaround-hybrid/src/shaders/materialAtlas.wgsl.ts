@@ -609,12 +609,6 @@ fn materialAlphaDiscardedForHit(
     return true;
   }
 
-  let metaTexel = hit.indices.w * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_SLOT_ALPHA * 2u;
-  let alphaMeta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
-  if (i32(alphaMeta0.x) < 0) {
-    return false;
-  }
-
   let coverageMeta = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(hit.indices.w * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET),
@@ -626,13 +620,13 @@ fn materialAlphaDiscardedForHit(
   }
 
   let uv1 = materialAtlasUv1ForHit(hit);
+  let baseColorTexel = sampleMaterialAtlasRaw(hit.indices.w, MATERIAL_MAP_SLOT_BASE_COLOR, hit.uv, uv1);
+  let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
   let alphaTexel = sampleMaterialAtlasRaw(hit.indices.w, MATERIAL_MAP_SLOT_ALPHA, hit.uv, uv1);
-  if (alphaTexel.x < 0.0) {
-    return false;
-  }
+  let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   let cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  let coverage = opacity * clamp(alphaTexel.r, 0.0, 1.0);
+  let coverage = opacity * baseColorAlpha * alphaMapCoverage;
   if (mode == 1u) {
     return coverage < cutoff;
   }
