@@ -16,8 +16,8 @@ const PT_WEBGL2_BASE_SUPPORT_DETAILS = BACKEND_PROMISE_LEDGER['pt-webgl2'].suppo
  * against it via `partitionSceneBySupport` — so advertised capability and ingestion
  * behaviour cannot drift (the pt-webgpu PT_WEBGPU_SUPPORT invariant).
  *
- * Slice 0 ships the mesh-focused set; analytic shapes + procedural-sky come online
- * in later slices (left as an empty/minimal set here, so they are warn-and-skipped).
+ * Slice 0 ships the mesh-focused set. Procedural sky is baked into the HDRI
+ * equirect path; analytic shapes remain warn-and-skipped.
  */
 export const PT_WEBGL2_SUPPORT: Required<SupportSets> = {
   supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
@@ -34,7 +34,7 @@ export const PT_WEBGL2_SUPPORT: Required<SupportSets> = {
     'mesh-area',
   ]),
   supportedAnalyticShapes: new Set<AnalyticShape>(),
-  supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
+  supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
 };
 
 /**

@@ -103,7 +103,7 @@ written in characterization mode first, flipped to enforcement when H1 lands).
 - **Fix:** `materialsTexture.ts:167-168` → `m.specularColor ?? DEFAULT_SPECULAR_COLOR` / `m.specularIntensity ?? 1.0`; delete the false "core has no field" comments. Unit test pinning packed bytes for `specularColor:[1,0,0]`. Byte-identical at defaults. · **Effort:** S.
 
 #### H44/H51 pt-webgl2 parts
-- Root README pt-webgl2 row corrected AFTER H1/H2 land (interim: a "under repair, see items_to_fix §H" callout). New `packages/pt-webgl2/README.md` (entry point, capabilities, limitations, snippet). `procedural-sky` stays honestly `unsupported`. Verify `emissiveIntensity` multiplication in `materialsTexture.ts` (~line 155) — comment if correct. · **Effort:** S.
+- Root README pt-webgl2 row corrected AFTER H1/H2 land (interim: a "under repair, see items_to_fix §H" callout). New `packages/pt-webgl2/README.md` (entry point, capabilities, limitations, snippet). `procedural-sky` is now approximate via the shared Preetham equirect bake. Verify `emissiveIntensity` multiplication in `materialsTexture.ts` (~line 155) — comment if correct. · **Effort:** S.
 
 **Section ordering:** H1+H4+H40 → H2/H3 (same PR) → S-cluster (H6/H49/H7-b,c,d,e/H8) → D1/D3 decisions → README. **Total: M–L (3–5 days)**, dominated by the A/B harness + recording-mock test, not the code.
 

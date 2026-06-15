@@ -178,8 +178,8 @@ describe('H12: lite-tier capabilities truth', () => {
     const sd = engine.capabilities.supportDetails!;
     expect(sd.environments.hdri).toBe('native');
     expect(sd.environments.none).toBe('native');
-    // procedural-sky is heuristic tint (not a full Preetham model), so 'approximate'
-    expect(sd.environments['procedural-sky']).not.toBe('unsupported');
+    // procedural-sky uses the shared finite-resolution Preetham equirect bake.
+    expect(sd.environments['procedural-sky']).toBe('approximate');
     engine.dispose();
     warn.mockRestore();
   });

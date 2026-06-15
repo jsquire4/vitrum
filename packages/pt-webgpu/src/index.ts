@@ -742,7 +742,7 @@ class PTEngineWebGPU implements Engine {
               },
               environments: {
                 none: 'native',
-                'procedural-sky': 'native',
+                'procedural-sky': 'approximate',
                 hdri: 'native',
               },
               analyticShapes: {

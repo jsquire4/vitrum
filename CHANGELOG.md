@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (shared Preetham procedural sky, 2026-06-14)
+
+- **`@vitrum/shared-samplers` + PT backends procedural sky:** `bakePreethamSkyEquirect()` now provides a shared CPU Preetham daylight bake. `@vitrum/pt-webgl2` uses it to route `procedural-sky` environments through the existing equirect HDRI/CDF upload path, promoting that environment kind from unsupported to approximate; `@vitrum/pt-webgpu` now consumes the same shared bake helper so the two PT backends cannot drift on sky radiance.
+
 ### Fixed (engine H31 residue, 2026-06-14)
 
 - **`@vitrum/engine` attach/progressive diagnostics:** `attachVitrum()` handles now expose a live `backendId` getter so hosts can see the currently selected backend even after auto-recreate swaps the underlying engine. `createProgressiveEngine()` now has a focused regression test proving final WebGPU canvas `configure()` failures surface through `onError` as `{ phase:'canvas-configure', backend:'walkaround-hybrid', recoverable:true }`.

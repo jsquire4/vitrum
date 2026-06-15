@@ -11,14 +11,22 @@ export * from './wgsl/hammersley.wgsl.js';
 export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 export { LUMINANCE_WGSL, LUMINANCE_MODULE_NAME } from './wgsl/luminance.wgsl.js';
 export { HERO_WAVELENGTH_WGSL, HERO_WAVELENGTH_MODULE_NAME } from './wgsl/heroWavelength.wgsl.js';
-export { acesFilmic, reinhard, agx, applyTonemap, linearToSrgb, srgbToLinear, TONEMAP_MODE_INDEX, type TonemapMode } from './tonemap.js';
+export {
+  acesFilmic,
+  reinhard,
+  agx,
+  applyTonemap,
+  linearToSrgb,
+  srgbToLinear,
+  TONEMAP_MODE_INDEX,
+  type TonemapMode,
+} from './tonemap.js';
 export { tonemapWgsl } from './wgsl/tonemap.wgsl.js';
 export { PCG_WGSL, PCG_MODULE_NAME, PCG_HASH_TO_F32_WGSL } from './wgsl/pcg.wgsl.js';
-export {
-  BSDF_PRIMITIVES_WGSL,
-  BSDF_PRIMITIVES_MODULE_NAME,
-} from './wgsl/bsdfPrimitives.wgsl.js';
+export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
+export { bakePreethamSkyEquirect } from './preethamSky.js';
+export type { PreethamSkyBake, PreethamSkyBakeOptions } from './preethamSky.js';
 export {
   buildLightTree,
   packLightTreeForGPU,
@@ -32,7 +40,12 @@ export {
   sampleLightTreeCPU,
   lightTreePdfCPU,
 } from './lightTree.js';
-export type { LightTreeNode, LightTreeBuildInput, OrientationCone, LightTreeDebugOutput } from './lightTree.js';
+export type {
+  LightTreeNode,
+  LightTreeBuildInput,
+  OrientationCone,
+  LightTreeDebugOutput,
+} from './lightTree.js';
 // Canonical GPU light-tree traversal WGSL (binding-agnostic). Both
 // walkaround-hybrid (ReSTIR-DI candidate selection) and pt-webgpu (NEE
 // importance sampling) build their light-tree shader from this one source.
@@ -84,11 +97,7 @@ export {
 export type { BDPTVertex } from './bdptVertex.js';
 // T2.H4 — Full Veach §10.3 BDPT MIS strategy enumeration.
 // Sprint-10c `_partial` variants removed 2026-05-18 (no production consumers).
-export {
-  geometricTermG,
-  buildBDPTStrategyPDFs_full,
-  bdptConnectionMIS_full,
-} from './bdptMIS.js';
+export { geometricTermG, buildBDPTStrategyPDFs_full, bdptConnectionMIS_full } from './bdptMIS.js';
 export type { BDPTFullVertex } from './bdptMIS.js';
 
 // GRIS / ReSTIR-PT reconnection-shift CPU oracle (Lin et al. 2022).

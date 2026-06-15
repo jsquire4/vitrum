@@ -946,7 +946,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // instance at its real per-instance world transform.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
-    supportedEnvironmentKinds: ['none', 'hdri'],
+    supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
     // Runtime supportedAnalyticShapes is an empty Set (PT_WEBGL2_SUPPORT). No
     // analytic shape is accepted — none here either.
     supportedAnalyticShapes: [],
@@ -969,7 +969,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       environments: {
         none: 'native',
         hdri: 'native',
-        'procedural-sky': 'unsupported',
+        // Preetham 1999 analytic daylight model baked to a 256x128 equirect
+        // map and routed through the HDRI importance-sampling path. All scene
+        // fields are consumed; 'approximate' reflects finite bake resolution.
+        'procedural-sky': 'approximate',
       },
       analyticShapes: NO_ANALYTIC_SHAPES,
       materials: PT_WEBGL2_MATERIALS,

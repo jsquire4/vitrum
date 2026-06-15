@@ -74,12 +74,24 @@ describe('backend promise ledger', () => {
 
   it('keeps supportDetails mutation rows aligned with promised optional methods', () => {
     for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
-      expect(rec.supportDetails.mutations.emitter !== 'unsupported').toBe(rec.methodPromises.updateEmitter);
-      expect(rec.supportDetails.mutations.environment !== 'unsupported').toBe(rec.methodPromises.updateEnvironment);
-      expect(rec.supportDetails.mutations.addPrimitive !== 'unsupported').toBe(rec.methodPromises.addPrimitive);
-      expect(rec.supportDetails.mutations.removePrimitive !== 'unsupported').toBe(rec.methodPromises.removePrimitive);
-      expect(rec.supportDetails.mutations.resize !== 'unsupported').toBe(rec.methodPromises.setSize);
-      expect(rec.supportDetails.mutations.lighting !== 'unsupported').toBe(rec.methodPromises.updateLighting);
+      expect(rec.supportDetails.mutations.emitter !== 'unsupported').toBe(
+        rec.methodPromises.updateEmitter,
+      );
+      expect(rec.supportDetails.mutations.environment !== 'unsupported').toBe(
+        rec.methodPromises.updateEnvironment,
+      );
+      expect(rec.supportDetails.mutations.addPrimitive !== 'unsupported').toBe(
+        rec.methodPromises.addPrimitive,
+      );
+      expect(rec.supportDetails.mutations.removePrimitive !== 'unsupported').toBe(
+        rec.methodPromises.removePrimitive,
+      );
+      expect(rec.supportDetails.mutations.resize !== 'unsupported').toBe(
+        rec.methodPromises.setSize,
+      );
+      expect(rec.supportDetails.mutations.lighting !== 'unsupported').toBe(
+        rec.methodPromises.updateLighting,
+      );
     }
   });
 
@@ -104,10 +116,9 @@ describe('backend promise ledger', () => {
       );
       for (const field of MATERIAL_SPEC_FIELDS) {
         const mode = rec.supportDetails.materials[field];
-        expect(
-          ['native', 'approximate', 'unsupported'],
-          `materials.${field} for ${id}`,
-        ).toContain(mode);
+        expect(['native', 'approximate', 'unsupported'], `materials.${field} for ${id}`).toContain(
+          mode,
+        );
       }
     }
   });
@@ -171,7 +182,9 @@ describe('backend promise ledger', () => {
       expect(keys, `shadows matrix keys for ${id}`).toEqual([...SHADOW_KEYS].sort());
       // receiveShadow is non-physical for GI — unsupported EVERYWHERE; backends
       // emit a structured *.reserved-receive-shadow warning when set false.
-      expect(rec.supportDetails.shadows.receiveShadow, `receiveShadow for ${id}`).toBe('unsupported');
+      expect(rec.supportDetails.shadows.receiveShadow, `receiveShadow for ${id}`).toBe(
+        'unsupported',
+      );
     }
     const wa = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.shadows;
     const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.shadows;
@@ -198,10 +211,9 @@ describe('backend promise ledger', () => {
         `denoisers matrix keys for ${id}`,
       ).toEqual([...ENGINE_DENOISER_MODES].sort());
       for (const mode of ENGINE_DENOISER_MODES) {
-        expect(
-          ['native', 'approximate', 'unsupported'],
-          `denoisers.${mode} for ${id}`,
-        ).toContain(rec.supportDetails.denoisers[mode]);
+        expect(['native', 'approximate', 'unsupported'], `denoisers.${mode} for ${id}`).toContain(
+          rec.supportDetails.denoisers[mode],
+        );
       }
     }
 
@@ -214,10 +226,18 @@ describe('backend promise ledger', () => {
       'oidn-final': 'unsupported',
       neural: 'unsupported',
     });
-    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['oidn-final']).toBe('native');
-    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['svgf-real']).toBe('unsupported');
-    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers['svgf-real']).toBe('native');
-    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers.bmfr).toBe('native');
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['oidn-final']).toBe(
+      'native',
+    );
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['svgf-real']).toBe(
+      'unsupported',
+    );
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers['svgf-real']).toBe(
+      'native',
+    );
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers.bmfr).toBe(
+      'native',
+    );
   });
 
   it('pins onError: true for all three shipping backends (item 28 — GPU error surface)', () => {
@@ -301,25 +321,35 @@ describe('backend promise ledger', () => {
       // 'approximate' reflects the degraded-but-functional reality. Item 18c.
       'procedural-sky': 'approximate',
     });
-    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual(['none', 'hdri', 'procedural-sky']);
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportedEnvironmentKinds).toEqual([
+      'none',
+      'hdri',
+      'procedural-sky',
+    ]);
 
     expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.environments).toEqual({
       none: 'native',
       hdri: 'native',
-      'procedural-sky': 'unsupported',
+      'procedural-sky': 'approximate',
     });
-    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportedEnvironmentKinds).toEqual(['none', 'hdri']);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportedEnvironmentKinds).toEqual([
+      'none',
+      'hdri',
+      'procedural-sky',
+    ]);
 
-    // procedural-sky is 'approximate': heuristic tint, not a full Preetham
-    // model (turbidity/rayleigh/mieDirectionalG are ignored). Interim per
-    // plan/v1-closure-plan-2026-06-10.md; promote to 'native' when the
-    // Preetham implementation lands in Wave 2.
+    // procedural-sky is 'approximate' on PT backends: both bake the Preetham
+    // model to a finite equirect map and route it through the HDRI sampling path.
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.environments).toEqual({
       none: 'native',
       hdri: 'native',
       'procedural-sky': 'approximate',
     });
-    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportedEnvironmentKinds).toEqual(['none', 'hdri', 'procedural-sky']);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportedEnvironmentKinds).toEqual([
+      'none',
+      'hdri',
+      'procedural-sky',
+    ]);
   });
 });
 

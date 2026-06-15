@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { HdriEnvironment, NoneEnvironment } from '@vitrum/core';
+import type { HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 
-const luminance = (r: number, g: number, b: number) =>
-  0.2126 * r + 0.7152 * g + 0.0722 * b;
+const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
 // A tiny 4×2 synthetic equirect HDRI. Row 0 is dim, row 1 has a bright hot spot
 // in the second column. Row-major RGB float pixels (3 floats/pixel), the shape
@@ -33,7 +32,7 @@ function tinyHdri(): HdriEnvironment {
 }
 
 describe('buildEquirectInfo', () => {
-  it('returns all-null grids for non-hdri environments', () => {
+  it('returns all-null grids for none environments', () => {
     const none: NoneEnvironment = { kind: 'none' };
     const out = buildEquirectInfo(none);
     expect(out.map).toBeNull();
@@ -99,5 +98,77 @@ describe('buildEquirectInfo', () => {
     const row1Centre = (1 + 0.5) / 2;
     expect(m[0]!).toBeCloseTo(row1Centre, 6);
     expect(m[4]!).toBeCloseTo(row1Centre, 6);
+  });
+
+  it('bakes procedural-sky environments into the equirect HDRI path', () => {
+    const sky: ProceduralSkyEnvironment = {
+      kind: 'procedural-sky',
+      sunDirection: [0, 1, 0],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 1,
+    };
+
+    const skyOut = buildEquirectInfo(sky);
+
+    expect(skyOut.map).not.toBeNull();
+    expect(skyOut.map!.width).toBe(256);
+    expect(skyOut.map!.height).toBe(128);
+    expect(skyOut.marginal!.width).toBe(128);
+    expect(skyOut.conditional!.width).toBe(256);
+    expect(skyOut.conditional!.height).toBe(128);
+    expect(skyOut.totalSum).toBeGreaterThan(0);
+  });
+
+  it('honors zero procedural-sky intensity as a black environment', () => {
+    const sky: ProceduralSkyEnvironment = {
+      kind: 'procedural-sky',
+      sunDirection: [0, 1, 0],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 0,
+    };
+
+    const skyOut = buildEquirectInfo(sky);
+
+    expect(skyOut.map).not.toBeNull();
+    expect(skyOut.totalSum).toBe(0);
+    expect(Array.from(skyOut.map!.data).every((v) => v === 0)).toBe(true);
+  });
+
+  it('places the procedural-sky maximum near the authored sun direction', () => {
+    const sky: ProceduralSkyEnvironment = {
+      kind: 'procedural-sky',
+      sunDirection: [1, 0.05, 0],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 1,
+    };
+    const out = buildEquirectInfo(sky);
+    const map = out.map!;
+    let maxLum = -Infinity;
+    let maxIdx = 0;
+    for (let i = 0; i < map.width * map.height; i += 1) {
+      const lum = luminance(map.data[i * 4]!, map.data[i * 4 + 1]!, map.data[i * 4 + 2]!);
+      if (lum > maxLum) {
+        maxLum = lum;
+        maxIdx = i;
+      }
+    }
+
+    const pyMax = (maxIdx / map.width) | 0;
+    const pxMax = maxIdx % map.width;
+    const thetaMax = ((pyMax + 0.5) / map.height) * Math.PI;
+    const phiMax = ((pxMax + 0.5) / map.width) * (2 * Math.PI);
+
+    expect(thetaMax).toBeGreaterThan(Math.PI / 2 - 0.3);
+    expect(thetaMax).toBeLessThan(Math.PI / 2 + 0.3);
+    expect(Math.min(phiMax, 2 * Math.PI - phiMax)).toBeLessThan(0.3);
   });
 });

@@ -20,6 +20,7 @@
 // match the fork so the GLSL `equirect_sampling` decoder behaves identically.
 
 import type { SceneEnvironment } from '@vitrum/core';
+import { bakePreethamSkyEquirect } from '@vitrum/shared-samplers';
 import type { EnvTextureData } from './sceneTextures.js';
 
 /** The opaque @vitrum/core `EnvironmentMapRef` is, for the HDRI path, a raw
@@ -30,6 +31,13 @@ interface HdriPayload {
   readonly width?: number;
   readonly height?: number;
   readonly data?: ArrayLike<number>;
+}
+
+interface EquirectSource {
+  readonly width: number;
+  readonly height: number;
+  readonly data: ArrayLike<number> | undefined;
+  readonly channels: 3 | 4;
 }
 
 function colorToLuminance(r: number, g: number, b: number): number {
@@ -70,20 +78,41 @@ const EMPTY_ENV: EnvTextureData = {
 };
 
 /**
- * Build the equirect radiance grid + marginal/conditional importance CDFs for an
- * HDRI environment. For non-`hdri` environment kinds (or an HDRI lacking CPU
- * pixel data), returns an all-null `EnvTextureData` — the integrator falls back
- * to its uniform/sky env path.
+ * Build the equirect radiance grid + marginal/conditional importance CDFs for
+ * HDRI and procedural-sky environments. Procedural skies are baked through the
+ * shared Preetham model and then use the same equirect sampling path as HDRI.
  */
 export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
-  if (env.kind !== 'hdri') {
+  if (env.kind === 'none') {
     return EMPTY_ENV;
   }
 
-  const hdri = env.hdri as HdriPayload;
-  const width = Number(hdri?.width ?? 0);
-  const height = Number(hdri?.height ?? 0);
-  const src = hdri?.data;
+  let source: EquirectSource;
+  let hdriHandleForDiagnostic: unknown = null;
+  if (env.kind === 'procedural-sky') {
+    const baked = bakePreethamSkyEquirect({
+      sunDirection: env.sunDirection,
+      turbidity: env.turbidity,
+      rayleigh: env.rayleigh,
+      mieCoefficient: env.mieCoefficient,
+      mieDirectionalG: env.mieDirectionalG,
+      ...(env.intensity !== undefined ? { intensity: env.intensity } : {}),
+    });
+    source = { width: baked.width, height: baked.height, data: baked.texels, channels: 4 };
+  } else {
+    const hdri = env.hdri as HdriPayload;
+    hdriHandleForDiagnostic = hdri;
+    source = {
+      width: Number(hdri?.width ?? 0),
+      height: Number(hdri?.height ?? 0),
+      data: hdri?.data,
+      channels: 3,
+    };
+  }
+
+  const width = source.width;
+  const height = source.height;
+  const src = source.data;
 
   if (
     !Number.isFinite(width) ||
@@ -92,20 +121,19 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
     height <= 0 ||
     src == null ||
     typeof src.length !== 'number' ||
-    src.length < width * height * 3
+    src.length < width * height * source.channels
   ) {
-    // H7 (2026-06-09): warn explicitly so the host knows the HDRI was silently
-    // dropped. Without this, a missing/incorrectly-shaped HDRI payload results in
-    // a flat-black environment with no error signal (a frequent source of confusion
-    // during host integration). The EMPTY_ENV fallback is intentional — the
-    // integrator's uniform/procedural-sky path takes over.
+    // H7 (2026-06-09): warn explicitly so the host knows the HDRI was dropped.
+    // Without this, a missing/incorrectly-shaped HDRI payload results in a
+    // flat-black environment with no error signal (a frequent source of
+    // confusion during host integration).
     console.warn(
       '[pt-webgl2] HDRI environment is present (kind="hdri") but has no usable CPU pixel data. ' +
         'pt-webgl2 requires a raw {width, height, data} RGB float payload (or use the ' +
         'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
         'The environment will be ignored (EMPTY_ENV fallback). ' +
         // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic warning; [object Object] output is acceptable here
-        `Received hdri handle: ${String(hdri)}, width=${width}, height=${height}, ` +
+        `Received hdri handle: ${String(hdriHandleForDiagnostic)}, width=${width}, height=${height}, ` +
         `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`,
     );
     return EMPTY_ENV;
@@ -128,9 +156,10 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
     let cumulativeRowWeight = 0.0;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
-      const r = Number(src[i * 3] ?? 0);
-      const g = Number(src[i * 3 + 1] ?? 0);
-      const b = Number(src[i * 3 + 2] ?? 0);
+      const base = i * source.channels;
+      const r = Number(src[base] ?? 0);
+      const g = Number(src[base + 1] ?? 0);
+      const b = Number(src[base + 2] ?? 0);
 
       map[i * 4 + 0] = r;
       map[i * 4 + 1] = g;
@@ -177,12 +206,7 @@ export function buildEquirectInfo(env: SceneEnvironment): EnvTextureData {
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
       const dist = (x + 1) / width;
-      const col = binarySearchFindClosestIndexOf(
-        cdfConditional,
-        dist,
-        y * width,
-        width,
-      );
+      const col = binarySearchFindClosestIndexOf(cdfConditional, dist, y * width, width);
       conditionalData[i * 4 + 0] = (col + 0.5) / width; // half-texel recentre
     }
   }
