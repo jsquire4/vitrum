@@ -303,6 +303,53 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
+  it('emits structured warnings for unsupported displacement and environment intensity fields', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const baseScene = consumedOnlyScene();
+      const basePrim = baseScene.primitives[0]!;
+      const scene: Scene = {
+        ...baseScene,
+        primitives: [
+          {
+            ...basePrim,
+            id: 'unsupported-material-fields',
+            material: {
+              ...basePrim.material,
+              displacementMap: { handle: { id: 'height' } },
+              displacementScale: 0.2,
+              displacementBias: -0.1,
+              envMapIntensity: 0.35,
+            },
+          } as unknown as ScenePrimitive,
+        ],
+      };
+
+      engine.setScene(scene);
+      const expectedFields = [
+        'displacementBias',
+        'displacementMap',
+        'displacementScale',
+        'envMapIntensity',
+      ];
+      const materialWarn = warnSpy.mock.calls.flat().map(String).find((m) => m.includes('not consumed'));
+      expect(materialWarn).toBeDefined();
+      for (const field of expectedFields) {
+        expect(materialWarn).toContain(field);
+      }
+      expect(structured.some((w) =>
+        w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
+        JSON.stringify(w.details?.fields) === JSON.stringify(expectedFields),
+      )).toBe(true);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('warns only once per distinct field set across repeated setScene calls', () => {
     const engine = new HybridEngine(makeOpts());
     try {

@@ -1427,6 +1427,16 @@ For every `MaterialSpec` field:
 - Add diagnostics for ignored fields that affect visual output.
 - Add at least one executable test for every field marked implemented.
 
+Status:
+- Core `engineContract.test.ts` keeps the `BACKEND_PROMISE_LEDGER` material
+  matrix exhaustive over every public `MaterialSpec` key for every backend.
+- 2026-06-15 follow-up: pt-webgpu now has direct descriptor/WGSL pins for the
+  native scalar lanes `aoMapIntensity`, `lightMapIntensity`, and
+  `envMapIntensity`; walkaround-hybrid now has an engine-level structured
+  warning fixture for unsupported displacement fields and `envMapIntensity`.
+- Keep this gate as a permanent regression guard when adding new material
+  fields or promoting backend support rows.
+
 ### GATE-03 - Mutation matrix audit
 
 For every mutation type:

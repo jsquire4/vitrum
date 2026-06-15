@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Tests (material contract gates, 2026-06-15)
+
+- **Material promise gate hardening:** added pt-webgpu descriptor/WGSL regression pins for native `aoMapIntensity`, `lightMapIntensity`, and `envMapIntensity` scalar lanes, plus a walkaround-hybrid `setScene` structured-warning fixture for unsupported displacement and environment-intensity material fields.
+
 ### Fixed (pt-webgpu ReSTIR-PT emitter shadows, 2026-06-15)
 
 - **`@vitrum/pt-webgpu` ReSTIR-PT suffix direct-lighting `castShadow:false` parity:** the ReSTIR-PT producer now consumes packed point, spot, rect/disc, and mesh-area emitter shadow-disable lanes before firing suffix direct-lighting visibility rays. The ledger remains `approximate` because the flag-less directional UBO mirror, BDPT light subpath, and MNEE/SPPM caustic legs still shadow-test.

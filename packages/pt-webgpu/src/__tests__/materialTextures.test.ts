@@ -144,6 +144,20 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 23]).toBe(1); // glTF default scale
   });
 
+  it('packs AO, light-map, and environment scalar lanes with defaults', () => {
+    const { descriptors } = collectMaterialTextures([
+      mat({ aoMapIntensity: 0.25, lightMapIntensity: 2.5, envMapIntensity: 0.4 }),
+      mat({}),
+    ]);
+
+    expect(descriptors[16]).toBeCloseTo(0.25);
+    expect(descriptors[17]).toBeCloseTo(2.5);
+    expect(descriptors[19]).toBeCloseTo(0.4);
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 16]).toBe(1);
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 17]).toBe(1);
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 19]).toBe(1);
+  });
+
   it('collects clearcoatNormalMap as LINEAR data with scale, wrap, and UV metadata', () => {
     const ccNormalTex = { id: 'cc-normal' };
     const { linearSources, descriptors } = collectMaterialTextures([

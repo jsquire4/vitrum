@@ -580,6 +580,13 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('return true;');
   });
 
+  it('keeps the per-material envMapIntensity descriptor lane wired into environment paths', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn materialEnvMapIntensity(matId: u32) -> f32');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return max(materialTexDescriptors[base + 4u].w, 0.0);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lastEnvMapIntensity = materialEnvMapIntensity(matId);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let envScale = materialEnvMapIntensity(matId);');
+  });
+
   // ── Theme-D luminance dedup (behavior-preserving) ──────────────────────────
   // material.wgsl.ts:441 and bdpt/bdptLightSubpath.wgsl.ts:8 previously inlined
   // the Rec.709 `dot(c, vec3f(0.2126, 0.7152, 0.0722))` though the canonical
