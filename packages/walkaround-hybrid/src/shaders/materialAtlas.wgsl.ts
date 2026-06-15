@@ -635,6 +635,44 @@ fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
   return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
+struct RestirDIMaterialPayload {
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  envMapIntensity: f32,
+  clearcoatNormal: vec3f,
+  specular: vec4f,
+  anisotropy: vec2f,
+  iridescence: vec4f,
+  clearcoat: vec2f,
+  sheen: vec4f,
+  sheenRoughness: f32,
+};
+
+fn sampleRestirDIMaterialPayloadForHit(
+  hit: IntersectionResult,
+  smoothNormal: vec3f,
+  shadingNormal: vec3f,
+  scalarBaseColor: vec3f,
+  materialWord: u32,
+) -> RestirDIMaterialPayload {
+  let uv1 = materialAtlasUv1ForHit(hit);
+  let vertexColor = sampleVertexColorForHit(hit);
+  var payload: RestirDIMaterialPayload;
+  payload.albedo = sampleBaseColorMap(hit.indices.w, hit.uv, uv1, scalarBaseColor * vertexColor.rgb);
+  payload.rough = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, hit.uv, uv1, decodeRoughMetal(materialWord).x);
+  payload.metal = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, hit.uv, uv1, decodeRoughMetal(materialWord).y);
+  payload.envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
+  payload.clearcoatNormal = applyClearcoatNormalMapForHit(hit, smoothNormal, shadingNormal);
+  payload.specular = sampleSpecularControls(hit.indices.w, hit.uv, uv1);
+  payload.anisotropy = sampleAnisotropyControls(hit.indices.w, hit.uv, uv1);
+  payload.iridescence = sampleIridescenceControls(hit.indices.w, hit.uv, uv1);
+  payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);
+  payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);
+  payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);
+  return payload;
+}
+
 fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {
   return (materialWord & 4u) != 0u;
 }

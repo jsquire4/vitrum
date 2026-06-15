@@ -69,23 +69,33 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
   let n_i = select(0u, n_base, n_ok);
-  s.normal = smoothShadingNormal(
+  let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
     bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
+  let normalMapped = applyNormalMapForHit(hit, smoothNormal);
+  s.normal = applyBumpMapForHit(hit, normalMapped);
   s.wo     = -ray.direction;
   let matColor = decodeMaterialColor(hit.matColorPacked);
-  s.albedo = matColor.rgb;
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded select(0.85,0.05,isGlass) / metal 0). The diffuse-default
   // invariant keeps default-diffuse surfaces at 0.85 / glass at 0.05.
   let rmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-  let rm = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
-  s.rough  = rm.x;
-  s.metal  = rm.y;
-  s.envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
+  let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
+  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, s.normal, matColor.rgb, materialWord);
+  s.clearcoatNormal = payload.clearcoatNormal;
+  s.albedo = payload.albedo;
+  s.rough  = payload.rough;
+  s.metal  = payload.metal;
+  s.specular = payload.specular;
+  s.anisotropy = payload.anisotropy;
+  s.iridescence = payload.iridescence;
+  s.clearcoat = payload.clearcoat;
+  s.sheen = payload.sheen;
+  s.sheenRoughness = payload.sheenRoughness;
+  s.envMapIntensity = payload.envMapIntensity;
   s.depth  = hit.dist;
   return s;
 }

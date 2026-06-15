@@ -40,7 +40,29 @@ export const RESTIR_PHAT_WGSL = /* wgsl */ `
 // (should be zero after Wave 4).
 // ============================================================
 
-// ENV branch: p̂ = luminance(envRadiance(dir) * evalGGX(... dir)) — no geometry
+fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
+  return evalGGXWithSpecularClearcoatSheen(
+    surf.albedo,
+    surf.rough,
+    surf.metal,
+    surf.specular.rgb,
+    surf.specular.a,
+    surf.anisotropy.x,
+    surf.anisotropy.y,
+    surf.iridescence,
+    surf.clearcoat.x,
+    surf.clearcoat.y,
+    surf.sheen.a,
+    surf.sheenRoughness,
+    surf.sheen.rgb,
+    surf.normal,
+    surf.clearcoatNormal,
+    surf.wo,
+    wi,
+  );
+}
+
+// ENV branch: p̂ = luminance(envRadiance(dir) * full material BRDF(... dir)) — no geometry
 // term (the IBL is at infinity: no cosθ_light, no 1/dist² falloff). This is the
 // solid-angle measure p̂ consistent with the SA-measure source pdf the env
 // candidate used (envDirectionalPdf).
@@ -53,7 +75,7 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
     let nDotL = max(0.0, dot(surf.normal, wi));
     if (nDotL < 1e-6) { return 0.0; }
     let color = envRadiance(wi) * max(surf.envMapIntensity, 0.0);
-    let brdf  = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
+    let brdf  = restir_di_eval_surface_brdf(surf, wi);
     return luminance(color * brdf);
   }
   let e = emitters[lid];
@@ -69,7 +91,7 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   // geometry term only: cos(emitter) / dist² with the emitterDist2Floor
   // clamp applied consistently with shade.wgsl (sweep finding Bug 3).
   let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-  let brdf = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
+  let brdf = restir_di_eval_surface_brdf(surf, wi);
   return luminance(e.Le * brdf * G);
 }
 
@@ -90,7 +112,7 @@ fn restir_di_compute_phat_from_surface(lid: u32, surf: PrimarySurface) -> f32 {
 export const RESTIR_PHAT_MODULE: WgslModule = {
   name: 'restirPHat',
   source: RESTIR_PHAT_WGSL,
-  // `common` for PrimarySurface, emitters, emitterGeometry, evalGGX, luminance, ubo.
+  // `common` for PrimarySurface, emitters, emitterGeometry, full BRDF helpers, luminance, ubo.
   // `environmentSample` for ENV_SAMPLE_SENTINEL / envHasMap / envRadiance / envDirFromXi.
   requires: ['common', 'environmentSample'],
 };

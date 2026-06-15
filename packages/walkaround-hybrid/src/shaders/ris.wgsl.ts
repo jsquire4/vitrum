@@ -162,12 +162,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
   let n_i = select(0u, n_base, n_ok);
-  let normal = smoothShadingNormal(
+  let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
     bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
+  let normalMapped = applyNormalMapForHit(hit, smoothNormal);
+  let normal = applyBumpMapForHit(hit, normalMapped);
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).
@@ -177,17 +179,35 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
   let isGlass   = matColor.a > 0.3;  // transmission > ~76/255
-  // Use the actual BVH-baked material color for all surfaces.
-  let albedo    = matColor.rgb;
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded). The diffuse-default invariant packs 0.85 for unspecified
   // roughness / 0.05 for glass, so default-diffuse scenes are numerically
   // unchanged; authored glossy/metal surfaces now drive the GGX candidate p̂.
   let rmCoord   = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-  let rm        = decodeRoughMetal(textureLoad(bvh_material, vec2i(rmCoord), 0).r);
-  let roughness = rm.x;
-  let metalness = rm.y;
-  let envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
+  let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
+  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, normal, matColor.rgb, materialWord);
+  let albedo    = payload.albedo;
+  let roughness = payload.rough;
+  let metalness = payload.metal;
+  let envMapIntensity = payload.envMapIntensity;
+
+  var surf: PrimarySurface;
+  surf.hit    = true;
+  surf.pos    = pos;
+  surf.normal = normal;
+  surf.clearcoatNormal = payload.clearcoatNormal;
+  surf.wo     = wo;
+  surf.albedo = albedo;
+  surf.rough  = roughness;
+  surf.metal  = metalness;
+  surf.specular = payload.specular;
+  surf.anisotropy = payload.anisotropy;
+  surf.iridescence = payload.iridescence;
+  surf.clearcoat = payload.clearcoat;
+  surf.sheen = payload.sheen;
+  surf.sheenRoughness = payload.sheenRoughness;
+  surf.envMapIntensity = envMapIntensity;
+  surf.depth  = hit.dist;
 
   var r = emptyReservoirDI();
   // Support-aware sample counts for mixed-measure reservoirs. Area emitters and
@@ -261,7 +281,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // per-candidate p̂ in the M_LIGHT loop matches the reservoir's
     // selection p̂ matches shade's evaluation p̂ (sweep finding Bug 3).
     let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-    let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
+    let brdf = restir_di_eval_surface_brdf(surf, wi);
     let pHat = luminance(ls.Le * brdf * G);
 
     // p(x) = emitter-selection pmf × per-triangle uniform-area pdf. The first
@@ -353,7 +373,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let nlDotLB = max(0.0, dot(-bestNl, wiB));
     if (nlDotLB < 1e-6) { continue; }
     let Gb = emitterGeometry(nlDotLB, dist2B, ubo.emitterDist2Floor);
-    let brdfB = evalGGX(albedo, roughness, metalness, normal, wo, wiB);
+    let brdfB = restir_di_eval_surface_brdf(surf, wiB);
     let pHatB = luminance(bestLe * brdfB * Gb);
 
     // Convert the BSDF solid-angle pdf to AREA measure so it shares the
@@ -391,7 +411,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (envS.pdf <= 1e-8 || !envHasMap()) { continue; }
     let nDotL = max(0.0, dot(normal, envS.dir));
     if (nDotL < 1e-6) { continue; }
-    let brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir);
+    let brdfE = restir_di_eval_surface_brdf(surf, envS.dir);
     // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
     let pHatE = luminance(envS.color * envMapIntensity * brdfE);
     // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
@@ -425,16 +445,6 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         r.w_sum = 0.0;
         r.W     = 0.0;
       } else {
-        var surf: PrimarySurface;
-        surf.hit    = true;
-        surf.pos    = pos;
-        surf.normal = normal;
-        surf.wo     = wo;
-        surf.albedo = albedo;
-        surf.rough  = roughness;
-        surf.metal  = metalness;
-        surf.envMapIntensity = envMapIntensity;
-        surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mEnvSupport);
         r.M = supportM;
@@ -472,16 +482,6 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         // Build a PrimarySurface from the inline-cast values so the canonical
         // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
         // sees the same struct shape as the reuse passes.
-        var surf: PrimarySurface;
-        surf.hit    = true;
-        surf.pos    = pos;
-        surf.normal = normal;
-        surf.wo     = wo;
-        surf.albedo = albedo;
-        surf.rough  = roughness;
-        surf.metal  = metalness;
-        surf.envMapIntensity = envMapIntensity;
-        surf.depth  = hit.dist;
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mAreaSupport);
         r.M = supportM;

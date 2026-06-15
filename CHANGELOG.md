@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround ReSTIR-DI material parity, 2026-06-15)
+
+- **Extension-aware ReSTIR-DI target scoring:** `@vitrum/walkaround-hybrid` now threads material-atlas payloads through DI `PrimarySurface` reconstruction and evaluates RIS candidate weights, finalization, temporal reuse, and spatial reuse with the same extension-aware BRDF used by shade-owned direct lighting. ReSTIR-DI pHat now consumes base/vertex/roughness/metallic maps, normal/bump/clearcoat-normal perturbations, specular scalar/color maps, clearcoat, sheen, anisotropy, iridescence, and env-map intensity instead of the old albedo/rough/metal-only proxy. Reservoir storage is unchanged; this is render-changing for rich glTF materials and still needs GPU A/B promotion evidence.
+
 ### Tests (pt-webgpu BDPT, 2026-06-15)
 
 - **BDPT light-side material payload numeric oracle:** `bdptGlossyLightSubpath.test.ts` now supplements the A9 WGSL structure pins with independent arithmetic checks for row-4 tri/front-face payload packing, mapped base/vertex/AO/ORM/transmission/extension material transforms, front/back layer selection, thin-film tint mixing, Cauchy IOR, and Jakob-Hanika spectral reflectance override. This hardens the BDPT material parity proof without changing renderer behavior; GPU material-furnace/radiometric A/B evidence remains a validation-tail item.
