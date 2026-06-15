@@ -11,6 +11,7 @@ import type {
   GltfAssetResult,
   GltfEngineSelection,
   GltfCompatibilityMode,
+  GltfCompatibilityIssue,
   GltfForEngineResult,
   GltfImportDiagnostic,
   GltfSceneController,
@@ -88,7 +89,12 @@ export async function loadGltfWithEngine(
     ...adapterOptions,
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     createEngine: async ({ scene, backend, asset, options: createOptions }) => {
-      await assertStrictPtWebgpuTier(backend, adapterOptions.compatibilityMode ?? 'best-effort');
+      await assertStrictPtWebgpuTier(
+        backend,
+        adapterOptions.compatibilityMode ?? 'best-effort',
+        asset,
+        adapterOptions,
+      );
       return await createEngine({
         ...createOptions,
         scene,
@@ -134,18 +140,94 @@ export async function loadGltfWithProgressiveEngine(
 async function assertStrictPtWebgpuTier(
   backend: CreateEngineBackendId | GltfEngineSelection,
   compatibilityMode: GltfCompatibilityMode,
+  asset: GltfAssetResult,
+  options: LoadGltfWithEngineOptions,
 ): Promise<void> {
-  if (compatibilityMode !== 'reject-degraded') return;
+  if (compatibilityMode === 'best-effort') return;
   if (backend !== 'pt-webgpu') return;
 
   const profile = await probeAdapterProfile();
   if (profile.ptWebgpuTier === 'full') return;
 
+  const profileId = profile.ptWebgpuTier === 'lite' ? 'pt-webgpu-lite' : 'pt-webgpu';
+  const selected = asset.backendCompatibility.find((entry) => entry.profileId === profileId);
+  if (selected != null) {
+    const effectiveIssues = selected.issues.filter((issue) =>
+      !isSatisfiedRuntimeCompatibilityIssue(issue, options, asset)
+    );
+    const rejectedIssues = rejectedIssuesForMode(effectiveIssues, compatibilityMode);
+    if (rejectedIssues.length === 0) return;
+
+    throw new Error(
+      `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
+        `"${profile.ptWebgpuTier}" trace tier, which does not satisfy ` +
+        `${compatibilityMode}: ${formatRuntimeCompatibilityIssues(rejectedIssues)}. ` +
+        `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
+    );
+  }
+
   throw new Error(
     `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
-      `"${profile.ptWebgpuTier}" trace tier, which is degraded for glTF strict mode. ` +
+      `"${profile.ptWebgpuTier}" trace tier, but the glTF asset has no compatibility row ` +
+      `for runtime profile "${profileId}". ` +
       `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
   );
+}
+
+function rejectedIssuesForMode(
+  issues: readonly GltfCompatibilityIssue[],
+  compatibilityMode: Exclude<GltfCompatibilityMode, 'best-effort'>,
+): readonly GltfCompatibilityIssue[] {
+  if (compatibilityMode === 'reject-unsupported') {
+    return issues.filter((issue) => issue.support === 'unsupported');
+  }
+  return issues.filter((issue) => issue.support !== 'native');
+}
+
+function formatRuntimeCompatibilityIssues(issues: readonly GltfCompatibilityIssue[]): string {
+  return issues
+    .map((issue) => `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`)
+    .join(', ');
+}
+
+function isSatisfiedRuntimeCompatibilityIssue(
+  issue: GltfCompatibilityIssue,
+  options: LoadGltfWithEngineOptions,
+  asset: GltfAssetResult,
+): boolean {
+  if (issue.support === 'requires-hook') {
+    if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
+    if (issue.name === 'EXT_meshopt_compression') return typeof options.meshoptDecode === 'function';
+    if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
+      return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
+    }
+    return false;
+  }
+
+  if (issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha') {
+    const decoded = decodedAssetView(asset);
+    if (decoded == null) return false;
+    const bakeUnavailable = decoded.textureDecodeDiagnostics.some((diagnostic) =>
+      diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
+    );
+    const bakedRoughnessMap = asset.textureDecodeReport.entries.some((entry) =>
+      entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
+    );
+    return bakedRoughnessMap && !bakeUnavailable;
+  }
+
+  return false;
+}
+
+function decodedAssetView(
+  asset: GltfAssetResult,
+): { readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[] } | null {
+  const maybe = asset as GltfAssetResult & {
+    readonly textureDecodeDiagnostics?: readonly DecodeSceneTextureDiagnostic[];
+  };
+  return Array.isArray(maybe.textureDecodeDiagnostics)
+    ? { textureDecodeDiagnostics: maybe.textureDecodeDiagnostics }
+    : null;
 }
 
 function preferForSelectedBackend(

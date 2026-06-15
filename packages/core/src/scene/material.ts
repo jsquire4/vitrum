@@ -422,6 +422,7 @@ export type MaterialMapFields = Pick<
   | 'roughnessMap'
   | 'metallicMap'
   | 'transmissionMap'
+  | 'thicknessMap'
   | 'emissiveMap'
   | 'alphaMap'
   | 'aoMap'

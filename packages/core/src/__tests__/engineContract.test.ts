@@ -8,6 +8,7 @@ import {
   narrowToBackendTexture,
   narrowToBackendTextureFormat,
 } from '../index.js';
+import type { MaterialMapFields } from '../scene/material.js';
 import { asMat4, isMat4 } from '../scene/math.js';
 
 describe('backend promise ledger', () => {
@@ -363,6 +364,15 @@ describe('backend promise ledger', () => {
       'hdri',
       'procedural-sky',
     ]);
+  });
+});
+
+describe('material contract slices', () => {
+  it('keeps thicknessMap in MaterialMapFields so adapter/backend map lists cannot drift', () => {
+    const fields = {
+      thicknessMap: { handle: { id: 'thickness' } },
+    } satisfies Partial<MaterialMapFields>;
+    expect(fields.thicknessMap.handle).toEqual({ id: 'thickness' });
   });
 });
 

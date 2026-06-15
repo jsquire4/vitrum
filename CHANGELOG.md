@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF strict runtime profile, 2026-06-15)
+
+- **`@vitrum/engine/gltf` runtime lite-profile enforcement:** strict one-call glTF loads now evaluate the actual runtime `pt-webgpu-lite` compatibility row before constructing an engine. `reject-unsupported` rejects lite-tier assets with unsupported rows, `reject-degraded` rejects any unsatisfied non-native lite row, best-effort remains non-blocking, and decoded spec-gloss roughness bakes / required host hooks are honored before deciding whether a lite-row issue is still active.
+- **Core material-map contract drift:** `MaterialMapFields` now includes `thicknessMap`, matching the first-class `MaterialSpec.thicknessMap` / glTF KHR volume import path and preventing adapter/backend material-map slices from accidentally omitting the field.
+
 ### Fixed (walkaround memory layout, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` compact default ReSTIR-GI reservoirs:** the default `restirPtReuse:false` path now allocates and compiles the compact 20-u32 Sprint-16/17 GI reservoir layout instead of paying for the 30-u32 GRIS reconnection cache. Opt-in GRIS/ReSTIR-PT reuse still compiles the widened layout, GI snapshot import/export checks the live stride, and the PPG training kernel bakes the same stride as the active GI reservoir variant.
