@@ -477,6 +477,34 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.atlasData[sheenRoughnessLayerBase + 3]).toBeCloseTo(96 / 255, 5);
   });
 
+  it('packs anisotropy controls and KHR anisotropy maps into atlas metadata', () => {
+    const anisotropyHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 128, 64, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      anisotropy: 0.5,
+      anisotropyRotation: 0.25,
+      anisotropyMap: { handle: anisotropyHandle, texCoord: 1 },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableAnisotropyLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[156]).toBe(0); // anisotropyMap layer (texel 39)
+    expect(atlas.baseColorMetaData[157]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[164]).toBeCloseTo(0.5, 5); // anisotropy scalar (texel 41)
+    expect(atlas.baseColorMetaData[165]).toBeCloseTo(0.25, 5); // anisotropyRotation
+    expect(atlas.atlasData[0]).toBeCloseTo(1, 5); // direction.r
+    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5); // direction.g
+    expect(atlas.atlasData[2]).toBeCloseTo(64 / 255, 5); // strength.b
+  });
+
   it('packs scalar clearcoat controls into per-triangle material metadata', () => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -522,7 +550,7 @@ describe('walkaround materialTextureAtlas', () => {
   });
 
   it('shade and traversal sample material maps from the shared atlas module', () => {
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 39u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 42u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
@@ -542,6 +570,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
@@ -549,6 +579,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleClearcoatControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSheenControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSheenRoughness(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleAnisotropyControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyClearcoatNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
@@ -564,6 +595,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('let clearcoat = sampleClearcoatControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let sheen = sampleSheenControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('let anisotropy = sampleAnisotropyControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
     );

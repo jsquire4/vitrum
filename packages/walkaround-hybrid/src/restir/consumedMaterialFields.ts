@@ -107,13 +107,19 @@
  *  sheenColorMap         readable sRGB maps multiply scalar `sheenColor`.
  *  sheenRoughnessMap     readable linear maps multiply scalar
  *                           `sheenRoughness` from their alpha channel.
+ *  anisotropy            stored in material atlas metadata and switches
+ *                           shade-owned GGX evals to an anisotropic branch.
+ *  anisotropyRotation    metadata rotation for the anisotropic GGX frame.
+ *  anisotropyMap         readable linear KHR anisotropy maps multiply
+ *                           strength from B and direction from RG.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
- * transmissionMap / lightMap / specular maps / clearcoat maps / sheen maps,
+ * transmissionMap / lightMap / specular maps / clearcoat maps / sheen maps /
+ * anisotropyMap,
  * remaining Disney BSDF scalars, spectral curves,
- * volume scattering, thin-film stacks, layered BSDF, anisotropy, and extension
- * maps — is IGNORED.
+ * volume scattering, thin-film stacks, layered BSDF, and extension maps — is
+ * IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -142,6 +148,9 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'sheenRoughness',
   'sheenColorMap',
   'sheenRoughnessMap',
+  'anisotropy',
+  'anisotropyRotation',
+  'anisotropyMap',
   'alphaMode',
   'alphaCutoff',
   'opacity',

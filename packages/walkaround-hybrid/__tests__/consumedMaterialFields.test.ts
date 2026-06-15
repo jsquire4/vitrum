@@ -2,8 +2,8 @@
  * Tests for the material-field consumption warning (Wave 2, §3 item 1).
  *
  * Pins:
- *   (a) A scene supplying baseColorMap + normalMap + anisotropy warns only for
- *       anisotropy because normalMap now has a walkaround texture path.
+ *   (a) A scene supplying baseColorMap + normalMap + iridescence warns only for
+ *       iridescence because normalMap now has a walkaround texture path.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -83,39 +83,39 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('normalMap');
   });
 
-  it('names anisotropy when supplied', () => {
+  it('names iridescence when supplied', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      anisotropy: 1.0,
+      iridescence: 1.0,
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
-    expect(result).toContain('anisotropy');
+    expect(result).toContain('iridescence');
   });
 
-  it('(pin a) names anisotropy while baseColorMap + normalMap are consumed', () => {
+  it('(pin a) names iridescence while baseColorMap + normalMap are consumed', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
       baseColorMap: { handle: stubTextureRef() },
       normalMap: stubTextureRef(),
-      anisotropy: 1.0,
+      iridescence: 1.0,
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
     // Result is sorted alphabetically.
-    expect(result).toEqual(['anisotropy']);
+    expect(result).toEqual(['iridescence']);
   });
 
   it('dedupes unconsumed fields across multiple primitives', () => {
     const prims: PrimLike[] = [
-      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, anisotropy: 1 } },
-      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, anisotropy: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, iridescence: 1 } },
+      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, iridescence: 0.5 } },
     ];
     const result = collectUnconsumedMaterialFields(prims);
-    // anisotropy should appear exactly once.
-    expect(result.filter((f) => f === 'anisotropy')).toHaveLength(1);
+    // iridescence should appear exactly once.
+    expect(result.filter((f) => f === 'iridescence')).toHaveLength(1);
   });
 
   it('skips non-mesh primitives', () => {
@@ -142,9 +142,9 @@ describe('collectUnconsumedMaterialFields', () => {
     const kinds = ['skinned-mesh', 'instanced-mesh'] as const;
     for (const kind of kinds) {
       const prims: PrimLike[] = [
-        { kind, material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, anisotropy: 0.5 } },
+        { kind, material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, iridescence: 0.5 } },
       ];
-      expect(collectUnconsumedMaterialFields(prims)).toContain('anisotropy');
+      expect(collectUnconsumedMaterialFields(prims)).toContain('iridescence');
     }
   });
 });
@@ -164,6 +164,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'specularColorMap', 'specularIntensityMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
       'sheenColorMap', 'sheenRoughnessMap',
+      'anisotropy', 'anisotropyRotation', 'anisotropyMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
@@ -176,7 +177,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
     const textureMaps = [
       'thicknessMap',
       'iridescenceMap',
-      'iridescenceThicknessMap', 'anisotropyMap', 'bumpMap', 'displacementMap',
+      'iridescenceThicknessMap', 'bumpMap', 'displacementMap',
     ];
     for (const field of textureMaps) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(false);

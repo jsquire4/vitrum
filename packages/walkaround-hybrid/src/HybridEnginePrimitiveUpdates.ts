@@ -1047,6 +1047,7 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'clearcoatNormalMap',
   'sheenColorMap',
   'sheenRoughnessMap',
+  'anisotropyMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(
@@ -1133,13 +1134,18 @@ function materialAtlasPatchRequiresFullRebuild(
     colorUnit(prev, 'sheenColor', 0, 0) !== colorUnit(next, 'sheenColor', 0, 0) ||
     colorUnit(prev, 'sheenColor', 1, 0) !== colorUnit(next, 'sheenColor', 1, 0) ||
     colorUnit(prev, 'sheenColor', 2, 0) !== colorUnit(next, 'sheenColor', 2, 0);
+  const anisotropyChanged =
+    alphaAtlasUnit(prev?.anisotropy, 0) !== alphaAtlasUnit(next?.anisotropy, 0) ||
+    (Number.isFinite(prev?.anisotropyRotation) ? prev?.anisotropyRotation ?? 0 : 0) !==
+      (Number.isFinite(next?.anisotropyRotation) ? next?.anisotropyRotation ?? 0 : 0);
   return normalScaleChanged ||
     clearcoatNormalScaleChanged ||
     lightMapIntensityChanged ||
     alphaCoverageChanged ||
     specularChanged ||
     clearcoatChanged ||
-    sheenChanged;
+    sheenChanged ||
+    anisotropyChanged;
 }
 
 /**

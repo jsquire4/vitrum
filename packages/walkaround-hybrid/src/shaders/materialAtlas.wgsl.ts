@@ -9,7 +9,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 39u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 42u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -33,6 +33,8 @@ const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
 const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
 const MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;
 const MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;
+const MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;
+const MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -252,6 +254,27 @@ fn sampleSheenRoughness(triIndex: u32, uv0: vec2f, uv1: vec2f) -> f32 {
     roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
   }
   return roughness;
+}
+
+fn sampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
+  let scalars = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET),
+    0,
+  );
+  var strength = clamp(scalars.x, 0.0, 1.0);
+  var rotation = scalars.y;
+
+  let anisoMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET, uv0, uv1);
+  if (anisoMap.x >= 0.0) {
+    strength = clamp(strength * anisoMap.b, 0.0, 1.0);
+    let direction = anisoMap.rg * 2.0 - vec2f(1.0);
+    if (dot(direction, direction) > 1e-6) {
+      rotation += atan2(direction.y, direction.x);
+    }
+  }
+
+  return vec2f(strength, rotation);
 }
 
 fn fallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {

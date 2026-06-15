@@ -413,7 +413,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheenRoughnessMap: 'approximate',
   iridescenceMap: 'unsupported',
   iridescenceThicknessMap: 'unsupported',
-  anisotropyMap: 'unsupported',
+  // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
+  // anisotropic GGX branch (B = strength, RG = direction). ReSTIR candidate
+  // PDFs/payloads and authored tangents are still not anisotropy-complete.
+  anisotropyMap: 'approximate',
   // Readable specular maps ride the material atlas and modulate shade-owned
   // scalar specular controls. ReSTIR candidate PDFs/payloads remain scalar.
   specularColorMap: 'approximate',
@@ -453,8 +456,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   frontLayer: 'unsupported',
   backLayer: 'unsupported',
   thinFilmStack: 'unsupported',
-  anisotropy: 'unsupported',
-  anisotropyRotation: 'unsupported',
+  // Scalar anisotropy rides material atlas metadata and swaps shade-owned GGX
+  // evals to an anisotropic branch. Sampling/PDF reservoirs remain isotropic.
+  anisotropy: 'approximate',
+  anisotropyRotation: 'approximate',
   // extensions.surfaceTextureId → texType3 procedural-pattern lane;
   // extensions.skipEmitter → emitter classification. Consumed as defined.
   extensions: 'native',

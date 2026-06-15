@@ -47,6 +47,47 @@ fn materialF0(albedo: vec3f, metal: f32, specularColor: vec3f, specularIntensity
   return mix(dielectricF0, albedo, clamp(metal, 0.0, 1.0));
 }
 
+fn anisotropyAxes(rough: f32, anisotropy: f32) -> vec2f {
+  let alpha = max(rough * rough, 1e-4);
+  let aspect = sqrt(max(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0), 1e-4));
+  return vec2f(max(alpha / aspect, 1e-4), max(alpha * aspect, 1e-4));
+}
+
+fn anisotropyTangentFrame(n: vec3f, rotation: f32) -> mat3x3f {
+  var up = vec3f(0.0, 1.0, 0.0);
+  if (abs(n.y) > 0.999) { up = vec3f(1.0, 0.0, 0.0); }
+  let t0 = normalize(cross(up, n));
+  let b0 = cross(n, t0);
+  let c = cos(rotation);
+  let s = sin(rotation);
+  let t = normalize(t0 * c + b0 * s);
+  let b = normalize(-t0 * s + b0 * c);
+  return mat3x3f(t, b, n);
+}
+
+fn distributionGGXAnisotropic(n: vec3f, t: vec3f, b: vec3f, h: vec3f, alphaX: f32, alphaY: f32) -> f32 {
+  let NdotH = max(0.0, dot(n, h));
+  let TdotH = dot(t, h);
+  let BdotH = dot(b, h);
+  let denom = (TdotH / alphaX) * (TdotH / alphaX) +
+              (BdotH / alphaY) * (BdotH / alphaY) +
+              NdotH * NdotH;
+  return 1.0 / max(PI * alphaX * alphaY * denom * denom, 1e-8);
+}
+
+fn geometrySmithGGXAnisotropicG1(n: vec3f, t: vec3f, b: vec3f, v: vec3f, alphaX: f32, alphaY: f32) -> f32 {
+  let NdotV = max(1e-4, dot(n, v));
+  let TdotV = dot(t, v);
+  let BdotV = dot(b, v);
+  let root = sqrt(alphaX * alphaX * TdotV * TdotV + alphaY * alphaY * BdotV * BdotV + NdotV * NdotV);
+  return (2.0 * NdotV) / max(NdotV + root, 1e-6);
+}
+
+fn geometrySmithGGXAnisotropic(n: vec3f, t: vec3f, b: vec3f, wo: vec3f, wi: vec3f, alphaX: f32, alphaY: f32) -> f32 {
+  return geometrySmithGGXAnisotropicG1(n, t, b, wo, alphaX, alphaY) *
+         geometrySmithGGXAnisotropicG1(n, t, b, wi, alphaX, alphaY);
+}
+
 // Evaluate GGX BRDF (diffuse + specular).
 // albedo: base color, rough: roughness, metalness baked into F0.
 fn evalGGXWithSpecular(
@@ -73,6 +114,41 @@ fn evalGGXWithSpecular(
 
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let diffuse  = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
+  return (diffuse + specular) * NdotL;
+}
+
+fn evalGGXWithSpecularAnisotropy(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let aniso = clamp(anisotropy, 0.0, 1.0);
+  if (aniso <= 1e-4) {
+    return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
+  }
+
+  let h = safe_normalize(wo + wi);
+  let NdotL = max(0.0, dot(n, wi));
+  let NdotV = max(1e-4, dot(n, wo));
+  let VdotH = max(0.0, dot(wo, h));
+  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+
+  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
+  let F = fresnelSchlick(VdotH, F0);
+  let frame = anisotropyTangentFrame(n, anisotropyRotation);
+  let axes = anisotropyAxes(max(0.01, rough), aniso);
+  let D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
+  let G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+
+  let specular = (D * G * F) / (4.0 * NdotV * NdotL);
+  let diffuse = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
   return (diffuse + specular) * NdotL;
 }
 
@@ -131,6 +207,8 @@ fn evalGGXWithSpecularClearcoatSheen(
   metal: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -141,7 +219,7 @@ fn evalGGXWithSpecularClearcoatSheen(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
+  return evalGGXWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, n, wo, wi)
        + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
@@ -256,6 +334,40 @@ fn evalGGXSpecularOnlyWithSpecular(
   return (specular + ms) * NdotL;
 }
 
+fn evalGGXSpecularOnlyWithSpecularAnisotropy(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let aniso = clamp(anisotropy, 0.0, 1.0);
+  if (aniso <= 1e-4) {
+    return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
+  }
+
+  let h = safe_normalize(wo + wi);
+  let NdotL = max(0.0, dot(n, wi));
+  let NdotV = max(1e-4, dot(n, wo));
+  let VdotH = max(0.0, dot(wo, h));
+  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+
+  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
+  let F = fresnelSchlick(VdotH, F0);
+  let frame = anisotropyTangentFrame(n, anisotropyRotation);
+  let axes = anisotropyAxes(max(0.01, rough), aniso);
+  let D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
+  let G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
+  let specular = (D * G * F) / (4.0 * NdotV * NdotL);
+  let ms = ggxMultiscatter(F0, max(0.01, rough), NdotV, NdotL);
+  return (specular + ms) * NdotL;
+}
+
 fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
 }
@@ -266,6 +378,8 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   metal: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -276,7 +390,7 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi)
+  return evalGGXSpecularOnlyWithSpecularAnisotropy(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, n, wo, wi)
        + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
        + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }

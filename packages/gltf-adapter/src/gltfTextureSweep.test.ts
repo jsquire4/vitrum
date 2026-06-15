@@ -137,6 +137,7 @@ const WALKAROUND_OPAQUE_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'clearcoatNormalMap',
   'sheenColorMap',
   'sheenRoughnessMap',
+  'anisotropyMap',
 ]);
 
 function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {

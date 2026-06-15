@@ -109,7 +109,7 @@ describe('B1 — glossy/metal specular indirect term', () => {
 
   it('shade computes lo_indirectSpecular and folds it into the un-demodulated direct channel', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
-    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi)');
+    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
     // It joins directRadiance (NOT the demodulated indirect channel).
     expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);

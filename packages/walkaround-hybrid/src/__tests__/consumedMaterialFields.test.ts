@@ -73,7 +73,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + `anisotropy` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + `iridescence` (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -87,7 +87,7 @@ function unconsumedFieldsScene(): Scene {
           roughness: 0.3,
           metallic: 0,
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
-          anisotropy: 0.8,                     // unconsumed
+          iridescence: 0.8,                    // unconsumed
         },
       } as unknown as ScenePrimitive,
     ],
@@ -111,6 +111,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'specularColorMap', 'specularIntensityMap',
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
       'sheenColorMap', 'sheenRoughnessMap',
+      'anisotropy', 'anisotropyRotation', 'anisotropyMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -142,8 +143,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'frontLayer',
       'backLayer',
       'thinFilmStack',
-      'anisotropy',
-      'anisotropyMap',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(false);
     }
@@ -164,7 +163,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['anisotropy']);
+    expect(result).toEqual(['iridescence']);
   });
 
   it('skips non-mesh kinds (analytic kind is not scanned)', () => {
@@ -178,12 +177,12 @@ describe('collectUnconsumedMaterialFields', () => {
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { kind: 'mesh', material: { baseColor: [1, 0, 0], iridescence: 0.5 } },
-      { kind: 'mesh', material: { baseColor: [0, 1, 0], iridescence: 0.2, anisotropy: 0.5 } },
+      { kind: 'mesh', material: { baseColor: [0, 1, 0], iridescenceMap: { handle: 'iridescence' }, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['anisotropy', 'iridescence']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['iridescence', 'iridescenceMap']);
   });
 
-  it('surfaces representative specular, layered, thin-film, and anisotropy drops', () => {
+  it('surfaces representative layered, thin-film, and iridescence drops', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         kind: 'mesh',
@@ -206,17 +205,20 @@ describe('collectUnconsumedMaterialFields', () => {
           clearcoatNormalScale: 0.5,
           sheenColorMap: { handle: 'sheenColor' },
           sheenRoughnessMap: { handle: 'sheenRoughness' },
+          anisotropy: 0.5,
+          anisotropyRotation: 0.25,
+          anisotropyMap: { handle: 'anisotropy' },
+          iridescenceMap: { handle: 'iridescence' },
           frontLayer: { transmission: [1, 0.5, 0.25] },
           backLayer: { transmission: [0.25, 0.5, 1] },
           thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
-          anisotropyMap: { handle: 'aniso' },
         },
       },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual([
-      'anisotropyMap',
       'backLayer',
       'frontLayer',
+      'iridescenceMap',
       'thinFilmStack',
     ]);
   });
@@ -273,7 +275,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for anisotropy when baseColorMap is also supplied', () => {
+  it('warns only for iridescence when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -285,12 +287,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
       expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('anisotropy');
+      expect(materialWarn).toContain('iridescence');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
         !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('anisotropy'),
+        w.details.fields.includes('iridescence'),
       )).toBe(true);
     } finally {
       engine.dispose();

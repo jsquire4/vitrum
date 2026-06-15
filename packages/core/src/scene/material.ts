@@ -380,8 +380,8 @@ export interface MaterialSpec {
    * Anisotropic specular highlight strength ∈ [0, 1].
    * 0 = isotropic (default); 1 = fully anisotropic.
    *
-   * Consumed by pt-webgpu's material descriptor and BSDF kernel. pt-webgl2 and
-   * walkaround-hybrid are non-consumers.
+   * Consumed natively by pt-webgpu/pt-webgl2 and approximately by
+   * walkaround-hybrid's shade-owned anisotropic GGX branch.
    *
    * Reference: glTF KHR_materials_anisotropy.
    */
@@ -391,8 +391,8 @@ export interface MaterialSpec {
    * Rotation of the anisotropic highlight in radians ∈ [0, π].
    * Only meaningful when `anisotropy` > 0.
    *
-   * Consumed by pt-webgpu's material descriptor and BSDF kernel. pt-webgl2 and
-   * walkaround-hybrid are non-consumers.
+   * Consumed natively by pt-webgpu/pt-webgl2 and approximately by
+   * walkaround-hybrid's shade-owned anisotropic GGX branch.
    *
    * Reference: glTF KHR_materials_anisotropy.
    */

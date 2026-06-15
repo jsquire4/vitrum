@@ -362,6 +362,13 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   ledger promotes `clearcoatNormalMap` / `clearcoatNormalScale` to
   `approximate`, not `native`, because authored tangents and ReSTIR candidate
   PDFs/payloads remain base-lobe-only.
+- Walkaround-hybrid Phase-3E anisotropy follow-up (2026-06-14): scalar
+  `anisotropy` / `anisotropyRotation` and readable `anisotropyMap` handles now
+  ride the material atlas. The shader samples glTF B-channel strength and RG
+  direction, then uses a guarded anisotropic GGX branch for shade-owned direct,
+  analytic, sun, and glossy-indirect paths. The promise ledger promotes these
+  rows to `approximate`, not `native`, because authored tangent consumption and
+  ReSTIR/GI reservoir PDFs/payloads remain isotropic.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,
