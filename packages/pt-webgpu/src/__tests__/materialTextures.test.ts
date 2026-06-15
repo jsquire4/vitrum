@@ -34,6 +34,32 @@ function expectCloseArray(actual: ArrayLike<number>, expected: readonly number[]
   }
 }
 
+function wrapTextureCoordReference(coord: number, mode: 0 | 1 | 2): number {
+  if (mode === 1) {
+    return Math.min(Math.max(coord, 0), 0.999999);
+  }
+  if (mode === 2) {
+    const period = coord - 2 * Math.floor(coord * 0.5);
+    const mirrored = period <= 1 ? period : 2 - period;
+    return Math.min(Math.max(mirrored, 0), 0.999999);
+  }
+  return coord - Math.floor(coord);
+}
+
+function transformedUvReference(
+  rawUv: readonly [number, number],
+  offset: readonly [number, number],
+  scale: readonly [number, number],
+  rotation: number,
+): readonly [number, number] {
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  return [
+    scale[0] * c * rawUv[0] + scale[0] * s * rawUv[1] + offset[0],
+    -scale[1] * s * rawUv[0] + scale[1] * c * rawUv[1] + offset[1],
+  ];
+}
+
 describe('collectMaterialTextures (P2 host)', () => {
   it('dedups shared texture handles + indexes per material', () => {
     const tex = { id: 'A' };
@@ -584,6 +610,26 @@ describe('collectMaterialTextures (P2 host)', () => {
 });
 
 describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
+  it('CPU oracle: wrap modes and KHR_texture_transform match the shader convention', () => {
+    expect(wrapTextureCoordReference(-0.25, 0)).toBeCloseTo(0.75, 6);
+    expect(wrapTextureCoordReference(1.25, 0)).toBeCloseTo(0.25, 6);
+    expect(wrapTextureCoordReference(-0.25, 1)).toBe(0);
+    expect(wrapTextureCoordReference(1.25, 1)).toBeCloseTo(0.999999, 6);
+    expect(wrapTextureCoordReference(-0.25, 2)).toBeCloseTo(0.25, 6);
+    expect(wrapTextureCoordReference(1.25, 2)).toBeCloseTo(0.75, 6);
+    expect(wrapTextureCoordReference(2.25, 2)).toBeCloseTo(0.25, 6);
+
+    const uv = transformedUvReference([0.25, 0.75], [0.1, 0.2], [2, 3], Math.PI / 2);
+    expectCloseArray(uv, [1.6, -0.55]);
+    expectCloseArray(
+      [
+        wrapTextureCoordReference(uv[0], 0) * 0.5,
+        wrapTextureCoordReference(uv[1], 2) * 0.25,
+      ],
+      [0.3, 0.1375],
+    );
+  });
+
   it('WGSL MATERIAL_TEX_VEC4_STRIDE matches the host descriptor stride', () => {
     expect(MATERIAL_TEX_FLOAT_STRIDE).toBe(MATERIAL_TEX_VEC4_STRIDE * 4);
     // The WGSL sampler indexes materialTexDescriptors with this exact stride;

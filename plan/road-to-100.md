@@ -256,6 +256,8 @@ buckets that the A–D framing was missing:**
   vertex remains nonzero. `restirPtReuseContract.test.ts` now adds numeric
   pairwise-GRIS temporal weight oracles, including reused-reservoir
   `pdfSrc`-independence and final `W = w_sum / pHat` without `M` normalization.
+  `materialTextures.test.ts` now adds CPU coverage for shader-side wrap modes,
+  KHR/THREE UV transforms, and post-wrap UV-fit scaling.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
