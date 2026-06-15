@@ -240,10 +240,16 @@ buckets that the A–D framing was missing:**
   `cpuTracerDriftTripwire.test.ts` now uses literal frozen WGSL function-body hashes
   rather than live-computed "frozen" values. `oidnFinalDenoiser.test.ts` now pins
   dispatch-time OIDN failure degradation on walkaround: raw HDR fallback remains visible,
-  state becomes retryable `failed`, and the next dispatch retries successfully. Remaining
-  D10 infrastructure work: the WebGPU WGSL/PASS_ORDER shader gate still stays explicit
-  because it needs a WebGPU adapter (items H53–H56 list the current priorities). M effort
-  total; this is what stops the next H1 from shipping green.
+  state becomes retryable `failed`, and the next dispatch retries successfully.
+  Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
+  parse gate itself is already present and CI-backed: `npm run shader-gate`
+  compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
+  walkaround PASS_ORDER roots including NRC when the adapter supports it,
+  shared-denoisers, and walkaround-rc), and `--self-test` catches an injected
+  broken shader. Remaining D10 infrastructure work is narrower: a stronger
+  adapter-backed pipeline-layout creation gate for lite/optional variants plus
+  the non-mirrored WGSL behavior oracles. M effort total; this is what stops
+  the next H1 from shipping green.
 - **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
   fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
   casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b
@@ -366,7 +372,7 @@ buckets that the A–D framing was missing:**
 |------|---------|---------|
 | **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic unsupported rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
 | **GATE-02** | Per `native` material row: one test that packs + shader string pin OR readback oracle | Byte-identity SHA tests can be green while both sides share a bug |
-| **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; keep `npm run shader-gate` explicit in CI for every WGSL `PASS_ORDER` variant including walkaround texture bind layout because that path needs a WebGPU adapter | WGSL string tests don't compile shaders |
+| **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; WGSL/PASS_ORDER parse gate is source-verified present as root `npm run shader-gate` and CI-backed with lavapipe (51 production modules + self-test). Keep it explicit rather than default `npm test` because that path needs a WebGPU adapter. | WGSL string tests don't compile shaders; pipeline-layout creation remains a stronger future proof gate |
 | **GATE-GLTF** | `gltfKhronosSweep.test.ts` — `analyzeGltfAsset` only, no network in CI (fixtures vendored) | Live URL tests flake in CI |
 
 #### 0.3 V28-B baseline recapture (restored 2026-06-12 — was dropped from this addendum)
