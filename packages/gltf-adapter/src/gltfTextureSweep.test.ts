@@ -16,7 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
-import { loadGltfAsset } from './index.js';
+import { loadGltfAsset, type GltfTextureSourceExtension } from './index.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
 import { gltfTextureColorSpaceForField, type GltfMaterialTextureField } from './texturePipeline.js';
 import type { MaterialSpec, MeshPrimitive, TextureRef } from '@vitrum/core';
@@ -28,6 +28,17 @@ function f32Buffer(values: number[]): ArrayBuffer {
   const view = new DataView(buf);
   values.forEach((v, i) => view.setFloat32(i * 4, v, true));
   return buf;
+}
+
+function concat(buffers: readonly ArrayBuffer[]): ArrayBuffer {
+  const total = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const buffer of buffers) {
+    out.set(new Uint8Array(buffer), offset);
+    offset += buffer.byteLength;
+  }
+  return out.buffer;
 }
 
 const TRIANGLE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
@@ -184,6 +195,59 @@ function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } 
   return { gltf, buffers: new Map([[0, total.buffer]]) };
 }
 
+function makeTextureSourceExtensionGltf(extension: GltfTextureSourceExtension): {
+  gltf: GltfJson;
+  buffers: Map<number, ArrayBuffer>;
+  fallbackBytes: number[];
+  extensionBytes: number[];
+  extensionMimeType: string;
+} {
+  const positions = f32Buffer(TRIANGLE_POSITIONS);
+  const fallbackBytes = PNG_MAGIC;
+  const extensionBytes = [0x44, 0x44, 0x53, 0x20];
+  const fallback = new Uint8Array(fallbackBytes).buffer;
+  const alternate = new Uint8Array(extensionBytes).buffer;
+  const buffer = concat([positions, fallback, alternate]);
+  const fallbackOffset = positions.byteLength;
+  const alternateOffset = fallbackOffset + fallback.byteLength;
+  const extensionMimeType = extension === 'KHR_texture_basisu'
+    ? 'image/ktx2'
+    : extension === 'MSFT_texture_dds'
+      ? 'image/vnd-ms.dds'
+      : 'image/webp';
+  return {
+    fallbackBytes,
+    extensionBytes,
+    extensionMimeType,
+    buffers: new Map([[0, buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{
+        source: 0,
+        extensions: {
+          [extension]: { source: 1 },
+        },
+      }],
+      images: [
+        { bufferView: 1, mimeType: 'image/png' },
+        { bufferView: 2, mimeType: extensionMimeType },
+      ],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: fallbackOffset, byteLength: fallback.byteLength },
+        { buffer: 0, byteOffset: alternateOffset, byteLength: alternate.byteLength },
+      ],
+      buffers: [{ byteLength: buffer.byteLength }],
+    },
+  };
+}
+
 // ── The sweep ────────────────────────────────────────────────────────────────
 
 describe('KHR extension texture sweep (GLTF-06)', () => {
@@ -269,6 +333,61 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       });
       expect(transform.rotation).toBeGreaterThan(0);
     }
+  });
+
+  it('loadGltfAsset textureDecodeReport follows enabled MSFT_texture_dds alternate source selection', async () => {
+    const { gltf, buffers, fallbackBytes, extensionBytes, extensionMimeType } =
+      makeTextureSourceExtensionGltf('MSFT_texture_dds');
+    gltf.extensionsUsed = ['MSFT_texture_dds'];
+
+    const fallback = await loadGltfAsset(gltf, {
+      buffers,
+      decodeImage: async (bytes, mimeType) => ({
+        kind: 'decoded-texture',
+        mimeType,
+        bytes: Array.from(bytes),
+      }),
+    });
+    const fallbackMaterial = (fallback.scene.primitives[0] as MeshPrimitive).material;
+    expect((fallbackMaterial.baseColorMap!.handle as { mimeType: string; bytes: number[] })).toMatchObject({
+      mimeType: 'image/png',
+      bytes: fallbackBytes,
+    });
+
+    const alternate = await loadGltfAsset(gltf, {
+      buffers,
+      textureSourceExtensions: ['MSFT_texture_dds'],
+      decodeImage: async (bytes, mimeType) => ({
+        kind: 'decoded-texture',
+        mimeType,
+        bytes: Array.from(bytes),
+      }),
+    });
+    const alternateMaterial = (alternate.scene.primitives[0] as MeshPrimitive).material;
+    expect((alternateMaterial.baseColorMap!.handle as { mimeType: string; bytes: number[] })).toMatchObject({
+      mimeType: extensionMimeType,
+      bytes: extensionBytes,
+    });
+    expect(alternate.textureDecodeReport).toMatchObject({
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      entries: [
+        expect.objectContaining({
+          primitiveId: 'gltf-prim-0',
+          primitiveKind: 'mesh',
+          primitiveIndex: 0,
+          materialField: 'baseColorMap',
+          path: 'scene.primitives[0].material.baseColorMap',
+          colorSpace: 'srgb',
+          handleKind: 'opaque',
+          backendReadiness: {
+            ptWebgl2: 'opaque',
+            ptWebgpu: 'opaque',
+            walkaroundHybrid: 'opaque',
+          },
+        }),
+      ],
+    });
   });
 
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {

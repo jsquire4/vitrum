@@ -897,7 +897,7 @@ targets.
 
 - **Condensed to 5 phases:** land gates → glTF → PT → walkaround → orchestration → proof.
 - **Specificity:** file-level plug-in points, decoder contracts, bind-group footguns, integrator audit matrix, texture atlas architecture.
-- **Gap fill vs 85%:** texture decode bridge, EXT_mesh_gpu_instancing decision, animation×temporal GI, lite-tier rejection for fidelity, PTWG-MAT all paths, walkaround alpha/blending, examples/gltf-viewer, render-based glTF sweep (not analyze-only), `pickBackend` fix, double-sided/vertex-color, tangent generation at import, engine `gltfAsset` passthrough, documentation sync as part of done.
+- **Gap fill vs 85%:** texture decode bridge, EXT_mesh_gpu_instancing decision, animation×temporal GI, lite-tier rejection for fidelity, PTWG-MAT all paths, walkaround alpha/blending, examples/gltf-viewer, render-based glTF sweep (not analyze-only), `pickBackend` fix, double-sided/vertex-color, tangent generation at import, engine `gltfAsset` passthrough, documentation sync as part of done. 2026-06-14 proof addendum: the progressive glTF engine helper now has regression coverage for `textureDecodeReport` + warning passthrough, and the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()`.
 - **Performance work preserved:** low-discrepancy sampling and compressed wide
   BVH traversal are tracked as active SOTA/performance work, but not as
   arbitrary-glTF API contract blockers. Shipped denoiser weights remain

@@ -19,26 +19,37 @@ function f32Buffer(values: number[]): ArrayBuffer {
   return buf;
 }
 
-function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+function makeInlineTexturedTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  total.set(new Uint8Array(positions), 0);
+  total.set(imageBytes, positions.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      cameras: [{ type: 'perspective' }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
       accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
-      buffers: [{ byteLength: positions.byteLength }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [{ byteLength: total.byteLength }],
     },
-    buffers: new Map([[0, positions]]),
+    buffers: new Map([[0, total.buffer]]),
   };
 }
 
 describe('@vitrum/engine/gltf progressive helper', () => {
   it('loads a glTF scene and wires its controller into createProgressiveEngine', async () => {
-    const { gltf, buffers } = makeInlineTriangleGltf();
+    const { gltf, buffers } = makeInlineTexturedTriangleGltf();
     const canvas = {} as HTMLCanvasElement;
     const handle = {
       coordinator: {},
@@ -60,6 +71,24 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.backend).toBe('pt-webgpu');
     expect(result.engine).toBe(handle);
     expect(result.attached).toBe(true);
+    expect(result.textureDecodeReport).toBe(result.asset.textureDecodeReport);
+    expect(result.textureDecodeReport).toMatchObject({
+      mapCount: 1,
+      rawImageCount: 1,
+      rawImageRefs: [
+        expect.objectContaining({
+          primitiveId: 'gltf-prim-0',
+          materialField: 'baseColorMap',
+          path: 'scene.primitives[0].material.baseColorMap',
+          colorSpace: 'srgb',
+          handleKind: 'raw-image',
+        }),
+      ],
+    });
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('No decodeImage callback provided'),
+      expect.stringContaining('Camera nodes are present but ignored'),
+    ]));
     expect(createProgressiveEngineMock).toHaveBeenCalledTimes(1);
     expect(createProgressiveEngineMock.mock.calls[0]![0]).toEqual(expect.objectContaining({
       canvas,

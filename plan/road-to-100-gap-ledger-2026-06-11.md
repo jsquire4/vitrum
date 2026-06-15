@@ -1392,7 +1392,12 @@ Do not carry these as open gaps unless the code regresses again.
 - Blanket "glTF compression/animations/morphs/strip/fan are not imported":
   stale. Those lower-level importer paths are implemented and covered by the
   glTF adapter suite; the open gap is turnkey arbitrary-asset loading,
-  compatibility planning, and playback/update orchestration.
+  compatibility planning, and playback/update orchestration. 2026-06-14 proof
+  addendum: `gltfProgressiveSubpath.test.ts` now asserts the engine progressive
+  helper returns `textureDecodeReport` plus adapter warnings, and
+  `gltfTextureSweep.test.ts` now proves enabled `MSFT_texture_dds` alternate
+  source selection flows through `loadGltfAsset()` while the report still
+  identifies the imported material map.
 
 ## Recommended execution order
 
