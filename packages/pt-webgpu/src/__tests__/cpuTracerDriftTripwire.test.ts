@@ -94,7 +94,7 @@ function bodyHash(wgsl: string, fnName: string): string {
   return createHash('sha256').update(normalise(body)).digest('hex').slice(0, 16);
 }
 
-// ── Pinned hashes ─────────────────────────────────────────────────────────────
+// ── Frozen hashes ─────────────────────────────────────────────────────────────
 //
 // To repin after an intentional WGSL change:
 //   1. Update the cpuTracer.ts mirror to match the new WGSL.
@@ -103,29 +103,6 @@ function bodyHash(wgsl: string, fnName: string): string {
 //   3. Copy the new hash into the constant below.
 //   4. Commit both the WGSL change, the mirror update, and the hash update together.
 
-// Note: these hashes are computed from the CURRENT WGSL state.  They are updated
-// by running the test once after each intentional WGSL function change.
-
-const PINNED_HASHES: Record<string, string> = {
-  safe_normalize:          computeCurrentHash(PT_WEBGPU_COMMON_WGSL,                    'safe_normalize'),
-  intersectAabb:           computeCurrentHash(PT_WEBGPU_INTERSECTION_CORE_WGSL,          'intersectAabb'),
-  cosineHemisphereSample:  computeCurrentHash(PT_WEBGPU_PATH_TRACE_BSDF_WGSL,           'cosineHemisphereSample'),
-  sampleGgxVndfTangent:    computeCurrentHash(PT_WEBGPU_PATH_TRACE_BSDF_WGSL,           'sampleGgxVndfTangent'),
-  fresnelSchlick:          computeCurrentHash(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL, 'fresnelSchlick'),
-  frDielectric:            computeCurrentHash(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL, 'frDielectric'),
-  powerHeuristic:          computeCurrentHash(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL, 'powerHeuristic'),
-};
-
-// Bootstrap: on first run (or after intentional change), the hash IS the current
-// value — compute it here so the assertion body can compare against a known string.
-// This is the "store the current hash on first run" pattern; the test NEVER fails
-// spuriously on a clean tree because both sides are computed from the same string.
-// The value only changes when the WGSL changes.  The REAL enforcement comes from
-// the FROZEN literal hashes in FROZEN_HASHES below, which are hand-updated.
-function computeCurrentHash(wgsl: string, fn: string): string {
-  return bodyHash(wgsl, fn);
-}
-
 /**
  * FROZEN hashes — hand-updated on each intentional WGSL change.
  *
@@ -133,18 +110,18 @@ function computeCurrentHash(wgsl: string, fn: string): string {
  * without a deliberate update here, the frozen hash won't match the live hash
  * and the test fails, prompting the editor to update the cpuTracer mirror.
  *
- * Initial values are seeded from the current (2026-06-09) WGSL state.
+ * Current literals are seeded from the verified 2026-06-15 WGSL state.
  */
 const FROZEN_HASHES: Record<string, string> = {
   // Repin by running the test with the new WGSL, capturing the failing assertion,
   // and updating the value here + updating cpuTracer.ts.
-  safe_normalize:         PINNED_HASHES['safe_normalize']!,
-  intersectAabb:          PINNED_HASHES['intersectAabb']!,
-  cosineHemisphereSample: PINNED_HASHES['cosineHemisphereSample']!,
-  sampleGgxVndfTangent:   PINNED_HASHES['sampleGgxVndfTangent']!,
-  fresnelSchlick:         PINNED_HASHES['fresnelSchlick']!,
-  frDielectric:           PINNED_HASHES['frDielectric']!,
-  powerHeuristic:         PINNED_HASHES['powerHeuristic']!,
+  safe_normalize:         '0d23a9b027f5edfc',
+  intersectAabb:          'da9898b696fd3d16',
+  cosineHemisphereSample: 'f93d14571d96f6e6',
+  sampleGgxVndfTangent:   '867ece6ffbc4ae0b',
+  fresnelSchlick:         'c5e709aecf383066',
+  frDielectric:           'b37da4158d551392',
+  powerHeuristic:         'e6ba80ffab3fa7ac',
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
