@@ -106,6 +106,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'attenuationColor', 'attenuationDistance', 'thickness', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity',
+      'specularColor', 'specularIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -133,8 +134,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'displacementMap',
       'displacementScale',
       'displacementBias',
-      'specularColor',
-      'specularIntensity',
       'specularColorMap',
       'specularIntensityMap',
       'bumpMap',
@@ -208,8 +207,6 @@ describe('collectUnconsumedMaterialFields', () => {
       'anisotropyMap',
       'backLayer',
       'frontLayer',
-      'specularColor',
-      'specularIntensity',
       'thinFilmStack',
     ]);
   });

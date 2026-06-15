@@ -1078,6 +1078,14 @@ function alphaAtlasUnit(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
+function specularColorUnit(
+  material: MaterialSpec | undefined,
+  index: 0 | 1 | 2,
+): number {
+  const value = material?.specularColor?.[index];
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? 1)) : 1;
+}
+
 function materialAtlasPatchRequiresFullRebuild(
   prev: MaterialSpec | undefined,
   next: MaterialSpec | undefined,
@@ -1099,7 +1107,12 @@ function materialAtlasPatchRequiresFullRebuild(
       alphaAtlasUnit(prev?.opacity, 1) !== alphaAtlasUnit(next?.opacity, 1) ||
       alphaAtlasUnit(prev?.alphaCutoff, 0.5) !== alphaAtlasUnit(next?.alphaCutoff, 0.5)
     );
-  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged;
+  const specularChanged =
+    specularColorUnit(prev, 0) !== specularColorUnit(next, 0) ||
+    specularColorUnit(prev, 1) !== specularColorUnit(next, 1) ||
+    specularColorUnit(prev, 2) !== specularColorUnit(next, 2) ||
+    alphaAtlasUnit(prev?.specularIntensity, 1) !== alphaAtlasUnit(next?.specularIntensity, 1);
+  return normalScaleChanged || lightMapIntensityChanged || alphaCoverageChanged || specularChanged;
 }
 
 /**

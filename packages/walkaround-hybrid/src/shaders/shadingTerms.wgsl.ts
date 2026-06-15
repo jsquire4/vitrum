@@ -144,6 +144,7 @@ fn lo_analyticNEE(
   albedo:   vec3f,
   rough:    f32,
   metal:    f32,
+  specular: vec4f,
   wo:       vec3f,
   isGlass:  bool,
   isMetal:  bool,
@@ -209,7 +210,7 @@ fn lo_analyticNEE(
 
     // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
-    let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
+    let brdf = evalGGXWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, wi);
     Lo += lightLe * brdf * nDotL * cone * invDist2;
   }
   return Lo;
@@ -233,6 +234,7 @@ fn lo_direct(
   albedo:   vec3f,
   rough:    f32,
   metal:    f32,
+  specular: vec4f,
   isGlass:  bool,
   isMetal:  bool,
   rng:      ptr<function, u32>,
@@ -259,7 +261,7 @@ fn lo_direct(
     let nDotL = max(0.0, dot(normal, envDir));
     if (nDotL < 1e-6) { return vec3f(0.0); }
     let envColor = envRadiance(envDir);
-    let brdfE = evalGGX(albedo, rough, metal, normal, wo, envDir);
+    let brdfE = evalGGXWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, envDir);
     return envColor * brdfE * r.W;
   }
 
@@ -292,7 +294,7 @@ fn lo_direct(
     if (occ) { return vec3f(0.0); }
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-  let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
+  let brdf = evalGGXWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, wi);
   return e.Le * brdf * G * r.W;
 }
 
@@ -351,6 +353,7 @@ fn lo_sunNEE(
   albedo:    vec3f,
   rough:     f32,
   metal:     f32,
+  specular:  vec4f,
   wo:        vec3f,
   isGlass:   bool,
 ) -> vec3f {
@@ -398,7 +401,7 @@ fn lo_sunNEE(
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
   // evalGGX already folds in nDotSun as its NdotL term (returns 0 when NdotL<1e-6).
-  let brdf = evalGGX(albedo, rough, metal, normal, wo, toSun);
+  let brdf = evalGGXWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, toSun);
   // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
   // No distance falloff — directional lights have infinite distance.
   return vec3f(ubo.sunIntensity) * brdf;
@@ -678,6 +681,7 @@ fn lo_indirectSpecular(
   albedo: vec3f,
   rough:  f32,
   metal:  f32,
+  specular: vec4f,
   isGlass: bool,
 ) -> vec3f {
   if (isGlass) { return vec3f(0.0); }
@@ -693,6 +697,6 @@ fn lo_indirectSpecular(
   if (distS <= 1e-4) { return vec3f(0.0); }
   let wi = toS / distS;
   // evalGGXSpecularOnly already includes the NdotL cosine + conductor F0.
-  let specBrdf = evalGGXSpecularOnly(albedo, rough, metal, normal, wo, wi);
+  let specBrdf = evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, wi);
   return g.Lo * specBrdf * g.W;
 }`;

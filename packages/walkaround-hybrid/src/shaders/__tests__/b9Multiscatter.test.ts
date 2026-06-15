@@ -47,8 +47,8 @@ describe('B9 — Kulla-Conty multiscatter (structural)', () => {
     expect(GGX_BRDF_WGSL).toContain('fn ggxAverageAlbedo(');
   });
 
-  it('multiscatter is folded into evalGGXSpecularOnly (the gated GI lobe)', () => {
-    const start = GGX_BRDF_WGSL.indexOf('fn evalGGXSpecularOnly(');
+  it('multiscatter is folded into evalGGXSpecularOnlyWithSpecular (the gated GI lobe)', () => {
+    const start = GGX_BRDF_WGSL.indexOf('fn evalGGXSpecularOnlyWithSpecular(');
     const body = GGX_BRDF_WGSL.slice(start);
     expect(body).toContain('ggxMultiscatter(F0');
     expect(body).toContain('(specular + ms) * NdotL');

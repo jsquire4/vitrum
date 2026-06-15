@@ -75,12 +75,17 @@
  *                           as camera-visible baked outgoing radiance only.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into
  *                           the camera-visible baked light-map term.
+ *  specularColor          stored in material atlas metadata and applied to the
+ *                           dielectric GGX F0 tint in shade-owned direct,
+ *                           analytic, sun, and specular-indirect paths.
+ *  specularIntensity      same scalar specular metadata path; approximate
+ *                           because ReSTIR candidate PDFs still use default F0.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / lightMap, Disney BSDF scalars, spectral curves,
  * volume scattering, thin-film stacks, layered BSDF, anisotropy, and specular
- * extension scalars — is IGNORED.
+ * extension maps — is IGNORED.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -94,6 +99,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'emissiveMap',
   'lightMap',
   'lightMapIntensity',
+  'specularColor',
+  'specularIntensity',
   'alphaMode',
   'alphaCutoff',
   'opacity',

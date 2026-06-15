@@ -97,12 +97,14 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
 describe('B1 — glossy/metal specular indirect term', () => {
   it('ggxBrdf exposes evalGGXSpecularOnly (specular lobe, conductor F0)', () => {
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnly(');
-    expect(GGX_BRDF_WGSL).toContain('mix(vec3f(0.04), albedo, metal)');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecular(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecular(');
+    expect(GGX_BRDF_WGSL).toContain('fn materialF0(');
   });
 
   it('shade computes lo_indirectSpecular and folds it into the un-demodulated direct channel', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
-    expect(SHADE_WGSL).toContain('evalGGXSpecularOnly(albedo, rough, metal, normal, wo, wi)');
+    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specular.rgb, specular.a, normal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
     // It joins directRadiance (NOT the demodulated indirect channel).
     expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);

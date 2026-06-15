@@ -423,8 +423,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescence: 'unsupported',
   iridescenceIor: 'unsupported',
   iridescenceThicknessRange: 'unsupported',
-  specularIntensity: 'unsupported',
-  specularColor: 'unsupported',
+  // Scalar KHR_materials_specular controls ride the material atlas metadata and
+  // modulate dielectric F0 in shade-owned direct/analytic/sun/specular-indirect
+  // paths. ReSTIR candidate PDFs still use default F0, so this stays approximate.
+  specularIntensity: 'approximate',
+  specularColor: 'approximate',
   envMapIntensity: 'unsupported',
   spectralAttenuation: 'unsupported',
   dispersionAbbeNumber: 'unsupported',

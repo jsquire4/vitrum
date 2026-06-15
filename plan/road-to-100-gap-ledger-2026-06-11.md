@@ -316,6 +316,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   multiplies runtime GTAO by `mix(1, aoMap.r, strength)`. The ledger promotes
   `aoMap`/`aoMapIntensity` to approximate, not native, because upstream
   reservoir/GI payloads still use scalar packed lanes.
+- Walkaround-hybrid Phase-3E scalar-specular follow-up (2026-06-14):
+  `pipeline/materialTextureAtlas.ts` now appends a per-triangle metadata texel
+  carrying `specularColor.rgb` + `specularIntensity`; `materialAtlas.wgsl.ts`
+  exposes `sampleSpecularControls()`, and `shade.wgsl.ts` threads those controls
+  into direct, analytic, sun, and glossy-indirect GGX evaluation. The promise
+  ledger promotes scalar `specularColor` / `specularIntensity` to
+  `approximate`, not `native`, because ReSTIR candidate PDFs/payloads and
+  specular maps still use the default-F0 path.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,

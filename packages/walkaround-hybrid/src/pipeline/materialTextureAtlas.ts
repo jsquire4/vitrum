@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 21;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 22;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -217,6 +217,14 @@ function clampedUnit(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? fallback)) : fallback;
 }
 
+function clampedColorComponent(
+  color: readonly [number, number, number] | undefined,
+  index: 0 | 1 | 2,
+): number {
+  const value = color?.[index];
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value ?? 1)) : 1;
+}
+
 export function packMaterialTextureAtlas(
   materials: readonly MaterialSpec[],
   triMaterialIds: Uint32Array,
@@ -348,6 +356,14 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeSpecularMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = clampedColorComponent(mat?.specularColor, 0);
+    baseColorMetaData[b + 1] = clampedColorComponent(mat?.specularColor, 1);
+    baseColorMetaData[b + 2] = clampedColorComponent(mat?.specularColor, 2);
+    baseColorMetaData[b + 3] = clampedUnit(mat?.specularIntensity, 1);
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -363,6 +379,7 @@ export function packMaterialTextureAtlas(
     writeNormalScaleMeta(mat, baseTexel + 17);
     writeMapMeta(mat, 'lightMap', 'linear', baseTexel + 18);
     writeLightMapIntensityMeta(mat, baseTexel + 20);
+    writeSpecularMeta(mat, baseTexel + 21);
   }
 
   return {

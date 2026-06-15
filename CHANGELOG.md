@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added (walkaround roughness/metallic/AO atlas slice, 2026-06-14)
 
 - **`@vitrum/walkaround-hybrid` roughness/metallic/AO map consumption:** the material texture atlas now packs readable `roughnessMap`, `metallicMap`, and `aoMap` handles alongside `baseColorMap`, preserving per-map uv0/uv1 selection, wrap modes, and `KHR_texture_transform` metadata. `shade.wgsl` samples roughness from the glTF G channel, metallic from the B channel, and AO from the R channel, with `aoMapIntensity` carried in the per-triangle material word and applied with glTF occlusion-strength semantics. The promise ledger grades these rows `approximate` because upstream reservoir/GI payloads still use scalar packed lanes.
+- **`@vitrum/walkaround-hybrid` scalar KHR_materials_specular controls:** the material texture atlas now packs `specularColor.rgb` plus `specularIntensity` as per-triangle metadata, and shade-owned direct, analytic, sun, and glossy-indirect GGX paths modulate dielectric F0 from those controls. The promise ledger grades these rows `approximate` because ReSTIR candidate PDFs/payloads and specular maps are not yet specular-control complete.
 
 ### Added (glTF morph target tangent preservation, 2026-06-14)
 

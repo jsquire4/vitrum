@@ -42,9 +42,23 @@ fn geometrySmith(NdotV: f32, NdotL: f32, rough: f32) -> f32 {
   return geometrySchlickGGX(NdotV, rough) * geometrySchlickGGX(NdotL, rough);
 }
 
+fn materialF0(albedo: vec3f, metal: f32, specularColor: vec3f, specularIntensity: f32) -> vec3f {
+  let dielectricF0 = vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0);
+  return mix(dielectricF0, albedo, clamp(metal, 0.0, 1.0));
+}
+
 // Evaluate GGX BRDF (diffuse + specular).
 // albedo: base color, rough: roughness, metalness baked into F0.
-fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+fn evalGGXWithSpecular(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
   let h = safe_normalize(wo + wi);
   let NdotL = max(0.0, dot(n, wi));
   let NdotV = max(1e-4, dot(n, wo));
@@ -52,7 +66,7 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
   let VdotH = max(0.0, dot(wo, h));
   if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
 
-  let F0 = mix(vec3f(0.04), albedo, metal);
+  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F   = fresnelSchlick(VdotH, F0);
   let D   = distributionGGX(NdotH, max(0.01, rough));
   let G   = geometrySmith(NdotV, NdotL, max(0.01, rough));
@@ -60,6 +74,10 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let diffuse  = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
   return (diffuse + specular) * NdotL;
+}
+
+fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  return evalGGXWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
 }
 
 // ── B9 (road-to-100) — Kulla-Conty multiple-scattering energy compensation ───
@@ -147,20 +165,33 @@ fn ggxMultiscatter(F0: vec3f, rough: f32, NdotV: f32, NdotL: f32) -> vec3f {
 // inter-facet energy the Smith G term drops. This is the glossy/metal GI path
 // only (shade gates it to non-default surfaces via SPEC_GI_ROUGH_MAX), so
 // default-diffuse + the direct-light evalGGX above remain byte-identical.
-fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+fn evalGGXSpecularOnlyWithSpecular(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
   let h = safe_normalize(wo + wi);
   let NdotL = max(0.0, dot(n, wi));
   let NdotV = max(1e-4, dot(n, wo));
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
   if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
-  let F0 = mix(vec3f(0.04), albedo, metal);
+  let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F  = fresnelSchlick(VdotH, F0);
   let D  = distributionGGX(NdotH, max(0.01, rough));
   let G  = geometrySmith(NdotV, NdotL, max(0.01, rough));
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let ms = ggxMultiscatter(F0, max(0.01, rough), NdotV, NdotL);
   return (specular + ms) * NdotL;
+}
+
+fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
 }
 
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────

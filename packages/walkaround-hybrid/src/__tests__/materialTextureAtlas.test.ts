@@ -354,7 +354,26 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[80]).toBeCloseTo(2.5, 5);
   });
 
+  it('packs scalar specular controls into per-triangle material metadata', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      specularColor: [0.25, 0.5, 0.75],
+      specularIntensity: 0.4,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    // specular metadata lives at texel 21 (vec4 lanes 84..87).
+    expect(atlas.baseColorMetaData[84]).toBeCloseTo(0.25, 5);
+    expect(atlas.baseColorMetaData[85]).toBeCloseTo(0.5, 5);
+    expect(atlas.baseColorMetaData[86]).toBeCloseTo(0.75, 5);
+    expect(atlas.baseColorMetaData[87]).toBeCloseTo(0.4, 5);
+  });
+
   it('shade and traversal sample material maps from the shared atlas module', () => {
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 22u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
@@ -363,9 +382,11 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_LIGHT_TEXEL_OFFSET: u32 = 18u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSpecularControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('return coverage < cutoff;');
@@ -375,6 +396,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain(
       'let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);',
     );
+    expect(SHADE_WGSL).toContain('let specular = sampleSpecularControls(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);',
     );

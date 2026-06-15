@@ -399,6 +399,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
             alphaMap: { handle: alphaHandle },
             lightMap: { handle: lightHandle },
             lightMapIntensity: 1,
+            specularColor: [1, 1, 1],
+            specularIntensity: 1,
           },
         },
         ...base.primitives.slice(1),
@@ -417,6 +419,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           alphaMap: { handle: alphaHandle },
           lightMap: { handle: lightHandle },
           lightMapIntensity: 3,
+          specularColor: [0.25, 0.5, 0.75],
+          specularIntensity: 0.4,
         },
       });
 
