@@ -850,10 +850,12 @@ surface through both `loadGltfWithEngine()` and
 `npm run gltf-material-sweep` now builds a synthetic material-heavy glTF asset,
 loads it through `loadGltfAndDecodeTextures()`, asserts every base/KHR material
 texture appears in `textureDecodeReport`, verifies `KHR_texture_transform`
-`texCoord` survives as uv1, and checks backend-readiness diagnostics for
-pt-webgl2, pt-webgpu, and walkaround-hybrid. This caught and fixed the stale
-walkaround `thicknessMap` readiness classifier: the adapter now reports it
-`ready`, matching the shipped walkaround atlas/shader path.
+`texCoord` survives as uv1, asserts the generated sampler/wrap/mipmap policy in
+the decode report, checks the expected `*.samplerPolicy` compatibility
+diagnostics per backend, and checks backend-readiness diagnostics for pt-webgl2,
+pt-webgpu, and walkaround-hybrid. This caught and fixed the stale walkaround
+`thicknessMap` readiness classifier: the adapter now reports it `ready`,
+matching the shipped walkaround atlas/shader path.
 
 For each fixture in `tools/reference-assets/gltf/`:
 1. `loadGltfAsset` + `decodeSceneTextures`

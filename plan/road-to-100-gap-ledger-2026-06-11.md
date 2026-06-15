@@ -1384,8 +1384,9 @@ Closure:
 - `tools/gltf-material-sweep/` now covers the CPU/API half of the material sweep:
   it loads a synthetic glTF through `loadGltfAndDecodeTextures()`, checks every
   base/KHR texture field in `textureDecodeReport`, verifies uv1 transform
-  preservation, and asserts backend readiness including walkaround `thicknessMap`
-  as `ready`.
+  preservation, asserts sampler/wrap/mipmap metadata plus expected
+  `*.samplerPolicy` backend compatibility diagnostics, and asserts backend
+  readiness including walkaround `thicknessMap` as `ready`.
 - Prefer pt-webgl2/full pt-webgpu for fidelity policy until walkaround either
   implements texture-driven PBR fallback or is explicitly a realtime-profile
   target in the compatibility report.

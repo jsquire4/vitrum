@@ -64,6 +64,27 @@ const WALKAROUND_ATLAS_FIELDS = new Set([
   "iridescenceThicknessMap",
 ]);
 
+const FIELD_TEXTURE_INDEX = new Map([
+  ["baseColorMap", 0],
+  ["roughnessMap", 1],
+  ["metallicMap", 1],
+  ["normalMap", 2],
+  ["aoMap", 3],
+  ["emissiveMap", 4],
+  ["transmissionMap", 5],
+  ["specularIntensityMap", 6],
+  ["specularColorMap", 7],
+  ["sheenColorMap", 8],
+  ["sheenRoughnessMap", 9],
+  ["clearcoatMap", 10],
+  ["clearcoatRoughnessMap", 11],
+  ["clearcoatNormalMap", 12],
+  ["iridescenceMap", 13],
+  ["iridescenceThicknessMap", 14],
+  ["anisotropyMap", 15],
+  ["thicknessMap", 16],
+]);
+
 function f32Buffer(values) {
   const buf = new ArrayBuffer(values.length * 4);
   const view = new DataView(buf);
@@ -95,6 +116,61 @@ function texInfo(index) {
       },
     },
   };
+}
+
+function expectedSamplerPolicy(textureIndex) {
+  const minFilterModes = [
+    { minFilter: "nearest", mipFilter: "none", usesMipmaps: false },
+    { minFilter: "linear", mipFilter: "none", usesMipmaps: false },
+    { minFilter: "nearest", mipFilter: "nearest", usesMipmaps: true },
+    { minFilter: "linear", mipFilter: "nearest", usesMipmaps: true },
+    { minFilter: "nearest", mipFilter: "linear", usesMipmaps: true },
+    { minFilter: "linear", mipFilter: "linear", usesMipmaps: true },
+  ];
+  return {
+    wrapS: textureIndex % 3 === 1 ? "clamp-to-edge" : textureIndex % 3 === 2 ? "mirrored-repeat" : "repeat",
+    wrapT: textureIndex % 3 === 0 ? "repeat" : textureIndex % 3 === 1 ? "mirrored-repeat" : "clamp-to-edge",
+    magFilter: textureIndex % 2 === 0 ? "nearest" : "linear",
+    ...minFilterModes[textureIndex % minFilterModes.length],
+  };
+}
+
+function samplerPolicyIsNativeForBackend(backend, policy) {
+  if (backend === "walkaround-hybrid") return false;
+  if (backend === "pt-webgl2") {
+    return policy.magFilter === "nearest" && policy.minFilter === "nearest" && policy.mipFilter === "none";
+  }
+  return policy.magFilter === "linear" && policy.minFilter === "linear" && policy.mipFilter === "linear";
+}
+
+function assertExpectedSamplerCompatibility(compatibility) {
+  const mismatches = [];
+  for (const backendSummary of compatibility) {
+    const actual = new Set(
+      backendSummary.issues
+        .filter((issue) => issue.name.endsWith(".samplerPolicy"))
+        .map((issue) => `${issue.name}:${issue.support}:${issue.path}`),
+    );
+    const expected = new Set();
+    for (const field of SWEEP_MAPS) {
+      const textureIndex = FIELD_TEXTURE_INDEX.get(field);
+      if (textureIndex === undefined) continue;
+      const policy = expectedSamplerPolicy(textureIndex);
+      if (!samplerPolicyIsNativeForBackend(backendSummary.backend, policy)) {
+        expected.add(`${field}.samplerPolicy:approximate:samplers[${textureIndex}].minFilter`);
+      }
+    }
+
+    for (const item of expected) {
+      if (!actual.has(item)) mismatches.push({ backend: backendSummary.backend, missing: item });
+    }
+    for (const item of actual) {
+      if (!expected.has(item)) mismatches.push({ backend: backendSummary.backend, unexpected: item });
+    }
+  }
+  if (mismatches.length > 0) {
+    fail("backend sampler-policy diagnostics mismatch", { mismatches });
+  }
 }
 
 function makeSweepGltf() {
@@ -240,11 +316,32 @@ async function main() {
   if (missing.length > 0) fail("textureDecodeReport missed material fields", { missing });
 
   const badReadiness = [];
+  const badSamplerPolicy = [];
   for (const field of SWEEP_MAPS) {
     const entry = entriesByField.get(field);
     if (!entry) continue;
     if (entry.texCoord !== 1) {
       badReadiness.push({ field, reason: `expected texCoord 1, got ${entry.texCoord}` });
+    }
+    if (entry.hasTransform !== true) {
+      badSamplerPolicy.push({ field, reason: "expected KHR_texture_transform to survive in the decode report" });
+    }
+    const textureIndex = FIELD_TEXTURE_INDEX.get(field);
+    if (textureIndex === undefined) {
+      badSamplerPolicy.push({ field, reason: "material field is missing from FIELD_TEXTURE_INDEX" });
+    } else {
+      const expected = expectedSamplerPolicy(textureIndex);
+      for (const key of ["wrapS", "wrapT", "magFilter", "minFilter", "mipFilter", "usesMipmaps"]) {
+        if (entry[key] !== expected[key]) {
+          badSamplerPolicy.push({
+            field,
+            textureIndex,
+            key,
+            expected: expected[key],
+            actual: entry[key],
+          });
+        }
+      }
     }
     if (entry.backendReadiness.ptWebgl2 !== "ready" || entry.backendReadiness.ptWebgpu !== "ready") {
       badReadiness.push({ field, reason: "decoded CPU texture was not ready for PT backends", readiness: entry.backendReadiness });
@@ -259,6 +356,9 @@ async function main() {
     }
   }
   if (badReadiness.length > 0) fail("textureDecodeReport backend readiness mismatch", { badReadiness });
+  if (badSamplerPolicy.length > 0) fail("textureDecodeReport sampler policy mismatch", { badSamplerPolicy });
+  const compatibility = summarizeCompatibility(assetReport);
+  assertExpectedSamplerCompatibility(compatibility);
 
   const summary = {
     fixture: "synthetic-material-sweep",
@@ -271,6 +371,14 @@ async function main() {
       fields: decoded.textureDecodeReport.entries.map((entry) => ({
         field: entry.materialField,
         colorSpace: entry.colorSpace,
+        texCoord: entry.texCoord,
+        hasTransform: entry.hasTransform,
+        wrapS: entry.wrapS,
+        wrapT: entry.wrapT,
+        magFilter: entry.magFilter,
+        minFilter: entry.minFilter,
+        mipFilter: entry.mipFilter,
+        usesMipmaps: entry.usesMipmaps,
         readiness: entry.backendReadiness,
       })),
     },
@@ -281,7 +389,7 @@ async function main() {
       approximateCount: decoded.recommendedBackend.approximateCount,
       isCompatible: decoded.recommendedBackend.isCompatible,
     },
-    compatibility: summarizeCompatibility(assetReport),
+    compatibility,
     renderStatus: "queued",
     renderQueueReason:
       "Phase 5A GPU render/golden-PNG capture is intentionally outside this CPU preflight; use behavioral-gate/reference-render harness for captures.",
