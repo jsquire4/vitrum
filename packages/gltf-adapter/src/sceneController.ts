@@ -52,6 +52,10 @@ export interface GltfApplyAnimationOptions {
   readonly forceSetScene?: boolean;
 }
 
+export interface GltfPlaybackOptions extends GltfApplyAnimationOptions {
+  readonly time?: number;
+}
+
 export interface GltfBlendAnimationOptions {
   readonly engine?: GltfScenePatchTarget;
   readonly loop?: boolean;
@@ -134,6 +138,7 @@ export class GltfSceneController {
   #engine: GltfScenePatchTarget | undefined;
   #activeClip: AnimationClip | undefined;
   #clock = 0;
+  #playing = false;
   readonly #sceneIndex: number;
   readonly #baseLocals: readonly NodeLocalState[];
   readonly #nodeToPrimitiveIds: ReadonlyMap<number, readonly string[]>;
@@ -170,6 +175,18 @@ export class GltfSceneController {
     return this.#warnings;
   }
 
+  get activeClip(): AnimationClip | undefined {
+    return this.#activeClip;
+  }
+
+  get currentTime(): number {
+    return this.#clock;
+  }
+
+  get playing(): boolean {
+    return this.#playing;
+  }
+
   attachEngine(engine: GltfScenePatchTarget, options: { readonly setScene?: boolean } = {}): void {
     this.#engine = engine;
     if (options.setScene ?? true) {
@@ -182,6 +199,34 @@ export class GltfSceneController {
     this.#activeClip = clip;
     this.#clock = time;
     return clip;
+  }
+
+  play(selector?: GltfClipSelector, options: GltfPlaybackOptions = {}): GltfAnimationApplyResult {
+    if (selector !== undefined) {
+      this.#activeClip = this.#resolveClip(selector);
+    } else if (!this.#activeClip) {
+      this.#activeClip = this.#defaultClip('play');
+    }
+    this.#playing = true;
+    const { time, ...applyOptions } = options;
+    return this.seek(time ?? this.#clock, applyOptions);
+  }
+
+  pause(): void {
+    this.#playing = false;
+  }
+
+  resume(options: GltfApplyAnimationOptions = {}): GltfAnimationApplyResult {
+    if (!this.#activeClip) {
+      this.#activeClip = this.#defaultClip('resume');
+    }
+    this.#playing = true;
+    return this.seek(this.#clock, options);
+  }
+
+  tick(deltaSeconds: number, options: GltfApplyAnimationOptions = {}): GltfAnimationApplyResult | undefined {
+    if (!this.#playing) return undefined;
+    return this.advance(deltaSeconds, options);
   }
 
   seek(time: number, options: GltfApplyAnimationOptions = {}): GltfAnimationApplyResult {
@@ -375,6 +420,14 @@ export class GltfSceneController {
       ),
     };
     if (target) target.setScene(this.#scene);
+  }
+
+  #defaultClip(caller: 'play' | 'resume'): AnimationClip {
+    const clip = this.animations[0];
+    if (!clip) {
+      throw new Error(`[vitrum/gltf-adapter] GltfSceneController.${caller}: asset has no animations.`);
+    }
+    return clip;
   }
 
   #resolveClip(selector: GltfClipSelector): AnimationClip {

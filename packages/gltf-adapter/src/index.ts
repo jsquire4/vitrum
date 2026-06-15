@@ -60,6 +60,7 @@ export type {
   GltfBlendAnimationOptions,
   GltfBlendApplyResult,
   GltfClipSelector,
+  GltfPlaybackOptions,
   GltfPrimitivePatchRecord,
   GltfSceneControllerInput,
   GltfSceneControllerOptions,

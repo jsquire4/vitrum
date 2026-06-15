@@ -374,6 +374,44 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[13]).toBeCloseTo(3);
   });
 
+  it('owns a play/pause/resume clock so hosts can tick animations predictably', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+    const engine = { setScene: vi.fn(), updatePrimitive };
+
+    const first = controller.play('parent-slide', { time: 0.25, engine });
+    expect(first.localTime).toBeCloseTo(0.25);
+    expect(controller.playing).toBe(true);
+    expect(controller.activeClip?.name).toBe('parent-slide');
+    expect(controller.currentTime).toBeCloseTo(0.25);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0.5);
+
+    const ticked = controller.tick(0.25, { engine });
+    expect(ticked?.localTime).toBeCloseTo(0.5);
+    expect(controller.currentTime).toBeCloseTo(0.5);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1);
+    const callsAfterTick = updatePrimitive.mock.calls.length;
+
+    controller.pause();
+    const paused = controller.tick(0.25, { engine });
+    expect(paused).toBeUndefined();
+    expect(controller.playing).toBe(false);
+    expect(controller.currentTime).toBeCloseTo(0.5);
+    expect(updatePrimitive).toHaveBeenCalledTimes(callsAfterTick);
+
+    const resumed = controller.resume({ engine });
+    expect(resumed.localTime).toBeCloseTo(0.5);
+    expect(controller.playing).toBe(true);
+    expect(controller.currentTime).toBeCloseTo(0.5);
+
+    const next = controller.tick(0.25, { engine });
+    expect(next?.localTime).toBeCloseTo(0.75);
+    expect(controller.currentTime).toBeCloseTo(0.75);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1.5);
+  });
+
   it('blends morph weights before skin solving', async () => {
     const { gltf, buffers } = morphGltf();
     const result = await gltfToScene(gltf, { buffers });

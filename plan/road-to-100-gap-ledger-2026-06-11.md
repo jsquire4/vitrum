@@ -1268,15 +1268,17 @@ Status:
   rebuilds skinned `bones` arrays from animated joint nodes, applies morph
   weight channels, runs `solveSkin()`, and emits `updatePrimitive()` patches
   with `setScene()` fallback for targets without an incremental method.
-- `seek()`, `advance(dt)`, active clip selection, looped advance, and applied
+- `seek()`, `advance(dt)`, active clip selection, `play()` / `pause()` /
+  `resume()` / `tick(dt)` clock ownership, looped advance, and applied
   patch/warning reporting are implemented.
 - Fixtures now cover parent-node animation, joint animation, morph weights, and
-  fallback from incremental patches to full `setScene()`.
+  fallback from incremental patches to full `setScene()`, plus pause-as-no-op
+  and resume-from-retained-clock behavior.
 
 Closure:
 - Closed for single-clip playback and engine mutation orchestration.
-- Still optional/future: multi-clip blending/cross-fades, explicit play/pause
-  clock ownership helpers, richer topology-changing animation diagnostics,
+- Still optional/future: richer cross-fade scheduling APIs, richer
+  topology-changing animation diagnostics,
   multi-primitive mesh-node fixture coverage, mixed skin+morph fixture coverage,
   and broader real-world animated sample sweeps.
 
@@ -1336,6 +1338,11 @@ Closure:
 - Completed follow-up: CPU-linear texture-bake parity for
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
   glossiness-in-alpha now exists when the host supplies `decodePixels`.
+- Completed follow-up: the engine bridge no longer keeps the
+  `specularGlossinessTexture.glossinessAlpha` compatibility issue active after
+  that CPU-linear bake succeeds; `reject-degraded` still rejects the broader
+  archived spec-gloss model-conversion issue unless the caller accepts that
+  approximation.
 - Add core fields only when at least one backend consumes them or the
   compatibility report can honestly say they are imported-but-unsupported.
 - Continue adding real-world sample sweeps for supported/approximate required

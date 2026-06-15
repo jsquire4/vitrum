@@ -1363,6 +1363,53 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects spec-gloss alpha degradation before construction when no CPU-linear bake is available', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate',
+    );
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('does not keep the spec-gloss alpha degradation after the CPU-linear roughness bake succeeds', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    let message = '';
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        decodePixels,
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(createEngine).not.toHaveBeenCalled();
+    expect(message).toContain('material:KHR_materials_pbrSpecularGlossiness=approximate');
+    expect(message).not.toContain('specularGlossinessTexture.glossinessAlpha');
+  });
+
   it('rejects unsupported point/line primitive modes before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {

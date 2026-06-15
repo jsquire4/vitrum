@@ -213,7 +213,7 @@ function enforceCompatibility<
   if (!selected) {
     throw new Error(`[vitrum/gltf-adapter] No compatibility entry found for backend "${backend}".`);
   }
-  const effectiveIssues = selected.issues.filter((issue) => !isSatisfiedHostHook(issue, options));
+  const effectiveIssues = selected.issues.filter((issue) => !isSatisfiedCompatibilityIssue(issue, options, asset));
   const hardFailures = effectiveIssues.filter((issue) => issue.support === 'unsupported').length;
   const degradedFailures = effectiveIssues.filter((issue) =>
     issue.support !== 'native' && issue.support !== 'unsupported',
@@ -240,18 +240,33 @@ function formatCompatibilityIssue(issue: GltfCompatibilityIssue): string {
   return `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`;
 }
 
-function isSatisfiedHostHook<
+function isSatisfiedCompatibilityIssue<
   TEngine extends GltfScenePatchTarget,
   TFactoryOptions extends object,
 >(
   issue: GltfCompatibilityIssue,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+  asset: GltfAssetResult | GltfDecodedAssetResult,
 ): boolean {
-  if (issue.support !== 'requires-hook') return false;
-  if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
-  if (issue.name === 'EXT_meshopt_compression') return typeof options.meshoptDecode === 'function';
-  if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
-    return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
+  if (issue.support === 'requires-hook') {
+    if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
+    if (issue.name === 'EXT_meshopt_compression') return typeof options.meshoptDecode === 'function';
+    if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
+      return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
+    }
+    return false;
+  }
+  if (
+    issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha' &&
+    isDecodedAsset(asset)
+  ) {
+    const bakeUnavailable = asset.textureDecodeDiagnostics.some((diagnostic) =>
+      diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
+    );
+    const bakedRoughnessMap = asset.textureDecodeReport.entries.some((entry) =>
+      entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
+    );
+    return bakedRoughnessMap && !bakeUnavailable;
   }
   return false;
 }
