@@ -1623,6 +1623,21 @@ Capture before/after references for:
 - SPPM caustics under multiple light types.
 - Material extension lobes in pt-webgpu.
 
+### GATE-06 - glTF one-call behavioral gate
+
+Status:
+- 2026-06-15 follow-up: `tools/behavioral-gate/gate.mjs` now makes
+  `pt/gltf-textured-pbr` exercise the real one-call texture decode bridge
+  instead of only preserving a texture reference. The fixture supplies a
+  raw-image handle plus `decodePixels`, calls `loadGltfForEngine()` with
+  `decodeTextures:true` and `textureTarget:'cpu-linear'`, asserts
+  decoded/unchanged counts, asserts the `textureDecodeReport` has a
+  backend-ready CPU texture row, verifies the engine attached the decoded
+  controller scene, then renders the pt-webgpu frame. The current
+  `npm run behavioral-gate -- --filter gltf` pass covers unlit, decoded
+  textured PBR, transmission glass, skinned animation/controller patching, and
+  mock-Draco ingestion.
+
 ## Rejected or stale claims
 
 Do not carry these as open gaps unless the code regresses again.

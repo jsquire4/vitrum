@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Tests (glTF behavioral gate, 2026-06-15)
+
+- **One-call decoded glTF render gate:** `tools/behavioral-gate` now forces the `pt/gltf-textured-pbr` fixture through `loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear', decodePixels })`, asserts decoded texture counts and a backend-ready `textureDecodeReport`, verifies the engine attaches the decoded controller scene, and renders the decoded pt-webgpu asset.
+
 ### Added (glTF sampler metadata, 2026-06-15)
 
 - **`@vitrum/core` + `@vitrum/gltf-adapter` sampler intent preservation:** `TextureRef` now carries authored `magFilter`, `minFilter`, and `mipFilter` metadata in addition to UV channel, `KHR_texture_transform`, and wrap modes. The glTF adapter maps all six glTF minification constants plus NEAREST/LINEAR magnification into those fields, and `textureDecodeReport` exposes the same sampler policy with `usesMipmaps` for authored mipmapped modes. Backend per-texture filter/mipmap enforcement remains a separate renderer policy rather than silently implied by import success.

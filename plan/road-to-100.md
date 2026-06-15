@@ -809,6 +809,14 @@ decode counts, diagnostics, and warnings. `@vitrum/engine/gltf` forwards the sam
 surface through both `loadGltfWithEngine()` and
 `loadGltfWithProgressiveEngine()`.
 
+✅ **FOLLOW-UP (2026-06-15):** the behavioral glTF gate now exercises the same
+one-call decode bridge on a rendered asset. `pt/gltf-textured-pbr` feeds a raw
+image handle into `loadGltfForEngine({ decodeTextures:true,
+textureTarget:'cpu-linear', decodePixels })`, asserts the decoded/unchanged
+counts, asserts a backend-ready `textureDecodeReport` row, verifies the engine
+was attached to the decoded controller scene, and renders the resulting
+pt-webgpu frame.
+
 ✅ **FOLLOW-UP (2026-06-15):** walkaround-hybrid textured alpha traversal now multiplies baseColorMap `.a` with optional `alphaMap.r`, so glTF assets that store MASK/BLEND coverage in `pbrMetallicRoughness.baseColorTexture.a` are honored without adapter-side fake `alphaMap` aliases. Tests: `gltfAdapter.test.ts` verifies the glTF boundary and `materialTextureAtlas.test.ts` verifies atlas/shader coverage.
 
 **Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.

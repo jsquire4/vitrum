@@ -397,6 +397,7 @@ function makeQuadGltfFixture(kind) {
     },
   };
   let decodeImage;
+  let decodePixels;
 
   if (kind === "unlit") {
     builder.gltf.extensionsUsed = ["KHR_materials_unlit"];
@@ -410,9 +411,17 @@ function makeQuadGltfFixture(kind) {
     builder.gltf.samplers = [{ wrapS: 10497, wrapT: 10497, magFilter: 9728, minFilter: 9728 }];
     builder.gltf.textures = [{ source: 0, sampler: 0 }];
     material.pbrMetallicRoughness.baseColorTexture = { index: 0 };
-    decodeImage = async () => ({
+    decodeImage = async (bytes, mimeType) => ({
+      kind: "raw-image",
+      mimeType,
+      data: bytes,
+    });
+    decodePixels = async (_handle, context) => ({
       width: 2,
       height: 2,
+      channels: 4,
+      dataType: "uint8",
+      colorSpace: context.colorSpace,
       data: new Uint8Array([
         255, 48, 48, 255,
         48, 255, 48, 255,
@@ -432,7 +441,7 @@ function makeQuadGltfFixture(kind) {
 
   builder.gltf.materials.push(material);
   const mesh = addQuadMesh(builder, 0);
-  return { ...finalizeSingleMeshGltf(builder, mesh), decodeImage };
+  return { ...finalizeSingleMeshGltf(builder, mesh), decodeImage, decodePixels };
 }
 
 function makeSkinnedAnimationGltfFixture() {
@@ -554,7 +563,12 @@ async function buildGltfFixtureScene(kind) {
     buffers: fixture.buffers,
     backend: "pt-webgpu",
     createEngine,
-    ...(fixture.decodeImage ? { decodeImage: fixture.decodeImage } : {}),
+    ...(fixture.decodeImage ? {
+      decodeTextures: true,
+      textureTarget: "cpu-linear",
+      decodeImage: fixture.decodeImage,
+      decodePixels: fixture.decodePixels,
+    } : {}),
     ...(fixture.dracoDecode ? { dracoDecode: fixture.dracoDecode } : {}),
   });
   if (!result.attached || preparedScenes.length !== 1) {
@@ -570,6 +584,30 @@ async function buildGltfFixtureScene(kind) {
   }
   if (kind === "textured-pbr" && first.material?.baseColorMap == null) {
     throw new Error("glTF textured-pbr fixture lost baseColorTexture");
+  }
+  if (kind === "textured-pbr") {
+    const entry = result.textureDecodeReport.entries.find((candidate) =>
+      candidate.materialField === "baseColorMap" && candidate.primitiveIndex === 0);
+    const handle = first.material.baseColorMap.handle;
+    if (result.decodedTextureCount !== 1 || result.unchangedTextureCount !== 0) {
+      throw new Error(
+        `glTF textured-pbr fixture did not exercise decode bridge ` +
+        `(decoded=${result.decodedTextureCount}, unchanged=${result.unchangedTextureCount})`,
+      );
+    }
+    if (result.textureDecodeWarnings.length > 0) {
+      throw new Error(`glTF textured-pbr fixture emitted texture decode warnings: ${result.textureDecodeWarnings.join(" | ")}`);
+    }
+    if (entry == null || entry.handleKind !== "pixel-data" || entry.colorSpace !== "srgb" ||
+        entry.backendReadiness.ptWebgpu !== "ready") {
+      throw new Error(`glTF textured-pbr fixture did not surface a backend-ready CPU texture decode report`);
+    }
+    if (!(handle?.data instanceof Float32Array) || handle.__vitrum_hint__?.colorSpace !== "linear") {
+      throw new Error("glTF textured-pbr fixture did not attach the CPU-linear decoded texture to the engine scene");
+    }
+    if (preparedScenes[0] !== result.asset.scene || result.asset.scene !== result.controller.scene) {
+      throw new Error("glTF textured-pbr fixture attached a scene other than the decoded controller scene");
+    }
   }
   if (kind === "transmission" && (first.material?.transmission ?? 0) <= 0) {
     throw new Error("glTF transmission fixture lost KHR_materials_transmission");
