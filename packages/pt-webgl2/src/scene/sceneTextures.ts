@@ -2,6 +2,8 @@
 // lightsTexture, equirectHdrInfo, attributesTextureArray) and the GL consumer
 // (uploadSceneTextures builds the bundle; GlResources binds it to the program).
 
+import type { TextureAtlasLayerMap } from './texturesArray.js';
+
 /** A square CPU texel grid ready for `gl.texImage2D` (dim×dim, RGBA-strided). */
 interface TexelGrid {
   readonly data: Float32Array | Uint32Array;
@@ -70,6 +72,12 @@ export interface UploadedSceneTextures {
   readonly envHeight: number;
   // material texture atlas (optional)
   readonly textures2DArray: WebGLTexture | null;
+  /** Role-aware TextureRef handle -> atlas layer map used to repack material scalar
+   *  slots without rebuilding the texture atlas. Null when no readable atlas exists. */
+  readonly materialLayerMap: TextureAtlasLayerMap | null;
+  /** Material slots whose triangles use authored vertex colors; reused by the
+   *  material-only mutation fast path so the vertex-color flag survives repacks. */
+  readonly vertexColorMaterialIds: ReadonlySet<number>;
   // iesProfiles removed — IES profiles are not in the @vitrum/core contract.
   readonly triangleCount: number;
   destroy(): void;

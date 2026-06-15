@@ -61,21 +61,22 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(ledger.supportedAnalyticShapes).toHaveLength(0);
   });
 
-  it('ledger mutations grade: resize is native; scene/content edits remain rebuild-or-unsupported', () => {
-    // buildCapabilities() in pt-webgl2/src/capabilities.ts copies the ledger's
-    // native resize grade and overrides scene/content mutation kinds to the
-    // retained-scene fallback rebuild path. This keeps setSize truthful without
-    // over-promoting geometry/material/edit performance.
+  it('ledger mutations grade: scalar material/env edits and resize are native; broad emitter/geometry rows stay fallback', () => {
+    // pt-webgl2 updates scalar material slots and environment textures without
+    // rebuilding the merged BVH. Analytic emitters have a fast path, but the
+    // coarse emitter row remains fallback until mesh-area emitter edits avoid
+    // folded-material/mesh-light rebuilds too.
     const { mutations } = ledger.supportDetails;
+    expect(mutations.material).toBe('native');
+    expect(mutations.environment).toBe('native');
     expect(mutations.resize).toBe('native');
-    const acceptableGrades = new Set(['fallback-rebuild', 'unsupported']);
-    for (const [key, grade] of Object.entries(mutations) as [string, string][]) {
-      if (key === 'resize') continue;
-      expect(
-        acceptableGrades.has(grade),
-        `mutations.${key} should be fallback-rebuild or unsupported, got '${grade}'`,
-      ).toBe(true);
-    }
+    expect(mutations.transform).toBe('fallback-rebuild');
+    expect(mutations.positions).toBe('fallback-rebuild');
+    expect(mutations.emitter).toBe('fallback-rebuild');
+    expect(mutations.topology).toBe('fallback-rebuild');
+    expect(mutations.addPrimitive).toBe('fallback-rebuild');
+    expect(mutations.removePrimitive).toBe('fallback-rebuild');
+    expect(mutations.lighting).toBe('unsupported');
   });
 
   it('debugSurface matches the method promise row', () => {

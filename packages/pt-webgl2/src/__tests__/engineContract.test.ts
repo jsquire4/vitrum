@@ -107,8 +107,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       topology: true,
     });
     expect(c.supportsAddRemovePrimitive).toBe(true);
-    expect(c.supportDetails?.mutations.material).toBe('fallback-rebuild');
-    expect(c.supportDetails?.mutations.environment).toBe('fallback-rebuild');
+    expect(c.supportDetails?.mutations.material).toBe('native');
+    expect(c.supportDetails?.mutations.emitter).toBe('fallback-rebuild');
+    expect(c.supportDetails?.mutations.environment).toBe('native');
+    expect(c.supportDetails?.mutations.positions).toBe('fallback-rebuild');
     expect(c.supportDetails?.mutations.resize).toBe('native');
     expect(c.supportDetails?.denoisers).toEqual({
       none: 'native',
@@ -121,7 +123,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     });
   });
 
-  it('exposes fallback-rebuild scene mutation methods', async () => {
+  it('exposes scene mutation methods', async () => {
     const e = await createPTEngine_WebGL2(opts());
     expect(typeof e.updatePrimitive).toBe('function');
     expect(typeof e.updateEmitter).toBe('function');
@@ -398,13 +400,20 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     e.dispose(); // idempotent
   });
 
-  it('updatePrimitive rebuilds from the patched retained scene and resets accumulation', async () => {
+  it('updatePrimitive material patches update scene textures without rebuilding BVH geometry', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene(triScene());
+    const beforeGeo = e._debugGeoPack;
+    const beforeBvhNodes = beforeGeo?.bvhNodes;
+    const beforePositions = beforeGeo?.positions;
     e.renderFrame(frame(16));
     expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
 
     e.updatePrimitive?.('tri', { material: { roughness: 0.25 } } as never);
+    const afterGeo = e._debugGeoPack;
+    expect(afterGeo?.bvhNodes).toBe(beforeBvhNodes);
+    expect(afterGeo?.positions).toBe(beforePositions);
+    expect(afterGeo?.materials[0]?.roughness).toBe(0.25);
     const scene = e.getScene?.();
     const prim = scene?.primitives[0];
     expect(prim?.kind).toBe('mesh');
@@ -415,17 +424,21 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(1);
   });
 
-  it('updateEmitter and updateEnvironment rebuild from patched scene snapshots', async () => {
+  it('updateEmitter and updateEnvironment patch scene textures without rebuilding BVH geometry', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene(sceneWithEmitter());
+    const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
 
     e.updateEmitter?.('point-a', { intensity: 4 });
     expect(e.getScene?.()?.emitters[0]?.intensity).toBe(4);
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
 
     e.updateEnvironment?.(hdriScene().environment);
     const scene = e.getScene?.();
     expect(scene?.environment.kind).toBe('hdri');
     expect(e._debugSceneTex?.envMap).toBe(true);
+    expect(e._debugSceneTex?.envTotalSum).toBeGreaterThan(0);
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
   });
 
   // Contract-honesty: EngineOptions.denoiser must not be silently ignored.

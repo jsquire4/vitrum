@@ -156,6 +156,8 @@ export function buildSceneTextures(
     envWidth: env.map?.width ?? 0,
     envHeight: env.map?.height ?? 0,
     textures2DArray,
+    materialLayerMap: atlas?.layerOfByColorSpace ?? null,
+    vertexColorMaterialIds,
     triangleCount: merged.triangleCount,
     destroy(): void {
       if (destroyed) return;
@@ -358,7 +360,7 @@ function collectVertexColorMaterialIds(
 /** Square RGBA32F sampler2D (dim×dim), NEAREST/ClampToEdge. Accepts the
  *  `TexelGrid.data` union; the materials/lights grids are `kind: 'rgba32f'`, so
  *  the float view is the correct upload type. */
-function uploadRgba32f(
+export function uploadRgba32f(
   gl: WebGL2RenderingContext,
   data: Float32Array | Uint32Array,
   dim: number,
@@ -373,7 +375,7 @@ function uploadRgba32f(
 }
 
 /** Non-square RGBA32F sampler2D (width×height) — for the equirect map / CDF slabs. */
-function uploadRgba32fRect(
+export function uploadRgba32fRect(
   gl: WebGL2RenderingContext,
   data: Float32Array,
   width: number,
@@ -390,7 +392,7 @@ function uploadRgba32fRect(
 
 /** RGBA32F TEXTURE_2D_ARRAY (dim×dim × `layers`), NEAREST/ClampToEdge — the
  *  5-layer vertex-attribute array (normal/tangent/uv0/color/uv1). */
-function uploadRgba32fArray(
+export function uploadRgba32fArray(
   gl: WebGL2RenderingContext,
   data: Float32Array,
   dim: number,

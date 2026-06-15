@@ -784,18 +784,22 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 // Extracted to eliminate copy-paste drift between the three backend records.
 // Deep-equal to the prior inline literals (byte-identical ledger output).
 
-/** pt-webgl2 mutations — scene/content edits still fallback-rebuild (full
- *  scene-texture/BVH repack). Resize is native: it reallocates render targets
- *  and resets accumulation without scene/BVH work. Lighting is unsupported. */
+/** pt-webgl2 mutations — scalar material edits and environment swaps update
+ *  only the affected GL scene textures. Analytic emitter edits also have a
+ *  texture-only fast path, but the coarse emitter promise stays fallback-rebuild
+ *  until mesh-area emitters can avoid folded-material/mesh-light rebuilds too.
+ *  Geometry/TLAS content edits still fallback-rebuild (full scene-texture/BVH
+ *  repack). Resize is native: it reallocates render targets and resets
+ *  accumulation without scene/BVH work. Lighting is unsupported. */
 const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'fallback-rebuild',
   positions: 'fallback-rebuild',
-  material: 'fallback-rebuild',
+  material: 'native',
   emitter: 'fallback-rebuild',
   topology: 'fallback-rebuild',
   addPrimitive: 'fallback-rebuild',
   removePrimitive: 'fallback-rebuild',
-  environment: 'fallback-rebuild',
+  environment: 'native',
   resize: 'native',
   lighting: 'unsupported',
 });

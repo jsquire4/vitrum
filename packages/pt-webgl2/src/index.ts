@@ -36,6 +36,12 @@ import { GlResources } from './gl/glResources.js';
 import { probeGlCaps } from './gl/glCaps.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
+import {
+  fastPathEnvironmentMutation,
+  tryFastPathEmitterMutation,
+  tryFastPathMaterialMutation,
+  type WebGl2MutationSwap,
+} from './scene/mutateSceneTextures.js';
 import { invertMat4, makeRotationYMat4 } from './mat4.js';
 import { CAUCHY_CROWN_GLASS, TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { FrameUniforms } from './gl/glResources.js';
@@ -491,7 +497,20 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene == null) {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
-    this.setScene(patchPrimitiveInScene(this.#scene, id, patch));
+    const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
+    const fast = tryFastPathMaterialMutation(
+      this.#gl,
+      this.#sceneTextures,
+      this.#geoPack,
+      nextScene,
+      id,
+      patch,
+    );
+    if (fast != null) {
+      this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    this.setScene(nextScene);
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
@@ -499,7 +518,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene == null) {
       throw new Error('updateEmitter: call setScene() before updateEmitter()');
     }
-    this.setScene(patchEmitterInScene(this.#scene, id, patch));
+    const nextScene = patchEmitterInScene(this.#scene, id, patch);
+    const fast = tryFastPathEmitterMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, id);
+    if (fast != null) {
+      this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    this.setScene(nextScene);
   }
 
   updateEnvironment(env: SceneEnvironment | null): void {
@@ -507,10 +532,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene == null) {
       throw new Error('updateEnvironment: call setScene() before updateEnvironment()');
     }
-    this.setScene({
+    const nextScene: Scene = {
       ...this.#scene,
       environment: env ?? { kind: 'none' },
-    });
+    };
+    const fast = fastPathEnvironmentMutation(this.#gl, this.#sceneTextures, nextScene);
+    if (fast != null) {
+      this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    this.setScene(nextScene);
   }
 
   setSize(width: number, height: number): void {
@@ -717,6 +748,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
+
+  #commitMutationSwap(scene: Scene, swap: WebGl2MutationSwap): void {
+    this.#sceneTextures = swap.textures;
+    if (swap.geoPack != null) this.#geoPack = swap.geoPack;
+    this.#scene = scene;
+    for (const tex of swap.deleteOldTextures) {
+      if (tex != null) this.#gl.deleteTexture(tex);
+    }
+    this.reset();
+  }
 
   #traceFeatures(): TraceFeatures {
     return {
