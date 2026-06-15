@@ -43,12 +43,15 @@ describe('B1 — real per-tri roughness/metalness decode', () => {
   });
 
   it('ris / cast / shade no longer hardcode roughness/metalness', () => {
-    for (const src of [RIS_WGSL, RESTIR_CAST_PRIMARY_WGSL, SHADE_WGSL]) {
+    for (const src of [RIS_WGSL, RESTIR_CAST_PRIMARY_WGSL]) {
       expect(src).toContain('textureLoad(bvh_material');
-      expect(src).toContain('decodeRoughMetal(');
+      expect(src).toContain('sampleRestirDIMaterialPayloadForHit(');
       // The old hardcoded forms must be gone.
       expect(src).not.toContain('select(0.85, 0.05, isGlass)');
     }
+    expect(SHADE_WGSL).toContain('textureLoad(bvh_material');
+    expect(SHADE_WGSL).toContain('decodeRoughMetal(');
+    expect(SHADE_WGSL).not.toContain('select(0.85, 0.05, isGlass)');
   });
 });
 
@@ -88,8 +91,11 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
     expect(RIS_GI_NRC_BODY).not.toContain('if (isGlass || isMetal)');
   });
 
-  it('the GI target p̂ stays the Lambertian luminance form (unchanged for GRIS correctness)', () => {
-    // p̂ = luminance(Lo) · cosθ · INV_PI — risGi candidate + finalise must keep it.
+  it('the GI producer keeps a single luminance target over material-shaded Lo', () => {
+    // p̂ is still formed from reservoir Lo, but Lo is now material-shaded at the
+    // suffix vertex instead of scalar base color only.
+    expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
+    expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
     expect(RIS_GI_WGSL).toContain('luminance(Lo) * cosTheta * INV_PI');
   });
 });

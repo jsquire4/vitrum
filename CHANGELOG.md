@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround ReSTIR-GI material parity, 2026-06-15)
+
+- **Material-aware ReSTIR-GI suffix radiance:** `@vitrum/walkaround-hybrid` default and NRC GI-RIS producers now apply atlas-backed smooth/normal/bump normals at primary, post-glass, and bounce vertices, and compute reconnection-vertex `Lo` through the shared material payload. Default diffuse suffixes still use mapped albedo × irradiance/π; rich suffix materials (metal/glossy/specular/clearcoat/sheen/anisotropy/iridescence) use the extension-aware GGX/clearcoat/sheen BRDF proxy. NRC training records now use the same mapped albedo/roughness payload as the suffix query. Reservoir storage remains geometry+Lo; receiver-lobe reservoir targeting and GPU A/B promotion evidence remain validation/closure tail items.
+
 ### Fixed (walkaround ReSTIR-DI material parity, 2026-06-15)
 
 - **Extension-aware ReSTIR-DI target scoring:** `@vitrum/walkaround-hybrid` now threads material-atlas payloads through DI `PrimarySurface` reconstruction and evaluates RIS candidate weights, finalization, temporal reuse, and spatial reuse with the same extension-aware BRDF used by shade-owned direct lighting. ReSTIR-DI pHat now consumes base/vertex/roughness/metallic maps, normal/bump/clearcoat-normal perturbations, specular scalar/color maps, clearcoat, sheen, anisotropy, iridescence, and env-map intensity instead of the old albedo/rough/metal-only proxy. Reservoir storage is unchanged; this is render-changing for rich glTF materials and still needs GPU A/B promotion evidence.

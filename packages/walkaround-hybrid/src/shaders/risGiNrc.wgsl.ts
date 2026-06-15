@@ -36,12 +36,15 @@
  * The NRC suffix replacement (the only behavioural delta vs the OFF pass)
  * ════════════════════════════════════════════════════════════════════════════
  * The OFF pass computes the reconnection-vertex outgoing radiance Lo by sampling
- * the DDGI irradiance atlas (`Lo = irrAtXs · albedo · INV_PI`). The NRC pass
+ * the DDGI irradiance atlas and applying the same material-aware suffix response
+ * as risGi.wgsl (`albedo / π` for ordinary suffixes; extension-aware
+ * GGX/clearcoat/sheen proxy for rich suffixes). The NRC pass
  * tracks Müller's path SPREAD along the single bounce (primary→suffix edge); at
  * the suffix vertex, when the spread heuristic fires (a(x) > c·a₀), it REPLACES
- * that DDGI estimate with the MLP's predicted outgoing radiance (the cache
- * query). Below the spread threshold it keeps the DDGI estimate verbatim, so a
- * scene/region where spread never exceeds c·a₀ is bit-identical to the OFF pass.
+ * that material-shaded DDGI suffix estimate with the MLP's predicted outgoing
+ * radiance (the cache query). Below the spread threshold it keeps the same
+ * material-shaded suffix estimate verbatim, so a scene/region where spread never
+ * exceeds c·a₀ is bit-identical to the OFF pass.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * A6 — Training target: ReSTIR-GI reservoir Lo (not DDGI distillation)
@@ -78,16 +81,14 @@
  * records; this is standard self-distillation that converges over frames).
  *
  * ════════════════════════════════════════════════════════════════════════════
- * A6 — xsRough: real per-tri roughness from bvh_material (not hardcoded 1.0)
+ * A6 — xsRough: real material-payload roughness (not hardcoded 1.0)
  * ════════════════════════════════════════════════════════════════════════════
- * The NRC now binds bvh_material at @group(1) @binding(14) (same as ris.wgsl /
- * restirCastPrimary.wgsl). At the bounce vertex xs, decodeRoughMetal returns the
- * authored roughness packed by BvhBufferHost. The QUERY and the RECORD use the
- * same real xsRough, making the MLP input consistent with the surface being
- * approximated. Default-diffuse scenes (rough=0.85) are numerically unchanged
- * relative to the old xsRough=1.0; only authored glossy/metal bounce vertices
- * (rare in a GI RIS pass whose candidates are cosine-hemisphere-sampled diffuse
- * targets) change.
+ * The NRC GI-RIS variant now samples the same mapped material payload as the
+ * OFF pass at the bounce vertex xs. The QUERY and the RECORD use
+ * `xsPayload.rough` and `xsPayload.albedo`, making the MLP input consistent
+ * with the surface whose outgoing radiance is being approximated. Default
+ * diffuse scenes (rough≈0.85) remain close to the old xsRough=1.0 path; authored
+ * glossy/metal/mapped bounce vertices now train/query with their real payload.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * A6 — spreadC derivation + selectivity arithmetic
@@ -220,15 +221,17 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
   let n_i = select(0u, n_base, n_ok);
-  let normal = smoothShadingNormal(
+  let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
     bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
-  // B1 — metals/glossy now get a (diffuse-target) GI reservoir; shade reflects
-  // it via the GGX specular lobe. Glass still punts (refracted GI out of scope).
-  // Mirrors risGi.wgsl. The Lambertian target p̂ is unchanged.
+  let normalMapped = applyNormalMapForHit(hit, smoothNormal);
+  let normal = applyBumpMapForHit(hit, normalMapped);
+  // B1 — metals/glossy now get a GI reservoir; shade reflects it via the GGX
+  // specular lobe. Glass still punts in the NRC variant (the default risGi pass
+  // handles refracted GI). Mirrors risGi.wgsl material payload consumption.
   let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
   let matColor = vec4f(
     scalarMatColor.rgb,
@@ -313,18 +316,32 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     if (bounceHit.didHit) {
       xs = bounceRay.origin + wi * bounceHit.dist;
-      ns = bounceHit.normal;
+      let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
+      ns = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs));
       let irrAtXs = min(sampleDDGIAtPoint(xs, ns), vec3f(ubo.restirGiIrrClamp));
-      let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
-      let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;
+      let xsRmCoord = vec2u(
+        bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+        bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+      );
+      let xsMaterialWord = textureLoad(bvh_material, vec2i(xsRmCoord), 0).r;
+      let xsPayload = sampleRestirGIHitMaterialForHit(
+        bounceHit,
+        smoothNs,
+        ns,
+        irrAtXs,
+        wi,
+        xsMaterialWord,
+      );
+      let ddgiLo = xsPayload.Lo;
 
       // ── NRC cache termination (Müller §5) ──
       // The bounce edge pos→xs accumulates spread. The candidate's source pdf
       // is the cosine-hemisphere pdf cosθ/π (the always-present component; the
       // guided dTree term only narrows it). When a(x) > c·a0 the suffix is
-      // TERMINATED into the cache: the MLP prediction REPLACES the DDGI suffix
-      // estimate. Below threshold the DDGI estimate is kept verbatim, so a
-      // sub-threshold region is bit-identical to the OFF pass.
+      // TERMINATED into the cache: the MLP prediction REPLACES the
+      // material-shaded DDGI suffix estimate. Below threshold that same suffix
+      // estimate is kept verbatim, so a sub-threshold region is bit-identical
+      // to the OFF pass.
       //
       // H26 seeding fix: runningSum starts at 0.0 (Müller 2021 §5). The
       // previous seed of a0term was a tautology: nrcAccumulateSpread adds
@@ -339,19 +356,12 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let pSrcBounce = max(cosTheta * INV_PI, 1e-12);
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
       if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC)) {
-        let xsAlbedo = xsMat.rgb;
-        // A6 — real per-tri roughness from bvh_material (was hardcoded 1.0).
-        // decodeRoughMetal returns vec2f(roughness, metalness); we only need
-        // roughness for the NRC encoding (xsRough). The diffuse-default invariant
-        // packs 0.85 for materials without authored roughness, so default-diffuse
-        // scenes are numerically close to the old xsRough=1.0.
-        let xsRmCoord = vec2u(
-          bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
-          bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
-        );
-        let xsRough = decodeRoughMetal(
-          textureLoad(bvh_material, vec2i(xsRmCoord), 0).r
-        ).x;
+        let xsAlbedo = xsPayload.albedo;
+        // A6 — real mapped payload roughness (was hardcoded 1.0). The
+        // diffuse-default invariant still yields rough≈0.85 for materials
+        // without authored roughness, while mapped glossy/metal suffixes now
+        // feed their actual roughness to the NRC encoding.
+        let xsRough = xsPayload.rough;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).
         Lo = nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo);
@@ -464,9 +474,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *   + nrcSpreadTermination (segment-spread + accumulate + predicate)
  *   + nrcQuery (@group(4) bindings + one-blob/oct/assemble/MLP-forward/record)
  *   + RIS_GI_NRC_BODY (the gi-ris compute body)
- * Its `requires` MATCH RIS_GI_MODULE exactly (walkaroundUbo / sceneTraversal /
- * reservoirGi / sharedPrimitives / materialDecode / cameraRays / ddgiSample /
- * ppgPdf) so the @group(0..3) closure is identical; the only structural delta
+   * Its `requires` MATCH RIS_GI_MODULE exactly (walkaroundUbo / sceneTraversal /
+   * reservoirGi / sharedPrimitives / materialDecode / materialAtlas /
+   * restirGiMaterial / cameraRays / ddgiSample / ppgPdf) so the @group(0..3) closure is identical; the only structural delta
  * is the prepended NRC helpers + the @group(4) NRC bindings.
  *
  * Composed ONLY when nrcEnabled is compile-time true — see compilePipelines.
@@ -491,6 +501,6 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
     // env bindings 15-19 are already present in the scene BGL for NRC passes.
     // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
     // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
   };
 }

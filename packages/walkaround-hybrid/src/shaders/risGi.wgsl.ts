@@ -11,8 +11,9 @@
  *      cosine-weighted hemisphere direction; the reconnection vertex
  *      is the first BVH hit along that direction (or sky).
  *      Outgoing radiance Lo at the reconnection vertex is computed by
- *      sampling the DDGI irradiance atlas, multiplied by the hit
- *      surface's albedo / π (Lambertian re-radiation).
+ *      sampling the DDGI irradiance atlas, then applying the hit surface's
+ *      mapped material response: diffuse albedo / π for ordinary suffixes,
+ *      or the extension-aware GGX/clearcoat/sheen proxy for rich suffixes.
  *   3. p̂ = luminance(Lo) × cos(N_visible, wi) × INV_PI
  *      pdf_source = the candidate's source pdf. Without path guiding this is
  *        the pure cosine-hemisphere pdf cos/π, so w_i = p̂/pdf = luminance(Lo)
@@ -133,18 +134,23 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
   let n_i = select(0u, n_base, n_ok);
-  let normal = smoothShadingNormal(
+  let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
     bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
-  // B1 (road-to-100) — metals/glossy now get a GI reservoir. The reservoir is a
-  // DIFFUSE-irradiance cache (cosine-hemisphere candidates, Lambertian target
-  // p̂ = luminance(Lo)·cosθ·INV_PI — UNCHANGED, preserving GRIS reuse +
-  // diffuse-default invariance). shade reflects this stored radiance off the
-  // glossy/metal surface via the GGX specular lobe (shade.lo_indirectSpecular),
-  // so metals/glossy receive real specular indirect — no longer an empty punt.
+  let normalMapped = applyNormalMapForHit(hit, smoothNormal);
+  let normal = applyBumpMapForHit(hit, normalMapped);
+  // B1 (road-to-100) — metals/glossy now get a GI reservoir. The reservoir uses
+  // cosine-hemisphere candidates and the visible-point target
+  // p̂ = luminance(Lo)·cosθ·INV_PI (UNCHANGED, preserving GRIS reuse +
+  // diffuse-default invariance). The suffix Lo is material-aware: ordinary
+  // suffixes are DDGI irradiance * mapped albedo / π, while rich suffixes route
+  // through the extension-aware GGX/clearcoat/sheen proxy. shade then reflects
+  // this stored radiance off the receiver via the visible material's indirect
+  // lobes (for metals/glossy, shade.lo_indirectSpecular), so the old empty punt
+  // is gone without widening the GI reservoir payload.
   //
   // B1 tail (2026-06-10) — glass primaries NOW get a refracted GI reservoir.
   // The reservoir is built at the FIRST DIFFUSE SURFACE reached by a 1-interface
@@ -276,7 +282,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         let wn_base = walkHit.instanceIndex * 4u;
         let wn_ok = wn_isTlas && wn_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
         let wn_i = select(0u, wn_base, wn_ok);
-        walkHitNormal = smoothShadingNormal(
+        let walkSmoothNormal = smoothShadingNormal(
           walkHit, walkHit.normal,
           bvh_normal[walkHit.indices.x].xyz,
           bvh_normal[walkHit.indices.y].xyz,
@@ -286,6 +292,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
           tlasInstanceWorldToLocal[wn_i + 1u],
           tlasInstanceWorldToLocal[wn_i + 2u],
         );
+        let walkNormalMapped = applyNormalMapForHit(walkHit, walkSmoothNormal);
+        walkHitNormal = applyBumpMapForHit(walkHit, walkNormalMapped);
         foundSurface = true;
         break;
       }
@@ -336,10 +344,23 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
       if (bounceHit.didHit) {
         xs_g = bounceRay.origin + wi * bounceHit.dist;
-        ns_g = bounceHit.normal;
+        let smoothNs_g = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
+        ns_g = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs_g));
         let irrAtXs = min(sampleDDGIAtPoint(xs_g, ns_g), vec3f(ubo.restirGiIrrClamp));
-        let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
-        Lo_g = irrAtXs * xsMat.rgb * INV_PI;
+        let xsRmCoord_g = vec2u(
+          bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+          bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+        );
+        let xsMaterialWord_g = textureLoad(bvh_material, vec2i(xsRmCoord_g), 0).r;
+        let xsPayload_g = sampleRestirGIHitMaterialForHit(
+          bounceHit,
+          smoothNs_g,
+          ns_g,
+          irrAtXs,
+          wi,
+          xsMaterialWord_g,
+        );
+        Lo_g = xsPayload_g.Lo;
       } else {
         xs_g = walkHitPos + wi * RECONNECT_MAX_DIST;
         ns_g = -wi;
@@ -454,10 +475,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     if (bounceHit.didHit) {
       xs = bounceRay.origin + wi * bounceHit.dist;
-      ns = bounceHit.normal;
+      let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
+      ns = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs));
       // Sample DDGI atlas at the reconnection vertex along its normal —
       // gives the incoming irradiance there. Modulate by the hit surface's
-      // albedo / π for Lambertian outgoing radiance toward the visible pt.
+      // material response for outgoing radiance toward the visible pt.
       //
       // Defensive cap on the atlas read.  DDGI probes within ~1 spacing of
       // an area light catch Le directly during the probe trace, so atlas
@@ -471,8 +493,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       // over-truncating: the magnitude audit showed it was a 5-10× *under*-
       // energizer of the indirect channel.
       let irrAtXs = min(sampleDDGIAtPoint(xs, ns), vec3f(ubo.restirGiIrrClamp));
-      let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
-      Lo = irrAtXs * xsMat.rgb * INV_PI;
+      let xsRmCoord = vec2u(
+        bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+        bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+      );
+      let xsMaterialWord = textureLoad(bvh_material, vec2i(xsRmCoord), 0).r;
+      let xsPayload = sampleRestirGIHitMaterialForHit(
+        bounceHit,
+        smoothNs,
+        ns,
+        irrAtXs,
+        wi,
+        xsMaterialWord,
+      );
+      Lo = xsPayload.Lo;
     } else {
       // Sky miss — the GI ray escaped the scene. B3: sample the directional IBL
       // map along wi (rotationY-aware) as the reconnection radiance; envRadiance
@@ -584,7 +618,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *      / `BVH_MATERIAL_TEX_WIDTH`              → materialDecode
  *    - `invertMat4_common` / `generatePrimaryRay_common` → cameraRays
  *    - `ddgiSample`                          → ddgiSample
- *  Drops emitterSampling / ggxBrdf / jacobianShift / welfordTail (unused).
+ *  Drops emitterSampling / jacobianShift / welfordTail (unused).
+ *  ReSTIR-GI material parity adds `restirGiMaterial` (normal/bump maps, mapped
+ *  base color, rough/metal, and extension-aware suffix radiance).
  *  W9 guided sampling — adds `ppgPdf` (declares the group(3) PPG tree buffers
  *  + provides ppgEvalPdf / ppgSampleGuidedDir). Listed AFTER sharedPrimitives
  *  so `rand_f32` is defined before ppgPdf's source, and after ddgiSample so
@@ -595,5 +631,5 @@ export const RIS_GI_MODULE: WgslModule = {
   source: RIS_GI_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
 };
