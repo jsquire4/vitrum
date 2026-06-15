@@ -102,6 +102,45 @@ function texturedPbr(): GltfJson {
   };
 }
 
+function uv2MaterialTexture(): GltfJson {
+  return {
+    asset: { version: '2.0', generator: 'KhronosSampleModels/MultiUV-like' },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{
+      primitives: [{
+        attributes: {
+          POSITION: 0,
+          TEXCOORD_0: 1,
+          TEXCOORD_1: 2,
+          TEXCOORD_2: 3,
+        },
+        material: 0,
+      }],
+    }],
+    materials: [{
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: 2 },
+      },
+    }],
+    textures: [{ source: 0 }],
+    images: [{ uri: 'uv2-baseColor.png', mimeType: 'image/png' }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      { bufferView: 3, componentType: 5126, count: 3, type: 'VEC2' },
+    ],
+    bufferViews: Array.from({ length: 4 }, (_, index) => ({
+      buffer: 0,
+      byteOffset: index * 32,
+      byteLength: 32,
+    })),
+    buffers: [{ byteLength: 128 }],
+  };
+}
+
 function extensionGlass(): GltfJson {
   return {
     asset: { version: '2.0', generator: 'KhronosSampleModels/TransmissionTest-like' },
@@ -367,6 +406,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     const fixtures: ReadonlyArray<readonly [string, GltfJson]> = [
       ['Box', minimalTriangle()],
       ['DamagedHelmet-like textured PBR', texturedPbr()],
+      ['MultiUV-like unsupported UV2 material texture', uv2MaterialTexture()],
       ['TransmissionTest-like material extensions', extensionGlass()],
       ['SimpleSkin/Morph animation', skinMorphAnimation()],
       ['Compression hook fixture', compressedAndAlternateSources()],
@@ -437,6 +477,24 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         path: 'samplers[0].minFilter',
       }),
     ]));
+  });
+
+  it('reports TEXCOORD_2 material textures as structured unsupported compatibility issues', () => {
+    const report = reportFor(uv2MaterialTexture());
+
+    expect(report.primitives.attributeSemantics).toContain('TEXCOORD_2');
+    expect(report.materials.uvSets).toEqual([2]);
+    for (const profile of ['pt-webgl2', 'pt-webgpu', 'pt-webgpu-lite', 'walkaround-hybrid'] as const) {
+      const compatibility = evaluateGltfBackendProfileCompatibility(report, profile);
+      expect(compatibility.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'TEXCOORD_2',
+          support: 'unsupported',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture.texCoord',
+        }),
+      ]));
+    }
   });
 
   it('reports material-extension glass caveats with concrete paths', () => {
