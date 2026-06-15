@@ -247,7 +247,10 @@ buckets that the A–D framing was missing:**
   `gtaoQuarterRes.test.ts` now adds an independent CPU oracle for the GTAO
   per-channel bilateral upsample: equal-surface taps average per channel, depth
   edges prefer matching low-res cells, and zero bilateral weight falls back to the
-  per-channel 2x2 average.
+  per-channel 2x2 average. `volumetricSss.test.ts` now adds an independent
+  pt-webgpu oracle for volume-thickness vec4 #28 packing,
+  `materialAttenuationDistance`, negative-segment handling, and finite
+  Beer-Lambert absorption for an infinite ray segment through an authored slab.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,

@@ -76,6 +76,28 @@ function powerHeuristic(pdfA: number, pdfB: number): number {
   return a2 / Math.max(a2 + b2, 1e-6);
 }
 
+interface VolumeThicknessMaterial {
+  readonly hasVolumeThickness: boolean;
+  readonly volumeThickness: number;
+}
+
+function materialAttenuationDistanceReference(
+  segmentDistance: number,
+  mat: VolumeThicknessMaterial,
+): number {
+  const segment = Math.max(segmentDistance, 0);
+  if (!mat.hasVolumeThickness) return segment;
+  return Math.min(segment, Math.max(mat.volumeThickness, 0));
+}
+
+function beerLambertWithThicknessClamp(
+  sigmaA: number,
+  segmentDistance: number,
+  mat: VolumeThicknessMaterial,
+): number {
+  return Math.exp(-Math.max(sigmaA, 0) * materialAttenuationDistanceReference(segmentDistance, mat));
+}
+
 // Simple deterministic LCG so the MC tests are reproducible.
 function makeRng(seed: number): () => number {
   let s = seed >>> 0;
@@ -278,6 +300,67 @@ describe('σ_a packing from attenuationColor / attenuationDistance', () => {
     const SIGMA_A_FLOAT_OFFSET = 22 * 4; // = 88
     const sigmaA = packed.slice(SIGMA_A_FLOAT_OFFSET, SIGMA_A_FLOAT_OFFSET + 4);
     expect(sigmaA).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe('volume thickness packing and attenuation-distance clamp', () => {
+  const VOLUME_THICKNESS_FLOAT_OFFSET = 28 * 4;
+
+  it('packs vec4 #28 as thickness plus a presence flag', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      thickness: 0.35,
+    } as never);
+
+    expect(packed.length).toBe(MATERIAL_FLOAT_STRIDE);
+    expect(packed[VOLUME_THICKNESS_FLOAT_OFFSET]).toBeCloseTo(0.35, 6);
+    expect(packed[VOLUME_THICKNESS_FLOAT_OFFSET + 1]).toBe(1);
+  });
+
+  it('leaves the clamp disabled when no thickness source is authored', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+    } as never);
+
+    expect(packed[VOLUME_THICKNESS_FLOAT_OFFSET]).toBe(0);
+    expect(packed[VOLUME_THICKNESS_FLOAT_OFFSET + 1]).toBe(0);
+  });
+
+  it('clamps attenuation to the authored volume slab without inventing negative distance', () => {
+    const mat = { hasVolumeThickness: true, volumeThickness: 0.4 };
+
+    expect(materialAttenuationDistanceReference(-1.0, mat)).toBe(0);
+    expect(materialAttenuationDistanceReference(0.2, mat)).toBeCloseTo(0.2, 6);
+    expect(materialAttenuationDistanceReference(1.2, mat)).toBeCloseTo(0.4, 6);
+    expect(materialAttenuationDistanceReference(Number.POSITIVE_INFINITY, mat)).toBeCloseTo(0.4, 6);
+    expect(
+      materialAttenuationDistanceReference(1.2, { hasVolumeThickness: true, volumeThickness: -0.7 }),
+    ).toBe(0);
+  });
+
+  it('uses geometric segment length when the clamp flag is absent', () => {
+    const mat = { hasVolumeThickness: false, volumeThickness: 0.4 };
+
+    expect(materialAttenuationDistanceReference(1.2, mat)).toBeCloseTo(1.2, 6);
+    expect(materialAttenuationDistanceReference(-0.5, mat)).toBe(0);
+  });
+
+  it('keeps infinite-medium absorption finite when a slab clamp is authored', () => {
+    const sigmaA = 1.6;
+    const slab = { hasVolumeThickness: true, volumeThickness: 0.25 };
+    const unclamped = { hasVolumeThickness: false, volumeThickness: 0.25 };
+
+    expect(beerLambertWithThicknessClamp(sigmaA, Number.POSITIVE_INFINITY, slab)).toBeCloseTo(
+      Math.exp(-sigmaA * 0.25),
+      12,
+    );
+    expect(beerLambertWithThicknessClamp(sigmaA, Number.POSITIVE_INFINITY, unclamped)).toBe(0);
   });
 });
 
