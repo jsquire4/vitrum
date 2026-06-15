@@ -198,9 +198,17 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `textureDecodeReport` exposes the same sampler policy plus `usesMipmaps`.
   The existing texture sweep now proves every imported base/KHR material map
   preserves handle, UV channel, transform, wrap, and sampler filter/mipmap
-  intent; the current full glTF adapter suite is 197 tests. Backend per-texture
-  filter/mipmap enforcement remains a renderer policy gap rather than an
-  import/data-loss gap.
+  intent. Backend per-texture filter/mipmap enforcement remains a renderer
+  policy gap rather than an import/data-loss gap.
+- Follow-up 2026-06-15: the renderer-policy half is now explicit in the glTF
+  compatibility planner. `analyzeGltfAsset()` inventories authored sampler
+  policies per material texture, `evaluateGltfBackendCompatibility()` emits
+  `*.samplerPolicy` approximate issues when a backend imports the texture but
+  cannot guarantee exact per-texture filter/mipmap behavior, and
+  `loadGltfForEngine(..., compatibilityMode:'reject-degraded')` rejects those
+  sampler-policy degradations before constructing an engine. This does not
+  claim backend sampler enforcement; it makes the non-enforcement visible and
+  gateable. The current full glTF adapter suite is 201 tests.
 - The pt-webgpu material texture backend consumption slice landed after that
   adapter import work: `materialTextures.ts` packs per-map UV metadata for every
   map the backend currently samples (baseColor, emissive, normal, roughnessMap,

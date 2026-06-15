@@ -97,6 +97,9 @@ export type {
   GltfResourceKind,
   GltfResourceUse,
   GltfSceneGraphFeatureReport,
+  GltfTextureSamplerFilterMode,
+  GltfTextureSamplerMipMode,
+  GltfTextureSamplerPolicyUse,
   GltfTextureSourceExtensionName,
   GltfTextureSourceExtensionUse,
 } from './featureReport.js';

@@ -377,8 +377,9 @@ upload.
 `usesMipmaps` when the asset authored a mipmapped minification mode. Current
 backends already consume per-map UV, transform, and wrap metadata where their
 material map rows are supported; per-texture filter/mipmap enforcement remains
-backend policy and should be checked through compatibility/capability details
-instead of inferred from import success.
+backend policy and is reported through `analyzeGltfAsset()` /
+`evaluateGltfBackendCompatibility()` as `*.samplerPolicy` compatibility issues
+when a selected backend can only approximate the authored filter/mipmap policy.
 
 ### ORM texture
 

@@ -360,4 +360,115 @@ describe('glTF common extension policy', () => {
       path: 'textures[0].extensions.EXT_texture_webp',
     }));
   });
+
+  it('reports authored non-linear sampler policy as an approximate compatibility issue', () => {
+    const { gltf } = minimalMaterialGltf({
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0 },
+      },
+    });
+    gltf.textures = [{ source: 0, sampler: 0 }];
+    gltf.images = [{ uri: 'albedo.png', mimeType: 'image/png' }];
+    gltf.samplers = [{ magFilter: 9728, minFilter: 9984 }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.materials.samplerPolicies).toEqual([
+      {
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        samplerIndex: 0,
+        materialPath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        path: 'samplers[0].minFilter',
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+        mipFilter: 'nearest',
+        usesMipmaps: true,
+      },
+    ]);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'baseColorMap.samplerPolicy',
+          support: 'approximate',
+          path: 'samplers[0].minFilter',
+        }),
+      ]),
+    );
+  });
+
+  it('treats linear mipmapped sampler policy as exact on pt-webgpu full but approximate elsewhere', () => {
+    const { gltf } = minimalMaterialGltf({
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0 },
+      },
+    });
+    gltf.textures = [{ source: 0, sampler: 0 }];
+    gltf.images = [{ uri: 'albedo.png', mimeType: 'image/png' }];
+    gltf.samplers = [{ magFilter: 9729, minFilter: 9987 }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.materials.samplerPolicies).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        path: 'samplers[0].minFilter',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipFilter: 'linear',
+        usesMipmaps: true,
+      }),
+    ]);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'baseColorMap.samplerPolicy',
+          support: 'approximate',
+          path: 'samplers[0].minFilter',
+        }),
+      ]),
+    );
+    expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'baseColorMap.samplerPolicy',
+          support: 'approximate',
+          path: 'samplers[0].minFilter',
+        }),
+      ]),
+    );
+  });
+
+  it('treats nearest non-mip sampler policy as exact on pt-webgl2 but approximate on pt-webgpu full', () => {
+    const { gltf } = minimalMaterialGltf({
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0 },
+      },
+    });
+    gltf.textures = [{ source: 0, sampler: 0 }];
+    gltf.images = [{ uri: 'albedo.png', mimeType: 'image/png' }];
+    gltf.samplers = [{ magFilter: 9728, minFilter: 9728 }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'baseColorMap.samplerPolicy',
+          support: 'approximate',
+          path: 'samplers[0].minFilter',
+        }),
+      ]),
+    );
+  });
 });

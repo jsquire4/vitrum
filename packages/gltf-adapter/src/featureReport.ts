@@ -75,6 +75,7 @@ export interface GltfMaterialFeatureReport {
   readonly count: number;
   readonly materialFields: readonly (keyof MaterialSpec)[];
   readonly textureFields: readonly (keyof MaterialSpec)[];
+  readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly extensions: readonly string[];
   readonly unsupportedKnownExtensions: readonly string[];
   readonly alphaModes: readonly string[];
@@ -85,6 +86,21 @@ export interface GltfMaterialFeatureReport {
   readonly specularGlossinessTextureCount: number;
   readonly doubleSidedCount: number;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
+}
+
+export type GltfTextureSamplerFilterMode = 'nearest' | 'linear';
+export type GltfTextureSamplerMipMode = 'none' | 'nearest' | 'linear';
+
+export interface GltfTextureSamplerPolicyUse {
+  readonly materialField: keyof MaterialSpec;
+  readonly textureIndex: number;
+  readonly samplerIndex: number;
+  readonly materialPath: string;
+  readonly path: string;
+  readonly magFilter?: GltfTextureSamplerFilterMode;
+  readonly minFilter?: GltfTextureSamplerFilterMode;
+  readonly mipFilter?: GltfTextureSamplerMipMode;
+  readonly usesMipmaps?: boolean;
 }
 
 export interface GltfAnimationFeatureReport {
@@ -307,7 +323,7 @@ export function analyzeGltfAsset(gltf: GltfJson): GltfFeatureReport {
   const extensions = analyzeExtensions(gltf);
   const resources = analyzeResources(gltf);
   const primitives = analyzePrimitives(gltf);
-  const materials = analyzeMaterials(gltf.materials ?? []);
+  const materials = analyzeMaterials(gltf);
   const animations = analyzeAnimations(gltf);
   const punctualLights = extractPunctualLightCount(gltf);
 
@@ -505,6 +521,25 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const samplerPolicy of report.materials.samplerPolicies) {
+    const field = samplerPolicy.materialField;
+    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    if (fieldSupport === 'unsupported') continue;
+    const samplerSupport = samplerPolicySupport(profile.id, samplerPolicy);
+    if (samplerSupport !== 'native') {
+      addIssue({
+        category: 'material',
+        name: `${String(field)}.samplerPolicy`,
+        support: samplerSupport,
+        path: samplerPolicy.path,
+        message:
+          `glTF material texture "${String(field)}" authors sampler filtering at ${samplerPolicy.path}; ` +
+          `backend profile ${profile.id} imports the texture but does not guarantee exact per-texture ` +
+          `filter/mipmap policy for that material path (${samplerPolicy.materialPath}).`,
+      });
+    }
+  }
+
   for (const field of report.materials.materialFields) {
     const support = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
     if (support === 'native') {
@@ -562,6 +597,23 @@ export function recommendGltfBackend(
   policy: GltfBackendPolicy = 'fidelity',
 ): GltfBackendCompatibility {
   return rankGltfBackends(report, policy)[0]!;
+}
+
+function samplerPolicySupport(
+  profileId: GltfBackendProfileId,
+  policy: GltfTextureSamplerPolicyUse,
+): BackendSupportMode {
+  if (profileId === 'walkaround-hybrid') return 'approximate';
+  if (profileId === 'pt-webgl2') {
+    if ((policy.magFilter ?? 'nearest') !== 'nearest') return 'approximate';
+    if ((policy.minFilter ?? 'nearest') !== 'nearest') return 'approximate';
+    if ((policy.mipFilter ?? 'none') !== 'none') return 'approximate';
+    return 'native';
+  }
+  if ((policy.magFilter ?? 'linear') !== 'linear') return 'approximate';
+  if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
+  if ((policy.mipFilter ?? 'linear') !== 'linear') return 'approximate';
+  return 'native';
 }
 
 function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
@@ -757,9 +809,11 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   };
 }
 
-function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatureReport {
+function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
+  const materials = gltf.materials ?? [];
   const fields = new Set<keyof MaterialSpec>();
   const textureFields = new Set<keyof MaterialSpec>();
+  const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
   const extensions = new Set<string>();
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
@@ -780,6 +834,8 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
     fields.add(field);
     textureFields.add(field);
     addSourcePath(issuePaths, `field:${String(field)}`, path);
+    const samplerPolicy = textureSamplerPolicyUse(gltf, field, info, path);
+    if (samplerPolicy !== null) samplerPolicies.push(samplerPolicy);
     const uvSet = textureInfoUvSet(info);
     uvSets.add(uvSet);
     if (uvSet > 1) addSourcePath(issuePaths, `uvSet:${uvSet}`, textureInfoUvSetPath(info, path));
@@ -921,6 +977,9 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
     count: materials.length,
     materialFields: sorted(fields) as (keyof MaterialSpec)[],
     textureFields: sorted(textureFields) as (keyof MaterialSpec)[],
+    samplerPolicies: samplerPolicies.sort((a, b) =>
+      a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
+    ),
     extensions: sorted(extensions),
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
@@ -932,6 +991,66 @@ function analyzeMaterials(materials: readonly GltfMaterial[]): GltfMaterialFeatu
     doubleSidedCount,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function textureSamplerPolicyUse(
+  gltf: GltfJson,
+  materialField: keyof MaterialSpec,
+  info: GltfTextureInfo,
+  materialPath: string,
+): GltfTextureSamplerPolicyUse | null {
+  const texture = gltf.textures?.[info.index];
+  const samplerIndex = texture?.sampler;
+  if (samplerIndex === undefined) return null;
+  const sampler = gltf.samplers?.[samplerIndex];
+  if (sampler == null) return null;
+  const magFilter = textureMagFilterMode(sampler.magFilter);
+  const minFilter = textureMinFilterModes(sampler.minFilter);
+  if (magFilter === undefined && minFilter === null) return null;
+  const path = minFilter !== null
+    ? `samplers[${samplerIndex}].minFilter`
+    : `samplers[${samplerIndex}].magFilter`;
+  return {
+    materialField,
+    textureIndex: info.index,
+    samplerIndex,
+    materialPath,
+    path,
+    ...(magFilter !== undefined ? { magFilter } : {}),
+    ...(minFilter !== null ? {
+      minFilter: minFilter.minFilter,
+      mipFilter: minFilter.mipFilter,
+      usesMipmaps: minFilter.mipFilter !== 'none',
+    } : {}),
+  };
+}
+
+function textureMagFilterMode(value: number | undefined): GltfTextureSamplerFilterMode | undefined {
+  if (value === 9728) return 'nearest';
+  if (value === 9729) return 'linear';
+  return undefined;
+}
+
+function textureMinFilterModes(value: number | undefined): {
+  readonly minFilter: GltfTextureSamplerFilterMode;
+  readonly mipFilter: GltfTextureSamplerMipMode;
+} | null {
+  switch (value) {
+    case 9728:
+      return { minFilter: 'nearest', mipFilter: 'none' };
+    case 9729:
+      return { minFilter: 'linear', mipFilter: 'none' };
+    case 9984:
+      return { minFilter: 'nearest', mipFilter: 'nearest' };
+    case 9985:
+      return { minFilter: 'linear', mipFilter: 'nearest' };
+    case 9986:
+      return { minFilter: 'nearest', mipFilter: 'linear' };
+    case 9987:
+      return { minFilter: 'linear', mipFilter: 'linear' };
+    default:
+      return null;
+  }
 }
 
 function analyzeAnimations(gltf: GltfJson): GltfAnimationFeatureReport {

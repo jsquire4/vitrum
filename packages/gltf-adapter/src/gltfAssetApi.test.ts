@@ -1267,6 +1267,22 @@ describe('loadGltfForEngine', () => {
     })).rejects.toThrow('baseColorMap');
   });
 
+  it('rejects degraded authored sampler policies before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
+    gltf.samplers = [{ magFilter: 9728, minFilter: 9984 }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow('material:baseColorMap.samplerPolicy=approximate at samplers[0].minFilter');
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported point/line primitive modes before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {

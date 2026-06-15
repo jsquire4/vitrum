@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added (glTF sampler metadata, 2026-06-15)
 
 - **`@vitrum/core` + `@vitrum/gltf-adapter` sampler intent preservation:** `TextureRef` now carries authored `magFilter`, `minFilter`, and `mipFilter` metadata in addition to UV channel, `KHR_texture_transform`, and wrap modes. The glTF adapter maps all six glTF minification constants plus NEAREST/LINEAR magnification into those fields, and `textureDecodeReport` exposes the same sampler policy with `usesMipmaps` for authored mipmapped modes. Backend per-texture filter/mipmap enforcement remains a separate renderer policy rather than silently implied by import success.
+- **glTF sampler compatibility diagnostics:** `analyzeGltfAsset()` now inventories authored sampler policies per material texture, and backend compatibility adds `*.samplerPolicy` approximate issues when a selected backend imports the texture but cannot guarantee exact per-texture filter/mipmap behavior. `loadGltfForEngine(..., compatibilityMode:'reject-degraded')` rejects those sampler-policy degradations before constructing an engine.
 
 ### Added (pt-webgl2 OIDN final-pass, 2026-06-15)
 
