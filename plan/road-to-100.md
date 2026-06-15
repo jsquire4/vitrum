@@ -872,8 +872,8 @@ CPU/API/diagnostic preflight, not a substitute for reference captures.
 | Oracle | File | Regression guard |
 |--------|------|------------------|
 | ~~PTWG-BDPT-01~~ ✅ code/proof closed | `oracle.bdptConnectionCosine.test.ts`; `bdptGlossyLightSubpath.test.ts` | Finite-area endpoint, one-bounce diffuse light tracing, and non-Lambertian light-vertex connection |
-| HYB-GI-01/02 | `oracle.restirDiEstimator.test.ts` | Env + area DI |
-| HYB-DDGI-01 | `oracle.ddgiVisibilityMoments.test.ts` | Probe visibility |
+| ~~HYB-GI-01/02~~ ✅ code/proof closed | `oracle.restirDiEstimator.test.ts` | RIS candidate accounting, selected-xi p-hat/finalize, selected-point shading, env + area DI characterization |
+| ~~HYB-DDGI-01~~ ✅ code/proof closed | `oracle.ddgiVisibilityMoments.test.ts` | Probe miss visibility, all-sky open semantics, f32/f16 moment poisoning regression |
 | PTWG-LITE-01 | `oracle.liteRectMis.test.ts` | Lite policy |
 
 #### 5C — Mutation matrix GPU observability

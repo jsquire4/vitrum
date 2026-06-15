@@ -1556,14 +1556,38 @@ Remaining:
 
 ### GATE-04 - Renderer math oracle suite
 
-Add independent oracles for:
-- SPPM photon flux and per-pixel progressive stats.
-- BDPT contribution/pdf assembly.
-- DI ReSTIR candidate accounting and selected-point shading.
-- DDGI miss visibility semantics.
-- Extension-lobe contribution/PDF parity for the remaining schema paths:
-  inverse adjoints, plus material-furnace/reference A/B for the sampled
-  eye/ReSTIR/BDPT paths now implemented.
+Status: CORE ORACLES CLOSED / SPECIALTY PROOF STILL OPEN.
+
+Source-verified 2026-06-15:
+- SPPM photon flux is covered by
+  `packages/pt-webgpu/src/__tests__/oracle.sppmPhotonFlux.test.ts`, which
+  derives per-source powers independently and proves `lightSelectInvPdf`
+  conserves total emitted flux across point, rect, and environment sources.
+- SPPM per-pixel progressive stats are covered by
+  `packages/pt-webgpu/src/__tests__/sppmHashGrid.test.ts`, whose TS mirror
+  proves the Hachisuka recurrence (`N'`, radius shrink, tau update, M=0
+  stability, and first-frame seeding) against closed-form invariants.
+- BDPT contribution/pdf assembly is covered by
+  `packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts` and
+  `packages/pt-webgpu/src/__tests__/oracle.bdptConnectionCosine.test.ts`.
+  The first compares an independent Veach MIS recurrence against the
+  shared-samplers oracle; the second derives the finite-area endpoint,
+  one-bounce diffuse light tracing, and glossy light-vertex contribution from
+  the rendering equation rather than mirroring shader assembly.
+- DI ReSTIR candidate accounting and selected-point shading are covered by
+  `packages/walkaround-hybrid/src/__tests__/oracle.restirDiEstimator.test.ts`.
+  The oracle independently transcribes RIS candidate generation, W finalize,
+  selected-xi p-hat, and shade consumption, with characterization coverage for
+  the historical centroid/fresh-xi and mixed-measure defects.
+- DDGI miss visibility semantics are covered by
+  `packages/walkaround-hybrid/src/__tests__/oracle.ddgiVisibilityMoments.test.ts`,
+  which independently models f32 accumulation, f16 visibility atlas storage,
+  Chebyshev visibility, miss skipping, and all-sky open-visibility semantics.
+
+Remaining:
+- Extension-lobe contribution/PDF parity for inverse adjoints.
+- Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
+  BDPT paths now structurally implemented.
 
 ### GATE-05 - Reference-render A/B suite
 
