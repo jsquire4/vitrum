@@ -1359,11 +1359,15 @@ Evidence:
   still emits `walkaround-hybrid.alpha-blend-approximation` because sorted or
   weighted transparent composition remains open.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
-  camera-visible emitter glow: `materialTextureAtlas.ts` packs emissive maps as
-  sRGB-decoded atlas layers with per-map UV/transform/wrap metadata, and
-  `shade.wgsl` calls `sampleEmissiveMap(..., lo_emitterGlow(...))`. Direct-light
-  emitter power, ReSTIR candidate payloads, and GI still use scalar emissive Le,
-  so this is not native parity yet.
+  camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
+  packs emissive maps as sRGB-decoded atlas layers with per-map
+  UV/transform/wrap metadata, `shade.wgsl` calls
+  `sampleEmissiveMap(..., lo_emitterGlow(...))`, and
+  `materialSpecEmissiveLe()` now folds the average linear RGB of CPU-readable
+  emissive maps into the shared ReSTIR/DDGI/RC emitter radiance path. This
+  closes the scalar-only emitter-power hole for decoded glTF-style 1x1/CPU
+  handles. Exact UV-varying emitter texel PDFs, per-candidate spatial payloads,
+  and GI texel-space emission are still approximate rather than native parity.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
   rows and needs tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel

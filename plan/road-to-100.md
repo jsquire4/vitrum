@@ -696,14 +696,16 @@ before multiplying the runtime GTAO factor. Normal maps perturb the visible
 smooth normal through authored/generated tangent.xyzw when present, falling back
 to a derived per-triangle tangent frame, with `normalScale` applied. Alpha maps
 cut out primary/RIS/GI hits, emissive maps modulate camera-visible emitter glow,
-transmission maps modulate shade/RIS/GI glass gating, volume thickness maps
+and CPU-readable emissive maps now feed average linear RGB into the shared
+direct emitter radiance/power path. Transmission maps modulate shade/RIS/GI glass gating, volume thickness maps
 sample glTF G and exponentiate the scalar Beer tint in shade, transmitted GI,
 and tinted-visibility paths, and light maps add
 first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_FIELDS` and the
 core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, `envMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission/thickness tint,
-emitter power, upstream reservoir/GI payloads, and baked light maps' non-camera
+emissive-map direct power uses a CPU-readable average rather than texel-exact
+emitter PDFs, upstream reservoir/GI payloads, and baked light maps' non-camera
 paths still use scalar packed lanes. Bump maps are now a shade-owned visible
 normal perturbation; displacement maps remain deliberately unsupported until a
 true geometry/BVH displacement path exists.

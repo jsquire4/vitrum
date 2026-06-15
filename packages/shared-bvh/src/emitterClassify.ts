@@ -13,7 +13,7 @@
  * directly to exercise the surface-texture and emitter-suppression paths.
  */
 
-import type { MaterialSpec } from '@vitrum/core';
+import type { MaterialSpec, TextureRef } from '@vitrum/core';
 import {
   MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD,
   MATERIAL_EMITTER_TRANSMISSION_THRESHOLD,
@@ -21,15 +21,135 @@ import {
   MATERIAL_DEFAULT_TRI_COLOR,
 } from './materialEntry.js';
 
+interface ReadableTextureHandle {
+  readonly width?: number;
+  readonly height?: number;
+  readonly data?: ArrayLike<number>;
+  readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
+  readonly __vitrum_hint__?: TextureHandleHint;
+  readonly channels?: number;
+  readonly dataType?: string;
+  readonly colorSpace?: string;
+}
+
+interface TextureHandleHint {
+  readonly channels?: 1 | 2 | 3 | 4;
+  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  readonly colorSpace?: 'srgb' | 'linear';
+}
+
+type MutableTextureHandleHint = {
+  -readonly [K in keyof TextureHandleHint]?: TextureHandleHint[K];
+};
+
+function halfToFloat(h: number): number {
+  const s = (h & 0x8000) >> 15;
+  const e = (h & 0x7c00) >> 10;
+  const f = h & 0x03ff;
+  if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
+  if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
+  return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
+}
+
+function srgbToLinear(v: number): number {
+  const c = Math.max(0, Math.min(1, v));
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefined {
+  if (handle.__vitrum_hint__ != null) return handle.__vitrum_hint__;
+  if (handle.channels == null && handle.dataType == null && handle.colorSpace == null) return undefined;
+  const hint: MutableTextureHandleHint = {};
+  if (
+    handle.channels === 1 ||
+    handle.channels === 2 ||
+    handle.channels === 3 ||
+    handle.channels === 4
+  ) {
+    hint.channels = handle.channels;
+  }
+  if (
+    handle.dataType === 'uint8' ||
+    handle.dataType === 'uint16' ||
+    handle.dataType === 'float32'
+  ) {
+    hint.dataType = handle.dataType;
+  }
+  if (handle.colorSpace === 'srgb' || handle.colorSpace === 'linear') {
+    hint.colorSpace = handle.colorSpace;
+  }
+  return hint;
+}
+
+function averageReadableTextureRgb(
+  ref: TextureRef | undefined,
+  fieldColorSpace: 'srgb' | 'linear',
+): [number, number, number] | null {
+  const handle = ref?.handle as ReadableTextureHandle | null | undefined;
+  if (handle == null) return null;
+
+  const src = handle.data ?? handle.image?.data;
+  const width = Number(handle.width ?? handle.image?.width ?? 0);
+  const height = Number(handle.height ?? handle.image?.height ?? 0);
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const pixelCount = Math.floor(width) * Math.floor(height);
+  if (pixelCount <= 0) return null;
+  const hint = textureHint(handle);
+  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
+  const stride = hint?.channels ?? heuristicStride;
+  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
+    return null;
+  }
+
+  const isHalf = src instanceof Uint16Array;
+  const isFloat = src instanceof Float32Array;
+  const useHalf = hint?.dataType != null ? hint.dataType === 'uint16' : isHalf;
+  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
+  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const decode = (v: number): number => (
+    useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v
+  );
+  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  for (let p = 0; p < pixelCount; p += 1) {
+    const base = p * stride;
+    let pr = decode(Number(src[base] ?? 0));
+    let pg = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
+    let pb = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+    if (needsSrgbDecode) {
+      pr = srgbToLinear(pr);
+      pg = srgbToLinear(pg);
+      pb = srgbToLinear(pb);
+    }
+    if (!Number.isFinite(pr) || !Number.isFinite(pg) || !Number.isFinite(pb)) continue;
+    r += pr;
+    g += pg;
+    b += pb;
+    n += 1;
+  }
+
+  return n > 0 ? [r / n, g / n, b / n] : null;
+}
+
 /**
- * Emissive radiance Le (`emissive.rgb · emissiveIntensity`) of a core
+ * Emissive radiance Le (`emissive.rgb · emissiveIntensity · emissiveMap`) of a core
  * `MaterialSpec`, or `null` when the surface is not self-emissive.
  *
  * Uses the same reject conditions as the rest of the core emitter pipeline
- * (absent emissive, non-positive intensity, all-non-positive emissive channels),
+ * (absent emissive, non-positive intensity, all-non-positive final channels),
  * so the camera-visible glow Le and the NEE-sampled emitter radiance share one
- * source. Deliberately EXCLUDES the transmissive "sun-attenuated secondary
- * emitter" branch — that lives in {@link classifyTriangleEmitterCore}.
+ * source. When `emissiveMap` exposes readable CPU pixels, the average linear RGB
+ * map value modulates Le; opaque/GPU-only handles fall back to the scalar factor.
+ * Deliberately EXCLUDES the transmissive "sun-attenuated secondary emitter"
+ * branch — that lives in {@link classifyTriangleEmitterCore}.
  * A missing `emissiveIntensity` defaults to ×1, matching the core material
  * entry adapter and the path-tracing backends.
  *
@@ -44,7 +164,14 @@ export function materialSpecEmissiveLe(
   const ei = material.emissiveIntensity ?? 1;
   if (!(ei > 0)) return null;
   if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
-  return [em[0] * ei, em[1] * ei, em[2] * ei];
+  const map = averageReadableTextureRgb(material.emissiveMap, 'srgb') ?? [1, 1, 1];
+  const out: [number, number, number] = [
+    em[0] * ei * map[0],
+    em[1] * ei * map[1],
+    em[2] * ei * map[2],
+  ];
+  if (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) return null;
+  return out;
 }
 
 /**

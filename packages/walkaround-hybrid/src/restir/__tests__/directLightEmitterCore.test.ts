@@ -198,6 +198,46 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
   });
 
+  it('uses readable emissiveMap averages for ReSTIR emitter radiance and power', () => {
+    const panel: MeshPrimitive = {
+      ...supportTriangle('emissive-map-panel'),
+      material: {
+        ...emissiveMaterial([2, 2, 2], 3),
+        emissiveMap: {
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Float32Array([
+              0.25, 0.5, 1, 1,
+              0.75, 0.25, 0.5, 1,
+            ]),
+            __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+          },
+        },
+      },
+    };
+    const scene: Scene = {
+      primitives: [panel],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
+    const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+    const expectedLe: [number, number, number] = [1, 0.75, 1.5];
+
+    expect(emitters).toHaveLength(1);
+    expect(emitters[0]!.color[0]).toBeCloseTo(expectedLe[0], 6);
+    expect(emitters[0]!.color[1]).toBeCloseTo(expectedLe[1], 6);
+    expect(emitters[0]!.color[2]).toBeCloseTo(expectedLe[2], 6);
+    expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
+    expect(buffers.totalEmissivePower).toBeCloseTo(
+      luminance(expectedLe[0], expectedLe[1], expectedLe[2]) * 0.5,
+      5,
+    );
+    expect(new Float32Array(buffers.emitterCdf.cpuData)[0]).toBe(1);
+  });
+
   it('does not duplicate material-emissive mesh triangles for mesh-area emitters', () => {
     const panel: MeshPrimitive = {
       ...supportTriangle('panel'),
