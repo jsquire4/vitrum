@@ -7,6 +7,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
 @group(1) @binding(22) var bvh_tangent: texture_2d<f32>;
+@group(1) @binding(23) var bvh_vertex_color: texture_2d<f32>;
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
@@ -360,6 +361,33 @@ fn bvhTangentTexel(vertexIndex: u32) -> vec4f {
   return textureLoad(bvh_tangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
 }
 
+fn bvhVertexColorTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(bvh_vertex_color);
+  let width = u32(dims.x);
+  let height = u32(dims.y);
+  if (width == 0u || height == 0u) {
+    return vec4f(1.0);
+  }
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(1.0);
+  }
+  return textureLoad(bvh_vertex_color, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn sampleVertexColorForHit(hit: IntersectionResult) -> vec4f {
+  let ca = bvhVertexColorTexel(hit.indices.x);
+  let cb = bvhVertexColorTexel(hit.indices.y);
+  let cc = bvhVertexColorTexel(hit.indices.z);
+  return clamp(
+    hit.barycoord.x * ca +
+    hit.barycoord.y * cb +
+    hit.barycoord.z * cc,
+    vec4f(0.0),
+    vec4f(1.0)
+  );
+}
+
 fn transformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
   return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
 }
@@ -650,9 +678,10 @@ fn materialAlphaDiscardedForHit(
   let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
   let alphaTexel = sampleMaterialAtlasRaw(hit.indices.w, MATERIAL_MAP_SLOT_ALPHA, hit.uv, uv1);
   let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let vertexColorAlpha = sampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   let cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  let coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  let coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
   if (mode == 1u) {
     return coverage < cutoff;
   }

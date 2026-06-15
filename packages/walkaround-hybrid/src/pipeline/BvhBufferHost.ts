@@ -29,6 +29,10 @@ import {
   type TangentTexture,
 } from './bvhTangentTexture.js';
 import {
+  uploadVertexColorTexture,
+  type VertexColorTexture,
+} from './bvhVertexColorTexture.js';
+import {
   uploadAnalyticLightsTexture,
   type AnalyticLightsTexture,
 } from './analyticLightsTexture.js';
@@ -71,6 +75,8 @@ export interface SceneBindGroupResources {
   /** Per-vertex authored/generated tangents, exposed as a texture so the scene
    *  group does not spend another storage-buffer slot. */
   bvhTangentTextureView: GPUTextureView;
+  /** Per-vertex COLOR_0 colors (rgba32float texture, binding 23). */
+  bvhVertexColorTextureView: GPUTextureView;
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -108,6 +114,7 @@ export class BvhBufferHost {
   /** WS1 — per-vertex world-space normals for the smooth shading-normal blend. */
   private _bvhNormalBuffer: GPUBuffer | null = null;
   private _bvhTangentTexture: TangentTexture | null = null;
+  private _bvhVertexColorTexture: VertexColorTexture | null = null;
   private _bvhPositionBuffer: GPUBuffer | null = null;
   private _tlasNodesBuffer: GPUBuffer | null = null;
   private _tlasInstanceIndicesBuffer: GPUBuffer | null = null;
@@ -168,6 +175,11 @@ export class BvhBufferHost {
       device,
       new Float32Array(bvhBuffers.bvhTangents.cpuData),
       bvhBuffers.bvhTangents.count,
+    );
+    this._bvhVertexColorTexture = uploadVertexColorTexture(
+      device,
+      new Float32Array(bvhBuffers.bvhColors.cpuData),
+      bvhBuffers.bvhColors.count,
     );
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     const emitterCount = validateEmitterPayload('uploadInitial', bvhBuffers.emitters);
@@ -280,6 +292,7 @@ export class BvhBufferHost {
       baseColorMapMetaTextureView: this._materialTextureAtlas!.baseColorMetaTextureView,
       bvhNormalBuffer: this._bvhNormalBuffer!,
       bvhTangentTextureView: this._resourceCache.textureView(this._bvhTangentTexture!.texture),
+      bvhVertexColorTextureView: this._resourceCache.textureView(this._bvhVertexColorTexture!.texture),
       tlasNodesBuffer: this._tlasNodesBuffer!,
       tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer!,
       tlasBlasRootsBuffer: this._tlasBlasRootsBuffer!,
@@ -355,6 +368,14 @@ export class BvhBufferHost {
       section.bvhTangentTexture = {
         width: this._bvhTangentTexture.width,
         height: this._bvhTangentTexture.height,
+        depthOrArrayLayers: 1,
+        format: 'rgba32float' as GPUTextureFormat,
+      };
+    }
+    if (this._bvhVertexColorTexture != null) {
+      section.bvhVertexColorTexture = {
+        width: this._bvhVertexColorTexture.width,
+        height: this._bvhVertexColorTexture.height,
         depthOrArrayLayers: 1,
         format: 'rgba32float' as GPUTextureFormat,
       };
@@ -470,7 +491,7 @@ export class BvhBufferHost {
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this.initialized) return;
@@ -482,6 +503,7 @@ export class BvhBufferHost {
     this._materialTextureAtlas?.atlasTexture.destroy();
     this._materialTextureAtlas?.baseColorMetaTexture.destroy();
     this._bvhTangentTexture?.texture.destroy();
+    this._bvhVertexColorTexture?.texture.destroy();
     this._bvhNormalBuffer!.destroy();
     this._bvhPositionBuffer!.destroy();
     this._destroyTlasBuffers();
@@ -503,6 +525,11 @@ export class BvhBufferHost {
       new Float32Array(bvhBuffers.bvhTangents.cpuData),
       bvhBuffers.bvhTangents.count,
     );
+    this._bvhVertexColorTexture = uploadVertexColorTexture(
+      device,
+      new Float32Array(bvhBuffers.bvhColors.cpuData),
+      bvhBuffers.bvhColors.count,
+    );
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers as SceneBVHBuffers);
   }
@@ -516,6 +543,7 @@ export class BvhBufferHost {
     this._materialTextureAtlas?.atlasTexture.destroy();
     this._materialTextureAtlas?.baseColorMetaTexture.destroy();
     this._bvhTangentTexture?.texture.destroy();
+    this._bvhVertexColorTexture?.texture.destroy();
     this._bvhNormalBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
     this._destroyTlasBuffers();
@@ -531,6 +559,7 @@ export class BvhBufferHost {
     this._bvhRoughMetalTexture = null;
     this._materialTextureAtlas = null;
     this._bvhTangentTexture = null;
+    this._bvhVertexColorTexture = null;
     this._bvhNormalBuffer = null;
     this._bvhPositionBuffer = null;
     this._emitterBuffer = null;

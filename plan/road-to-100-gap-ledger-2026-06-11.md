@@ -1583,9 +1583,12 @@ Do not carry these as open gaps unless the code regresses again.
   `attributesArray` layer 3 with the material `vertexColors` flag enabled for
   affected material slots. pt-webgpu full consumed the same core `colors` stream
   on 2026-06-14 via shared-bvh rgba packing, group(3)/binding(11), baseColor
-  modulation, and alpha pass-through. pt-webgpu-lite and walkaround-hybrid
-  remain honest structured-unsupported paths for glTF vertex colors until their
-  attribute/material tiers consume them.
+  modulation, and alpha pass-through. walkaround-hybrid consumed the same core
+  colors stream on 2026-06-15 via shared-bvh/world-space RGBA packing, a scene
+  vertex-color texture, visible baseColor modulation, and traversal alpha
+  coverage; compatibility is `approximate` because realtime GI reservoirs are
+  not full secondary path-tracer material transport. pt-webgpu-lite remains an
+  honest structured-unsupported path for glTF vertex colors.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial

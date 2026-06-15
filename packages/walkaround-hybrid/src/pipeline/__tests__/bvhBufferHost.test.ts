@@ -64,6 +64,14 @@ vi.mock('../bvhTangentTexture.js', () => ({
   })),
 }));
 
+vi.mock('../bvhVertexColorTexture.js', () => ({
+  uploadVertexColorTexture: vi.fn(() => ({
+    texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+    width: 4096,
+    height: 1,
+  })),
+}));
+
 vi.mock('../analyticLightsTexture.js', () => ({
   uploadAnalyticLightsTexture: vi.fn(() => ({
     texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
@@ -114,6 +122,7 @@ function makeSceneBvhBuffers(emitterCount = 1): SceneBVHBuffers {
     bvhRoughMetal: buf,
     bvhNormals: buf,
     bvhTangents: buf,
+    bvhColors: buf,
     bvhPositions: buf,
     emitters,
     emitterCdf,
@@ -138,6 +147,7 @@ describe('BvhBufferHost', () => {
     expect(r2.bvhBeerTextureView).toBe(r.bvhBeerTextureView);
     expect(r2.bvhEmissiveTextureView).toBe(r.bvhEmissiveTextureView);
     expect(r2.bvhTangentTextureView).toBe(r.bvhTangentTextureView);
+    expect(r2.bvhVertexColorTextureView).toBe(r.bvhVertexColorTextureView);
     expect(host.lightTreeBuffer()).toBeDefined();
     const mem = host.gpuMemorySections().staticScene;
     if (mem == null) throw new Error('expected staticScene memory section');

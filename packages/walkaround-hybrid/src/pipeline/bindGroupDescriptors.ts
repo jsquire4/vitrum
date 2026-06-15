@@ -220,6 +220,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (readable material maps as RGBA32F array layers)' },
       { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle map layer/wrap/transform/coverage metadata)' },
       { binding: 22, kind: 'tex', note: 'bvh_tangent (per-vertex authored/generated tangent.xyzw, rgba32float texture)' },
+      { binding: 23, kind: 'tex', note: 'bvh_vertex_color (per-vertex COLOR_0 rgba, rgba32float texture)' },
     ],
   },
   {

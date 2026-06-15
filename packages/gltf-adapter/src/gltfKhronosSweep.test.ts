@@ -609,7 +609,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       expect.objectContaining({
         category: 'primitive',
         name: 'vertexColors',
-        support: 'unsupported',
+        support: 'approximate',
         path: 'meshes[0].primitives[0].attributes.COLOR_0',
       }),
     ]));

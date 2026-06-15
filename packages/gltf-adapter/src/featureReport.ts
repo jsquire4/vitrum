@@ -213,7 +213,7 @@ const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, BackendSupport
   'pt-webgl2': 'native',
   'pt-webgpu': 'native',
   'pt-webgpu-lite': 'unsupported',
-  'walkaround-hybrid': 'unsupported',
+  'walkaround-hybrid': 'approximate',
 });
 
 const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = [

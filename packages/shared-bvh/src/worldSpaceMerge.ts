@@ -99,6 +99,10 @@ export interface WorldSpaceMergeResult {
    *  consumers can fall back to a UV-gradient frame. */
   readonly tangents: Float32Array;
 
+  /** Merged per-vertex colors, vec4f stride (rgba). Missing colors are encoded
+   *  as 1,1,1,1 so downstream material paths can multiply without a presence bit. */
+  readonly colors: Float32Array;
+
   /** Merged per-vertex texture coords (stride 2, merge/vertex order — same order as
    *  {@link positions}/{@link normals}; the BVH reorders triangles not vertices).
    *  (0,0) for vertices whose source primitive carries no UVs. */
@@ -452,6 +456,7 @@ export function mergeWorldSpaceFromCore(
   const positions: number[] = [];
   const normals: number[] = [];
   const tangents: number[] = [];
+  const colors: number[] = [];
   const uvs: number[] = []; // per-vertex texture coords (stride 2, merge order, untransformed)
   const mergedIndices: number[] = [];
   const mergedTriMaterialId: number[] = [];
@@ -502,9 +507,15 @@ export function mergeWorldSpaceFromCore(
     const basePositions = primitive.positions;
     const baseNormals = primitive.normals;
     const baseTangents = primitive.tangents;
+    const baseColors = primitive.colors;
     const baseUvs = primitive.uvs; // optional; (0,0) per vertex when absent
     const localVertexCount = Math.floor(basePositions.length / 3);
     const hasCompleteTangents = baseTangents != null && baseTangents.length >= localVertexCount * 4;
+    const colorStride = baseColors != null && baseColors.length >= localVertexCount * 4
+      ? 4
+      : baseColors != null && baseColors.length >= localVertexCount * 3
+        ? 3
+        : 0;
     if (localVertexCount < 3) continue;
 
     // Sequential index when the primitive carries none (triangle-list), matching
@@ -556,6 +567,18 @@ export function mergeWorldSpaceFromCore(
           if (stride === 4) tangents.push(0);
         }
 
+        if (colorStride > 0) {
+          const src = i * colorStride;
+          colors.push(
+            baseColors?.[src] ?? 1,
+            baseColors?.[src + 1] ?? 1,
+            baseColors?.[src + 2] ?? 1,
+            colorStride === 4 ? baseColors?.[src + 3] ?? 1 : 1,
+          );
+        } else {
+          colors.push(1, 1, 1, 1);
+        }
+
         // UVs are 2D texture coords — transform-invariant (no world-matrix applied).
         uvs.push(baseUvs?.[i * 2] ?? 0, baseUvs?.[i * 2 + 1] ?? 0);
 
@@ -605,6 +628,7 @@ export function mergeWorldSpaceFromCore(
       triMaterialId: new Uint32Array(1),
       normals: new Float32Array(stride === 4 ? 12 : 9),
       tangents: new Float32Array(stride === 4 ? 12 : 9),
+      colors: new Float32Array(12).fill(1),
       uvs: new Float32Array(6),
       mergedIndices: new Uint32Array([0, 1, 2]),
       mergedTriMaterialId: new Uint32Array(1),
@@ -619,6 +643,7 @@ export function mergeWorldSpaceFromCore(
   const packedPositions = new Float32Array(positions);
   const packedNormals = new Float32Array(normals);
   const packedTangents = new Float32Array(tangents);
+  const packedColors = new Float32Array(colors);
   const packedUvs = new Float32Array(uvs);
   const packedMergedIndices = new Uint32Array(mergedIndices);
   const packedMergedTriMaterialId = new Uint32Array(mergedTriMaterialId);
@@ -640,6 +665,7 @@ export function mergeWorldSpaceFromCore(
     triMaterialId: bvh.reorderedTriMaterialIds,
     normals: packedNormals,
     tangents: packedTangents,
+    colors: packedColors,
     uvs: packedUvs,
     mergedIndices: packedMergedIndices,
     mergedTriMaterialId: packedMergedTriMaterialId,

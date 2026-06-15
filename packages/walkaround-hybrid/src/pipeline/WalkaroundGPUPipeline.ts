@@ -1428,7 +1428,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
   /**
    * Full BVH-buffer reupload — destroy + recreate the four BVH GPU
-   * buffers (nodes, index, beer, positions) from a freshly-built
+   * buffers/textures (nodes, index, beer, positions, normals, tangents, colors)
+   * from a freshly-built
    * `SceneBVHBuffers`. Used by `HybridEngine.updatePrimitive`'s topology-
    * change path after a `buildReSTIRSceneBVH` rebuild. Emitter buffers
    * are NOT touched here — call `updateEmitters` separately if the
@@ -1442,7 +1443,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   refreshBvhFullRebuild(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this._initialized) return;

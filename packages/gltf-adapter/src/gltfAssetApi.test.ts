@@ -1068,15 +1068,21 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const webgpuFull = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu');
     expect(webgpuFull.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
 
-    for (const profile of ['pt-webgpu-lite', 'walkaround-hybrid'] as const) {
-      const compatibility = evaluateGltfBackendProfileCompatibility(report, profile);
-      expect(compatibility.issues).toContainEqual(expect.objectContaining({
-        category: 'primitive',
-        name: 'vertexColors',
-        support: 'unsupported',
-        path: 'meshes[0].primitives[0].attributes.COLOR_0',
-      }));
-    }
+    const lite = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu-lite');
+    expect(lite.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'vertexColors',
+      support: 'unsupported',
+      path: 'meshes[0].primitives[0].attributes.COLOR_0',
+    }));
+
+    const walkaround = evaluateGltfBackendProfileCompatibility(report, 'walkaround-hybrid');
+    expect(walkaround.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'vertexColors',
+      support: 'approximate',
+      path: 'meshes[0].primitives[0].attributes.COLOR_0',
+    }));
   });
 
   it('reports EXT_mesh_gpu_instancing as an explicit unsupported extension with node source path', () => {

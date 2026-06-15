@@ -295,7 +295,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let uv1 = interpolateUv1FromNormalW(primaryHit, n0, n1, n2);
-  let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb);
+  let vertexColor = sampleVertexColorForHit(primaryHit);
+  let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb * vertexColor.rgb);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
   // invariant packs 0.85 for unspecified roughness / 0.05 for glass / metal 0,

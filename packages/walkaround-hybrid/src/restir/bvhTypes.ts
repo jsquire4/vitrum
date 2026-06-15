@@ -45,6 +45,10 @@ export interface SceneBVHBuffers {
    *  WebGPU storage-buffer floor. xyz = tangent, w = bitangent handedness;
    *  0,0,0,0 means derive a UV-gradient frame in WGSL. */
   bvhTangents: StorageBufferHandle;
+  /** Per-vertex COLOR_0 colors, vec4f stride (rgba). Uploaded as a texture
+   *  binding and multiplied into visible baseColor/alpha; missing colors are
+   *  already white-filled by shared-bvh. */
+  bvhColors: StorageBufferHandle;
   emitters: StorageBufferHandle;
   emitterCdf: StorageBufferHandle;
   emitterCount: number;

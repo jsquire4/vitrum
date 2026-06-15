@@ -241,16 +241,19 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
 // ── 3. Scene bind-group storage-buffer budget (≤ 16 floor) ───────────────────
 
 describe('WS1 scene bind-group storage budget', () => {
-  it('scene group has bvh_normal as storage and bvh_beer/bvh_tangent as textures', () => {
+  it('scene group has bvh_normal as storage and bvh_beer/bvh_tangent/COLOR_0 as textures', () => {
     const scene = BIND_GROUP_TABLE.find((e) => e.id === 'scene')!;
     const beer = scene.entries.find((e) => e.binding === 5)!;
     const normal = scene.entries.find((e) => e.binding === 11)!;
     const tangent = scene.entries.find((e) => e.binding === 22)!;
+    const colors = scene.entries.find((e) => e.binding === 23)!;
     expect(beer.kind).toBe('tex:uint');
     expect(normal.kind).toBe('storage-ro');
     expect(normal.note).toMatch(/normal/i);
     expect(tangent.kind).toBe('tex');
     expect(tangent.note).toMatch(/tangent/i);
+    expect(colors.kind).toBe('tex');
+    expect(colors.note).toMatch(/COLOR_0/i);
   });
 
   it('scene group stays at or below the 16 storage-buffer floor', () => {

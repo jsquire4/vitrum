@@ -32,6 +32,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     bvhRoughMetal: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhNormals: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     bvhTangents: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
+    bvhColors: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     emitters: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 0 },
     emitterCdf: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 0 },
     emitterCount: 0,

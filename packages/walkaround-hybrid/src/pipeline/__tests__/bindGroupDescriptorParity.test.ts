@@ -124,6 +124,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     bvhRoughMetalTextureView: view,
     materialTextureAtlasView: view, baseColorMapMetaTextureView: view,
     bvhTangentTextureView: view,
+    bvhVertexColorTextureView: view,
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
     analyticLightsTextureView: view,

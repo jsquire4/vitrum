@@ -104,6 +104,7 @@ export function buildPerFrameBindGroups(
     scene.materialTextureAtlasView,  // 20 — Phase-3D baseColorMap atlas
     scene.baseColorMapMetaTextureView, // 21
     scene.bvhTangentTextureView,     // 22 — authored/generated tangent.xyzw
+    scene.bvhVertexColorTextureView, // 23 — COLOR_0 vertex colors
   ] as const;
   return {
     frame: resourceCache?.bindGroup('per-frame:frame', [
