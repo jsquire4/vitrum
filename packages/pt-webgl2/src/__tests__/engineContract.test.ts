@@ -494,7 +494,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   it('updatePrimitive material patches update scene textures without rebuilding BVH geometry', async () => {
-    const e = await createPTEngine_WebGL2(opts());
+    const structured: EngineWarning[] = [];
+    const e = await createPTEngine_WebGL2({
+      ...opts(),
+      onWarning: (w) => structured.push(w),
+    });
     e.setScene(triScene());
     const beforeGeo = e._debugGeoPack;
     const beforeBvhNodes = beforeGeo?.bvhNodes;
@@ -515,6 +519,74 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(prim.material.baseColor).toEqual(GREY.baseColor);
     }
     expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(1);
+    expect(structured.some((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toBe(false);
+  });
+
+  it('warns once when primitive patches use the scene-texture/BVH rebuild fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+
+      const moved = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1]);
+      const movedAgain = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1]);
+      e.updatePrimitive?.('tri', { transform: moved } as never);
+      e.updatePrimitive?.('tri', { transform: movedAgain } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(1);
+      expect(fallbackWarnings[0]?.phase).toBe('mutation');
+      expect(fallbackWarnings[0]?.method).toBe('updatePrimitive');
+      expect(fallbackWarnings[0]?.details).toEqual({ primitiveId: 'tri', fields: ['transform'] });
+      const scene = e.getScene?.();
+      const prim = scene?.primitives[0];
+      expect(prim?.kind).toBe('mesh');
+      if (prim?.kind === 'mesh') {
+        expect(Array.from(prim.transform ?? [])).toEqual(Array.from(movedAgain));
+      }
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('updatePrimitive("tri") fields [transform]'),
+      )).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns once when primitive add/remove use the scene-texture/BVH rebuild fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+
+      e.addPrimitive?.(tri('extra', 2));
+      e.removePrimitive?.('extra');
+      // A second add of the same id is the same fallback signature and should not
+      // spam animation/streaming hosts that repeatedly rebuild the same slot.
+      e.addPrimitive?.(tri('extra', 2));
+
+      const listWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild');
+      expect(listWarnings).toHaveLength(2);
+      expect(listWarnings.map((w) => w.method)).toEqual(['addPrimitive', 'removePrimitive']);
+      expect(listWarnings.map((w) => w.details)).toEqual([
+        { primitiveId: 'extra', operation: 'addPrimitive' },
+        { primitiveId: 'extra', operation: 'removePrimitive' },
+      ]);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('scene-texture/BVH pack'),
+      )).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('updateEmitter and updateEnvironment patch scene textures without rebuilding BVH geometry', async () => {
@@ -558,6 +630,33 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(4);
     expect(e._debugSceneTex?.meshLightCount).toBe(2);
     expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+  });
+
+  it('updatePrimitive material fast path preserves mesh-area folded emissive radiance', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene(sceneWithMeshAreaEmitter());
+    const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+    const beforePositions = e._debugGeoPack?.positions;
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(2);
+
+    e.updatePrimitive?.('panel', { material: { roughness: 0.25 } } as never);
+
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.25);
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(2);
+    expect(e._debugSceneTex?.meshLightCount).toBe(2);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+    const scene = e.getScene?.();
+    const prim = scene?.primitives[0];
+    expect(prim?.kind).toBe('mesh');
+    if (prim?.kind === 'mesh') {
+      expect(prim.material.roughness).toBe(0.25);
+      expect(prim.material.emissive).toBeUndefined();
+      expect(prim.material.emissiveIntensity).toBeUndefined();
+    }
   });
 
   // Contract-honesty: EngineOptions.denoiser must not be silently ignored.
@@ -646,19 +745,27 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   it('addPrimitive and removePrimitive rebuild, validate ids, and allow an empty scene', async () => {
-    const e = await createPTEngine_WebGL2(opts());
-    e.setScene({ primitives: [tri('a', 0)], emitters: [], environment: { kind: 'none' } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const e = await createPTEngine_WebGL2(opts());
+      e.setScene({ primitives: [tri('a', 0)], emitters: [], environment: { kind: 'none' } });
 
-    e.addPrimitive?.(tri('b', 2));
-    expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['a', 'b']);
-    expect(() => e.addPrimitive?.(tri('b', 4))).toThrow(/already exists/);
+      e.addPrimitive?.(tri('b', 2));
+      expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['a', 'b']);
+      expect(() => e.addPrimitive?.(tri('b', 4))).toThrow(/already exists/);
 
-    e.removePrimitive?.('a');
-    expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['b']);
-    expect(() => e.removePrimitive?.('missing')).toThrow(/not found/);
+      e.removePrimitive?.('a');
+      expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['b']);
+      expect(() => e.removePrimitive?.('missing')).toThrow(/not found/);
 
-    e.removePrimitive?.('b');
-    expect(e.getScene?.()?.primitives).toEqual([]);
-    expect(e.renderFrame(frame(16)).kind).toBe('rendered');
+      e.removePrimitive?.('b');
+      expect(e.getScene?.()?.primitives).toEqual([]);
+      expect(e.renderFrame(frame(16)).kind).toBe('rendered');
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('scene-texture/BVH pack'),
+      )).toHaveLength(3);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -53,6 +53,12 @@ import {
 
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+function primitivePatchFields(patch: Partial<ScenePrimitive>): string[] {
+  return Object.keys(patch)
+    .filter((key) => key !== 'id' && key !== 'kind')
+    .sort();
+}
+
 // A5 — light-subpath ping-pong width (one column per light bounce). MUST match the
 // `BDPT_MAX_LIGHT_BOUNCES=3` layout the GLSL light-subpath/connection kernels assume
 // (bdpt_light_subpath.glsl.js header; the connection sweep caps the merged path at
@@ -225,6 +231,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
   #onErrorSubs = new Set<(e: EngineError) => void>();
   #onWarningSubs = new Set<(w: EngineWarning) => void>();
+  #fallbackMutationWarnings = new Set<string>();
 
   constructor(opts: PTEngineWebGL2Options, slot: StateSlot, traceTier: WebGl2TraceTier) {
     this.#slot = slot;
@@ -485,6 +492,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene.primitives.some((p) => String(p.id) === String(primitive.id))) {
       throw new Error(`addPrimitive: primitive "${primitive.id}" already exists in current scene`);
     }
+    this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id));
     this.setScene({
       ...this.#scene,
       primitives: [...this.#scene.primitives, primitive],
@@ -505,6 +513,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (!matched) {
       throw new Error(`removePrimitive: primitive "${id}" not found in current scene`);
     }
+    this.#warnPrimitiveListFallback('removePrimitive', String(id));
     this.setScene({
       ...this.#scene,
       primitives,
@@ -529,6 +538,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
+    this.#warnPrimitiveMutationFallback(id, patch);
     this.setScene(nextScene);
   }
 
@@ -767,6 +777,42 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
+
+  #warnPrimitiveListFallback(method: 'addPrimitive' | 'removePrimitive', primitiveId: string): void {
+    const key = `${method}:${primitiveId}`;
+    if (this.#fallbackMutationWarnings.has(key)) return;
+    this.#fallbackMutationWarnings.add(key);
+    this.#warn({
+      code: 'pt-webgl2.primitive-list-fallback-rebuild',
+      backend: 'pt-webgl2',
+      phase: 'mutation',
+      method,
+      message:
+        `[vitrum/pt-webgl2] ${method}("${primitiveId}") rebuilds the backend ` +
+        'scene-texture/BVH pack. This is supported, but it is not a targeted ' +
+        'native geometry patch.',
+      details: { primitiveId, operation: method },
+    });
+  }
+
+  #warnPrimitiveMutationFallback(id: string, patch: Partial<ScenePrimitive>): void {
+    const fields = primitivePatchFields(patch);
+    const signature = fields.length > 0 ? fields.join(',') : '<none>';
+    const key = `updatePrimitive:${id}:${signature}`;
+    if (this.#fallbackMutationWarnings.has(key)) return;
+    this.#fallbackMutationWarnings.add(key);
+    this.#warn({
+      code: 'pt-webgl2.primitive-mutation-fallback-rebuild',
+      backend: 'pt-webgl2',
+      phase: 'mutation',
+      method: 'updatePrimitive',
+      message:
+        `[vitrum/pt-webgl2] updatePrimitive("${id}") fields [${signature}] ` +
+        'are supported by rebuilding the backend scene-texture/BVH pack rather ' +
+        'than by a targeted native patch.',
+      details: { primitiveId: id, fields },
+    });
+  }
 
   #commitMutationSwap(scene: Scene, swap: WebGl2MutationSwap): void {
     for (const warning of swap.structuredWarnings ?? []) {

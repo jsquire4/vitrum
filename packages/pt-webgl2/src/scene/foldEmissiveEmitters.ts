@@ -21,10 +21,9 @@
 // build — every other backend keeps consuming the original (stripped) scene, so
 // the cross-backend NEE contract is untouched.
 //
-// Variance note: this gives the fork its native emissive-surface-hit lighting (no
-// NEE for the area light, since the lights texture excludes `mesh-area`). That is
-// unbiased but higher-variance than NEE; wiring mesh-area emitters into the lights
-// texture for MIS is a tracked fidelity enhancement, not a correctness gap.
+// pt-webgl2 also builds an explicit mesh-area NEE texture in `meshAreaLights.ts`.
+// This fold keeps camera/path-hit emissive radiance and mesh-light NEE radiance in
+// sync with the same authored `mesh-area` emitter.
 
 import type { MaterialSpec, Scene, ScenePrimitive, SceneNodeId, Vec3 } from '@vitrum/core';
 

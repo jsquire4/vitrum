@@ -10,7 +10,7 @@
 // asserts that the PACKED BVH positions for a posed skinned-mesh match an
 // independent CPU expectation and differ from the rest pose.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type {
   MaterialSpec,
   MeshPrimitive,
@@ -243,33 +243,41 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
   });
 
   it('updatePrimitive with new bones re-solves skinning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Initial pose: bone 0 = identity (v1 at bone0 = rest pos X=0).
-    const prim = twoBoneSkinnedPrim('sk3');
-    const scene: Scene = {
-      primitives: [prim],
-      emitters: [],
-      environment: { kind: 'none' },
-    };
+    try {
+      const prim = twoBoneSkinnedPrim('sk3');
+      const scene: Scene = {
+        primitives: [prim],
+        emitters: [],
+        environment: { kind: 'none' },
+      };
 
-    const e = await createPTEngine_WebGL2(opts());
-    e.setScene(scene);
+      const e = await createPTEngine_WebGL2(opts());
+      e.setScene(scene);
 
-    const before = e._debugGeoPack!.positions[1 * 4 + 0]!; // v1 solved X after initial pose
+      const before = e._debugGeoPack!.positions[1 * 4 + 0]!; // v1 solved X after initial pose
 
-    // New pose: bone 0 = translate(10, 0, 0), bone 1 = translate(4, 0, 0).
-    // v1 is 100% bone 1 → solved X = 4 (unchanged from before).
-    // v0 is 100% bone 0 → rest X = 0; new solved X = 10.
-    const newBones = new Float32Array([
-      ...translate4(10, 0, 0), // bone 0 → translate +10 in X
-      ...translate4(4, 0, 0),  // bone 1 → same as before
-    ]);
+      // New pose: bone 0 = translate(10, 0, 0), bone 1 = translate(4, 0, 0).
+      // v1 is 100% bone 1 -> solved X = 4 (unchanged from before).
+      // v0 is 100% bone 0 -> rest X = 0; new solved X = 10.
+      const newBones = new Float32Array([
+        ...translate4(10, 0, 0), // bone 0 -> translate +10 in X
+        ...translate4(4, 0, 0),  // bone 1 -> same as before
+      ]);
 
-    e.updatePrimitive?.('sk3', { bones: newBones });
+      e.updatePrimitive?.('sk3', { bones: newBones });
 
-    const after = e._debugGeoPack!.positions[0 * 4 + 0]!; // v0 solved X after re-pose
-    expect(after).toBeCloseTo(10); // re-solved: bone 0 now translates +10
-    expect(before).toBeCloseTo(4);  // v1 was bone-1-only = +4
+      const after = e._debugGeoPack!.positions[0 * 4 + 0]!; // v0 solved X after re-pose
+      expect(after).toBeCloseTo(10); // re-solved: bone 0 now translates +10
+      expect(before).toBeCloseTo(4);  // v1 was bone-1-only = +4
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('updatePrimitive("sk3") fields [bones]'),
+      )).toHaveLength(1);
 
-    e.dispose();
+      e.dispose();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

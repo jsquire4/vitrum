@@ -86,6 +86,10 @@ function uniqueMaterialSlotForPrimitive(geoPack: WorldSpaceMergeResult, primitiv
   return slot;
 }
 
+function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string): boolean {
+  return scene.emitters.some((e) => e.kind === 'mesh-area' && String(e.meshId) === primitiveId);
+}
+
 function materialSlotsByPrimitive(
   geoPack: WorldSpaceMergeResult,
 ): Map<string, Set<number>> {
@@ -184,6 +188,17 @@ export function tryFastPathMaterialMutation(
   if (!isMeshLikePrimitive(primitive)) return null;
   const slot = uniqueMaterialSlotForPrimitive(geoPack, primitiveId);
   if (slot == null || slot >= geoPack.materials.length) return null;
+
+  if (hasMeshAreaEmitterForPrimitive(nextScene, primitiveId)) {
+    const foldedMaterials = repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene);
+    return {
+      textures: withTextureReplacementsForGl(gl, current, {
+        materials: foldedMaterials.materials,
+      }),
+      geoPack: foldedMaterials.nextGeoPack,
+      deleteOldTextures: [current.materials],
+    };
+  }
 
   const nextMaterials = geoPack.materials.slice();
   nextMaterials[slot] = materialWithCastShadow(primitive);
