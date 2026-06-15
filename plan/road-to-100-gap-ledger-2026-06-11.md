@@ -1560,7 +1560,10 @@ Status:
   and accumulation reset, plus same-sized HDRI `updateEnvironment()` texel/CDF
   writes, environment metadata mutation, scene-state commit, and reset without
   falling through to `setScene()`.
-- pt-webgl2 fallback mutation behavior is covered as rebuild-style behavior.
+- pt-webgl2 now has focused coverage for native scalar material, emitter
+  (analytic plus mesh-area folded-material/mesh-light refresh), environment,
+  and resize mutations; transform/positions/topology/add/remove still use
+  rebuild-style behavior.
 - walkaround-hybrid now has a focused non-GPU seam test for transform, material,
   emitter, environment, lighting, and resize behavior.
 

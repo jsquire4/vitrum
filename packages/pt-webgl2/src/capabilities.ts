@@ -86,7 +86,7 @@ export function buildCapabilities(
         transform: 'fallback-rebuild',
         positions: 'fallback-rebuild',
         material: 'native',
-        emitter: 'fallback-rebuild',
+        emitter: 'native',
         topology: 'fallback-rebuild',
         addPrimitive: 'fallback-rebuild',
         removePrimitive: 'fallback-rebuild',

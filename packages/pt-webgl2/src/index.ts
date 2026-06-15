@@ -157,7 +157,15 @@ export interface PTEngineWebGL2Surface {
   /** @internal The retained single-root merged BVH pack (for tests/inspection). */
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
   /** @internal The retained scene texture summary (for tests/inspection). */
-  readonly _debugSceneTex: { envMap: boolean; envTotalSum: number; envWidth: number; envHeight: number; lightCount: number } | null;
+  readonly _debugSceneTex: {
+    envMap: boolean;
+    envTotalSum: number;
+    envWidth: number;
+    envHeight: number;
+    lightCount: number;
+    meshLightCount: number;
+    totalEmissiveArea: number;
+  } | null;
   /** Latest completed OIDN final-pass CPU result for `denoiser: 'oidn-final'`. */
   getLatestDenoised(): DenoisedFrame | null;
 }
@@ -353,7 +361,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   }
 
   /** Debug-only: presence/summary of the uploaded scene textures (env + lights). */
-  get _debugSceneTex(): { envMap: boolean; envTotalSum: number; envWidth: number; envHeight: number; lightCount: number } | null {
+  get _debugSceneTex(): {
+    envMap: boolean;
+    envTotalSum: number;
+    envWidth: number;
+    envHeight: number;
+    lightCount: number;
+    meshLightCount: number;
+    totalEmissiveArea: number;
+  } | null {
     const t = this.#sceneTextures;
     if (t == null) return null;
     return {
@@ -362,6 +378,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       envWidth: t.envWidth,
       envHeight: t.envHeight,
       lightCount: t.lightCount,
+      meshLightCount: t.meshLightCount,
+      totalEmissiveArea: t.totalEmissiveArea,
     };
   }
 

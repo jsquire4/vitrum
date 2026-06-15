@@ -50,6 +50,22 @@ function sceneWithEmitter(): Scene {
   };
 }
 
+function sceneWithMeshAreaEmitter(): Scene {
+  return {
+    primitives: [tri('panel', 0)],
+    emitters: [
+      {
+        kind: 'mesh-area',
+        id: 'panel-light',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 2,
+      },
+    ],
+    environment: { kind: 'none' },
+  };
+}
+
 function hdriScene(): Scene {
   return {
     primitives: [tri('tri', 0)],
@@ -108,7 +124,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     });
     expect(c.supportsAddRemovePrimitive).toBe(true);
     expect(c.supportDetails?.mutations.material).toBe('native');
-    expect(c.supportDetails?.mutations.emitter).toBe('fallback-rebuild');
+    expect(c.supportDetails?.mutations.emitter).toBe('native');
     expect(c.supportDetails?.mutations.environment).toBe('native');
     expect(c.supportDetails?.mutations.positions).toBe('fallback-rebuild');
     expect(c.supportDetails?.mutations.resize).toBe('native');
@@ -448,6 +464,32 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugSceneTex?.envMap).toBe(true);
     expect(e._debugSceneTex?.envTotalSum).toBeGreaterThan(0);
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+  });
+
+  it('updateEmitter mesh-area patches folded material and mesh-light textures without rebuilding BVH geometry', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene(sceneWithMeshAreaEmitter());
+    const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+    const beforePositions = e._debugGeoPack?.positions;
+    expect(e._debugSceneTex?.meshLightCount).toBe(2);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(2);
+
+    e.updateEmitter?.('panel-light', { color: [0.25, 0.5, 1], intensity: 4 });
+    const scene = e.getScene?.();
+    expect(scene?.emitters[0]?.kind).toBe('mesh-area');
+    if (scene?.emitters[0]?.kind === 'mesh-area') {
+      expect(scene.emitters[0].color).toEqual([0.25, 0.5, 1]);
+      expect(scene.emitters[0].intensity).toBe(4);
+    }
+
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([0.25, 0.5, 1]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(4);
+    expect(e._debugSceneTex?.meshLightCount).toBe(2);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
   });
 
   // Contract-honesty: EngineOptions.denoiser must not be silently ignored.

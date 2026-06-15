@@ -3,6 +3,7 @@ import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { packMeshAreaLights } from './meshAreaLights.js';
+import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 import {
@@ -84,6 +85,57 @@ function uniqueMaterialSlotForPrimitive(geoPack: WorldSpaceMergeResult, primitiv
   return slot;
 }
 
+function materialSlotsByPrimitive(
+  geoPack: WorldSpaceMergeResult,
+): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  for (const range of geoPack.meshVertexRanges) {
+    let slots = out.get(range.name);
+    if (slots == null) {
+      slots = new Set<number>();
+      out.set(range.name, slots);
+    }
+    for (let tri = range.triStart; tri < range.triStart + range.triCount; tri += 1) {
+      slots.add(geoPack.mergedTriMaterialId[tri] ?? 0);
+    }
+  }
+  return out;
+}
+
+function repackMeshAreaFoldedMaterials(
+  gl: WebGL2RenderingContext,
+  current: UploadedSceneTextures,
+  geoPack: WorldSpaceMergeResult,
+  nextScene: Scene,
+): { materials: WebGLTexture; nextGeoPack: WorldSpaceMergeResult } {
+  const foldedScene = foldMeshAreaEmittersIntoMaterials(nextScene);
+  const foldedMaterialsByPrimitive = new Map<string, MaterialSpec>();
+  for (const primitive of foldedScene.primitives) {
+    if (isMeshLikePrimitive(primitive)) {
+      foldedMaterialsByPrimitive.set(String(primitive.id), materialWithCastShadow(primitive));
+    }
+  }
+
+  const nextMaterials = geoPack.materials.slice();
+  for (const [primitiveId, slots] of materialSlotsByPrimitive(geoPack)) {
+    const material = foldedMaterialsByPrimitive.get(primitiveId);
+    if (material == null) continue;
+    for (const slot of slots) {
+      if (slot < nextMaterials.length) nextMaterials[slot] = material;
+    }
+  }
+
+  const data = packMaterialsTexture(
+    nextMaterials,
+    current.materialLayerMap ?? undefined,
+    { vertexColorMaterialIds: current.vertexColorMaterialIds },
+  );
+  return {
+    materials: uploadRgba32f(gl, data.data, data.dim, 'scene materials'),
+    nextGeoPack: { ...geoPack, materials: nextMaterials },
+  };
+}
+
 function withTextureReplacementsForGl(
   gl: WebGL2RenderingContext,
   current: UploadedSceneTextures,
@@ -156,22 +208,31 @@ export function tryFastPathEmitterMutation(
 ): WebGl2MutationSwap | null {
   if (current == null || geoPack == null) return null;
   const changed = nextScene.emitters.find((e) => String(e.id) === emitterId);
-  if (changed?.kind === 'mesh-area') return null;
+  const isMeshAreaMutation = changed?.kind === 'mesh-area';
   const lightsData = packLightsTexture(nextScene.emitters);
   const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
   const meshLightsData = packMeshAreaLights(nextScene, geoPack);
   const meshLights = meshLightsData.data != null
     ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')
     : null;
+  const foldedMaterials = isMeshAreaMutation
+    ? repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene)
+    : null;
   return {
     textures: withTextureReplacementsForGl(gl, current, {
+      ...(foldedMaterials != null ? { materials: foldedMaterials.materials } : {}),
       lights,
       lightCount: lightsData.lightCount,
       meshLights,
       meshLightCount: meshLightsData.triLightCount,
       totalEmissiveArea: meshLightsData.totalEmissiveArea,
     }),
-    deleteOldTextures: [current.lights, current.meshLights],
+    ...(foldedMaterials != null ? { geoPack: foldedMaterials.nextGeoPack } : {}),
+    deleteOldTextures: [
+      current.lights,
+      current.meshLights,
+      ...(foldedMaterials != null ? [current.materials] : []),
+    ],
   };
 }
 
