@@ -293,9 +293,10 @@ function _parseSpecularGlossinessExt(
     warnings.push(
       `[vitrum/gltf-adapter] Material "${materialName}" uses ` +
         'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture. The RGB ' +
-        'specular map is imported as specularColorMap, but glossiness-in-alpha ' +
-        'cannot be inverted into a roughnessMap without a texture bake, so the ' +
-        'scalar glossinessFactor is used for roughness.',
+        'specular map is imported as specularColorMap. Raw import uses scalar ' +
+        'glossinessFactor for roughness until loadGltfAndDecodeTextures() or ' +
+        'decodeSceneTextures(target:"cpu-linear") can bake glossiness-in-alpha ' +
+        'into a roughnessMap.',
     );
   }
 

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF spec-gloss texture alpha, 2026-06-15)
+
+- **`@vitrum/gltf-adapter` archived specular-glossiness texture bake:** `loadGltfAndDecodeTextures()` / `decodeSceneTextures(target:'cpu-linear')` now synthesize a linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` alpha using `roughness = 1 - glossinessFactor * alpha`, preserving texCoord, `KHR_texture_transform`, and sampler wrap metadata. Pre-decode planning still reports the legacy extension as approximate because a host pixel decoder is required for the bake.
+
 ### Fixed (skinned morph tangent consumption, 2026-06-15)
 
 - **`@vitrum/core` + skinned backends:** `solveSkin()` now returns a solved `tangents` stream when rest tangents exist, blends glTF `morphTargetTangents` before skinning, and preserves base tangent handedness. `@vitrum/pt-webgpu` carries those solved tangents through initial scene packing and bones/morph-weight mutation fast paths, while `@vitrum/walkaround-hybrid` routes tangent-bearing skinned meshes through the CPU skin fallback until its GPU skin kernel grows tangent writes. glTF compatibility remains `approximate` for GPU-native tangent skinning, not because tangent deltas are dropped.

@@ -166,6 +166,54 @@ function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function makeInlineSpecGlossTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  total.set(new Uint8Array(positions), 0);
+  total.set(imageBytes, positions.byteLength);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        extensions: {
+          KHR_materials_pbrSpecularGlossiness: {
+            diffuseFactor: [1, 1, 1, 1],
+            specularFactor: [1, 1, 1],
+            glossinessFactor: 0.5,
+            specularGlossinessTexture: {
+              index: 0,
+              texCoord: 0,
+              extensions: {
+                KHR_texture_transform: {
+                  texCoord: 1,
+                  offset: [0.25, 0.5],
+                  scale: [2, 3],
+                  rotation: 0.125,
+                },
+              },
+            },
+          },
+        },
+      }],
+      textures: [{ source: 0, sampler: 0 }],
+      samplers: [{ wrapS: 33071, wrapT: 33648 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [{ byteLength: total.byteLength }],
+    },
+    buffers: new Map([[0, total.buffer]]),
+  };
+}
+
 describe('loadGltfAsset', () => {
   it('fetches JSON glTF, external .bin buffers, and external image bytes', async () => {
     const gltf = makeExternalTexturedGltf();
@@ -382,9 +430,134 @@ describe('loadGltfAsset', () => {
     expect(handle.data[2]).toBeCloseTo(1);
     expect(handle.data[3]).toBeCloseTo(128 / 255);
   });
+
+  it('bakes spec-gloss alpha into a CPU-linear roughnessMap when decoding textures', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => {
+      expect(context).toMatchObject({
+        materialField: 'specularColorMap',
+        path: 'scene.primitives[0].material.specularColorMap',
+        colorSpace: 'srgb',
+      });
+      return {
+        width: 2,
+        height: 1,
+        data: new Uint8Array([
+          255, 0, 0, 128,
+          0, 255, 0, 64,
+        ]),
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: context.colorSpace,
+      };
+    });
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(2);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeWarnings).toEqual([]);
+    expect(result.textureDecodeReport.entries.map((entry) => entry.materialField).sort()).toEqual([
+      'roughnessMap',
+      'specularColorMap',
+    ]);
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const specular = primitive.material.specularColorMap as TextureRef;
+    const roughness = primitive.material.roughnessMap as TextureRef;
+    expect(roughness).toBeDefined();
+    expect(roughness.handle).not.toBe(specular.handle);
+    expect(roughness.texCoord).toBe(1);
+    expect(roughness.transform).toEqual({
+      offset: [0.25, 0.5],
+      scale: [2, 3],
+      rotation: 0.125,
+    });
+    expect(roughness.wrapS).toBe('clamp-to-edge');
+    expect(roughness.wrapT).toBe('mirrored-repeat');
+
+    const handle = roughness.handle as { width: number; height: number; data: Float32Array; __vitrum_hint__: unknown };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    const first = 1 - 0.5 * (128 / 255);
+    const second = 1 - 0.5 * (64 / 255);
+    expect(Array.from(handle.data.slice(0, 4))).toEqual([
+      expect.closeTo(first),
+      expect.closeTo(first),
+      expect.closeTo(first),
+      1,
+    ]);
+    expect(Array.from(handle.data.slice(4, 8))).toEqual([
+      expect.closeTo(second),
+      expect.closeTo(second),
+      expect.closeTo(second),
+      1,
+    ]);
+  });
 });
 
 describe('decodeSceneTextures', () => {
+  it('bakes spec-gloss roughness from already CPU-readable pixel handles', async () => {
+    const pixelHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'spec-gloss-pixel-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.75,
+            metallic: 0,
+            specularColorMap: {
+              handle: pixelHandle,
+              texCoord: 1,
+              wrapS: 'clamp-to-edge',
+            },
+            extensions: {
+              KHR_materials_pbrSpecularGlossiness: {
+                glossinessFactor: 0.25,
+                specularGlossinessTexture: { index: 0 },
+              },
+            },
+          },
+        } as MeshPrimitive,
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
+
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.diagnostics).toEqual([]);
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const roughness = material.roughnessMap as TextureRef;
+    expect(roughness.texCoord).toBe(1);
+    expect(roughness.wrapS).toBe('clamp-to-edge');
+    const handle = roughness.handle as { data: Float32Array };
+    const expected = 1 - 0.25 * (128 / 255);
+    expect(handle.data[0]).toBeCloseTo(expected);
+    expect(handle.data[1]).toBeCloseTo(expected);
+    expect(handle.data[2]).toBeCloseTo(expected);
+    expect(handle.data[3]).toBe(1);
+  });
+
   it('reports decoded lightMap handles as walkaround-ready', async () => {
     const scene: Scene = {
       primitives: [

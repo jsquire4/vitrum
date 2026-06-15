@@ -102,7 +102,8 @@ export type DecodeSceneTextureDiagnosticCode =
   | 'unsupported-handle-kind'
   | 'raw-image-decoder-missing'
   | 'decoded-texture-exceeds-max-size'
-  | 'decoded-texture-npot-repeat-wrap';
+  | 'decoded-texture-npot-repeat-wrap'
+  | 'spec-gloss-alpha-bake-unavailable';
 
 export interface DecodeSceneTextureDiagnostic {
   readonly severity: 'warning';
@@ -145,6 +146,8 @@ interface DecodedTextureCacheEntry {
   readonly originalWidth: number;
   readonly originalHeight: number;
 }
+
+type SpecGlossRoughnessBakeCache = Map<unknown, Map<number, GltfCpuLinearTextureHandle>>;
 
 const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
   'baseColorMap',
@@ -253,6 +256,7 @@ export async function decodeSceneTextures(
   const warnings: string[] = [];
   const diagnostics: DecodeSceneTextureDiagnostic[] = [];
   const decoded = new Map<unknown, Map<GltfTextureColorSpace, DecodedTextureCacheEntry>>();
+  const specGlossBakes: SpecGlossRoughnessBakeCache = new Map();
   let decodedCount = 0;
   let unchangedCount = 0;
 
@@ -286,6 +290,18 @@ export async function decodeSceneTextures(
       decodedCount += 1;
       if (nextMaterial == null) nextMaterial = { ...material };
       (nextMaterial as unknown as Record<string, unknown>)[field] = nextRef;
+    }
+    const baked = maybeBakeSpecGlossRoughnessMap(nextMaterial ?? material, {
+      primitiveId: String(primitive.id),
+      primitiveIndex,
+      options,
+      diagnostic,
+      specGlossBakes,
+    });
+    if (baked !== null) {
+      if (nextMaterial == null) nextMaterial = { ...material };
+      (nextMaterial as unknown as Record<string, unknown>).roughnessMap = baked;
+      decodedCount += 1;
     }
     return nextMaterial == null ? primitive : { ...primitive, material: nextMaterial };
   }));
@@ -396,6 +412,126 @@ async function decodeTextureRef(
   }
   emitDecodedTextureDiagnostics(entry, ref, context);
   return { ...ref, handle: entry.handle };
+}
+
+function maybeBakeSpecGlossRoughnessMap(
+  material: MaterialSpec,
+  context: {
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+    readonly options: DecodeSceneTexturesOptions;
+    readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+    readonly specGlossBakes: SpecGlossRoughnessBakeCache;
+  },
+): TextureRef | null {
+  if (context.options.target !== 'cpu-linear') return null;
+  const specGloss = material.extensions?.KHR_materials_pbrSpecularGlossiness;
+  if (!isRecord(specGloss) || !isRecord(specGloss.specularGlossinessTexture)) return null;
+  const sourceRef = material.specularColorMap;
+  if (sourceRef == null) return null;
+  const glossinessFactor = clamp01Number(specGloss.glossinessFactor, 1);
+  const sourceHandle = cpuLinearTextureHandleForSpecGlossBake(sourceRef.handle);
+  if (sourceHandle !== null) {
+    return {
+      ...sourceRef,
+      handle: getOrBakeSpecGlossRoughnessHandle(
+        sourceRef.handle,
+        sourceHandle,
+        glossinessFactor,
+        context.specGlossBakes,
+      ),
+    };
+  }
+
+  context.diagnostic({
+    severity: 'warning',
+    code: 'spec-gloss-alpha-bake-unavailable',
+    path: `scene.primitives[${context.primitiveIndex}].material.roughnessMap`,
+    materialField: 'roughnessMap',
+    primitiveId: context.primitiveId,
+    primitiveIndex: context.primitiveIndex,
+    handleKind: classifyTextureHandle(sourceRef.handle),
+    message:
+      `[vitrum/gltf-adapter] scene.primitives[${context.primitiveIndex}].material uses ` +
+      'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture alpha for glossiness, ' +
+      'but the texture was not decoded to CPU-linear pixels, so no roughnessMap could be baked. ' +
+      'Supply decodePixels through decodeSceneTextures() or loadGltfAndDecodeTextures() to derive roughness per pixel.',
+  });
+  return null;
+}
+
+function getOrBakeSpecGlossRoughnessHandle(
+  cacheKey: unknown,
+  source: GltfCpuLinearTextureHandle,
+  glossinessFactor: number,
+  cache: SpecGlossRoughnessBakeCache,
+): GltfCpuLinearTextureHandle {
+  let perSource = cache.get(cacheKey);
+  if (perSource == null) {
+    perSource = new Map();
+    cache.set(cacheKey, perSource);
+  }
+  const key = Math.round(glossinessFactor * 1_000_000);
+  const cached = perSource.get(key);
+  if (cached !== undefined) return cached;
+
+  const data = new Float32Array(source.width * source.height * 4);
+  for (let p = 0; p < source.width * source.height; p += 1) {
+    const alpha = clamp01Number(source.data[p * 4 + 3], 1);
+    const roughness = 1 - clamp01Number(glossinessFactor * alpha, 1);
+    const dst = p * 4;
+    data[dst] = roughness;
+    data[dst + 1] = roughness;
+    data[dst + 2] = roughness;
+    data[dst + 3] = 1;
+  }
+
+  const baked: GltfCpuLinearTextureHandle = {
+    width: source.width,
+    height: source.height,
+    data,
+    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+  };
+  perSource.set(key, baked);
+  return baked;
+}
+
+function cpuLinearTextureHandleForSpecGlossBake(handle: unknown): GltfCpuLinearTextureHandle | null {
+  if (isCpuLinearTextureHandle(handle)) return handle;
+  const pixels = decodedPixelsFromCpuReadableHandle(handle);
+  return pixels === null ? null : normalizeDecodedPixels(pixels, 'srgb');
+}
+
+function decodedPixelsFromCpuReadableHandle(handle: unknown): GltfDecodedTexturePixels | null {
+  if (isRecord(handle)) {
+    const direct = decodedPixelsFromRecord(handle);
+    if (direct !== null) return direct;
+    if (isRecord(handle.image)) return decodedPixelsFromRecord(handle.image, handle);
+  }
+  return null;
+}
+
+function decodedPixelsFromRecord(
+  record: Record<string, unknown>,
+  metadata: Record<string, unknown> = record,
+): GltfDecodedTexturePixels | null {
+  if (typeof record.width !== 'number' || typeof record.height !== 'number' || !isArrayLikeData(record.data)) {
+    return null;
+  }
+  const base = {
+    width: record.width,
+    height: record.height,
+    data: record.data as ArrayLike<number>,
+  };
+  const channels = metadata.channels;
+  const dataType = metadata.dataType;
+  const colorSpace = metadata.colorSpace;
+  return {
+    ...base,
+    ...(channels === 1 || channels === 2 || channels === 3 || channels === 4 ? { channels } : {}),
+    ...(dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32' ? { dataType } : {}),
+    ...(colorSpace === 'srgb' || colorSpace === 'linear' ? { colorSpace } : {}),
+  };
 }
 
 function emitDecodedTextureDiagnostics(
@@ -544,6 +680,28 @@ function isSinglePowerOfTwo(value: number): boolean {
 
 function usesRepeatWrap(ref: TextureRef): boolean {
   return (ref.wrapS ?? 'repeat') !== 'clamp-to-edge' || (ref.wrapT ?? 'repeat') !== 'clamp-to-edge';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isCpuLinearTextureHandle(handle: unknown): handle is GltfCpuLinearTextureHandle {
+  if (!isRecord(handle)) return false;
+  const hint = handle.__vitrum_hint__;
+  return typeof handle.width === 'number' &&
+    typeof handle.height === 'number' &&
+    handle.data instanceof Float32Array &&
+    isRecord(hint) &&
+    hint.channels === 4 &&
+    hint.dataType === 'float32' &&
+    hint.colorSpace === 'linear';
+}
+
+function clamp01Number(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : fallback;
 }
 
 function decodeChannel(value: number, dataType: 'uint8' | 'uint16' | 'float32'): number {

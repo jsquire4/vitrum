@@ -150,6 +150,10 @@ asset's feature report.
 | `KHR_materials_specular.specularColorFactor` | `specularColor` |
 | `KHR_materials_specular.specularTexture` | `specularIntensityMap` |
 | `KHR_materials_specular.specularColorTexture` | `specularColorMap` |
+| `KHR_materials_pbrSpecularGlossiness.diffuseFactor` | `baseColor` + `opacity` (legacy conversion) |
+| `KHR_materials_pbrSpecularGlossiness.specularFactor` | `specularColor` |
+| `KHR_materials_pbrSpecularGlossiness.glossinessFactor` | `roughness = 1 - glossinessFactor` |
+| `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` | `specularColorMap`; `loadGltfAndDecodeTextures()` / `decodeSceneTextures(target:'cpu-linear')` can bake alpha glossiness into `roughnessMap` |
 | `KHR_materials_sheen.sheenColorFactor` | `sheenColor` |
 | `KHR_materials_sheen.sheenRoughnessFactor` | `sheenRoughness` |
 | `KHR_materials_sheen.sheenColorTexture` | `sheenColorMap` |

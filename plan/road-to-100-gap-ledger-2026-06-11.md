@@ -264,10 +264,10 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   `specularFactor`, and `glossinessFactor` are now converted approximately to
   `baseColor`, `specularColor`, `roughness = 1 - glossiness`, and
   `metallic = 0`, with raw extension data preserved. Its
-  `specularGlossinessTexture` RGB path maps to `specularColorMap`; glossiness
-  in alpha remains a warned, structured approximate downgrade because the
-  current `TextureRef` contract cannot invert/bake that channel into
-  `roughnessMap`. The glTF adapter suite is now 136 tests.
+  `specularGlossinessTexture` RGB path maps to `specularColorMap`; raw import
+  remains a warned, structured approximate downgrade until pixels are decoded,
+  and the CPU-linear texture decode bridge now bakes alpha glossiness into a
+  generated linear `roughnessMap` (RGB replicated, G-channel compatible).
 - The seventh arbitrary-glTF primitive-policy slice landed in
   `@vitrum/gltf-adapter`: `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP`
   now have a focused policy fixture proving deterministic skip warnings and
@@ -1246,8 +1246,10 @@ Evidence:
   data is preserved for hosts that need exact legacy semantics.
 - Archived `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` now
   emits a structured approximate compatibility issue for glossiness-in-alpha
-  because the current adapter imports RGB as `specularColorMap` but does not
-  bake alpha into `roughnessMap`.
+  at pre-decode planning time. `loadGltfAndDecodeTextures()` /
+  `decodeSceneTextures(target:'cpu-linear')` close the pixel-data path by
+  baking `roughnessMap = 1 - glossinessFactor * alpha` from the decoded
+  `specularColorMap` handle.
 - Required-extension policy now accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness`; scalar-only spec-gloss conversion is
   compatibility-scored as approximate even without a texture.
@@ -1268,9 +1270,9 @@ Evidence:
 Closure:
 - Decide per extension: implement, require host hook, translate approximately,
   or reject with a structured compatibility error.
-- High-priority remaining implementations: optional texture-bake parity for
+- Completed follow-up: CPU-linear texture-bake parity for
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
-  glossiness-in-alpha if exact legacy parity is required.
+  glossiness-in-alpha now exists when the host supplies `decodePixels`.
 - Add core fields only when at least one backend consumes them or the
   compatibility report can honestly say they are imported-but-unsupported.
 - Continue adding real-world sample sweeps for supported/approximate required
