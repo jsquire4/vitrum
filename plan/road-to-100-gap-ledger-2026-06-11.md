@@ -813,10 +813,11 @@ engineContract.test.ts):
   - pt-webgpu `approximate`: per-light lanes (directional sign-encoded
     angularDiameter; point/spot extra .z; rect/disc center .w; mesh-area
     radiance .w) consumed by the default kernel/kernelLite NEE loops + the
-    connect.wgsl BSDF-MIS area connections; off-default integrators (BDPT
-    light subpath, ReSTIR-PT, MNEE/SPPM caustic legs) and in-medium
-    directional NEE still shadow-test; lite directional rides the flag-less
-    UBO mirror.
+    connect.wgsl BSDF-MIS area connections. ReSTIR-PT suffix direct lighting
+    now also consumes the point/spot/rect/disc/mesh packed lanes. Remaining
+    residuals: the flag-less directional UBO mirror in ReSTIR-PT/in-medium NEE,
+    BDPT light subpath, and MNEE/SPPM caustic legs still shadow-test; lite
+    directional rides the same flag-less mirror.
   - walkaround-hybrid `native` (2026-06-13 follow-up): analytic point/spot
     payloads pack binding-13 lane `[13]`; shared `EmitterTri` packs lane `[19]`;
     ReSTIR-DI candidate visibility + shade visibility gate on
@@ -832,9 +833,9 @@ engineContract.test.ts):
   masked-traversal derivation pins (bvhCastShadowMask.test.ts), WGSL SHA
   re-pins (intended; default lanes pack 0.0 → flag-less scenes behaviorally
   identical), ledger exhaustiveness pin in engineContract.test.ts.
-- Remaining optional future work: pt-webgpu off-default-integrator coverage and
-  pt-webgl2 forward-emissive residual policy/coverage — promote rows with
-  renderer A/B evidence when implemented.
+- Remaining optional future work: pt-webgpu directional/off-default-integrator
+  coverage and pt-webgl2 forward-emissive residual policy/coverage — promote
+  rows with renderer A/B evidence when implemented.
 
 ### WEBGL2-02 - CLOSED 2026-06-14 - pt-webgl2 procedural sky is approximate, not unsupported
 

@@ -308,6 +308,7 @@ fn rptDirectAtVertex(
   for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
     let rb = ri * 4u;
     let rpos = rectAreaLights[rb].xyz;
+    let rectShadowDisabled = rectAreaLights[rb].w > 0.5;
     let ru = rectAreaLights[rb + 1u].xyz;
     let rv = rectAreaLights[rb + 2u].xyz;
     let rshapeR = rectAreaLights[rb + 3u];
@@ -344,7 +345,7 @@ fn rptDirectAtVertex(
       if (cosLight > 0.0) {
         let lightPdf = dist2 / max(cosLight * area, 1e-6);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
           let brdf = evaluateBrdfFull(
             baseColor, roughness, metallic, normal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
@@ -366,6 +367,7 @@ fn rptDirectAtVertex(
     let ptExtra = pointLights[base + 2u];
     let ptMaxDist = ptExtra.x;
     let ptDecay   = ptExtra.y;
+    let ptShadowDisabled = ptExtra.z > 0.5;
     let toPoint = lp - pos;
     let dist2 = max(dot(toPoint, toPoint), 1e-5);
     let dist = sqrt(dist2);
@@ -374,7 +376,7 @@ fn rptDirectAtVertex(
     let nDotL = max(0.0, dot(normal, wi));
     if (nDotL > 0.0) {
       let shadowRay = Ray(pos + normal * 1e-3, wi);
-      if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+      if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
         let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
         let brdf = evaluateBrdfFull(
           baseColor, roughness, metallic, normal, wo, wi,
@@ -401,6 +403,7 @@ fn rptDirectAtVertex(
     let srad = sradW.rgb;
     let spMaxDist = spExtra.x;
     let spDecay   = spExtra.y;
+    let spShadowDisabled = spExtra.z > 0.5;
     let toSpot = spos - pos;
     let dist2 = max(dot(toSpot, toSpot), 1e-5);
     let dist = sqrt(dist2);
@@ -411,7 +414,7 @@ fn rptDirectAtVertex(
       let nDotL = max(0.0, dot(normal, wi));
       if (nDotL > 0.0) {
         let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
           let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
           let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spDecay), spDecay > 0.01);
           let brdf = evaluateBrdfFull(

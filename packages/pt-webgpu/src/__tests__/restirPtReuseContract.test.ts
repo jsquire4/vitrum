@@ -215,6 +215,16 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
+  it('honors packed emitter castShadow flags in suffix direct lighting where those lanes are available', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let rectShadowDisabled = rectAreaLights[rb].w > 0.5;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let ptShadowDisabled = ptExtra.z > 0.5;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let spShadowDisabled = spExtra.z > 0.5;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
+  });
+
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');

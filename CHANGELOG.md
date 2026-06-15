@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu ReSTIR-PT emitter shadows, 2026-06-15)
+
+- **`@vitrum/pt-webgpu` ReSTIR-PT suffix direct-lighting `castShadow:false` parity:** the ReSTIR-PT producer now consumes packed point, spot, rect/disc, and mesh-area emitter shadow-disable lanes before firing suffix direct-lighting visibility rays. The ledger remains `approximate` because the flag-less directional UBO mirror, BDPT light subpath, and MNEE/SPPM caustic legs still shadow-test.
+
 ### Fixed (pt-webgl2 mesh-area emitter shadows, 2026-06-15)
 
 - **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. The promise ledger remains `approximate` for the separate forward emissive-hit residual.
