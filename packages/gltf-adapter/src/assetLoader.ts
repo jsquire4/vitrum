@@ -108,7 +108,9 @@ export async function loadGltfAsset(
   await resolveExternalBuffers(parsed.gltf, buffers, parsed.baseUri, options);
   const imageBytes = await resolveExternalImages(parsed.gltf, parsed.baseUri, options);
 
-  const featureReport = analyzeGltfAsset(parsed.gltf);
+  const featureReport = analyzeGltfAsset(parsed.gltf, {
+    ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
+  });
   const backendCompatibility = rankGltfBackends(featureReport, options.backendPolicy ?? 'fidelity');
   const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
   const sceneOptions: GltfToSceneOptions = {

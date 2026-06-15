@@ -1294,7 +1294,9 @@ Evidence:
   fallback. Optional alternates with a base fallback remain compatibility-clean
   until the host opts in. `GltfFeatureReport.extensions.textureSourceUses[]`
   now records the exact texture index, alternate image index, source path,
-  fallback/required status, MIME type, and whether that use requires a hook.
+  selected/fallback/required status, MIME type, and whether that use requires a
+  hook, and `loadGltfAsset()` passes the selected `textureSourceExtensions` into
+  analysis before ranking/enforcement.
 - `KHR_materials_variants` now supports a `materialVariant` selection option and
   falls back to base materials when no active variant is selected.
 - `KHR_materials_unlit` now maps to the core `MaterialSpec.shadingModel`

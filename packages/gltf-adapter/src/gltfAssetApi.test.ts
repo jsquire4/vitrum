@@ -1400,6 +1400,46 @@ describe('loadGltfForEngine', () => {
     });
   });
 
+  it('rejects selected optional texture-source extensions without an image decode hook', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { EXT_texture_webp: { source: 0 } },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      textureSourceExtensions: ['EXT_texture_webp'],
+      createEngine,
+    })).rejects.toThrow('extension:EXT_texture_webp=requires-hook at textures[0].extensions.EXT_texture_webp');
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('accepts selected optional texture-source extensions with an explicit image decode hook', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { EXT_texture_webp: { source: 0 } },
+    };
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      textureSourceExtensions: ['EXT_texture_webp'],
+      decodeImage: async () => ({ kind: 'decoded-webp' }),
+      createEngine: async () => ({ setScene: vi.fn() }),
+    })).resolves.toMatchObject({
+      backend: 'pt-webgl2',
+      attached: true,
+    });
+  });
+
   it('does not treat an explicitly enabled texture-source extension as a missing host hook', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.extensionsUsed = ['KHR_texture_basisu'];

@@ -268,6 +268,7 @@ describe('glTF common extension policy', () => {
         textureIndex: 0,
         sourceImageIndex: 1,
         path: 'textures[0].extensions.KHR_texture_basisu',
+        selected: false,
         required: true,
         hasBaseSource: true,
         requiresHook: true,
@@ -319,6 +320,7 @@ describe('glTF common extension policy', () => {
         textureIndex: 0,
         sourceImageIndex: 1,
         path: 'textures[0].extensions.EXT_texture_webp',
+        selected: false,
         required: false,
         hasBaseSource: true,
         requiresHook: false,
@@ -330,6 +332,32 @@ describe('glTF common extension policy', () => {
       category: 'extension',
       name: 'EXT_texture_webp',
     }));
+
+    const selectedReport = analyzeGltfAsset(gltf, { textureSourceExtensions: ['EXT_texture_webp'] });
+    expect(selectedReport.extensions.requiresHook).toContain('EXT_texture_webp');
+    expect(selectedReport.extensions.textureSourceUses).toEqual([
+      {
+        extension: 'EXT_texture_webp',
+        textureIndex: 0,
+        sourceImageIndex: 1,
+        path: 'textures[0].extensions.EXT_texture_webp',
+        selected: true,
+        required: false,
+        hasBaseSource: true,
+        requiresHook: true,
+        mimeType: 'image/webp',
+      },
+    ]);
+    expect(evaluateGltfBackendCompatibility(selectedReport, 'pt-webgl2').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'extension',
+          name: 'EXT_texture_webp',
+          support: 'requires-hook',
+          path: 'textures[0].extensions.EXT_texture_webp',
+        }),
+      ]),
+    );
   });
 
   it('requires a hook for an optional texture-source extension when no base source fallback exists', () => {

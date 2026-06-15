@@ -48,6 +48,7 @@ export interface GltfTextureSourceExtensionUse {
   readonly textureIndex: number;
   readonly sourceImageIndex: number;
   readonly path: string;
+  readonly selected: boolean;
   readonly required: boolean;
   readonly hasBaseSource: boolean;
   readonly requiresHook: boolean;
@@ -166,6 +167,10 @@ export interface GltfBackendCompatibility {
 export type GltfBackendProfileId = BackendId | 'pt-webgpu-lite';
 export type GltfBackendTraceTier = 'full' | 'lite';
 export type GltfBackendPolicy = 'fidelity' | 'realtime' | 'strict' | 'best-effort';
+
+export interface AnalyzeGltfAssetOptions {
+  readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
+}
 
 const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_draco_mesh_compression',
@@ -319,8 +324,12 @@ function requiresHookIssuePath(report: GltfFeatureReport, ext: string): string {
   ) ?? fallback;
 }
 
-export function analyzeGltfAsset(gltf: GltfJson): GltfFeatureReport {
-  const extensions = analyzeExtensions(gltf);
+export function analyzeGltfAsset(
+  gltf: GltfJson,
+  options: AnalyzeGltfAssetOptions = {},
+): GltfFeatureReport {
+  const selectedTextureSourceExtensions = new Set<string>(options.textureSourceExtensions ?? []);
+  const extensions = analyzeExtensions(gltf, selectedTextureSourceExtensions);
   const resources = analyzeResources(gltf);
   const primitives = analyzePrimitives(gltf);
   const materials = analyzeMaterials(gltf);
@@ -616,7 +625,10 @@ function samplerPolicySupport(
   return 'native';
 }
 
-function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
+function analyzeExtensions(
+  gltf: GltfJson,
+  selectedTextureSourceExtensions: ReadonlySet<string>,
+): GltfExtensionReport {
   const used = sorted(gltf.extensionsUsed ?? []);
   const required = sorted(gltf.extensionsRequired ?? []);
   const all = new Set([...used, ...required]);
@@ -631,7 +643,7 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
   const unsupportedRequired: string[] = [];
 
   for (const ext of sorted(all)) {
-    if (extensionRequiresHostHook(gltf, ext, required)) requiresHook.push(ext);
+    if (extensionRequiresHostHook(gltf, ext, required, selectedTextureSourceExtensions)) requiresHook.push(ext);
     if (REQUIRED_EXTENSION_SUPPORT.has(ext)) {
       supported.push(ext);
       continue;
@@ -649,7 +661,7 @@ function analyzeExtensions(gltf: GltfJson): GltfExtensionReport {
     requiresHook: sorted(requiresHook),
     unsupportedOptional: sorted(unsupportedOptional),
     unsupportedRequired: sorted(unsupportedRequired),
-    textureSourceUses: collectTextureSourceExtensionUses(gltf, required),
+    textureSourceUses: collectTextureSourceExtensionUses(gltf, required, selectedTextureSourceExtensions),
     sourcePaths: sourcePathRecord(sourcePaths),
   };
 }
@@ -658,6 +670,7 @@ function extensionRequiresHostHook(
   gltf: GltfJson,
   ext: string,
   required: readonly string[],
+  selectedTextureSourceExtensions: ReadonlySet<string>,
 ): boolean {
   if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
   if (ext === 'EXT_meshopt_compression') {
@@ -670,6 +683,11 @@ function extensionRequiresHostHook(
   // available image source for at least one texture; otherwise the loader uses
   // the base `texture.source` fallback until the host opts into the extension.
   if (required.includes(ext)) return true;
+  if (selectedTextureSourceExtensions.has(ext)) {
+    return (gltf.textures ?? []).some((texture) =>
+      textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
+    );
+  }
   return (gltf.textures ?? []).some((texture) =>
     texture.source === undefined &&
     textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
@@ -705,6 +723,7 @@ function textureSourceExtensionHasImageSource(value: unknown): boolean {
 function collectTextureSourceExtensionUses(
   gltf: GltfJson,
   required: readonly string[],
+  selectedTextureSourceExtensions: ReadonlySet<string>,
 ): readonly GltfTextureSourceExtensionUse[] {
   const uses: GltfTextureSourceExtensionUse[] = [];
   for (const [textureIndex, texture] of (gltf.textures ?? []).entries()) {
@@ -712,15 +731,17 @@ function collectTextureSourceExtensionUses(
       const source = texture.extensions?.[extension]?.source;
       if (typeof source !== 'number') continue;
       const requiredUse = required.includes(extension);
+      const selectedUse = selectedTextureSourceExtensions.has(extension);
       const hasBaseSource = texture.source !== undefined;
       uses.push({
         extension,
         textureIndex,
         sourceImageIndex: source,
         path: `textures[${textureIndex}].extensions.${extension}`,
+        selected: selectedUse,
         required: requiredUse,
         hasBaseSource,
-        requiresHook: requiredUse || !hasBaseSource,
+        requiresHook: requiredUse || selectedUse || !hasBaseSource,
         ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source]!.mimeType } : {}),
       });
     }
