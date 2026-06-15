@@ -248,10 +248,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // binding 11 and multiply baseColor / alpha in material paths.
     // Re-pinned 2026-06-15: finite-area BDPT light-subpath extension now keeps
     // the required cos/pdfΩ = π factor while legacy pseudo emitters keep INV_PI.
-    // Re-pinned 2026-06-15: BDPT light vertices widened 4→5 rows and now carry
-    // hit-local material payloads for mapped light-subpath scatter/connection.
-    expect(digest).toBe('218f949664d423df358bdb50ea44fb07632a68aeb6fc7516de8594beb7ff2f6f');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(365350);
+    // Re-pinned 2026-06-15: BDPT light vertices carry hit-local material payloads
+    // including clearcoat-normal parity for light-subpath scatter/connection.
+    expect(digest).toBe('8598b01918ea98cd919d68a3e50a97f9a6db1385c52b1df6434611a0456a3492');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(365958);
   });
 });
 
@@ -346,8 +346,9 @@ describe('pt-webgpu WGSL material contract', () => {
   it('uses extension-aware BRDF/PDF evaluation for BDPT connection endpoints', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn evaluateBdptConnection(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
   });
 

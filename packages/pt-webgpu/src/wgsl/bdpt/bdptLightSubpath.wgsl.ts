@@ -167,11 +167,13 @@ struct BdptSampledMaterial {
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  clearcoatNormal: vec3f,
 }
 
-fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f) -> BdptSampledMaterial {
+fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f) -> BdptSampledMaterial {
   let triIndex = bitcast<u32>(payload.x);
   let baryVW = payload.yz;
+  let instanceIndex = bitcast<u32>(payload.w);
   let mat = decodeMaterial(matId);
   var out: BdptSampledMaterial;
   out.baseColor = mat.baseColor * sampleVertexColor(triIndex, baryVW).rgb * sampleBaseColorTexture(matId, triIndex, baryVW).rgb;
@@ -201,6 +203,7 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f) -> BdptSampledMateria
   out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, triIndex, baryVW), 0.0, 1.0);
   out.anisotropy = materialAnisotropy(matId, triIndex, baryVW);
   out.anisotropyRotation = materialAnisotropyRotation(matId, triIndex, baryVW);
+  out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);
   return out;
 }
 
@@ -522,19 +525,20 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       // Surface vertex: sample the real BSDF at prevPos (outgoing = woAtPrev,
       // the direction that brought the path to prevPos from its predecessor).
       let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
-      let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload);
+      let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal);
       let prevBc = prevMat.baseColor;
       let prevRough = max(prevMat.roughness, 0.02);
       let prevMetal = prevMat.metallic;
       let cosOPrev = max(dot(prevNormal, woAtPrev), 0.0);
       let f0Prev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);
       let fresPrev = fresnelSchlick(cosOPrev, f0Prev);
-      let bsPrev = sampleNextBounceDirection(
+      let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(
         &rng,
         -woAtPrev,
         prevPos,
         prevNormal,
         prevNormal,
+        prevMat.clearcoatNormal,
         prevBc,
         prevRough,
         prevMetal,
@@ -552,8 +556,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
         prevMat.anisotropyRotation,
       );
       scatterDir = bsPrev.sampledDir;
-      pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
-                                      prevNormal, woAtPrev, scatterDir,
+      pdfScatter = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,
+                                      prevNormal, prevMat.clearcoatNormal, woAtPrev, scatterDir,
                                       prevMat.clearcoat, prevMat.clearcoatRoughness,
                                       prevMat.sheen, prevMat.sheenRoughness,
                                       prevMat.iridescence, prevMat.iridescenceIor,
@@ -561,8 +565,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
                                       prevMat.specularColor, prevMat.specularIntensity,
                                       prevMat.anisotropy, prevMat.anisotropyRotation);
       cosPrev = max(dot(prevNormal, scatterDir), 0.0);
-      fPrev = evaluateBrdfFull(
-        prevBc, prevRough, prevMetal, prevNormal, woAtPrev, scatterDir,
+      fPrev = evaluateBrdfFullWithClearcoatNormal(
+        prevBc, prevRough, prevMetal, prevNormal, prevMat.clearcoatNormal, woAtPrev, scatterDir,
         prevMat.clearcoat, prevMat.clearcoatRoughness,
         prevMat.sheen, prevMat.sheenRoughness, prevMat.sheenColor,
         prevMat.iridescence, prevMat.iridescenceIor,
@@ -587,7 +591,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     }
     let matIdx = hitMaterialId(hit);
     let matPayload = vec4f(bitcast<f32>(hit.triIndex), hit.baryVW.x, hit.baryVW.y, bitcast<f32>(hit.instanceIndex));
-    let mat = bdptSampleMaterialAtPayload(matIdx, matPayload);
+    let mat = bdptSampleMaterialAtPayload(matIdx, matPayload, safe_normalize(hit.normal));
     // Perfect-specular TRANSMISSION (glass) is non-reconnectable on the light path —
     // the reconnection-shift / Veach connection assumes a non-singular BSDF at the
     // connectable vertex. (A glossy/rough refractive vertex IS handled by the real
@@ -647,13 +651,13 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       // prevBc/prevRough/prevMetal/prevMat.ior are in scope from the surface branch
       // above (the emitter branch does not reach this code path since prevMatId < 0).
       let prevPayloadForRev = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
-      let prevMatForRev = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayloadForRev);
+      let prevMatForRev = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayloadForRev, prevNormal);
       let prevBcRev = prevMatForRev.baseColor;
       let prevRoughRev = max(prevMatForRev.roughness, 0.02);
       let prevMetalRev = prevMatForRev.metallic;
       // Reverse: incoming = scatterDir, outgoing (toward prevCol's predecessor) = woAtPrev.
-      pdfRevAtPrev = brdfDirectionalPdfFullSampled(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
-                                        prevMatForRev.ior, prevNormal, scatterDir, woAtPrev,
+      pdfRevAtPrev = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBcRev, prevRoughRev, prevMetalRev, 0.0,
+                                        prevMatForRev.ior, prevNormal, prevMatForRev.clearcoatNormal, scatterDir, woAtPrev,
                                         prevMatForRev.clearcoat, prevMatForRev.clearcoatRoughness,
                                         prevMatForRev.sheen, prevMatForRev.sheenRoughness,
                                         prevMatForRev.iridescence, prevMatForRev.iridescenceIor,

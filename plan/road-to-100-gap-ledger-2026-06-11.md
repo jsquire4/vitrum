@@ -1120,6 +1120,8 @@ Evidence:
   reservoir-visible domain. ReSTIR-PT suffix/reconnection vertices now also
   alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral
   domain before Lo evaluation, including mapped normals for reservoir geometry.
+  Clearcoat-normal map parity remains open on ReSTIR-PT: that payload is not yet
+  stored in `ReservoirPTHero` or used by the resolve/source-PDF/suffix Lo helpers.
   ReSTIR-PT producer source sampling now uses a normalized base/clearcoat/sheen
   lobe mixture and stores the matching `pdfSrc` rather than the old base-only
   density. The main eye path now samples the same normalized base/clearcoat/sheen
@@ -1128,8 +1130,10 @@ Evidence:
   records matching `brdfDirectionalPdfFullSampled` forward/reverse densities.
   Remaining approximate/schema sites are not simple omissions:
   inverse adjoints use a separate derivative model, and BDPT light-side
-  clearcoat-normal/layer/thin-film/spectral special cases are not yet fully
-  shade-prologue-equivalent.
+  layer/thin-film/spectral special cases are not yet fully
+  shade-prologue-equivalent. BDPT clearcoat-normal light-side parity is now
+  closed by sampling `applyClearcoatNormalMap` into the row-4 material payload
+  and using the clearcoat-normal-aware BRDF/PDF helpers.
 
 Closure:
 - Keep the main eye-path `sampleNextBounceDirection` sampled-density regression
@@ -1137,11 +1141,13 @@ Closure:
   and BDPT eye-stack forward/reverse densities must stay in lockstep.
 - Keep the ReSTIR-PT suffix material-map parity regression pins green; the
   suffix cached-Lo path is code-complete for hit-local maps/layers/thin-film/
-  spectral emission, and the producer source-sampler/PDF limit is closed.
+  spectral emission, and the producer source-sampler/PDF limit is closed except
+  for the clearcoat-normal payload/resolve parity row above.
 - Keep the BDPT light-subpath sampling/PDF regression pins green. Row-4 hit-local
-  material payloads now cover mapped base/ORM/transmission/normal/bump/extension/
-  specular/anisotropy fields; remaining BDPT work is oracle/reference promotion
-  plus the special-case parity listed above.
+  material payloads now cover mapped base/ORM/transmission/normal/bump/
+  clearcoat-normal/extension/specular/anisotropy fields; remaining BDPT work is
+  oracle/reference promotion plus the layer/thin-film/spectral special-case
+  parity listed above.
 - Add material-furnace and lobe-specific tests plus reference A/B before
   promoting these rows from approximate/experimental.
 

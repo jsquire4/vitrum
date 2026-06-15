@@ -32,9 +32,10 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     // extend the path, compute f·|cos|/pdf, and store pdfFwd. The old two-step
     // (cosine-hemisphere trace + discard + real-BSDF sample at newPos) is gone,
     // and scalar clearcoat/sheen now route through the shared sampled-density
-    // helper rather than the base-only BRDF pdf.
+    // helper with a distinct clearcoat normal rather than the base-only BRDF pdf.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,',
+      'pdfScatter = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,',
     );
     // pdfFwd at the new vertex = the scatter pdf at prevPos for the traced direction.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let pdfFwd = pdfScatter;');
@@ -48,6 +49,7 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 5u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatNormal,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('prevMat.clearcoatNormal,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularColor,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (lvMatId >= 0.0) {');

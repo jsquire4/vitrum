@@ -29,15 +29,15 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // factor after the first traced hit; legacy pseudo emitters keep the old
     // INV_PI branch because their bounce-0 normalization already includes the
     // direction-density term.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirection(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoat,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.sheenRoughness,');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFull(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;');
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdfFullSampled(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter;');
     // pdfRev(prevCol) is patched to the TRUE reverse density (Item-3 fix 2026-06-10):
     // for surface vertices, brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) —
@@ -45,7 +45,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // For emitter vertices (prevMatId < 0), Lambertian cosine hemisphere IS symmetric
     // so pdfFwd == pdfRev; the emitter branch correctly falls back to pdfFwd.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfRevAtPrev = brdfDirectionalPdfFullSampled(prevBcRev, prevRoughRev, prevMetalRev, 0.0,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfRevAtPrev = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBcRev, prevRoughRev, prevMetalRev, 0.0,');
   });
 
   it('finite-area emitter extension keeps the needed π factor, legacy pseudo emitters do not double-apply it', () => {
@@ -53,7 +53,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'fPrev = select(vec3f(INV_PI), vec3f(1.0), prevMatId == BDPT_LV_AREA_EMITTER_MATID);',
     );
     // Surface vertices still use the real extension-aware BRDF.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFull(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
   });
 
@@ -90,7 +90,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload);',
+      'let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal);',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triIndex = bitcast<u32>(payload.x);');
   });
@@ -103,6 +103,11 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW), 0.0, 1.0);',
     );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevNormal,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoatNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW), vec3f(0.0), vec3f(1.0));',
     );
@@ -128,12 +133,14 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // without re-multiplying cosLight (the geometry term owns edge cosines).
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4);');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal);');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvBrdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
     // The MIS pdf bookkeeping (fwdEe + revLcMinus) also uses the real BSDF pdf.
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvWoPrev, lcToE,');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMatF.clearcoatNormal, lvWoPrev, lcToE,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,',
     );
