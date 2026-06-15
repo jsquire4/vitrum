@@ -426,8 +426,11 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // scalar specular controls. ReSTIR candidate PDFs/payloads remain scalar.
   specularColorMap: 'approximate',
   specularIntensityMap: 'approximate',
-  bumpMap: 'unsupported',
-  bumpScale: 'unsupported',
+  // Readable bump maps ride the walkaround material atlas and finite-difference a
+  // shade-owned visible normal perturbation. ReSTIR/GI candidate PDFs/payloads
+  // still use the base normal, so this is approximate rather than native.
+  bumpMap: 'approximate',
+  bumpScale: 'approximate',
   displacementMap: 'unsupported',
   displacementScale: 'unsupported',
   displacementBias: 'unsupported',

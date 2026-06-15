@@ -270,7 +270,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     n_ok,
     tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
-  let normal = applyNormalMapForHit(primaryHit, smoothNormal);
+  let normalMapped = applyNormalMapForHit(primaryHit, smoothNormal);
+  let normal = applyBumpMapForHit(primaryHit, normalMapped);
   let clearcoatNormal = applyClearcoatNormalMapForHit(primaryHit, smoothNormal, normal);
   let wo     = -primaryRay.direction;
 

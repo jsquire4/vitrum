@@ -1,7 +1,7 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 49;
+const MATERIAL_MAP_META_TEXELS_PER_TRI = 52;
 
 type AtlasMapField =
   | 'baseColorMap'
@@ -23,7 +23,8 @@ type AtlasMapField =
   | 'anisotropyMap'
   | 'iridescenceMap'
   | 'iridescenceThicknessMap'
-  | 'thicknessMap';
+  | 'thicknessMap'
+  | 'bumpMap';
 type AtlasColorSpace = 'srgb' | 'linear';
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
@@ -47,6 +48,7 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'iridescenceMap', colorSpace: 'linear' },
   { field: 'iridescenceThicknessMap', colorSpace: 'linear' },
   { field: 'thicknessMap', colorSpace: 'linear' },
+  { field: 'bumpMap', colorSpace: 'linear' },
 ];
 
 export interface MaterialTextureAtlasPayload {
@@ -76,6 +78,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableIridescenceLayerCount: number;
   readonly readableIridescenceThicknessLayerCount: number;
   readonly readableThicknessLayerCount: number;
+  readonly readableBumpLayerCount: number;
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -287,6 +290,7 @@ export function packMaterialTextureAtlas(
     iridescenceMap: new Set<number>(),
     iridescenceThicknessMap: new Set<number>(),
     thicknessMap: new Set<number>(),
+    bumpMap: new Set<number>(),
   };
 
   const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
@@ -460,6 +464,16 @@ export function packMaterialTextureAtlas(
       : 400;
   };
 
+  const writeBumpScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = Number.isFinite(mat?.bumpScale)
+      ? mat?.bumpScale ?? 1
+      : 1;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -492,6 +506,8 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'iridescenceThicknessMap', 'linear', baseTexel + 44);
     writeIridescenceMeta(mat, baseTexel + 46);
     writeMapMeta(mat, 'thicknessMap', 'linear', baseTexel + 47);
+    writeMapMeta(mat, 'bumpMap', 'linear', baseTexel + 49);
+    writeBumpScaleMeta(mat, baseTexel + 51);
   }
 
   return {
@@ -521,6 +537,7 @@ export function packMaterialTextureAtlas(
     readableIridescenceLayerCount: fieldLayers.iridescenceMap.size,
     readableIridescenceThicknessLayerCount: fieldLayers.iridescenceThicknessMap.size,
     readableThicknessLayerCount: fieldLayers.thicknessMap.size,
+    readableBumpLayerCount: fieldLayers.bumpMap.size,
   };
 }
 

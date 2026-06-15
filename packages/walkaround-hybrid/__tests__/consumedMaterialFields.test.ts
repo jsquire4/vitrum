@@ -51,6 +51,8 @@ describe('collectUnconsumedMaterialFields', () => {
       shadingModel: 'unlit',
       normalMap: { handle: stubTextureRef() },
       normalScale: 0.5,
+      bumpMap: { handle: stubTextureRef() },
+      bumpScale: 0.25,
       transmission: 0.9,
       attenuationColor: [0.8, 0.9, 1],
       attenuationDistance: 1,
@@ -171,7 +173,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'thicknessMap',
-      'normalMap', 'normalScale', 'lightMap', 'lightMapIntensity',
+      'normalMap', 'normalScale', 'bumpMap', 'bumpScale', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
     }
@@ -179,7 +181,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
 
   it('does NOT include unsupported texture-map fields', () => {
     const textureMaps = [
-      'bumpMap', 'displacementMap',
+      'displacementMap',
     ];
     for (const field of textureMaps) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(false);

@@ -59,6 +59,12 @@
  *                           and perturbs the camera-visible smooth normal.
  *  normalScale            stored in normal-map atlas metadata and applied to
  *                           tangent-space xy before normal reconstruction.
+ *  bumpMap                same material atlas path; shade.wgsl samples a
+ *                           readable linear height field and finite-differences
+ *                           it into a camera-visible normal perturbation after
+ *                           normalMap application.
+ *  bumpScale              stored in bump-map atlas metadata and applied to the
+ *                           finite-difference height gradient.
  *  roughnessMap           same material atlas + metadata path; shade.wgsl
  *                           samples the glTF G channel and overrides the
  *                           scalar roughness for visible BRDF terms.
@@ -127,7 +133,8 @@
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
- * sheen maps / anisotropyMap / iridescence maps, remaining layered BSDF scalars, spectral
+ * sheen maps / anisotropyMap / iridescence maps / bumpMap,
+ * remaining layered BSDF scalars, spectral
  * curves, volume scattering, thin-film stacks, layered BSDF, and extension
  * maps — is IGNORED.
  */
@@ -180,6 +187,8 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'baseColorMap',
   'normalMap',
   'normalScale',
+  'bumpMap',
+  'bumpScale',
   'roughnessMap',
   'metallicMap',
   'aoMap',

@@ -215,12 +215,12 @@ export interface MaterialSpec {
   readonly specularColorMap?: TextureRef;     // glTF KHR_materials_specular (RGB = specularColor)
   readonly specularIntensityMap?: TextureRef; // glTF KHR_materials_specular (A = specularFactor)
   /** Height-field normal perturbation map.
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer (road-to-100 texture tier). */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  atlas-backed visible shade path. */
   readonly bumpMap?: TextureRef;
   /** Bump perturbation scale. Default 1.
-   *  Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   *  remaining non-consumer. */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  atlas-backed visible shade path. */
   readonly bumpScale?: number;
   /** Vertex displacement height map.
    *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */

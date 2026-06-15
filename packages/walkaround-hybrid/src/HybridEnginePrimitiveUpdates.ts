@@ -1051,6 +1051,7 @@ const ATLAS_MATERIAL_MAP_FIELDS = [
   'iridescenceMap',
   'iridescenceThicknessMap',
   'thicknessMap',
+  'bumpMap',
 ] as const;
 
 function textureMapPatchRequiresFullRebuild(
@@ -1126,6 +1127,9 @@ function materialAtlasPatchRequiresFullRebuild(
   const clearcoatNormalScaleChanged =
     (prev?.clearcoatNormalMap != null || next?.clearcoatNormalMap != null) &&
     (prev?.clearcoatNormalScale ?? 1) !== (next?.clearcoatNormalScale ?? 1);
+  const bumpScaleChanged =
+    (prev?.bumpMap != null || next?.bumpMap != null) &&
+    (prev?.bumpScale ?? 1) !== (next?.bumpScale ?? 1);
   const lightMapIntensityChanged =
     (prev?.lightMap != null || next?.lightMap != null) &&
     (prev?.lightMapIntensity ?? 1) !== (next?.lightMapIntensity ?? 1);
@@ -1161,6 +1165,7 @@ function materialAtlasPatchRequiresFullRebuild(
     iridescenceThicknessBound(prev, 1, 400) !== iridescenceThicknessBound(next, 1, 400);
   return normalScaleChanged ||
     clearcoatNormalScaleChanged ||
+    bumpScaleChanged ||
     lightMapIntensityChanged ||
     alphaCoverageChanged ||
     specularChanged ||

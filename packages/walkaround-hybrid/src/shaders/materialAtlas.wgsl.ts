@@ -10,7 +10,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 49u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 52u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -40,6 +40,8 @@ const MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
 const MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
 const MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
+const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
+const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -79,7 +81,13 @@ fn materialAtlasPackedUvFromVec4(v: vec4f) -> vec2f {
   return unpack2x16unorm(bitcast<u32>(v.w));
 }
 
-fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+fn sampleMaterialAtlasRawAtOffsetDelta(
+  triIndex: u32,
+  metaOffset: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+  transformedDelta: vec2f,
+) -> vec4f {
   let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
   let layer = i32(meta0.x);
@@ -94,7 +102,7 @@ fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
-  ) + meta0.zw;
+  ) + meta0.zw + transformedDelta;
   let wrapped = wrapMaterialUv(transformed, wrapPacked);
   let dims = textureDimensions(materialTextureAtlas);
   let texel = vec2i(
@@ -102,6 +110,10 @@ fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv
     i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
   );
   return textureLoad(materialTextureAtlas, texel, layer, 0);
+}
+
+fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return sampleMaterialAtlasRawAtOffsetDelta(triIndex, metaOffset, uv0, uv1, vec2f(0.0));
 }
 
 fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -412,43 +424,14 @@ fn preferAuthoredTangentFrameForHit(
   return MaterialTangentFrame(tangent, bitangent);
 }
 
-fn applyNormalMapAtOffsetForHit(
+fn materialTangentFrameForHit(
   hit: IntersectionResult,
   frameNormal: vec3f,
-  fallbackNormal: vec3f,
-  normalMapOffset: u32,
-  normalScaleOffset: u32,
-) -> vec3f {
+  mapOffset: u32,
+) -> MaterialTangentFrame {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
-  if (i32(meta0.x) < 0) {
-    return fallbackNormal;
-  }
-
-  let uv1 = materialAtlasUv1ForHit(hit);
-  let texelColor = sampleMaterialAtlasRawAtOffset(
-    triIndex,
-    normalMapOffset,
-    hit.uv,
-    uv1,
-  );
-  if (texelColor.x < 0.0) {
-    return fallbackNormal;
-  }
-
-  let scaleMeta = textureLoad(
-    baseColorMapMeta,
-    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
-    0,
-  );
-  let normalScale = max(scaleMeta.x, 0.0);
-  let tangentSample = normalize(vec3f(
-    (texelColor.r * 2.0 - 1.0) * normalScale,
-    (texelColor.g * 2.0 - 1.0) * normalScale,
-    texelColor.b * 2.0 - 1.0,
-  ));
-
   let flags = u32(max(meta0.y, 0.0) + 0.5);
   let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
   let p0 = bvh_position[hit.indices.x];
@@ -496,7 +479,47 @@ fn applyNormalMapAtOffsetForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  let frame = preferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  return preferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+}
+
+fn applyNormalMapAtOffsetForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackNormal: vec3f,
+  normalMapOffset: u32,
+  normalScaleOffset: u32,
+) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
+  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return fallbackNormal;
+  }
+
+  let uv1 = materialAtlasUv1ForHit(hit);
+  let texelColor = sampleMaterialAtlasRawAtOffset(
+    triIndex,
+    normalMapOffset,
+    hit.uv,
+    uv1,
+  );
+  if (texelColor.x < 0.0) {
+    return fallbackNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
+    0,
+  );
+  let normalScale = max(scaleMeta.x, 0.0);
+  let tangentSample = normalize(vec3f(
+    (texelColor.r * 2.0 - 1.0) * normalScale,
+    (texelColor.g * 2.0 - 1.0) * normalScale,
+    texelColor.b * 2.0 - 1.0,
+  ));
+
+  let frame = materialTangentFrameForHit(hit, frameNormal, normalMapOffset);
   let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
@@ -519,6 +542,59 @@ fn applyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fa
     MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET,
     MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET,
   );
+}
+
+fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_BUMP_TEXEL_OFFSET;
+  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return shadingNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
+    0,
+  );
+  let bumpScale = scaleMeta.x;
+  if (abs(bumpScale) < 1e-8) {
+    return shadingNormal;
+  }
+
+  let uv1 = materialAtlasUv1ForHit(hit);
+  let hC = sampleMaterialAtlasRawAtOffset(
+    triIndex,
+    MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    hit.uv,
+    uv1,
+  );
+  if (hC.x < 0.0) {
+    return shadingNormal;
+  }
+
+  let du = 1.0 / 512.0;
+  let hU = sampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    hit.uv,
+    uv1,
+    vec2f(du, 0.0),
+  ).r;
+  let hV = sampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    hit.uv,
+    uv1,
+    vec2f(0.0, du),
+  ).r;
+  let dhdu = (hU - hC.r) / du;
+  let dhdv = (hV - hC.r) / du;
+  let frame = materialTangentFrameForHit(hit, shadingNormal, MATERIAL_MAP_BUMP_TEXEL_OFFSET);
+  let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
+  let plen = length(perturbed);
+  let n = select(shadingNormal, perturbed / plen, plen > 1e-6);
+  return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
 fn materialScalarAlphaDiscardedFromWord(materialWord: u32) -> bool {

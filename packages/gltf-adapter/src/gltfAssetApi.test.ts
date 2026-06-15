@@ -399,6 +399,8 @@ describe('decodeSceneTextures', () => {
             metallic: 0,
             lightMap: { handle: { kind: 'raw-image', uri: 'light.png' } },
             lightMapIntensity: 2,
+            bumpMap: { handle: { kind: 'raw-image', uri: 'bump.png' } },
+            bumpScale: 0.5,
           },
         } as MeshPrimitive,
       ],
@@ -417,7 +419,8 @@ describe('decodeSceneTextures', () => {
       }),
     });
 
-    expect(result.report.entries).toEqual([
+    expect(result.report.entries).toHaveLength(2);
+    expect(result.report.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({
         primitiveId: 'lightmap-mesh',
         materialField: 'lightMap',
@@ -429,7 +432,18 @@ describe('decodeSceneTextures', () => {
           walkaroundHybrid: 'ready',
         },
       }),
-    ]);
+      expect.objectContaining({
+        primitiveId: 'lightmap-mesh',
+        materialField: 'bumpMap',
+        colorSpace: 'linear',
+        handleKind: 'pixel-data',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]));
   });
 
   it('normalizes raw-image texture refs to linear CPU pixel handles with field color-space policy', async () => {

@@ -135,6 +135,8 @@ describe('backend promise ledger', () => {
     expect(wa.shadingModel).toBe('approximate');
     expect(wa.baseColorMap).toBe('approximate');
     expect(wa.thicknessMap).toBe('approximate');
+    expect(wa.bumpMap).toBe('approximate');
+    expect(wa.bumpScale).toBe('approximate');
     expect(wa.sheen).toBe('approximate');
     expect(wa.extensions).toBe('native');
 

@@ -367,6 +367,14 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   normal. The promise ledger promotes `clearcoatNormalMap` /
   `clearcoatNormalScale` to `approximate`, not `native`, because ReSTIR
   candidate PDFs/payloads remain base-lobe-only.
+- Walkaround-hybrid Phase-3E bump-map follow-up (2026-06-15): readable
+  `bumpMap` handles now use the material atlas as linear height fields with
+  per-map uv0/uv1, wrap, and texture-transform metadata. `bumpScale` is stored
+  in per-triangle metadata, and `materialAtlas.wgsl.ts` finite-differences the
+  sampled height field into a visible shade-normal perturbation after normal-map
+  application. The promise ledger promotes `bumpMap` / `bumpScale` to
+  `approximate`, not `native`, because ReSTIR/GI candidate PDFs/payloads still
+  use the base visible-normal path.
 - Walkaround-hybrid Phase-3E anisotropy follow-up (2026-06-14): scalar
   `anisotropy` / `anisotropyRotation` and readable `anisotropyMap` handles now
   ride the material atlas. The shader samples glTF B-channel strength and RG
