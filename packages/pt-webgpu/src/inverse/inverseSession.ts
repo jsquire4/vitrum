@@ -159,8 +159,27 @@ interface ParamSlot {
   readonly length: number;
 }
 
-const MATERIAL_RGB_FIELDS = new Set(['baseColor', 'emissive']);
-const MATERIAL_SCALAR_FIELDS = new Set(['roughness', 'metallic', 'emissiveIntensity', 'ior']);
+const MATERIAL_RGB_FIELDS = new Set([
+  'baseColor',
+  'emissive',
+  'specularColor',
+  'sheenColor',
+]);
+const MATERIAL_SCALAR_FIELDS = new Set([
+  'roughness',
+  'metallic',
+  'emissiveIntensity',
+  'ior',
+  'specularIntensity',
+  'clearcoat',
+  'clearcoatRoughness',
+  'sheen',
+  'sheenRoughness',
+  'iridescence',
+  'iridescenceIor',
+  'anisotropy',
+  'anisotropyRotation',
+]);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
 
@@ -434,11 +453,24 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
 function defaultClampRange(field: string): [number, number] {
   switch (field) {
     case 'baseColor':
+    case 'specularColor':
+    case 'sheenColor':
     case 'roughness':
     case 'metallic':
+    case 'specularIntensity':
+    case 'clearcoat':
+    case 'clearcoatRoughness':
+    case 'sheen':
+    case 'sheenRoughness':
+    case 'iridescence':
+    case 'anisotropy':
       return [0, 1];
     case 'ior':
       return [1, 2.5];
+    case 'iridescenceIor':
+      return [1, 3];
+    case 'anisotropyRotation':
+      return [0, Math.PI];
     case 'emissive':
     case 'emissiveIntensity':
     case 'color':
@@ -473,6 +505,17 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'emissive': return [...(m.emissive ?? [0, 0, 0])];
       case 'emissiveIntensity': return [m.emissiveIntensity ?? 1];
       case 'ior': return [m.ior ?? 1.5];
+      case 'specularColor': return [...(m.specularColor ?? [1, 1, 1])];
+      case 'specularIntensity': return [m.specularIntensity ?? 1];
+      case 'clearcoat': return [m.clearcoat ?? 0];
+      case 'clearcoatRoughness': return [m.clearcoatRoughness ?? 0];
+      case 'sheen': return [m.sheen ?? 0];
+      case 'sheenColor': return [...(m.sheenColor ?? [1, 1, 1])];
+      case 'sheenRoughness': return [m.sheenRoughness ?? 0];
+      case 'iridescence': return [m.iridescence ?? 0];
+      case 'iridescenceIor': return [m.iridescenceIor ?? 1.3];
+      case 'anisotropy': return [m.anisotropy ?? 0];
+      case 'anisotropyRotation': return [m.anisotropyRotation ?? 0];
       default: break;
     }
   } else {
@@ -495,6 +538,17 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'emissive': return { emissive: value as unknown as Vec3 };
     case 'emissiveIntensity': return { emissiveIntensity: value[0]! };
     case 'ior': return { ior: value[0]! };
+    case 'specularColor': return { specularColor: value as unknown as Vec3 };
+    case 'specularIntensity': return { specularIntensity: value[0]! };
+    case 'clearcoat': return { clearcoat: value[0]! };
+    case 'clearcoatRoughness': return { clearcoatRoughness: value[0]! };
+    case 'sheen': return { sheen: value[0]! };
+    case 'sheenColor': return { sheenColor: value as unknown as Vec3 };
+    case 'sheenRoughness': return { sheenRoughness: value[0]! };
+    case 'iridescence': return { iridescence: value[0]! };
+    case 'iridescenceIor': return { iridescenceIor: value[0]! };
+    case 'anisotropy': return { anisotropy: value[0]! };
+    case 'anisotropyRotation': return { anisotropyRotation: value[0]! };
     default: throw new Error(`inverse: unsupported material field "${field}".`);
   }
 }

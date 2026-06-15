@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/pt-webgl2` OIDN final denoiser:** `denoiser: 'oidn-final'` now has a real async final-pass path instead of degrading to disabled. The backend reads linear HDR plus full-tier albedo/normal MRT aux into OIDN RGB tensors, runs the shared OIDN dispatcher once converged, reports `FrameStats.denoiserState`, exposes `getLatestDenoised()`, invalidates on reset, and releases cache state on dispose. The promise ledger now marks pt-webgl2 `oidn-final` as `native`; realtime denoisers still warn/degrade as unsupported.
 
+### Added (pt-webgpu inverse rendering, 2026-06-15)
+
+- **Finite-difference extension-lobe material params:** `@vitrum/pt-webgpu` inverse sessions now accept common scalar/RGB material extension fields for finite-difference optimization, including specular, clearcoat, sheen, iridescence, and anisotropy controls. Path-replay remains limited to the validated baseColor/roughness/emissive set and still degrades to finite-difference for these extension fields until analytic adjoints are implemented.
+
 ### Fixed (D1 source reconciliation, 2026-06-15)
 
 - **Walkaround/RC stale documentation cleanup:** active READMEs and source comments now reflect the raw WebGPU package boundary, live PPG sTree splitting, intentionally truncating `expandIndicesToStride4()` helper behavior, and CPU-oracle-only PPG helper functions. Package-boundary tests now reject the old `three/webgpu`, single-global-cell PPG, and RC receiver-export claims.

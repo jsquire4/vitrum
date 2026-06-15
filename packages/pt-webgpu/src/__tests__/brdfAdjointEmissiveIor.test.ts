@@ -196,6 +196,11 @@ function makeScene(): Scene {
         material: {
           baseColor: [0.2, 0.2, 0.2], roughness: 0.5, metallic: 0,
           emissive: [0.1, 0.2, 0.3], emissiveIntensity: 1, ior: 1.5,
+          specularColor: [0.7, 0.8, 0.9], specularIntensity: 0.65,
+          clearcoat: 0.25, clearcoatRoughness: 0.35,
+          sheen: 0.45, sheenColor: [0.15, 0.25, 0.35], sheenRoughness: 0.55,
+          iridescence: 0.2, iridescenceIor: 1.4,
+          anisotropy: 0.3, anisotropyRotation: 0.4,
         },
       },
     ],
@@ -305,6 +310,53 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     // initial 3.0 is above the clamp ceiling; after a step the clamp pins it ≤ 2.5.
     await session.step();
     expect(session.currentValues()[0]![0]!).toBeLessThanOrEqual(2.5);
+    session.dispose();
+  });
+
+  it('resolves common extension-lobe material params for finite-difference optimization', () => {
+    const session = new PtWebgpuInverseSession(makeHooks(makeScene(), false), {
+      target,
+      parameters: [
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+        { path: 'materials.panel.specularIntensity', kind: 'scalar' },
+        { path: 'materials.panel.clearcoat', kind: 'scalar' },
+        { path: 'materials.panel.clearcoatRoughness', kind: 'scalar' },
+        { path: 'materials.panel.sheenColor', kind: 'rgb' },
+        { path: 'materials.panel.sheenRoughness', kind: 'scalar' },
+        { path: 'materials.panel.iridescence', kind: 'scalar' },
+        { path: 'materials.panel.iridescenceIor', kind: 'scalar' },
+        { path: 'materials.panel.anisotropy', kind: 'scalar' },
+        { path: 'materials.panel.anisotropyRotation', kind: 'scalar' },
+      ],
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()).toEqual([
+      [expect.closeTo(0.7, 6), expect.closeTo(0.8, 6), expect.closeTo(0.9, 6)],
+      [expect.closeTo(0.65, 6)],
+      [expect.closeTo(0.25, 6)],
+      [expect.closeTo(0.35, 6)],
+      [expect.closeTo(0.15, 6), expect.closeTo(0.25, 6), expect.closeTo(0.35, 6)],
+      [expect.closeTo(0.55, 6)],
+      [expect.closeTo(0.2, 6)],
+      [expect.closeTo(1.4, 6)],
+      [expect.closeTo(0.3, 6)],
+      [expect.closeTo(0.4, 6)],
+    ]);
+    session.dispose();
+  });
+
+  it('keeps extension-lobe params on finite-difference even when path-replay is requested', () => {
+    const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
+      target,
+      parameters: [
+        { path: 'materials.panel.clearcoat', kind: 'scalar' },
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
     session.dispose();
   });
 });

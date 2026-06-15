@@ -1621,7 +1621,15 @@ Source-verified 2026-06-15:
   Chebyshev visibility, miss skipping, and all-sky open-visibility semantics.
 
 Remaining:
-- Extension-lobe contribution/PDF parity for inverse adjoints.
+- Extension-lobe contribution/PDF parity for inverse path-replay adjoints.
+  2026-06-15 follow-up: pt-webgpu inverse sessions now accept common scalar/RGB
+  extension-lobe material params (`specularColor`, `specularIntensity`,
+  `clearcoat`, `clearcoatRoughness`, `sheenColor`, `sheenRoughness`,
+  `iridescence`, `iridescenceIor`, `anisotropy`, `anisotropyRotation`) through
+  the finite-difference baseline and explicitly degrade requested path-replay
+  sessions back to finite-difference for those fields. Analytic path-replay
+  adjoints remain open until their contribution/PDF gradients are implemented
+  and converging inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
   BDPT paths now structurally implemented.
 
