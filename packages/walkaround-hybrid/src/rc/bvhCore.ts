@@ -9,12 +9,14 @@
 
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
+  mergeUv1FromCore,
   mergeWorldSpaceFromCore,
   coreMaterialToMaterialEntry,
   packMaterials,
   MATERIAL_ENTRY_FLOATS,
   type MaterialEntryInput,
 } from '@vitrum/shared-bvh';
+import { packUVIntoVec4W } from '../restir/packingHelpers.js';
 
 export interface StorageAttributeLike<T extends Float32Array | Uint32Array = Float32Array | Uint32Array> {
   readonly array: T;
@@ -24,6 +26,7 @@ export interface StorageAttributeLike<T extends Float32Array | Uint32Array = Flo
 export interface SceneBVH {
   bvhNodes: StorageAttributeLike<Float32Array>;
   positions: StorageAttributeLike<Float32Array>;
+  normals: StorageAttributeLike<Float32Array>;
   indices: StorageAttributeLike<Uint32Array>;
   coreMaterials: readonly MaterialSpec[];
   materials: StorageAttributeLike<Float32Array>;
@@ -72,9 +75,17 @@ export function buildRCSceneBVHFromCore(
     splitMaterialsByCastShadow: true,
   });
   const materialFloats = packCascadeMaterialsFromCore(merged.materials);
+  const vertCount = merged.vertexCount;
+  const mergedUv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, vertCount);
+  const normalsWithUV1 = packUVIntoVec4W(
+    merged.normals,
+    mergedUv1 == null ? undefined : { array: mergedUv1 },
+    vertCount,
+  );
   return {
     bvhNodes: attr(merged.bvhNodes, 8),
     positions: attr(merged.positions, 4),
+    normals: attr(normalsWithUV1, 4),
     indices: attr(merged.indices, 3),
     coreMaterials: merged.materials,
     materials: attr(materialFloats, 16),

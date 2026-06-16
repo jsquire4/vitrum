@@ -273,7 +273,7 @@ struct RCLightBuffer {
 };
 
 // ─── Bind group declarations ──────────────────────────────────────────────────
-// Cast pass: @group(0) bindings 0-15.
+// Cast pass: @group(0) bindings 0-18.
 
 @group(0) @binding(0) var<storage, read>       rc_bvh:                   array<BVHNode>;
 @group(0) @binding(1) var<storage, read>       rc_geom_index:            array<vec4u>;
@@ -299,6 +299,7 @@ struct RCLightBuffer {
 // calls fall back to scalar EmitterTri.Le when the caller omits these bindings.
 @group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;
 @group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;
+@group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;
 
 const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
@@ -367,7 +368,7 @@ fn rcEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: 
   return localBary;
 }
 
-fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f) -> vec4f {
+fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   let metaDims = textureDimensions(rc_materialMapMeta);
   let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   if (metaTexel + 1u >= metaDims.x * metaDims.y) {
@@ -379,11 +380,10 @@ fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f) 
     return vec4f(-1.0);
   }
   let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
-  // RC currently binds the packed position stream but not the packed normal/UV1
-  // stream, so UV1-authored emissive maps intentionally fall back to UV0 here.
-  // The metadata remains honored for transforms and wrap modes.
+  let texCoord = (wrapPacked >> 4u) & 0x3u;
+  let uv = select(uv0, uv1, texCoord == 1u);
   let meta1 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel + 1u), 0);
-  let scaled = uv0 * meta1.xy;
+  let scaled = uv * meta1.xy;
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
@@ -412,6 +412,9 @@ fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3
   if (tri.x >= arrayLength(&rc_geom_position) || tri.y >= arrayLength(&rc_geom_position) || tri.z >= arrayLength(&rc_geom_position)) {
     return scalarEmission;
   }
+  if (tri.x >= arrayLength(&rc_geom_normal) || tri.y >= arrayLength(&rc_geom_normal) || tri.z >= arrayLength(&rc_geom_normal)) {
+    return scalarEmission;
+  }
 
   var bary = rcEmitterParentBarycentricFromLocal(localBary, e._padB, e._padC);
   if (mirroredSourceTri) {
@@ -422,10 +425,15 @@ fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3
   let uv0b = rcPackedUvFromVec4(rc_geom_position[tri.y]);
   let uv0c = rcPackedUvFromVec4(rc_geom_position[tri.z]);
   let uv0 = bary.x * uv0a + bary.y * uv0b + bary.z * uv0c;
+  let uv1a = rcPackedUvFromVec4(rc_geom_normal[tri.x]);
+  let uv1b = rcPackedUvFromVec4(rc_geom_normal[tri.y]);
+  let uv1c = rcPackedUvFromVec4(rc_geom_normal[tri.z]);
+  let uv1 = bary.x * uv1a + bary.y * uv1b + bary.z * uv1c;
   let texel = rcSampleMaterialAtlasRawAtOffset(
     triIndex,
     RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
     uv0,
+    uv1,
   );
   if (texel.x < 0.0) {
     return scalarEmission;

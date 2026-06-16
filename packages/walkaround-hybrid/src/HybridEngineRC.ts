@@ -73,6 +73,7 @@ interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;
   readonly bvhIndicesBuf:    GPUBuffer;
   readonly bvhPositionsBuf:  GPUBuffer;
+  readonly bvhNormalsBuf:    GPUBuffer;
   readonly materialsBuf:     GPUBuffer;
   readonly triMaterialIdBuf: GPUBuffer;
   readonly tlasNodesBuf?:     GPUBuffer;
@@ -452,6 +453,7 @@ export class RCSubsystem implements PipelineSubsystem {
       bvhNodesBuf:      bvh.bvhNodesBuf,
       bvhIndicesBuf:    bvh.bvhIndicesBuf,
       bvhPositionsBuf:  bvh.bvhPositionsBuf,
+      bvhNormalsBuf:    bvh.bvhNormalsBuf,
       materialsBuf:     bvh.materialsBuf,
       triMaterialIdBuf: bvh.triMaterialIdBuf,
       cascadeBufs:      this._cascadeBufs,
@@ -558,6 +560,7 @@ export class RCSubsystem implements PipelineSubsystem {
       bvhNodesBuf: upload('rc-restir-bvh-nodes', snap.bvhNodes),
       bvhIndicesBuf: upload('rc-restir-bvh-index', snap.bvhIndex),
       bvhPositionsBuf: upload('rc-restir-bvh-positions', snap.positions),
+      bvhNormalsBuf: upload('rc-restir-bvh-normals', snap.normals),
       materialsBuf: upload('rc-restir-bvh-materials', matFloats.buffer as ArrayBuffer),
       triMaterialIdBuf: upload('rc-restir-bvh-tri-mat', snap.triMaterialIds),
       ...(tlas != null
@@ -601,6 +604,7 @@ export class RCSubsystem implements PipelineSubsystem {
       bvhNodesBuf:      this._uploadAttribute(bvh.bvhNodes,      'rc-bvh-nodes'),
       bvhIndicesBuf:    this._uploadTypedArray(idxStride4,        'rc-bvh-indices'),
       bvhPositionsBuf:  this._uploadAttribute(bvh.positions,      'rc-bvh-positions'),
+      bvhNormalsBuf:    this._uploadAttribute(bvh.normals,        'rc-bvh-normals'),
       materialsBuf:     this._uploadAttribute(bvh.materials,      'rc-bvh-materials'),
       triMaterialIdBuf: this._uploadAttribute(bvh.triMaterialId,  'rc-bvh-tri-mat-id'),
     };
@@ -650,6 +654,7 @@ export class RCSubsystem implements PipelineSubsystem {
     this._bvhBuffers.bvhNodesBuf.destroy();
     this._bvhBuffers.bvhIndicesBuf.destroy();
     this._bvhBuffers.bvhPositionsBuf.destroy();
+    this._bvhBuffers.bvhNormalsBuf.destroy();
     this._bvhBuffers.materialsBuf.destroy();
     this._bvhBuffers.triMaterialIdBuf.destroy();
     this._bvhBuffers.tlasNodesBuf?.destroy();

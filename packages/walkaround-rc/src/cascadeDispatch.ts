@@ -79,6 +79,7 @@ interface DispatchBindingSignature {
   readonly bvhNodesBuf: GPUBuffer;
   readonly bvhIndicesBuf: GPUBuffer;
   readonly bvhPositionsBuf: GPUBuffer;
+  readonly bvhNormalsBuf: GPUBuffer;
   readonly materialsBuf: GPUBuffer;
   readonly triMaterialIdBuf: GPUBuffer;
   readonly cascadeBufs: readonly GPUBuffer[];
@@ -116,10 +117,12 @@ export interface RCDispatchOptsRaw {
   /** Raw WebGPU device — caller-owned. */
   device:             GPUDevice;
 
-  /** BVH GPU buffers (5 separate SSBOs; layout matches the raw RC SceneBVH contract). */
+  /** BVH GPU buffers (6 separate SSBOs; layout matches the raw RC SceneBVH contract). */
   bvhNodesBuf:        GPUBuffer;
   bvhIndicesBuf:      GPUBuffer;
   bvhPositionsBuf:    GPUBuffer;
+  /** Packed normal.xyz plus UV1 in .w, matching the shared ReSTIR BVH layout. */
+  bvhNormalsBuf:      GPUBuffer;
   materialsBuf:       GPUBuffer;
   triMaterialIdBuf:   GPUBuffer;
 
@@ -327,6 +330,7 @@ function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
     bvhNodesBuf: opts.bvhNodesBuf,
     bvhIndicesBuf: opts.bvhIndicesBuf,
     bvhPositionsBuf: opts.bvhPositionsBuf,
+    bvhNormalsBuf: opts.bvhNormalsBuf,
     materialsBuf: opts.materialsBuf,
     triMaterialIdBuf: opts.triMaterialIdBuf,
     cascadeBufs: [...opts.cascadeBufs],
@@ -356,6 +360,7 @@ function sameBindingSignature(
     a.bvhNodesBuf === b.bvhNodesBuf &&
     a.bvhIndicesBuf === b.bvhIndicesBuf &&
     a.bvhPositionsBuf === b.bvhPositionsBuf &&
+    a.bvhNormalsBuf === b.bvhNormalsBuf &&
     a.materialsBuf === b.materialsBuf &&
     a.triMaterialIdBuf === b.triMaterialIdBuf &&
     sameBufferArray(a.cascadeBufs, b.cascadeBufs) &&
@@ -530,6 +535,7 @@ export class RCDispatcher {
         { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
         { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
         { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },       // rc_materialMapMeta
+        { binding: 18, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_geom_normal
       ],
     });
   }
@@ -743,7 +749,7 @@ export class RCDispatcher {
    * `_buildHandlesRaw` (D13.1).
    */
   private _resolveBvhBindings(device: GPUDevice, opts: RCDispatchOptsRaw): {
-    bvhBuf: GPUBuffer; idxBuf: GPUBuffer; posBuf: GPUBuffer;
+    bvhBuf: GPUBuffer; idxBuf: GPUBuffer; posBuf: GPUBuffer; normBuf: GPUBuffer;
     matBuf: GPUBuffer; triMatBuf: GPUBuffer;
     tlasNodesBuf: GPUBuffer; tlasInstBuf: GPUBuffer; tlasBlasBuf: GPUBuffer;
     tlasW2lBuf: GPUBuffer; tlasL2wBuf: GPUBuffer;
@@ -752,6 +758,7 @@ export class RCDispatcher {
     const bvhBuf    = opts.bvhNodesBuf;
     const idxBuf    = opts.bvhIndicesBuf;
     const posBuf    = opts.bvhPositionsBuf;
+    const normBuf   = opts.bvhNormalsBuf;
     const matBuf    = opts.materialsBuf;
     const triMatBuf = opts.triMaterialIdBuf;
     const tlasNodesBuf = opts.tlasNodesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-nodes-dummy');
@@ -770,7 +777,7 @@ export class RCDispatcher {
     // When absent, bind a 1040-byte zero placeholder (count=0 → loop no-op).
     // 1040 bytes ≥ the RCLightBuffer struct stride so strict backends accept it.
     const lightsBuf = opts.lightsBuf ?? this._dummyStorageBuffer(device, 'rc-lights-dummy', 1040);
-    return { bvhBuf, idxBuf, posBuf, matBuf, triMatBuf, tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf, emittersBuf, lightsBuf };
+    return { bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf, tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf, emittersBuf, lightsBuf };
   }
 
   /**
@@ -789,7 +796,7 @@ export class RCDispatcher {
     materialMapMetaTextureView: GPUTextureView,
   ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
-      bvhBuf, idxBuf, posBuf, matBuf, triMatBuf,
+      bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf,
       tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf,
       emittersBuf, lightsBuf,
     } = bvhBindings;
@@ -868,6 +875,7 @@ export class RCDispatcher {
           { binding: 15, resource: { buffer: lightsBuf } },  // A7: rc_lights
           { binding: 16, resource: materialTextureAtlasView },
           { binding: 17, resource: materialMapMetaTextureView },
+          { binding: 18, resource: { buffer: normBuf } },
         ],
       });
 

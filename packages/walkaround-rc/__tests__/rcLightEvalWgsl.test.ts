@@ -61,8 +61,13 @@ describe('RC light-eval WGSL contract', () => {
     const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f');
     expect(PROBE_RAY_CAST_WGSL).toContain('let encodedSourceTri = i32(round(e._padA));');
+    expect(PROBE_RAY_CAST_WGSL).toContain('let texCoord = (wrapPacked >> 4u) & 0x3u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('let uv = select(uv0, uv1, texCoord == 1u);');
+    expect(PROBE_RAY_CAST_WGSL).toContain('let uv1a = rcPackedUvFromVec4(rc_geom_normal[tri.x]);');
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('UV1-authored emissive maps intentionally fall back to UV0');
     expect(PROBE_RAY_CAST_WGSL).toContain('return scalarEmission * texel.rgb;');
     expect(emitterNee).toContain('let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);');
     expect(emitterNee).toContain('let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);');

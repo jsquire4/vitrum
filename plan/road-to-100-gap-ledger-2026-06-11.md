@@ -1783,9 +1783,9 @@ Evidence:
   atlas-backed alpha-mask holes and fractional blend layers through
   `ddgiTraceFirstHitAlphaMaskTextured`. Analytic/extra emitters intentionally
   retain averaged `Le`. Later 2026-06-16 follow-up: RC probe-cast emitter NEE
-  receives the shared material atlas and samples UV0 material-backed emissive
-  texels through the packed source-triangle/subdivision lanes, with scalar
-  fallback for omitted atlas bindings, unmapped emitters, and UV1-only cases.
+  receives the shared material atlas and samples UV0/UV1 material-backed
+  emissive texels through the packed source-triangle/subdivision lanes, with
+  scalar fallback for omitted atlas bindings and unmapped emitters.
   Exact UV-varying texel-PDF selection and full GI/RC/DDGI texel-space emission
   are still approximate rather than native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:

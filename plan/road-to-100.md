@@ -84,9 +84,9 @@
 > (`ior`/`transmission`/`thickness`/`attenuationColor`/`attenuationDistance`) from visibility tails
 > (`opacity`/`alphaCutoff`) via contract-level diagnostic codes. Latest RC
 > emitter follow-up: RC probe-cast emitter NEE now receives the main material
-> atlas and samples UV0 material-backed emissive texels through the packed
+> atlas and samples UV0/UV1 material-backed emissive texels through the packed
 > `EmitterTri` source-triangle/subdivision lanes, falling back to scalar `Le`
-> for unmapped emitters, omitted atlas bindings, and UV1-only map cases.
+> only for unmapped emitters and omitted atlas bindings.
 > Latest inverse API follow-up: pt-webgpu inverse sessions now accept
 > finite-difference optimization for renderer-consumed scalar map controls
 > (`normalScale`, `bumpScale`, `clearcoatNormalScale`, `envMapIntensity`) while
@@ -835,7 +835,7 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   ReSTIR-DI emitters and implicit PT mesh lights rather than whole-texture average
   power, and DDGI mesh-area emitter NEE samples material-atlas emissive texels
   when TLAS source-triangle metadata is available. 2026-06-16 RC follow-up:
-  RC probe-cast emitter NEE now samples UV0 material-backed emissive texels from
+  RC probe-cast emitter NEE now samples UV0/UV1 material-backed emissive texels from
   the shared material atlas via `EmitterTri` source-triangle/subdivision metadata
   instead of always using averaged `Le`. The glTF compatibility planner now
   reports this remaining boundary as `emissiveMap.texelPdf: approximate` for
@@ -844,8 +844,8 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   `updatePrimitive()` patches now emit the same truth as a structured
   `walkaround-hybrid.emissive-map-texel-pdf-approximation` runtime warning for
   non-glTF hosts. These paths still do not build full
-  texel-alias emitter PDFs; analytic/extra emitter mapped payloads, UV1-only RC
-  emissive maps, and non-NEE GI/DDGI emission remain approximate,
+  texel-alias emitter PDFs; analytic/extra emitter mapped payloads and
+  non-NEE GI/DDGI emission remain approximate,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus

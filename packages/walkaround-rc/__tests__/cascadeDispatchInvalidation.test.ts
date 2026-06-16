@@ -66,6 +66,7 @@ function baseOpts(device: GPUDevice): RCDispatchOptsRaw {
     bvhNodesBuf: makeExternalBuffer('bvh-nodes'),
     bvhIndicesBuf: makeExternalBuffer('bvh-indices'),
     bvhPositionsBuf: makeExternalBuffer('bvh-positions'),
+    bvhNormalsBuf: makeExternalBuffer('bvh-normals'),
     materialsBuf: makeExternalBuffer('materials'),
     triMaterialIdBuf: makeExternalBuffer('tri-material-id'),
     cascadeBufs: [makeExternalBuffer('cascade-0'), makeExternalBuffer('cascade-1')],
@@ -95,6 +96,16 @@ describe('RCDispatcher binding cache invalidation', () => {
 
     dispatcher.dispatchFrameRaw({
       ...merged,
+      bvhNormalsBuf: makeExternalBuffer('bvh-normals-b'),
+      frameSeed: 3,
+    });
+    const bindGroupsAfterNormals = createBindGroup.mock.calls.length;
+    const destroysAfterNormals = destroyBuffer.mock.calls.length;
+    expect(bindGroupsAfterNormals).toBeGreaterThan(bindGroupsAfterFirst);
+    expect(destroysAfterNormals).toBeGreaterThan(destroysAfterFirst);
+
+    dispatcher.dispatchFrameRaw({
+      ...merged,
       bvhMode: 'tlas',
       tlasNodeCount: 1,
       tlasNodesBuf: makeExternalBuffer('tlas-nodes'),
@@ -102,18 +113,18 @@ describe('RCDispatcher binding cache invalidation', () => {
       tlasBlasRootsBuf: makeExternalBuffer('tlas-blas'),
       tlasInstanceWorldToLocalBuf: makeExternalBuffer('tlas-w2l'),
       tlasInstanceLocalToWorldBuf: makeExternalBuffer('tlas-l2w'),
-      frameSeed: 3,
+      frameSeed: 4,
     });
     const bindGroupsAfterTlas = createBindGroup.mock.calls.length;
     const destroysAfterTlas = destroyBuffer.mock.calls.length;
-    expect(bindGroupsAfterTlas).toBeGreaterThan(bindGroupsAfterFirst);
-    expect(destroysAfterTlas).toBeGreaterThan(destroysAfterFirst);
+    expect(bindGroupsAfterTlas).toBeGreaterThan(bindGroupsAfterNormals);
+    expect(destroysAfterTlas).toBeGreaterThan(destroysAfterNormals);
 
     dispatcher.dispatchFrameRaw({
       ...merged,
       probeOriginWorld: [2, 0, 0],
       roomSize: [2, 1, 1],
-      frameSeed: 4,
+      frameSeed: 5,
     });
     expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterTlas);
     expect(destroyBuffer.mock.calls.length).toBeGreaterThan(destroysAfterTlas);
@@ -136,6 +147,10 @@ describe('RCDispatcher binding cache invalidation', () => {
     const firstEntries = createBindGroupCalls[0]![0].entries;
     expect(firstEntries.some((entry) => entry.binding === 16 && entry.resource === opts.materialTextureAtlasView)).toBe(true);
     expect(firstEntries.some((entry) => entry.binding === 17 && entry.resource === opts.materialMapMetaTextureView)).toBe(true);
+    expect(firstEntries.some((entry) => {
+      if (entry.binding !== 18 || typeof entry.resource !== 'object' || entry.resource == null) return false;
+      return (entry.resource as { buffer?: unknown }).buffer === opts.bvhNormalsBuf;
+    })).toBe(true);
     const bindGroupsAfterFirst = createBindGroup.mock.calls.length;
 
     dispatcher.dispatchFrameRaw({
