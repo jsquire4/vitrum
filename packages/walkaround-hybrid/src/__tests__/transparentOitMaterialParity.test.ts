@@ -20,10 +20,12 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.sheen.rgb,');
     expect(TRANSPARENT_OIT_WGSL).toContain('let toSun = safe_normalize(ubo.sunDirection);');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let hit = traceSceneFirstHit(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('if (oitCastsShadow(word) && !oitHitIsScalarGlass(hit)) {');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let alpha = materialAlphaCoverageForHit(hit, word);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('tau = tau * clamp(1.0 - alpha.coverage, 0.0, 1.0);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return traceSceneAlphaTransmittanceTextured(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('true,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('bvh_material,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('BVH_MATERIAL_TEX_WIDTH,');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitCastsShadow(');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitHitIsScalarGlass(');
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + hit.normal * 1e-3,');
     expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;');

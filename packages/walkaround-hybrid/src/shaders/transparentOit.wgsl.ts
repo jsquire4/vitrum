@@ -9,8 +9,9 @@
  * Lighting policy: transparent layer radiance is an intentionally cheap
  * camera-visible approximation. The sky/environment, direct sun, and analytic
  * point/spot/finite-emitter terms use the same atlas-backed material-lobe BRDF
- * as opaque shade/ReSTIR material scoring; their shadow rays walk the material
- * atlas and deterministically attenuate through alphaMode:'blend' blockers.
+ * as opaque shade/ReSTIR material scoring; their shadow rays use the canonical
+ * material-atlas alpha transmittance helper, including the post-budget opaque
+ * blocker fallback used by shade/ReSTIR.
  * Emissive, light-map, and finite-emitter terms remain camera-visible
  * approximations rather than transparent ReSTIR/GI reservoir participation.
  */
@@ -55,70 +56,26 @@ fn oitHitIsMaskDiscarded(hit: IntersectionResult, alpha: MaterialAlphaCoverage) 
   return false;
 }
 
-fn oitCastsShadow(materialWord: u32) -> bool {
-  return (materialWord & 1u) == 0u;
-}
-
-fn oitHitIsScalarGlass(hit: IntersectionResult) -> bool {
-  let trans4 = (hit.matColorPacked >> 4u) & 0xFu;
-  return trans4 > 4u;
-}
-
 fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32 {
-  let maxDistance = max(tMax, 0.0);
-  if (maxDistance <= 1e-4) {
-    return 1.0;
-  }
-
-  var walkRay: Ray;
-  walkRay.origin = origin;
-  walkRay.direction = dir;
-
-  var traveled = 0.0;
-  var tau = 1.0;
-  let step = max(1e-4, triEps * 4.0);
-
-  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
-    let remaining = maxDistance - traveled;
-    if (remaining <= step || tau <= 0.001) {
-      break;
-    }
-
-    let hit = traceSceneFirstHit(
-      ubo.bvhMode,
-      ubo.tlasNodeCount,
-      &bvh_index,
-      &bvh_position,
-      &bvh,
-      &tlasNodes,
-      &tlasInstanceIndices,
-      &tlasBlasRoots,
-      &tlasInstanceWorldToLocal,
-      &tlasInstanceLocalToWorld,
-      walkRay,
-      triEps,
-    );
-    if (!hit.didHit || hit.dist >= remaining) {
-      break;
-    }
-
-    let word = oitMaterialWord(hit.indices.w);
-    if (oitCastsShadow(word) && !oitHitIsScalarGlass(hit)) {
-      let alpha = materialAlphaCoverageForHit(hit, word);
-      if (!oitHitIsMaskDiscarded(hit, alpha)) {
-        if (alpha.mode == 2u) {
-          tau = tau * clamp(1.0 - alpha.coverage, 0.0, 1.0);
-        } else {
-          return 0.0;
-        }
-      }
-    }
-
-    traveled = traveled + hit.dist + step;
-    walkRay.origin = origin + dir * traveled;
-  }
-
-  return clamp(tau, 0.0, 1.0);
+  return traceSceneAlphaTransmittanceTextured(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    &bvh_index,
+    &bvh_position,
+    &bvh,
+    &tlasNodes,
+    &tlasInstanceIndices,
+    &tlasBlasRoots,
+    &tlasInstanceWorldToLocal,
+    &tlasInstanceLocalToWorld,
+    origin,
+    dir,
+    max(tMax, 0.0),
+    triEps,
+    true,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+  );
 }
 
 struct OitLayerNormals {

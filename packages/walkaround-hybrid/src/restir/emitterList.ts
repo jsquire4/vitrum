@@ -24,8 +24,11 @@ import {
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
 import {
+  type BarycentricWeights,
   classifyTriangleEmitterCore,
+  emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
+  forEachBarycentricSubTriangle,
   materialSpecScalarEmissiveLe,
 } from '@vitrum/shared-bvh';
 
@@ -39,8 +42,8 @@ interface Vector3Like {
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
  *   0..15  : vertexA.xyz + sourceTriIndex (-1 for non-BVH/placeholder emitters)
- *   16..31 : vertexB.xyz + pad
- *   32..47 : vertexC.xyz + pad
+ *   16..31 : vertexB.xyz + sourceSubdivLevel
+ *   32..47 : vertexC.xyz + sourceSubdivOrdinal
  *   48..63 : normal.xyz + area
  *   64..79 : Le.rgb + castShadowDisabled
  * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
@@ -218,6 +221,18 @@ export function buildEmitterListFromCore(
         color: scalarLe,
         selectionColor,
         sourceTriIndex: Math.trunc(sourceTriIndex),
+        subdivisionLevel: emissiveMapTriangleSubdivisionLevel(mat),
+        subdivisionSelectionColor: (wa: BarycentricWeights, wb: BarycentricWeights, wc: BarycentricWeights) =>
+          estimateSubTriangleEmissiveLe(
+            mat,
+            indices,
+            t,
+            wa,
+            wb,
+            wc,
+            options.uvs,
+            options.uv1s,
+          ) ?? selectionColor,
       };
     },
     options,
@@ -247,6 +262,14 @@ type TriangleEmitterClassifier = (
   selectionColor?: [number, number, number];
   /** Valid atlas/BVH triangle id for emissive-map sampling, or absent for fallback. */
   sourceTriIndex?: number;
+  /** Barycentric micro-triangle split for UV-varying emitter selection. */
+  subdivisionLevel?: number;
+  /** Per-micro-triangle selection radiance estimate in parent barycentric space. */
+  subdivisionSelectionColor?: (
+    wa: BarycentricWeights,
+    wb: BarycentricWeights,
+    wc: BarycentricWeights,
+  ) => [number, number, number];
 } | null;
 
 function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, number] | null {
@@ -256,6 +279,31 @@ function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, numb
 function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
   if (uvs == null) return [0, 0];
   return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
+}
+
+function baryVec3(
+  a: [number, number, number],
+  b: [number, number, number],
+  c: [number, number, number],
+  w: BarycentricWeights,
+): [number, number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
+  ];
+}
+
+function baryUv(
+  a: [number, number],
+  b: [number, number],
+  c: [number, number],
+  w: BarycentricWeights,
+): [number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+  ];
 }
 
 function estimateTriangleEmissiveLe(
@@ -277,6 +325,36 @@ function estimateTriangleEmissiveLe(
     uvAt(uv1s, i0),
     uvAt(uv1s, i1),
     uvAt(uv1s, i2),
+  );
+}
+
+function estimateSubTriangleEmissiveLe(
+  material: MaterialSpec,
+  indices: Uint32Array,
+  triIdx: number,
+  wa: BarycentricWeights,
+  wb: BarycentricWeights,
+  wc: BarycentricWeights,
+  uvs?: Float32Array,
+  uv1s?: Float32Array,
+): [number, number, number] | null {
+  const i0 = indices[triIdx * 3 + 0] ?? 0;
+  const i1 = indices[triIdx * 3 + 1] ?? 0;
+  const i2 = indices[triIdx * 3 + 2] ?? 0;
+  const uv0a = uvAt(uvs, i0);
+  const uv0b = uvAt(uvs, i1);
+  const uv0c = uvAt(uvs, i2);
+  const uv1a = uvAt(uv1s, i0);
+  const uv1b = uvAt(uv1s, i1);
+  const uv1c = uvAt(uv1s, i2);
+  return estimateMaterialSpecEmissiveLeOverTriangle(
+    material,
+    baryUv(uv0a, uv0b, uv0c, wa),
+    baryUv(uv0a, uv0b, uv0c, wb),
+    baryUv(uv0a, uv0b, uv0c, wc),
+    baryUv(uv1a, uv1b, uv1c, wa),
+    baryUv(uv1a, uv1b, uv1c, wb),
+    baryUv(uv1a, uv1b, uv1c, wc),
   );
 }
 
@@ -307,6 +385,8 @@ function buildEmitterListCore(
   const emitterData: {
     triIdx: number;
     sourceTriIndex: number;
+    sourceSubdivLevel: number;
+    sourceSubdivOrdinal: number;
     vA: [number, number, number];
     vB: [number, number, number];
     vC: [number, number, number];
@@ -317,6 +397,41 @@ function buildEmitterListCore(
     castShadowDisabled: boolean;
     power: number;
   }[] = [];
+
+  const pushEmitter = (e: {
+    triIdx: number;
+    sourceTriIndex: number;
+    sourceSubdivLevel?: number;
+    sourceSubdivOrdinal?: number;
+    vA: [number, number, number];
+    vB: [number, number, number];
+    vC: [number, number, number];
+    normal: [number, number, number];
+    area: number;
+    color: [number, number, number];
+    intensity: number;
+    castShadowDisabled: boolean;
+    selectionColor?: [number, number, number];
+  }): void => {
+    const powerColor = e.selectionColor ?? e.color;
+    const power = luminance(powerColor[0], powerColor[1], powerColor[2]) * e.area;
+    if (power < 1e-8) return;
+    emitterData.push({
+      triIdx: e.triIdx,
+      sourceTriIndex: e.sourceTriIndex,
+      sourceSubdivLevel: e.sourceSubdivLevel ?? 1,
+      sourceSubdivOrdinal: e.sourceSubdivOrdinal ?? 0,
+      vA: e.vA,
+      vB: e.vB,
+      vC: e.vC,
+      normal: e.normal,
+      area: e.area,
+      color: e.color,
+      intensity: e.intensity,
+      castShadowDisabled: e.castShadowDisabled,
+      power,
+    });
+  };
 
   for (let t = 0; t < triCount; t++) {
     const i0 = indices[t * 3 + 0]!;
@@ -356,22 +471,53 @@ function buildEmitterListCore(
     const [cr, cg, cb] = classified.color;
     const intensity = classified.intensity;
 
-    const powerColor = classified.selectionColor ?? classified.color;
-    const power = luminance(powerColor[0], powerColor[1], powerColor[2]) * area;
-    if (power < 1e-8) continue;
+    const parentA: [number, number, number] = [ax, ay, az];
+    const parentB: [number, number, number] = [bx, by, bz];
+    const parentC: [number, number, number] = [cx0, cy0, cz0];
+    const normal: [number, number, number] = [nx, ny, nz];
+    const sourceTriIndex = classified.sourceTriIndex ?? -1;
+    const subdivisionLevel = Math.max(1, Math.floor(classified.subdivisionLevel ?? 1));
+    if (sourceTriIndex !== -1 && subdivisionLevel > 1) {
+      let ordinal = 0;
+      forEachBarycentricSubTriangle(subdivisionLevel, (wa, wb, wc) => {
+        const subA = baryVec3(parentA, parentB, parentC, wa);
+        const subB = baryVec3(parentA, parentB, parentC, wb);
+        const subC = baryVec3(parentA, parentB, parentC, wc);
+        const subSelectionColor = classified.subdivisionSelectionColor?.(wa, wb, wc) ??
+          classified.selectionColor ??
+          classified.color;
+        pushEmitter({
+          triIdx: t,
+          sourceTriIndex,
+          sourceSubdivLevel: subdivisionLevel,
+          sourceSubdivOrdinal: ordinal,
+          vA: subA,
+          vB: subB,
+          vC: subC,
+          normal,
+          area: area / (subdivisionLevel * subdivisionLevel),
+          color: [cr, cg, cb],
+          intensity,
+          castShadowDisabled: false,
+          selectionColor: subSelectionColor,
+        });
+        ordinal += 1;
+      });
+      continue;
+    }
 
-    emitterData.push({
+    pushEmitter({
       triIdx: t,
-      sourceTriIndex: classified.sourceTriIndex ?? -1,
-      vA: [ax, ay, az],
-      vB: [bx, by, bz],
-      vC: [cx0, cy0, cz0],
-      normal: [nx, ny, nz],
+      sourceTriIndex,
+      vA: parentA,
+      vB: parentB,
+      vC: parentC,
+      normal,
       area,
       color: [cr, cg, cb],
       intensity,
       castShadowDisabled: false,
-      power,
+      ...(classified.selectionColor != null ? { selectionColor: classified.selectionColor } : {}),
     });
   }
 
@@ -383,6 +529,8 @@ function buildEmitterListCore(
       emitterData.push({
         triIdx: -1,
         sourceTriIndex: -1,
+        sourceSubdivLevel: 1,
+        sourceSubdivOrdinal: 0,
         vA: ex.vA, vB: ex.vB, vC: ex.vC,
         normal: ex.normal,
         area: ex.area,
@@ -408,6 +556,8 @@ function buildEmitterListCore(
     emitterData.push({
       triIdx: -1,
       sourceTriIndex: -1,
+      sourceSubdivLevel: 1,
+      sourceSubdivOrdinal: 0,
       vA: [0, 10, 0], vB: [1, 10, 0], vC: [0.5, 10, 1],
       normal: [0, -1, 0],
       area: 0.5,
@@ -433,8 +583,8 @@ function buildEmitterListCore(
     const base = i * EMITTER_FLOATS;
     const sourceTriIndex = options.packSourceTriIndex === true ? e.sourceTriIndex : -1;
     emitterFloats[base + 0] = e.vA[0]; emitterFloats[base + 1] = e.vA[1]; emitterFloats[base + 2] = e.vA[2]; emitterFloats[base + 3] = sourceTriIndex;
-    emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = 0;
-    emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = 0;
+    emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = sourceTriIndex !== -1 ? e.sourceSubdivLevel : 1;
+    emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = sourceTriIndex !== -1 ? e.sourceSubdivOrdinal : 0;
     emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;
     emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2]; emitterFloats[base + 19] = e.castShadowDisabled ? 1 : 0;
     totalEmissivePower += e.power;

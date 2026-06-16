@@ -240,6 +240,8 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'metallic',
   'emissiveIntensity',
   'ior',
+  'transmission',
+  'thickness',
   'specularIntensity',
   'clearcoat',
   'clearcoatRoughness',
@@ -991,6 +993,7 @@ function defaultClampRange(field: string): [number, number] {
     case 'sheenColor':
     case 'roughness':
     case 'metallic':
+    case 'transmission':
     case 'specularIntensity':
     case 'clearcoat':
     case 'clearcoatRoughness':
@@ -1007,6 +1010,7 @@ function defaultClampRange(field: string): [number, number] {
       return [0, Math.PI];
     case 'emissive':
     case 'emissiveIntensity':
+    case 'thickness':
     case 'color':
     case 'intensity':
       return [0, Infinity];
@@ -1039,6 +1043,8 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'emissive': return [...(m.emissive ?? [0, 0, 0])];
       case 'emissiveIntensity': return [m.emissiveIntensity ?? 1];
       case 'ior': return [m.ior ?? 1.5];
+      case 'transmission': return [m.transmission ?? 0];
+      case 'thickness': return [m.thickness ?? 0];
       case 'specularColor': return [...(m.specularColor ?? [1, 1, 1])];
       case 'specularIntensity': return [m.specularIntensity ?? 1];
       case 'clearcoat': return [m.clearcoat ?? 0];
@@ -1072,6 +1078,8 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'emissive': return { emissive: value as unknown as Vec3 };
     case 'emissiveIntensity': return { emissiveIntensity: value[0]! };
     case 'ior': return { ior: value[0]! };
+    case 'transmission': return { transmission: value[0]! };
+    case 'thickness': return { thickness: value[0]! };
     case 'specularColor': return { specularColor: value as unknown as Vec3 };
     case 'specularIntensity': return { specularIntensity: value[0]! };
     case 'clearcoat': return { clearcoat: value[0]! };

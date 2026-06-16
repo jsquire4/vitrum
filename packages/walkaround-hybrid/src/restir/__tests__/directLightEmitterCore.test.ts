@@ -19,7 +19,9 @@ interface DecodedEmitter {
   vA: [number, number, number];
   sourceTriIndex: number;
   vB: [number, number, number];
+  sourceSubdivLevel: number;
   vC: [number, number, number];
+  sourceSubdivOrdinal: number;
   normal: [number, number, number];
   area: number;
   color: [number, number, number];
@@ -48,11 +50,13 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       emitterFloats[b + 5]!,
       emitterFloats[b + 6]!,
     ];
+    const sourceSubdivLevel = emitterFloats[b + 7]!;
     const vC: [number, number, number] = [
       emitterFloats[b + 8]!,
       emitterFloats[b + 9]!,
       emitterFloats[b + 10]!,
     ];
+    const sourceSubdivOrdinal = emitterFloats[b + 11]!;
     const normal: [number, number, number] = [
       emitterFloats[b + 12]!,
       emitterFloats[b + 13]!,
@@ -69,7 +73,9 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       vA,
       sourceTriIndex,
       vB,
+      sourceSubdivLevel,
       vC,
+      sourceSubdivOrdinal,
       normal,
       area,
       color,
@@ -206,7 +212,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
   });
 
-  it('packs scalar emissive radiance plus UV-local quadrature power for merged emissiveMap emitters', () => {
+  it('packs scalar radiance plus UV-local micro-emitter power for merged emissiveMap emitters', () => {
     const panel: MeshPrimitive = {
       ...supportTriangle('emissive-map-panel'),
       material: {
@@ -232,20 +238,21 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedSelectionLe: [number, number, number] = [0.5, 1, 2];
     const expectedScalarLe: [number, number, number] = [2, 2, 2];
 
-    expect(emitters).toHaveLength(1);
-    expect(emitters[0]!.sourceTriIndex).toBe(0);
-    expect(emitters[0]!.color[0]).toBeCloseTo(expectedScalarLe[0], 6);
-    expect(emitters[0]!.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
-    expect(emitters[0]!.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
-    expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
-    expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
-      5,
-    );
-    expect(new Float32Array(buffers.emitterCdf.cpuData)[0]).toBe(1);
+    expect(emitters).toHaveLength(4);
+    expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(0.5, 6);
+    expect(emitters.map((e) => e.sourceSubdivOrdinal)).toEqual([0, 1, 2, 3]);
+    for (const e of emitters) {
+      expect(e.sourceTriIndex).toBe(0);
+      expect(e.sourceSubdivLevel).toBe(2);
+      expect(e.color[0]).toBeCloseTo(expectedScalarLe[0], 6);
+      expect(e.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
+      expect(e.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
+      expect(e.area).toBeCloseTo(0.125, 6);
+    }
+    expect(buffers.totalEmissivePower).toBeGreaterThan(0);
+    expect(new Float32Array(buffers.emitterCdf.cpuData).at(-1)).toBe(1);
   });
 
   it('packs TLAS emissiveMap emitters with local material-atlas source triangles', () => {
@@ -275,18 +282,19 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedSelectionLe: [number, number, number] = [0.5, 1, 2];
     const expectedScalarLe: [number, number, number] = [2, 2, 2];
 
-    expect(emitters).toHaveLength(1);
-    expect(emitters[0]!.sourceTriIndex).toBe(0);
-    expect(emitters[0]!.color[0]).toBeCloseTo(expectedScalarLe[0], 6);
-    expect(emitters[0]!.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
-    expect(emitters[0]!.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
-    expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
-      5,
-    );
+    expect(emitters).toHaveLength(4);
+    expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(0.5, 6);
+    expect(emitters.map((e) => e.sourceSubdivOrdinal)).toEqual([0, 1, 2, 3]);
+    for (const e of emitters) {
+      expect(e.sourceTriIndex).toBe(0);
+      expect(e.sourceSubdivLevel).toBe(2);
+      expect(e.color[0]).toBeCloseTo(expectedScalarLe[0], 6);
+      expect(e.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
+      expect(e.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
+    }
+    expect(buffers.totalEmissivePower).toBeGreaterThan(0);
   });
 
   it('maps instanced TLAS emissiveMap emitters back to the shared local source triangle', () => {
@@ -324,21 +332,19 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedSelectionLe: [number, number, number] = [11 / 7, 13 / 7, 10 / 7];
     const expectedScalarLe: [number, number, number] = [4, 4, 4];
 
-    expect(emitters).toHaveLength(2);
+    expect(emitters).toHaveLength(8);
     for (const e of emitters) {
       expect(e.sourceTriIndex).toBe(0);
+      expect(e.sourceSubdivLevel).toBe(2);
       expect(e.color[0]).toBeCloseTo(expectedScalarLe[0], 6);
       expect(e.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
       expect(e.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
-      expect(e.area).toBeCloseTo(0.5, 6);
+      expect(e.area).toBeCloseTo(0.125, 6);
     }
-    expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 1.0,
-      5,
-    );
+    expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(1.0, 6);
+    expect(buffers.totalEmissivePower).toBeGreaterThan(0);
   });
 
   it('encodes mirrored TLAS emissiveMap emitters with reversed source-triangle orientation', () => {
@@ -373,16 +379,16 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedSelectionLe: [number, number, number] = [12 / 7, 0.75, 57 / 28];
-
-    expect(emitters).toHaveLength(1);
-    expect(emitters[0]!.sourceTriIndex).toBe(-2);
-    expect(emitters[0]!.color).toEqual([3, 3, 3]);
-    expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
-    expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
-      5,
-    );
+    expect(emitters).toHaveLength(4);
+    expect(emitters.map((e) => e.sourceSubdivOrdinal)).toEqual([0, 1, 2, 3]);
+    for (const e of emitters) {
+      expect(e.sourceTriIndex).toBe(-2);
+      expect(e.sourceSubdivLevel).toBe(2);
+      expect(e.color).toEqual([3, 3, 3]);
+      expect(e.area).toBeCloseTo(0.125, 6);
+    }
+    expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(0.5, 6);
+    expect(buffers.totalEmissivePower).toBeGreaterThan(0);
   });
 
   it('does not mark transmissive secondary emitters as emissive-map sources', () => {

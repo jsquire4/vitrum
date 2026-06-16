@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js';
+import { EMITTER_LE_AT_XI_WGSL } from '../emitterLeAtXi.wgsl.js';
 import { EMITTER_SAMPLING_WGSL } from '../emitterSampling.wgsl.js';
 import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
@@ -19,11 +20,23 @@ describe('emitter castShadow:false shader gates', () => {
 
   it('threads the shared EmitterTri castShadowDisabled lane through ReSTIR-DI visibility', () => {
     expect(RESERVOIR_DI_WGSL).toContain('sourceTriIndex: f32');
+    expect(RESERVOIR_DI_WGSL).toContain('sourceSubdivLevel: f32');
+    expect(RESERVOIR_DI_WGSL).toContain('sourceSubdivOrdinal: f32');
     expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(RIS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
     expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+  });
+
+  it('maps micro-emitter samples back to parent-triangle UV barycentrics', () => {
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('fn emitterParentBarycentricFromXi(e: EmitterTri, xi: vec2f) -> vec3f');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('e.sourceSubdivLevel');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('e.sourceSubdivOrdinal');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('return localBary.x * a + localBary.y * b + localBary.z * c;');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('return localBary.x * b + localBary.y * d + localBary.z * c;');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('var bary = emitterParentBarycentricFromXi(e, xi);');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('bary = vec3f(bary.z, bary.y, bary.x);');
   });
 
   it('threads analytic point/spot and DDGI area-emitter flags into shadow-ray gates', () => {

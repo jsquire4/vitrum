@@ -22,9 +22,9 @@ struct EmitterTri {
   vA:        vec3f,   // bytes 0-11
   sourceTriIndex: f32, // bytes 12-15 (-1.0 for analytic/placeholder emitters)
   vB:        vec3f,   // bytes 16-27
-  _padB:     f32,     // bytes 28-31
+  sourceSubdivLevel: f32,   // bytes 28-31 (1 for unsplit emitters)
   vC:        vec3f,   // bytes 32-43
-  _padC:     f32,     // bytes 44-47
+  sourceSubdivOrdinal: f32, // bytes 44-47 (parent barycentric micro-triangle id)
   normal:    vec3f,   // bytes 48-59
   area:      f32,     // bytes 60-63
   Le:        vec3f,   // bytes 64-75

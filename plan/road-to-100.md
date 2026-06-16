@@ -786,10 +786,11 @@ first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_F
 core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, `envMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission/thickness tint,
-emissive-map light selection now uses CPU-readable UV-local per-triangle quadrature
-for material-backed walkaround emitters and implicit PT mesh lights rather than
-whole-texture average power, but still does not build texel-exact emitter PDFs;
-analytic/extra emitter mapped payloads plus GI/RC/DDGI emission still use averaged `Le`,
+  emissive-map light selection now uses CPU-readable UV-local per-triangle quadrature
+  plus bounded barycentric micro-emitter subdivision for material-backed walkaround
+  ReSTIR-DI emitters and implicit PT mesh lights rather than whole-texture average
+  power, but still does not build full texel-alias emitter PDFs; analytic/extra
+  emitter mapped payloads plus GI/RC/DDGI emission still use averaged `Le`,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus
