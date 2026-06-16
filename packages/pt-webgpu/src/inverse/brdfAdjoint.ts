@@ -61,6 +61,7 @@ export type Vec3 = readonly [number, number, number];
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
+const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;
 const ANISOTROPY_DERIV_STEP = 1e-3;
 const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
 
@@ -1029,6 +1030,66 @@ export function dBrdf_dIridescenceIor(
     iridescence * (fp[1] - fm[1]) / denom,
     iridescence * (fp[2] - fm[2]) / denom,
   ]);
+}
+
+/**
+ * Path-replay partials for map-free KHR_materials_iridescence
+ * `iridescenceThicknessRange`.
+ *
+ * The forward single-layer helper evaluates a sampled thickness
+ * `mix(min,max,V·H)` in the map-free direct-light domain. We take a local
+ * symmetric derivative of that thin-film F0 colour with respect to sampled
+ * thickness, then chain it to the authored range endpoints by
+ * ∂thickness/∂min = 1 − V·H and ∂thickness/∂max = V·H. This mirrors the WGSL
+ * replay pass and is still a frozen-path local partial, not a full-render FD
+ * probe.
+ */
+export function dBrdf_dIridescenceThicknessRange(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  iridescence: number,
+  iridescenceIor: number,
+  iridescenceThicknessMin: number,
+  iridescenceThicknessMax: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): { min: Vec3; max: Vec3 } {
+  if (iridescence < 1e-4) return { min: [0, 0, 0], max: [0, 0, 0] };
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.min(Math.max(dot(wo, h), 0.0), 1.0);
+  const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const thicknessNm = iridescenceThicknessMin +
+    (iridescenceThicknessMax - iridescenceThicknessMin) * vDotH;
+  const step = IRIDESCENCE_THICKNESS_DERIV_STEP;
+  const tp = Math.max(0.0, thicknessNm + step);
+  const tm = Math.max(0.0, thicknessNm - step);
+  const denom = tp - tm;
+  if (denom <= 1e-6) return { min: [0, 0, 0], max: [0, 0, 0] };
+  const fp = evalIridescence(1.0, iridescenceIor, vDotH, tp, baseF0);
+  const fm = evalIridescence(1.0, iridescenceIor, vDotH, tm, baseF0);
+  const dBrdf_dThickness = dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
+    iridescence * (fp[0] - fm[0]) / denom,
+    iridescence * (fp[1] - fm[1]) / denom,
+    iridescence * (fp[2] - fm[2]) / denom,
+  ]);
+  const minWeight = 1.0 - vDotH;
+  const maxWeight = vDotH;
+  return {
+    min: [
+      dBrdf_dThickness[0] * minWeight,
+      dBrdf_dThickness[1] * minWeight,
+      dBrdf_dThickness[2] * minWeight,
+    ],
+    max: [
+      dBrdf_dThickness[0] * maxWeight,
+      dBrdf_dThickness[1] * maxWeight,
+      dBrdf_dThickness[2] * maxWeight,
+    ],
+  };
 }
 
 /**

@@ -31,6 +31,7 @@ import {
   ADJOINT_FIELD_SHEEN_COLOR,
   ADJOINT_FIELD_IRIDESCENCE,
   ADJOINT_FIELD_IRIDESCENCE_IOR,
+  ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE,
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
   ADJOINT_FIELD_EMITTER_COLOR,
@@ -268,6 +269,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_ANISOTROPY_ROTATION).toBe(15);
     expect(ADJOINT_FIELD_EMITTER_COLOR).toBe(16);
     expect(ADJOINT_FIELD_EMITTER_INTENSITY).toBe(17);
+    expect(ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE).toBe(18);
     expect(ADJOINT_EMITTER_TARGET_DIRECTIONAL).toBe(1);
     expect(ADJOINT_EMITTER_TARGET_POINT).toBe(2);
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
@@ -284,6 +286,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('binding: 19, resource: sb.materialLinearTextureView');
     expect(ADJOINT_PASS_TS).toContain("case 'iridescenceIor':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;');
+    expect(ADJOINT_PASS_TS).toContain("case 'iridescenceThicknessRange':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropy':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropyRotation':");

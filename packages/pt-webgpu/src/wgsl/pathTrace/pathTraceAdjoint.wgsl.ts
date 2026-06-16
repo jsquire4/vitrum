@@ -271,6 +271,7 @@ fn dBrdf_dSpecularIntensity(
 // Mirrors inverse/brdfAdjoint.ts:dBrdf_dIridescence*. This is map-free scalar
 // iridescence only: no iridescence maps, no thickness maps, no anisotropy.
 const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
+const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;
 const ANISOTROPY_DERIV_STEP = 1e-3;
 const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
 fn adjointIridXyzToRec709(xyz: vec3f) -> vec3f {
@@ -386,6 +387,42 @@ fn dBrdf_dIridescenceIor(
   return dBrdf_dSpecularF0(
     baseColor, roughness, metallic, normal, wo, wi,
     iridescence * (fp - fm) / denom,
+  );
+}
+
+struct IridescenceThicknessRangePartial {
+  min: vec3f,
+  max: vec3f,
+}
+fn dBrdf_dIridescenceThicknessRange(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+  iridescence: f32, iridescenceIor: f32,
+  iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+) -> IridescenceThicknessRangePartial {
+  if (iridescence < 1e-4) {
+    return IridescenceThicknessRangePartial(vec3f(0.0), vec3f(0.0));
+  }
+  let h = safe_normalize(wi + wo);
+  let vDotH = clamp(max(dot(wo, h), 0.0), 0.0, 1.0);
+  let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, vDotH);
+  let tp = max(0.0, thicknessNm + IRIDESCENCE_THICKNESS_DERIV_STEP);
+  let tm = max(0.0, thicknessNm - IRIDESCENCE_THICKNESS_DERIV_STEP);
+  let denom = tp - tm;
+  if (denom <= 1e-6) {
+    return IridescenceThicknessRangePartial(vec3f(0.0), vec3f(0.0));
+  }
+  let fp = adjointEvalIridescence(1.0, iridescenceIor, vDotH, tp, baseF0);
+  let fm = adjointEvalIridescence(1.0, iridescenceIor, vDotH, tm, baseF0);
+  let dBrdf_dThickness = dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    iridescence * (fp - fm) / denom,
+  );
+  return IridescenceThicknessRangePartial(
+    dBrdf_dThickness * (1.0 - vDotH),
+    dBrdf_dThickness * vDotH,
   );
 }
 

@@ -80,6 +80,7 @@ export const ADJOINT_FIELD_ANISOTROPY = 14;
 export const ADJOINT_FIELD_ANISOTROPY_ROTATION = 15;
 export const ADJOINT_FIELD_EMITTER_COLOR = 16;
 export const ADJOINT_FIELD_EMITTER_INTENSITY = 17;
+export const ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE = 18;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -710,6 +711,7 @@ struct DirectLightAdjoint {
   sheenColor: vec3f,
   iridescenceGrad: f32,
   iridescenceIorGrad: f32,
+  iridescenceThicknessRangeGrad: vec2f,
   anisotropyGrad: f32,
   anisotropyRotationGrad: f32,
 }
@@ -776,6 +778,14 @@ fn directLightAdjoint(
     baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
+  let gIridescenceThicknessRangePartial = dBrdf_dIridescenceThicknessRange(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  let gIridescenceThicknessRange = vec2f(
+    dot(dLoss_dR, gIridescenceThicknessRangePartial.min * nDotL * Li),
+    dot(dLoss_dR, gIridescenceThicknessRangePartial.max * nDotL * Li),
+  );
   let gAnisotropy = dot(dLoss_dR, dBrdf_dAnisotropy(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -787,7 +797,7 @@ fn directLightAdjoint(
   return DirectLightAdjoint(
     gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
     gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness, gSheenColor,
-    gIridescence, gIridescenceIor, gAnisotropy, gAnisotropyRotation,
+    gIridescence, gIridescenceIor, gIridescenceThicknessRange, gAnisotropy, gAnisotropyRotation,
   );
 }
 
@@ -972,6 +982,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gSheenColor = vec3f(0.0);
     var gIridescence = 0.0;
     var gIridescenceIor = 0.0;
+    var gIridescenceThicknessRange = vec2f(0.0);
     var gAnisotropy = 0.0;
     var gAnisotropyRotation = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
@@ -1007,6 +1018,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
@@ -1060,6 +1072,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
@@ -1119,6 +1132,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
@@ -1193,6 +1207,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
@@ -1261,6 +1276,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
@@ -1324,6 +1340,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gIridescence * iridescenceGradientFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_IRIDESCENCE_IOR}u) {
         adjointScatter(gradOffset, gIridescenceIor * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE}u) {
+        adjointScatter(gradOffset, gIridescenceThicknessRange.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gIridescenceThicknessRange.y * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY}u) {
         adjointScatter(gradOffset, gAnisotropy * anisotropyMapSample.strength * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY_ROTATION}u) {

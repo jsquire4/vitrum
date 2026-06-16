@@ -34,6 +34,7 @@ import {
   ADJOINT_FIELD_SHEEN_COLOR,
   ADJOINT_FIELD_IRIDESCENCE,
   ADJOINT_FIELD_IRIDESCENCE_IOR,
+  ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE,
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
   ADJOINT_FIELD_EMITTER_COLOR,
@@ -200,6 +201,9 @@ export class AdjointPass {
           break;
         case 'iridescenceIor':
           fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;
+          break;
+        case 'iridescenceThicknessRange':
+          fieldCode = ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE;
           break;
         case 'anisotropy':
           fieldCode = ADJOINT_FIELD_ANISOTROPY;

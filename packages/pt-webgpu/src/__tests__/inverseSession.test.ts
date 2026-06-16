@@ -1245,7 +1245,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps iridescence thickness range on finite-difference until path replay mirrors vec2 thin-film gradients', () => {
+  it('resolves map-free vec2 iridescenceThicknessRange to path-replay', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1272,15 +1272,50 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
+    expect(session.method).toBe('path-replay');
     expect(session.currentValues()[0]).toEqual([
       expect.closeTo(120, 6),
       expect.closeTo(420, 6),
     ]);
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps mapped iridescence thickness ranges on finite-difference until texture-space range gradients replay', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 1,
+                iridescenceIor: 1.5,
+                iridescenceThicknessRange: [120, 420],
+                iridescenceThicknessMap: {
+                  handle: { width: 1, height: 1, data: new Float32Array([0, 0.5, 0, 1]) },
+                },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.iridescenceThicknessRange', kind: 'vec2' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-field',
+      code: 'path-replay-unsupported-material',
       path: 'materials.panel.iridescenceThicknessRange',
-      details: expect.objectContaining({ field: 'iridescenceThicknessRange' }),
+      details: expect.objectContaining({ unsupportedMaterialFields: ['iridescenceThicknessMap'] }),
     }));
     session.dispose();
   });

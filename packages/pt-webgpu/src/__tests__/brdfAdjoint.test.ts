@@ -28,6 +28,7 @@ import {
 	  dBrdf_dSheenRoughness,
 	  dBrdf_dIridescence,
 	  dBrdf_dIridescenceIor,
+	  dBrdf_dIridescenceThicknessRange,
 	  dBrdf_dAnisotropy,
 	  dBrdf_dAnisotropyRotation,
 	} from '../inverse/brdfAdjoint.js';
@@ -414,6 +415,50 @@ describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == 
       expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
     }
   });
+
+  it('matches FD for map-free vec2 iridescenceThicknessRange over the unclamped interior', () => {
+    const h = 1e-2;
+    const analytic = dBrdf_dIridescenceThicknessRange(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.iridescence,
+      cfg.iridescenceIor,
+      cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const fpMin = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor, cfg.iridescenceThicknessMin + h,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fmMin = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor, cfg.iridescenceThicknessMin - h,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fpMax = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax + h, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fmMax = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax - h, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fdMin = (fpMin[c]! - fmMin[c]!) / (2 * h);
+      const fdMax = (fpMax[c]! - fmMax[c]!) / (2 * h);
+      expect(Math.abs(analytic.min[c]! - fdMin)).toBeLessThan(1e-4);
+      expect(Math.abs(analytic.max[c]! - fdMax)).toBeLessThan(1e-4);
+    }
+  });
 });
 
 describe('BRDF adjoint — map-free KHR_materials_anisotropy scalar partials == finite difference', () => {
@@ -568,12 +613,15 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	  it('iridescence partial mirrors the thin-film F0 scalar derivative', () => {
 	    expect(wgsl).toContain('fn dBrdf_dIridescence(');
 	    expect(wgsl).toContain('fn dBrdf_dIridescenceIor(');
+	    expect(wgsl).toContain('fn dBrdf_dIridescenceThicknessRange(');
 	    expect(wgsl).toContain('fn adjointEvalIridescence(');
 	    expect(wgsl).toContain('let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);');
 	    expect(wgsl).toContain('return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);');
 	    expect(wgsl).toContain('const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;');
+	    expect(wgsl).toContain('const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;');
 	    expect(wgsl).toContain('let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);');
 	    expect(wgsl).toContain('iridescence * (fp - fm) / denom');
+	    expect(wgsl).toContain('dBrdf_dThickness * (1.0 - vDotH)');
 	  });
 
 	  it('anisotropy partials mirror the map-free anisotropic GGX local derivatives', () => {
