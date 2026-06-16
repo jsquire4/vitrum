@@ -204,6 +204,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   normal/bump/displacement, clearcoat-normal, layered/volume/spectral,
   environment, indirect, and forward light-selection MIS parity remain outside the
   scoped path-replay domain.
+- Later 2026-06-16 inverse API follow-up: pt-webgpu finite-difference inverse
+  sessions now accept renderer-consumed scalar map controls (`normalScale`,
+  `bumpScale`, `clearcoatNormalScale`, `aoMapIntensity`, `lightMapIntensity`,
+  `envMapIntensity`). They seed from the scene, patch through the incremental
+  material hook, and requested `method:'path-replay'` reports structured
+  unsupported-field diagnostics until analytic normal/map-scale replay is
+  implemented.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
   path-replay domain. The CPU oracle now mirrors the additive fixed-F0

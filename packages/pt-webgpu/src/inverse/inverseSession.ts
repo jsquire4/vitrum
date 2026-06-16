@@ -258,6 +258,12 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'iridescenceIor',
   'anisotropy',
   'anisotropyRotation',
+  'normalScale',
+  'bumpScale',
+  'clearcoatNormalScale',
+  'aoMapIntensity',
+  'lightMapIntensity',
+  'envMapIntensity',
 ]);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
@@ -1193,6 +1199,7 @@ function defaultClampRange(field: string): [number, number] {
     case 'sheenRoughness':
     case 'iridescence':
     case 'anisotropy':
+    case 'aoMapIntensity':
       return [0, 1];
     case 'ior':
       return [1, 2.5];
@@ -1203,6 +1210,11 @@ function defaultClampRange(field: string): [number, number] {
     case 'emissive':
     case 'emissiveIntensity':
     case 'thickness':
+    case 'normalScale':
+    case 'bumpScale':
+    case 'clearcoatNormalScale':
+    case 'lightMapIntensity':
+    case 'envMapIntensity':
     case 'color':
     case 'intensity':
       return [0, Infinity];
@@ -1250,6 +1262,12 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'iridescenceIor': return [m.iridescenceIor ?? 1.3];
       case 'anisotropy': return [m.anisotropy ?? 0];
       case 'anisotropyRotation': return [m.anisotropyRotation ?? 0];
+      case 'normalScale': return [m.normalScale ?? 1];
+      case 'bumpScale': return [m.bumpScale ?? 1];
+      case 'clearcoatNormalScale': return [m.clearcoatNormalScale ?? 1];
+      case 'aoMapIntensity': return [m.aoMapIntensity ?? 1];
+      case 'lightMapIntensity': return [m.lightMapIntensity ?? 1];
+      case 'envMapIntensity': return [m.envMapIntensity ?? 1];
       default: break;
     }
   } else {
@@ -1287,6 +1305,12 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'iridescenceIor': return { iridescenceIor: value[0]! };
     case 'anisotropy': return { anisotropy: value[0]! };
     case 'anisotropyRotation': return { anisotropyRotation: value[0]! };
+    case 'normalScale': return { normalScale: value[0]! };
+    case 'bumpScale': return { bumpScale: value[0]! };
+    case 'clearcoatNormalScale': return { clearcoatNormalScale: value[0]! };
+    case 'aoMapIntensity': return { aoMapIntensity: value[0]! };
+    case 'lightMapIntensity': return { lightMapIntensity: value[0]! };
+    case 'envMapIntensity': return { envMapIntensity: value[0]! };
     default: throw new Error(`inverse: unsupported material field "${field}".`);
   }
 }

@@ -76,10 +76,12 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const alphaCutoff = mat.alphaMode === 'mask'
         ? mat.alphaCutoff ?? 0.5
         : 0;
+      const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
+      const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + alphaCutoff;
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + alphaCutoff + materialMapIntensity;
         rgb[p * 3 + 2] = mat.baseColor[2];
       }
       return { rgb, channels: 3 as const };
@@ -284,6 +286,65 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(session.currentValues()[1]![0]).toBeLessThanOrEqual(0.400001);
     expect(fake.scene.primitives[0]!.material.opacity).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.alphaCutoff).toBeCloseTo(session.currentValues()[1]![0]!, 6);
+    session.dispose();
+  });
+
+  it('optimizes renderer-consumed scalar map controls through finite differences', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                normalScale: 0.8,
+                bumpScale: 0.7,
+                clearcoatNormalScale: 0.6,
+                aoMapIntensity: 0.9,
+                lightMapIntensity: 0.5,
+                envMapIntensity: 0.4,
+              },
+            }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.normalScale', kind: 'scalar', max: 0.4 },
+        { path: 'materials.panel.bumpScale', kind: 'scalar', max: 0.4 },
+        { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar', max: 0.4 },
+        { path: 'materials.panel.aoMapIntensity', kind: 'scalar', max: 0.4 },
+        { path: 'materials.panel.lightMapIntensity', kind: 'scalar', max: 0.4 },
+        { path: 'materials.panel.envMapIntensity', kind: 'scalar', max: 0.4 },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.8, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.7, 6)]);
+    expect(session.currentValues()[2]).toEqual([expect.closeTo(0.6, 6)]);
+    expect(session.currentValues()[3]).toEqual([expect.closeTo(0.9, 6)]);
+    expect(session.currentValues()[4]).toEqual([expect.closeTo(0.5, 6)]);
+    expect(session.currentValues()[5]).toEqual([expect.closeTo(0.4, 6)]);
+
+    const result = await session.step();
+    for (const grad of result.gradient) {
+      expect(grad[0]).toBeGreaterThan(0);
+    }
+    for (const value of session.currentValues()) {
+      expect(value[0]).toBeLessThanOrEqual(0.400001);
+    }
+    const mat = fake.scene.primitives[0]!.material;
+    expect(mat.normalScale).toBeCloseTo(session.currentValues()[0]![0]!, 6);
+    expect(mat.bumpScale).toBeCloseTo(session.currentValues()[1]![0]!, 6);
+    expect(mat.clearcoatNormalScale).toBeCloseTo(session.currentValues()[2]![0]!, 6);
+    expect(mat.aoMapIntensity).toBeCloseTo(session.currentValues()[3]![0]!, 6);
+    expect(mat.lightMapIntensity).toBeCloseTo(session.currentValues()[4]![0]!, 6);
+    expect(mat.envMapIntensity).toBeCloseTo(session.currentValues()[5]![0]!, 6);
     session.dispose();
   });
 
@@ -1100,6 +1161,67 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       path: 'materials.panel.alphaCutoff',
       details: expect.objectContaining({ field: 'alphaCutoff', finiteDifferenceReason: 'visibility' }),
     }));
+    session.dispose();
+  });
+
+  it('keeps scalar map controls on finite-difference until path replay mirrors normal/map-scale terms', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                normalScale: 0.8,
+                bumpScale: 0.7,
+                clearcoatNormalScale: 0.6,
+                aoMapIntensity: 0.5,
+                lightMapIntensity: 0.4,
+                envMapIntensity: 0.3,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(6) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.normalScale', kind: 'scalar' },
+        { path: 'materials.panel.bumpScale', kind: 'scalar' },
+        { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar' },
+        { path: 'materials.panel.aoMapIntensity', kind: 'scalar' },
+        { path: 'materials.panel.lightMapIntensity', kind: 'scalar' },
+        { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()).toEqual([
+      [expect.closeTo(0.8, 6)],
+      [expect.closeTo(0.7, 6)],
+      [expect.closeTo(0.6, 6)],
+      [expect.closeTo(0.5, 6)],
+      [expect.closeTo(0.4, 6)],
+      [expect.closeTo(0.3, 6)],
+    ]);
+    for (const field of [
+      'normalScale',
+      'bumpScale',
+      'clearcoatNormalScale',
+      'aoMapIntensity',
+      'lightMapIntensity',
+      'envMapIntensity',
+    ]) {
+      expect(session.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'path-replay-unsupported-field',
+        path: `materials.panel.${field}`,
+        details: { field },
+      }));
+    }
     session.dispose();
   });
 
