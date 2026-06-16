@@ -752,8 +752,11 @@ and sampled a second time. CPU-readable emissive maps still feed average linear 
 direct emitter selection-power path. 2026-06-16 follow-up: merged-BVH
 ReSTIR-DI material-backed emitters pack a source-triangle lane, so RIS candidate
 scoring, temporal/spatial pHat reuse, and final shade evaluate the emissive map
-at the stored triangle `xi`; TLAS/analytic emitters deliberately keep the
-average-`Le` fallback. Transmission maps modulate shade/RIS/GI glass gating, volume thickness maps
+at the stored triangle `xi`. Later 2026-06-16 follow-up: TLAS material-backed
+emitters now map each world-expanded emitter triangle back to the local BLAS
+material-atlas triangle and use the same sampled-texel payload; mirrored TLAS
+instances and analytic/extra emitters deliberately keep the average-`Le`
+fallback. Transmission maps modulate shade/RIS/GI glass gating, volume thickness maps
 sample glTF G and exponentiate the scalar Beer tint in shade, transmitted GI,
 and tinted-visibility paths, and light maps add
 first-hit baked outgoing radiance with `lightMapIntensity`. `CONSUMED_MATERIAL_FIELDS` and the
@@ -761,8 +764,8 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, `envMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission/thickness tint,
 emissive-map light selection still uses a CPU-readable average rather than
-texel-exact emitter PDFs, TLAS/analytic emitter payloads plus GI/RC/DDGI
-emission still use averaged `Le`, GI receiver/reuse targeting is now material-lobe aware but still
+texel-exact emitter PDFs, mirrored-TLAS and analytic/extra emitter payloads plus
+GI/RC/DDGI emission still use averaged `Le`, GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus
 analytic point/spot and center-sampled finite-emitter lighting, but

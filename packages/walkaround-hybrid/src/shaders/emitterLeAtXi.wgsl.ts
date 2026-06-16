@@ -7,13 +7,10 @@ fn emitterSampleBarycentricFromXi(xi: vec2f) -> vec3f {
 }
 
 fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f {
-  // The sourceTriIndex lane is valid only for merged BVH builds, where the
-  // emitter list and material atlas share the same BVH-reordered triangle
-  // space. TLAS uses a world-expanded emitter stream plus local BLAS atlas
-  // triangles, so it intentionally keeps the average-Le fallback.
-  if (ubo.bvhMode != 0u) {
-    return e.Le;
-  }
+  // sourceTriIndex is packed in the active render buffers' bvh_index/material
+  // atlas triangle space. Merged mode uses the BVH-reordered triangle directly;
+  // TLAS mode maps the world-expanded emitter triangle back to the local BLAS
+  // atlas triangle before upload. Negative/unmapped values keep average Le.
   let sourceTri = i32(round(e.sourceTriIndex));
   if (sourceTri < 0) {
     return e.Le;

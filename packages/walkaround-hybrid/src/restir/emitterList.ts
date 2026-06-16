@@ -74,12 +74,17 @@ interface EmitterListOptions {
   /**
    * When true, mesh-material emitters pack their triangle index into the first
    * padding lane so DI shaders can resample UV-varying emissive maps at the
-   * stored candidate `xi`. Only enable this when the emitter-list triangle
-   * stream is in the same BVH/material-atlas triangle order as the active
-   * render buffers. TLAS uses a separate world-expanded emitter stream, so it
-   * must leave this disabled and fall back to the averaged `Le`.
+   * stored candidate `xi`. The index must be in the active render buffers'
+   * `bvh_index` / material-atlas triangle space; callers with a world-expanded
+   * emitter stream can provide `sourceTriIndexForTriangle` to translate.
    */
   packSourceTriIndex?: boolean;
+  /**
+   * Optional mapper from the emitter-list triangle index to the active render
+   * buffers' triangle index. Returning a negative/non-finite value keeps that
+   * emitter on the averaged-radiance fallback.
+   */
+  sourceTriIndexForTriangle?: (triIdx: number) => number;
 }
 
 /**
@@ -182,11 +187,13 @@ export function buildEmitterListFromCore(
       if (classified == null || options.packSourceTriIndex !== true) return classified;
       const scalarLe = scalarMaterialEmissiveLe(mat);
       if (scalarLe == null) return classified;
+      const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
+      if (!Number.isFinite(sourceTriIndex) || sourceTriIndex < 0) return classified;
       return {
         ...classified,
         color: scalarLe,
         selectionColor: classified.color,
-        sourceTriIndex: t,
+        sourceTriIndex: Math.trunc(sourceTriIndex),
       };
     },
     options,

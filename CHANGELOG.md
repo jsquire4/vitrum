@@ -45,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround emissive-map DI payloads, 2026-06-16)
 
-- **Merged ReSTIR-DI now evaluates emissive-map texels at the selected light sample:** `@vitrum/walkaround-hybrid` packs a valid source-triangle lane for merged-BVH material-backed emitters, keeps CPU-readable map averages for CDF/light-tree power, and uses a shared WGSL helper in RIS, pHat reuse, and final shade to sample `emissiveMap` at the stored triangle `xi`. TLAS/analytic emitters conservatively keep the averaged `Le` fallback, and exact texel-PDF selection plus GI/RC/DDGI texel-space emission remain approximate.
+- **Merged and TLAS ReSTIR-DI now evaluate material emissive-map texels at the selected light sample:** `@vitrum/walkaround-hybrid` packs a valid source-triangle lane for material-backed emitters, keeps CPU-readable map averages for CDF/light-tree power, and uses a shared WGSL helper in RIS, pHat reuse, and final shade to sample `emissiveMap` at the stored triangle `xi`. TLAS emitters map the world-expanded light triangle back to the local BLAS material-atlas triangle; mirrored TLAS instances and analytic/extra emitters conservatively keep the averaged `Le` fallback. Exact texel-PDF selection plus GI/RC/DDGI texel-space emission remain approximate.
 
 ### Fixed (pt-webgl2 scattering coefficient semantics, 2026-06-16)
 

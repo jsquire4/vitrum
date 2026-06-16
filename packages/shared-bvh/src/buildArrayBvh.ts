@@ -189,6 +189,13 @@ export interface CpuBvhBuildResult {
   readonly reorderedIndices: Uint32Array;
   /** Per-triangle material IDs, reordered to match `reorderedIndices`. */
   readonly reorderedTriMaterialIds: Uint32Array;
+  /**
+   * For each BVH-reordered triangle, the source triangle index in the caller's
+   * input stream. Consumers that need to translate BVH-triangle payloads back
+   * to a stable pre-build stream should use this instead of inferring from
+   * material ids or vertex triples.
+   */
+  readonly reorderedToSourceTriangle: Uint32Array;
 }
 
 export interface BuildArrayBvhOpts {
@@ -265,6 +272,7 @@ export function buildArrayBvh(
       bvhNodes: emptyNode,
       reorderedIndices: indices,
       reorderedTriMaterialIds: triMaterialIds,
+      reorderedToSourceTriangle: new Uint32Array(0),
     };
   }
 
@@ -352,6 +360,7 @@ export function buildArrayBvh(
       bvhNodes: emptyNode,
       reorderedIndices: indices,
       reorderedTriMaterialIds: triMaterialIds,
+      reorderedToSourceTriangle: new Uint32Array(0),
     };
   }
 
@@ -615,8 +624,10 @@ export function buildArrayBvh(
 
   const reorderedIndices = new Uint32Array(indices.length);
   const reorderedTriMaterialIds = new Uint32Array(triMaterialIds.length);
+  const reorderedToSourceTriangle = new Uint32Array(orderedTriangles.length);
   for (let newTri = 0; newTri < orderedTriangles.length; newTri += 1) {
     const oldTri = orderedTriangles[newTri] ?? 0;
+    reorderedToSourceTriangle[newTri] = oldTri;
     for (let k = 0; k < 3; k += 1) {
       reorderedIndices[newTri * indexStride + k] = indices[oldTri * indexStride + k] ?? 0;
     }
@@ -648,5 +659,6 @@ export function buildArrayBvh(
     bvhNodes: new Float32Array(nodeBuffer),
     reorderedIndices,
     reorderedTriMaterialIds,
+    reorderedToSourceTriangle,
   };
 }

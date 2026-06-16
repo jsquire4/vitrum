@@ -61,6 +61,7 @@ export interface MergedMeshVertexRange {
   readonly vertexCount: number;
   readonly triStart: number;
   readonly triCount: number;
+  readonly windingFlipped?: boolean;
 }
 
 export interface WorldSpaceMergeResult {
@@ -88,6 +89,14 @@ export interface WorldSpaceMergeResult {
 
   /** Per-triangle materialId, BVH-reordered to match {@link indices}. */
   readonly triMaterialId: Uint32Array;
+
+  /**
+   * For each triangle in {@link indices} / {@link triMaterialId}, the triangle
+   * index in the pre-BVH {@link mergedIndices} stream. This is required when a
+   * world-space consumer needs to point back at another triangle-addressed atlas
+   * whose ordering is based on merge order or local BLAS order.
+   */
+  readonly bvhTriToMergedTri: Uint32Array;
 
   /** Merged world-space normals (THREE normal-matrix + normalize). Stride =
    *  {@link positionStrideFloats}. */
@@ -608,6 +617,7 @@ export function mergeWorldSpaceFromCore(
         vertexCount: localVertexCount,
         triStart,
         triCount: localTriCount,
+        windingFlipped: flip,
       });
     }
   }
@@ -626,6 +636,7 @@ export function mergeWorldSpaceFromCore(
       indices: new Uint32Array([0, 1, 2]),
       bvhIndexStride: 3,
       triMaterialId: new Uint32Array(1),
+      bvhTriToMergedTri: new Uint32Array(0),
       normals: new Float32Array(stride === 4 ? 12 : 9),
       tangents: new Float32Array(stride === 4 ? 12 : 9),
       colors: new Float32Array(12).fill(1),
@@ -663,6 +674,7 @@ export function mergeWorldSpaceFromCore(
     indices: bvh.reorderedIndices,
     bvhIndexStride: 3,
     triMaterialId: bvh.reorderedTriMaterialIds,
+    bvhTriToMergedTri: bvh.reorderedToSourceTriangle,
     normals: packedNormals,
     tangents: packedTangents,
     colors: packedColors,

@@ -1443,7 +1443,10 @@ export function materialPatch(
         z: ctx.primaryLightDir[2],
       },
       primaryLightIntensity: ctx.primaryLightIntensity,
-      packSourceTriIndex: bvh.bvhMode === 'merged',
+      packSourceTriIndex: true,
+      ...(bvh.bvhMode === 'tlas'
+        ? { tlasPrimitiveBindings: bvh.primitiveTlasBindings }
+        : {}),
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(updatedRenderScene, emitterOptions);
     outBvh = {

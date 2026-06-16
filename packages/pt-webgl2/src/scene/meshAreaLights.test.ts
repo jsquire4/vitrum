@@ -27,6 +27,7 @@ function fakeMerged(overrides: Partial<WorldSpaceMergeResult> = {}): WorldSpaceM
     indices: mergedIndices,
     bvhIndexStride: 3,
     triMaterialId: new Uint32Array([0, 0]),
+    bvhTriToMergedTri: new Uint32Array([0, 1]),
     normals: new Float32Array(positions.length),
     tangents: new Float32Array(positions.length),
     colors: new Float32Array([

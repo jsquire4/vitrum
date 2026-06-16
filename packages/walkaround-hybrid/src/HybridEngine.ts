@@ -1453,7 +1453,10 @@ export class HybridEngine implements Engine {
         z: this._primaryLightDir[2],
       },
       primaryLightIntensity: this._primaryLightIntensity,
-      packSourceTriIndex: this._bvhBuffers.bvhMode === 'merged',
+      packSourceTriIndex: true,
+      ...(this._bvhBuffers.bvhMode === 'tlas'
+        ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
+        : {}),
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
 

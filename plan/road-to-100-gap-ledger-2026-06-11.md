@@ -1604,10 +1604,14 @@ Evidence:
   emissive maps into the shared ReSTIR/DDGI/RC emitter selection-power path,
   and the 2026-06-16 DI follow-up packs a source-triangle lane for merged-BVH
   material emitters so RIS candidate scoring, pHat reuse, and final shade sample
-  mapped radiance at the stored triangle `xi`. This closes the scalar-only
-  merged-DI payload hole for decoded glTF-style CPU handles. Exact UV-varying
-  texel-PDF selection, TLAS/analytic emitter mapped payloads, and GI/RC/DDGI
-  texel-space emission are still approximate rather than native parity.
+  mapped radiance at the stored triangle `xi`. Later same-day follow-up: TLAS
+  material-backed emitters now translate the world-expanded emitter triangle
+  through `bvhTriToMergedTri` and `primitiveTlasBindings` back to the local BLAS
+  material-atlas triangle, so instanced decoded glTF-style emissive maps share
+  the native sampled-texel payload too. Mirrored TLAS instances and analytic/
+  extra emitters intentionally retain averaged `Le`. Exact UV-varying texel-PDF
+  selection and GI/RC/DDGI texel-space emission are still approximate rather than
+  native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
   `emitterPacking.ts` folds the CPU-readable sRGB-decoded average RGB into
   synthesized emissive-mesh radiance, uses that same helper for the geometry

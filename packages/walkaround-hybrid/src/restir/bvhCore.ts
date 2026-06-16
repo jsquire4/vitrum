@@ -14,7 +14,9 @@ import {
   mergeWorldSpaceFromCore,
   packSceneFromCore,
   rebuildPrimitiveBlas,
+  type PrimitiveTlasBinding,
   type ScenePackResult,
+  type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
 import {
   packUVIntoPositionW,
@@ -269,12 +271,43 @@ function applyMeshAreaLeOverridesToCoreMaterials(
   return patched;
 }
 
+function buildTlasEmitterSourceTriMapper(
+  merged: WorldSpaceMergeResult,
+  primitiveTlasBindings: readonly PrimitiveTlasBinding[],
+): (triIdx: number) => number {
+  const bindingByPrimitiveId = new Map<string, PrimitiveTlasBinding>();
+  for (const binding of primitiveTlasBindings) {
+    if (!bindingByPrimitiveId.has(binding.primitiveId)) {
+      bindingByPrimitiveId.set(binding.primitiveId, binding);
+    }
+  }
+
+  const mergedTriToTlasTri = new Int32Array(merged.triangleCount);
+  mergedTriToTlasTri.fill(-1);
+  for (const range of merged.meshVertexRanges) {
+    if (range.windingFlipped === true) continue;
+    const binding = bindingByPrimitiveId.get(range.name);
+    if (binding == null) continue;
+    const triCount = Math.min(range.triCount, binding.triCount);
+    for (let localTri = 0; localTri < triCount; localTri += 1) {
+      mergedTriToTlasTri[range.triStart + localTri] = binding.triStart + localTri;
+    }
+  }
+
+  return (triIdx: number): number => {
+    const mergedTri = merged.bvhTriToMergedTri[triIdx];
+    if (mergedTri === undefined) return -1;
+    return mergedTriToTlasTri[mergedTri] ?? -1;
+  };
+}
+
 function coreEmitterBuffers(
   scene: Scene,
   options: {
     primaryLightDir?: Vector3Like;
     primaryLightIntensity?: number;
     packSourceTriIndex?: boolean;
+    tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
   } = {},
 ): RebuiltEmitterBuffers {
   // This stream is only for ReSTIR light selection. Expanding instanced meshes
@@ -294,13 +327,21 @@ function coreEmitterBuffers(
     // (toProductionEmissiveRadiance would keep ei=1 which is correct).
     return { ...m, emissive: [leOverride[0], leOverride[1], leOverride[2]] as const, emissiveIntensity: 1 };
   });
+  const sourceTriIndexForTriangle =
+    options.packSourceTriIndex === true && options.tlasPrimitiveBindings != null
+      ? buildTlasEmitterSourceTriMapper(merged, options.tlasPrimitiveBindings)
+      : undefined;
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,
     merged.positions,
     merged.normals,
     merged.triMaterialId,
     productionMaterials,
-    { ...options, extraEmitters },
+    {
+      ...options,
+      extraEmitters,
+      ...(sourceTriIndexForTriangle != null ? { sourceTriIndexForTriangle } : {}),
+    },
   );
   const emitterCount = cdfArray.length;
   const lightTreeBuf = buildLightTreeBuffer(treeInput);
@@ -381,7 +422,11 @@ function buffersFromCoreScenePack(
   const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
   const emissiveLeBuf = packBVHEmissiveLeFromCore(geo.triMaterialIds, emissiveCoreMats, triCount);
 
-  const emitterSlice = coreEmitterBuffers(scene, options);
+  const emitterSlice = coreEmitterBuffers(scene, {
+    ...options,
+    packSourceTriIndex: true,
+    tlasPrimitiveBindings: geo.primitiveTlasBindings,
+  });
   const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
     filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
@@ -556,6 +601,7 @@ export function rebuildEmitterBuffersFromCoreScene(
     primaryLightDir?: Vector3Like;
     primaryLightIntensity?: number;
     packSourceTriIndex?: boolean;
+    tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
   } = {},
 ): RebuiltEmitterBuffers {
   return coreEmitterBuffers(scene, options);

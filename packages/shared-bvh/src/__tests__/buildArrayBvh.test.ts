@@ -80,6 +80,7 @@ describe('buildArrayBvh', () => {
     expect(built.reorderedIndices.length).toBe(indices.length);
     expect(built.reorderedTriMaterialIds.length).toBe(triMaterialIds.length);
     expect(Array.from(built.reorderedTriMaterialIds).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(Array.from(built.reorderedToSourceTriangle).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   it('4. interior nodes carry valid relative right-child offsets', () => {
