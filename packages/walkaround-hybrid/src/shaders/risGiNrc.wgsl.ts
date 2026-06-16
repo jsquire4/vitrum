@@ -28,6 +28,12 @@
  *   - {@link buildRisGiNrcModule}  — ON. Adds @group(4) NRC + the inline MLP
  *                                   forward + spread-gated cache query + record
  *                                   gather. Composed ONLY when nrcEnabled.
+ *
+ * The cache substitution is additionally warm-up gated: the spread heuristic
+ * may write training records from frame 0, but the reservoir keeps the DDGI
+ * suffix estimate until the host reports enough completed trainer windows in
+ * `nrcCfg.trainedSteps`. This avoids replacing radiance with cold random MLP
+ * predictions while preserving self-training cadence.
  * {@link compilePipelines} composes whichever module matches the host flag and
  * builds the matching pipeline layout (4 groups OFF, 5 ON); {@link RISGIPass}
  * only calls `setBindGroup(4, …)` when ON.
@@ -287,6 +293,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let a0term = nrcSegmentSpreadTerm(hit.dist, nrcCfg.cameraPixelPdf, cosThetaPrimary);
   let a0 = a0term * a0term;
 
+  let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps;
+
   // A6 — NRC candidate tracking: save surface data for the FIRST candidate
   // that triggers the spread heuristic. The training record is written once
   // after the loop using r.Lo (the final ReSTIR-GI selected radiance) as the
@@ -352,10 +360,10 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       // The bounce edge pos→xs accumulates spread. The candidate's source pdf
       // is the cosine-hemisphere pdf cosθ/π (the always-present component; the
       // guided dTree term only narrows it). When a(x) > c·a0 the suffix is
-      // TERMINATED into the cache: the MLP prediction REPLACES the
-      // material-shaded DDGI suffix estimate. Below threshold that same suffix
-      // estimate is kept verbatim, so a sub-threshold region is bit-identical
-      // to the OFF pass.
+      // TERMINATED into the cache: once warm, the MLP prediction REPLACES the
+      // material-shaded DDGI suffix estimate. Before warm-up, the same fired
+      // candidate still writes a training record but keeps ddgiLo in the
+      // reservoir so cold random predictions never drive visible GI.
       //
       // H26 seeding fix: runningSum starts at 0.0 (Müller 2021 §5). The
       // previous seed of a0term was a tautology: nrcAccumulateSpread adds
@@ -378,7 +386,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         let xsRough = xsPayload.rough;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).
-        Lo = nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo);
+        Lo = select(ddgiLo, nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo), nrcCanSubstitute);
         // A6 — save the NRC candidate surface data for the post-loop record.
         // We only save the FIRST fired candidate (the one most likely to be
         // importance-selected into the reservoir). After the loop, we write

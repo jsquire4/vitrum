@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (inverse/walkaround learned tails, 2026-06-16)
+
+- **Scoped adjoint + transparent/NRC startup tails closed:** `@vitrum/pt-webgpu` path-replay inverse sessions now keep map-free opaque `shadingModel:'unlit'` `baseColor` on the analytic route as a primary-hit contribution identity while mapped or non-baseColor unlit targets still downgrade to finite difference. `@vitrum/walkaround-hybrid` transparent-OIT direct sun now casts through the shared cast-shadow-aware scene visibility query instead of using an unshadowed sun BRDF. Opt-in NRC now exposes `trainedSteps/warmupSteps` in its config UBO and keeps DDGI suffix radiance in the visible reservoir until completed trainer windows satisfy the warm-up gate, while still gathering spread-fired training records immediately.
+
 ### Fixed (glTF EXT_mesh_gpu_instancing native import, 2026-06-16)
 
 - **glTF GPU instancing now imports and animates natively:** `@vitrum/gltf-adapter` maps valid node-level `EXT_mesh_gpu_instancing` TRANSLATION/ROTATION/SCALE accessors to core `InstancedMeshPrimitive` records, baking `nodeWorld * instanceTRS` into each instance matrix. `extensionsRequired: ['EXT_mesh_gpu_instancing']` is now accepted, feature reporting predicts the native `instanced-mesh` primitive kind, `GltfSceneController` patches `instances[]` for animated instanced nodes/ancestors, and malformed/skinned/morphed instancing paths keep structured fallback diagnostics instead of silently dropping instance intent.

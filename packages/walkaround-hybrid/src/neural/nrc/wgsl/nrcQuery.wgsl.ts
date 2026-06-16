@@ -159,7 +159,8 @@ struct NrcCfgUBO {
   // Used as the primary-edge pdf in nrcSegmentSpreadTerm so a0 is the
   // correct Müller camera footprint instead of the old hard-coded 1.0.
   cameraPixelPdf  : f32,
-  _pad1 : u32, _pad2 : u32,
+  trainedSteps    : u32,      // completed host trainer windows
+  warmupSteps     : u32,      // query substitution gate; records still gather below this
 }
 
 @group(${G}) @binding(0) var<storage, read>       nrcWeights : array<f32>;

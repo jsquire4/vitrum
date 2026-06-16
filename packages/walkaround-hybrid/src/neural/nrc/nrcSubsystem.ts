@@ -81,6 +81,8 @@ export interface NrcConfig {
   readonly useF16: boolean;
   /** Trainer tile size (samples per workgroup). */
   readonly tileB: number;
+  /** Completed trainer windows required before NRC predictions may replace DDGI suffixes. */
+  readonly warmupSteps?: number;
 }
 
 /** Müller-core-sized default NRC config, sized to be full-tier viable. */
@@ -99,6 +101,7 @@ const DEFAULT_NRC_CONFIG: NrcConfig = {
   tableLearningRate: 0.1,   // Instant-NGP §4: embedding LR ≈ 10× the MLP LR.
   useF16: false,
   tileB: 32,
+  warmupSteps: 8,
 };
 
 const OUT_W = 3; // RGB radiance
@@ -160,6 +163,7 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _batchY!: Float32Array;
   private _batchPos!: Float32Array;  // [recordCap × 3] dense query positions
   private _readPending = false;
+  private _trainedSteps = 0;
 
   constructor(device: GPUDevice, bglCache: BGLCache, cfg: NrcConfig = DEFAULT_NRC_CONFIG) {
     this._device = device;
@@ -188,6 +192,7 @@ export class NrcSubsystem implements PipelineSubsystem {
   ): Promise<void> {
     const d = this._device;
     const cfg = this.cfg;
+    this._trainedSteps = 0;
     const enc = encodingConfig(cfg, aabbMin, aabbMax);
     this._inW = nrcInputWidth(enc);
     // record = [inW encoded input | OUT_W radiance target | 3 query world pos].
@@ -284,6 +289,8 @@ export class NrcSubsystem implements PipelineSubsystem {
     // the camera projection matrix and render resolution.  1.0 is the safe
     // fallback used by the old hard-coded path.
     f[9] = 1.0;
+    u[10] = this._trainedSteps >>> 0;
+    u[11] = Math.max(0, Math.floor(cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
     d.queue.writeBuffer(this._cfgUbo, 0, ab);
 
     // ── H27 — per-slot atomic claim flags (one u32 per recordCap slot). ──
@@ -371,6 +378,13 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._device.queue.writeBuffer(this._cfgUbo, 36, tmp);
   }
 
+  private _writeTrainingGateState(): void {
+    const tmp = new Uint32Array(2);
+    tmp[0] = this._trainedSteps >>> 0;
+    tmp[1] = Math.max(0, Math.floor(this.cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
+    this._device.queue.writeBuffer(this._cfgUbo, 40, tmp);
+  }
+
   /** Copy this frame's gathered records into the MAP_READ staging buffer. Called
    *  by the engine on its own command encoder AFTER the gi-ris pass ran (so the
    *  records the gi-ris pass wrote are present). Cheap (one B2B copy). */
@@ -428,6 +442,8 @@ export class NrcSubsystem implements PipelineSubsystem {
       // Adam). Owned by the peer HashGridTableTrainer; it reads the trainer's
       // finalized dL/dX + the dense query positions and Adam-updates _tablesBuf.
       this._tableTrainer.step(this._batchPos, filled);
+      this._trainedSteps++;
+      this._writeTrainingGateState();
     } finally {
       this._readPending = false;
     }
@@ -449,4 +465,3 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._trainer?.dispose();
   }
 }
-

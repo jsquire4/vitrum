@@ -128,6 +128,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   selects path replay for `materials.<id>.emissiveIntensity` under the existing
   opaque/unmapped emissive predicate. Emissive maps and non-primary/indirect
   emission gradients remain finite-difference tails.
+- Later 2026-06-16 follow-up: map-free `shadingModel:"unlit"` `baseColor`
+  joined the safe pt-webgpu path-replay adjoint domain as a primary-hit
+  contribution identity (`radiance += throughput * baseColor`). The routing is
+  deliberately narrow: opaque, unmapped, no transmission, no spectral/scattering,
+  no layered/thin-film/generic extensions. Unlit non-baseColor parameters and
+  mapped unlit baseColor remain finite-difference.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including
@@ -137,6 +143,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   material-lobe aware, but the compact reservoir still stores geometry plus
   `Lo` and temporal previous-domain recast falls back to geometry when exact
   previous-camera reconstruction is unavailable.
+- Later 2026-06-16 follow-up: transparent OIT direct sun is now
+  cast-shadow-aware. The camera-visible transparent layer pass still uses a
+  first-hit approximation for sky ambient, emissive, and light-map terms and does
+  not promote transparent ReSTIR/GI participation, but the direct-sun material
+  lobe now matches the opaque path's scene-visibility convention via
+  `traceSceneAnyCastMask` with `castShadow:false` respected and glass skipped.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
   GPU allocation; the tracked `starter-v1.vitrum-model` and
@@ -146,6 +158,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   before declaring an empty slot; and `nrcEnabled:true` emits a structured
   experimental/biased warning instead of silently presenting NRC as production
   default behavior.
+- Later 2026-06-16 follow-up: opt-in NRC substitution is warm-up gated. The
+  NRC config UBO now exposes `trainedSteps` and `warmupSteps`; the GI-RIS NRC
+  shader continues to gather records whenever the spread heuristic fires, but it
+  keeps the DDGI suffix radiance in the visible reservoir until completed trainer
+  windows reach the warm-up threshold. NRC remains off by default and still
+  needs quality/convergence A/B before any default-tier promotion.
 - Follow-up 2026-06-15: the top Road summary was reconciled with the detailed
   ledger. Closed items such as DDGI glossy bounce and stale NRC structural
   defects were removed from the headline remaining-work list, while the honest

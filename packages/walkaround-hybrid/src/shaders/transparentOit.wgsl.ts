@@ -8,10 +8,11 @@
  *
  * Lighting policy: transparent layer radiance is an intentionally cheap
  * camera-visible approximation. The direct sun term uses the same atlas-backed
- * material-lobe BRDF as opaque shade/ReSTIR material scoring; sky ambient,
+ * material-lobe BRDF as opaque shade/ReSTIR material scoring, with the same
+ * castShadow-aware scene visibility query as opaque direct sun. Sky ambient,
  * emissive, and light-map terms remain first-hit camera-visible approximations.
- * ReSTIR/GI/shadow participation remains handled by the existing stochastic
- * traversal path until transparent GI has its own validation row.
+ * ReSTIR/GI participation remains handled by the existing stochastic traversal
+ * path until transparent GI has its own validation row.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -83,7 +84,7 @@ fn oitLayerNormals(hit: IntersectionResult) -> OitLayerNormals {
   return normals;
 }
 
-fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f, materialWord: u32) -> vec3f {
+fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f {
   let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
   let uv1 = materialAtlasUv1ForHit(hit);
   let normals = oitLayerNormals(hit);
@@ -101,6 +102,7 @@ fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f, materialWord: u32) -
 
   let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;
   let wo = safe_normalize(-rayDir);
+  let toSun = safe_normalize(ubo.sunDirection);
   let sunBrdf = evalGGXWithSpecularClearcoatSheen(
     payload.albedo,
     payload.rough,
@@ -118,9 +120,32 @@ fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f, materialWord: u32) -
     normal,
     payload.clearcoatNormal,
     wo,
-    safe_normalize(ubo.sunDirection),
+    toSun,
   );
-  let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf;
+  var sunVisibility = 1.0;
+  if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
+    let sunOccluded = traceSceneAnyCastMask(
+      ubo.bvhMode,
+      ubo.tlasNodeCount,
+      &bvh_index,
+      &bvh_position,
+      &bvh,
+      &tlasNodes,
+      &tlasInstanceIndices,
+      &tlasBlasRoots,
+      &tlasInstanceWorldToLocal,
+      &tlasInstanceLocalToWorld,
+      hitPos + hit.normal * 1e-3,
+      toSun,
+      1e6,
+      ubo.triIntersectEpsilon,
+      true,
+      bvh_material,
+      BVH_MATERIAL_TEX_WIDTH,
+    );
+    sunVisibility = select(1.0, 0.0, sunOccluded);
+  }
+  let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));
   return (skyAmbient + sunDirect) * viewFacing + emissive + baked;
 }
@@ -171,7 +196,8 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
 
     if (alpha.mode == 2u && alpha.coverage > 0.001 && alpha.coverage < 0.999) {
       let a = clamp(alpha.coverage, 0.0, 1.0);
-      let layerRadiance = oitLayerRadiance(hit, primaryRay.direction, word);
+      let hitPos = walkRay.origin + walkRay.direction * hit.dist;
+      let layerRadiance = oitLayerRadiance(hit, hitPos, primaryRay.direction, word);
       accum = accum + layerRadiance * a * transmittance;
       transmittance = transmittance * (1.0 - a);
       traveled = traveled + hit.dist + step;

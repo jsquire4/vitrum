@@ -20,7 +20,8 @@
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
  * material stays within the direct-light base/specular domain this pass mirrors
- * (delta directional, point, spot, and center-sampled rect/disc area lights;
+ * (delta directional, point, spot, and center-sampled rect/disc area lights), or
+ * is a map-free `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
  * emissive / specularColor / specularIntensity); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
@@ -131,6 +132,10 @@ export interface AdjointGradientRequest {
  *
  *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
  *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
+ *    `baseColor` also covers map-free `shadingModel:'unlit'` primary hits:
+ *    forward contributes `throughput · baseColor` and terminates, so the
+ *    derivative is the direct contribution-level identity rather than a BRDF
+ *    partial or light-domain term.
  *  - `metallic` — the opaque base-BRDF partial through the diffuse fade-out
  *    and F0 blend in the same direct-light replay domain.
  *  - `emissive` / `emissiveIntensity` — the camera-direct emission partials
@@ -264,7 +269,8 @@ export class PtWebgpuInverseSession implements InverseSession {
     // (InverseSessionOptions.method contract). 'path-replay' requires the engine
     // to provide the adjoint hook, every parameter to be in the
     // adjoint-differentiable set, and every target material to stay in the
-    // compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`: material
+    // compatible direct-light domain, or a map-free unlit baseColor primary-hit
+    // fit (`ADJOINT_ELIGIBLE_FIELDS`: material
     // baseColor / roughness / metallic / emissive / emissiveIntensity /
     // specularColor / specularIntensity — see its doc for the ior exclusion). Any shortfall
     // degrades to finite-difference and is reported via `method`, so the host
@@ -430,10 +436,25 @@ function isPathReplayCompatibleTarget(scene: Scene, target: ResolvedParamTarget)
   const prim = findPrimitive(scene, target.id);
   if (prim == null) return false;
   const m = prim.material;
+  if (target.field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(m)) {
+    return true;
+  }
   if (target.field === 'emissive' || target.field === 'emissiveIntensity') {
     return isPathReplayCompatibleEmissiveMaterial(m);
   }
   return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);
+}
+
+function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {
+  if (m.shadingModel !== 'unlit') return false;
+  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
+  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.transmission ?? 0) > 1e-6) return false;
+  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
+  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
+  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
+  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
+  return !hasPathReplayUnsupportedMap(m);
 }
 
 function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {

@@ -23,7 +23,9 @@
  * Direct lights are summed deterministically over all eligible lights (no MC
  * light selection: the adjoint is the deterministic expectation; finite area
  * lights are center-sampled). baseColor/roughness/metallic/specular params share
- * this direct-light BRDF path. The shading normal is faced toward the viewer
+ * this direct-light BRDF path. Map-free unlit baseColor is a primary-hit
+ * contribution-level identity (`radiance += throughput * baseColor`) and is
+ * scattered without requiring any light. The shading normal is faced toward the viewer
  * (the same flip the forward shade prologue applies). The primary-ray jitter
  * sequence matches the inverse baseline render:
  * sample `s` uses `frameSeed = 0x5eed5eed + s`, `frameIndex = 0`, then the pass
@@ -277,10 +279,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let matId = triMaterialIds[hit.tri];
     let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
     let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
+    let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u];
     let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
     let baseColor = m0.rgb;
     let roughness = clamp(m0.w, 0.02, 1.0);
     let metallic = clamp(m1.w, 0.0, 1.0);
+    let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
     let specularColor = m27.rgb;
     let specularIntensity = clamp(m27.w, 0.0, 1.0);
 
@@ -483,9 +487,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (d.x != matId) { continue; }
       let gradOffset = d.z;
       if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
-        adjointScatter(gradOffset, gBaseColor.x * invReplaySamples);
-        adjointScatter(gradOffset + 1u, gBaseColor.y * invReplaySamples);
-        adjointScatter(gradOffset + 2u, gBaseColor.z * invReplaySamples);
+        let gUnlitBaseColor = dLoss_dR;
+        let gBase = select(gBaseColor, gUnlitBaseColor, isUnlit);
+        adjointScatter(gradOffset, gBase.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gBase.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gBase.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SPECULAR_COLOR}u) {
         adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples);
         adjointScatter(gradOffset + 1u, gSpecularColor.y * invReplaySamples);

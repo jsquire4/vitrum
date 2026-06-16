@@ -13,6 +13,7 @@ import {
   type PathSegment,
 } from '../spreadTermination.ts';
 import { nrcSpreadTerminationWgsl } from '../wgsl/spreadTermination.wgsl.ts';
+import { nrcQueryWgsl } from '../wgsl/nrcQuery.wgsl.ts';
 import { RIS_GI_NRC_BODY } from '../../../shaders/risGiNrc.wgsl.ts';
 
 describe('NRC spread term — per segment', () => {
@@ -291,6 +292,29 @@ describe('NRC spread WGSL codegen — shape pins (oracle equivalence)', () => {
   it('the termination test is a(x) > c·a0', () => {
     const wgsl = nrcSpreadTerminationWgsl();
     expect(wgsl).toContain('return aX > c * a0;');
+  });
+});
+
+describe('NRC warm-up gate — cold cache predictions do not replace DDGI', () => {
+  it('threads trainedSteps/warmupSteps through the NRC query UBO without changing its size', () => {
+    const wgsl = nrcQueryWgsl({
+      levels: 2,
+      featuresPerEntry: 2,
+      oneBlobBins: 4,
+      width: 8,
+      outWidth: 3,
+      hidden: 1,
+    });
+    expect(wgsl).toContain('trainedSteps    : u32');
+    expect(wgsl).toContain('warmupSteps     : u32');
+    expect(wgsl).not.toContain('_pad1 : u32, _pad2 : u32');
+  });
+
+  it('keeps spread-fired records but gates visible Lo substitution until the trainer is warm', () => {
+    expect(RIS_GI_NRC_BODY).toContain('let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps;');
+    expect(RIS_GI_NRC_BODY).toContain('Lo = select(ddgiLo, nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo), nrcCanSubstitute);');
+    expect(RIS_GI_NRC_BODY).toContain('if (nrcFired) {');
+    expect(RIS_GI_NRC_BODY).toContain('nrcWriteRecord(');
   });
 });
 

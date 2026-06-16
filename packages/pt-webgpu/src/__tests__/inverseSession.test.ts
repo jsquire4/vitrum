@@ -334,6 +334,75 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for map-free unlit baseColor without requiring scene lights', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [],
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([0.1, 0.2, 0.3, 1]) } },
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, shadingModel: 'unlit' as const } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
+  it('keeps unlit non-baseColor and unlit mapped baseColor on finite-difference', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                shadingModel: 'unlit' as const,
+                baseColorMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const mappedBase = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(mappedBase.method).toBe('finite-difference');
+    mappedBase.dispose();
+
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? (() => {
+              const material = { ...pr.material };
+              delete material.baseColorMap;
+              return { ...pr, material };
+            })()
+          : pr,
+      ),
+    };
+    const roughness = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(roughness.method).toBe('finite-difference');
+    roughness.dispose();
+  });
+
   it('degrades to finite-difference when the engine provides NO adjoint hook', () => {
     const fake = makeFakeEngine();
     const session = new PtWebgpuInverseSession(fake.hooks, eligibleOpts());
