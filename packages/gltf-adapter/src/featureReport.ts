@@ -543,9 +543,11 @@ export function evaluateGltfBackendProfileCompatibility(
     addIssue({
       category: 'scene',
       name: 'cameras',
-      support: 'unsupported',
+      support: 'approximate',
       path: report.sceneGraph.cameraPaths[0] ?? 'cameras',
-      message: 'glTF cameras are reported for host inspection but are not imported into the core Scene contract.',
+      message:
+        'glTF cameras are reported for host inspection but are not imported into the core Scene contract; ' +
+        'Vitrum cameras are supplied per frame through FrameInput.',
     });
   }
 

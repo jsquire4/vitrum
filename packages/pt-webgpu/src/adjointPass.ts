@@ -347,10 +347,6 @@ function adjointEmitterTargetForScene(
         const slot = directionalSlot;
         directionalSlot += 1;
         if (emitter.id !== id) break;
-        const angularDiameter = emitter.angularDiameter;
-        if (angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6) {
-          return null;
-        }
         return {
           kind: ADJOINT_EMITTER_TARGET_DIRECTIONAL,
           slot,

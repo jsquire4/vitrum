@@ -130,7 +130,11 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dAnisotropyRotation(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = dDirAD.w < 0.0');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let angularDiameterRaw = dDirAD.w');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = angularDiameterRaw < 0.0');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let angularDiameter = select(angularDiameterRaw, -1.0 - angularDiameterRaw, directionalShadowDisabled)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('if (angularDiameter > 0.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let cosHalfAngle = cos(angularDiameter * 0.5)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('spotLights');                     // spot NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var si = 0u; si < params.spotLightCount; si = si + 1u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos)');

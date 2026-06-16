@@ -121,8 +121,10 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   mesh-triangle buffer. Latest 2026-06-16 follow-up: finite area replay now uses
   stochastic area-measure rect/disc samples and uniform triangle barycentrics with
   solid-angle area PDFs instead of center points. `inverseSession` now selects
-  replay for delta directional, point, spot, and stochastic area-measure
-  rect/disc/mesh-area scenes; it still keeps soft-sun angular diameter,
+  replay for delta/soft-sun directional, point, spot, and stochastic area-measure
+  rect/disc/mesh-area scenes; the 2026-06-16 soft-sun follow-up mirrors the
+  forward directional cone sample in `adjointPass.wgsl.ts` and keeps compatible
+  soft directional material/emitter targets on path replay. It still keeps
   environment, indirect, most mapped/transmissive/layered/spectral/volume,
   forward light-selection MIS parity, and extension-lobe material domains on finite
   difference until those adjoints are implemented and validated. The current map
@@ -724,6 +726,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `textureDecodeDiagnostics`, `textureDecodeWarnings`, and the refreshed
   `textureDecodeReport`; it is no longer a report-only alias for
   `loadGltfAsset()`.
+  Follow-up closure (2026-06-16): decoded loads that provide `decodePixels`
+  but no custom `decodeImage` now install a raw-image-preserving asset decode
+  hook internally. Browser hosts therefore avoid the previous
+  `createImageBitmap()`/opaque-handle detour on `loadGltfAndDecodeTextures()`
+  and `loadGltfForEngine({ decodeTextures: true })`, while ordinary
+  `loadGltfAsset()` browser behavior remains unchanged.
 - The seventeenth arbitrary-glTF geometry slice landed in `@vitrum/gltf-adapter`:
   normal/bump/clearcoat-normal mapped primitives that omit authored `TANGENT`
   now synthesize per-vertex xyzw tangents from POSITION/NORMAL/TEXCOORD_0 during
@@ -1730,10 +1738,13 @@ Evidence:
   into `bvh_material` bit 2 for mask discard and fully-transparent blend
   endpoints. Readable `alphaMap` handles are now code-closed/approximate:
   `materialTextureAtlas.ts` packs alpha maps as linear atlas layers plus
-  per-triangle mode/opacity/cutoff metadata, and `materialAtlas.wgsl`
-  `traceSceneFirstHitAlphaMaskTextured` applies `opacity * alphaMap.r <
-  alphaCutoff` in RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and
-  NRC GI paths. 2026-06-16 follow-up: `traceSceneAnyAlphaMaskTextured` now
+  per-triangle mode/opacity/cutoff metadata, and `materialAtlas.wgsl` exposes
+  both stochastic cutout and opaque-pass first-hit predicates. 2026-06-16
+  follow-up: shade, ReSTIR-DI, temporal/spatial primary casts, default
+  ReSTIR-GI, and NRC-GI use `traceSceneFirstHitAlphaMaskTexturedOpaqueOnly`
+  so fractional alpha-blend surfaces remain OIT-owned camera composition rather
+  than stochastic reservoir vertices; alpha-mask cutout still happens before
+  reservoir writes. `traceSceneAnyAlphaMaskTextured` now
   evaluates readable `baseColorMap.a`, `alphaMap.r`, vertex alpha, opacity,
   and mask/blend coverage for shade direct-light shadows, ReSTIR-DI
   visibility, ReSTIR-GI/NRC visibility, and GRIS temporal/spatial
@@ -1754,10 +1765,10 @@ Evidence:
   uniform-area samples per emitter with per-sample alpha-aware shadow
   transmittance and emissive-map-aware `Le`, replacing the earlier single
   center/centroid-style sample. The structured warning remains because
-  light-map/emissive terms are first-hit approximations, and reservoir-backed
-  ReSTIR direct light plus GI participation is still approximate, including
-  material `updatePrimitive` patches that mutate a primitive into fractional
-  blend.
+  light-map/emissive terms are first-hit approximations, and true layered
+  transparent ReSTIR direct light plus GI transport remains a separate promotion
+  target; the current reservoir contract is opaque/masked vertices plus
+  alpha-aware shadow visibility.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow, direct-light selection power, and merged-BVH
   ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as
@@ -2080,9 +2091,9 @@ Remaining:
   `iridescence`, `iridescenceIor`, `anisotropy`, `anisotropyRotation`) through
   the finite-difference baseline and explicitly degrade requested path-replay
   sessions back to finite-difference for those fields. 2026-06-16 follow-up:
-  scoped light-source path replay now covers delta directional, point, spot, and
-  stochastic area-measure rect/disc/mesh-area direct lights. Analytic path-replay adjoints
-  remain open for environment, soft-sun angular diameter, forward light-selection
+  scoped light-source path replay now covers delta/soft-sun directional, point,
+  spot, and stochastic area-measure rect/disc/mesh-area direct lights. Analytic
+  path-replay adjoints remain open for environment, forward light-selection
   MIS parity, indirect paths, remaining nonlocal/path-changing maps,
   transmission/layers/volume/spectral material domains, and full extension-lobe
   contribution/PDF gradients until converging

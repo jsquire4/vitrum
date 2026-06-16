@@ -552,42 +552,6 @@ export class PtWebgpuInverseSession implements InverseSession {
   }
 }
 
-function isPathReplayCompatibleTarget(
-  scene: Scene,
-  target: ResolvedParamTarget,
-  iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
-): boolean {
-  const prim = findPrimitive(scene, target.id);
-  if (prim == null) return false;
-  if (!isPathReplayTriangleBackedPrimitive(prim)) return false;
-  const m = prim.material;
-  if (target.field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(m)) {
-    return true;
-  }
-  if (target.field === 'emissive' || target.field === 'emissiveIntensity') {
-    return isPathReplayCompatibleEmissiveMaterial(m);
-  }
-  if (target.field === 'aoMapIntensity') {
-    const needsLighting = pathReplayTargetRequiresLighting(target.field, m);
-    return (!needsLighting || isPathReplayCompatibleLighting(scene)) && isPathReplayCompatibleAoMapIntensityMaterial(m);
-  }
-  if (target.field === 'lightMapIntensity') {
-    return isPathReplayCompatibleLightMapIntensityMaterial(m);
-  }
-  if (
-    target.field === 'iridescence' ||
-    target.field === 'iridescenceIor' ||
-    target.field === 'iridescenceThicknessRange'
-  ) {
-    return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleIridescenceMaterial(m);
-  }
-  if (target.field === 'anisotropy' || target.field === 'anisotropyRotation') {
-    return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleAnisotropyMaterial(m);
-  }
-  if (iridescenceOptimizedPrimitiveIds.has(target.id)) return false;
-  return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);
-}
-
 function collectPathReplayDiagnostics(
   scene: Scene,
   slots: readonly ParamSlot[],
@@ -872,13 +836,6 @@ function pathReplayEmitterTargetIssue(
 ): { message: string; details: Record<string, string | number> } | null {
   switch (emitter.kind) {
     case 'directional': {
-      const angularDiameter = emitter.angularDiameter;
-      if (angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6) {
-        return {
-          message: 'soft-sun angularDiameter is not replayed for emitter target gradients',
-          details: { emitterKind: emitter.kind, angularDiameter },
-        };
-      }
       return null;
     }
     case 'point':
@@ -906,12 +863,13 @@ function pathReplayEmitterTargetIssue(
       }
       return null;
     }
-    default:
+    default: {
       const emitterKind = (emitter as { readonly kind: string }).kind;
       return {
         message: `emitter kind "${emitterKind}" is outside the path-replay target domain`,
         details: { emitterKind },
       };
+    }
   }
 }
 
@@ -1115,22 +1073,18 @@ function pathReplayLightingIssue(
       details: { environmentKind },
     };
   }
-  const unsupported = scene.emitters.find((e) => {
-    if (
-      e.kind === 'point' ||
-      e.kind === 'spot' ||
-      e.kind === 'rect-area' ||
-      e.kind === 'disc-area' ||
-      e.kind === 'mesh-area'
-    ) {
-      return false;
-    }
-    if (e.kind === 'directional') {
-      const angularDiameter = e.angularDiameter;
-      return angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6;
-    }
-    return true;
-  });
+  const unsupported = (scene.emitters as unknown as ReadonlyArray<{
+    readonly id: string;
+    readonly kind: string;
+    readonly angularDiameter?: number;
+  }>).find((e) =>
+    e.kind !== 'directional' &&
+    e.kind !== 'point' &&
+    e.kind !== 'spot' &&
+    e.kind !== 'rect-area' &&
+    e.kind !== 'disc-area' &&
+    e.kind !== 'mesh-area'
+  );
   if (unsupported == null) return null;
   return {
     message: `emitter "${unsupported.id}" (${unsupported.kind}) is outside the deterministic direct-light replay domain`,
@@ -1153,11 +1107,6 @@ function isIdentityMat4(transform: Float32Array): boolean {
   return true;
 }
 
-function isPathReplayTriangleBackedPrimitive(primitive: ScenePrimitive): boolean {
-  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') return false;
-  return primitive.transform == null || isIdentityMat4(primitive.transform);
-}
-
 function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {
   if (m.shadingModel !== 'unlit') return false;
   if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
@@ -1170,84 +1119,8 @@ function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean 
   return !hasPathReplayTransportOrGeometryMap(m);
 }
 
-function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {
-  if (m.shadingModel === 'unlit') return false;
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  return !hasPathReplayEmissiveTargetUnsupportedMap(m);
-}
-
-function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
-  if (m.shadingModel === 'unlit') return false;
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  if ((m.iridescence ?? 0) > 1e-6) return false;
-  if ((m.anisotropy ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
-  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayTransportOrGeometryMap(m);
-}
-
-function isPathReplayCompatibleAoMapIntensityMaterial(m: MaterialSpec): boolean {
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  if ((m.iridescence ?? 0) > 1e-6) return false;
-  if ((m.anisotropy ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
-  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayTransportOrGeometryMap(m);
-}
-
-function isPathReplayCompatibleLightMapIntensityMaterial(m: MaterialSpec): boolean {
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
-  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayEmissiveTargetUnsupportedMap(m);
-}
-
-function isPathReplayCompatibleIridescenceMaterial(m: MaterialSpec): boolean {
-  if (m.shadingModel === 'unlit') return false;
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  if ((m.anisotropy ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
-  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayTransportOrGeometryMap(m);
-}
-
-function isPathReplayCompatibleAnisotropyMaterial(m: MaterialSpec): boolean {
-  if (m.shadingModel === 'unlit') return false;
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
-  if ((m.iridescence ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
-  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayTransportOrGeometryMap(m);
-}
-
 function hasPathReplayTransportOrGeometryMap(m: MaterialSpec): boolean {
   return listPathReplayTransportOrGeometryMaps(m).length > 0;
-}
-
-function hasPathReplayEmissiveTargetUnsupportedMap(m: MaterialSpec): boolean {
-  return listPathReplayEmissiveUnsupportedMaps(m).length > 0;
 }
 
 function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string[] {
@@ -1272,31 +1145,6 @@ function listPathReplayEmissiveUnsupportedMaps(m: MaterialSpec): readonly string
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');
   return out;
-}
-
-function isPathReplayCompatibleLighting(scene: Scene): boolean {
-  if ((scene.environment?.kind ?? 'none') !== 'none') return false;
-  // The path-replay pass differentiates deterministic direct-light terms for
-  // delta directional, point, spot, and stochastic area-measure rect/disc/mesh-area lights.
-  // Soft-sun angular-diameter directionals and environment lighting
-  // stay on finite difference until their stochastic/source terms are mirrored
-  // and validated end-to-end.
-  return scene.emitters.every((e) => {
-    if (
-      e.kind === 'point' ||
-      e.kind === 'spot' ||
-      e.kind === 'rect-area' ||
-      e.kind === 'disc-area' ||
-      e.kind === 'mesh-area'
-    ) {
-      return true;
-    }
-    if (e.kind === 'directional') {
-      const angularDiameter = e.angularDiameter;
-      return angularDiameter == null || !Number.isFinite(angularDiameter) || angularDiameter <= 1e-6;
-    }
-    return false;
-  });
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

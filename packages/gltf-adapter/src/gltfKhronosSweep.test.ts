@@ -589,7 +589,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       expect.objectContaining({
         category: 'scene',
         name: 'cameras',
-        support: 'unsupported',
+        support: 'approximate',
         path: 'cameras[0]',
       }),
       expect.objectContaining({

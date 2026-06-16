@@ -83,9 +83,9 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0]! + iridescenceThicknessRange[0]! / 1000;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1]! + iridescenceThicknessRange[1]! / 1000;
-        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2]!;
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000;
+        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2];
       }
       return { rgb, channels: 3 as const };
     },
@@ -845,7 +845,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       direction: [0, -1, 0] as [number, number, number],
       angularDiameter: 0.01,
     }], 'emitters.soft-sun.intensity'],
-  ])('keeps %s emitter targets on finite-difference until their source terms are replayed', (_label, emitters, path) => {
+  ])('keeps %s emitter targets on path-replay now that cone sampling is mirrored', (_label, emitters, path) => {
     const fake = makeFakeEngine();
     fake.scene = { ...fake.scene, emitters };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
@@ -854,11 +854,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path, kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-emitter',
-      path,
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({ path }));
     session.dispose();
   });
 
@@ -1661,6 +1658,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       intensity: 1,
       direction: [0, -1, 0] as [number, number, number],
     }]],
+    ['soft directional', [{
+      kind: 'directional' as const,
+      id: 'soft-sun',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      direction: [0, -1, 0] as [number, number, number],
+      angularDiameter: 0.01,
+    }]],
     ['spot', [{
       kind: 'spot' as const,
       id: 'spot',
@@ -1699,35 +1704,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('path-replay');
-    session.dispose();
-  });
-
-  it.each([
-    ['soft directional', [{
-      kind: 'directional' as const,
-      id: 'soft-sun',
-      color: [1, 1, 1] as [number, number, number],
-      intensity: 1,
-      direction: [0, -1, 0] as [number, number, number],
-      angularDiameter: 0.01,
-    }]],
-  ])('degrades to finite-difference for lighting outside adjoint pass scope: %s', (_label, emitters) => {
-    const fake = makeFakeEngine();
-    fake.scene = {
-      ...fake.scene,
-      emitters,
-    };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
-    const session = new PtWebgpuInverseSession(hooks, {
-      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
-      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
-      method: 'path-replay',
-    });
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-lighting',
-      details: expect.objectContaining({ emitterId: 'soft-sun', emitterKind: 'directional' }),
-    }));
     session.dispose();
   });
 

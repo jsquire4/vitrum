@@ -46,6 +46,39 @@ function linearToSrgbForTest(value: number): number {
   return c <= 0.0031308 ? c * 12.92 : 1.055 * (c ** (1 / 2.4)) - 0.055;
 }
 
+async function withCreateImageBitmapStub<T>(
+  fn: (createImageBitmap: unknown) => Promise<T>,
+): Promise<T> {
+  const host = globalThis as typeof globalThis & { createImageBitmap?: unknown };
+  const hadCreateImageBitmap = Object.prototype.hasOwnProperty.call(host, 'createImageBitmap');
+  const previousCreateImageBitmap = host.createImageBitmap;
+  const createImageBitmap = vi.fn(async () => ({
+    width: 4,
+    height: 4,
+    close: vi.fn(),
+  }));
+
+  Object.defineProperty(host, 'createImageBitmap', {
+    configurable: true,
+    writable: true,
+    value: createImageBitmap,
+  });
+
+  try {
+    return await fn(createImageBitmap);
+  } finally {
+    if (hadCreateImageBitmap) {
+      Object.defineProperty(host, 'createImageBitmap', {
+        configurable: true,
+        writable: true,
+        value: previousCreateImageBitmap,
+      });
+    } else {
+      delete (host as { createImageBitmap?: unknown }).createImageBitmap;
+    }
+  }
+}
+
 function response(data: ArrayBuffer, contentType = 'application/octet-stream'): GltfAssetFetchResponse {
   return {
     ok: true,
@@ -383,7 +416,7 @@ function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<numbe
   };
 }
 
-function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer>; png: Uint8Array } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
@@ -412,6 +445,7 @@ function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
       buffers: [{ byteLength: total.byteLength }],
     },
     buffers: new Map([[0, total.buffer]]),
+    png: imageBytes,
   };
 }
 
@@ -711,6 +745,57 @@ describe('loadGltfAsset', () => {
     expect(handle.data[3]).toBeCloseTo(128 / 255);
   });
 
+  it('loadGltfAndDecodeTextures bypasses browser ImageBitmap handles when a pixel decoder is supplied', async () => {
+    const { gltf, buffers, png } = makeInlineTexturedGltf();
+    const decodePixels = vi.fn((
+      handle: Parameters<DecodeGltfTexturePixelsFn>[0],
+      context: Parameters<DecodeGltfTexturePixelsFn>[1],
+    ) => {
+      expect(handle).toMatchObject({
+        kind: 'raw-image',
+        mimeType: 'image/png',
+      });
+      expect(handle.data).toEqual(png);
+      return {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 255, 255, 255]),
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: context.colorSpace,
+      };
+    });
+
+    await withCreateImageBitmapStub(async (createImageBitmap) => {
+      const result = await loadGltfAndDecodeTextures(gltf, {
+        buffers,
+        decodePixels,
+      });
+
+      expect(createImageBitmap).not.toHaveBeenCalled();
+      expect(decodePixels).toHaveBeenCalledTimes(1);
+      expect(result.decodedTextureCount).toBe(1);
+      expect(result.unchangedTextureCount).toBe(0);
+      expect(result.textureDecodeDiagnostics).toEqual([]);
+      expect(result.textureDecodeReport).toMatchObject({
+        mapCount: 1,
+        uniqueHandleCount: 1,
+        rawImageCount: 0,
+        opaqueHandleCount: 0,
+        cpuReadableCount: 1,
+      });
+      expect(result.textureDecodeReport.entries).toEqual([
+        expect.objectContaining({
+          materialField: 'baseColorMap',
+          handleKind: 'pixel-data',
+          textureIndex: 0,
+          imageIndex: 0,
+          imageMimeType: 'image/png',
+        }),
+      ]);
+    });
+  });
+
   it('bakes spec-gloss alpha into a CPU-linear roughnessMap when decoding textures', async () => {
     const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
     const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => {
@@ -819,7 +904,7 @@ describe('decodeSceneTextures', () => {
               },
             },
           },
-        } as MeshPrimitive,
+        },
       ],
       emitters: [],
       environment: { kind: 'none' },
@@ -859,7 +944,7 @@ describe('decodeSceneTextures', () => {
             bumpMap: { handle: { kind: 'raw-image', uri: 'bump.png' } },
             bumpScale: 0.5,
           },
-        } as MeshPrimitive,
+        },
       ],
       emitters: [],
       environment: { kind: 'none' },
@@ -1747,7 +1832,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       expect.objectContaining({
         category: 'scene',
         name: 'cameras',
-        support: 'unsupported',
+        support: 'approximate',
         path: 'cameras[0]',
       }),
       expect.objectContaining({
@@ -1970,6 +2055,38 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('allows glTF cameras in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.cameras = [{ type: 'perspective' }];
+    gltf.nodes![0] = { ...gltf.nodes![0]!, camera: 0 };
+
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'ignored-camera',
+        path: 'cameras[0]',
+      }),
+    ]));
+    expect(createEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow('scene:cameras=approximate at cameras[0]');
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
   it('rejects opaque texture handles in reject-degraded mode unless the host opts in', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
@@ -2058,6 +2175,52 @@ describe('loadGltfForEngine', () => {
     expect(handle.height).toBe(1);
     expect(handle.data).toBeInstanceOf(Float32Array);
     expect(result.asset.scene).toBe(attachedScene);
+  });
+
+  it('loadGltfForEngine decodes browser image bytes without requiring a custom decodeImage hook', async () => {
+    const { gltf, buffers, png } = makeInlineTexturedGltf();
+    const engine = { setScene: vi.fn() };
+    const decodePixels = vi.fn((
+      handle: Parameters<DecodeGltfTexturePixelsFn>[0],
+      context: Parameters<DecodeGltfTexturePixelsFn>[1],
+    ) => {
+      expect(handle).toMatchObject({
+        kind: 'raw-image',
+        mimeType: 'image/png',
+      });
+      expect(handle.data).toEqual(png);
+      return {
+        width: 2,
+        height: 2,
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: context.colorSpace,
+        data: new Uint8Array(2 * 2 * 4).fill(255),
+      };
+    });
+
+    await withCreateImageBitmapStub(async (createImageBitmap) => {
+      const result = await loadGltfForEngine(gltf, {
+        buffers,
+        engine,
+        decodeTextures: true,
+        decodePixels,
+        attachScene: false,
+      });
+
+      expect(createImageBitmap).not.toHaveBeenCalled();
+      expect(decodePixels).toHaveBeenCalledTimes(1);
+      expect(engine.setScene).not.toHaveBeenCalled();
+      expect(result.attached).toBe(true);
+      expect(result.decodedTextureCount).toBe(1);
+      expect(result.unchangedTextureCount).toBe(0);
+      expect(result.textureDecodeDiagnostics).toEqual([]);
+      expect(result.textureDecodeReport).toMatchObject({
+        rawImageCount: 0,
+        opaqueHandleCount: 0,
+        cpuReadableCount: 1,
+      });
+    });
   });
 
   it('preserves KHR_materials_variants metadata on bridge-created controllers', async () => {

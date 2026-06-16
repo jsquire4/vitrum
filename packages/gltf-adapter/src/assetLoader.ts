@@ -10,7 +10,7 @@ import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum
 import type { GltfJson } from './gltfTypes.js';
 import { gltfToScene, type GltfToSceneOptions, type GltfToSceneResult } from './gltfToScene.js';
 import { parseGlb } from './glbParser.js';
-import type { GltfImageBytes } from './textures.js';
+import type { DecodeImageFn, GltfImageBytes, RawImageHandle } from './textures.js';
 import {
   analyzeGltfAsset,
   rankGltfBackends,
@@ -144,7 +144,7 @@ export async function loadGltfAndDecodeTextures(
   input: GltfAssetInput,
   options: LoadGltfAndDecodeTexturesOptions = {},
 ): Promise<GltfDecodedAssetResult> {
-  const asset = await loadGltfAsset(input, options);
+  const asset = await loadGltfAsset(input, loadOptionsForTextureDecode(options));
   const decodeOptions: DecodeSceneTexturesOptions = {
     target: options.textureTarget ?? 'cpu-linear',
     ...(options.decodePixels ? { decodePixels: options.decodePixels } : {}),
@@ -192,6 +192,28 @@ export async function loadGltfAndDecodeTextures(
     textureDecodeWarnings,
   };
 }
+
+function loadOptionsForTextureDecode(
+  options: LoadGltfAndDecodeTexturesOptions,
+): LoadGltfAssetOptions {
+  if (options.decodePixels === undefined || options.decodeImage !== undefined) {
+    return options;
+  }
+
+  return {
+    ...options,
+    decodeImage: preserveRawImageForTextureDecode,
+  };
+}
+
+const preserveRawImageForTextureDecode: DecodeImageFn = (
+  data,
+  mimeType,
+): Promise<RawImageHandle> => Promise.resolve({
+  kind: 'raw-image',
+  mimeType,
+  data,
+});
 
 const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
@@ -479,9 +501,13 @@ function normalizeBufferMap(
   const out = new Map<number, ArrayBuffer>();
   if (buffers == null) return out;
   if (buffers instanceof Map) {
-    for (const [k, v] of buffers) out.set(k, v);
+    const bufferMap = buffers as ReadonlyMap<number, ArrayBuffer>;
+    for (const [k, v] of bufferMap) out.set(k, v);
   } else {
-    for (const [k, v] of Object.entries(buffers)) out.set(Number(k), v);
+    const bufferRecord = buffers as Record<string, ArrayBuffer>;
+    for (const [k, v] of Object.entries(bufferRecord)) {
+      out.set(Number(k), v);
+    }
   }
   return out;
 }

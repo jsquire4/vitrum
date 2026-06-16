@@ -16,8 +16,8 @@
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
  * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
- * delta + point + spot + stochastic area-measure rect/disc/mesh-area direct lights.
- * Environment, indirect, soft-sun angular diameter, and BRDF/transmissive/
+ * delta/soft-sun directional + point + spot + stochastic area-measure rect/disc/mesh-area direct lights.
+ * Environment, indirect, and BRDF/transmissive/
  * layered/volume/spectral mapped material terms remain deliberate
  * finite-difference fallbacks until their source terms are mirrored here and
  * GPU-validated. Mapped terms replayed here are scoped to the camera-direct
@@ -1030,11 +1030,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let dDirAD = directionalLights[dBase];
       let dIrrMean = directionalLights[dBase + 1u];
       if (dIrrMean.w <= 1e-6) { continue; }
-      // Delta directional adjoint: exact for angularDiameter≈0. Soft-sun cone
-      // scenes are kept on finite-difference by inverseSession routing; if this
-      // pass is called directly anyway, use the cone center as a stable estimate.
-      let wi = safe_normalize(dDirAD.xyz);
-      let directionalShadowDisabled = dDirAD.w < 0.0;
+      var wi = safe_normalize(dDirAD.xyz);
+      let angularDiameterRaw = dDirAD.w;
+      let directionalShadowDisabled = angularDiameterRaw < 0.0;
+      let angularDiameter = select(angularDiameterRaw, -1.0 - angularDiameterRaw, directionalShadowDisabled);
+      if (angularDiameter > 0.0) {
+        let cosHalfAngle = cos(angularDiameter * 0.5);
+        let xi1 = rand_f32(&rng);
+        let xi2 = rand_f32(&rng);
+        let cosTheta = mix(cosHalfAngle, 1.0, xi1);
+        let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        let phi = 6.28318530718 * xi2;
+        let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(wi.x) > 0.9);
+        let basisY = normalize(cross(wi, tangentX));
+        let basisX = cross(basisY, wi);
+        wi = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * wi);
+      }
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL <= 0.0) { continue; }
       if (!directionalShadowDisabled && anyHit(pos + n * 1e-3, wi, 1e30)) { continue; }

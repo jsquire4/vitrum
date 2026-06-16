@@ -52,7 +52,7 @@ export const RESTIR_CAST_PRIMARY_WGSL = /* wgsl */ `
 fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
   var s: PrimarySurface;
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
-  let hit = traceSceneFirstHitAlphaMaskTextured(
+  let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,

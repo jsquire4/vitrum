@@ -133,7 +133,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let invVP = invertMat4_common(vp);
 
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = traceSceneFirstHitAlphaMaskTextured(
+  let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
