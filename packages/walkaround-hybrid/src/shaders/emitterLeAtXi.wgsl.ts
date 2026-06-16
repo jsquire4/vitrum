@@ -10,11 +10,14 @@ fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f {
   // sourceTriIndex is packed in the active render buffers' bvh_index/material
   // atlas triangle space. Merged mode uses the BVH-reordered triangle directly;
   // TLAS mode maps the world-expanded emitter triangle back to the local BLAS
-  // atlas triangle before upload. Negative/unmapped values keep average Le.
-  let sourceTri = i32(round(e.sourceTriIndex));
-  if (sourceTri < 0) {
+  // atlas triangle before upload. Encodings: -1 = average-Le fallback;
+  // -(tri + 2) = mirrored TLAS instance, source tri with reversed barycentrics.
+  let encodedSourceTri = i32(round(e.sourceTriIndex));
+  if (encodedSourceTri == -1) {
     return e.Le;
   }
+  let mirroredSourceTri = encodedSourceTri < -1;
+  let sourceTri = select(encodedSourceTri, -encodedSourceTri - 2, mirroredSourceTri);
   let triIndex = u32(sourceTri);
   if (triIndex >= arrayLength(&bvh_index)) {
     return e.Le;
@@ -24,7 +27,10 @@ fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f {
       tri.x >= arrayLength(&bvh_normal) || tri.y >= arrayLength(&bvh_normal) || tri.z >= arrayLength(&bvh_normal)) {
     return e.Le;
   }
-  let bary = emitterSampleBarycentricFromXi(xi);
+  var bary = emitterSampleBarycentricFromXi(xi);
+  if (mirroredSourceTri) {
+    bary = vec3f(bary.z, bary.y, bary.x);
+  }
   let uv0a = materialAtlasPackedUvFromVec4(bvh_position[tri.x]);
   let uv0b = materialAtlasPackedUvFromVec4(bvh_position[tri.y]);
   let uv0c = materialAtlasPackedUvFromVec4(bvh_position[tri.z]);

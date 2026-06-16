@@ -285,12 +285,13 @@ function buildTlasEmitterSourceTriMapper(
   const mergedTriToTlasTri = new Int32Array(merged.triangleCount);
   mergedTriToTlasTri.fill(-1);
   for (const range of merged.meshVertexRanges) {
-    if (range.windingFlipped === true) continue;
     const binding = bindingByPrimitiveId.get(range.name);
     if (binding == null) continue;
     const triCount = Math.min(range.triCount, binding.triCount);
     for (let localTri = 0; localTri < triCount; localTri += 1) {
-      mergedTriToTlasTri[range.triStart + localTri] = binding.triStart + localTri;
+      const sourceTri = binding.triStart + localTri;
+      mergedTriToTlasTri[range.triStart + localTri] =
+        range.windingFlipped === true ? -(sourceTri + 2) : sourceTri;
     }
   }
 

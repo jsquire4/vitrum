@@ -81,9 +81,11 @@ describe('ReSTIR-DI material parity', () => {
 
   it('samples UV-varying emissive-map radiance for ReSTIR-DI emitter evaluation', () => {
     expect(EMITTER_LE_AT_XI_WGSL).toContain('fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f');
-    expect(EMITTER_LE_AT_XI_WGSL).toContain('TLAS mode maps the world-expanded emitter triangle');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('-(tri + 2) = mirrored TLAS instance');
     expect(EMITTER_LE_AT_XI_WGSL).not.toContain('if (ubo.bvhMode != 0u)');
-    expect(EMITTER_LE_AT_XI_WGSL).toContain('if (sourceTri < 0)');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('if (encodedSourceTri == -1)');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('let mirroredSourceTri = encodedSourceTri < -1;');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('bary = vec3f(bary.z, bary.y, bary.x);');
     expect(EMITTER_LE_AT_XI_WGSL).toContain('return sampleEmissiveMap(triIndex, uv0, uv1, e.Le);');
     expect(RESTIR_PHAT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
     expect(RIS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xiTri);');

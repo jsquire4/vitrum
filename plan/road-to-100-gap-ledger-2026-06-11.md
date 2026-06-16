@@ -1608,10 +1608,12 @@ Evidence:
   material-backed emitters now translate the world-expanded emitter triangle
   through `bvhTriToMergedTri` and `primitiveTlasBindings` back to the local BLAS
   material-atlas triangle, so instanced decoded glTF-style emissive maps share
-  the native sampled-texel payload too. Mirrored TLAS instances and analytic/
-  extra emitters intentionally retain averaged `Le`. Exact UV-varying texel-PDF
-  selection and GI/RC/DDGI texel-space emission are still approximate rather than
-  native parity.
+  the native sampled-texel payload too. Later follow-up: mirrored TLAS instances
+  encode reversed barycentric orientation in the source-triangle lane
+  (`-(tri + 2)`), so they also sample the local material-atlas texel instead of
+  falling back to averaged radiance. Analytic/extra emitters intentionally retain
+  averaged `Le`. Exact UV-varying texel-PDF selection and GI/RC/DDGI texel-space
+  emission are still approximate rather than native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
   `emitterPacking.ts` folds the CPU-readable sRGB-decoded average RGB into
   synthesized emissive-mesh radiance, uses that same helper for the geometry

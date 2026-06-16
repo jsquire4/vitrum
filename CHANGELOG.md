@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (glTF/walkaround asset-tail closures, 2026-06-16)
 
 - **glTF generated tangents now honor the selected tangent-space UV set:** `@vitrum/gltf-adapter` generates fallback tangents from `TEXCOORD_1` when a normal/clearcoat-normal/bump map selects `texCoord:1`; `texCoord:2+` and mixed tangent-space map UV channels now emit structured diagnostics instead of silently generating a wrong UV0 tangent frame.
-- **Walkaround camera-visible emissive maps no longer double-apply readable map averages:** `packBVHEmissiveLeFromCore()` now stores scalar production Le in the per-triangle glow buffer and leaves hit-local emissive-map modulation to the material atlas sampler. ReSTIR/RC/DDGI emitter selection power still uses readable average energy, while exact texel-PDF selection and GI/RC/DDGI texel-space emission remain promotion tails.
+- **Walkaround emissive maps no longer double-apply readable map averages and now feed mirrored TLAS DI payloads:** `packBVHEmissiveLeFromCore()` stores scalar production Le in the per-triangle glow buffer and leaves hit-local emissive-map modulation to the material atlas sampler. ReSTIR-DI source-triangle payloads now cover merged, TLAS, instanced, and mirrored-TLAS material-backed emitters by encoding reversed barycentric orientation in the existing source-triangle lane. ReSTIR/RC/DDGI emitter selection power still uses readable average energy, while exact texel-PDF selection, analytic/extra emitter mapped payloads, and GI/RC/DDGI texel-space emission remain promotion tails.
 
 ### Fixed (pt-webgpu sheenColor adjoint breadth, 2026-06-16)
 

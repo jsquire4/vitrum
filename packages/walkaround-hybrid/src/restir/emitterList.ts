@@ -77,6 +77,9 @@ interface EmitterListOptions {
    * stored candidate `xi`. The index must be in the active render buffers'
    * `bvh_index` / material-atlas triangle space; callers with a world-expanded
    * emitter stream can provide `sourceTriIndexForTriangle` to translate.
+   * Negative encodings are reserved: `-1` means fallback to averaged radiance,
+   * while `-(tri + 2)` means source triangle `tri` with reversed barycentric
+   * orientation for mirrored TLAS instances.
    */
   packSourceTriIndex?: boolean;
   /**
@@ -188,7 +191,13 @@ export function buildEmitterListFromCore(
       const scalarLe = scalarMaterialEmissiveLe(mat);
       if (scalarLe == null) return classified;
       const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
-      if (!Number.isFinite(sourceTriIndex) || sourceTriIndex < 0) return classified;
+      if (
+        !Number.isFinite(sourceTriIndex) ||
+        (sourceTriIndex < 0 && Math.trunc(sourceTriIndex) !== sourceTriIndex) ||
+        sourceTriIndex === -1
+      ) {
+        return classified;
+      }
       return {
         ...classified,
         color: scalarLe,

@@ -127,6 +127,10 @@ function translation(x: number, y: number, z: number): Float32Array {
   return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
 }
 
+function scale(x: number, y: number, z: number): Float32Array {
+  return new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]);
+}
+
 describe('core ReSTIR direct-light emitter fidelity', () => {
   it('tessellates disc-area emitters as an area-preserving triangle fan', () => {
     const scene: Scene = {
@@ -333,6 +337,50 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     }
     expect(buffers.totalEmissivePower).toBeCloseTo(
       luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 1.0,
+      5,
+    );
+  });
+
+  it('encodes mirrored TLAS emissiveMap emitters with reversed source-triangle orientation', () => {
+    const instanced: InstancedMeshPrimitive = {
+      kind: 'instanced-mesh',
+      id: 'mirrored-emissive-map',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: {
+        ...emissiveMaterial([3, 3, 3], 1),
+        emissiveMap: {
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Float32Array([
+              0.25, 0.25, 1, 1,
+              1, 0.25, 0.25, 1,
+            ]),
+            __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+          },
+        },
+      },
+      instances: [asMat4(scale(-1, 1, 1))],
+    };
+    const scene: Scene = {
+      primitives: [instanced],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
+    const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+    const expectedAverageLe: [number, number, number] = [1.875, 0.75, 1.875];
+
+    expect(emitters).toHaveLength(1);
+    expect(emitters[0]!.sourceTriIndex).toBe(-2);
+    expect(emitters[0]!.color).toEqual([3, 3, 3]);
+    expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
+    expect(buffers.totalEmissivePower).toBeCloseTo(
+      luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 0.5,
       5,
     );
   });
