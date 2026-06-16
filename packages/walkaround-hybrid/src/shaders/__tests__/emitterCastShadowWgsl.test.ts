@@ -14,8 +14,8 @@ describe('emitter castShadow:false shader gates', () => {
     expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
-    expect(RIS_WGSL).toContain('traceSceneAnyAlphaMaskTextured(');
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAnyAlphaMaskTextured(');
+    expect(RIS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
   });
 
   it('threads analytic point/spot and DDGI area-emitter flags into shadow-ray gates', () => {
@@ -40,7 +40,12 @@ describe('emitter castShadow:false shader gates', () => {
     expect(ddgi).toContain('fn bvhTraceAnyCastShadow(');
     expect(ddgi).toContain('bvhTraceAnyCastShadow(shadowOrig, lightDir, dist - normalBias_p, false)');
 
-    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY, TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_GRIS_WGSL]) {
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(src).toContain('traceSceneAlphaTransmittanceTextured(');
+      expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
+    }
+
+    for (const src of [TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_GRIS_WGSL]) {
       expect(src).toContain('traceSceneAnyAlphaMaskTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }

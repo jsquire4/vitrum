@@ -441,7 +441,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (distS > 1e-4) {
       let wiZ = toS / distS;
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
-      let occ = traceSceneAnyAlphaMaskTextured(
+      let shadowT = traceSceneAlphaTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -449,7 +449,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
         bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
-      if (occ) {
+      if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W = 0.0;
       } else {
@@ -462,6 +462,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
           r.xs,
           r.Lo,
         );
+        r.w_sum = r.w_sum * shadowT;
         let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
         r.W = min(W_raw, ubo.restirGiWCap);
       }

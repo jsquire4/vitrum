@@ -856,16 +856,103 @@ fn materialShadowOccluderForHit(
   materialWord: u32,
   skipGlass: bool,
 ) -> bool {
+  return materialShadowTransmittanceForHit(hit, materialWord, skipGlass) <= 0.001;
+}
+
+fn materialShadowTransmittanceForHit(
+  hit: IntersectionResult,
+  materialWord: u32,
+  skipGlass: bool,
+) -> f32 {
   if ((materialWord & 1u) != 0u) {
-    return false;
+    return 1.0;
   }
   if (skipGlass) {
     let trans4 = (hit.matColorPacked >> 4u) & 0xFu;
     if (trans4 > 4u) {
-      return false;
+      return 1.0;
     }
   }
-  return !materialAlphaDiscardedForHit(hit, materialWord);
+  let alpha = materialAlphaCoverageForHit(hit, materialWord);
+  if (alpha.scalarDiscarded != 0u) {
+    return 1.0;
+  }
+  if (alpha.mode == 0u) {
+    return 0.0;
+  }
+  if (alpha.mode == 1u) {
+    return select(0.0, 1.0, alpha.coverage < alpha.cutoff);
+  }
+  if (alpha.mode == 2u) {
+    return clamp(1.0 - alpha.coverage, 0.0, 1.0);
+  }
+  return select(0.0, 1.0, alpha.coverage <= 0.0);
+}
+
+fn traceSceneAlphaTransmittanceTextured(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  origin: vec3f,
+  dir: vec3f,
+  tMax: f32,
+  triEps: f32,
+  skipGlass: bool,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+) -> f32 {
+  var walkRay: Ray;
+  walkRay.origin = origin;
+  walkRay.direction = dir;
+  var traveled = 0.0;
+  var tau = 1.0;
+  let step = max(1e-4, triEps * 4.0);
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    let remaining = tMax - traveled;
+    if (remaining <= step || tau <= 0.001) {
+      return clamp(tau, 0.0, 1.0);
+    }
+    let hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      bvh_index, bvh_position, bvh,
+      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+      walkRay, triEps,
+    );
+    if (!hit.didHit || hit.dist >= remaining) {
+      return clamp(tau, 0.0, 1.0);
+    }
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    tau = tau * materialShadowTransmittanceForHit(hit, word, skipGlass);
+    if (tau <= 0.001) {
+      return 0.0;
+    }
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = origin + dir * traveled;
+  }
+
+  if (traceSceneAnyCastMask(
+    bvhMode, tlasNodeCount,
+    bvh_index, bvh_position, bvh,
+    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+    walkRay.origin, dir, max(0.0, tMax - traveled), triEps, skipGlass,
+    materialMask, materialMaskWidth,
+  )) {
+    return 0.0;
+  }
+  return clamp(tau, 0.0, 1.0);
 }
 
 fn traceSceneAnyAlphaMaskTextured(
@@ -887,46 +974,14 @@ fn traceSceneAnyAlphaMaskTextured(
   materialMask: texture_2d<u32>,
   materialMaskWidth: u32,
 ) -> bool {
-  var walkRay: Ray;
-  walkRay.origin = origin;
-  walkRay.direction = dir;
-  var traveled = 0.0;
-  let step = max(1e-4, triEps * 4.0);
-  for (var i = 0u; i < 32u; i = i + 1u) {
-    let remaining = tMax - traveled;
-    if (remaining <= step) {
-      return false;
-    }
-    let hit = traceSceneFirstHit(
-      bvhMode, tlasNodeCount,
-      bvh_index, bvh_position, bvh,
-      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-      walkRay, triEps,
-    );
-    if (!hit.didHit || hit.dist >= remaining) {
-      return false;
-    }
-    let word = textureLoad(
-      materialMask,
-      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
-      0,
-    ).r;
-    if (materialShadowOccluderForHit(hit, word, skipGlass)) {
-      return true;
-    }
-    traveled = traveled + hit.dist + step;
-    walkRay.origin = origin + dir * traveled;
-  }
-
-  return traceSceneAnyCastMask(
+  return traceSceneAlphaTransmittanceTextured(
     bvhMode, tlasNodeCount,
     bvh_index, bvh_position, bvh,
     tlasNodes, tlasInstanceIndices, tlasBlasRoots,
     tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-    walkRay.origin, dir, max(0.0, tMax - traveled), triEps, skipGlass,
+    origin, dir, tMax, triEps, skipGlass,
     materialMask, materialMaskWidth,
-  );
+  ) <= 0.001;
 }
 
 fn traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(

@@ -67,9 +67,10 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo');
   });
 
-  it('runs the final visibility test on the chosen sample and zeroes W on occlusion', () => {
-    expect(RIS_GI_WGSL).toContain('traceSceneAny');
-    expect(RIS_GI_WGSL).toMatch(/if \(occ\)/);
+  it('runs the final visibility test on the chosen sample and attenuates W by alpha transmittance', () => {
+    expect(RIS_GI_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+    expect(RIS_GI_WGSL).toMatch(/if \(shadowT <= 0\.001\)/);
+    expect(RIS_GI_WGSL).toContain('r.w_sum = r.w_sum * shadowT;');
     expect(RIS_GI_WGSL).toMatch(/r\.W\s*=\s*0\.0/);
   });
 

@@ -76,7 +76,10 @@ function makeMockDevice(tracking: MockDeviceTracking): GPUDevice {
     createComputePipelineAsync: vi.fn(async () => ({
       getBindGroupLayout: vi.fn(() => ({})),
     })),
-    queue: { writeBuffer: vi.fn() },
+    queue: {
+      writeBuffer: vi.fn(),
+      writeTexture: vi.fn(),
+    },
     destroy: vi.fn(),
   } as unknown as GPUDevice;
 }

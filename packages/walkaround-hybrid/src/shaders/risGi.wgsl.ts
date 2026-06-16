@@ -422,7 +422,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (distS_g > 1e-4) {
         let wiZ_g = toS_g / distS_g;
         let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
-        let occ_g = traceSceneAnyAlphaMaskTextured(
+        let shadowT_g = traceSceneAlphaTransmittanceTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -430,7 +430,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
           shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon, true,
           bvh_material, BVH_MATERIAL_TEX_WIDTH,
         );
-        if (occ_g) {
+        if (shadowT_g <= 0.001) {
           rGlass.w_sum = 0.0;
           rGlass.W = 0.0;
         } else {
@@ -443,6 +443,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
             rGlass.xs,
             rGlass.Lo,
           );
+          rGlass.w_sum = rGlass.w_sum * shadowT_g;
           finaliseGIReservoirWFromPHat(&rGlass, ubo.restirGiWCap, false, pHatZ_g);
         }
       } else {
@@ -614,7 +615,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let occ = traceSceneAnyAlphaMaskTextured(
+      let shadowT = traceSceneAlphaTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -622,7 +623,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
         bvh_material, BVH_MATERIAL_TEX_WIDTH,
       );
-      if (occ) {
+      if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W = 0.0;
       } else {
@@ -635,6 +636,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
           r.xs,
           r.Lo,
         );
+        r.w_sum = r.w_sum * shadowT;
         let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
         // Cap W to bound firefly contribution from tiny pHat denominators
         // (grazing cos or near-zero Lo luminance). Cornell default 16.0

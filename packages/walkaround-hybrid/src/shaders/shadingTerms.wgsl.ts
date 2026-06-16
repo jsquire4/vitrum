@@ -204,24 +204,25 @@ fn lo_analyticNEE(
       cone = smoothstep(cosOuter, cosInner, cosTheta);
     }
 
+    var shadowT = 1.0;
     if (!castShadowDisabled) {
       // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
       // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
-      // and readable texture-alpha cutouts through the material atlas.
-      let occ = traceSceneAnyAlphaMaskTextured(
+      // and attenuate through readable alpha-blend coverage in the material atlas.
+      shadowT = traceSceneAlphaTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
         bvh_material, BVH_MATERIAL_TEX_WIDTH);
-      if (occ) { continue; }
+      if (shadowT <= 0.001) { continue; }
     }
 
     // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
     let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
-    Lo += lightLe * brdf * nDotL * cone * invDist2;
+    Lo += lightLe * brdf * nDotL * cone * invDist2 * shadowT;
   }
   return Lo;
 }
@@ -413,16 +414,17 @@ fn lo_sunNEE(
   // flag is set. This conservative transparency matches the analytic-NEE convention
   // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
   // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry and
-  // readable texture-alpha cutouts through the material atlas.
+  // attenuate through readable alpha-blend coverage in the material atlas.
+  var sunShadowT = 1.0;
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    let occ = traceSceneAnyAlphaMaskTextured(
+    sunShadowT = traceSceneAlphaTransmittanceTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
       &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
       pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true,
       bvh_material, BVH_MATERIAL_TEX_WIDTH);
-    if (occ) { return vec3f(0.0); }
+    if (sunShadowT <= 0.001) { return vec3f(0.0); }
   }
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
@@ -430,7 +432,7 @@ fn lo_sunNEE(
   let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, toSun);
   // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
   // No distance falloff — directional lights have infinite distance.
-  return vec3f(ubo.sunIntensity) * brdf;
+  return vec3f(ubo.sunIntensity) * brdf * sunShadowT;
 }
 
 // T5 — the sun-caustic + sky-aperture stained-glass-specific lighting terms

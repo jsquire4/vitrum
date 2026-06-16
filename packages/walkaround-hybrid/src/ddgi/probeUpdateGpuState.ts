@@ -12,7 +12,7 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  * references that appear in each bind group.
  *
  * Layout:
- *  - raysGroup0 / raysGroup1: stable (keyed on bvhBuf + materialsBuf)
+ *  - raysGroup0 / raysGroup1: stable (keyed on bvhBuf + materialsBuf + material atlas views)
  *  - raysGroup2:              per-frame (keyed on irrReadTex + rayResultsBuf + envMapView)
  *  - blendIrrGroup0/1:        stable/per-frame (keyed on rayResultsBuf / irrRead+irrWriteTex)
  *  - blendVisGroup0/1:        stable/per-frame
@@ -22,9 +22,12 @@ export interface DispatchBindGroupCache {
   // Rays pass — group 0: BVH buffers (11 entries). Epoch key = bvhBuf.
   raysG0Key: GPUBuffer | null;
   raysG0: GPUBindGroup | null;
-  // Rays pass — group 1: materials + lights + emitters. Key = materialsBuf + emitterTrisBuf.
+  // Rays pass — group 1: materials + lights + emitters + material atlas.
+  // Key = materialsBuf + emitterTrisBuf + atlas views.
   raysG1Key0: GPUBuffer | null;
   raysG1Key1: GPUBuffer | null;
+  raysG1KeyAtlas: GPUTextureView | null;
+  raysG1KeyAtlasMeta: GPUTextureView | null;
   raysG1: GPUBindGroup | null;
   // Rays pass — group 2: per-frame (changes every atlas swap).
   // Key = irrReadTex + rayResultsBuf + activeProbesBuf + envMapView.
@@ -82,6 +85,12 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   emitterTrisBuf: GPUBuffer;
   /** Number of valid emitter triangles in emitterTrisBuf (0 when sun-only). */
   emitterTrisCount: number;
+  /** DDGI-local copy of the readable material texture atlas for probe-hit emission maps. */
+  materialTextureAtlas: GPUTexture;
+  materialTextureAtlasView: GPUTextureView;
+  /** Per-triangle material-map metadata texture paired with {@link materialTextureAtlas}. */
+  materialTextureAtlasMeta: GPUTexture;
+  materialTextureAtlasMetaView: GPUTextureView;
   gridParamsBuf: GPUBuffer;
   frameParamsBuf: GPUBuffer;
   blendParamsBuf: GPUBuffer;

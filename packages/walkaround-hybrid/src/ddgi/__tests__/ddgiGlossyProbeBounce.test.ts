@@ -94,6 +94,14 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('mat.roughness');
     expect(src).toContain('mat.metalness');
   });
+
+  it('1h. readable emissive maps modulate direct probe-hit surface emission', () => {
+    const src = wgsl();
+    expect(src).toContain('@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;');
+    expect(src).toContain('@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;');
+    expect(src).toContain('fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f');
+    expect(src).toContain('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
+  });
 });
 
 // ── 2. Material availability: roughness / metalness in MaterialEntry ─────────
@@ -212,14 +220,17 @@ describe('B2 — WGSL gate: specular complement is disabled when indirectFeedbac
 describe('H18 — material-emissive direct probe hits', () => {
   it('adds packed surface emission after glass mix and before writing hit radiance', () => {
     const src = wgsl();
-    expect(src).toContain('let surfaceEmission = vec3f(');
+    expect(src).toContain('let scalarSurfaceEmission = vec3f(');
+    expect(src).toContain('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
     expect(src).toContain('radiance = radiance + surfaceEmission;');
 
     const glassMix = src.indexOf('radiance = mix(radiance, transmitted');
+    const mapSample = src.indexOf('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
     const emissionAdd = src.indexOf('radiance = radiance + surfaceEmission;');
     const writeOut = src.indexOf('out.hitRadiance  = radiance;');
     expect(glassMix).toBeGreaterThanOrEqual(0);
-    expect(emissionAdd).toBeGreaterThan(glassMix);
+    expect(mapSample).toBeGreaterThan(glassMix);
+    expect(emissionAdd).toBeGreaterThan(mapSample);
     expect(writeOut).toBeGreaterThan(emissionAdd);
   });
 

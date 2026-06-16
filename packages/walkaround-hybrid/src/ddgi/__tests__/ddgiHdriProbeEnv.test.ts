@@ -22,9 +22,9 @@
  *     d. The equirect UV math matches environmentSample.wgsl:
  *        atan2(lookupDir.z, lookupDir.x) + acos(clamp(lookupDir.y, -1.0, 1.0)).
  *
- *  5. Bind-group layout: dispatchProbeUpdateRaysPass builds bg2 with 8
- *     entries (bindings 0–7), including the new bindings 6 (ddgiEnvMap) and
- *     7 (ddgiEnvSamp).
+ *  5. Bind-group layout: dispatchProbeUpdateRaysPass builds bg2 with 7
+ *     entries (bindings 0–6), including binding 6 (ddgiEnvMap). There is no
+ *     sampler binding because the shader uses textureLoad.
  *
  *  6. DDGI.setEnvironment() forwarding: calling DDGI.setEnvironment() reaches
  *     ProbeUpdatePass.setEnvironment() (ProbeUpdatePass is the DDGI API owner).
@@ -236,10 +236,10 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
   });
 });
 
-// ── 5. Bind-group layout: bg2 has 8 entries ──────────────────────────────────
+// ── 5. Bind-group layout: bg2 has 7 entries ──────────────────────────────────
 
-describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 8 entries (bindings 0–7)', () => {
-  it('bg2 createBindGroup call includes binding 6 and binding 7 entries', () => {
+describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0–6)', () => {
+  it('bg2 createBindGroup call includes binding 6 and no stripped sampler entry', () => {
     const bindGroupEntryLists: unknown[][] = [];
     const mockDevice = {
       createBindGroup: vi.fn((desc: { entries: unknown[] }) => {
@@ -280,6 +280,10 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 8 entries (bindings 0�
       lightsBuf:         mockBuf,
       emitterTrisBuf:    mockBuf,
       emitterTrisCount:  0,
+      materialTextureAtlas: mockTex,
+      materialTextureAtlasView: mockView,
+      materialTextureAtlasMeta: mockTex,
+      materialTextureAtlasMetaView: mockView,
       gridParamsBuf:     mockBuf,
       frameParamsBuf:    mockBuf,
       blendParamsBuf:    mockBuf,

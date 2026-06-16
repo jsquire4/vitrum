@@ -434,21 +434,22 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (lid == ENV_SAMPLE_SENTINEL) {
       let envDir = envDirFromXi(r.xi);
       // SHADOW-01 / ALPHA-03 — DI shadow rays honor primitive castShadow:false
-      // and readable texture alpha coverage via the material atlas.
-      let occluded = traceSceneAnyAlphaMaskTextured(
+      // and attenuate through readable alpha-blend coverage via the material atlas.
+      let shadowT = traceSceneAlphaTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon, true,
         bvh_material, BVH_MATERIAL_TEX_WIDTH);
-      if (occluded) {
+      if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W     = 0.0;
       } else {
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mEnvSupport);
         r.M = supportM;
+        r.w_sum = r.w_sum * shadowT;
         r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
       }
     } else {
@@ -464,12 +465,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       let wi  = toL / dist;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      // SHADOW-01 / ALPHA-03 — castShadow:false geometry and readable texture
-      // alpha coverage are skipped via the material atlas.
+      // SHADOW-01 / ALPHA-03 — castShadow:false geometry is skipped and readable
+      // alpha-blend coverage attenuates visibility via the material atlas.
       // Emitter castShadow:false disables the emitter's own NEE shadow ray.
-      var occluded = false;
+      var shadowT = 1.0;
       if (e.castShadowDisabled < 0.5) {
-        occluded = traceSceneAnyAlphaMaskTextured(
+        shadowT = traceSceneAlphaTransmittanceTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -477,7 +478,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
           shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
           bvh_material, BVH_MATERIAL_TEX_WIDTH);
       }
-      if (occluded) {
+      if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W     = 0.0;
       } else {
@@ -487,6 +488,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
         let supportM = max(1u, mAreaSupport);
         r.M = supportM;
+        r.w_sum = r.w_sum * shadowT;
         r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
       }
     }

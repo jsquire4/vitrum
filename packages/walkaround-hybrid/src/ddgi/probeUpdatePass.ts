@@ -44,6 +44,10 @@ import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
 import { DDGI_PROBE_LIGHTS_BUFFER_BYTES, packDDGIProbeLights } from './probeUpdateLights.js';
 import {
+  uploadMaterialTextureAtlas,
+  type MaterialTextureAtlasPayload,
+} from '../pipeline/materialTextureAtlas.js';
+import {
   packProbeUpdateBlendParams,
   packProbeUpdateFrameParams,
 } from './probeUpdateFrameParams.js';
@@ -61,6 +65,37 @@ import {
   DDGI_FRAME_PARAMS_UBO,
   PROBE_RAY_STRIDE_BYTES,
 } from './probeUpdateUbos.js';
+
+const DDGI_PLACEHOLDER_MATERIAL_ATLAS: MaterialTextureAtlasPayload = {
+  atlasData: new Float32Array([1, 1, 1, 1]),
+  atlasDim: 1,
+  atlasLayerCount: 1,
+  baseColorMetaData: new Float32Array([-1, 0, 0, 0]),
+  baseColorMetaWidth: 1,
+  baseColorMetaHeight: 1,
+  readableBaseColorLayerCount: 0,
+  readableNormalLayerCount: 0,
+  readableRoughnessLayerCount: 0,
+  readableMetallicLayerCount: 0,
+  readableAoLayerCount: 0,
+  readableAlphaLayerCount: 0,
+  readableEmissiveLayerCount: 0,
+  readableTransmissionLayerCount: 0,
+  readableLightLayerCount: 0,
+  readableSpecularColorLayerCount: 0,
+  readableSpecularIntensityLayerCount: 0,
+  readableClearcoatLayerCount: 0,
+  readableClearcoatRoughnessLayerCount: 0,
+  readableClearcoatNormalLayerCount: 0,
+  readableSheenColorLayerCount: 0,
+  readableSheenRoughnessLayerCount: 0,
+  readableAnisotropyLayerCount: 0,
+  readableIridescenceLayerCount: 0,
+  readableIridescenceThicknessLayerCount: 0,
+  readableThicknessLayerCount: 0,
+  readableBumpLayerCount: 0,
+  diagnostics: [],
+};
 
 /** Options accepted by ProbeUpdatePass constructor. */
 export interface ProbeUpdatePassOptions {
@@ -98,6 +133,7 @@ export class ProbeUpdatePass {
   private _lastBvhVersion = -1;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
+  private _lastMaterialAtlasPayload: MaterialTextureAtlasPayload | null = null;
   private _frameIndex = 0;
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
@@ -470,6 +506,8 @@ export class ProbeUpdatePass {
       format: 'rgba16float',
       usage: TEX_BINDING | COPY_DST_TEX,
     });
+    const placeholderMaterialAtlas =
+      uploadMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
 
     this._gpu = {
       device,
@@ -498,6 +536,10 @@ export class ProbeUpdatePass {
       // H18 — placeholder (16 bytes); real data uploaded by setEmitterTris().
       emitterTrisBuf:  makeBuffer('ddgi.emitter-tris.placeholder', 16, RO),
       emitterTrisCount: 0,
+      materialTextureAtlas: placeholderMaterialAtlas.atlasTexture,
+      materialTextureAtlasView: placeholderMaterialAtlas.atlasTextureView,
+      materialTextureAtlasMeta: placeholderMaterialAtlas.baseColorMetaTexture,
+      materialTextureAtlasMetaView: placeholderMaterialAtlas.baseColorMetaTextureView,
       linearSampler,
       // Wave 4 — env map: placeholder initially; real view + sampler wired via
       // setEnvironment() (called from the engine before runFrame).
@@ -506,6 +548,7 @@ export class ProbeUpdatePass {
       envMapPlaceholderTex: placeholderEnvTex,
       envSamplerForProbe:  linearSampler,
     };
+    this._lastMaterialAtlasPayload = DDGI_PLACEHOLDER_MATERIAL_ATLAS;
     // If setEnvironment() was called before init (engine wires env before GPU is
     // ready), apply those values now.
     this._syncEnvViewsToGpu();
@@ -560,6 +603,7 @@ export class ProbeUpdatePass {
         this._lastTlasVersion = snap.tlasContentVersion;
       }
       this._uploadTraceParams(device, snap);
+      this._syncMaterialTextureAtlas(device, snap.materialTextureAtlas);
     } else if (legacyBuffers != null) {
       // H24-C — always rebuild so normal/position updates land in the probe-BVH.
       // The length-based gate was a fragile proxy that missed in-place geometry
@@ -567,6 +611,7 @@ export class ProbeUpdatePass {
       // relative to probe-ray dispatch; this is the safe default.
       rebuildProbeBvhFromScene(device, this._gpu, legacyBuffers);
       this._uploadTraceParams(device, { bvhMode: 'merged', tlasNodeCount: 0 });
+      this._syncMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
     }
 
     // Reallocate ray results buffer if probe count changed.
@@ -753,6 +798,19 @@ export class ProbeUpdatePass {
   private _uploadLights(device: GPUDevice): void {
     const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul);
     device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
+  }
+
+  private _syncMaterialTextureAtlas(device: GPUDevice, payload: MaterialTextureAtlasPayload): void {
+    const gpu = this._gpu;
+    if (gpu == null || this._lastMaterialAtlasPayload === payload) return;
+    const next = uploadMaterialTextureAtlas(device, payload);
+    gpu.materialTextureAtlas.destroy();
+    gpu.materialTextureAtlasMeta.destroy();
+    gpu.materialTextureAtlas = next.atlasTexture;
+    gpu.materialTextureAtlasView = next.atlasTextureView;
+    gpu.materialTextureAtlasMeta = next.baseColorMetaTexture;
+    gpu.materialTextureAtlasMetaView = next.baseColorMetaTextureView;
+    this._lastMaterialAtlasPayload = payload;
   }
 
   /** H18 Stage 2 — upload the packed emitter-tri array (or keep a dummy if count==0). */
@@ -956,6 +1014,8 @@ export class ProbeUpdatePass {
     g.materialsBuf.destroy();
     g.lightsBuf.destroy();
     g.emitterTrisBuf.destroy();  // H18
+    g.materialTextureAtlas.destroy();
+    g.materialTextureAtlasMeta.destroy();
     g.gridParamsBuf.destroy();
     g.frameParamsBuf.destroy();
     g.blendParamsBuf.destroy();
@@ -969,6 +1029,7 @@ export class ProbeUpdatePass {
       g.envMapPlaceholderTex.destroy();
     }
     this._gpu = null;
+    this._lastMaterialAtlasPayload = null;
     this._atlasCache.dispose();
   }
 }

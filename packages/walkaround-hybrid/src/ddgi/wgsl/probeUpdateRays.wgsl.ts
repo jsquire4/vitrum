@@ -256,6 +256,12 @@ struct DdgiTraceParams {
 // emitterCount (uniform in lights) is reused for the area-emitter count. A
 // dedicated u32 is cheaper than a second UBO; it lives in DdgiTraceParams.
 @group(1) @binding(2) var<storage, read> ddgiEmitterTris: array<vec4f>;
+// DDGI probe-hit emission-map subset. These are a DDGI-local copy of the
+// walkaround material atlas, used only to modulate direct probe hits on emissive
+// materials. Explicit emitter selection/NEE still uses the existing triangle
+// payloads and remains triangle-level.
+@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;
+@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
 @group(2) @binding(1) var<storage, read>       activeProbes: array<u32>;
@@ -274,6 +280,96 @@ struct DdgiTraceParams {
 // rejected the probe-update bind group on EVERY frame (probe radiance silently
 // never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
+
+const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
+
+fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
+  let dims = textureDimensions(ddgiMaterialMapMeta);
+  let w = max(dims.x, 1u);
+  return vec2i(i32(texel % w), i32(texel / w));
+}
+
+fn ddgiWrapMaterialUv1(v: f32, mode: u32) -> f32 {
+  if (mode == 1u) {
+    return clamp(v, 0.0, 1.0);
+  }
+  if (mode == 2u) {
+    return 1.0 - abs(fract(v * 0.5) * 2.0 - 1.0);
+  }
+  return fract(v);
+}
+
+fn ddgiWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
+  let wrapS = wrapPacked & 0x3u;
+  let wrapT = (wrapPacked >> 2u) & 0x3u;
+  return vec2f(ddgiWrapMaterialUv1(uv.x, wrapS), ddgiWrapMaterialUv1(uv.y, wrapT));
+}
+
+fn ddgiPackedUvFromVec4(v: vec4f) -> vec2f {
+  return unpack2x16unorm(bitcast<u32>(v.w));
+}
+
+fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return vec4f(-1.0);
+  }
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  let layer = i32(meta0.x);
+  if (layer < 0 || u32(layer) >= textureNumLayers(ddgiMaterialTextureAtlas)) {
+    return vec4f(-1.0);
+  }
+  let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
+  let texCoord = (wrapPacked >> 4u) & 0x3u;
+  let uv = select(uv0, uv1, texCoord == 1u);
+  let meta1 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel + 1u), 0);
+  let scaled = uv * meta1.xy;
+  let transformed = vec2f(
+    scaled.x * meta1.z - scaled.y * meta1.w,
+    scaled.x * meta1.w + scaled.y * meta1.z,
+  ) + meta0.zw;
+  let wrapped = ddgiWrapMaterialUv(transformed, wrapPacked);
+  let dims = textureDimensions(ddgiMaterialTextureAtlas);
+  let texel = vec2i(
+    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
+    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+  );
+  return textureLoad(ddgiMaterialTextureAtlas, texel, layer, 0);
+}
+
+fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let i0 = hit.indices.x;
+  let i1 = hit.indices.y;
+  let i2 = hit.indices.z;
+  if (
+    triIndex >= arrayLength(&bvh_index) ||
+    i0 >= arrayLength(&bvh_position) || i1 >= arrayLength(&bvh_position) || i2 >= arrayLength(&bvh_position) ||
+    i0 >= arrayLength(&bvh_normal) || i1 >= arrayLength(&bvh_normal) || i2 >= arrayLength(&bvh_normal)
+  ) {
+    return scalarEmission;
+  }
+  let uv0 =
+    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_position[i0]) +
+    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_position[i1]) +
+    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_position[i2]);
+  let uv1 =
+    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_normal[i0]) +
+    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_normal[i1]) +
+    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_normal[i2]);
+  let texel = ddgiSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+    uv0,
+    uv1,
+  );
+  if (texel.x < 0.0) {
+    return scalarEmission;
+  }
+  return scalarEmission * texel.rgb;
+}
 
 // -----------------------------------------------------------------
 // BVH traversal — merged world BLAS or TLAS+local BLAS (PR-5.2).
@@ -917,11 +1013,12 @@ fn probeUpdateRays(
         // handled by ddgiEmitterNEE above; this closes the non-emitter
         // material-emissive path without requiring hosts to author duplicate
         // mesh-area emitters for camera-visible glowing surfaces.
-        let surfaceEmission = vec3f(
+        let scalarSurfaceEmission = vec3f(
           max(mat.emissive.r, 0.0),
           max(mat.emissive.g, 0.0),
           max(mat.emissive.b, 0.0),
         );
+        let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);
         radiance = radiance + surfaceEmission;
 
         out.hitRadiance  = radiance;

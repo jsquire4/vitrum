@@ -15,7 +15,7 @@ import { DDGI_BORDER_UBO } from './probeUpdateUbos.js';
 function makeBgCache(): DispatchBindGroupCache {
   return {
     raysG0Key: null, raysG0: null,
-    raysG1Key0: null, raysG1Key1: null, raysG1: null,
+    raysG1Key0: null, raysG1Key1: null, raysG1KeyAtlas: null, raysG1KeyAtlasMeta: null, raysG1: null,
     raysG2KeyTex: null, raysG2KeyBuf: null, raysG2KeyProbes: null, raysG2KeyEnv: null,
     raysG2IrrView: null, raysG2: null,
     blendIrrG0Key: null, blendIrrG0KeyProbes: null, blendIrrG0: null,
@@ -106,8 +106,14 @@ export function dispatchProbeUpdateRaysPass(
     c.raysG0Key = gpu.bvhBuf;
   }
 
-  // Group 1: materials + lights + emitters. Invalidated on material/emitter upload.
-  if (c.raysG1Key0 !== gpu.materialsBuf || c.raysG1Key1 !== gpu.emitterTrisBuf) {
+  // Group 1: materials + lights + emitters + material-map atlas. Invalidated on
+  // material/emitter upload or atlas replacement.
+  if (
+    c.raysG1Key0 !== gpu.materialsBuf ||
+    c.raysG1Key1 !== gpu.emitterTrisBuf ||
+    c.raysG1KeyAtlas !== gpu.materialTextureAtlasView ||
+    c.raysG1KeyAtlasMeta !== gpu.materialTextureAtlasMetaView
+  ) {
     c.raysG1 = gpu.device.createBindGroup({
       layout: gpu.raysPipeline.getBindGroupLayout(1),
       entries: [
@@ -115,10 +121,14 @@ export function dispatchProbeUpdateRaysPass(
         { binding: 1, resource: { buffer: gpu.lightsBuf } },
         // H18 Stage 2 — area-emitter NEE triangles (dummy 16-byte buf when count==0).
         { binding: 2, resource: { buffer: gpu.emitterTrisBuf } },
+        { binding: 3, resource: gpu.materialTextureAtlasView },
+        { binding: 4, resource: gpu.materialTextureAtlasMetaView },
       ],
     });
     c.raysG1Key0 = gpu.materialsBuf;
     c.raysG1Key1 = gpu.emitterTrisBuf;
+    c.raysG1KeyAtlas = gpu.materialTextureAtlasView;
+    c.raysG1KeyAtlasMeta = gpu.materialTextureAtlasMetaView;
   }
 
   // Group 2: per-frame resources. Changes every atlas swap (irrReadTex ping-pongs),

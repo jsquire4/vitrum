@@ -10,6 +10,7 @@ import {
   isTlasOnlyVersionBump,
 } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './bvhTypes.js';
+import type { MaterialTextureAtlasPayload } from '../pipeline/materialTextureAtlas.js';
 import {
   makeEmptyAabb,
   setAabb,
@@ -49,6 +50,8 @@ export interface RestirBvhSnapshot {
    * keeps reading {@link materials} (THREE).
    */
   readonly coreMaterials: readonly MaterialSpec[];
+  /** Readable material-map atlas payload, slot-aligned with the active BVH triangles. */
+  readonly materialTextureAtlas: MaterialTextureAtlasPayload;
   readonly boundingBox: RestirBvhAabb;
   readonly tlas?: {
     readonly nodes: ArrayBuffer;
@@ -123,6 +126,7 @@ export function makeRestirBvhSnapshot(
     triMaterialIds: buffers.triangleMaterialIds.cpuData,
     materials: buffers.buildMaterials,
     coreMaterials: buffers.coreMaterials,
+    materialTextureAtlas: buffers.materialTextureAtlas,
     boundingBox: bbox,
     ...(tlas != null
       ? {
@@ -153,4 +157,3 @@ export function isRestirTlasOnlyRefit(
     isTlasOnlyVersionBump(snap.blasContentVersion, snap.tlasContentVersion, prev)
   );
 }
-

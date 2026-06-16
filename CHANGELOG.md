@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround DDGI emissive maps + alpha transmittance, 2026-06-16)
+
+- **DDGI probe-hit material emission now samples readable emissive maps:** `@vitrum/walkaround-hybrid` forwards the material texture atlas snapshot into `ProbeUpdatePass`, binds the atlas/meta textures in the probe-ray pass, and modulates material-emissive direct probe hits by the hit-local emissive-map texel. This closes the DDGI probe-hit side of mapped emissive radiance; exact texel-PDF emitter selection and full texel-space GI/RC/DDGI sampling remain promotion tails.
+- **Walkaround direct/GI visibility now has a shared alpha-transmittance path:** the material-atlas shadow walk exposes deterministic fractional transmittance for `alphaMode:'blend'` blockers. Analytic/sun direct lighting, ReSTIR-DI producer visibility, ReSTIR-GI producer visibility, and NRC GI producer visibility use it while preserving `castShadow:false`, mask, scalar-glass, and full-occluder behavior. Transparent layers still are not true ReSTIR/RC/DDGI/GI transport vertices.
+
+### Fixed (pt-webgpu additive-map inverse replay routing, 2026-06-16)
+
+- **Path-replay adjoint no longer falls back for unrelated additive primary-hit maps:** `@vitrum/pt-webgpu` keeps BRDF/unlit path-replay sessions when the target material has additive `emissiveMap` or `lightMap` terms that do not change the optimized local derivative, and keeps emissive parameter replay when a baked light map is present. Transport/geometry-changing maps such as alpha, transmission/thickness, normal/bump, displacement, and clearcoat-normal still route to finite difference or unsupported paths.
+
 ### Fixed (pt-webgpu AO-map adjoint replay, 2026-06-16)
 
 - **AO maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors the forward full-tier `aoMap` sampler in `adjointPass`, including linear R-channel sampling, `aoMapIntensity`, per-map UV/transform/wrap metadata, and the local chain-rule multiplier on `baseColor` gradients for lit direct-light and unlit primary-hit fits. Normal/bump/light/alpha/transmission/thickness/displacement maps, clearcoat-normal maps, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or unsupported tails.

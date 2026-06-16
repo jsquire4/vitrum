@@ -781,6 +781,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneAnyAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialShadowOccluderForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialShadowTransmittanceForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneAlphaTransmittanceTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('if ((materialWord & 1u) != 0u)');
     expect(MATERIAL_ATLAS_WGSL).toContain('let trans4 = (hit.matColorPacked >> 4u) & 0xFu;');
     expect(MATERIAL_ATLAS_WGSL).toContain('let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);');
@@ -790,7 +792,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('return alpha.coverage < alpha.cutoff;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaBlendCoverageHash(hit: IntersectionResult) -> f32');
     expect(MATERIAL_ATLAS_WGSL).toContain('return alpha.coverage < 1.0 && materialAlphaBlendCoverageHash(hit) >= alpha.coverage;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('return !materialAlphaDiscardedForHit(hit, materialWord);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return clamp(1.0 - alpha.coverage, 0.0, 1.0);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return materialShadowTransmittanceForHit(hit, materialWord, skipGlass) <= 0.001;');
     expect(SHADE_WGSL).toContain('let vertexColor = sampleVertexColorForHit(primaryHit);');
     expect(SHADE_WGSL).toContain(
       'let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb * vertexColor.rgb);',

@@ -172,12 +172,15 @@ export interface AdjointGradientRequest {
  *    derivative of that F0 term. Iridescence thickness maps replay by collapsing
  *    the min/max thickness range to the sampled forward value for the BRDF
  *    derivative. Thickness range fields themselves are not optimized here.
- *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, specular color/intensity
- *    maps, clearcoat/sheen maps, iridescence/thickness maps, and anisotropy
- *    maps are replayed as local chain-rule factors for the lit BRDF domain
- *    above. Emissive-on-lit-BRDF, alpha, transmission, AO, normal/bump,
- *    light-map, and other extension maps remain finite-difference fallbacks
- *    until their own source terms are mirrored.
+ *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, AO, specular
+ *    color/intensity maps, clearcoat/sheen maps, iridescence/thickness maps,
+ *    and anisotropy maps are replayed as local chain-rule factors for the lit
+ *    BRDF domain above. Additive primary-hit emissiveMap/lightMap terms are
+ *    allowed on BRDF/unlit targets because they do not change the derivative
+ *    of those optimized fields; dLossDRendered already contains their forward
+ *    contribution. Alpha, transmission, normal/bump, displacement, and
+ *    clearcoat-normal maps remain finite-difference fallbacks until their
+ *    visibility/transport/normal terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps replay the B-channel strength multiplier and RG
@@ -528,7 +531,7 @@ function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean 
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
   if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayUnsupportedMap(m);
+  return !hasPathReplayTransportOrGeometryMap(m);
 }
 
 function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {
@@ -536,7 +539,7 @@ function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {
   if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
   if (m.opacity != null && m.opacity < 1) return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
-  return m.alphaMap == null;
+  return !hasPathReplayEmissiveTargetUnsupportedMap(m);
 }
 
 function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
@@ -550,7 +553,7 @@ function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
   if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayUnsupportedMap(m);
+  return !hasPathReplayTransportOrGeometryMap(m);
 }
 
 function isPathReplayCompatibleIridescenceMaterial(m: MaterialSpec): boolean {
@@ -563,7 +566,7 @@ function isPathReplayCompatibleIridescenceMaterial(m: MaterialSpec): boolean {
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
   if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayUnsupportedMap(m);
+  return !hasPathReplayTransportOrGeometryMap(m);
 }
 
 function isPathReplayCompatibleAnisotropyMaterial(m: MaterialSpec): boolean {
@@ -576,20 +579,30 @@ function isPathReplayCompatibleAnisotropyMaterial(m: MaterialSpec): boolean {
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
   if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
-  return !hasPathReplayUnsupportedMap(m);
+  return !hasPathReplayTransportOrGeometryMap(m);
 }
 
-function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
+function hasPathReplayTransportOrGeometryMap(m: MaterialSpec): boolean {
   return (
     m.normalMap != null ||
     m.transmissionMap != null ||
     m.thicknessMap != null ||
-    m.emissiveMap != null ||
     m.alphaMap != null ||
     m.clearcoatNormalMap != null ||
     m.bumpMap != null ||
+    m.displacementMap != null
+  );
+}
+
+function hasPathReplayEmissiveTargetUnsupportedMap(m: MaterialSpec): boolean {
+  return (
+    m.alphaMap != null ||
+    m.normalMap != null ||
+    m.bumpMap != null ||
+    m.clearcoatNormalMap != null ||
     m.displacementMap != null ||
-    m.lightMap != null
+    m.transmissionMap != null ||
+    m.thicknessMap != null
   );
 }
 
