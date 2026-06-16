@@ -1018,6 +1018,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
               ...pr,
               material: {
                 ...pr.material,
+                ior: 1.37,
                 transmission: 0.25,
                 thickness: 0.75,
               },
@@ -1025,12 +1026,13 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
         { path: 'materials.panel.transmission', kind: 'scalar' },
         { path: 'materials.panel.thickness', kind: 'scalar' },
+        { path: 'materials.panel.ior', kind: 'scalar' },
       ],
       method: 'path-replay',
     });
@@ -1038,15 +1040,21 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.method).toBe('finite-difference');
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.25, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.75, 6)]);
+    expect(session.currentValues()[2]).toEqual([expect.closeTo(1.37, 6)]);
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-field',
+      code: 'path-replay-unsupported-transport',
       path: 'materials.panel.transmission',
-      details: { field: 'transmission' },
+      details: expect.objectContaining({ field: 'transmission', finiteDifferenceReason: 'transport' }),
     }));
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-field',
+      code: 'path-replay-unsupported-transport',
       path: 'materials.panel.thickness',
-      details: { field: 'thickness' },
+      details: expect.objectContaining({ field: 'thickness', finiteDifferenceReason: 'transport' }),
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-transport',
+      path: 'materials.panel.ior',
+      details: expect.objectContaining({ field: 'ior', finiteDifferenceReason: 'transport' }),
     }));
     session.dispose();
   });
@@ -1083,14 +1091,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.75, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.4, 6)]);
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-field',
+      code: 'path-replay-unsupported-visibility',
       path: 'materials.panel.opacity',
-      details: { field: 'opacity' },
+      details: expect.objectContaining({ field: 'opacity', finiteDifferenceReason: 'visibility' }),
     }));
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-field',
+      code: 'path-replay-unsupported-visibility',
       path: 'materials.panel.alphaCutoff',
-      details: { field: 'alphaCutoff' },
+      details: expect.objectContaining({ field: 'alphaCutoff', finiteDifferenceReason: 'visibility' }),
     }));
     session.dispose();
   });

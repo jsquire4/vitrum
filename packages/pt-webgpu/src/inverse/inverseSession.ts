@@ -223,6 +223,8 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropyRotation',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
+const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set(['ior', 'transmission', 'thickness']);
+const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -561,6 +563,18 @@ function diagnosePathReplaySlot(
     return diagnosePathReplayEmitterSlot(scene, slot);
   }
   if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
+    const finiteDifferenceOnlyIssue = pathReplayFiniteDifferenceOnlyFieldIssue(target.field);
+    if (finiteDifferenceOnlyIssue != null) {
+      return [{
+        severity: 'info',
+        code: finiteDifferenceOnlyIssue.code,
+        path,
+        message:
+          `[vitrum/pt-webgpu] InverseSession path "${path}" targets material field ` +
+          `"${target.field}", ${finiteDifferenceOnlyIssue.message}; using finite-difference.`,
+        details: finiteDifferenceOnlyIssue.details,
+      }];
+    }
     return [{
       severity: 'info',
       code: 'path-replay-unsupported-field',
@@ -616,6 +630,40 @@ function diagnosePathReplaySlot(
     }
   }
   return [];
+}
+
+function pathReplayFiniteDifferenceOnlyFieldIssue(
+  field: string,
+): {
+  readonly code: 'path-replay-unsupported-transport' | 'path-replay-unsupported-visibility';
+  readonly message: string;
+  readonly details: Record<string, string | readonly string[]>;
+} | null {
+  if (PATH_REPLAY_TRANSPORT_ONLY_FIELDS.has(field)) {
+    return {
+      code: 'path-replay-unsupported-transport',
+      message:
+        'which changes transmissive/medium transport that the scoped path-replay adjoint does not mirror yet',
+      details: {
+        field,
+        finiteDifferenceReason: 'transport',
+        affectedTerms: ['fresnel-partition', 'refraction-direction', 'medium-attenuation'],
+      },
+    };
+  }
+  if (PATH_REPLAY_VISIBILITY_ONLY_FIELDS.has(field)) {
+    return {
+      code: 'path-replay-unsupported-visibility',
+      message:
+        'which changes alpha coverage and visibility discontinuities that the scoped path-replay adjoint does not mirror yet',
+      details: {
+        field,
+        finiteDifferenceReason: 'visibility',
+        affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
+      },
+    };
+  }
+  return null;
 }
 
 function diagnosePathReplayEmitterSlot(

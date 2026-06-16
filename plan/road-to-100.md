@@ -77,7 +77,10 @@
 > light attenuation/geometric factors; soft-sun, capped/reordered or unmapped
 > mesh-area emitter targets, exact texel-PDF/stochastic area sampling,
 > environment/indirect transport, and unreplayed receiver material domains still
-> downgrade with structured diagnostics.
+> downgrade with structured diagnostics. Latest diagnostic cleanup: finite-
+> difference-only scalar inverse fields now distinguish transport tails
+> (`ior`/`transmission`/`thickness`) from visibility tails
+> (`opacity`/`alphaCutoff`) via contract-level diagnostic codes.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive

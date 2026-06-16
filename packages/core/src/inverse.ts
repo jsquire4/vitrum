@@ -97,6 +97,8 @@ export interface InverseSessionDiagnostic {
     | 'path-replay-hook-missing'
     | 'path-replay-unsupported-param-domain'
     | 'path-replay-unsupported-field'
+    | 'path-replay-unsupported-transport'
+    | 'path-replay-unsupported-visibility'
     | 'path-replay-unsupported-primitive'
     | 'path-replay-unsupported-material'
     | 'path-replay-unsupported-lighting'
