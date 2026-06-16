@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent OIT finite emitters, 2026-06-16)
+
+- **Transparent blend layers now receive finite mesh-emitter direct light:** `@vitrum/walkaround-hybrid` transparent OIT reads the existing ReSTIR emitter list, center-samples each finite emitter as a deterministic area estimate, evaluates the same atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload used by opaque shade, samples emissive-map-aware `Le` where source-triangle payloads are available, and uses alpha-aware direct shadow transmittance. Reservoir-backed transparent ReSTIR direct-light participation, transparent GI/RC/DDGI/ReSTIR-GI participation, exact texel-PDF emissive selection, and GPU A/B promotion remain open tails.
+
 ### Fixed (walkaround transparent OIT shadow filtering, 2026-06-16)
 
-- **Transparent blend layers now attenuate direct shadows through alpha coverage:** `@vitrum/walkaround-hybrid` transparent OIT replaces its binary cast-shadow query for direct sun and analytic point/spot lights with a material-atlas shadow walk. The new path skips `castShadow:false` and scalar-glass blockers like the old shadow query, hard-blocks opaque/mask hits, and deterministically multiplies visibility by `1 - alphaCoverage` through `alphaMode:'blend'` blockers. Transparent ReSTIR/GI/area-light participation and GPU A/B promotion remain open tails.
+- **Transparent blend layers now attenuate direct shadows through alpha coverage:** `@vitrum/walkaround-hybrid` transparent OIT replaces its binary cast-shadow query for direct sun, analytic point/spot, and finite-emitter direct lights with a material-atlas shadow walk. The new path skips `castShadow:false` and scalar-glass blockers like the old shadow query, hard-blocks opaque/mask hits, and deterministically multiplies visibility by `1 - alphaCoverage` through `alphaMode:'blend'` blockers. Transparent ReSTIR/GI participation and GPU A/B promotion remain open tails.
 
 ### Fixed (pt-webgpu emissive-map adjoint replay, 2026-06-16)
 
@@ -20,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround transparent OIT analytic lights, 2026-06-16)
 
-- **Transparent blend layers now receive analytic point/spot direct light:** `@vitrum/walkaround-hybrid` transparent OIT binds the existing `analytic_lights` texture and adds a deterministic point/spot NEE loop using the atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload, inverse-square falloff, spot cone attenuation, and the shared cast-shadow-aware visibility query. Area-emitter/ReSTIR direct light, transparent GI/RC/DDGI/ReSTIR-GI participation, alpha-map-aware shadow filtering, and first-hit emissive/light-map semantics remain explicit approximation tails.
+- **Transparent blend layers now receive analytic point/spot direct light:** `@vitrum/walkaround-hybrid` transparent OIT binds the existing `analytic_lights` texture and adds a deterministic point/spot NEE loop using the atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload, inverse-square falloff, spot cone attenuation, and the shared cast-shadow-aware visibility query. Transparent GI/RC/DDGI/ReSTIR-GI participation and first-hit emissive/light-map semantics remain explicit approximation tails.
 
 ### Fixed (pt-webgpu clearcoat adjoint breadth, 2026-06-16)
 

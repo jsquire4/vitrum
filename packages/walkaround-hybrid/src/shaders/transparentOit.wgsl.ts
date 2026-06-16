@@ -8,12 +8,11 @@
  *
  * Lighting policy: transparent layer radiance is an intentionally cheap
  * camera-visible approximation. The sky/environment, direct sun, and analytic
- * point/spot terms use the same atlas-backed material-lobe BRDF as opaque
- * shade/ReSTIR material scoring; direct sun/point/spot shadows walk the material
+ * point/spot/finite-emitter terms use the same atlas-backed material-lobe BRDF
+ * as opaque shade/ReSTIR material scoring; their shadow rays walk the material
  * atlas and deterministically attenuate through alphaMode:'blend' blockers.
- * Emissive and light-map terms remain first-hit camera-visible approximations.
- * ReSTIR/GI/area-light participation remains handled by the existing stochastic
- * traversal path until transparent GI has its own validation row.
+ * Emissive, light-map, and finite-emitter terms remain camera-visible
+ * approximations rather than transparent ReSTIR/GI reservoir participation.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -23,6 +22,7 @@ export const TRANSPARENT_OIT_WGSL = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
 @group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
 @group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
@@ -291,6 +291,72 @@ fn oitLayerAnalyticNEE(
   return Lo;
 }
 
+fn oitLayerAreaEmitterNEE(
+  hitPos: vec3f,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  geoNormal: vec3f,
+  payload: RestirDIMaterialPayload,
+  wo: vec3f,
+) -> vec3f {
+  let count = min(ubo.emitterCount, arrayLength(&emitters));
+  if (count == 0u) { return vec3f(0.0); }
+
+  var Lo = vec3f(0.0);
+  // Deterministic area estimate: one stable uniform-area sample per emitter.
+  // This gives transparent layers native finite-emitter visibility without
+  // coupling the OIT pass to the opaque ReSTIR-DI reservoir state.
+  let xi = vec2f(0.5, 0.5);
+  for (var lid = 0u; lid < count; lid = lid + 1u) {
+    let e = emitters[lid];
+    let ls = sampleEmitterPoint(e, xi);
+    let toL = ls.pos - hitPos;
+    let dist2 = dot(toL, toL);
+    if (dist2 < 1e-8 || ls.area <= 0.0) { continue; }
+
+    let dist = sqrt(dist2);
+    let wi = toL / dist;
+    let nDotL = max(0.0, dot(normal, wi));
+    let nlDotL = max(0.0, dot(-ls.normal, wi));
+    if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
+
+    var shadowT = 1.0;
+    if (e.castShadowDisabled < 0.5) {
+      shadowT = oitShadowTransmittance(
+        hitPos + geoNormal * 1e-3,
+        wi,
+        max(dist - 2e-3, 0.0),
+        ubo.triIntersectEpsilon,
+      );
+      if (shadowT <= 0.001) { continue; }
+    }
+
+    let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
+    let brdf = evalGGXWithSpecularClearcoatSheen(
+      payload.albedo,
+      payload.rough,
+      payload.metal,
+      payload.specular.rgb,
+      payload.specular.a,
+      payload.anisotropy.x,
+      payload.anisotropy.y,
+      payload.iridescence,
+      payload.clearcoat.x,
+      payload.clearcoat.y,
+      payload.sheen.a,
+      payload.sheenRoughness,
+      payload.sheen.rgb,
+      normal,
+      clearcoatNormal,
+      wo,
+      wi,
+    );
+    let Le = sampleEmitterLeAtXi(e, xi);
+    Lo += Le * brdf * G * ls.area * shadowT;
+  }
+  return Lo;
+}
+
 fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f {
   let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
   let uv1 = materialAtlasUv1ForHit(hit);
@@ -310,6 +376,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
 
   let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);
   let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
+  let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let toSun = safe_normalize(ubo.sunDirection);
   let sunBrdf = evalGGXWithSpecularClearcoatSheen(
     payload.albedo,
@@ -341,7 +408,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   }
   let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));
-  return (skyAmbient + sunDirect + analyticDirect) * viewFacing + emissive + baked;
+  return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -409,5 +476,5 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TRANSPARENT_OIT_MODULE: WgslModule = {
   name: 'transparentOit',
   source: TRANSPARENT_OIT_WGSL,
-  requires: ['common', 'materialAtlas', 'environmentSample', 'ggxBrdf'],
+  requires: ['common', 'materialAtlas', 'environmentSample', 'ggxBrdf', 'emitterLeAtXi'],
 };

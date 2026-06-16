@@ -360,8 +360,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
   // including direct sun plus analytic point/spot lighting with alpha-aware
-  // direct shadow transmittance, but area-emitter / ReSTIR direct light and GI
-  // participation remain approximate.
+  // direct shadow transmittance and center-sampled finite-emitter direct light,
+  // but reservoir-backed ReSTIR direct light and GI participation remain approximate.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',
@@ -392,8 +392,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Approximate because emissive selection power still uses the CPU-readable
   // average rather than texel-PDF importance sampling, TLAS/analytic emitters
   // and GI/RC/DDGI emitter payloads still fall back to averaged Le,
-  // lightMap is camera-visible only, and transparent blend area-emitter/ReSTIR
-  // direct light plus GI/shadow semantics remain approximate.
+  // lightMap is camera-visible only, and transparent blend promotion is split:
+  // finite emitters are camera-visible in OIT, while
+  // ReSTIR direct-light reservoirs plus GI semantics remain approximate.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',

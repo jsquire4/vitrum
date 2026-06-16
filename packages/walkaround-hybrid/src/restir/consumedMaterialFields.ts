@@ -80,8 +80,9 @@
  *                           primary traversal, RIS, and GI bounce casts; mask
  *                           uses opacity * baseColorMap.a * alphaMap.r <
  *                           alphaCutoff. Fractional blend camera composition is
- *                           handled by the transparent-OIT pass; ReSTIR/GI and
- *                           shadow participation remain approximate.
+ *                           handled by the transparent-OIT pass; direct-light
+ *                           OIT shadows attenuate blend coverage, while
+ *                           ReSTIR/GI participation remains approximate.
  *  lightMap               materialAtlas.wgsl samples readable linear light maps
  *                           as camera-visible baked outgoing radiance only.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into
@@ -266,8 +267,9 @@ export function collectUnconsumedMaterialFields(
  * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
  * and the transparent-OIT pass camera-composites partial coverage. HybridEngine
  * still emits a structured warning because no-HDRI sky fallback plus
- * camera-visible light-map/emissive terms are first-hit approximations, and
- * ReSTIR/GI/shadow participation remains approximate.
+ * camera-visible light-map/emissive terms are first-hit approximations,
+ * finite-emitter direct light is center-sampled, and ReSTIR/GI participation
+ * remains approximate.
  */
 export function collectApproximateAlphaBlendPrimitiveIds(
   primitives: ReadonlyArray<{

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TRANSPARENT_OIT_MODULE, TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 
 describe('transparent OIT material parity', () => {
-  it('shades camera-visible blend layers with extension-aware material BRDFs for sky, sun, and point/spot lights', () => {
+  it('shades camera-visible blend layers with extension-aware material BRDFs for sky, sun, point/spot, and finite emitters', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f');
     expect(TRANSPARENT_OIT_WGSL).toContain('let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f');
@@ -39,7 +39,17 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);');
     expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * brdf * nDotL * cone * invDist2 * shadowT;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect) * viewFacing + emissive + baked;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let count = min(ubo.emitterCount, arrayLength(&emitters));');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let ls = sampleEmitterPoint(e, xi);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let nlDotL = max(0.0, dot(-ls.normal, wi));');
+    expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * brdf * G * ls.area * shadowT;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');
     expect(TRANSPARENT_OIT_WGSL).toContain('oitLayerRadiance(hit, hitPos, primaryRay.direction, word);');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');
@@ -53,5 +63,6 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('sampleLightMap(');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('materialAtlas');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('ggxBrdf');
+    expect(TRANSPARENT_OIT_MODULE.requires).toContain('emitterLeAtXi');
   });
 });
