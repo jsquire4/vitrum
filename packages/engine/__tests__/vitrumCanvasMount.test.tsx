@@ -334,7 +334,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
       environment: { kind: 'none' as const },
     };
     const engine = makeMockEngine();
-    const controller = { attachEngine: vi.fn(), warnings: [] };
+    const controller = { attachEngine: vi.fn(), advance: vi.fn(), warnings: [] };
     const asset = makeMockGltfAsset(gltf, importedScene);
     const bridgeResult = makeMockGltfForEngineResult(asset, engine, controller);
     const loadSpy = vi.spyOn(gltfModule, 'loadGltfWithEngine').mockResolvedValue(bridgeResult);
@@ -358,6 +358,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
       prefer: 'quality',
       advanced,
       debug: true,
+      gltfPlayback: { loop: false },
       onGltfLoaded,
     }));
     await happyWindow.happyDOM.waitUntilComplete();
@@ -389,6 +390,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(opts.gltfAsset).toBe(asset);
     expect(opts.engine).toBe(engine);
     expect(opts.sceneController).toBe(controller);
+    expect(opts.sceneControllerPlayback).toEqual({ loop: false });
     expect(opts.gltfAsset?.recommendedBackend?.backend).toBe('pt-webgl2');
     expect(opts.prefer).toBe('quality');
     expect(opts.advanced).toBe(advanced);

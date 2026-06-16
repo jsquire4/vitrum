@@ -71,6 +71,7 @@ async function main(): Promise<void> {
   let frameIndex = 0;
   let captureSignalled = false;
   let lastSpp = 0;
+  let lastAnimationNowMs: number | null = null;
 
   engine.onFrame?.((stats) => {
     lastSpp = stats.spp ?? lastSpp;
@@ -80,7 +81,11 @@ async function main(): Promise<void> {
 
   function tick(now: number): void {
     if (result.asset.animations.length > 0) {
-      result.controller.advance(now * 0.001, { engine });
+      if (lastAnimationNowMs != null) {
+        const deltaSeconds = Math.max(0, (now - lastAnimationNowMs) / 1000);
+        if (deltaSeconds > 0) result.controller.advance(deltaSeconds, { engine });
+      }
+      lastAnimationNowMs = now;
     }
 
     const width = Math.max(1, canvas.clientWidth);

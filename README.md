@@ -49,7 +49,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **Light types**               | point/spot/dir/area/sky (point+spot: analytic NEE in shade pass + DDGI probe bounce; rect-area: NEE) | point / dir / area / sky   |
 | **Materials**                 | PBR + transmission          | PBR + transmission; spectral hero-λ lit (hero-λ tint over RGB — achromatic-flat reflectance); clearcoat/sheen unsupported |
 | **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      |
-| **BDPT**                      | not applicable              | implemented + host-driven (A5); ANGLE/Chromium falls back to unidirectional |
+| **BDPT**                      | not applicable              | implemented + host-driven (A5); no ANGLE/Chromium fallback gate |
 | **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (all patches via rebuild) |
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |
@@ -148,7 +148,7 @@ context loss, device-limit errors, NaN pixels) see
 | Cornell box (~30 tris)      | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
 | Cornell glass               | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
 | Cornell spectral (hero MIS) | pt-webgl2         | 512×512    | 64 SPP             | validation pending |
-| Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | 14–22 ms / frame |
+| Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | validation pending |
 
 Current mechanical benchmark gates:
 
@@ -164,7 +164,7 @@ Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid
 - **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))
 - **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; ported into the native path-tracing stack.
 - **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics + triangle meshes in the same path-tracing kernel. Production renderers usually pick one or the other.
-- **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path.
+- **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path; material spectral coefficients remain a known promotion tail.
 
 ## Built on prior work
 

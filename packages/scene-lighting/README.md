@@ -8,8 +8,8 @@ are using.
 ## What it provides
 
 - `computeLightingState` — derive a `LightingState` (sun direction, intensity, sky tint,
-  sky irradiance) from a `LightingStateInputs` description; both pt-webgl2 and
-  walkaround-hybrid accept `LightingState` inputs.
+  sky irradiance) from a `LightingStateInputs` description; host adapters map those
+  values into each engine's own options/update API.
 - `skyParamsFor` / `worldSunPosition` — Preetham sky model: compute `SkyParams` from
   a time-of-day and geographic location.
 - `getSunIntensity` / `COLOR_TEMP_HEX` / `SUN_INTENSITY` — directional sun-intensity

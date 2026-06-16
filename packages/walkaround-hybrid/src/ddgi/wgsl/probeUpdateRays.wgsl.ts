@@ -282,6 +282,9 @@ struct DdgiTraceParams {
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
 
 const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
+const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
+const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
@@ -308,6 +311,41 @@ fn ddgiWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
 
 fn ddgiPackedUvFromVec4(v: vec4f) -> vec2f {
   return unpack2x16unorm(bitcast<u32>(v.w));
+}
+
+struct DdgiHitMaterialUvs {
+  valid: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+}
+
+fn ddgiHitMaterialUvs(hit: IntersectionResult) -> DdgiHitMaterialUvs {
+  var out: DdgiHitMaterialUvs;
+  out.valid = 0u;
+  out.uv0 = vec2f(0.0);
+  out.uv1 = vec2f(0.0);
+
+  let i0 = hit.indices.x;
+  let i1 = hit.indices.y;
+  let i2 = hit.indices.z;
+  if (
+    hit.indices.w >= arrayLength(&bvh_index) ||
+    i0 >= arrayLength(&bvh_position) || i1 >= arrayLength(&bvh_position) || i2 >= arrayLength(&bvh_position) ||
+    i0 >= arrayLength(&bvh_normal) || i1 >= arrayLength(&bvh_normal) || i2 >= arrayLength(&bvh_normal)
+  ) {
+    return out;
+  }
+
+  out.valid = 1u;
+  out.uv0 =
+    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_position[i0]) +
+    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_position[i1]) +
+    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_position[i2]);
+  out.uv1 =
+    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_normal[i0]) +
+    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_normal[i1]) +
+    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_normal[i2]);
+  return out;
 }
 
 fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -339,36 +377,77 @@ fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f
   return textureLoad(ddgiMaterialTextureAtlas, texel, layer, 0);
 }
 
+fn ddgiSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return ddgiSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
+}
+
 fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f {
   let triIndex = hit.indices.w;
-  let i0 = hit.indices.x;
-  let i1 = hit.indices.y;
-  let i2 = hit.indices.z;
-  if (
-    triIndex >= arrayLength(&bvh_index) ||
-    i0 >= arrayLength(&bvh_position) || i1 >= arrayLength(&bvh_position) || i2 >= arrayLength(&bvh_position) ||
-    i0 >= arrayLength(&bvh_normal) || i1 >= arrayLength(&bvh_normal) || i2 >= arrayLength(&bvh_normal)
-  ) {
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
     return scalarEmission;
   }
-  let uv0 =
-    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_position[i0]) +
-    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_position[i1]) +
-    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_position[i2]);
-  let uv1 =
-    hit.barycoord.x * ddgiPackedUvFromVec4(bvh_normal[i0]) +
-    hit.barycoord.y * ddgiPackedUvFromVec4(bvh_normal[i1]) +
-    hit.barycoord.z * ddgiPackedUvFromVec4(bvh_normal[i2]);
   let texel = ddgiSampleMaterialAtlasRawAtOffset(
     triIndex,
     DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
-    uv0,
-    uv1,
+    uvs.uv0,
+    uvs.uv1,
   );
   if (texel.x < 0.0) {
     return scalarEmission;
   }
   return scalarEmission * texel.rgb;
+}
+
+struct DdgiAlphaCoverage {
+  mode: u32,
+  coverage: f32,
+  cutoff: f32,
+}
+
+fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage {
+  var out: DdgiAlphaCoverage;
+  out.mode = 0u;
+  out.coverage = 1.0;
+  out.cutoff = 0.0;
+
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  let metaTexel = hit.indices.w * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET;
+  if (metaTexel >= metaDims.x * metaDims.y) {
+    return out;
+  }
+  let coverageMeta = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  out.mode = u32(max(coverageMeta.x, 0.0) + 0.5);
+  if (out.mode == 0u) {
+    return out;
+  }
+
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return out;
+  }
+  let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);
+  let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
+  let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);
+  let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let opacity = clamp(coverageMeta.y, 0.0, 1.0);
+  out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
+  out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  return out;
+}
+
+fn ddgiAlphaShadowTransmittanceForHit(hit: IntersectionResult) -> f32 {
+  let alpha = ddgiMaterialAlphaCoverageForHit(hit);
+  if (alpha.mode == 0u) {
+    return 0.0;
+  }
+  if (alpha.mode == 1u) {
+    return select(0.0, 1.0, alpha.coverage < alpha.cutoff);
+  }
+  if (alpha.mode == 2u) {
+    return clamp(1.0 - alpha.coverage, 0.0, 1.0);
+  }
+  return select(0.0, 1.0, alpha.coverage <= 0.0);
 }
 
 // -----------------------------------------------------------------
@@ -435,6 +514,48 @@ fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) 
     &bvh_index, &bvh_position, &bvh, origin, dir, tMax, DDGI_TRI_EPSILON, skipGlass, 0u,
   );
 }
+
+fn ddgiTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> f32 {
+  var walkRay: Ray;
+  walkRay.origin = origin;
+  walkRay.direction = dir;
+  var traveled = 0.0;
+  var tau = 1.0;
+  let step = max(1e-4, DDGI_TRI_EPSILON * 4.0);
+
+  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+    let remaining = tMax - traveled;
+    if (remaining <= step || tau <= 0.001) {
+      return clamp(tau, 0.0, 1.0);
+    }
+
+    let hit = traceSceneFirstHitDdgi(walkRay);
+    if (!hit.didHit || hit.dist >= remaining) {
+      return clamp(tau, 0.0, 1.0);
+    }
+
+    let matId = bvh_materialId[hit.indices.w];
+    let mat = materials[matId];
+    if ((mat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) == 0u) {
+      if (skipGlass && (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
+        // Let the walk continue through scalar glass, matching the predicate path.
+      } else {
+        tau = tau * ddgiAlphaShadowTransmittanceForHit(hit);
+        if (tau <= 0.001) {
+          return 0.0;
+        }
+      }
+    }
+
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = origin + dir * traveled;
+  }
+
+  if (bvhTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), skipGlass)) {
+    return 0.0;
+  }
+  return clamp(tau, 0.0, 1.0);
+}
 `; }
 
 /**
@@ -499,7 +620,18 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
       rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
       continue;
     }
-    if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
+    let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);
+    if (alphaT >= 0.999) {
+      rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
+      continue;
+    }
+    if (alphaT > 0.001) {
+      visibility = visibility * alphaT;
+      if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
+        rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
+        continue;
+      }
+    } else if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
       // Opaque occluder — sun is fully blocked.
       return vec3f(0.0);
     }
@@ -580,9 +712,11 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   let normalBias_p = gridParams.spacing * 0.001;
   if (!ddgiLightCastShadowDisabled(light)) {
     let shadowOrig = hitPos + hitNormal * normalBias_p;
-    if (bvhTraceAnyCastShadow(shadowOrig, lightDir, dist - normalBias_p, false)) {
+    let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false);
+    if (shadowT <= 0.001) {
       return vec3f(0.0);
     }
+    coneFalloff = coneFalloff * shadowT;
   }
   let atten = light.intensity / (dist * dist + 1.0);
   return light.color * atten * nDotL * coneFalloff;
@@ -659,17 +793,15 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     let cosLight = dot(nrm, -wi);   // front-face only (one-sided emitter)
     if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
 
+    let G = (cosSurf * cosLight) / dist2;
+    var shadowT = 1.0;
     if (!castShadowDisabled) {
-      // Opaque shadow test — stop just short of the light sample.
-      var sRay: Ray;
-      sRay.origin    = hitPos + n * normalBias;
-      sRay.direction = wi;
-      let sHit = bvhTraceFirstHit(sRay);
-      if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }
+      // Alpha-aware shadow walk — stop just short of the light sample.
+      shadowT = ddgiTraceShadowTransmittance(hitPos + n * normalBias, wi, dist - normalBias, false);
+      if (shadowT <= 0.001) { continue; }
     }
 
-    let G = (cosSurf * cosLight) / dist2;
-    Lo = Lo + albedo * 0.31831 * Le * G * area;   // 0.31831 = 1/π
+    Lo = Lo + albedo * 0.31831 * Le * G * area * shadowT;   // 0.31831 = 1/π
   }
   return Lo;
 }

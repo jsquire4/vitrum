@@ -26,7 +26,11 @@ import {
   type GltfAssetResult,
   type GltfForEngineResult,
 } from '@vitrum/gltf-adapter';
-import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
+import type {
+  AttachVitrumHandle,
+  AttachVitrumSceneControllerPlayback,
+  CameraLike,
+} from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
   CreateEngineErrorEvent,
@@ -57,6 +61,8 @@ export interface VitrumCanvasProps {
    *  baseUri, fetch, compatibility policy inputs, etc. Identity changes recreate
    *  the engine, matching `scene` creation-time semantics. */
   gltfOptions?: VitrumCanvasGltfOptions;
+  /** Opt-in RAF-driven playback for glTF animations loaded through `gltf`. */
+  gltfPlayback?: AttachVitrumSceneControllerPlayback;
   /** Called after a glTF asset loads successfully and before attachVitrum
    *  resolves. Callback updates do not recreate the engine. */
   onGltfLoaded?: (
@@ -176,6 +182,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           ...(gltfResult !== undefined ? { gltfAsset: gltfResult.asset } : {}),
           ...(gltfResult?.engine !== undefined ? { engine: gltfResult.engine } : {}),
           ...(gltfResult?.controller !== undefined ? { sceneController: gltfResult.controller } : {}),
+          ...(gltfResult?.controller !== undefined && props.gltfPlayback !== undefined
+            ? { sceneControllerPlayback: props.gltfPlayback }
+            : {}),
           camera: props.camera,
           ...(props.prefer ? { prefer: props.prefer } : {}),
           ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
@@ -225,6 +234,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       props.scene,
       props.gltf,
       props.gltfOptions,
+      props.gltfPlayback,
       props.camera,
       props.prefer,
       props.pauseOnHidden,

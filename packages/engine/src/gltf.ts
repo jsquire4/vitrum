@@ -12,6 +12,7 @@ import type {
   GltfEngineSelection,
   GltfCompatibilityMode,
   GltfCompatibilityIssue,
+  GltfBackendProfileId,
   GltfForEngineResult,
   GltfImportDiagnostic,
   GltfSceneController,
@@ -93,7 +94,7 @@ export async function loadGltfWithEngine(
       attachScene: false,
       engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     });
-    await assertStrictPtWebgpuTier(
+    const runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
       engine.backendId,
       adapterOptions.compatibilityMode ?? 'best-effort',
       loaded.asset,
@@ -103,17 +104,19 @@ export async function loadGltfWithEngine(
     return {
       ...loaded,
       backend: engine.backendId,
+      profileId: runtimeProfileId ?? loaded.profileId,
       engine,
       attached: true,
       warnings: [...loaded.asset.warnings, ...loaded.textureDecodeWarnings, ...loaded.controller.warnings],
     };
   }
 
-  return loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
+  let runtimeProfileId: GltfBackendProfileId | undefined;
+  const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
     ...adapterOptions,
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     createEngine: async ({ scene, backend, asset, options: createOptions }) => {
-      await assertStrictPtWebgpuTier(
+      runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
         backend,
         adapterOptions.compatibilityMode ?? 'best-effort',
         asset,
@@ -127,6 +130,9 @@ export async function loadGltfWithEngine(
       });
     },
   });
+  return loaded.backend === 'pt-webgpu' && runtimeProfileId != null
+    ? { ...loaded, profileId: runtimeProfileId }
+    : loaded;
 }
 
 export async function loadGltfWithProgressiveEngine(
@@ -139,7 +145,7 @@ export async function loadGltfWithProgressiveEngine(
     backend: 'pt-webgpu',
     attachScene: false,
   });
-  await assertStrictPtWebgpuTier(
+  await resolvePtWebgpuRuntimeProfile(
     'pt-webgpu',
     adapterOptions.compatibilityMode ?? 'best-effort',
     loaded.asset,
@@ -167,26 +173,26 @@ export async function loadGltfWithProgressiveEngine(
   };
 }
 
-async function assertStrictPtWebgpuTier(
+async function resolvePtWebgpuRuntimeProfile(
   backend: CreateEngineBackendId | GltfEngineSelection,
   compatibilityMode: GltfCompatibilityMode,
   asset: GltfAssetResult,
   options: LoadGltfWithEngineOptions,
-): Promise<void> {
-  if (compatibilityMode === 'best-effort') return;
-  if (backend !== 'pt-webgpu') return;
+): Promise<GltfBackendProfileId | undefined> {
+  if (backend !== 'pt-webgpu') return undefined;
 
   const profile = await probeAdapterProfile();
-  if (profile.ptWebgpuTier === 'full') return;
+  if (profile.ptWebgpuTier === 'full') return 'pt-webgpu';
 
   const profileId = profile.ptWebgpuTier === 'lite' ? 'pt-webgpu-lite' : 'pt-webgpu';
+  if (compatibilityMode === 'best-effort') return profileId;
   const selected = asset.backendCompatibility.find((entry) => entry.profileId === profileId);
   if (selected != null) {
     const effectiveIssues = selected.issues.filter((issue) =>
       !isSatisfiedRuntimeCompatibilityIssue(issue, options, asset)
     );
     const rejectedIssues = rejectedIssuesForMode(effectiveIssues, compatibilityMode);
-    if (rejectedIssues.length === 0) return;
+    if (rejectedIssues.length === 0) return profileId;
 
     throw new Error(
       `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +

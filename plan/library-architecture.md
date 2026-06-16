@@ -19,7 +19,7 @@
 
 ### `@vitrum/stained-glass-extensions`
 
-**Owns**: stained-glass host-domain seams extracted from generic packages: `SURFACE_TEXTURE_ID`, stained-glass `userData` key constants, and analytic came UBO packing helpers.
+**Owns**: stained-glass host-domain seams extracted from generic packages: `SURFACE_TEXTURE_ID` and analytic came UBO packing helpers. The old Three.js `userData` key bridge was removed with the retired three-bindings layer.
 
 **Depends on**: nothing.
 
@@ -71,7 +71,7 @@
 
 **Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — see `_staging/legacy-source/src/rendering/scene/walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
 
-**Depends on** (see `packages/walkaround-hybrid/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/stained-glass-extensions`, `@vitrum/walkaround-rc`.
+**Depends on** (see `packages/walkaround-hybrid/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/walkaround-rc`. Its tests/dev config import `@vitrum/stained-glass-extensions` to pin the shared surface-texture wire enum, but the runtime backend does not depend on that host-utility package.
 
 ### `@vitrum/walkaround-rc`
 

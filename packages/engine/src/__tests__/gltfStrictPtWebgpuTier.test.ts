@@ -111,6 +111,7 @@ const mocks = vi.hoisted(() => {
       return {
         asset,
         backend: state.selectedBackend,
+        profileId: state.selectedBackend === 'pt-webgpu' ? 'pt-webgpu' : state.selectedBackend,
         ...(engine != null ? { engine } : {}),
         controller: { warnings: [], attachEngine },
         attached: engine != null,
@@ -251,6 +252,26 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.attachEngine).toHaveBeenCalledWith(existingEngine, { setScene: true });
   });
 
+  it('reports the runtime lite profile for best-effort existing pt-webgpu engines', async () => {
+    const existingEngine = makeExistingPtWebgpuEngine();
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'best-effort',
+      }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      engine: existingEngine,
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+    expect(mocks.attachEngine).toHaveBeenCalledWith(existingEngine, { setScene: true });
+  });
+
   it('allows reject-unsupported pt-webgpu glTF loads on lite tier when rows are degraded but supported', async () => {
     mocks.state.liteIssues = [mocks.approximateLiteIssue];
 
@@ -262,12 +283,12 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
-  it('does not probe adapter tier for best-effort pt-webgpu glTF loads', async () => {
+  it('reports the runtime lite profile for best-effort pt-webgpu glTF loads without rejecting', async () => {
     await expect(
       loadGltfWithEngine('asset.glb', { compatibilityMode: 'best-effort' }),
-    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', profileId: 'pt-webgpu-lite', attached: true });
 
-    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 

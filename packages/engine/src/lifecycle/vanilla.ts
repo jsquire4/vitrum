@@ -183,6 +183,15 @@ export type QualityOption =
   | NonNullable<FrameInput['quality']>
   | (() => NonNullable<FrameInput['quality']> | undefined);
 
+export interface AttachVitrumSceneControllerPlaybackOptions {
+  /** Forwarded to `sceneController.advance(..., { loop })`. Default true. */
+  readonly loop?: boolean;
+}
+
+export type AttachVitrumSceneControllerPlayback =
+  | boolean
+  | AttachVitrumSceneControllerPlaybackOptions;
+
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /**
    * Optional already-constructed engine for callers that prepared the scene
@@ -200,6 +209,14 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    * runtime imports.
    */
   readonly sceneController?: AttachVitrumSceneController;
+  /**
+   * Opt-in RAF-driven playback for scene controllers attached through this
+   * lifecycle helper. When enabled, attachVitrum calls
+   * `sceneController.advance(deltaSeconds, { engine, loop })` once per frame.
+   * Default: false, so hosts that own their own animation clocks keep full
+   * control.
+   */
+  readonly sceneControllerPlayback?: AttachVitrumSceneControllerPlayback;
   /** Engine-level GPU/runtime error callback. Receives errors from the
    *  underlying engine's `onError` subscription (device-lost, GPU validation
    *  errors, WebGL context-lost).  Distinct from `onError` in
@@ -272,7 +289,12 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
 }
 
 export interface AttachVitrumSceneController {
+  readonly animations?: readonly unknown[];
   attachEngine(engine: EngineWithBackendId, options?: { readonly setScene?: boolean }): void;
+  advance?(
+    deltaSeconds: number,
+    options?: { readonly engine?: EngineWithBackendId; readonly loop?: boolean },
+  ): unknown;
 }
 
 export interface AttachVitrumHandle {
@@ -392,6 +414,28 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let engine = opts.engine ?? await buildEngineFromOpts(opts, currentScene);
   trackEngineScene(engine);
   attachSceneController(engine);
+
+  const sceneControllerPlayback = opts.sceneControllerPlayback;
+  let lastSceneControllerFrameMs: number | null = null;
+  const advanceSceneController = (nowMs: number): void => {
+    const controller = opts.sceneController;
+    if (!isSceneControllerPlaybackEnabled(sceneControllerPlayback)) return;
+    if (controller?.advance == null) return;
+    if (controller.animations != null && controller.animations.length === 0) return;
+
+    if (lastSceneControllerFrameMs == null) {
+      lastSceneControllerFrameMs = nowMs;
+      return;
+    }
+    const deltaSeconds = Math.max(0, (nowMs - lastSceneControllerFrameMs) / 1000);
+    lastSceneControllerFrameMs = nowMs;
+    if (deltaSeconds === 0) return;
+
+    controller.advance(deltaSeconds, {
+      engine,
+      loop: sceneControllerPlaybackLoop(sceneControllerPlayback),
+    });
+  };
 
   // ── ResizeObserver ───────────────────────────────────────────────────────
   let resizeObserver: ResizeObserver | undefined;
@@ -554,6 +598,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       engine = await buildEngineFromOpts(opts, currentScene);
       trackEngineScene(engine);
       attachSceneController(engine);
+      lastSceneControllerFrameMs = null;
     } catch (createErr) {
       console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
       autoRecreateMachine.recreating = false;
@@ -595,9 +640,15 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   const RAF_SELF_STOP_THRESHOLD = 5;
   let consecutiveThrows = 0;
 
-  const tick = (): void => {
+  const tick = (now: number = currentFrameTimeMs()): void => {
     if (stopped) return;
     rafHandle = requestAnimationFrame(tick);
+    try {
+      advanceSceneController(now);
+    } catch (err) {
+      reportError(err, { phase: 'attach:scene-controller', backend: engine.backendId, recoverable: true });
+      console.error('[attachVitrum] sceneController.advance threw:', err);
+    }
     opts.camera.updateMatrixWorld();
     const view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
     const proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
@@ -684,4 +735,24 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 /** Return true when the given error kind represents a device/context loss. */
 function isLossKind(kind: EngineError['kind']): boolean {
   return kind === 'device-lost' || kind === 'context-lost';
+}
+
+function isSceneControllerPlaybackEnabled(
+  playback: AttachVitrumSceneControllerPlayback | undefined,
+): playback is true | AttachVitrumSceneControllerPlaybackOptions {
+  return playback === true || (typeof playback === 'object' && playback != null);
+}
+
+function sceneControllerPlaybackLoop(
+  playback: true | AttachVitrumSceneControllerPlaybackOptions,
+): boolean {
+  return typeof playback === 'object' && playback.loop !== undefined
+    ? playback.loop
+    : true;
+}
+
+function currentFrameTimeMs(): number {
+  const perf = globalThis.performance;
+  const now = perf?.now?.();
+  return Number.isFinite(now) ? now : Date.now();
 }

@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
 
 type V3 = [number, number, number];
 
@@ -79,5 +80,24 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     const b = beerSlab(1.0, [1, 1, 1], 1.0, 0.3, 1.0); // k=0.3
     const combined = a[0] * b[0];
     expect(combined).toBeCloseTo(Math.exp(-(0.5 + 0.3)), 10);
+  });
+
+  it('samples material-atlas alpha for DDGI direct-light shadow transmittance', () => {
+    const wgsl = makeProbeUpdateRaysWGSL(4);
+
+    expect(wgsl).toContain('const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;');
+    expect(wgsl).toContain('const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
+    expect(wgsl).toContain('const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;');
+    expect(wgsl).toContain('fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage');
+    expect(wgsl).toContain('let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
+    expect(wgsl).toContain('let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
+    expect(wgsl).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
+    expect(wgsl).toContain('fn ddgiTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> f32');
+    expect(wgsl).toContain('tau = tau * ddgiAlphaShadowTransmittanceForHit(hit);');
+    expect(wgsl).toContain('let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);');
+    expect(wgsl).toContain('visibility = visibility * alphaT;');
+    expect(wgsl).toContain('let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false);');
+    expect(wgsl).toContain('shadowT = ddgiTraceShadowTransmittance(hitPos + n * normalBias, wi, dist - normalBias, false);');
+    expect(wgsl).not.toContain('let sHit = bvhTraceFirstHit(sRay);\\n\\t      if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }');
   });
 });

@@ -237,10 +237,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
 - Latest 2026-06-16 follow-up: transparent OIT now also binds the existing
   `analytic_lights` texture and shades analytic point/spot emitters through the
   same material-lobe payload, inverse-square falloff, spot cone attenuation, and
-  cast-shadow-aware visibility convention as opaque shade. Area-emitter/ReSTIR
-  direct light, transparent GI/RC/DDGI/ReSTIR-GI participation,
-  alpha-map-aware shadow filtering, and first-hit emissive/light-map semantics
-  remain open approximation/promotion tails.
+  cast-shadow-aware visibility convention as opaque shade. Later same-day work
+  added finite mesh-emitter OIT lighting with alpha-aware per-sample visibility.
+  Current working-tree follow-up: DDGI probe direct sun, point/spot, and mesh
+  emitter NEE visibility now samples material-atlas `baseColorMap.a` /
+  `alphaMap.r` coverage for mask/blend shadow transmittance. Transparent
+  ReSTIR direct-light reservoir participation, true GI/RC/DDGI/ReSTIR-GI
+  transport vertices, exact UV-varying emissive/light-map PDFs, and first-hit
+  emissive/light-map promotion remain open approximation/promotion tails.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
   GPU allocation; the tracked `starter-v1.vitrum-model` and
@@ -329,8 +333,10 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   texture decode options, and compatibility modes into the same one-call glTF
   path, and hands the prepared engine/controller to `attachVitrum`. The
   lifecycle now accepts a preconstructed engine plus structural scene controller,
-  and re-targets that controller after device-loss auto-recreate. Focused
-  React/lifecycle tests pin both wrapper and forwarding seams.
+  re-targets that controller after device-loss auto-recreate, and can opt into
+  RAF-driven controller playback through `gltfPlayback` /
+  `sceneControllerPlayback` with real delta seconds. Focused React/lifecycle
+  tests pin wrapper, forwarding, and playback seams.
 - `ProgressiveHandoffCoordinator` can be constructed with an authoritative
   `scene` snapshot and falls back to `setScene()` on both engines when either
   incremental primitive path is missing or rejects; fallback patching uses the
@@ -1842,6 +1848,11 @@ Closure:
   Full renderer promotion still requires GPU-native tangent skinning / broader
   backend evidence, so compatibility remains approximate instead of native.
 - Controller-side morph playback is closed under `GLTF-API-04`.
+- `@vitrum/engine/gltf` runtime-profile truth is closed for both strict and
+  best-effort paths: factory-created and existing pt-webgpu engines run the
+  adapter-profile probe, strict modes reject the actual full/lite runtime row,
+  and best-effort returns the negotiated `profileId` instead of reporting full
+  pt-webgpu support on a lite adapter.
 
 ### GLTF-05 - glTF primitive modes
 
