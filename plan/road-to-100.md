@@ -8,9 +8,9 @@
 
 ## Where we actually are
 
-> **Updated 2026-06-10 at the END of trust-remediation rounds R7a–R7d (commits a1b85b1, ba1429d, 3f3aa6d, 9c3e6ba, 1a8ab08).**
+> **Updated 2026-06-15 after the latest code-first closure wave (commits d9415357, 8d29d387, bc6b023f).**
 > Per `plan/v1-closure-plan-2026-06-10.md §0`, "100%" = everything fully implemented.
-> **R7a–R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
+> **R7a-R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
 > GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
 > silent-GPU-error class dead); `@vitrum/gltf-adapter` new package (glTF 2.0 → core Scene);
 > `captureFrame` pixel-readback API + `pickPrimitive` real on all 3 backends;
@@ -20,11 +20,23 @@
 > **A4-progressive DONE (2026-06-10):** true Hachisuka per-pixel SPPM — `SppmPixelStats`
 > binding(9), `sppmGatherProgressive` update rule (N′=N+α·M; R′²=R²·ratio; τ′=(τ+Φ_M)·ratio),
 > buffer reset on camera/scene/reset, Cesàro accumulator argument, 36 TS-mirror tests.
-> **Implementation distance remaining:** A6 NRC semantics; A8 GRIS-default gate;
-> sun-NEE-default gate; B2 DDGI glossy bounce; glass refracted GI (B1 tail);
-> production-quality neural weights (starter only); walkaround material parity for
-> the remaining permanent/specialty rows (displacement, spectral/scattering,
-> thin-film stack, front/back layers); H-residue (H5/H21/H24-cluster/H32/H34).
+> **Latest closure wave:** pt-webgpu inverse path replay now only advertises the
+> point-direct-light domain it actually supports and falls back to finite difference
+> for maps, transmission, layered, spectral/volume, environment, rect-area, and
+> directional-light cases; walkaround material truth was tightened so textured
+> alpha blend emits structured approximation warnings and the ledger no longer
+> claims native rows where GI reuse still uses stored-Lo/proxy targeting; neural
+> weights are validated before allocation, dispatch failures fall back to raw HDR,
+> and NRC opt-in emits a structured experimental/biased warning.
+> **Implementation distance remaining:** full analytic adjoint replay beyond the
+> point-direct-light slice; walkaround GI rich receiver-lobe reservoir targeting,
+> OIT-grade alpha blend, and finite-emitter/light-map promotion decisions; real
+> production neural checkpoints and NRC/neural quality/default-tier decisions;
+> validation-backed promotion decisions for GRIS, BDPT/pt-webgpu fidelity rows,
+> and rich-material GI. Explicitly unsupported rows such as displacement,
+> volumetric/spectral scattering, thin-film-stack parity in walkaround GI, and
+> front/back-layer specialty handling are now contract/truthfulness rows, not
+> silent implementation promises.
 > **GLTF-01 skinned-node double-transform CLOSED 2026-06-15:** glTF joint matrices are now converted into mesh-node-local skinning space and animation patches use the same convention.
 > **Big validation tail: V28-B** — GPU A/B recapture for every render-changing landing
 > (improvement confirmations, not regression suspects).
@@ -34,9 +46,11 @@
   correct, type-clean (typecheck green across 12 packages), and test-backed (~3,300+
   assertions). CI rewritten; in-repo shader compile gate (48 WGSL shaders, naga-validated).
   The P0 default-path correctness issues from prior audits are resolved.
-- **The real distance to "fully implemented + professional" is three buckets:**
-  **A** frontier features that are wired-but-inert/partial, **B** deliberate fidelity
-  ceilings in the default path, **C** provisioning, **D** hygiene. That's what this doc lists.
+- **The real distance to "fully implemented + professional" is four buckets:**
+  **A** frontier features that are implemented but still need fidelity promotion/default-tier
+  decisions, **B** deliberate fidelity ceilings or approximation semantics in realtime paths,
+  **C** provisioning for optional learned systems, **D** hygiene/ledger consistency. That's
+  what this doc lists.
 
 **Legend:** `✅` = verified by lead code-read/grep this session · `◻` = reported by a
 deep-reader agent with file:line, not independently re-verified (verify before acting).
@@ -61,7 +75,7 @@ the target is to make each one real and consumed — not to demote it.
 | **A7** | ✅ **DONE (v1-closure Wave 5, caab499) — RC finished (user decision: keep+finish)** | `walkaround-rc/src/`, `shade.wgsl.ts`, `HybridEngineRC.ts` | **Implemented:** RC receiver replaced with correct MC irradiance estimator `E=(4π/N)·ΣL·cos` (was `Le/Wsum·N·0.5` — ray-count-dependent; N=16/N=64 now agree ≈π in tests); real env map bound into the last cascade (was permanently 1×1 black); point/spot lights added to the RC light model (binding 15, DDGI conventions, fingerprint-gated upload); chromatic sun from scene's directional emitter (was achromatic); scene-scale shadow bias. | Real-GPU cascade A/B at N=16/N=64 (V28-B). | done (impl) |
 | **A8** | ✅ **DECIDED (2026-06-10) — biased default retained for realtime; unbiased GRIS documented as first-class opt-in** | `HybridEngineOptions.restirPtReuse`, `temporalGi.wgsl.ts`, `spatialGi.wgsl.ts`, `jacobianShift.wgsl.ts`, `restirPHat.wgsl.ts`, README bias docs | **Architecture decision:** The default (`restirPtReuse: false`) retains the pre-GRIS Sprint-17 clamped-Jacobian reuse for the realtime frame budget (the unbiased path adds one visibility ray + full-GBH O(K²) MIS cross-evaluation per accepted neighbour — the dominant cost in the GI reuse passes). Remaining documented default-OFF bias sources are B1 Jacobian clamp [0.1,10] (`jacobianShift.wgsl.ts`), B2 no reconnection-visibility ray (OFF variants of `spatialGi`/`temporalGi`), and B3 no full GBH MIS (OFF combine weights). The old B4 centroid-p̂ note is stale: `restirPHat.wgsl.ts` now evaluates `restir_di_compute_phat_xi(lid, xi, surf)`, RIS finalization uses stored `r.xi`, temporal/spatial reuse call the xi-aware helper, and `lo_direct` shades the selected xi. The unbiased GRIS path (`restirPtReuse: true`) is first-class, compile-time gated, fully functional (Phase-1 shift + Phase-2 full-GBH spatial, pairwise-MIS temporal), and the JSDoc specifies exactly when to enable it. H24 follow-up: the default path no longer pays the widened GRIS reservoir memory cost — `restirPtReuse:false` compiles/allocates the compact 20-u32 ReSTIR-GI layout, while the 30-u32 GRIS cache is opt-in only and PPG bakes the matching stride. A compile-time variant-selection pin test added (`__tests__/grisVariantPin.test.ts`), now complemented by `giStructuralGate.test.ts` shader-source stride checks. **ELEVATED 2026-06-13 (user decision during maturity audit): the keep-vs-flip-default call must be evidence-based, so V19 is promoted from a passive note to an ACTIVE validation task** — stand up a concrete harness on the wsl-gpu rig that (a) confirms the GRIS-on path converges to an unbiased mean at production settings and (b) quantifies the biased default's actual error vs a converged brute-force reference. The default is NOT being flipped now; this gathers the data to revisit F6 (GRIS default-on) with numbers instead of a guess. | GPU A/B converged-unbiasedness validation (V19 in `HARDWARE-VALIDATION-NEEDS.md`) — confirms the ON path converges to an unbiased mean and the OFF path's bias matches the documented characterization; **now an active task, not deferred.** | done (decision); A/B validation ACTIVE |
 | **A9** | ✅ **MOSTLY DONE (Wave A + v1-closure Wave 3 + 2026-06-15 parity/proof waves) — serial build retained; estimator coherence fixed** | `wgsl/bdpt/bdptLightSubpath.wgsl.ts:140-255,575-728`, `wgsl/bdpt/bdptConnection.wgsl.ts:369-443`, `pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts`, `index.ts:311` | **Implemented:** light subpath carries a REAL glossy/specular BSDF (VNDF) at each vertex, bounce cap 3→8, and a 5-row light-vertex record whose row 4 stores hit-local material payload plus a front-face side bit. **Wave 3 fix (1d31f0b):** estimator coherence — extension now samples ONE real-BSDF direction used for BOTH the trace and stored throughput/pdfFwd (was a sampled-then-discarded direction — biased MIS densities); pdfRev patched per PBRT §16.3. **2026-06-15 parity wave:** BDPT light-side material decode now mirrors the shade prologue for mapped base/vertexColor/AO/ORM/transmission/normal/bump/clearcoat-normal/extension/specular/anisotropy plus layer tint/roughness, thin-film reflect tint, Cauchy IOR, and spectral reflectance scalar. **2026-06-15 proof wave:** A9 now has independent numeric TS oracles for row-4 tri/front-face packing, mapped payload transforms, front/back layer selection, thin-film tint mixing, Cauchy IOR, and Jakob-Hanika spectral override; this removes the pure-substring proof residue for that lane. **Honest remaining:** serial dispatch (one workgroup; the per-column variant was a spec-undefined cross-workgroup race — documented) plus independent material-furnace/radiometric A/B. Still OFF-default. | Parallelize the subpath build; default-on `full` tier after the A/B. | mostly done |
-| **A10** | ✅ **Pipeline E2E (Wave A) — weights not shipped** | `tools/neural-denoiser-training/{train.py,capture-dataset.mjs,export_weights.py}` | **Implemented:** capture→train→export→load CLOSES — `train.py --dry-run/--smoke` exports a valid 535,107-param `.vitrum-model` binary (CANONICAL_PARAM_COUNT pinned to the engine loader; the "vi-neural-weights.json" reference was stale — binary is the real format), round-trip test green; `capture-dataset.mjs` CPU smoke. **Remaining:** no real trained checkpoint ships (real dataset + torch training = hardware/provisioning tail); `neural` denoiser stays experimental in capabilities until weights exist. | Vendor a trained checkpoint; quality A/B. | pipeline done / weights remaining |
+| **A10** | ✅ **Pipeline E2E (Wave A) — package weights not production-default** | `tools/neural-denoiser-training/{train.py,capture-dataset.mjs,export_weights.py}` | **Implemented:** capture→train→export→load CLOSES — `train.py --dry-run/--smoke` exports a valid 535,107-param `.vitrum-model` binary (CANONICAL_PARAM_COUNT pinned to the engine loader; the "vi-neural-weights.json" reference was stale — binary is the real format), round-trip test green; `capture-dataset.mjs` CPU smoke. **2026-06-15 posture fix:** repo research/starter checkpoints are now shape/value-validated before allocation, but the package still requires host-supplied weights and does not advertise a production default checkpoint. `neural` remains opt-in/experimental until a validated production checkpoint and quality A/B exist. | Vendor/ship or otherwise bless a production checkpoint; quality A/B. | pipeline done / weights remaining |
 
 ---
 
@@ -180,7 +194,8 @@ Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS do
 - **A10/H28 (neural denoiser) is no longer blocked on ReLU bind aliasing:** in-place
   ReLU layers allocate distinct output buffers and remap downstream tensor reads;
   `reluPingPong.test.ts` pins the no read/read_write alias invariant. The remaining
-  A10 gap is trained weights plus quality A/B.
+  A10 gap is a production-quality checkpoint plus quality A/B; 2026-06-15 follow-up
+  added graph-weight validation and raw-HDR fallback on inference dispatch failure.
 - **NEW B13 — ✅ CLOSED / SOURCE-VERIFIED 2026-06-13 — walkaround texture seam UVs**
   `restir/bvhCore.ts` now packs real UVs at both build seams: scene-pack UVs are
   extracted to stride-2 before `packUVIntoPositionW(...)`, and merged geometry uses

@@ -90,8 +90,32 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   and the `updatePrimitive(id, { material })` fast path, so unsupported
   displacement fields cannot bypass the warning on incremental material edits.
 
-Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
+Follow-up Codex closure sweeps (WSL Node 24.13.0):
 
+- Follow-up 2026-06-15: pt-webgpu inverse rendering no longer over-promises
+  analytic path replay. `inverseSession` only selects replay for the
+  point-direct-light domain the implementation actually differentiates, and
+  falls back to finite difference for map-heavy materials, transmission,
+  layered lobes, spectral/volume cases, environments, rect-area lights, and
+  directional lights. Focused inverse-session tests pin every downgrade case.
+- Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
+  of papered over. Textured `alphaMode:"blend"` materials now enter the same
+  approximation diagnostic path as scalar fractional opacity, including
+  `baseColorMap` alpha and `alphaMap`, while the ledger now labels GI
+  rich-material support as approximate where receiver/reuse targeting still
+  stores geometry plus `Lo` instead of a full receiver-lobe payload.
+- Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
+  weights are validated for layer coverage, lengths, and finite values before
+  GPU allocation; inference dispatch exceptions fall back to the raw HDR texture
+  with a recorded fallback reason; and `nrcEnabled:true` emits a structured
+  experimental/biased warning instead of silently presenting NRC as production
+  default behavior.
+- Follow-up 2026-06-15: the top Road summary was reconciled with the detailed
+  ledger. Closed items such as DDGI glossy bounce and stale NRC structural
+  defects were removed from the headline remaining-work list, while the honest
+  remaining tails are now analytic-adjoint breadth, walkaround receiver-lobe/OIT
+  promotion, neural/NRC production quality, and validation-backed fidelity
+  promotions.
 - `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
   `createEngine()` runs and forwards `onWarning` through the facade.
 - `createProgressiveEngine.onError` now mirrors the same
