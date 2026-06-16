@@ -120,11 +120,14 @@ Skip connections are element-wise addition (not concatenation). The skip
 source for decoder level N is the pre-downsampling encoder feature map
 at the same spatial resolution as the decoder output.
 
-## No Pre-trained Weights
+## Weight Posture
 
-Vitrum ships no trained weights. You must collect a dataset and train.
-The walkaround engine uses `'atrous-variance'` denoising by default;
-`'neural'` is opt-in and requires weights to be provided at engine creation.
+The published walkaround package ships no production neural weights. The repo
+tracks limited research checkpoints under `checkpoints/` so the binary format
+and runtime loader can be exercised, but they are small CPU-trained artifacts
+and are not suitable as a production default. The walkaround engine uses
+`'atrous-variance'` denoising by default; `'neural'` is opt-in and requires
+validated weights to be provided at engine creation.
 
 ## GPU capture (real dataset — for the GPU session)
 

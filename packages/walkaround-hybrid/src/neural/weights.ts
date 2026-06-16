@@ -39,17 +39,110 @@ export interface ModelWeights {
   readonly layers: readonly LayerWeights[];
 }
 
+// ── Spec validation ─────────────────────────────────────────────────────────
+
+type WeightLayerSpec = {
+  readonly name: string;
+  readonly kind: string;
+  readonly weightLayout: 'OIKW' | 'IOKW' | 'none';
+  readonly params: {
+    readonly inC: number;
+    readonly outC: number;
+    readonly kH?: number;
+    readonly kW?: number;
+  };
+};
+
+export interface WeightSpec {
+  readonly layers: readonly WeightLayerSpec[];
+}
+
+/**
+ * Validate that a checkpoint exactly matches the supplied inference spec before
+ * any GPU buffers are allocated.
+ *
+ * Exported training checkpoints are allowed to omit parameterless layers
+ * (`relu`, `skipAdd`, `inputPack`, etc.), but every parameterized conv layer
+ * must be present exactly once with the expected weight/bias lengths and finite
+ * f32 payloads. Unknown layers, duplicate layers, parameterless layers with
+ * payloads, and malformed values throw synchronously so `denoiser:'neural'`
+ * cannot silently run with placeholder weights.
+ */
+export function validateWeightsForSpec(spec: WeightSpec, weights: ModelWeights): void {
+  const specByName = new Map<string, WeightLayerSpec>();
+  for (const layer of spec.layers) {
+    if (specByName.has(layer.name)) {
+      throw new Error(`[validateWeightsForSpec] duplicate spec layer '${layer.name}'`);
+    }
+    specByName.set(layer.name, layer);
+  }
+
+  const supplied = new Set<string>();
+  for (const layerWeights of weights.layers) {
+    if (supplied.has(layerWeights.name)) {
+      throw new Error(`[validateWeightsForSpec] duplicate weights for layer '${layerWeights.name}'`);
+    }
+    supplied.add(layerWeights.name);
+
+    const layer = specByName.get(layerWeights.name);
+    if (layer == null) {
+      throw new Error(`[validateWeightsForSpec] unknown layer '${layerWeights.name}' in checkpoint`);
+    }
+
+    const expected = expectedParamCounts(layer);
+    if (layerWeights.weights.length !== expected.weights) {
+      throw new Error(
+        `[validateWeightsForSpec] layer '${layerWeights.name}' weight length ` +
+        `${layerWeights.weights.length} != expected ${expected.weights}`,
+      );
+    }
+    if (layerWeights.biases.length !== expected.biases) {
+      throw new Error(
+        `[validateWeightsForSpec] layer '${layerWeights.name}' bias length ` +
+        `${layerWeights.biases.length} != expected ${expected.biases}`,
+      );
+    }
+    assertFiniteArray(layerWeights.weights, `${layerWeights.name}.weights`);
+    assertFiniteArray(layerWeights.biases, `${layerWeights.name}.biases`);
+  }
+
+  for (const layer of spec.layers) {
+    const expected = expectedParamCounts(layer);
+    if ((expected.weights > 0 || expected.biases > 0) && !supplied.has(layer.name)) {
+      throw new Error(`[validateWeightsForSpec] missing weights for layer '${layer.name}'`);
+    }
+  }
+}
+
+function expectedParamCounts(layer: WeightLayerSpec): { weights: number; biases: number } {
+  if (layer.kind !== 'conv2d' && layer.kind !== 'transposedConv2d') {
+    return { weights: 0, biases: 0 };
+  }
+  const { inC, outC, kH = 1, kW = 1 } = layer.params;
+  return {
+    weights: inC * outC * kH * kW,
+    biases: outC,
+  };
+}
+
+function assertFiniteArray(values: Float32Array, label: string): void {
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) {
+      throw new Error(`[validateWeightsForSpec] ${label}[${i}] is not finite`);
+    }
+  }
+}
+
 // ── Random-weights helper (for examples + acceptance tests) ──────────────────
 
 /**
  * Build a ModelWeights matching a U-Net spec with deterministic He-initialized
  * random weights. The denoising output will NOT be meaningful — this is for
  * pipeline-wiring smoke tests and the W10 example.
- * Two trained checkpoints ship in-repo under
- * `tools/neural-denoiser-training/checkpoints/`:
- *   - `starter-v1.vitrum-model`  — baseline, Cornell-only (see below)
- *   - `v2-random.vitrum-model`   — diverse-data v2 (see below)
- * See `buildRandomWeightsForSpec` JSDoc for full checkpoint provenance.
+ * The repo tracks two limited research checkpoints under
+ * `tools/neural-denoiser-training/checkpoints/`, but the walkaround package
+ * does not ship production neural weights. Hosts opting into `denoiser:
+ * 'neural'` should provide their own validated `.vitrum-model` payload.
  *
  * Deterministic via a Park-Miller LCG seeded from `seed` so the same call
  * with the same spec + seed produces bit-identical output across runs.
@@ -58,8 +151,8 @@ export interface ModelWeights {
  * @param seed  LCG seed (default 0xDEAF1984 — matches the model magic).
  *
  * ---
- * Bundled checkpoints
- * -------------------
+ * Repo-only research checkpoints
+ * ------------------------------
  *
  * `tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model`
  *   Produced: 2026-06-10, CPU training (torch 2.12.0+cpu, Python 3.14).

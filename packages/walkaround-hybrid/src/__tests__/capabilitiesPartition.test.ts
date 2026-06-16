@@ -170,6 +170,34 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
+  it('emits a structured warning when NRC is explicitly enabled', () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      nrcEnabled: true,
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.nrc-experimental-biased',
+          backend: 'walkaround-hybrid',
+          phase: 'construction',
+          method: 'createWalkaroundEngine_Hybrid',
+          details: expect.objectContaining({
+            nrcEnabled: true,
+            defaultEnabled: false,
+            estimator: 'biased',
+          }),
+        }),
+      ]);
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain('nrcEnabled:true');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('keeps an instanced-mesh + rect-area scene intact (instanced-mesh is genuine via TLAS)', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = new HybridEngine(makeOpts());

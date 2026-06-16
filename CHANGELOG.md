@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround neural/NRC posture, 2026-06-15)
+
+- **Neural checkpoint validation and fallback:** `@vitrum/walkaround-hybrid` now validates `denoiser:'neural'` checkpoints against the U-Net spec before GPU allocation, rejecting missing, unknown, wrong-sized, duplicate, or non-finite layer payloads instead of allowing placeholder buffers. Neural dispatch failures now fall back to raw HDR and surface a fallback `denoiserState` rather than throwing the frame. Enabling `nrcEnabled:true` now emits a structured `walkaround-hybrid.nrc-experimental-biased` warning, and README/ledger wording now distinguishes repo-only research checkpoints from production neural weights.
+
 ### Fixed (walkaround material truthfulness, 2026-06-15)
 
 - **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material-payload implementation: rich DI and GI suffix payloads are implemented, but GI receiver/reuse targeting, finite-emitter power, light-map scope, OIT composition, and validation keep the rows `approximate`.

@@ -591,6 +591,24 @@ export class HybridEngine implements Engine {
         details: { keys: Object.keys(opts.causticOptions) },
       });
     }
+    if (opts.nrcEnabled === true) {
+      this._warn({
+        code: 'walkaround-hybrid.nrc-experimental-biased',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] nrcEnabled:true enables the opt-in Neural Radiance ` +
+          `Cache. NRC is a biased experimental radiance cache for realtime GI; ` +
+          `the default remains disabled and hosts should validate quality before ` +
+          `using it in production scenes.`,
+        details: {
+          nrcEnabled: true,
+          defaultEnabled: false,
+          estimator: 'biased',
+        },
+      });
+    }
 
     this._device                = opts.device;
     this._width                 = opts.width;

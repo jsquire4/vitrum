@@ -41,7 +41,7 @@
  */
 
 import type { UNetSpec } from './unetArchitecture.js';
-import type { ModelWeights, LayerWeights } from './weights.js';
+import { validateWeightsForSpec, type ModelWeights, type LayerWeights } from './weights.js';
 import {
   type TensorDims,
   computeTensorDims,
@@ -135,6 +135,8 @@ export class InferenceGraph {
     this._W      = W;
     this._H      = H;
     this._ready  = false;
+
+    validateWeightsForSpec(this._spec, weights);
 
     // Derive tensor dimensions ONCE by simulating the forward pass; store for
     // re-use every frame in run().

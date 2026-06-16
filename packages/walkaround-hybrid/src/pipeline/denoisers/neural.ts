@@ -43,6 +43,7 @@ export class NeuralDenoiser implements Denoiser {
   private _graphW = 0;
   private _graphH = 0;
   private _loggedSizeMismatch = false;
+  private _loggedDispatchFailure = false;
 
   private _device: GPUDevice | null = null;
   private _packPipeline: GPUComputePipeline | null = null;
@@ -218,13 +219,23 @@ export class NeuralDenoiser implements Denoiser {
       pass.end();
     }
 
-    this._inferenceGraph.run(
-      tb.noisyBuf,
-      tb.albedoBuf,
-      tb.normalsBuf,
-      tb.outputBuf,
-      ctx.encoder,
-    );
+    try {
+      this._inferenceGraph.run(
+        tb.noisyBuf,
+        tb.albedoBuf,
+        tb.normalsBuf,
+        tb.outputBuf,
+        ctx.encoder,
+      );
+    } catch (err) {
+      const reason = `inference graph dispatch failed: ${errorMessage(err)}`;
+      this._lastFallbackReason = reason;
+      if (!this._loggedDispatchFailure) {
+        this._loggedDispatchFailure = true;
+        console.warn(`[NeuralDenoiser] ${reason}; falling back to hdrColorTexture.`);
+      }
+      return ctx.resources.common.hdrColorTexture;
+    }
 
     const buildUnpackBg = (): GPUBindGroup => device.createBindGroup({
       label: 'neural-denoiser-unpack-bg',
@@ -260,6 +271,7 @@ export class NeuralDenoiser implements Denoiser {
     this._width = w;
     this._height = h;
     this._loggedSizeMismatch = false;
+    this._loggedDispatchFailure = false;
     this._lastFallbackReason = null;
     if (this._device != null) {
       this._allocTensorBuffers(this._device, w, h);
@@ -329,4 +341,8 @@ export class NeuralDenoiser implements Denoiser {
       height: h,
     };
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

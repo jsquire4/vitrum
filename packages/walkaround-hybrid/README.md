@@ -1,6 +1,6 @@
 # @vitrum/walkaround-hybrid
 
-**Stability:** production-grade for the shipped walkaround pipeline (DDGI, ReSTIR-DI/GI, GTAO, SVGF, RC, PPG, neural). Public API surface is still evolving with host-contract work in `@vitrum/core`.
+**Stability:** production-grade for the shipped default walkaround pipeline (DDGI, ReSTIR-DI/GI, GTAO, à-trous/SVGF/BMFR denoisers, and RC). PPG, NRC, and the U-Net neural denoiser are opt-in experimental systems whose quality depends on scene validation and supplied training data. Public API surface is still evolving with host-contract work in `@vitrum/core`.
 
 WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass, **GTAO** ambient occlusion (half-res + bilateral upsample), per-channel **SVGF / à-trous-variance** denoising on direct + indirect, and opt-in **PPG** path guiding, **neural U-Net** denoiser, and **Radiance Cascades** (W8 shipped). RC is opt-in via `HybridEngineOptions.rcEnabled` and dispatches cascades each frame against the engine's own raw `GPUBuffer` allocation (no THREE WebGPU renderer dependency); cascade-0 sampling + MIS composition with DDGI / ReSTIR-GI are documented in [plan/archive/w8-rc-mis-composition-archived-2026-05-30.md](../../plan/archive/w8-rc-mis-composition-archived-2026-05-30.md).
 
@@ -12,7 +12,8 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
 - **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
 - **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; GPU-side training atomics feed CPU sTree/dTree updates, `splitOverflowLeaves` adaptively splits high-sample spatial cells, and inline gi-ris guided sampling consumes the learned distribution under `src/ppg/`.
-- **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, `sheen`, `anisotropy`, and `iridescence` controls feed shade-owned direct, analytic, sun, and glossy-indirect lighting; readable specular, clearcoat factor/roughness/normal, sheen color/roughness, anisotropy, and iridescence factor/thickness maps multiply, perturb, or thin-film-modify the scalar controls. These rows remain approximate because upstream ReSTIR/GI candidate PDFs/payloads and authored tangents are not lobe-complete.
+- **NRC** (Neural Radiance Caching) — opt-in/experimental via `nrcEnabled:true`; the default is off and construction emits a structured warning because the cache is a biased learned GI approximation.
+- **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, `sheen`, `anisotropy`, and `iridescence` controls feed shade-owned direct, analytic, sun, glossy-indirect, ReSTIR-DI, and GI suffix material paths; readable specular, clearcoat factor/roughness/normal, sheen color/roughness, anisotropy, and iridescence factor/thickness maps multiply, perturb, or thin-film-modify the scalar controls. These rows remain approximate because GI receiver/reuse targeting and validation are not rich-lobe-complete.
 
 ## Denoisers
 
@@ -54,9 +55,11 @@ The binary format is `.vitrum-model` (magic `0xDEAF1984`, little-endian) —
 mirrored by the Python exporter at `tools/neural-denoiser-training/export_weights.py`
 and the TypeScript serialiser `serializeWeightsToArrayBuffer`.
 
-The canonical trained checkpoint ships as `vi-neural-weights.bin` (target ~2.1 MB
-at f32 for the default ~535k-parameter spec). **The repo does NOT ship a trained
-checkpoint** — see `tools/neural-denoiser-training/README.md` for training.
+The repo contains limited research checkpoints under
+`tools/neural-denoiser-training/checkpoints/` for local experiments, but the
+`@vitrum/walkaround-hybrid` package does **not** ship production neural weights.
+Those checkpoints are small CPU-trained artifacts, not a production default.
+See `tools/neural-denoiser-training/README.md` for training and export guidance.
 
 **Smoke-test path (no trained weights):** `buildRandomWeightsForSpec(spec, seed)`
 synthesises deterministic He-init random weights. The pipeline runs end-to-end

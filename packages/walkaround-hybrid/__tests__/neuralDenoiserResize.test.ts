@@ -75,6 +75,25 @@ function makeMockDevice(): MockDevice {
   return { device, buffers, textures, shaderCodes };
 }
 
+function makeTexture(label: string): GPUTexture {
+  return {
+    label,
+    createView: vi.fn(() => ({})),
+    destroy: vi.fn(),
+  } as unknown as GPUTexture;
+}
+
+function makeEncoder(): GPUCommandEncoder {
+  return {
+    beginComputePass: vi.fn(() => ({
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      dispatchWorkgroups: vi.fn(),
+      end: vi.fn(),
+    })),
+  } as unknown as GPUCommandEncoder;
+}
+
 /** Minimal InferenceGraph stub — enough for NeuralDenoiser to treat itself as enabled. */
 const fakeGraph = { run: vi.fn() } as unknown as InferenceGraph;
 
@@ -198,6 +217,53 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     d.resize(640, 360); // same size
     // _reallocForSize guard: already correct size → no new buffers.
     expect(buffers.length).toBe(beforeCount);
+  });
+
+  it('dispatch falls back to raw HDR when the inference graph throws', async () => {
+    const { device } = makeMockDevice();
+    const throwingGraph = {
+      run: vi.fn(() => { throw new Error('synthetic graph failure'); }),
+    } as unknown as InferenceGraph;
+    const d = new NeuralDenoiser({ inferenceGraph: throwingGraph });
+    await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
+
+    const hdr = makeTexture('hdr');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = d.dispatch({
+        device,
+        encoder: makeEncoder(),
+        width: 64,
+        height: 64,
+        frameIndex: 0,
+        resources: {
+          common: {
+            hdrColorTexture: hdr,
+            albedoTexture: makeTexture('albedo'),
+            gNormalDepthTexture: makeTexture('normal-depth'),
+          },
+        } as never,
+        sharedAtrousPipeline: {} as never,
+        bglCache: {} as never,
+        gNormalDepthView: {} as never,
+        atrousDirectSigmas: [128, 5, 0.05],
+        readAccum: {} as never,
+        isMoving: false,
+        wgX16: 4,
+        wgY16: 4,
+        computeDesc: () => ({}),
+      });
+
+      expect(result).toBe(hdr);
+      expect(d.state()).toEqual({
+        status: 'fallback',
+        reason: 'inference graph dispatch failed: synthetic graph failure',
+      });
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain('synthetic graph failure');
+    } finally {
+      warnSpy.mockRestore();
+      d.dispose();
+    }
   });
 });
 

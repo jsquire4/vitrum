@@ -766,6 +766,9 @@ const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   'svgf-real': 'native',
   bmfr: 'native',
   'oidn-final': 'native',
+  // Native dispatch path, but opt-in only: hosts must supply validated weights,
+  // and current repo checkpoints are research/starter artifacts rather than a
+  // production default.
   neural: 'native',
 });
 

@@ -37,6 +37,7 @@ import {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
   buildRandomWeightsForSpec,
+  validateWeightsForSpec,
 } from '../src/neural/weights.js';
 import type { ModelWeights } from '../src/neural/weights.js';
 
@@ -157,6 +158,40 @@ describe('neural weights capture→train→export→load round-trip', () => {
       expect(Array.from(b.weights)).toEqual(Array.from(a.weights));
       expect(Array.from(b.biases)).toEqual(Array.from(a.biases));
     }
+  });
+
+  it('validates the exported checkpoint against the runtime U-Net spec', () => {
+    expect(() => validateWeightsForSpec(buildUNetSpec(), loaded)).not.toThrow();
+  });
+
+  it('rejects missing, unknown, wrong-sized, and non-finite neural checkpoint layers', () => {
+    const spec = buildUNetSpec();
+    expect(() => validateWeightsForSpec(spec, {
+      layers: loaded.layers.filter((l) => l.name !== 'proj'),
+    })).toThrow(/missing weights for layer 'proj'/);
+
+    expect(() => validateWeightsForSpec(spec, {
+      layers: [...loaded.layers, { name: 'extra', weights: new Float32Array(0), biases: new Float32Array(0) }],
+    })).toThrow(/unknown layer 'extra'/);
+
+    const enc1 = loaded.layers.find((l) => l.name === 'enc1_conv')!;
+    expect(() => validateWeightsForSpec(spec, {
+      layers: loaded.layers.map((l) =>
+        l.name === 'enc1_conv'
+          ? { ...l, weights: enc1.weights.slice(1) }
+          : l,
+      ),
+    })).toThrow(/enc1_conv.*weight length/);
+
+    const badBiases = new Float32Array(enc1.biases);
+    badBiases[0] = Number.NaN;
+    expect(() => validateWeightsForSpec(spec, {
+      layers: loaded.layers.map((l) =>
+        l.name === 'enc1_conv'
+          ? { ...l, biases: badBiases }
+          : l,
+      ),
+    })).toThrow(/enc1_conv\.biases\[0\] is not finite/);
   });
 
   it('loaded checkpoint initializes a real InferenceGraph (stub device)', async () => {
