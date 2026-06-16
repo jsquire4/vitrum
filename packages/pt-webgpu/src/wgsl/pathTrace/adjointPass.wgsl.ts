@@ -77,6 +77,13 @@ export const ADJOINT_FIELD_IRIDESCENCE = 12;
 export const ADJOINT_FIELD_IRIDESCENCE_IOR = 13;
 export const ADJOINT_FIELD_ANISOTROPY = 14;
 export const ADJOINT_FIELD_ANISOTROPY_ROTATION = 15;
+export const ADJOINT_FIELD_EMITTER_COLOR = 16;
+export const ADJOINT_FIELD_EMITTER_INTENSITY = 17;
+
+export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
+export const ADJOINT_EMITTER_TARGET_POINT = 2;
+export const ADJOINT_EMITTER_TARGET_SPOT = 3;
+export const ADJOINT_EMITTER_TARGET_RECT = 4;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -147,12 +154,17 @@ struct AdjointParams {
 @group(0) @binding(6) var<storage, read>       pointLights:   array<vec4f>;
 @group(0) @binding(7) var<storage, read>       dLossDRendered: array<f32>;
 @group(0) @binding(8) var<storage, read_write> gradAccum:     array<atomic<i32>>;
-// adjointParams: per optimized param {matId, fieldCode, gradOffset, _}.
+// adjointParams:
+//   material fields: {matId, fieldCode, gradOffset, fieldPayloadBits}
+//   emitter fields: {kind-local light slot, fieldCode, gradOffset, emitterTargetKind}
 // adjointParamDescs: two vec4u records per optimized param:
-//   record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
-//   record 1: {payloadXBits, payloadYBits, payloadZBits, _}
+//   record 0: {targetIdOrSlot, fieldCode, gradOffset, fieldPayloadBitsOrEmitterKind}
+//   record 1: {payloadXBits, payloadYBits, payloadZBits, payloadWBits}
 // emissive uses record0.w for fixed emissiveIntensity. emissiveIntensity
 // uses record1.xyz for UNFACTORED emissive RGB so intensity=0 is differentiable.
+// emitter color/intensity use record1.xyz = unfactored emitter color and
+// record1.w = fixed intensity; area-emitter target fields remain finite-difference
+// until stochastic area sampling + mesh-triangle source mapping are replayed.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
@@ -757,6 +769,63 @@ fn directLightAdjoint(
   );
 }
 
+fn directLightBrdfValue(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> vec3f {
+  return adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  ) +
+    adjointClearcoatLobe(clearcoat, clearcoatRoughness, n, wo, wi) +
+    adjointSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
+}
+
+fn scatterEmitterRadianceGradient(
+  targetKind: u32,
+  targetSlot: u32,
+  dLoss_dPackedRadiance: vec3f,
+  invReplaySamples: f32,
+) {
+  for (var k = 0u; k < params.paramCount; k = k + 1u) {
+    let descBase = k * 2u;
+    let d = adjointParamDescs[descBase];
+    if (d.y != ${ADJOINT_FIELD_EMITTER_COLOR}u && d.y != ${ADJOINT_FIELD_EMITTER_INTENSITY}u) {
+      continue;
+    }
+    if (d.w != targetKind || d.x != targetSlot) { continue; }
+    let payload = adjointParamDescs[descBase + 1u];
+    let emitterColor = vec3f(
+      bitcast<f32>(payload.x),
+      bitcast<f32>(payload.y),
+      bitcast<f32>(payload.z),
+    );
+    let emitterIntensity = bitcast<f32>(payload.w);
+    let gradOffset = d.z;
+    if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u) {
+      let gColor = dLoss_dPackedRadiance * emitterIntensity;
+      adjointScatter(gradOffset, gColor.x * invReplaySamples);
+      adjointScatter(gradOffset + 1u, gColor.y * invReplaySamples);
+      adjointScatter(gradOffset + 2u, gColor.z * invReplaySamples);
+    } else {
+      adjointScatter(gradOffset, dot(dLoss_dPackedRadiance, emitterColor) * invReplaySamples);
+    }
+  }
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) { return; }
@@ -916,6 +985,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+      if (!isUnlit) {
+        let brdfValue = directLightBrdfValue(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+        );
+        scatterEmitterRadianceGradient(
+          ${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u,
+          di,
+          dLoss_dR * brdfValue * nDotL,
+          invReplaySamples,
+        );
+      }
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -956,6 +1038,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+      if (!isUnlit) {
+        let brdfValue = directLightBrdfValue(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+        );
+        scatterEmitterRadianceGradient(
+          ${ADJOINT_EMITTER_TARGET_POINT}u,
+          pi,
+          dLoss_dR * brdfValue * (nDotL * attenuation),
+          invReplaySamples,
+        );
+      }
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -1002,6 +1097,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+      if (!isUnlit) {
+        let brdfValue = directLightBrdfValue(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+        );
+        scatterEmitterRadianceGradient(
+          ${ADJOINT_EMITTER_TARGET_SPOT}u,
+          si,
+          dLoss_dR * brdfValue * (nDotL * softness * attenuation),
+          invReplaySamples,
+        );
+      }
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -1055,6 +1163,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+      if (!isUnlit) {
+        let areaFactor = cosLight * area / dist2;
+        let brdfValue = directLightBrdfValue(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+        );
+        scatterEmitterRadianceGradient(
+          ${ADJOINT_EMITTER_TARGET_RECT}u,
+          ri,
+          dLoss_dR * brdfValue * (nDotL * areaFactor),
+          invReplaySamples,
+        );
+      }
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -1115,6 +1237,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let descBase = k * 2u;
       let d = adjointParamDescs[descBase];
       let payload = adjointParamDescs[descBase + 1u];
+      if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u || d.y == ${ADJOINT_FIELD_EMITTER_INTENSITY}u) { continue; }
       if (d.x != matId) { continue; }
       let gradOffset = d.z;
       if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {

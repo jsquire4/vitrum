@@ -36,6 +36,12 @@ import {
   ADJOINT_FIELD_IRIDESCENCE_IOR,
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
+  ADJOINT_FIELD_EMITTER_COLOR,
+  ADJOINT_FIELD_EMITTER_INTENSITY,
+  ADJOINT_EMITTER_TARGET_DIRECTIONAL,
+  ADJOINT_EMITTER_TARGET_POINT,
+  ADJOINT_EMITTER_TARGET_SPOT,
+  ADJOINT_EMITTER_TARGET_RECT,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -119,16 +125,39 @@ export class AdjointPass {
     uboU[30] = sb.meshAreaLightCount >>> 0;
 
     // adjointParamDescs: two vec4u records per param:
-    //   record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
-    //   record 1: {payloadXBits, payloadYBits, payloadZBits, _}
+    //   material record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
+    //   emitter record 0: {kind-local light slot, fieldCode, gradOffset, emitterTargetKind}
+    //   record 1: {payloadXBits, payloadYBits, payloadZBits, payloadWBits}
     // For an emissive param, record0.w carries the FIXED emissiveIntensity
     // (bitcast f32). For an emissiveIntensity param, record1.xyz carries the
     // UNFACTORED material emissive RGB so intensity=0 remains differentiable.
-    // Lit BRDF fields leave payloads 0. A Float32 view aliases the same buffer.
+    // Emitter color/intensity params use record1.xyz = unfactored color and
+    // record1.w = fixed intensity. Lit BRDF fields leave payloads 0.
+    // A Float32 view aliases the same buffer.
     const descs = new Uint32Array(Math.max(params.length, 1) * 8);
     const descsF = new Float32Array(descs.buffer);
     for (let i = 0; i < params.length; i++) {
       const p = params[i]!;
+      if (p.domain === 'emitters') {
+        const target = adjointEmitterTargetForScene(scene, p.id);
+        if (target == null) {
+          throw new Error(
+            `computeAdjointGradient: emitter "${p.id}" is outside the scoped adjoint direct-light target domain.`,
+          );
+        }
+        let fieldCode = ADJOINT_FIELD_EMITTER_INTENSITY;
+        if (p.field === 'color') fieldCode = ADJOINT_FIELD_EMITTER_COLOR;
+        const descBase = i * 8;
+        descs[descBase + 0] = target.slot >>> 0;
+        descs[descBase + 1] = fieldCode;
+        descs[descBase + 2] = p.offset >>> 0;
+        descs[descBase + 3] = target.kind >>> 0;
+        descsF[descBase + 4] = target.color[0];
+        descsF[descBase + 5] = target.color[1];
+        descsF[descBase + 6] = target.color[2];
+        descsF[descBase + 7] = target.intensity;
+        continue;
+      }
       const matId = materialIndexForPrimitive(scene, p.id, supportedAnalyticShapes);
       if (matId == null) {
         throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
@@ -278,4 +307,76 @@ export class AdjointPass {
   dispose(): void {
     this.#pipeline = null;
   }
+}
+
+function adjointEmitterTargetForScene(
+  scene: Scene,
+  id: string,
+): {
+  readonly kind: number;
+  readonly slot: number;
+  readonly color: readonly [number, number, number];
+  readonly intensity: number;
+} | null {
+  let directionalSlot = 0;
+  let pointSlot = 0;
+  let spotSlot = 0;
+  let rectSlot = 0;
+  for (const emitter of scene.emitters) {
+    switch (emitter.kind) {
+      case 'directional': {
+        const slot = directionalSlot;
+        directionalSlot += 1;
+        if (emitter.id !== id) break;
+        const angularDiameter = emitter.angularDiameter;
+        if (angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6) {
+          return null;
+        }
+        return {
+          kind: ADJOINT_EMITTER_TARGET_DIRECTIONAL,
+          slot,
+          color: emitter.color,
+          intensity: emitter.intensity,
+        };
+      }
+      case 'point': {
+        const slot = pointSlot;
+        pointSlot += 1;
+        if (emitter.id !== id) break;
+        return {
+          kind: ADJOINT_EMITTER_TARGET_POINT,
+          slot,
+          color: emitter.color,
+          intensity: emitter.intensity,
+        };
+      }
+      case 'spot': {
+        const slot = spotSlot;
+        spotSlot += 1;
+        if (emitter.id !== id) break;
+        return {
+          kind: ADJOINT_EMITTER_TARGET_SPOT,
+          slot,
+          color: emitter.color,
+          intensity: emitter.intensity,
+        };
+      }
+      case 'rect-area':
+      case 'disc-area': {
+        const slot = rectSlot;
+        rectSlot += 1;
+        if (emitter.id !== id) break;
+        return {
+          kind: ADJOINT_EMITTER_TARGET_RECT,
+          slot,
+          color: emitter.color,
+          intensity: emitter.intensity,
+        };
+      }
+      default:
+        if (emitter.id === id) return null;
+        break;
+    }
+  }
+  return null;
 }

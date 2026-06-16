@@ -221,6 +221,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropy',
   'anisotropyRotation',
 ]);
+const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -556,15 +557,7 @@ function diagnosePathReplaySlot(
   const path = slot.param.path;
   const target = slot.target;
   if (target.domain !== 'materials') {
-    return [{
-      severity: 'info',
-      code: 'path-replay-unsupported-param-domain',
-      path,
-      message:
-        `[vitrum/pt-webgpu] InverseSession path "${path}" targets ${target.domain}; ` +
-        'path-replay currently differentiates material parameters only, so this parameter uses finite-difference.',
-      details: { domain: target.domain },
-    }];
+    return diagnosePathReplayEmitterSlot(scene, slot);
   }
   if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
     return [{
@@ -624,6 +617,68 @@ function diagnosePathReplaySlot(
   return [];
 }
 
+function diagnosePathReplayEmitterSlot(
+  scene: Scene,
+  slot: ParamSlot,
+): InverseSessionDiagnostic[] {
+  const path = slot.param.path;
+  const target = slot.target;
+  if (!ADJOINT_ELIGIBLE_EMITTER_FIELDS.has(target.field)) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-field',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" targets emitter field ` +
+        `"${target.field}", which is not in the path-replay differentiable emitter field set; ` +
+        'using finite-difference.',
+      details: { field: target.field },
+    }];
+  }
+
+  const emitter = scene.emitters.find((e) => e.id === target.id);
+  if (emitter == null) return [];
+  const emitterIssue = pathReplayEmitterTargetIssue(emitter);
+  if (emitterIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-emitter',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" targets emitter "${target.id}", ` +
+        `${emitterIssue.message}; using finite-difference.`,
+      details: emitterIssue.details,
+    }];
+  }
+
+  const lightingIssue = pathReplayLightingIssue(scene);
+  if (lightingIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-lighting',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" needs the direct-light replay domain, ` +
+        `${lightingIssue.message}; using finite-difference.`,
+      details: lightingIssue.details,
+    }];
+  }
+
+  const receiverIssue = pathReplayEmitterReceiverSceneIssue(scene);
+  if (receiverIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-receiver',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" differentiates an emitter through ` +
+        `scene receivers, but ${receiverIssue.message}; using finite-difference.`,
+      details: receiverIssue.details,
+    }];
+  }
+  return [];
+}
+
 function pathReplayPrimitiveIssue(
   primitive: ScenePrimitive,
 ): { message: string; details: Record<string, string | boolean> } | null {
@@ -638,6 +693,73 @@ function pathReplayPrimitiveIssue(
       message: 'non-identity primitive transforms are not mirrored by the adjoint replay pass',
       details: { primitiveKind: primitive.kind, nonIdentityTransform: true },
     };
+  }
+  return null;
+}
+
+function pathReplayEmitterTargetIssue(
+  emitter: SceneEmitter,
+): { message: string; details: Record<string, string | number> } | null {
+  switch (emitter.kind) {
+    case 'directional': {
+      const angularDiameter = emitter.angularDiameter;
+      if (angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6) {
+        return {
+          message: 'soft-sun angularDiameter is not replayed for emitter target gradients',
+          details: { emitterKind: emitter.kind, angularDiameter },
+        };
+      }
+      return null;
+    }
+    case 'point':
+    case 'spot':
+    case 'rect-area':
+    case 'disc-area':
+      return null;
+    case 'mesh-area':
+      return {
+        message: 'mesh-area emitter targets expand into many triangles and need source-triangle PDF mapping first',
+        details: { emitterKind: emitter.kind },
+      };
+    default:
+      const emitterKind = (emitter as { readonly kind: string }).kind;
+      return {
+        message: `emitter kind "${emitterKind}" is outside the path-replay target domain`,
+        details: { emitterKind },
+      };
+  }
+}
+
+function pathReplayEmitterReceiverSceneIssue(
+  scene: Scene,
+): { message: string; details: Record<string, string | boolean | number | readonly string[]> } | null {
+  for (const primitive of scene.primitives) {
+    const primitiveIssue = pathReplayPrimitiveIssue(primitive);
+    if (primitiveIssue != null) {
+      return {
+        message: `receiver primitive "${primitive.id}" ${primitiveIssue.message}`,
+        details: { primitiveId: primitive.id, ...primitiveIssue.details },
+      };
+    }
+    const materialIssue = pathReplayEmitterReceiverMaterialIssue(primitive.material);
+    if (materialIssue != null) {
+      return {
+        message: `receiver primitive "${primitive.id}" has material outside the scoped direct-light replay domain (${materialIssue.message})`,
+        details: { primitiveId: primitive.id, ...materialIssue.details },
+      };
+    }
+  }
+  return null;
+}
+
+function pathReplayEmitterReceiverMaterialIssue(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
   }
   return null;
 }

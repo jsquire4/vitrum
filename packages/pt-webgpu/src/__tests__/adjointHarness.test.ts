@@ -33,6 +33,12 @@ import {
   ADJOINT_FIELD_IRIDESCENCE_IOR,
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
+  ADJOINT_FIELD_EMITTER_COLOR,
+  ADJOINT_FIELD_EMITTER_INTENSITY,
+  ADJOINT_EMITTER_TARGET_DIRECTIONAL,
+  ADJOINT_EMITTER_TARGET_POINT,
+  ADJOINT_EMITTER_TARGET_SPOT,
+  ADJOINT_EMITTER_TARGET_RECT,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
@@ -220,6 +226,21 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let descBase = k * 2u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_EMISSIVE_INTENSITY}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb * emissiveTexel)');
+    // Emitter color/intensity target gradients are separate from material slots:
+    // the descriptor matches kind-local light slots and scatters through the
+    // direct-light BRDF value plus the same attenuation/geometric factors used
+    // for material direct-light adjoints.
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn directLightBrdfValue');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn scatterEmitterRadianceGradient');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y != ${ADJOINT_FIELD_EMITTER_COLOR}u && d.y != ${ADJOINT_FIELD_EMITTER_INTENSITY}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u || d.y == ${ADJOINT_FIELD_EMITTER_INTENSITY}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_POINT}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_SPOT}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_RECT}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * softness * attenuation)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * areaFactor)');
     // The UBO is mat4 + vec4 + 3×uvec4 = 128 bytes; the field codes are stable.
     expect(ADJOINT_PARAMS_UBO_BYTES).toBe(128);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
@@ -238,6 +259,12 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_IRIDESCENCE_IOR).toBe(13);
     expect(ADJOINT_FIELD_ANISOTROPY).toBe(14);
     expect(ADJOINT_FIELD_ANISOTROPY_ROTATION).toBe(15);
+    expect(ADJOINT_FIELD_EMITTER_COLOR).toBe(16);
+    expect(ADJOINT_FIELD_EMITTER_INTENSITY).toBe(17);
+    expect(ADJOINT_EMITTER_TARGET_DIRECTIONAL).toBe(1);
+    expect(ADJOINT_EMITTER_TARGET_POINT).toBe(2);
+    expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
+    expect(ADJOINT_EMITTER_TARGET_RECT).toBe(4);
   });
 
   it('engine adjoint PASS binds the material texture replay resources', () => {
@@ -253,5 +280,10 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropyRotation':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY_ROTATION;');
+    expect(ADJOINT_PASS_TS).toContain("if (p.domain === 'emitters')");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_EMITTER_COLOR;');
+    expect(ADJOINT_PASS_TS).toContain('adjointEmitterTargetForScene(scene, p.id)');
+    expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_POINT');
+    expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_RECT');
   });
 });

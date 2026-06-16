@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu emitter inverse replay slice, 2026-06-16)
+
+- **`@vitrum/pt-webgpu` path-replay inverse sessions now differentiate deterministic direct emitter color/intensity:** the adjoint descriptor format admits emitter-domain slots for delta directional, point, spot, rect-area, and disc-area emitters, and `adjointPass` scatters `emitters.<id>.color` / `emitters.<id>.intensity` gradients through the scoped direct-light BRDF value plus the same attenuation/geometric factors used by material direct-light replay. The session router keeps soft directional, mesh-area emitter targets, unreplayed receiver materials, environment lighting, indirect transport, alpha/normal/transmission/displacement visibility, layered/volume/spectral receivers, and full stochastic area sampling on finite-difference with structured diagnostics.
+
 ### Fixed (walkaround emitter/OIT + inverse scalar tails, 2026-06-16)
 
 - **Walkaround ReSTIR-DI material-backed emissive maps now split into bounded micro-emitters:** readable `emissiveMap` triangles use the shared barycentric subdivision helper in the ReSTIR-DI emitter list, carry per-micro-triangle CDF/light-tree power, and store subdivision metadata in the existing `EmitterTri` padding lanes so RIS/final shade map the winning `xi` back to parent-triangle UVs before sampling the material atlas. This narrows textured-emitter PDF error for merged, TLAS, instanced, and mirrored-TLAS material emitters without changing the 80-byte emitter stride. Full texel alias tables and GI/RC/DDGI texel-space emission remain promotion tails.

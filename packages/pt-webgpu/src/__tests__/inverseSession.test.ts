@@ -497,19 +497,102 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('degrades to finite-difference for an ineligible (emitter) param even with the hook', () => {
+  it('keeps path-replay for deterministic point emitter color/intensity and passes hook offsets', async () => {
     const fake = makeFakeEngine();
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.1, 0.2, 0.3, 0.4]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'emitters.lamp.color', kind: 'rgb' },
+        { path: 'emitters.lamp.intensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'emitters', id: 'lamp', field: 'color', offset: 0, length: 3 },
+      { domain: 'emitters', id: 'lamp', field: 'intensity', offset: 3, length: 1 },
+    ]);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0.1, 6), expect.closeTo(0.2, 6), expect.closeTo(0.3, 6)],
+      [expect.closeTo(0.4, 6)],
+    ]);
+    session.dispose();
+  });
+
+  it.each([
+    ['soft directional', [{
+      kind: 'directional' as const,
+      id: 'soft-sun',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      direction: [0, -1, 0] as [number, number, number],
+      angularDiameter: 0.01,
+    }], 'emitters.soft-sun.intensity'],
+    ['mesh-area', [{
+      kind: 'mesh-area' as const,
+      id: 'mesh-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      meshId: 'panel',
+    }], 'emitters.mesh-light.intensity'],
+  ])('keeps %s emitter targets on finite-difference until their source terms are replayed', (_label, emitters, path) => {
+    const fake = makeFakeEngine();
+    fake.scene = { ...fake.scene, emitters };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path, kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-emitter',
+      path,
+    }));
+    session.dispose();
+  });
+
+  it('keeps emitter path-replay on finite-difference when receiver materials use unreplayed normal maps', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference'); // emitter intensity isn't a Phase-1 BSDF param
+    expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-param-domain',
+      code: 'path-replay-unsupported-receiver',
       path: 'emitters.lamp.intensity',
-      details: expect.objectContaining({ domain: 'emitters' }),
+      details: expect.objectContaining({
+        primitiveId: 'panel',
+        unsupportedMaterialFields: expect.arrayContaining(['normalMap']),
+      }),
     }));
     session.dispose();
   });
