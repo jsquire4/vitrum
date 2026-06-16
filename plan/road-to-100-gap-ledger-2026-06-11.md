@@ -1597,6 +1597,9 @@ Evidence:
   camera-visible emitter glow, direct-light selection power, and merged-BVH
   ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as
   sRGB-decoded atlas layers with per-map UV/transform/wrap metadata,
+  `packBVHEmissiveLeFromCore()` now stores scalar production Le for the
+  camera-visible glow buffer so the shade pass samples readable emissive maps
+  exactly once at hit UV instead of pre-averaging and resampling them,
   `materialSpecEmissiveLe()` folds the average linear RGB of CPU-readable
   emissive maps into the shared ReSTIR/DDGI/RC emitter selection-power path,
   and the 2026-06-16 DI follow-up packs a source-triangle lane for merged-BVH

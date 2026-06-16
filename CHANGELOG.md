@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF/walkaround asset-tail closures, 2026-06-16)
+
+- **glTF generated tangents now honor the selected tangent-space UV set:** `@vitrum/gltf-adapter` generates fallback tangents from `TEXCOORD_1` when a normal/clearcoat-normal/bump map selects `texCoord:1`; `texCoord:2+` and mixed tangent-space map UV channels now emit structured diagnostics instead of silently generating a wrong UV0 tangent frame.
+- **Walkaround camera-visible emissive maps no longer double-apply readable map averages:** `packBVHEmissiveLeFromCore()` now stores scalar production Le in the per-triangle glow buffer and leaves hit-local emissive-map modulation to the material atlas sampler. ReSTIR/RC/DDGI emitter selection power still uses readable average energy, while exact texel-PDF selection and GI/RC/DDGI texel-space emission remain promotion tails.
+
 ### Fixed (pt-webgpu sheenColor adjoint breadth, 2026-06-16)
 
 - **Map-free `sheenColor` now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored diagonal RGB partials for KHR_materials_sheen `sheenColor`, scatters a dedicated adjoint field code across the deterministic direct-light replay loops, and routes map-free opaque inverse sessions for `materials.<id>.sheenColor` to `path-replay`. Sheen maps, transmission, layered/volume/spectral fields, environment/soft-sun terms, stochastic area sampling, indirect paths, and GPU inverse-fit recaptures remain finite-difference or validation tails.

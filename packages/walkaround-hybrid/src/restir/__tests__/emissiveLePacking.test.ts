@@ -8,7 +8,13 @@
  * already handles — packing it here would double-count).
  */
 import { describe, it, expect } from 'vitest';
-import { materialEmissiveLe, packBVHEmissiveLe, type PbrMaterialLike } from '../packingHelpers.js';
+import type { MaterialSpec } from '@vitrum/core';
+import {
+  materialEmissiveLe,
+  packBVHEmissiveLe,
+  packBVHEmissiveLeFromCore,
+  type PbrMaterialLike,
+} from '../packingHelpers.js';
 
 const color = (r: number, g: number, b: number) => ({ r, g, b });
 
@@ -68,5 +74,32 @@ describe('packBVHEmissiveLe — per-triangle HDR emissive texture data', () => {
   it('zero-fills triangles whose material is missing', () => {
     const out = packBVHEmissiveLe(new Uint32Array([7]), [], 1);
     expect(Array.from(out)).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe('packBVHEmissiveLeFromCore — camera-visible core emissive Le', () => {
+  it('packs scalar production Le without averaging readable emissiveMap pixels', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [2, 2, 2],
+      emissiveIntensity: 3,
+      emissiveMap: {
+        handle: {
+          width: 2,
+          height: 1,
+          data: new Float32Array([
+            0.25, 0.5, 1, 1,
+            0.75, 0.25, 0.5, 1,
+          ]),
+          __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+        },
+      },
+    };
+
+    const out = packBVHEmissiveLeFromCore(new Uint32Array([0]), [material], 1);
+
+    expect(Array.from(out)).toEqual([2, 2, 2, 0]);
   });
 });

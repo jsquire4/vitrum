@@ -777,6 +777,7 @@ export async function gltfToScene(
         positions,
         normals,
         uvs,
+        uv1,
         indices,
         material,
         `${mesh.name ?? node.mesh}`,
@@ -993,6 +994,7 @@ function _maybeGenerateTangents(
   positions: Float32Array,
   normals: Float32Array,
   uvs: Float32Array | undefined,
+  uv1: Float32Array | undefined,
   indices: Uint32Array | undefined,
   material: MaterialSpec,
   meshLabel: string,
@@ -1001,18 +1003,45 @@ function _maybeGenerateTangents(
   primitivePath: string,
 ): Float32Array | undefined {
   if (!materialNeedsTangentFrame(material)) return undefined;
-  if (!uvs) {
+  const tangentUvSet = tangentFrameTexCoord(material);
+  if (tangentUvSet == null) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'missing-tangent-texcoord',
-      path: `${primitivePath}.attributes.TEXCOORD_0`,
+      path: `${primitivePath}.attributes.TANGENT`,
       message:
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
-        'but has no TEXCOORD_0. Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses tangent-space material maps ` +
+        'on multiple UV channels, but @vitrum/core carries one generated tangent frame per primitive. ' +
+        'Tangents could not be generated; provide authored TANGENT data for this asset.',
     });
     return undefined;
   }
-  const generated = generateTangents(positions, normals, uvs, indices);
+  if (tangentUvSet > 1) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'missing-tangent-texcoord',
+      path: `${primitivePath}.attributes.TEXCOORD_${tangentUvSet}`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+        `on TEXCOORD_${tangentUvSet}, but @vitrum/core currently imports only TEXCOORD_0 ` +
+        'and TEXCOORD_1. Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
+    });
+    return undefined;
+  }
+  const tangentUvs = tangentUvSet === 1 ? uv1 : uvs;
+  if (!tangentUvs) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'missing-tangent-texcoord',
+      path: `${primitivePath}.attributes.TEXCOORD_${tangentUvSet}`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+        `on TEXCOORD_${tangentUvSet}, but the primitive has no TEXCOORD_${tangentUvSet}. ` +
+        'Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
+    });
+    return undefined;
+  }
+  const generated = generateTangents(positions, normals, tangentUvs, indices);
   if (!generated) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
@@ -1020,7 +1049,7 @@ function _maybeGenerateTangents(
       path: `${primitivePath}.attributes.TANGENT`,
       message:
         `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
-        'but tangents could not be generated from POSITION/NORMAL/TEXCOORD_0.',
+        `but tangents could not be generated from POSITION/NORMAL/TEXCOORD_${tangentUvSet}.`,
     });
     return undefined;
   }
@@ -1030,7 +1059,7 @@ function _maybeGenerateTangents(
     path: `${primitivePath}.attributes.TANGENT`,
     message:
       `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map without ` +
-      'TANGENT; generated per-vertex tangents from POSITION/NORMAL/TEXCOORD_0.',
+      `TANGENT; generated per-vertex tangents from POSITION/NORMAL/TEXCOORD_${tangentUvSet}.`,
   });
   return generated;
 }
@@ -1039,6 +1068,18 @@ function materialNeedsTangentFrame(material: MaterialSpec): boolean {
   return material.normalMap !== undefined ||
     material.clearcoatNormalMap !== undefined ||
     material.bumpMap !== undefined;
+}
+
+function tangentFrameTexCoord(material: MaterialSpec): number | null {
+  const candidates = [
+    material.normalMap?.texCoord,
+    material.clearcoatNormalMap?.texCoord,
+    material.bumpMap?.texCoord,
+  ].filter((texCoord): texCoord is number => texCoord !== undefined);
+  if (candidates.length === 0) return 0;
+  const channels = new Set(candidates.map((texCoord) => Math.max(0, Math.floor(texCoord))));
+  if (channels.size > 1) return null;
+  return channels.values().next().value ?? 0;
 }
 
 const GPU_INSTANCE_ATTRIBUTE_SPECS = {

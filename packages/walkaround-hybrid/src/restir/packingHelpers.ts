@@ -14,7 +14,6 @@
 import type { MaterialSpec } from '@vitrum/core';
 import {
   materialSpecTriColor,
-  materialSpecEmissiveLe,
   materialSpecSurfaceTextureId,
 } from '@vitrum/shared-bvh';
 
@@ -468,7 +467,7 @@ export function packBVHEmissiveLe(
 // These are the core-`MaterialSpec` counterparts to the three `*Tri` packers
 // above. They delegate the per-material RGB resolution to the canonical
 // `materialEntry.ts` mirrors in `@vitrum/shared-bvh`
-// (`materialSpecTriColor` / `materialSpecEmissiveLe` /
+// (`materialSpecTriColor` / scalar emissive Le /
 // `materialSpecSurfaceTextureId`) — the same functions the DDGI/emitter
 // decouples already use — and reproduce the EXACT RGBA8 / trans4 / isMetal
 // bit-packing + warm-gray missing-material default of the structural PBR packers
@@ -493,6 +492,30 @@ function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;
   if (m.emissiveIntensity === 1) return m; // already the production convention
   return { ...m, emissiveIntensity: 1 };
+}
+
+/**
+ * Scalar production Le for the camera-visible emissive buffer.
+ *
+ * Readable emissiveMap energy is intentionally NOT folded in here: shade.wgsl
+ * samples the emissive atlas at the hit UV, so averaging the map into this
+ * buffer would apply readable emissive maps twice. ReSTIR emitter selection
+ * still uses map-averaged power through `materialSpecEmissiveLe`.
+ */
+function scalarProductionEmissiveLe(m: MaterialSpec): [number, number, number] | null {
+  const production = toProductionEmissiveRadiance(m);
+  const em = production.emissive;
+  if (!em) return null;
+  const ei = production.emissiveIntensity ?? 1;
+  if (!(ei > 0)) return null;
+  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
+  const out: [number, number, number] = [
+    em[0] * ei,
+    em[1] * ei,
+    em[2] * ei,
+  ];
+  if (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) return null;
+  return out;
 }
 
 /**
@@ -648,8 +671,8 @@ export function packBVHBeerColorsFromCore(
 /**
  * Pack per-triangle HDR emissive radiance Le (stride-4 f32, rgb + 0 pad) from
  * a `MaterialSpec[]`. Non-emissive / missing triangles stay zero; emissive
- * triangles get `materialSpecEmissiveLe(toProductionEmissiveRadiance(mat))`.
- * See {@link toProductionEmissiveRadiance}.
+ * triangles get scalar production Le. Readable emissive maps are sampled in
+ * shade.wgsl, not averaged into this buffer.
  */
 export function packBVHEmissiveLeFromCore(
   triMaterialId: Uint32Array,
@@ -660,7 +683,7 @@ export function packBVHEmissiveLeFromCore(
   for (let t = 0; t < triCount; t++) {
     const mat = materials[triMaterialId[t]!];
     if (!mat) continue;
-    const le = materialSpecEmissiveLe(toProductionEmissiveRadiance(mat));
+    const le = scalarProductionEmissiveLe(mat);
     if (le == null) continue;
     out[t * 4 + 0] = le[0];
     out[t * 4 + 1] = le[1];

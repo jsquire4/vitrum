@@ -209,6 +209,62 @@ function makeNormalMappedTriangleGltf(
   return { gltf, buffers: new Map([[0, packed]]) };
 }
 
+function makeUv1NormalMappedTriangleGltf(opts: {
+  normalTexCoord: number;
+  includeUv0?: boolean;
+}): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+  const normalBuf = f32Buffer(TRIANGLE_NORMALS);
+  const uv1Buf = f32Buffer([
+    0, 0,
+    0, 1,
+    1, 0,
+  ]);
+  const imageBuf = u8Buffer(PNG_MAGIC);
+  const includeUv0 = opts.includeUv0 === true;
+  const uv0Buf = includeUv0 ? f32Buffer(TRIANGLE_UVS) : undefined;
+  const chunks = [posBuf, normalBuf, ...(uv0Buf ? [uv0Buf] : []), uv1Buf, imageBuf];
+  const packed = concatBuffers(...chunks);
+  const bufferViews: NonNullable<GltfJson['bufferViews']> = [];
+  let offset = 0;
+  for (const buf of chunks) {
+    bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: buf.byteLength });
+    offset += buf.byteLength;
+  }
+  const uv1Accessor = includeUv0 ? 3 : 2;
+  const imageBufferView = bufferViews.length - 1;
+  const attributes: Record<string, number> = {
+    POSITION: 0,
+    NORMAL: 1,
+    TEXCOORD_1: uv1Accessor,
+  };
+  if (includeUv0) attributes.TEXCOORD_0 = 2;
+  const accessors: NonNullable<GltfJson['accessors']> = [
+    { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+    { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+    ...(includeUv0
+      ? [{ bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' } as const]
+      : []),
+    { bufferView: uv1Accessor, componentType: 5126, count: 3, type: 'VEC2' },
+  ];
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes, material: 0 }] }],
+      materials: [{ normalTexture: { index: 0, texCoord: opts.normalTexCoord } }],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: imageBufferView, mimeType: 'image/png' }],
+      accessors,
+      bufferViews,
+      buffers: [{ byteLength: packed.byteLength }],
+    },
+    buffers: new Map([[0, packed]]),
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Test 1 — Minimal triangle
 // ────────────────────────────────────────────────────────────────────────────
@@ -245,6 +301,45 @@ describe('minimal triangle', () => {
     expect(prim.material.baseColor).toEqual([1, 1, 1]);
     expect(prim.material.metallic).toBe(1);
     expect(prim.material.roughness).toBe(1);
+  });
+
+  it('generates tangents from TEXCOORD_1 when a tangent-space map selects texCoord 1', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 1 });
+    const { scene, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.uvs).toBeUndefined();
+    expect(Array.from(prim.uv1 ?? [])).toEqual([
+      0, 0,
+      0, 1,
+      1, 0,
+    ]);
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(prim.tangents).toHaveLength(12);
+    expect(warnings.some((w) => w.includes('generated per-vertex tangents from POSITION/NORMAL/TEXCOORD_1'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'generated-tangents',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+    }));
+  });
+
+  it('warns instead of generating tangents from the wrong UV channel for texCoord 2', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({
+      normalTexCoord: 2,
+      includeUv0: true,
+    });
+    const { scene, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.tangents).toBeUndefined();
+    expect(warnings.some((w) =>
+      w.includes('TEXCOORD_2') &&
+      w.includes('imports only TEXCOORD_0 and TEXCOORD_1'),
+    )).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'missing-tangent-texcoord',
+      path: 'meshes[0].primitives[0].attributes.TEXCOORD_2',
+    }));
   });
 
   it('imports COLOR_0 vertex colors onto the core mesh primitive', async () => {
