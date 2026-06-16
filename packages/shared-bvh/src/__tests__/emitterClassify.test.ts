@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
   classifyTriangleEmitterCore,
+  estimateMaterialSpecEmissiveLeOverTriangle,
   materialSpecEmissiveLe,
+  materialSpecEmissiveLeAtUv,
 } from '../emitterClassify.js';
 
 function material(partial: Partial<MaterialSpec>): MaterialSpec {
@@ -90,6 +92,49 @@ describe('materialSpecEmissiveLe', () => {
       emissiveIntensity: 1,
       emissiveMap: { handle },
     }))).toBeNull();
+  });
+
+  it('samples readable emissiveMap texels at transformed and wrapped UVs', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 0, 1, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+
+    const le = materialSpecEmissiveLeAtUv(material({
+      emissive: [2, 2, 2],
+      emissiveMap: { handle, wrapS: 'repeat', transform: { offset: [0.5, 0] } },
+    }), [0.25, 0]);
+
+    expect(le).toEqual([0, 0, 2]);
+  });
+
+  it('estimates triangle emissive power from UV-local map samples instead of full-texture average', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+
+    const le = estimateMaterialSpecEmissiveLeOverTriangle(
+      material({
+        emissive: [4, 4, 4],
+        emissiveMap: { handle },
+      }),
+      [0.75, 0],
+      [0.75, 0],
+      [0.75, 0],
+    );
+
+    expect(le).toEqual([0, 4, 0]);
   });
 });
 

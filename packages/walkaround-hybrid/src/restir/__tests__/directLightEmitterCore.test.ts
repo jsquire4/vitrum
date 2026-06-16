@@ -206,7 +206,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
   });
 
-  it('packs scalar emissive radiance plus average power for merged emissiveMap emitters', () => {
+  it('packs scalar emissive radiance plus UV-local quadrature power for merged emissiveMap emitters', () => {
     const panel: MeshPrimitive = {
       ...supportTriangle('emissive-map-panel'),
       material: {
@@ -232,7 +232,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedAverageLe: [number, number, number] = [1, 0.75, 1.5];
+    const expectedSelectionLe: [number, number, number] = [0.5, 1, 2];
     const expectedScalarLe: [number, number, number] = [2, 2, 2];
 
     expect(emitters).toHaveLength(1);
@@ -242,7 +242,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(emitters[0]!.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
     expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
     expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 0.5,
+      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
       5,
     );
     expect(new Float32Array(buffers.emitterCdf.cpuData)[0]).toBe(1);
@@ -275,7 +275,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedAverageLe: [number, number, number] = [1, 0.75, 1.5];
+    const expectedSelectionLe: [number, number, number] = [0.5, 1, 2];
     const expectedScalarLe: [number, number, number] = [2, 2, 2];
 
     expect(emitters).toHaveLength(1);
@@ -284,7 +284,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(emitters[0]!.color[1]).toBeCloseTo(expectedScalarLe[1], 6);
     expect(emitters[0]!.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
     expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 0.5,
+      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
       5,
     );
   });
@@ -324,7 +324,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedAverageLe: [number, number, number] = [1.5, 2, 1.5];
+    const expectedSelectionLe: [number, number, number] = [11 / 7, 13 / 7, 10 / 7];
     const expectedScalarLe: [number, number, number] = [4, 4, 4];
 
     expect(emitters).toHaveLength(2);
@@ -336,7 +336,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(e.area).toBeCloseTo(0.5, 6);
     }
     expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 1.0,
+      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 1.0,
       5,
     );
   });
@@ -373,14 +373,14 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
-    const expectedAverageLe: [number, number, number] = [1.875, 0.75, 1.875];
+    const expectedSelectionLe: [number, number, number] = [12 / 7, 0.75, 57 / 28];
 
     expect(emitters).toHaveLength(1);
     expect(emitters[0]!.sourceTriIndex).toBe(-2);
     expect(emitters[0]!.color).toEqual([3, 3, 3]);
     expect(emitters[0]!.area).toBeCloseTo(0.5, 6);
     expect(buffers.totalEmissivePower).toBeCloseTo(
-      luminance(expectedAverageLe[0], expectedAverageLe[1], expectedAverageLe[2]) * 0.5,
+      luminance(expectedSelectionLe[0], expectedSelectionLe[1], expectedSelectionLe[2]) * 0.5,
       5,
     );
   });

@@ -1719,9 +1719,12 @@ Evidence:
   `packBVHEmissiveLeFromCore()` now stores scalar production Le for the
   camera-visible glow buffer so the shade pass samples readable emissive maps
   exactly once at hit UV instead of pre-averaging and resampling them,
-  `materialSpecEmissiveLe()` folds the average linear RGB of CPU-readable
-  emissive maps into the shared ReSTIR/DDGI/RC emitter selection-power path,
-  and the 2026-06-16 DI follow-up packs a source-triangle lane for merged-BVH
+  `materialSpecEmissiveLe()` still exposes the average linear RGB of CPU-readable
+  emissive maps for fallback/legacy paths, while the 2026-06-16 quadrature
+  follow-up estimates material-backed ReSTIR-DI emitter selection power from
+  UV-local readable-map samples and fixes the flat-CDF shader PMF to use the
+  sampled CDF segment instead of scalar `EmitterTri.Le`; the earlier same-day
+  DI follow-up packs a source-triangle lane for merged-BVH
   material emitters so RIS candidate scoring, pHat reuse, and final shade sample
   mapped radiance at the stored triangle `xi`. Later same-day follow-up: TLAS
   material-backed emitters now translate the world-expanded emitter triangle
@@ -1730,20 +1733,23 @@ Evidence:
   the native sampled-texel payload too. Later follow-up: mirrored TLAS instances
   encode reversed barycentric orientation in the source-triangle lane
   (`-(tri + 2)`), so they also sample the local material-atlas texel instead of
-  falling back to averaged radiance. Analytic/extra emitters intentionally retain
-  averaged `Le`. Exact UV-varying texel-PDF selection and GI/RC/DDGI texel-space
-  emission are still approximate rather than native parity.
+  falling back to averaged radiance. DDGI probe primary rays now also skip
+  atlas-backed alpha-mask holes and fractional blend layers through
+  `ddgiTraceFirstHitAlphaMaskTextured`. Analytic/extra emitters intentionally
+  retain averaged `Le`. Exact UV-varying texel-PDF selection and GI/RC/DDGI
+  texel-space emission are still approximate rather than native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
-  `emitterPacking.ts` folds the CPU-readable sRGB-decoded average RGB into
-  synthesized emissive-mesh radiance, uses that same helper for the geometry
+  `emitterPacking.ts` uses shared UV-local readable-map quadrature for synthesized
+  emissive-mesh triangle radiance, keeps the average/scalar helper for the geometry
   staleness predicate, suppresses black-map phantom emitters, and warns when an
   opaque/unreadable map handle forces the scalar-emissive fallback. This closes
   the scalar-only implicit emitter hole for decoded glTF/WebGPU-target texture
-  payloads; exact UV-varying emitter texel PDFs remain a promotion tail.
+  payloads and narrows textured-emitter selection; exact UV-varying emitter texel
+  PDFs remain a promotion tail.
 - pt-webgl2 now matches that decoded-emissive-mesh NEE behavior on its native
   triangle-light path: `meshAreaLights.ts` synthesizes triangle lights from
-  nonzero material `emissive * emissiveIntensity`, folds CPU-readable
-  `emissiveMap` average energy into the implicit radiance, suppresses black-map
+  nonzero material `emissive * emissiveIntensity`, folds CPU-readable UV-local
+  `emissiveMap` quadrature energy into implicit triangle radiance, suppresses black-map
   phantom lights, warns on opaque/unreadable map fallback, and
   `mutateSceneTextures.ts` repacks the mesh-light texture when scalar material
   emission changes through `updatePrimitive({ material })`. Explicit

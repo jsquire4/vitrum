@@ -139,6 +139,180 @@ function averageReadableTextureRgb(
   return n > 0 ? [r / n, g / n, b / n] : null;
 }
 
+function wrapUv1(value: number, mode: TextureRef['wrapS'] | TextureRef['wrapT']): number {
+  if (mode === 'clamp-to-edge') return Math.min(1, Math.max(0, value));
+  if (mode === 'mirrored-repeat') {
+    const f = value * 0.5 - Math.floor(value * 0.5);
+    return 1 - Math.abs(f * 2 - 1);
+  }
+  return value - Math.floor(value);
+}
+
+function transformTextureUv(ref: TextureRef, uv: readonly [number, number]): [number, number] {
+  const sx = ref.transform?.scale?.[0] ?? 1;
+  const sy = ref.transform?.scale?.[1] ?? 1;
+  const x = uv[0] * sx;
+  const y = uv[1] * sy;
+  const rot = ref.transform?.rotation ?? 0;
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const ox = ref.transform?.offset?.[0] ?? 0;
+  const oy = ref.transform?.offset?.[1] ?? 0;
+  return [
+    wrapUv1(x * c - y * s + ox, ref.wrapS),
+    wrapUv1(x * s + y * c + oy, ref.wrapT),
+  ];
+}
+
+/**
+ * Sample a CPU-readable `TextureRef` at a resolved UV, using the same KHR texture
+ * transform + repeat/clamp/mirror wrap convention as the GPU material samplers.
+ *
+ * This helper intentionally uses nearest `textureLoad`-style addressing because
+ * the walkaround atlas path also samples readable maps through texel loads. It is
+ * used only for CPU-side emitter-power estimates; GPU shading still samples the
+ * actual map payload where that backend supports it.
+ */
+export function sampleReadableTextureRgbAtUv(
+  ref: TextureRef | undefined,
+  uv: readonly [number, number],
+  fieldColorSpace: 'srgb' | 'linear',
+): [number, number, number] | null {
+  const handle = ref?.handle as ReadableTextureHandle | null | undefined;
+  if (handle == null || ref == null) return null;
+
+  const src = handle.data ?? handle.image?.data;
+  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
+  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const pixelCount = width * height;
+  const hint = textureHint(handle);
+  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
+  const stride = hint?.channels ?? heuristicStride;
+  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
+    return null;
+  }
+
+  const isHalf = src instanceof Uint16Array;
+  const isFloat = src instanceof Float32Array;
+  const useHalf = hint?.dataType != null ? hint.dataType === 'uint16' : isHalf;
+  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
+  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const decode = (v: number): number => (
+    useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v
+  );
+  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+
+  const wrapped = transformTextureUv(ref, uv);
+  const x = Math.min(width - 1, Math.max(0, Math.floor(wrapped[0] * width)));
+  const y = Math.min(height - 1, Math.max(0, Math.floor(wrapped[1] * height)));
+  const base = (y * width + x) * stride;
+  let r = decode(Number(src[base] ?? 0));
+  let g = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
+  let b = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+  if (needsSrgbDecode) {
+    r = srgbToLinear(r);
+    g = srgbToLinear(g);
+    b = srgbToLinear(b);
+  }
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  return [r, g, b];
+}
+
+export function materialSpecScalarEmissiveLe(
+  material: MaterialSpec,
+): [number, number, number] | null {
+  const em = material.emissive;
+  if (!em) return null;
+  const ei = material.emissiveIntensity ?? 1;
+  if (!(ei > 0)) return null;
+  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
+  const out: [number, number, number] = [em[0] * ei, em[1] * ei, em[2] * ei];
+  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
+}
+
+export function materialSpecEmissiveLeAtUv(
+  material: MaterialSpec,
+  uv0: readonly [number, number],
+  uv1?: readonly [number, number],
+): [number, number, number] | null {
+  const scalar = materialSpecScalarEmissiveLe(material);
+  if (scalar == null) return null;
+  const ref = material.emissiveMap;
+  if (ref == null) return scalar;
+  const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+  const uv = texCoord === 1 && uv1 != null ? uv1 : uv0;
+  const map = sampleReadableTextureRgbAtUv(ref, uv, 'srgb') ?? [1, 1, 1];
+  const out: [number, number, number] = [
+    scalar[0] * map[0],
+    scalar[1] * map[1],
+    scalar[2] * map[2],
+  ];
+  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
+}
+
+const TRIANGLE_EMISSIVE_QUADRATURE: readonly [number, number, number][] = [
+  [1 / 3, 1 / 3, 1 / 3],
+  [0.6, 0.2, 0.2],
+  [0.2, 0.6, 0.2],
+  [0.2, 0.2, 0.6],
+  [0.5, 0.5, 0],
+  [0.5, 0, 0.5],
+  [0, 0.5, 0.5],
+];
+
+function baryUv(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+  w: readonly [number, number, number],
+): [number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+  ];
+}
+
+/**
+ * Deterministic UV-local emissive estimate for one triangle. This is not a full
+ * texel alias table, but it prevents large UV-varying emissive maps from being
+ * selected solely by a whole-material average when building CPU emitter CDFs.
+ */
+export function estimateMaterialSpecEmissiveLeOverTriangle(
+  material: MaterialSpec,
+  uv0A: readonly [number, number],
+  uv0B: readonly [number, number],
+  uv0C: readonly [number, number],
+  uv1A?: readonly [number, number],
+  uv1B?: readonly [number, number],
+  uv1C?: readonly [number, number],
+): [number, number, number] | null {
+  const scalar = materialSpecScalarEmissiveLe(material);
+  if (scalar == null) return null;
+  if (material.emissiveMap == null) return scalar;
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (const weights of TRIANGLE_EMISSIVE_QUADRATURE) {
+    const uv0 = baryUv(uv0A, uv0B, uv0C, weights);
+    const uv1 = uv1A != null && uv1B != null && uv1C != null
+      ? baryUv(uv1A, uv1B, uv1C, weights)
+      : undefined;
+    const le = materialSpecEmissiveLeAtUv(material, uv0, uv1);
+    r += le?.[0] ?? 0;
+    g += le?.[1] ?? 0;
+    b += le?.[2] ?? 0;
+  }
+  const inv = 1 / TRIANGLE_EMISSIVE_QUADRATURE.length;
+  const out: [number, number, number] = [r * inv, g * inv, b * inv];
+  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
+}
+
 /**
  * Emissive radiance Le (`emissive.rgb · emissiveIntensity · emissiveMap`) of a core
  * `MaterialSpec`, or `null` when the surface is not self-emissive.
@@ -159,16 +333,13 @@ function averageReadableTextureRgb(
 export function materialSpecEmissiveLe(
   material: MaterialSpec,
 ): [number, number, number] | null {
-  const em = material.emissive;
-  if (!em) return null;
-  const ei = material.emissiveIntensity ?? 1;
-  if (!(ei > 0)) return null;
-  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
+  const scalar = materialSpecScalarEmissiveLe(material);
+  if (scalar == null) return null;
   const map = averageReadableTextureRgb(material.emissiveMap, 'srgb') ?? [1, 1, 1];
   const out: [number, number, number] = [
-    em[0] * ei * map[0],
-    em[1] * ei * map[1],
-    em[2] * ei * map[2],
+    scalar[0] * map[0],
+    scalar[1] * map[1],
+    scalar[2] * map[2],
   ];
   if (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) return null;
   return out;

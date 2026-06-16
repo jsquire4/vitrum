@@ -23,7 +23,11 @@ import {
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
-import { classifyTriangleEmitterCore } from '@vitrum/shared-bvh';
+import {
+  classifyTriangleEmitterCore,
+  estimateMaterialSpecEmissiveLeOverTriangle,
+  materialSpecScalarEmissiveLe,
+} from '@vitrum/shared-bvh';
 
 interface Vector3Like {
   readonly x: number;
@@ -88,6 +92,10 @@ interface EmitterListOptions {
    * emitter on the averaged-radiance fallback.
    */
   sourceTriIndexForTriangle?: (triIdx: number) => number;
+  /** Merged UV0 stream, stride-2 and aligned with `positions`. */
+  uvs?: Float32Array;
+  /** Optional merged UV1 stream, stride-2 and aligned with `positions`. */
+  uv1s?: Float32Array;
 }
 
 /**
@@ -190,6 +198,13 @@ export function buildEmitterListFromCore(
       if (classified == null || options.packSourceTriIndex !== true) return classified;
       const scalarLe = scalarMaterialEmissiveLe(mat);
       if (scalarLe == null) return classified;
+      const selectionColor = estimateTriangleEmissiveLe(
+        mat,
+        indices,
+        t,
+        options.uvs,
+        options.uv1s,
+      ) ?? classified.color;
       const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
       if (
         !Number.isFinite(sourceTriIndex) ||
@@ -201,7 +216,7 @@ export function buildEmitterListFromCore(
       return {
         ...classified,
         color: scalarLe,
-        selectionColor: classified.color,
+        selectionColor,
         sourceTriIndex: Math.trunc(sourceTriIndex),
       };
     },
@@ -235,13 +250,34 @@ type TriangleEmitterClassifier = (
 } | null;
 
 function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, number] | null {
-  const em = material.emissive;
-  if (!em) return null;
-  const ei = material.emissiveIntensity ?? 1;
-  if (!(ei > 0)) return null;
-  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
-  const out: [number, number, number] = [em[0] * ei, em[1] * ei, em[2] * ei];
-  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
+  return materialSpecScalarEmissiveLe(material);
+}
+
+function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
+  if (uvs == null) return [0, 0];
+  return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
+}
+
+function estimateTriangleEmissiveLe(
+  material: MaterialSpec,
+  indices: Uint32Array,
+  triIdx: number,
+  uvs?: Float32Array,
+  uv1s?: Float32Array,
+): [number, number, number] | null {
+  if (material.emissiveMap == null) return materialSpecScalarEmissiveLe(material);
+  const i0 = indices[triIdx * 3 + 0] ?? 0;
+  const i1 = indices[triIdx * 3 + 1] ?? 0;
+  const i2 = indices[triIdx * 3 + 2] ?? 0;
+  return estimateMaterialSpecEmissiveLeOverTriangle(
+    material,
+    uvAt(uvs, i0),
+    uvAt(uvs, i1),
+    uvAt(uvs, i2),
+    uvAt(uv1s, i0),
+    uvAt(uv1s, i1),
+    uvAt(uv1s, i2),
+  );
 }
 
 /**

@@ -78,7 +78,7 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     void STRIDE;
   });
 
-  it('modulates implicit mesh-area radiance by a CPU-readable emissiveMap average', () => {
+  it('modulates implicit mesh-area radiance by UV-local CPU-readable emissiveMap energy', () => {
     const scene: Scene = {
       primitives: [
         triMesh('mapped-glow', [2, 2, 2], 1, {
@@ -97,9 +97,9 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     };
     const packed = packEmitterArrays(scene);
     expect(packed.meshAreaLightCount).toBe(1);
-    expect(packed.meshAreaLightsData[12]).toBeCloseTo(1, 5);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
     expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
-    expect(packed.meshAreaLightsData[14]).toBeCloseTo(1, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
   });
 
   it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {

@@ -15,6 +15,7 @@ export * from './buildArrayBvh.js';
 export { validateBvhEncoding } from './validateBvhEncoding.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
+export * from './emitterClassify.js';
 export {
   mergeWorldSpaceFromCore,
   mergeUv1FromCore,

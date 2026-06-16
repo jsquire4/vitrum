@@ -40,7 +40,11 @@
 //   s5 = (0, castShadowDisabled, 0, 0) — s5.g mirrors analytic light slots
 
 import type { MaterialSpec, Scene, SceneNodeId, TextureRef, Vec3 } from '@vitrum/core';
-import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import {
+  estimateMaterialSpecEmissiveLeOverTriangle,
+  mergeUv1FromCore,
+  type WorldSpaceMergeResult,
+} from '@vitrum/shared-bvh';
 
 /** Triangle-light type id — must match the GLSL `#define TRI_AREA_LIGHT_TYPE`. */
 export const TRI_AREA_LIGHT_TYPE = 5;
@@ -69,6 +73,12 @@ const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
 function v3(p: Float32Array, vi: number, stride: number): Vec3 {
   const b = vi * stride;
   return [p[b] ?? 0, p[b + 1] ?? 0, p[b + 2] ?? 0];
+}
+
+function uvAt(uvs: Float32Array | undefined, vi: number): [number, number] {
+  if (uvs == null) return [0, 0];
+  const b = vi * 2;
+  return [uvs[b] ?? 0, uvs[b + 1] ?? 0];
 }
 
 function sub(a: Vec3, b: Vec3): Vec3 {
@@ -184,8 +194,8 @@ function isMeshLikePrimitive(primitive: Scene['primitives'][number]): primitive 
 function collectMeshAreaSources(
   scene: Scene,
   warnings: string[],
-): Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }> {
-  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }>();
+): Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number; implicitMaterial?: MaterialSpec }> {
+  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number; implicitMaterial?: MaterialSpec }>();
   for (const e of scene.emitters) {
     if (e.kind !== 'mesh-area') continue;
     emitterByMesh.set(e.meshId, {
@@ -202,6 +212,7 @@ function collectMeshAreaSources(
     emitterByMesh.set(primitive.id, {
       radiance,
       castShadowDisabled: primitive.castShadow === false ? 1 : 0,
+      implicitMaterial: primitive.material,
     });
   }
 
@@ -238,6 +249,8 @@ export function packMeshAreaLights(
   const stride = merged.positionStrideFloats;
   const idx = merged.mergedIndices;
   const pos = merged.positions;
+  const uv0 = merged.uvs;
+  const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
 
   // Collect (v0,v1,v2,radiance,area,shadow flag) for every triangle of every emissive mesh.
   const tris: {
@@ -262,11 +275,25 @@ export function packMeshAreaLights(
       const v2 = v3(pos, i2, stride);
       const area = 0.5 * length(cross(sub(v1, v0), sub(v2, v0)));
       if (area <= 0) continue; // degenerate triangle — contributes no light
+      const rad = emitter.implicitMaterial == null
+        ? emitter.radiance
+        : estimateMaterialSpecEmissiveLeOverTriangle(
+            emitter.implicitMaterial,
+            uvAt(uv0, i0),
+            uvAt(uv0, i1),
+            uvAt(uv0, i2),
+            uvAt(uv1, i0),
+            uvAt(uv1, i1),
+            uvAt(uv1, i2),
+          );
+      if (rad == null || luminanceRgb(rad) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
+        continue;
+      }
       tris.push({
         v0,
         v1,
         v2,
-        rad: emitter.radiance,
+        rad,
         area,
         castShadowDisabled: emitter.castShadowDisabled,
       });

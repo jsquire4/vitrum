@@ -94,6 +94,10 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     expect(wgsl).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(wgsl).toContain('fn ddgiTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> f32');
     expect(wgsl).toContain('tau = tau * ddgiAlphaShadowTransmittanceForHit(hit);');
+    expect(wgsl).toContain('fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult');
+    expect(wgsl).toContain('fn ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit: IntersectionResult) -> bool');
+    expect(wgsl).toContain('return alpha.coverage < 0.999;');
+    expect(wgsl).toContain('let hit = ddgiTraceFirstHitAlphaMaskTextured(ray);');
     expect(wgsl).toContain('let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);');
     expect(wgsl).toContain('visibility = visibility * alphaT;');
     expect(wgsl).toContain('let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false);');

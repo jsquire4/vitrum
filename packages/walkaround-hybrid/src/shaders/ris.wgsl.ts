@@ -217,7 +217,6 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // averaged down by all finite-emitter candidates in the pool.
   var mAreaSupport = 0u;
   var mEnvSupport = 0u;
-  let totalPower = max(ubo.totalEmPower, 1e-8);
   let emCount = max(ubo.emitterCount, 1u);
 
   // --- M_LIGHT candidates from emitter distribution ---
@@ -260,8 +259,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     } else {
       let xiEm = rand_f32(&rng);
       lid = sampleEmitterIdx(&emitterCdf, emCount, xiEm);
-      // Flat power CDF pmf: p(emitter) = luminance(Le)·area / totalPower.
-      emitterSelPmf = (luminance(emitters[lid].Le) * emitters[lid].area) / totalPower;
+      // Flat power CDF pmf is the actual CDF segment sampled above. This matters
+      // for UV-varying emissive maps: the CPU CDF can use map-aware selection
+      // power while EmitterTri.Le stays scalar so sampleEmitterLeAtXi can apply
+      // the exact hit texel at candidate time.
+      emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);
     }
     let e   = emitters[lid];
     let xiTri = rand2(&rng);

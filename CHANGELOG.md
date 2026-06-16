@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (emissive-map selection power + DDGI alpha probe hits, 2026-06-16)
+
+- **Material-backed emissive meshes now use UV-local selection power:** shared CPU helpers sample readable `emissiveMap` payloads at KHR-transform/wrap-aware UVs and estimate per-triangle emission with deterministic quadrature. Walkaround ReSTIR-DI uses that estimate for emitter CDF/light-tree power while keeping scalar packed `Le` for hit-local shader texel evaluation; `pt-webgpu` and `pt-webgl2` implicit mesh-area lights now pack UV-local triangle radiance instead of whole-texture averages. This narrows textured-emitter selection error; exact texel-alias PDFs remain a promotion tail.
+- **Walkaround ReSTIR-DI flat-CDF candidates now divide by the actual sampled CDF segment:** the shader no longer recomputes flat-branch PMF from scalar `EmitterTri.Le`, which was wrong for material-backed textured emitters whose CPU CDF was built from map-aware selection power.
+- **DDGI probe primary rays now skip alpha-mask holes and fractional blend layers for opaque probe hits:** `probeUpdateRays` uses a DDGI-local alpha-aware first-hit walk, matching the material-atlas alpha semantics already used by DDGI shadow transmittance.
+
 ### Fixed (walkaround DDGI emissive maps + alpha transmittance, 2026-06-16)
 
 - **DDGI probe-hit material emission now samples readable emissive maps:** `@vitrum/walkaround-hybrid` forwards the material texture atlas snapshot into `ProbeUpdatePass`, binds the atlas/meta textures in the probe-ray pass, and modulates material-emissive direct probe hits by the hit-local emissive-map texel. This closes the DDGI probe-hit side of mapped emissive radiance; exact texel-PDF emitter selection and full texel-space GI/RC/DDGI sampling remain promotion tails.
@@ -97,7 +103,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (glTF/walkaround asset-tail closures, 2026-06-16)
 
 - **glTF generated tangents now honor the selected tangent-space UV set:** `@vitrum/gltf-adapter` generates fallback tangents from `TEXCOORD_1` when a normal/clearcoat-normal/bump map selects `texCoord:1`; `texCoord:2+` and mixed tangent-space map UV channels now emit structured diagnostics instead of silently generating a wrong UV0 tangent frame.
-- **Walkaround emissive maps no longer double-apply readable map averages and now feed mirrored TLAS DI payloads:** `packBVHEmissiveLeFromCore()` stores scalar production Le in the per-triangle glow buffer and leaves hit-local emissive-map modulation to the material atlas sampler. ReSTIR-DI source-triangle payloads now cover merged, TLAS, instanced, and mirrored-TLAS material-backed emitters by encoding reversed barycentric orientation in the existing source-triangle lane. ReSTIR/RC/DDGI emitter selection power still uses readable average energy, while exact texel-PDF selection, analytic/extra emitter mapped payloads, and GI/RC/DDGI texel-space emission remain promotion tails.
+- **Walkaround emissive maps no longer double-apply readable map averages and now feed mirrored TLAS DI payloads:** `packBVHEmissiveLeFromCore()` stores scalar production Le in the per-triangle glow buffer and leaves hit-local emissive-map modulation to the material atlas sampler. ReSTIR-DI source-triangle payloads now cover merged, TLAS, instanced, and mirrored-TLAS material-backed emitters by encoding reversed barycentric orientation in the existing source-triangle lane. A later same-day follow-up replaces material-backed direct-emitter selection averages with UV-local quadrature and fixes the flat-CDF PMF; exact texel-PDF selection, analytic/extra emitter mapped payloads, and GI/RC/DDGI texel-space emission remain promotion tails.
 
 ### Fixed (pt-webgpu sheenColor adjoint breadth, 2026-06-16)
 
@@ -133,7 +139,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround emissive-map DI payloads, 2026-06-16)
 
-- **Merged and TLAS ReSTIR-DI now evaluate material emissive-map texels at the selected light sample:** `@vitrum/walkaround-hybrid` packs a valid source-triangle lane for material-backed emitters, keeps CPU-readable map averages for CDF/light-tree power, and uses a shared WGSL helper in RIS, pHat reuse, and final shade to sample `emissiveMap` at the stored triangle `xi`. TLAS emitters map the world-expanded light triangle back to the local BLAS material-atlas triangle; mirrored TLAS instances and analytic/extra emitters conservatively keep the averaged `Le` fallback. Exact texel-PDF selection plus GI/RC/DDGI texel-space emission remain approximate.
+- **Merged and TLAS ReSTIR-DI now evaluate material emissive-map texels at the selected light sample:** `@vitrum/walkaround-hybrid` packs a valid source-triangle lane for material-backed emitters and uses a shared WGSL helper in RIS, pHat reuse, and final shade to sample `emissiveMap` at the stored triangle `xi`. TLAS emitters map the world-expanded light triangle back to the local BLAS material-atlas triangle; mirrored TLAS instances and analytic/extra emitters conservatively keep the averaged `Le` fallback. Material-backed CDF/light-tree power is now narrowed by UV-local quadrature; exact texel-PDF selection plus GI/RC/DDGI texel-space emission remain approximate.
 
 ### Fixed (pt-webgl2 scattering coefficient semantics, 2026-06-16)
 
@@ -156,11 +162,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgl2 emissive mesh NEE parity, 2026-06-16)
 
-- **Plain glTF-style emissive meshes now feed WebGL2 triangle-light NEE:** `@vitrum/pt-webgl2` now synthesizes mesh-area triangle lights from nonzero material `emissive * emissiveIntensity`, so emissive meshes no longer rely only on path-hit luck unless hosts authored an explicit `mesh-area` emitter. CPU-readable `emissiveMap` handles modulate the synthesized radiance by their sRGB-decoded average RGB; black readable maps suppress the implicit light, and opaque/unreadable handles warn while keeping scalar emissive fallback. Scalar `updatePrimitive({ material })` fast paths now repack the mesh-light texture when material emission changes, without rebuilding BVH geometry.
+- **Plain glTF-style emissive meshes now feed WebGL2 triangle-light NEE:** `@vitrum/pt-webgl2` now synthesizes mesh-area triangle lights from nonzero material `emissive * emissiveIntensity`, so emissive meshes no longer rely only on path-hit luck unless hosts authored an explicit `mesh-area` emitter. CPU-readable `emissiveMap` handles now modulate synthesized triangle radiance through UV-local quadrature; black readable maps suppress the implicit light, and opaque/unreadable handles warn while keeping scalar emissive fallback. Scalar `updatePrimitive({ material })` fast paths now repack the mesh-light texture when material emission changes, without rebuilding BVH geometry.
 
 ### Fixed (pt-webgpu emissive-map emitter power, 2026-06-16)
 
-- **Readable emissive maps now drive implicit mesh-area NEE strength:** `@vitrum/pt-webgpu` implicit emissive-mesh synthesis now multiplies scalar `emissive * emissiveIntensity` by the CPU-readable emissive-map average, decoded through the same sRGB role used by the material texture array. Black readable emissive maps no longer synthesize phantom mesh-area lights, and opaque/unreadable map handles emit a warning while keeping the previous scalar fallback.
+- **Readable emissive maps now drive implicit mesh-area NEE strength:** `@vitrum/pt-webgpu` implicit emissive-mesh synthesis now multiplies scalar `emissive * emissiveIntensity` by UV-local CPU-readable emissive-map quadrature, decoded through the same sRGB role used by the material texture array. Black readable emissive maps no longer synthesize phantom mesh-area lights, and opaque/unreadable map handles emit a warning while keeping the previous scalar fallback.
 
 ### Fixed (walkaround mutation GI invalidation, 2026-06-16)
 

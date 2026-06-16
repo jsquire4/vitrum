@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js';
+import { EMITTER_SAMPLING_WGSL } from '../emitterSampling.wgsl.js';
 import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
@@ -9,6 +10,13 @@ import { TEMPORAL_GI_GRIS_WGSL } from '../temporalGi.wgsl.js';
 import { SPATIAL_GI_GRIS_WGSL } from '../spatialGi.wgsl.js';
 
 describe('emitter castShadow:false shader gates', () => {
+  it('uses the sampled CDF segment as the flat emitter PMF', () => {
+    expect(EMITTER_SAMPLING_WGSL).toContain('fn emitterCdfPmf(');
+    expect(EMITTER_SAMPLING_WGSL).toContain('here - prev');
+    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);');
+    expect(RIS_WGSL).not.toContain('luminance(emitters[lid].Le) * emitters[lid].area) / totalPower');
+  });
+
   it('threads the shared EmitterTri castShadowDisabled lane through ReSTIR-DI visibility', () => {
     expect(RESERVOIR_DI_WGSL).toContain('sourceTriIndex: f32');
     expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');

@@ -57,6 +57,22 @@ fn sampleEmitterIdx(
   return min(lo, emitterCount - 1u);
 }
 
+fn emitterCdfPmf(
+  cdf: ptr<storage, array<f32>, read>,
+  emitterCount: u32,
+  lid: u32,
+) -> f32 {
+  if (emitterCount == 0u || lid >= emitterCount) {
+    return 0.0;
+  }
+  let here = clamp((*cdf)[lid], 0.0, 1.0);
+  var prev = 0.0;
+  if (lid > 0u) {
+    prev = clamp((*cdf)[lid - 1u], 0.0, 1.0);
+  }
+  return max(0.0, here - prev);
+}
+
 `;
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */

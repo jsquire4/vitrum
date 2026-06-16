@@ -491,6 +491,48 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
   return traceSceneFirstHitDdgi(ray);
 }
 
+fn ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit: IntersectionResult) -> bool {
+  let alpha = ddgiMaterialAlphaCoverageForHit(hit);
+  if (alpha.mode == 0u) {
+    return false;
+  }
+  if (alpha.mode == 1u) {
+    return alpha.coverage < alpha.cutoff;
+  }
+  if (alpha.mode == 2u) {
+    return alpha.coverage < 0.999;
+  }
+  return alpha.coverage <= 0.0;
+}
+
+fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
+  var walkRay = ray;
+  var traveled = 0.0;
+  let step = max(1e-4, DDGI_TRI_EPSILON * 4.0);
+
+  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+    var hit = traceSceneFirstHitDdgi(walkRay);
+    if (!hit.didHit) {
+      return hit;
+    }
+    if (!ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit)) {
+      hit.dist = hit.dist + traveled;
+      return hit;
+    }
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = ray.origin + ray.direction * traveled;
+  }
+
+  var exhausted = traceSceneFirstHitDdgi(walkRay);
+  if (exhausted.didHit && ddgiMaterialAlphaDiscardedForOpaqueProbeHit(exhausted)) {
+    exhausted.didHit = false;
+  }
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  return exhausted;
+}
+
 fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> bool {
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
     return traceTlasAnyCastPredicate(
@@ -917,7 +959,7 @@ fn probeUpdateRays(
     ray.origin    = probeOrigin;
     ray.direction = dir;
 
-    let hit = bvhTraceFirstHit(ray);
+    let hit = ddgiTraceFirstHitAlphaMaskTextured(ray);
 
     var out: ProbeRay;
     out.direction = dir;

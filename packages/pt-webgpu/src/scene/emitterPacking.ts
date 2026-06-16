@@ -1,4 +1,5 @@
 import type { DiscAreaEmitter, Mat4, MaterialSpec, MeshAreaEmitter, Scene, TextureRef } from '@vitrum/core';
+import { estimateMaterialSpecEmissiveLeOverTriangle } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
@@ -189,6 +190,11 @@ function rawPayloadOfTexture(ref: TextureRef | undefined): RawTexturePayload | n
   return ArrayBuffer.isView(img.data)
     ? { width: Math.floor(width), height: Math.floor(height), data: img.data }
     : null;
+}
+
+function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
+  if (uvs == null) return [0, 0];
+  return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
 }
 
 function averageSrgbTextureRgb(ref: TextureRef | undefined): Vec3 | null {
@@ -401,6 +407,7 @@ function packMeshAreaTriangles(
     warnings.push(`Mesh-area emitter "${emitter.id}" references instanced primitive "${emitter.meshId}" with no instances.`);
     return [];
   }
+  const implicitMaterial = emitter.id === `__implicit__${primitive.id}` ? primitive.material : undefined;
   const radiance = emitterRadiance(emitter);
   // SHADOW-01 — carry the emitter's castShadow flag onto every packed triangle.
   const castShadowDisabled = emitter.castShadow === false;
@@ -433,7 +440,21 @@ function packMeshAreaTriangles(
         degenerateTriangleCount += 1;
         continue;
       }
-      packed.push({ triA: a, triB: b, triC: c, radiance, castShadowDisabled });
+      const triangleRadiance = implicitMaterial == null
+        ? radiance
+        : estimateMaterialSpecEmissiveLeOverTriangle(
+            implicitMaterial,
+            uvAt(primitive.uvs, i0),
+            uvAt(primitive.uvs, i1),
+            uvAt(primitive.uvs, i2),
+            uvAt(primitive.uv1, i0),
+            uvAt(primitive.uv1, i1),
+            uvAt(primitive.uv1, i2),
+          );
+      if (triangleRadiance == null || luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
+        continue;
+      }
+      packed.push({ triA: a, triB: b, triC: c, radiance: triangleRadiance, castShadowDisabled });
     }
   }
   if (invalidTriangleCount > 0) {

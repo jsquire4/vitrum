@@ -180,7 +180,7 @@ describe('packMeshAreaLights (B4)', () => {
     )).toBe(true);
   });
 
-  it('uses CPU-readable emissiveMap average energy for implicit triangle-light radiance', () => {
+  it('uses UV-local CPU-readable emissiveMap energy for implicit triangle-light radiance', () => {
     const emissiveMap = {
       handle: {
         width: 2,
@@ -201,8 +201,8 @@ describe('packMeshAreaLights (B4)', () => {
     );
 
     expect(out.triLightCount).toBe(2);
-    expect(out.data![4]).toBeCloseTo(3, 6);
-    expect(out.data![5]).toBeCloseTo(3, 6);
+    expect(out.data![4]).toBeCloseTo(6, 6);
+    expect(out.data![5]).toBeCloseTo(0, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
     expect(out.warnings).toEqual([]);
   });

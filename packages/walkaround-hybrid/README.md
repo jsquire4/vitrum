@@ -176,8 +176,9 @@ for the subsystem source.
 **Open items:** glossy and metal surfaces now receive specular indirect GI via
 `lo_indirectSpecular` (GGX lobe re-weighting of the same ReSTIR-GI reservoir — B1
 done, Wave A). DDGI's diffuse `lo_indirect` still gates on `isGlass || isMetal` (the
-reservoir p̂ is Lambertian); metals use `lo_indirectSpecular` instead. Glass refracted
-GI remains out of scope (empty reservoir, tracked in road-to-100). HDRI is fully directional-IBL-capable
+reservoir p̂ is Lambertian); metals use `lo_indirectSpecular` instead. Smooth/rough
+glass uses the current one-interface refracted GI path; multi-interface transparent
+transport remains tracked in road-to-100. HDRI is fully directional-IBL-capable
 (importance-sampled DI NEE candidate in the RIS loop + DDGI probe misses, 2026-06-10,
 `caab499`; ledger grade `native`). `updateEnvironment` rebuilds directional CDFs at
 runtime; scalar-tint fallback active when no env map is loaded. See `plan/road-to-100.md`.

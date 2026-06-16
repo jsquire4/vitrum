@@ -88,12 +88,9 @@ describe('RIS WGSL — selection pdf enters the WRS source weight', () => {
     expect(RIS_WGSL).toContain('emitterSelPmf = lt.pdf');
   });
 
-  it('the flat-CDF fallback path is unchanged (sampleEmitterIdx + power pmf)', () => {
+  it('the flat-CDF fallback path uses the actual sampled CDF segment as pmf', () => {
     expect(RIS_WGSL).toContain('sampleEmitterIdx(&emitterCdf, emCount');
-    // The flat-CDF source pmf is still luminance(Le)·area / totalPower.
-    expect(RIS_WGSL).toContain(
-      '(luminance(emitters[lid].Le) * emitters[lid].area) / totalPower',
-    );
+    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);');
   });
 
   it('the WRS source pdf pX multiplies the chosen selection pmf by the area pdf', () => {

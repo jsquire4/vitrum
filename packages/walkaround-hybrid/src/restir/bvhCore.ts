@@ -332,6 +332,9 @@ function coreEmitterBuffers(
     options.packSourceTriIndex === true && options.tlasPrimitiveBindings != null
       ? buildTlasEmitterSourceTriMapper(merged, options.tlasPrimitiveBindings)
       : undefined;
+  const mergedUv1 = options.packSourceTriIndex === true
+    ? mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount)
+    : undefined;
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,
     merged.positions,
@@ -342,6 +345,8 @@ function coreEmitterBuffers(
       ...options,
       extraEmitters,
       ...(sourceTriIndexForTriangle != null ? { sourceTriIndexForTriangle } : {}),
+      ...(options.packSourceTriIndex === true ? { uvs: merged.uvs } : {}),
+      ...(mergedUv1 != null ? { uv1s: mergedUv1 } : {}),
     },
   );
   const emitterCount = cdfArray.length;
