@@ -449,6 +449,31 @@ export function dContribution_dEmissive(
 }
 
 /**
+ * Analytic ∂(contribution)/∂emissiveIntensity — scalar partial of the same
+ * additive primary-hit emission term as {@link dContribution_dEmissive}.
+ *
+ * Forward:
+ *   contribution_c = throughput_c * emissive_c * emissiveIntensity
+ *
+ * Therefore:
+ *   ∂loss/∂emissiveIntensity = Σ_c dLoss/dRendered_c * throughput_c * emissive_c
+ *
+ * The end-to-end adjoint pass carries the UNFACTORED material emissive RGB in
+ * its parameter descriptor so intensity=0 remains differentiable; it never
+ * divides the packed `emissive * emissiveIntensity` value back out.
+ */
+export function dContribution_dEmissiveIntensity(
+  throughput: Vec3,
+  emissive: Vec3,
+): Vec3 {
+  return [
+    throughput[0] * emissive[0],
+    throughput[1] * emissive[1],
+    throughput[2] * emissive[2],
+  ];
+}
+
+/**
  * Analytic ∂(frDielectric)/∂ior — the scalar partial of the dielectric Fresnel
  * reflectance w.r.t. the index of refraction, evaluated at a frozen incident
  * cosine. This is the ONLY differentiable `ior` dependence in the current

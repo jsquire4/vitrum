@@ -659,6 +659,41 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('updatePrimitive material fast path repacks implicit emissive mesh lights', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene({ ...triScene(), primitives: [tri('panel', 0)] });
+    const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+    const beforePositions = e._debugGeoPack?.positions;
+    expect(e._debugSceneTex?.meshLightCount).toBe(0);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBe(0);
+
+    e.updatePrimitive?.('panel', {
+      material: {
+        emissive: [1, 0.5, 0.25],
+        emissiveIntensity: 3,
+      },
+    } as never);
+
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugSceneTex?.meshLightCount).toBe(2);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 0.5, 0.25]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(3);
+
+    e.updatePrimitive?.('panel', {
+      material: {
+        emissive: [0, 0, 0],
+        emissiveIntensity: 1,
+      },
+    } as never);
+
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugSceneTex?.meshLightCount).toBe(0);
+    expect(e._debugSceneTex?.totalEmissiveArea).toBe(0);
+  });
+
   // Contract-honesty: EngineOptions.denoiser must not be silently ignored.
   // Unsupported non-null non-'none' values warn once; oidn-final is a real
   // final-pass path and requires explicit host model config.

@@ -26,6 +26,7 @@ import {
   ADJOINT_FIELD_SPECULAR_COLOR,
   ADJOINT_FIELD_SPECULAR_INTENSITY,
   ADJOINT_FIELD_METALLIC,
+  ADJOINT_FIELD_EMISSIVE_INTENSITY,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -50,8 +51,9 @@ export class AdjointPass {
    *  - baseColor / roughness / metallic / specular controls — single-bounce
    *    directional + point + spot + center-sampled rect/disc/mesh-area
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
-   *  - emissive — the camera-DIRECT emission at the primary hit (NOT a NEE term):
-   *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`.
+   *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
+   *    hit (NOT a NEE term): `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`
+   *    and `∂loss/∂emissiveIntensity = dot(dLoss_dR, emissive)`.
    *
    * The pipeline is lazily compiled and cached on the first call.
    * Transient buffers are allocated per step and destroyed in the finally block
@@ -106,13 +108,14 @@ export class AdjointPass {
     uboU[29] = sb.spotLightCount >>> 0;
     uboU[30] = sb.meshAreaLightCount >>> 0;
 
-    // adjointParamDescs: per param {matId, fieldCode, gradOffset, w}. For an
-    // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the
-    // pass folds back in (the packed material folds intensity INTO emissive.rgb,
-    // so the partial ∂rendered/∂emissive_param = throughput · emissiveIntensity);
-    // lit BRDF fields leave it 0. A Float32 view aliases the same buffer so the
-    // .w slot can hold an f32 the shader reads via bitcast<f32>.
-    const descs = new Uint32Array(Math.max(params.length, 1) * 4);
+    // adjointParamDescs: two vec4u records per param:
+    //   record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
+    //   record 1: {payloadXBits, payloadYBits, payloadZBits, _}
+    // For an emissive param, record0.w carries the FIXED emissiveIntensity
+    // (bitcast f32). For an emissiveIntensity param, record1.xyz carries the
+    // UNFACTORED material emissive RGB so intensity=0 remains differentiable.
+    // Lit BRDF fields leave payloads 0. A Float32 view aliases the same buffer.
+    const descs = new Uint32Array(Math.max(params.length, 1) * 8);
     const descsF = new Float32Array(descs.buffer);
     for (let i = 0; i < params.length; i++) {
       const p = params[i]!;
@@ -127,18 +130,26 @@ export class AdjointPass {
             ? ADJOINT_FIELD_METALLIC
           : p.field === 'emissive'
             ? ADJOINT_FIELD_EMISSIVE
+            : p.field === 'emissiveIntensity'
+              ? ADJOINT_FIELD_EMISSIVE_INTENSITY
             : p.field === 'specularColor'
               ? ADJOINT_FIELD_SPECULAR_COLOR
               : p.field === 'specularIntensity'
                 ? ADJOINT_FIELD_SPECULAR_INTENSITY
                 : ADJOINT_FIELD_BASECOLOR;
-      descs[i * 4 + 0] = matId >>> 0;
-      descs[i * 4 + 1] = fieldCode;
-      descs[i * 4 + 2] = p.offset >>> 0;
+      const descBase = i * 8;
+      descs[descBase + 0] = matId >>> 0;
+      descs[descBase + 1] = fieldCode;
+      descs[descBase + 2] = p.offset >>> 0;
+      const prim = scene.primitives.find((pr) => pr.id === p.id);
       if (fieldCode === ADJOINT_FIELD_EMISSIVE) {
         // Read the live emissiveIntensity (held fixed during the fit) for the fold.
-        const prim = scene.primitives.find((pr) => pr.id === p.id);
-        descsF[i * 4 + 3] = prim?.material.emissiveIntensity ?? 1;
+        descsF[descBase + 3] = prim?.material.emissiveIntensity ?? 1;
+      } else if (fieldCode === ADJOINT_FIELD_EMISSIVE_INTENSITY) {
+        const emissive = prim?.material.emissive ?? [0, 0, 0];
+        descsF[descBase + 4] = emissive[0];
+        descsF[descBase + 5] = emissive[1];
+        descsF[descBase + 6] = emissive[2];
       }
     }
 

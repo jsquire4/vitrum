@@ -20,6 +20,7 @@ import {
   evaluateBrdf,
   frDielectric,
   dContribution_dEmissive,
+  dContribution_dEmissiveIntensity,
   dFrDielectric_dIor,
 } from '../inverse/brdfAdjoint.js';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from '../wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
@@ -74,6 +75,26 @@ describe('emissive adjoint — dContribution_dEmissive == finite difference', ()
     expect(g[0]).toBeCloseTo(1.2, 12);
     expect(g[1]).toBeCloseTo(0.6, 12);
     expect(g[2]).toBeCloseTo(1.8, 12);
+  });
+
+  it('emissiveIntensity partial matches FD and remains nonzero at intensity zero', () => {
+    const throughput: V3 = [0.6, 0.3, 0.9];
+    const emissive: V3 = [0.25, 0.5, 0.125];
+    const dLoss: V3 = [1.5, -0.25, 0.75];
+    const h = 1e-4;
+    const channelPartial = dContribution_dEmissiveIntensity(throughput, emissive);
+    const analytic = dLoss[0] * channelPartial[0] + dLoss[1] * channelPartial[1] + dLoss[2] * channelPartial[2];
+    const forward = (intensity: number): number => {
+      const rendered: V3 = [
+        throughput[0] * emissive[0] * intensity,
+        throughput[1] * emissive[1] * intensity,
+        throughput[2] * emissive[2] * intensity,
+      ];
+      return dLoss[0] * rendered[0] + dLoss[1] * rendered[1] + dLoss[2] * rendered[2];
+    };
+    const fd = (forward(h) - forward(-h)) / (2 * h);
+    expect(Math.abs(analytic - fd)).toBeLessThan(1e-4);
+    expect(Math.abs(analytic)).toBeGreaterThan(1e-3);
   });
 
   it('emissive does NOT enter evaluateBrdf (sanity: BRDF is emissive-independent)', () => {
@@ -270,6 +291,16 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     // end-to-end fit converges + sign-matches FD on lavapipe (wsl-gpu
     // tests/v24-emissive-fit.mjs). The earlier divergent trial scattered emissive
     // inside the NEE loop and validated against a barely-visible target.
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
+  it('resolves emissiveIntensity to path-replay in the same primary-hit emission domain', () => {
+    const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
+      target,
+      parameters: [{ path: 'materials.panel.emissiveIntensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
     expect(session.method).toBe('path-replay');
     session.dispose();
   });

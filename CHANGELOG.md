@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 emissive mesh NEE parity, 2026-06-16)
+
+- **Plain glTF-style emissive meshes now feed WebGL2 triangle-light NEE:** `@vitrum/pt-webgl2` now synthesizes mesh-area triangle lights from nonzero material `emissive * emissiveIntensity`, so emissive meshes no longer rely only on path-hit luck unless hosts authored an explicit `mesh-area` emitter. CPU-readable `emissiveMap` handles modulate the synthesized radiance by their sRGB-decoded average RGB; black readable maps suppress the implicit light, and opaque/unreadable handles warn while keeping scalar emissive fallback. Scalar `updatePrimitive({ material })` fast paths now repack the mesh-light texture when material emission changes, without rebuilding BVH geometry.
+
 ### Fixed (pt-webgpu emissive-map emitter power, 2026-06-16)
 
 - **Readable emissive maps now drive implicit mesh-area NEE strength:** `@vitrum/pt-webgpu` implicit emissive-mesh synthesis now multiplies scalar `emissive * emissiveIntensity` by the CPU-readable emissive-map average, decoded through the same sRGB role used by the material texture array. Black readable emissive maps no longer synthesize phantom mesh-area lights, and opaque/unreadable map handles emit a warning while keeping the previous scalar fallback.
@@ -51,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Path-replay adjoint now covers more direct-light source families:** `@vitrum/pt-webgpu` adjoint replay now differentiates material base/specular params under delta directional, point, spot, and center-sampled rect/disc/mesh-area direct lighting. The pass consumes packed directional/spot/mesh-area buffers, honors point/spot/rect/disc/mesh emitter `castShadow:false` lanes, and uses native disc area plus packed mesh-triangle area terms. Inverse-session routing now allows those covered source families while keeping soft-sun angular diameter, environment, indirect, mapped/transmissive/layered/volume/spectral, full stochastic area sampling, and extension-lobe material domains on finite difference until their adjoints are implemented and validated.
 - **Metallic path-replay adjoint coverage:** the same scoped direct-light adjoint path now differentiates scalar `metallic` through the opaque base-BRDF diffuse fade-out and F0 blend. The CPU oracle finite-difference test, emitted WGSL shape pins, engine field code, inverse-session routing, pt-webgpu suite, and shader gate cover the new field; GPU inverse-fit recapture remains part of the broader adjoint proof tail.
+- **Emissive-strength path-replay adjoint coverage:** the primary-hit emission adjoint now also supports scalar `emissiveIntensity` beside RGB `emissive`. The private adjoint descriptor carries unfactored emissive RGB so the derivative remains valid when intensity is zero; mapped emissive materials still degrade to finite difference.
 
 ### Fixed (VitrumCanvas glTF bridge parity, 2026-06-16)
 

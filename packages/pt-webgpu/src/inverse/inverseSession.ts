@@ -133,10 +133,12 @@ export interface AdjointGradientRequest {
  *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
  *  - `metallic` — the opaque base-BRDF partial through the diffuse fade-out
  *    and F0 blend in the same direct-light replay domain.
- *  - `emissive` — the camera-direct emission partial `dContribution_dEmissive`
- *    (∂rendered_c/∂emissive_c = throughput · emissiveIntensity, scattered at the
- *    PRIMARY hit where the camera sees the emissive surface directly — NOT a NEE
- *    term, so it needs no light). GPU-validated end-to-end on lavapipe
+ *  - `emissive` / `emissiveIntensity` — the camera-direct emission partials
+ *    (`∂rendered_c/∂emissive_c = throughput · emissiveIntensity` and
+ *    `∂rendered_c/∂emissiveIntensity = throughput · emissive_c`, scattered at
+ *    the PRIMARY hit where the camera sees the emissive surface directly — NOT
+ *    a NEE term, so they need no light). `emissive` is GPU-validated end-to-end
+ *    on lavapipe
  *    (`wsl-gpu tests/v24-emissive-fit.mjs`): the path-replay engine adjoint
  *    gradient SIGN-MATCHES the full-render FD on the decisive channels and the fit
  *    converges (param error 3→~0.4). The earlier divergent trial scattered emissive
@@ -168,6 +170,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'roughness',
   'metallic',
   'emissive',
+  'emissiveIntensity',
   'specularColor',
   'specularIntensity',
 ]);
@@ -262,8 +265,8 @@ export class PtWebgpuInverseSession implements InverseSession {
     // to provide the adjoint hook, every parameter to be in the
     // adjoint-differentiable set, and every target material to stay in the
     // compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`: material
-    // baseColor / roughness / metallic / emissive / specularColor / specularIntensity —
-    // see its doc for the ior exclusion). Any shortfall
+    // baseColor / roughness / metallic / emissive / emissiveIntensity /
+    // specularColor / specularIntensity — see its doc for the ior exclusion). Any shortfall
     // degrades to finite-difference and is reported via `method`, so the host
     // never receives a silently-wrong gradient. The two adjoint stages
     // the hook relies on (partials; chain rule + accumulation) are GPU-validated
@@ -427,7 +430,7 @@ function isPathReplayCompatibleTarget(scene: Scene, target: ResolvedParamTarget)
   const prim = findPrimitive(scene, target.id);
   if (prim == null) return false;
   const m = prim.material;
-  if (target.field === 'emissive') {
+  if (target.field === 'emissive' || target.field === 'emissiveIntensity') {
     return isPathReplayCompatibleEmissiveMaterial(m);
   }
   return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);

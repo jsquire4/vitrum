@@ -22,6 +22,7 @@ import {
   ADJOINT_FIELD_SPECULAR_COLOR,
   ADJOINT_FIELD_SPECULAR_INTENSITY,
   ADJOINT_FIELD_METALLIC,
+  ADJOINT_FIELD_EMISSIVE_INTENSITY,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
@@ -106,6 +107,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let descBase = k * 2u');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_EMISSIVE_INTENSITY}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb)');
     // The UBO is mat4 + vec4 + 3×uvec4 = 128 bytes; the field codes are stable.
     expect(ADJOINT_PARAMS_UBO_BYTES).toBe(128);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
@@ -114,5 +118,6 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_SPECULAR_COLOR).toBe(3);
     expect(ADJOINT_FIELD_SPECULAR_INTENSITY).toBe(4);
     expect(ADJOINT_FIELD_METALLIC).toBe(5);
+    expect(ADJOINT_FIELD_EMISSIVE_INTENSITY).toBe(6);
   });
 });

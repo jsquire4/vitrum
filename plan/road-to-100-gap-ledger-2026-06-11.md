@@ -120,6 +120,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   pass. This is code-closed for the scoped direct-light analytic path; metallic
   GPU inverse-fit recapture remains in the proof/promote tail with the other
   render-changing adjoint work.
+- Later 2026-06-16 follow-up: scalar `emissiveIntensity` joined the same
+  primary-hit emission adjoint domain as RGB `emissive`. The CPU oracle and WGSL
+  now expose `dContribution_dEmissiveIntensity`; the private adjoint descriptor
+  widened to two vec4 records per parameter so it can carry UNFACTORED emissive
+  RGB and keep the intensity-zero derivative valid; inverse-session routing
+  selects path replay for `materials.<id>.emissiveIntensity` under the existing
+  opaque/unmapped emissive predicate. Emissive maps and non-primary/indirect
+  emission gradients remain finite-difference tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including
@@ -1535,8 +1543,18 @@ Evidence:
   opaque/unreadable map handle forces the scalar-emissive fallback. This closes
   the scalar-only implicit emitter hole for decoded glTF/WebGPU-target texture
   payloads; exact UV-varying emitter texel PDFs remain a promotion tail.
+- pt-webgl2 now matches that decoded-emissive-mesh NEE behavior on its native
+  triangle-light path: `meshAreaLights.ts` synthesizes triangle lights from
+  nonzero material `emissive * emissiveIntensity`, folds CPU-readable
+  `emissiveMap` average energy into the implicit radiance, suppresses black-map
+  phantom lights, warns on opaque/unreadable map fallback, and
+  `mutateSceneTextures.ts` repacks the mesh-light texture when scalar material
+  emission changes through `updatePrimitive({ material })`. Explicit
+  `mesh-area` emitters still keep their existing folded-material path for
+  forward/path-hit emission. This closes the glTF-style scalar emissive mesh NEE
+  hole on pt-webgl2; exact UV-varying emitter texel PDFs remain a promotion tail.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
-  rows and needs tests for the high-value rows it claims.
+  rows and needs reference-render tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel
   extension-lobe maps now modulate the decoded material before ordinary
   BSDF/PDF/NEE calls, including `clearcoatNormalMap` in the clearcoat lobe. It

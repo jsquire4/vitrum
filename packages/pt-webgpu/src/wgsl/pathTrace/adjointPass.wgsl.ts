@@ -54,6 +54,7 @@ export const ADJOINT_FIELD_EMISSIVE = 2;
 export const ADJOINT_FIELD_SPECULAR_COLOR = 3;
 export const ADJOINT_FIELD_SPECULAR_INTENSITY = 4;
 export const ADJOINT_FIELD_METALLIC = 5;
+export const ADJOINT_FIELD_EMISSIVE_INTENSITY = 6;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -98,6 +99,11 @@ struct AdjointParams {
 @group(0) @binding(7) var<storage, read>       dLossDRendered: array<f32>;
 @group(0) @binding(8) var<storage, read_write> gradAccum:     array<atomic<i32>>;
 // adjointParams: per optimized param {matId, fieldCode, gradOffset, _}.
+// adjointParamDescs: two vec4u records per optimized param:
+//   record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
+//   record 1: {payloadXBits, payloadYBits, payloadZBits, _}
+// emissive uses record0.w for fixed emissiveIntensity. emissiveIntensity
+// uses record1.xyz for UNFACTORED emissive RGB so intensity=0 is differentiable.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
@@ -471,7 +477,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // 1/sampleCount because the baseline render is the mean of the same frozen
     // sample sequence.
     for (var k = 0u; k < params.paramCount; k = k + 1u) {
-      let d = adjointParamDescs[k];
+      let descBase = k * 2u;
+      let d = adjointParamDescs[descBase];
+      let payload = adjointParamDescs[descBase + 1u];
       if (d.x != matId) { continue; }
       let gradOffset = d.z;
       if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
@@ -496,6 +504,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gEmissive.x * invReplaySamples);
         adjointScatter(gradOffset + 1u, gEmissive.y * invReplaySamples);
         adjointScatter(gradOffset + 2u, gEmissive.z * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_EMISSIVE_INTENSITY}u) {
+        // ∂loss/∂emissiveIntensity = Σ_c dLoss_dR_c · emissive_c. The host
+        // descriptor carries unfactored emissive RGB in payload.xyz; using packed
+        // material emissive/intensity would be undefined when intensity is zero.
+        let emissiveRgb = vec3f(
+          bitcast<f32>(payload.x),
+          bitcast<f32>(payload.y),
+          bitcast<f32>(payload.z),
+        );
+        let gIntensity = dot(
+          dLoss_dR,
+          dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb),
+        );
+        adjointScatter(gradOffset, gIntensity * invReplaySamples);
       } else {
         adjointScatter(gradOffset, gRough * invReplaySamples);
       }

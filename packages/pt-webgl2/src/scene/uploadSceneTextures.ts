@@ -107,8 +107,9 @@ export function buildSceneTextures(
   const lightsData = packLightsTexture(supported.emitters);
   const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
 
-  // (5b) B4 — mesh-area triangle lights for NEE, built from the emissive mesh-area
-  //      emitters + the merged world-space geometry. null when the scene has none.
+  // (5b) B4 — mesh-area triangle lights for NEE, built from explicit mesh-area
+  //      emitters plus implicit emissive-material meshes over the merged world-
+  //      space geometry. null when the scene has no emissive mesh triangles.
   const meshLightsData = packMeshAreaLights(supported, merged);
   const meshLights =
     meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
@@ -185,7 +186,13 @@ export function buildSceneTextures(
     },
   };
 
-  return { textures, merged, warnings, structuredWarnings, supported };
+  return {
+    textures,
+    merged,
+    warnings: meshLightsData.warnings.length > 0 ? [...warnings, ...meshLightsData.warnings] : warnings,
+    structuredWarnings,
+    supported,
+  };
 }
 
 type MeshLikePrimitive = Extract<

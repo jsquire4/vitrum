@@ -7,9 +7,10 @@
 //   high variance, since a path only finds a small light by luck). `mesh-area`
 //   emitters were therefore left OUT of the analytic lights texture (no NEE).
 //
-//   B4 adds an explicit-connection (NEE) strategy: each emissive mesh-area triangle
-//   becomes a triangle light the integrator can sample directly. To keep the result
-//   unbiased we MIS-combine the two strategies — the forward emissive hit
+//   B4 adds an explicit-connection (NEE) strategy: each explicit `mesh-area`
+//   triangle, plus each ordinary mesh whose material has nonzero emissive energy,
+//   becomes a triangle light the integrator can sample directly. To keep the
+//   result unbiased we MIS-combine the two strategies — the forward emissive hit
 //   (BSDF sampling) and the NEE triangle sample — with the balance/power heuristic.
 //
 // Double-count guard / MIS algebra (the crux):
@@ -38,7 +39,7 @@
 //   s4 = (0, 0, 0, 0)
 //   s5 = (0, castShadowDisabled, 0, 0) — s5.g mirrors analytic light slots
 
-import type { Scene, SceneNodeId, Vec3 } from '@vitrum/core';
+import type { MaterialSpec, Scene, SceneNodeId, TextureRef, Vec3 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 
 /** Triangle-light type id — must match the GLSL `#define TRI_AREA_LIGHT_TYPE`. */
@@ -54,7 +55,16 @@ export interface MeshAreaLightsData {
   readonly triLightCount: number;
   /** Σ triangle areas — the global the forward-hit MIS weight needs (see header). */
   readonly totalEmissiveArea: number;
+  readonly warnings: readonly string[];
 }
+
+interface RawTexturePayload {
+  readonly width: number;
+  readonly height: number;
+  readonly data: ArrayBufferView;
+}
+
+const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
 
 function v3(p: Float32Array, vi: number, stride: number): Vec3 {
   const b = vi * stride;
@@ -73,27 +83,156 @@ function length(a: Vec3): number {
   return Math.hypot(a[0], a[1], a[2]);
 }
 
+function luminanceRgb(rgb: Vec3): number {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+function srgbToLinear(value: number): number {
+  const c = clamp01(value);
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function numericChannelMax(data: ArrayBufferView): number | null {
+  if (data instanceof Float32Array || data instanceof Float64Array) return 1;
+  if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 255;
+  if (data instanceof Uint16Array) return 65535;
+  if (data instanceof Uint32Array) return 4294967295;
+  if (data instanceof Int8Array) return 127;
+  if (data instanceof Int16Array) return 32767;
+  if (data instanceof Int32Array) return 2147483647;
+  return null;
+}
+
+function rawPayloadOfTexture(ref: TextureRef | undefined): RawTexturePayload | null {
+  const source = ref?.handle;
+  if (source == null || typeof source !== 'object') return null;
+  const img = ('image' in source && (source as { image?: unknown }).image != null
+    ? (source as { image?: unknown }).image
+    : source) as Record<string, unknown>;
+  if (img == null || typeof img !== 'object') return null;
+  const width = typeof img.width === 'number' ? img.width : 0;
+  const height = typeof img.height === 'number' ? img.height : 0;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return ArrayBuffer.isView(img.data)
+    ? { width: Math.floor(width), height: Math.floor(height), data: img.data }
+    : null;
+}
+
+function averageSrgbTextureRgb(ref: TextureRef | undefined): Vec3 | null {
+  const payload = rawPayloadOfTexture(ref);
+  if (payload == null) return null;
+  const pixelCount = payload.width * payload.height;
+  if (pixelCount <= 0) return null;
+  const data = payload.data as unknown as ArrayLike<number>;
+  const channelCount = data.length / pixelCount;
+  if (![1, 2, 3, 4].includes(channelCount) || !Number.isInteger(channelCount)) {
+    return null;
+  }
+  const maxValue = numericChannelMax(payload.data);
+  if (maxValue == null) return null;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channelCount;
+    const rawR = Number(data[src] ?? 0);
+    const rawG = channelCount >= 2 ? Number(data[src + 1] ?? 0) : rawR;
+    const rawB = channelCount >= 3 ? Number(data[src + 2] ?? 0) : rawR;
+    r += srgbToLinear(rawR / maxValue);
+    g += srgbToLinear(rawG / maxValue);
+    b += srgbToLinear(rawB / maxValue);
+  }
+  const inv = 1 / pixelCount;
+  return [r * inv, g * inv, b * inv];
+}
+
+function emissiveRadianceForMaterial(
+  material: MaterialSpec,
+  primitiveId: string,
+  warnings?: string[],
+): Vec3 {
+  const emissive = material.emissive ?? [0, 0, 0];
+  const intensity = material.emissiveIntensity ?? 1;
+  const mapAverage = averageSrgbTextureRgb(material.emissiveMap);
+  if (material.emissiveMap != null && mapAverage == null && warnings != null) {
+    warnings.push(
+      `@vitrum/pt-webgl2: primitive "${primitiveId}" has an emissiveMap without CPU-readable texels; ` +
+        'implicit mesh-area NEE uses scalar emissive radiance only.',
+    );
+  }
+  const map = mapAverage ?? [1, 1, 1];
+  return [
+    emissive[0] * intensity * map[0],
+    emissive[1] * intensity * map[1],
+    emissive[2] * intensity * map[2],
+  ];
+}
+
+function isMeshLikePrimitive(primitive: Scene['primitives'][number]): primitive is Extract<
+  Scene['primitives'][number],
+  { kind: 'mesh' | 'instanced-mesh' | 'skinned-mesh' }
+> {
+  return primitive.kind === 'mesh' || primitive.kind === 'instanced-mesh' || primitive.kind === 'skinned-mesh';
+}
+
+function collectMeshAreaSources(
+  scene: Scene,
+  warnings: string[],
+): Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }> {
+  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }>();
+  for (const e of scene.emitters) {
+    if (e.kind !== 'mesh-area') continue;
+    emitterByMesh.set(e.meshId, {
+      radiance: [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity],
+      castShadowDisabled: e.castShadow === false ? 1 : 0,
+    });
+  }
+
+  for (const primitive of scene.primitives) {
+    if (!isMeshLikePrimitive(primitive)) continue;
+    if (emitterByMesh.has(primitive.id)) continue;
+    const radiance = emissiveRadianceForMaterial(primitive.material, String(primitive.id), warnings);
+    if (luminanceRgb(radiance) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) continue;
+    emitterByMesh.set(primitive.id, {
+      radiance,
+      castShadowDisabled: primitive.castShadow === false ? 1 : 0,
+    });
+  }
+
+  return emitterByMesh;
+}
+
+export function hasMeshAreaLightForPrimitive(scene: Scene, primitiveId: string): boolean {
+  for (const e of scene.emitters) {
+    if (e.kind === 'mesh-area' && String(e.meshId) === primitiveId) return true;
+  }
+  const primitive = scene.primitives.find((p) => String(p.id) === primitiveId);
+  if (primitive == null || !isMeshLikePrimitive(primitive)) return false;
+  const radiance = emissiveRadianceForMaterial(primitive.material, primitiveId);
+  return luminanceRgb(radiance) >= IMPLICIT_EMITTER_LUMINANCE_THRESHOLD;
+}
+
 /**
- * Pack the emissive `mesh-area` triangles into a triangle-light grid for NEE.
+ * Pack explicit `mesh-area` emitters and implicit emissive-material meshes into a
+ * triangle-light grid for NEE.
  *
- * @param scene   the capability-filtered scene (its `mesh-area` emitters drive this)
+ * @param scene   the capability-filtered scene (emitters + material emission drive this)
  * @param merged  the world-space merged tri stream (geometry source via meshVertexRanges)
  */
 export function packMeshAreaLights(
   scene: Scene,
   merged: WorldSpaceMergeResult,
 ): MeshAreaLightsData {
-  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number }>();
-  for (const e of scene.emitters) {
-    if (e.kind === 'mesh-area') {
-      emitterByMesh.set(e.meshId, {
-        radiance: [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity],
-        castShadowDisabled: e.castShadow === false ? 1 : 0,
-      });
-    }
-  }
+  const warnings: string[] = [];
+  const emitterByMesh = collectMeshAreaSources(scene, warnings);
   if (emitterByMesh.size === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0 };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, warnings };
   }
 
   const stride = merged.positionStrideFloats;
@@ -136,7 +275,7 @@ export function packMeshAreaLights(
   }
 
   if (tris.length === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0 };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, warnings };
   }
 
   const pixelCount = tris.length * TRI_LIGHT_PIXELS;
@@ -169,5 +308,5 @@ export function packMeshAreaLights(
     data[base + 21] = castShadowDisabled;
   }
 
-  return { data, dim, triLightCount: tris.length, totalEmissiveArea };
+  return { data, dim, triLightCount: tris.length, totalEmissiveArea, warnings };
 }

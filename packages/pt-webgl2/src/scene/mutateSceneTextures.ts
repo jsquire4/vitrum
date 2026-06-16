@@ -2,7 +2,7 @@ import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
-import { packMeshAreaLights } from './meshAreaLights.js';
+import { hasMeshAreaLightForPrimitive, packMeshAreaLights } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
@@ -86,7 +86,7 @@ function uniqueMaterialSlotForPrimitive(geoPack: WorldSpaceMergeResult, primitiv
   return slot;
 }
 
-function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string): boolean {
+function hasExplicitMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string): boolean {
   return scene.emitters.some((e) => e.kind === 'mesh-area' && String(e.meshId) === primitiveId);
 }
 
@@ -189,29 +189,48 @@ export function tryFastPathMaterialMutation(
   const slot = uniqueMaterialSlotForPrimitive(geoPack, primitiveId);
   if (slot == null || slot >= geoPack.materials.length) return null;
 
-  if (hasMeshAreaEmitterForPrimitive(nextScene, primitiveId)) {
-    const foldedMaterials = repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene);
-    return {
-      textures: withTextureReplacementsForGl(gl, current, {
-        materials: foldedMaterials.materials,
-      }),
-      geoPack: foldedMaterials.nextGeoPack,
-      deleteOldTextures: [current.materials],
-    };
+  const explicitMeshArea = hasExplicitMeshAreaEmitterForPrimitive(nextScene, primitiveId);
+  const foldedMaterials = explicitMeshArea
+    ? repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene)
+    : null;
+
+  let nextGeoPack: WorldSpaceMergeResult;
+  let materials: WebGLTexture;
+  if (foldedMaterials != null) {
+    nextGeoPack = foldedMaterials.nextGeoPack;
+    materials = foldedMaterials.materials;
+  } else {
+    const nextMaterials = geoPack.materials.slice();
+    nextMaterials[slot] = materialWithCastShadow(primitive);
+    const data = packMaterialsTexture(
+      nextMaterials,
+      current.materialLayerMap ?? undefined,
+      { vertexColorMaterialIds: current.vertexColorMaterialIds },
+    );
+    materials = uploadRgba32f(gl, data.data, data.dim, 'scene materials');
+    nextGeoPack = { ...geoPack, materials: nextMaterials };
   }
 
-  const nextMaterials = geoPack.materials.slice();
-  nextMaterials[slot] = materialWithCastShadow(primitive);
-  const data = packMaterialsTexture(
-    nextMaterials,
-    current.materialLayerMap ?? undefined,
-    { vertexColorMaterialIds: current.vertexColorMaterialIds },
-  );
-  const materials = uploadRgba32f(gl, data.data, data.dim, 'scene materials');
+  const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
+    || (current.meshLightCount ?? 0) > 0
+    ? packMeshAreaLights(nextScene, geoPack)
+    : null;
+  const meshLights = meshLightsData?.data != null
+    ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')
+    : null;
   return {
-    textures: withTextureReplacementsForGl(gl, current, { materials }),
-    geoPack: { ...geoPack, materials: nextMaterials },
-    deleteOldTextures: [current.materials],
+    textures: withTextureReplacementsForGl(gl, current, {
+      materials,
+      ...(meshLightsData != null
+        ? {
+            meshLights,
+            meshLightCount: meshLightsData.triLightCount,
+            totalEmissiveArea: meshLightsData.totalEmissiveArea,
+          }
+        : {}),
+    }),
+    geoPack: nextGeoPack,
+    deleteOldTextures: [current.materials, ...(meshLightsData != null ? [current.meshLights] : [])],
   };
 }
 

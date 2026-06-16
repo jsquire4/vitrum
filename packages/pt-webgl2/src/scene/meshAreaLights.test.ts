@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
-import { packMeshAreaLights, TRI_AREA_LIGHT_TYPE, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
+import {
+  hasMeshAreaLightForPrimitive,
+  packMeshAreaLights,
+  TRI_AREA_LIGHT_TYPE,
+  TRI_LIGHT_PIXELS,
+} from './meshAreaLights.js';
 
 // B4 — mesh-area triangle-light packer. Pure-CPU: builds a fake merged geometry
 // stream + scene and checks triangle extraction, area, radiance, and the layout.
@@ -46,6 +51,37 @@ function fakeMerged(overrides: Partial<WorldSpaceMergeResult> = {}): WorldSpaceM
 
 function sceneWith(emitters: Scene['emitters']): Scene {
   return { primitives: [], emitters, environment: { kind: 'none' } };
+}
+
+function material(overrides: Partial<MaterialSpec>): MaterialSpec {
+  return { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0, ...overrides };
+}
+
+function panelPrimitive(mat: MaterialSpec, castShadow = true): MeshPrimitive {
+  return {
+    kind: 'mesh',
+    id: 'panel',
+    positions: new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      1, 0, 1,
+      0, 0, 1,
+    ]),
+    normals: new Float32Array([
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+    ]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: mat,
+    castShadow,
+  };
+}
+
+function sceneWithPrimitive(primitive: MeshPrimitive, emitters: Scene['emitters'] = []): Scene {
+  return { primitives: [primitive], emitters, environment: { kind: 'none' } };
 }
 
 describe('packMeshAreaLights (B4)', () => {
@@ -124,5 +160,104 @@ describe('packMeshAreaLights (B4)', () => {
     );
     expect(defaultOut.data![21]).toBe(0);
     expect(defaultOut.data![TRI_LIGHT_PIXELS * 4 + 21]).toBe(0);
+  });
+
+  it('synthesizes triangle-light NEE for emissive mesh materials without explicit emitters', () => {
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({ emissive: [0.25, 0.5, 1], emissiveIntensity: 4 }))),
+      fakeMerged(),
+    );
+
+    expect(out.triLightCount).toBe(2);
+    expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    expect(out.data![4]).toBeCloseTo(1, 6);
+    expect(out.data![5]).toBeCloseTo(2, 6);
+    expect(out.data![6]).toBeCloseTo(4, 6);
+    expect(hasMeshAreaLightForPrimitive(
+      sceneWithPrimitive(panelPrimitive(material({ emissive: [0.25, 0.5, 1], emissiveIntensity: 4 }))),
+      'panel',
+    )).toBe(true);
+  });
+
+  it('uses CPU-readable emissiveMap average energy for implicit triangle-light radiance', () => {
+    const emissiveMap = {
+      handle: {
+        width: 2,
+        height: 1,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+        ]),
+      },
+    };
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2, 2, 2],
+        emissiveIntensity: 3,
+        emissiveMap,
+      }))),
+      fakeMerged(),
+    );
+
+    expect(out.triLightCount).toBe(2);
+    expect(out.data![4]).toBeCloseTo(3, 6);
+    expect(out.data![5]).toBeCloseTo(3, 6);
+    expect(out.data![6]).toBeCloseTo(0, 6);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it('suppresses implicit mesh-light synthesis when a readable emissiveMap is black', () => {
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [10, 10, 10],
+        emissiveIntensity: 5,
+        emissiveMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Uint8Array([0, 0, 0, 255]),
+          },
+        },
+      }))),
+      fakeMerged(),
+    );
+
+    expect(out.data).toBeNull();
+    expect(out.triLightCount).toBe(0);
+    expect(out.totalEmissiveArea).toBe(0);
+    expect(hasMeshAreaLightForPrimitive(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [10, 10, 10],
+        emissiveIntensity: 5,
+        emissiveMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Uint8Array([0, 0, 0, 255]),
+          },
+        },
+      }))),
+      'panel',
+    )).toBe(false);
+  });
+
+  it('warns and falls back to scalar emissive radiance for unreadable emissiveMap handles', () => {
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [0.5, 0.25, 0.125],
+        emissiveIntensity: 8,
+        emissiveMap: { handle: { id: 'gpu-only-texture' } },
+      }))),
+      fakeMerged(),
+    );
+
+    expect(out.triLightCount).toBe(2);
+    expect(out.data![4]).toBeCloseTo(4, 6);
+    expect(out.data![5]).toBeCloseTo(2, 6);
+    expect(out.data![6]).toBeCloseTo(1, 6);
+    expect(out.warnings).toEqual([
+      '@vitrum/pt-webgl2: primitive "panel" has an emissiveMap without CPU-readable texels; ' +
+        'implicit mesh-area NEE uses scalar emissive radiance only.',
+    ]);
   });
 });

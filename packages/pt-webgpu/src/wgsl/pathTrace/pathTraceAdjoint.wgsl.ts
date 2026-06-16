@@ -262,6 +262,14 @@ fn dContribution_dEmissive(throughput: vec3f, emissiveIntensity: f32) -> vec3f {
   return throughput * emissiveIntensity;
 }
 
+// Mirror of inverse/brdfAdjoint.ts:dContribution_dEmissiveIntensity. This is
+// the scalar intensity partial's per-channel factor; the pass dots it with
+// dLoss/dRendered. The descriptor carries UNFACTORED emissive RGB so intensity=0
+// remains differentiable.
+fn dContribution_dEmissiveIntensity(throughput: vec3f, emissive: vec3f) -> vec3f {
+  return throughput * emissive;
+}
+
 // ── analytic ∂(frDielectric)/∂ior (scalar) ──────────────────────────────────
 // Mirror of inverse/brdfAdjoint.ts:dFrDielectric_dIor. The ONLY differentiable
 // ior dependence in the forward kernel (opaque F0 is controlled by
