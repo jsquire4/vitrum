@@ -86,6 +86,13 @@ export interface InverseEngineHooks {
   /** Apply an emitter patch (mirrors Engine.updateEmitter). */
   patchEmitter(emitterId: string, patch: Partial<SceneEmitter>): void;
   /**
+   * Optional render-regime facts for deciding whether the scoped path-replay
+   * adjoint matches the most recent forward baseline. When omitted, the session
+   * keeps legacy permissive behavior for non-engine fakes; the real pt-webgpu
+   * engine supplies this so multi-bounce/spectral baselines downgrade honestly.
+   */
+  getPathReplayRenderContext?(): InversePathReplayRenderContext;
+  /**
    * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
    * single-bounce adjoint compute pass over its scene buffers — re-tracing the
    * frozen-seed primary path + NEE, evaluating the analytic BSDF partials
@@ -105,6 +112,11 @@ export interface InverseEngineHooks {
    * only graduates to path-replay once its end-to-end inverse fit converges.
    */
   computeAdjointGradient?(args: AdjointGradientRequest): Promise<Float32Array>;
+}
+
+export interface InversePathReplayRenderContext {
+  readonly bounces?: number;
+  readonly spectral?: boolean;
 }
 
 /** One optimized parameter, located for the engine's adjoint scatter. */
@@ -379,6 +391,7 @@ export class PtWebgpuInverseSession implements InverseSession {
       ? collectPathReplayDiagnostics(scene, this.#slots, {
           hasHook: hooks.computeAdjointGradient != null,
           iridescenceOptimizedPrimitiveIds,
+          renderContext: hooks.getPathReplayRenderContext?.() ?? {},
         })
       : [];
     this.#diagnostics = pathReplayDiagnostics;
@@ -581,6 +594,7 @@ function collectPathReplayDiagnostics(
   options: {
     readonly hasHook: boolean;
     readonly iridescenceOptimizedPrimitiveIds: ReadonlySet<string>;
+    readonly renderContext: InversePathReplayRenderContext;
   },
 ): InverseSessionDiagnostic[] {
   const diagnostics: InverseSessionDiagnostic[] = [];
@@ -594,10 +608,40 @@ function collectPathReplayDiagnostics(
     });
   }
 
+  const renderRegimeIssue = pathReplayRenderRegimeIssue(options.renderContext);
+  if (renderRegimeIssue != null) {
+    diagnostics.push({
+      severity: 'info',
+      code: 'path-replay-unsupported-render-regime',
+      message:
+        '[vitrum/pt-webgpu] InverseSession requested path-replay, but the most recent ' +
+        `${renderRegimeIssue.message}; using finite-difference.`,
+      details: renderRegimeIssue.details,
+    });
+  }
+
   for (const slot of slots) {
     diagnostics.push(...diagnosePathReplaySlot(scene, slot, options.iridescenceOptimizedPrimitiveIds));
   }
   return diagnostics;
+}
+
+function pathReplayRenderRegimeIssue(
+  context: InversePathReplayRenderContext,
+): { readonly message: string; readonly details: Record<string, string | number | boolean> } | null {
+  if (context.spectral === true) {
+    return {
+      message: 'forward baseline used spectral transport that the scoped RGB direct-light adjoint does not mirror',
+      details: { spectral: true },
+    };
+  }
+  if (typeof context.bounces === 'number' && Number.isFinite(context.bounces) && context.bounces > 1) {
+    return {
+      message: `forward baseline used ${context.bounces} bounces while the adjoint pass is single-bounce direct-light only`,
+      details: { bounces: context.bounces, supportedBounces: 1 },
+    };
+  }
+  return null;
 }
 
 function diagnosePathReplaySlot(

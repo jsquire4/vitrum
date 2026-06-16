@@ -49,6 +49,13 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   `KHR_texture_transform.texCoord` override, so imported maps can select UV1
   through the same `TextureRef.texCoord` path that pt-webgl2 and pt-webgpu
   consume.
+- GLTF-07 texture decode reports are now self-contained for backend planning:
+  entries include decoded dimensions, POT/NPOT status, original/resize/max-size
+  metadata, texture/image/sampler indices, image URI/mime fields, and selected
+  texture-source extension provenance. Decoded spec-gloss alpha roughness bakes
+  also reconcile backend compatibility so direct asset callers no longer see
+  the stale `specularGlossinessTexture.glossinessAlpha` approximation after a
+  CPU-readable roughnessMap exists.
 - WEBGL2-01 pt-webgl2 consumes authored tangent XYZW, derives nonzero fallback
   handedness, guards legacy zero handedness in GLSL, preserves CPU-solved posed
   tangents after skinning, and avoids stale rest-pose tangent reuse.
@@ -74,6 +81,11 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   scalar fields that the lite shader cannot render.
 - PTWG-07 pt-webgpu lite sampled light/environment textures refresh after
   emitter/environment mutations.
+- PTWG-08 pt-webgpu inverse path replay now checks the actual forward render
+  regime before accepting the analytic path. The engine supplies effective
+  bounce count and spectral mode to `PtWebgpuInverseSession`; multi-bounce or
+  spectral baselines downgrade with `path-replay-unsupported-render-regime`
+  because the current adjoint is a single-bounce RGB direct-light replay.
 - ENGINE-01 structured nonfatal warning channel is now part of the core engine
   contract (`EngineWarning`, `EngineOptions.onWarning`, `Engine.onWarning`) and
   is wired through the createEngine facade plus the three shipping backends for

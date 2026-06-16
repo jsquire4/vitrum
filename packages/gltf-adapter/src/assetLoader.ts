@@ -16,6 +16,7 @@ import {
   rankGltfBackends,
   type GltfBackendCompatibility,
   type GltfBackendPolicy,
+  type GltfCompatibilityIssue,
   type GltfFeatureReport,
 } from './featureReport.js';
 import {
@@ -164,21 +165,89 @@ export async function loadGltfAndDecodeTextures(
   const sceneWithMaterialTable = convertedMaterials === undefined
     ? decoded.scene
     : appendInactiveMaterialPrimitives(decoded.scene, convertedMaterials.materials);
+  const textureDecodeReport = buildTextureDecodeReport(sceneWithMaterialTable);
+  const textureDecodeDiagnostics = [
+    ...decoded.diagnostics,
+    ...(convertedMaterials?.diagnostics ?? []),
+  ];
+  const textureDecodeWarnings = [
+    ...decoded.warnings,
+    ...(convertedMaterials?.warnings ?? []),
+  ];
+  const backendCompatibility = reconcileBackendCompatibilityAfterTextureDecode(
+    asset.backendCompatibility,
+    textureDecodeReport,
+    textureDecodeDiagnostics,
+  );
   return {
     ...asset,
     scene: decoded.scene,
     ...(convertedMaterials !== undefined ? { convertedMaterials: convertedMaterials.materials } : {}),
-    textureDecodeReport: buildTextureDecodeReport(sceneWithMaterialTable),
+    backendCompatibility,
+    recommendedBackend: backendCompatibility[0]!,
+    textureDecodeReport,
     decodedTextureCount: decoded.decodedCount + (convertedMaterials?.decodedCount ?? 0),
     unchangedTextureCount: decoded.unchangedCount + (convertedMaterials?.unchangedCount ?? 0),
-    textureDecodeDiagnostics: [
-      ...decoded.diagnostics,
-      ...(convertedMaterials?.diagnostics ?? []),
-    ],
-    textureDecodeWarnings: [
-      ...decoded.warnings,
-      ...(convertedMaterials?.warnings ?? []),
-    ],
+    textureDecodeDiagnostics,
+    textureDecodeWarnings,
+  };
+}
+
+const SPEC_GLOSS_ALPHA_ISSUE =
+  'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
+
+function reconcileBackendCompatibilityAfterTextureDecode(
+  compatibility: readonly GltfBackendCompatibility[],
+  report: GltfTextureDecodeReport,
+  diagnostics: readonly DecodeSceneTextureDiagnostic[],
+): readonly GltfBackendCompatibility[] {
+  const bakeUnavailable = diagnostics.some((diagnostic) =>
+    diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
+  );
+  const bakedRoughnessMap = report.entries.some((entry) =>
+    entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
+  );
+  if (!bakedRoughnessMap || bakeUnavailable) return compatibility;
+
+  return compatibility.map((candidate) => {
+    const issues = candidate.issues.filter((issue) => issue.name !== SPEC_GLOSS_ALPHA_ISSUE);
+    return issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues);
+  });
+}
+
+function compatibilityWithIssues(
+  candidate: GltfBackendCompatibility,
+  issues: readonly GltfCompatibilityIssue[],
+): GltfBackendCompatibility {
+  let unsupportedCount = 0;
+  let approximateCount = 0;
+  let nativeCount = 0;
+  let requiresHookCount = 0;
+
+  for (const issue of issues) {
+    if (issue.support === 'unsupported') {
+      unsupportedCount += 1;
+    } else if (
+      issue.support === 'approximate' ||
+      issue.support === 'fallback-generated-mesh' ||
+      issue.support === 'fallback-rebuild'
+    ) {
+      approximateCount += 1;
+    } else if (issue.support === 'native') {
+      nativeCount += 1;
+    } else if (issue.support === 'requires-hook') {
+      requiresHookCount += 1;
+    }
+  }
+
+  return {
+    ...candidate,
+    unsupportedCount,
+    approximateCount,
+    nativeCount,
+    requiresHookCount,
+    issues,
+    isCompatible: unsupportedCount === 0,
   };
 }
 

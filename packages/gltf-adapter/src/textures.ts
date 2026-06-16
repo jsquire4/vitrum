@@ -68,6 +68,12 @@ const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 
 export interface GltfTextureRefSource {
   readonly path: string;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly samplerIndex?: number;
+  readonly imageUri?: string;
+  readonly imageMimeType?: string;
+  readonly textureSourceExtension?: GltfTextureSourceExtension;
 }
 
 type GltfTextureRefWithSource = TextureRef & {
@@ -245,15 +251,13 @@ function resolveTextureImageSource(
   enabledExtensions: ReadonlySet<string>,
   warnings: string[],
 ): number | undefined {
-  for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
-    if (!enabledExtensions.has(extName)) continue;
-    const source = texture.extensions?.[extName]?.source;
-    if (source !== undefined) return source;
-  }
+  const selected = selectTextureImageSource(texture, enabledExtensions);
+  if (selected.imageIndex !== undefined) return selected.imageIndex;
 
-  const available = GLTF_TEXTURE_SOURCE_EXTENSIONS.filter((extName) =>
-    texture.extensions?.[extName]?.source !== undefined,
-  );
+  const available: GltfTextureSourceExtension[] = [];
+  for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
+    if (texture.extensions?.[extName]?.source !== undefined) available.push(extName);
+  }
   if (texture.source === undefined && available.length > 0) {
     warnings.push(
       `[vitrum/gltf-adapter] Texture uses ${available.join(', ')} but none of those ` +
@@ -262,6 +266,21 @@ function resolveTextureImageSource(
     );
   }
   return texture.source;
+}
+
+function selectTextureImageSource(
+  texture: GltfTexture,
+  enabledExtensions: ReadonlySet<string>,
+): {
+  readonly imageIndex?: number;
+  readonly textureSourceExtension?: GltfTextureSourceExtension;
+} {
+  for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
+    if (!enabledExtensions.has(extName)) continue;
+    const source = texture.extensions?.[extName]?.source;
+    if (source !== undefined) return { imageIndex: source, textureSourceExtension: extName };
+  }
+  return texture.source !== undefined ? { imageIndex: texture.source } : {};
 }
 
 function normalizeImageBytesMap(
@@ -331,8 +350,9 @@ function textureMinFilterModes(value: number | undefined): {
 export function resolveTextureRef(
   info: { index: number; texCoord?: number; extensions?: Record<string, unknown> } | undefined,
   handleMap: Map<number, unknown>,
-  gltf?: Pick<GltfJson, 'textures' | 'samplers'>,
+  gltf?: Pick<GltfJson, 'textures' | 'samplers' | 'images'>,
   sourcePath?: string,
+  textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
 ): TextureRef | undefined {
   if (!info) return undefined;
   const handle = handleMap.get(info.index);
@@ -343,12 +363,19 @@ export function resolveTextureRef(
     | undefined);
   const texCoord = khrTransform?.texCoord ?? info.texCoord ?? 0;
   const transform = uvTransformFromExt(khrTransform);
-  const samplerIdx = gltf?.textures?.[info.index]?.sampler;
+  const texture = gltf?.textures?.[info.index];
+  const samplerIdx = texture?.sampler;
   const sampler = samplerIdx !== undefined ? gltf?.samplers?.[samplerIdx] : undefined;
   const wrapS = textureWrapMode(sampler?.wrapS);
   const wrapT = textureWrapMode(sampler?.wrapT);
   const magFilter = textureMagFilterMode(sampler?.magFilter);
   const { minFilter, mipFilter } = textureMinFilterModes(sampler?.minFilter);
+  const selectedSource = texture !== undefined
+    ? selectTextureImageSource(texture, new Set(textureSourceExtensions))
+    : {};
+  const image = selectedSource.imageIndex !== undefined
+    ? gltf?.images?.[selectedSource.imageIndex]
+    : undefined;
 
   const ref: TextureRef = {
     handle,
@@ -360,5 +387,16 @@ export function resolveTextureRef(
     ...(minFilter !== undefined ? { minFilter } : {}),
     ...(mipFilter !== undefined ? { mipFilter } : {}),
   };
-  return attachGltfTextureRefSource(ref, sourcePath !== undefined ? { path: sourcePath } : undefined);
+  const source: GltfTextureRefSource = {
+    path: sourcePath ?? `textures[${info.index}]`,
+    textureIndex: info.index,
+    ...(selectedSource.imageIndex !== undefined ? { imageIndex: selectedSource.imageIndex } : {}),
+    ...(samplerIdx !== undefined ? { samplerIndex: samplerIdx } : {}),
+    ...(image?.uri !== undefined ? { imageUri: image.uri } : {}),
+    ...(image?.mimeType !== undefined ? { imageMimeType: image.mimeType } : {}),
+    ...(selectedSource.textureSourceExtension !== undefined
+      ? { textureSourceExtension: selectedSource.textureSourceExtension }
+      : {}),
+  };
+  return attachGltfTextureRefSource(ref, source);
 }

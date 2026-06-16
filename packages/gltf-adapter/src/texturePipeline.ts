@@ -9,7 +9,7 @@ import type {
   TextureRef,
   TextureWrapMode,
 } from '@vitrum/core';
-import { gltfTextureRefSource, type RawImageHandle } from './textures.js';
+import { gltfTextureRefSource, type GltfTextureSourceExtension, type RawImageHandle } from './textures.js';
 
 export type GltfMaterialTextureField =
   | 'baseColorMap'
@@ -60,6 +60,19 @@ export interface GltfTextureDecodeReportEntry {
   readonly minFilter?: TextureFilterMode;
   readonly mipFilter?: TextureMipFilterMode;
   readonly usesMipmaps?: boolean;
+  readonly width?: number;
+  readonly height?: number;
+  readonly isPowerOfTwo?: boolean;
+  readonly originalWidth?: number;
+  readonly originalHeight?: number;
+  readonly wasResized?: boolean;
+  readonly maxTextureSize?: number;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly samplerIndex?: number;
+  readonly imageUri?: string;
+  readonly imageMimeType?: string;
+  readonly textureSourceExtension?: GltfTextureSourceExtension;
   /**
    * The decoded payload's own color-space hint when the handle exposes one.
    * This is intentionally separate from `colorSpace`, which describes the
@@ -104,6 +117,9 @@ export interface GltfCpuLinearTextureHandle {
     readonly channels: 4;
     readonly dataType: 'float32';
     readonly colorSpace: 'linear';
+    readonly originalWidth?: number;
+    readonly originalHeight?: number;
+    readonly maxTextureSize?: number;
   };
 }
 
@@ -115,6 +131,9 @@ export interface GltfCpuTextureHandle {
     readonly channels: 4;
     readonly dataType: 'float32';
     readonly colorSpace: GltfTextureColorSpace;
+    readonly originalWidth?: number;
+    readonly originalHeight?: number;
+    readonly maxTextureSize?: number;
   };
 }
 
@@ -252,18 +271,29 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       const handleKind = classifyTextureHandle(ref.handle);
       const handleColorSpace = textureHandleColorSpace(ref.handle);
       const samplerFields = textureSamplerReportFields(ref);
+      const source = gltfTextureRefSource(ref);
+      const dimensionFields = textureDimensionReportFields(ref.handle);
       const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
       entries.push({
         primitiveId: String(primitive.id),
         primitiveKind: primitive.kind,
         primitiveIndex,
         materialField: field,
-        path: gltfTextureRefSource(ref)?.path ?? scenePath,
+        path: source?.path ?? scenePath,
         texCoord: ref.texCoord ?? 0,
         hasTransform: ref.transform !== undefined,
         wrapS: ref.wrapS ?? 'repeat',
         wrapT: ref.wrapT ?? 'repeat',
         ...samplerFields,
+        ...dimensionFields,
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
         ...(handleColorSpace !== undefined ? { handleColorSpace } : {}),
         colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
@@ -301,6 +331,54 @@ function textureSamplerReportFields(
     fields.usesMipmaps = ref.mipFilter !== 'none';
   }
   return fields;
+}
+
+function textureDimensionReportFields(
+  handle: unknown,
+): Pick<
+  GltfTextureDecodeReportEntry,
+  'width' | 'height' | 'isPowerOfTwo' | 'originalWidth' | 'originalHeight' | 'wasResized' | 'maxTextureSize'
+> {
+  const dims = textureHandleDimensions(handle);
+  if (dims === null) return {};
+  const hint = textureDecodeHint(handle);
+  const originalWidth = hint?.originalWidth ?? dims.width;
+  const originalHeight = hint?.originalHeight ?? dims.height;
+  return {
+    width: dims.width,
+    height: dims.height,
+    isPowerOfTwo: isPowerOfTwo(dims.width, dims.height),
+    originalWidth,
+    originalHeight,
+    wasResized: originalWidth !== dims.width || originalHeight !== dims.height,
+    ...(hint?.maxTextureSize !== undefined ? { maxTextureSize: hint.maxTextureSize } : {}),
+  };
+}
+
+function textureHandleDimensions(handle: unknown): { readonly width: number; readonly height: number } | null {
+  if (!isRecord(handle)) return null;
+  if (typeof handle.width === 'number' && typeof handle.height === 'number') {
+    return { width: handle.width, height: handle.height };
+  }
+  const image = handle.image;
+  if (isRecord(image) && typeof image.width === 'number' && typeof image.height === 'number') {
+    return { width: image.width, height: image.height };
+  }
+  return null;
+}
+
+function textureDecodeHint(handle: unknown): {
+  readonly originalWidth?: number;
+  readonly originalHeight?: number;
+  readonly maxTextureSize?: number;
+} | null {
+  if (!isRecord(handle) || !isRecord(handle.__vitrum_hint__)) return null;
+  const hint = handle.__vitrum_hint__;
+  return {
+    ...(typeof hint.originalWidth === 'number' ? { originalWidth: hint.originalWidth } : {}),
+    ...(typeof hint.originalHeight === 'number' ? { originalHeight: hint.originalHeight } : {}),
+    ...(typeof hint.maxTextureSize === 'number' ? { maxTextureSize: hint.maxTextureSize } : {}),
+  };
 }
 
 export async function decodeSceneTextures(
@@ -461,8 +539,20 @@ async function decodeTextureRef(
       primitiveIndex: context.primitiveIndex,
     });
     const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace);
+    const resized = resizeDecodedTextureToMaxSize(normalized, context.options.maxTextureSize);
+    const shouldAnnotate =
+      resized.width !== normalized.width ||
+      resized.height !== normalized.height ||
+      (typeof context.options.maxTextureSize === 'number' && context.options.maxTextureSize > 0);
     entry = {
-      handle: resizeDecodedTextureToMaxSize(normalized, context.options.maxTextureSize),
+      handle: shouldAnnotate
+        ? withDecodedTextureMetadata(
+            resized,
+            normalized.width,
+            normalized.height,
+            context.options.maxTextureSize,
+          )
+        : resized,
       originalWidth: normalized.width,
       originalHeight: normalized.height,
     };
@@ -736,6 +826,23 @@ function resizeDecodedTextureToMaxSize(
       colorSpace: handle.__vitrum_hint__.colorSpace,
     },
   };
+}
+
+function withDecodedTextureMetadata<T extends GltfCpuTextureHandle>(
+  handle: T,
+  originalWidth: number,
+  originalHeight: number,
+  maxTextureSize: number | undefined,
+): T {
+  return {
+    ...handle,
+    __vitrum_hint__: {
+      ...handle.__vitrum_hint__,
+      originalWidth,
+      originalHeight,
+      ...(typeof maxTextureSize === 'number' && maxTextureSize > 0 ? { maxTextureSize } : {}),
+    },
+  } as T;
 }
 
 function inferDecodedChannels(data: ArrayLike<number>, width: number, height: number): 1 | 2 | 3 | 4 {

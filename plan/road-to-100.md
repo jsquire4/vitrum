@@ -102,8 +102,16 @@
 > map-free ranges and readable `iridescenceThicknessMap` ranges by
 > differentiating sampled thin-film thickness and chaining it to min/max
 > endpoints through `V·H` or the sampled G-channel texel.
+> Latest API truthfulness follow-up: glTF texture decode reports now include
+> decoded dimensions, original/resize metadata, texture/image/sampler provenance,
+> and selected texture-source extension provenance, and decoded spec-gloss alpha
+> roughness bakes remove the now-satisfied glossiness-alpha compatibility issue
+> for direct asset callers. pt-webgpu inverse path replay also gates on the real
+> forward render regime: multi-bounce or spectral baselines now downgrade with a
+> structured `path-replay-unsupported-render-regime` diagnostic because the
+> current adjoint is a single-bounce RGB direct-light replay.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
-> current scoped direct-light/unlit-primary slice; walkaround transparent
+> current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
 > approximations, finite-emitter/light-map promotion
 > decisions, and rich-material GI GPU A/B evidence;

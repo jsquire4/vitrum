@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF decode reports + inverse render-regime gates, 2026-06-16)
+
+- **glTF texture decode reports now carry self-contained dimensions and provenance:** `GltfTextureDecodeReportEntry` includes decoded width/height, power-of-two status, original dimensions, resize/max-size metadata, glTF texture/image/sampler indices, image URI/mime data, and selected texture-source extension provenance. `loadGltfAndDecodeTextures()` also reconciles backend compatibility after a successful spec-gloss alpha roughness bake, so direct asset callers no longer see the stale `specularGlossinessTexture.glossinessAlpha` approximation after the baked CPU-readable `roughnessMap` exists.
+- **`@vitrum/pt-webgpu` path-replay inverse sessions now gate on the actual forward render regime:** the real engine reports effective bounce count and spectral mode to `PtWebgpuInverseSession`; requested path replay downgrades with `path-replay-unsupported-render-regime` when the baseline was multi-bounce or spectral, matching the current single-bounce RGB direct-light adjoint instead of producing a mismatched analytic gradient.
+
 ### Fixed (pt-webgpu inverse fallback diagnostic specificity, 2026-06-16)
 
 - **Path-replay inverse fallbacks now classify normal/env scalar controls explicitly:** requested `method:'path-replay'` sessions for `materials.<id>.normalScale`, `bumpScale`, and `clearcoatNormalScale` now report `path-replay-unsupported-normal`, while `materials.<id>.envMapIntensity` reports `path-replay-unsupported-environment`. These controls still optimize through finite difference; the change makes arbitrary-asset inverse diagnostics more machine-readable.

@@ -106,7 +106,8 @@ export interface InverseSessionDiagnostic {
     | 'path-replay-unsupported-material'
     | 'path-replay-unsupported-lighting'
     | 'path-replay-unsupported-emitter'
-    | 'path-replay-unsupported-receiver';
+    | 'path-replay-unsupported-receiver'
+    | 'path-replay-unsupported-render-regime';
   /** Parameter path, scene path, or backend-local path the diagnostic refers to. */
   readonly path?: string;
   readonly message: string;

@@ -592,6 +592,56 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for a single-bounce RGB render context', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ bounces: 1, spectral: false }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('degrades path-replay when the forward baseline used multiple bounces', () => {
+    const fake = makeFakeEngine();
+    const diagnostics: unknown[] = [];
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ bounces: 2, spectral: false }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      ...eligibleOpts(),
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-render-regime',
+      details: expect.objectContaining({ bounces: 2, supportedBounces: 1 }),
+    }));
+    expect(diagnostics).toEqual(session.diagnostics);
+    session.dispose();
+  });
+
+  it('degrades path-replay when the forward baseline used spectral transport', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ bounces: 1, spectral: true }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-render-regime',
+      details: expect.objectContaining({ spectral: true }),
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for map-free unlit baseColor without requiring scene lights', () => {
     const fake = makeFakeEngine();
     fake.scene = {

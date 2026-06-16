@@ -1938,6 +1938,10 @@ class PTEngineWebGPU implements Engine {
       patchEmitter: (emitterId: string, patch: Partial<SceneEmitter>) => {
         this.updateEmitter(emitterId, patch);
       },
+      getPathReplayRenderContext: () => ({
+        bounces: this.#activeBounces,
+        spectral: this.#spectralEnabled,
+      }),
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
     return new PtWebgpuInverseSession(hooks, opts);

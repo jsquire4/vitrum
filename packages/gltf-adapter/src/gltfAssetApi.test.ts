@@ -686,6 +686,20 @@ describe('loadGltfAsset', () => {
       opaqueHandleCount: 0,
       cpuReadableCount: 1,
     });
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        width: 1,
+        height: 1,
+        isPowerOfTwo: true,
+        originalWidth: 1,
+        originalHeight: 1,
+        wasResized: false,
+        textureIndex: 0,
+        imageIndex: 0,
+        imageMimeType: 'image/png',
+      }),
+    ]);
 
     const primitive = result.scene.primitives[0] as MeshPrimitive;
     const ref = primitive.material.baseColorMap as TextureRef;
@@ -732,6 +746,10 @@ describe('loadGltfAsset', () => {
       'roughnessMap',
       'specularColorMap',
     ]);
+    const compatibilityIssues = result.backendCompatibility.flatMap((candidate) => candidate.issues);
+    expect(compatibilityIssues).not.toContainEqual(expect.objectContaining({
+      name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
+    }));
 
     const primitive = result.scene.primitives[0] as MeshPrimitive;
     const specular = primitive.material.specularColorMap as TextureRef;
@@ -1054,6 +1072,20 @@ describe('decodeSceneTextures', () => {
     expect(handle.data[5]).toBeCloseTo(0.25);
     expect(handle.data[6]).toBeCloseTo(0.5);
     expect(handle.data[7]).toBeCloseTo(1);
+    expect(result.report.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        width: 2,
+        height: 1,
+        isPowerOfTwo: true,
+        originalWidth: 4,
+        originalHeight: 2,
+        wasResized: true,
+        maxTextureSize: 2,
+        textureIndex: 0,
+        imageIndex: 0,
+      }),
+    ]);
   });
 
   it('emits structured NPOT-repeat diagnostics after host decoding', async () => {
@@ -2415,7 +2447,7 @@ describe('loadGltfForEngine', () => {
       extensions: { EXT_texture_webp: { source: 0 } },
     };
 
-    await expect(loadGltfForEngine(gltf, {
+    const result = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
@@ -2423,10 +2455,20 @@ describe('loadGltfForEngine', () => {
       decodeImage: async () => ({ kind: 'decoded-webp' }),
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine: async () => ({ setScene: vi.fn() }),
-    })).resolves.toMatchObject({
+    });
+
+    expect(result).toMatchObject({
       backend: 'pt-webgl2',
       attached: true,
     });
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        imageIndex: 0,
+        textureSourceExtension: 'EXT_texture_webp',
+      }),
+    ]);
   });
 
   it('does not treat an explicitly enabled texture-source extension as a missing host hook', async () => {
