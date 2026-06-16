@@ -26,9 +26,9 @@ import {
   type GltfSceneController,
   type GltfScenePatchTarget,
 } from './sceneController.js';
-import type { GltfCompatibilityIssue } from './featureReport.js';
+import type { GltfBackendProfileId, GltfCompatibilityIssue } from './featureReport.js';
 
-export type GltfEngineSelection = BackendId | 'recommended';
+export type GltfEngineSelection = GltfBackendProfileId | 'recommended';
 export type GltfCompatibilityMode = 'best-effort' | 'reject-unsupported' | 'reject-degraded';
 
 export interface GltfEngineFactoryInput<TFactoryOptions extends object = Record<string, never>> {
@@ -73,7 +73,12 @@ export interface LoadGltfForEngineOptions<
   readonly createEngine?: GltfEngineFactory<TEngine, TFactoryOptions>;
   readonly engineOptions?: TFactoryOptions;
 
-  /** Backend to target. Defaults to the compatibility planner's top pick. */
+  /**
+   * Backend/profile to target. Defaults to the compatibility planner's top
+   * pick. Passing `'pt-webgpu-lite'` validates against the constrained lite
+   * profile while still passing the real backend id (`'pt-webgpu'`) to the
+   * injected engine factory.
+   */
   readonly backend?: GltfEngineSelection;
 
   /**
@@ -101,6 +106,7 @@ export interface LoadGltfForEngineOptions<
 export interface GltfForEngineResult<TEngine extends GltfScenePatchTarget = GltfScenePatchTarget> {
   readonly asset: GltfAssetResult;
   readonly backend: BackendId;
+  readonly profileId: GltfBackendProfileId;
   readonly engine?: TEngine;
   readonly controller: GltfSceneController;
   readonly attached: boolean;
@@ -123,9 +129,11 @@ export async function loadGltfForEngine<
   const asset = shouldDecodeTextures(options)
     ? await loadGltfAndDecodeTextures(input, options)
     : await loadGltfAsset(input, options);
-  const selectedBackend = selectBackend(asset, options.backend ?? 'recommended');
+  const selected = selectBackendTarget(asset, options.backend ?? 'recommended');
+  const selectedBackend = selected.backend;
+  let selectedProfileId = selected.profileId;
   const compatibilityMode = options.compatibilityMode ?? 'best-effort';
-  enforceCompatibility(asset, selectedBackend, compatibilityMode, options);
+  enforceCompatibility(asset, selectedBackend, selectedProfileId, compatibilityMode, options);
 
   const controller = createGltfSceneController({
     gltf: asset.gltf,
@@ -151,7 +159,8 @@ export async function loadGltfForEngine<
 
   const backend = backendIdFromEngine(engine) ?? selectedBackend;
   if (backend !== selectedBackend) {
-    enforceCompatibility(asset, backend, compatibilityMode, options, 'Actual engine backend');
+    selectedProfileId = backend;
+    enforceCompatibility(asset, backend, backend, compatibilityMode, options, 'Actual engine backend');
   }
 
   const attachScene = options.attachScene ?? true;
@@ -164,6 +173,7 @@ export async function loadGltfForEngine<
   return {
     asset,
     backend,
+    profileId: selectedProfileId,
     ...(engine ? { engine } : {}),
     controller,
     attached,
@@ -212,9 +222,20 @@ function textureDecodeWarnings(asset: GltfAssetResult | GltfDecodedAssetResult):
   return isDecodedAsset(asset) ? asset.textureDecodeWarnings : [];
 }
 
-function selectBackend(asset: GltfAssetResult, selection: GltfEngineSelection): BackendId {
-  if (selection === 'recommended') return asset.recommendedBackend.backend;
-  return selection;
+function selectBackendTarget(
+  asset: GltfAssetResult,
+  selection: GltfEngineSelection,
+): { readonly backend: BackendId; readonly profileId: GltfBackendProfileId } {
+  if (selection === 'recommended') {
+    return {
+      backend: asset.recommendedBackend.backend,
+      profileId: asset.recommendedBackend.profileId,
+    };
+  }
+  if (selection === 'pt-webgpu-lite') {
+    return { backend: 'pt-webgpu', profileId: 'pt-webgpu-lite' };
+  }
+  return { backend: selection, profileId: selection };
 }
 
 function enforceCompatibility<
@@ -223,16 +244,19 @@ function enforceCompatibility<
 >(
   asset: GltfAssetResult,
   backend: BackendId,
+  profileId: GltfBackendProfileId,
   mode: GltfCompatibilityMode,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
   label = 'Selected backend',
 ): void {
   if (mode === 'best-effort') return;
   const selected = asset.backendCompatibility.find((entry) =>
-    entry.backend === backend && entry.profileId === backend,
-  ) ?? asset.backendCompatibility.find((entry) => entry.backend === backend);
+    entry.backend === backend && entry.profileId === profileId,
+  );
   if (!selected) {
-    throw new Error(`[vitrum/gltf-adapter] No compatibility entry found for backend "${backend}".`);
+    throw new Error(
+      `[vitrum/gltf-adapter] No compatibility entry found for ${formatBackendProfile(backend, profileId)}.`,
+    );
   }
   const effectiveIssues = selected.issues.filter((issue) => !isSatisfiedCompatibilityIssue(issue, options, asset));
   const rejectedIssues = effectiveIssues
@@ -253,9 +277,15 @@ function enforceCompatibility<
   const issues = failures
     .join(', ');
   throw new Error(
-    `[vitrum/gltf-adapter] ${label} "${backend}" does not satisfy ` +
+    `[vitrum/gltf-adapter] ${label} ${formatBackendProfile(backend, profileId)} does not satisfy ` +
       `${mode}: ${issues || 'unknown compatibility issue'}.`,
   );
+}
+
+function formatBackendProfile(backend: BackendId, profileId: GltfBackendProfileId): string {
+  return profileId === backend
+    ? `"${backend}"`
+    : `"${backend}" profile "${profileId}"`;
 }
 
 const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([

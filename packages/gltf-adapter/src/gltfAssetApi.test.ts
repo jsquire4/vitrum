@@ -101,6 +101,33 @@ function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const colors = f32Buffer([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const total = new Uint8Array(positions.byteLength + colors.byteLength);
+  total.set(new Uint8Array(positions), 0);
+  total.set(new Uint8Array(colors), positions.byteLength);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, COLOR_0: 1 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: colors.byteLength },
+      ],
+      buffers: [{ byteLength: total.byteLength }],
+    },
+    buffers: new Map([[0, total.buffer]]),
+  };
+}
+
 function makeInlineMaterialVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   return {
@@ -1262,6 +1289,42 @@ describe('loadGltfForEngine', () => {
     expect(result.attached).toBe(true);
     expect(engine.setScene).toHaveBeenCalledWith(result.asset.scene);
     expect(result.controller.scene.primitives).toHaveLength(1);
+  });
+
+  it('lets direct callers target the pt-webgpu-lite profile while factories receive pt-webgpu', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async ({ backend }) => {
+      expect(backend).toBe('pt-webgpu');
+      return engine;
+    });
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu-lite',
+      createEngine,
+    });
+
+    expect(result.backend).toBe('pt-webgpu');
+    expect(result.profileId).toBe('pt-webgpu-lite');
+    expect(result.engine).toBe(engine);
+    expect(createEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects direct pt-webgpu-lite strict loads before constructing unsupported COLOR_0 scenes', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf();
+    const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: primitive:vertexColors=unsupported',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('attaches an existing engine without invoking a factory', async () => {

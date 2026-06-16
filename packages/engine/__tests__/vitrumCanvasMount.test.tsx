@@ -161,6 +161,7 @@ function makeMockGltfForEngineResult(
   return {
     asset,
     backend: engine.backendId,
+    profileId: engine.backendId,
     engine,
     controller: controller as unknown as GltfForEngineResult<EngineWithBackendId>['controller'],
     attached: true,

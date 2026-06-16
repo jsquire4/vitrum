@@ -1841,6 +1841,12 @@ Do not carry these as open gaps unless the code regresses again.
   honest structured-unsupported path for glTF vertex colors, and direct
   pt-webgpu lite `setScene` now warns on `Scene.primitives[].colors` even when
   hosts bypass the glTF adapter.
+- Direct `@vitrum/gltf-adapter` callers can now target the concrete
+  `pt-webgpu-lite` profile with `loadGltfForEngine(..., { backend:
+  "pt-webgpu-lite" })`. The factory still receives `backend:"pt-webgpu"`, but
+  strict compatibility uses the lite profile row, so adapter-only one-call loads
+  reject lite-unsupported assets before engine construction just like
+  `@vitrum/engine/gltf`'s runtime-tier gate.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial
