@@ -1304,6 +1304,10 @@ Status:
   `meshes[i].primitives[j].attributes.TANGENT` or `.TEXCOORD_0` source path, ignored
   cameras point at `cameras[i]`, and unknown required extensions point at
   `extensionsRequired[i]`.
+- Texture decode/readiness diagnostics for glTF-origin material maps now preserve
+  source material slots such as `materials[i].pbrMetallicRoughness.baseColorTexture`
+  and `materials[i].extensions.KHR_materials_clearcoat.clearcoatTexture`; direct
+  `Scene` callers still get `scene.primitives[i].material.*` fallback paths.
 - `decodeSceneTextures(target:'cpu-linear', { maxTextureSize })` now resizes
   oversized decoded raw-image payloads before backend upload and reports the
   original/resized dimensions in structured diagnostics.

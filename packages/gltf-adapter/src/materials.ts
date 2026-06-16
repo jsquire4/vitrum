@@ -49,13 +49,19 @@ function _parseTransmissionExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const txExt = ext['KHR_materials_transmission'] as
     | { transmissionFactor?: number; transmissionTexture?: { index: number; texCoord?: number } }
     | undefined;
   if (!txExt) return {};
   const transmission = txExt.transmissionFactor ?? 0;
-  const transmissionMap = resolveTextureRef(txExt.transmissionTexture, handleMap, gltf);
+  const transmissionMap = resolveTextureRef(
+    txExt.transmissionTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_transmission.transmissionTexture'),
+  );
   return {
     ...(transmission > 0 ? { transmission } : {}),
     ...(transmissionMap ? { transmissionMap } : {}),
@@ -66,6 +72,7 @@ function _parseVolumeExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const volExt = ext['KHR_materials_volume'] as
     | {
@@ -77,7 +84,12 @@ function _parseVolumeExt(
     | undefined;
   if (!volExt) return {};
   const thickness = volExt.thicknessFactor ?? 0;
-  const thicknessMap = resolveTextureRef(volExt.thicknessTexture, handleMap, gltf);
+  const thicknessMap = resolveTextureRef(
+    volExt.thicknessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_volume.thicknessTexture'),
+  );
   const attenuationDistance = volExt.attenuationDistance ?? Infinity;
   const attenuationColor: Vec3 | undefined = volExt.attenuationColor;
   return {
@@ -98,6 +110,7 @@ function _parseSpecularExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const specExt = ext['KHR_materials_specular'] as
     | {
@@ -110,8 +123,18 @@ function _parseSpecularExt(
   if (!specExt) return {};
   const specularIntensity = specExt.specularFactor ?? 1;
   const specularColor: Vec3 | undefined = specExt.specularColorFactor;
-  const specularIntensityMap = resolveTextureRef(specExt.specularTexture, handleMap, gltf);
-  const specularColorMap = resolveTextureRef(specExt.specularColorTexture, handleMap, gltf);
+  const specularIntensityMap = resolveTextureRef(
+    specExt.specularTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_specular.specularTexture'),
+  );
+  const specularColorMap = resolveTextureRef(
+    specExt.specularColorTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_specular.specularColorTexture'),
+  );
   return {
     ...(specularIntensity !== 1 ? { specularIntensity } : {}),
     ...(specularColor ? { specularColor } : {}),
@@ -124,6 +147,7 @@ function _parseSheenExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const sheenExt = ext['KHR_materials_sheen'] as
     | {
@@ -136,8 +160,18 @@ function _parseSheenExt(
   if (!sheenExt) return {};
   const sheenColor: Vec3 | undefined = sheenExt.sheenColorFactor;
   const sheenRoughness = sheenExt.sheenRoughnessFactor ?? 0;
-  const sheenColorMap = resolveTextureRef(sheenExt.sheenColorTexture, handleMap, gltf);
-  const sheenRoughnessMap = resolveTextureRef(sheenExt.sheenRoughnessTexture, handleMap, gltf);
+  const sheenColorMap = resolveTextureRef(
+    sheenExt.sheenColorTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_sheen.sheenColorTexture'),
+  );
+  const sheenRoughnessMap = resolveTextureRef(
+    sheenExt.sheenRoughnessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_sheen.sheenRoughnessTexture'),
+  );
   return {
     sheen: 1 as const,
     sheenRoughness,
@@ -151,6 +185,7 @@ function _parseClearcoatExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const ccExt = ext['KHR_materials_clearcoat'] as
     | {
@@ -165,9 +200,24 @@ function _parseClearcoatExt(
   const clearcoat = ccExt.clearcoatFactor ?? 0;
   if (clearcoat <= 0) return {};
   const clearcoatRoughness = ccExt.clearcoatRoughnessFactor ?? 0;
-  const clearcoatMap = resolveTextureRef(ccExt.clearcoatTexture, handleMap, gltf);
-  const clearcoatRoughnessMap = resolveTextureRef(ccExt.clearcoatRoughnessTexture, handleMap, gltf);
-  const clearcoatNormalMap = resolveTextureRef(ccExt.clearcoatNormalTexture, handleMap, gltf);
+  const clearcoatMap = resolveTextureRef(
+    ccExt.clearcoatTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_clearcoat.clearcoatTexture'),
+  );
+  const clearcoatRoughnessMap = resolveTextureRef(
+    ccExt.clearcoatRoughnessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_clearcoat.clearcoatRoughnessTexture'),
+  );
+  const clearcoatNormalMap = resolveTextureRef(
+    ccExt.clearcoatNormalTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_clearcoat.clearcoatNormalTexture'),
+  );
   const clearcoatNormalScale = (ccExt.clearcoatNormalTexture as { scale?: number } | undefined)?.scale ?? 1;
   return {
     clearcoat,
@@ -183,6 +233,7 @@ function _parseIridescenceExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const iridExt = ext['KHR_materials_iridescence'] as
     | {
@@ -202,8 +253,18 @@ function _parseIridescenceExt(
     iridExt.iridescenceThicknessMinimum ?? 100,
     iridExt.iridescenceThicknessMaximum ?? 400,
   ];
-  const iridescenceMap = resolveTextureRef(iridExt.iridescenceTexture, handleMap, gltf);
-  const iridescenceThicknessMap = resolveTextureRef(iridExt.iridescenceThicknessTexture, handleMap, gltf);
+  const iridescenceMap = resolveTextureRef(
+    iridExt.iridescenceTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_iridescence.iridescenceTexture'),
+  );
+  const iridescenceThicknessMap = resolveTextureRef(
+    iridExt.iridescenceThicknessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_iridescence.iridescenceThicknessTexture'),
+  );
   return {
     iridescence,
     iridescenceIor,
@@ -217,6 +278,7 @@ function _parseAnisotropyExt(
   ext: Record<string, unknown>,
   handleMap: Map<number, unknown>,
   gltf: GltfJson | undefined,
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const anisoExt = ext['KHR_materials_anisotropy'] as
     | {
@@ -228,7 +290,12 @@ function _parseAnisotropyExt(
   if (!anisoExt) return {};
   const anisotropy = anisoExt.anisotropyStrength ?? 0;
   const anisotropyRotation = anisoExt.anisotropyRotation ?? 0;
-  const anisotropyMap = resolveTextureRef(anisoExt.anisotropyTexture, handleMap, gltf);
+  const anisotropyMap = resolveTextureRef(
+    anisoExt.anisotropyTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'extensions.KHR_materials_anisotropy.anisotropyTexture'),
+  );
   return {
     anisotropy,
     anisotropyRotation,
@@ -265,6 +332,7 @@ function _parseSpecularGlossinessExt(
   warnings: string[],
   materialName: string,
   alphaMode: MaterialSpec['alphaMode'],
+  materialIndex: number | undefined,
 ): Partial<MaterialSpec> {
   const sgExt = ext['KHR_materials_pbrSpecularGlossiness'] as
     | {
@@ -286,8 +354,24 @@ function _parseSpecularGlossinessExt(
   const diffuseFactor = sgExt.diffuseFactor ?? [1, 1, 1, 1];
   const specularFactor = sgExt.specularFactor ?? [1, 1, 1];
   const glossinessFactor = sgExt.glossinessFactor ?? 1;
-  const diffuseTexture = resolveTextureRef(sgExt.diffuseTexture, handleMap, gltf);
-  const specularGlossinessTexture = resolveTextureRef(sgExt.specularGlossinessTexture, handleMap, gltf);
+  const diffuseTexture = resolveTextureRef(
+    sgExt.diffuseTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(
+      materialIndex,
+      'extensions.KHR_materials_pbrSpecularGlossiness.diffuseTexture',
+    ),
+  );
+  const specularGlossinessTexture = resolveTextureRef(
+    sgExt.specularGlossinessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(
+      materialIndex,
+      'extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    ),
+  );
 
   if (specularGlossinessTexture) {
     warnings.push(
@@ -328,6 +412,7 @@ export function convertMaterial(
   handleMap: Map<number, unknown>,
   warnings: string[],
   gltf?: GltfJson,
+  materialIndex?: number,
 ): MaterialSpec {
   const pbr = gltfMat.pbrMetallicRoughness ?? {};
   const ext = gltfMat.extensions ?? {};
@@ -336,27 +421,52 @@ export function convertMaterial(
   const baseColorFactor = pbr.baseColorFactor ?? [1, 1, 1, 1];
   const baseColor: Vec3 = [baseColorFactor[0], baseColorFactor[1], baseColorFactor[2]];
   const baseColorAlpha = baseColorFactor[3] ?? 1;
-  const baseColorMap = resolveTextureRef(pbr.baseColorTexture, handleMap, gltf);
+  const baseColorMap = resolveTextureRef(
+    pbr.baseColorTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'pbrMetallicRoughness.baseColorTexture'),
+  );
 
   // ── Metallic / roughness ───────────────────────────────────────────────────
   const metallic = pbr.metallicFactor ?? 1.0;
   const roughness = pbr.roughnessFactor ?? 1.0;
   // glTF combined metallic-roughness texture: G=roughness, B=metallic.
-  const roughnessMap = resolveTextureRef(pbr.metallicRoughnessTexture, handleMap, gltf);
+  const roughnessMap = resolveTextureRef(
+    pbr.metallicRoughnessTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'pbrMetallicRoughness.metallicRoughnessTexture'),
+  );
   const metallicMap = roughnessMap;
 
   // ── Normal map ────────────────────────────────────────────────────────────
-  const normalMap = resolveTextureRef(gltfMat.normalTexture, handleMap, gltf);
+  const normalMap = resolveTextureRef(
+    gltfMat.normalTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'normalTexture'),
+  );
   const normalScale = gltfMat.normalTexture?.scale ?? 1;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
-  const aoMap = resolveTextureRef(gltfMat.occlusionTexture, handleMap, gltf);
+  const aoMap = resolveTextureRef(
+    gltfMat.occlusionTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'occlusionTexture'),
+  );
   const aoMapIntensity = gltfMat.occlusionTexture?.strength ?? 1;
 
   // ── Emissive ──────────────────────────────────────────────────────────────
   const emissiveFactor = gltfMat.emissiveFactor ?? [0, 0, 0];
   const emissive: Vec3 = [emissiveFactor[0], emissiveFactor[1], emissiveFactor[2]];
-  const emissiveMap = resolveTextureRef(gltfMat.emissiveTexture, handleMap, gltf);
+  const emissiveMap = resolveTextureRef(
+    gltfMat.emissiveTexture,
+    handleMap,
+    gltf,
+    materialTextureSourcePath(materialIndex, 'emissiveTexture'),
+  );
   const emissiveStrengthExt = ext['KHR_materials_emissive_strength'] as
     | { emissiveStrength?: number }
     | undefined;
@@ -394,14 +504,14 @@ export function convertMaterial(
   }
 
   // ── Per-extension partial specs (D13.5) ────────────────────────────────────
-  const transmissionPartial = _parseTransmissionExt(ext, handleMap, gltf);
-  const volumePartial       = _parseVolumeExt(ext, handleMap, gltf);
+  const transmissionPartial = _parseTransmissionExt(ext, handleMap, gltf, materialIndex);
+  const volumePartial       = _parseVolumeExt(ext, handleMap, gltf, materialIndex);
   const iorPartial          = _parseIorExt(ext);
-  const specularPartial     = _parseSpecularExt(ext, handleMap, gltf);
-  const sheenPartial        = _parseSheenExt(ext, handleMap, gltf);
-  const clearcoatPartial    = _parseClearcoatExt(ext, handleMap, gltf);
-  const iridescencePartial  = _parseIridescenceExt(ext, handleMap, gltf);
-  const anisotropyPartial   = _parseAnisotropyExt(ext, handleMap, gltf);
+  const specularPartial     = _parseSpecularExt(ext, handleMap, gltf, materialIndex);
+  const sheenPartial        = _parseSheenExt(ext, handleMap, gltf, materialIndex);
+  const clearcoatPartial    = _parseClearcoatExt(ext, handleMap, gltf, materialIndex);
+  const iridescencePartial  = _parseIridescenceExt(ext, handleMap, gltf, materialIndex);
+  const anisotropyPartial   = _parseAnisotropyExt(ext, handleMap, gltf, materialIndex);
   const dispersionPartial   = _parseDispersionExt(ext, warnings, gltfMat.name ?? '(unnamed)');
   const specGlossPartial    = _parseSpecularGlossinessExt(
     ext,
@@ -410,6 +520,7 @@ export function convertMaterial(
     warnings,
     gltfMat.name ?? '(unnamed)',
     alphaMode,
+    materialIndex,
   );
 
   // ── Assemble MaterialSpec ─────────────────────────────────────────────────
@@ -455,6 +566,10 @@ export function convertMaterial(
   };
 
   return mat;
+}
+
+function materialTextureSourcePath(materialIndex: number | undefined, suffix: string): string | undefined {
+  return materialIndex === undefined ? undefined : `materials[${materialIndex}].${suffix}`;
 }
 
 /**

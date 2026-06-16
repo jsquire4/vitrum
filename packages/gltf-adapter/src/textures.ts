@@ -64,6 +64,28 @@ export interface RawImageHandle {
   readonly height?: number;
 }
 
+const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
+
+export interface GltfTextureRefSource {
+  readonly path: string;
+}
+
+type GltfTextureRefWithSource = TextureRef & {
+  readonly [GLTF_TEXTURE_REF_SOURCE]?: GltfTextureRefSource;
+};
+
+export function attachGltfTextureRefSource(ref: TextureRef, source: GltfTextureRefSource | undefined): TextureRef {
+  if (source === undefined) return ref;
+  return {
+    ...ref,
+    [GLTF_TEXTURE_REF_SOURCE]: source,
+  } as GltfTextureRefWithSource;
+}
+
+export function gltfTextureRefSource(ref: TextureRef): GltfTextureRefSource | undefined {
+  return (ref as GltfTextureRefWithSource)[GLTF_TEXTURE_REF_SOURCE];
+}
+
 /**
  * Resolve a glTF image index to bytes + mimeType from a bufferView.
  * Data URI images are decoded locally. External URI images are skipped (the
@@ -310,6 +332,7 @@ export function resolveTextureRef(
   info: { index: number; texCoord?: number; extensions?: Record<string, unknown> } | undefined,
   handleMap: Map<number, unknown>,
   gltf?: Pick<GltfJson, 'textures' | 'samplers'>,
+  sourcePath?: string,
 ): TextureRef | undefined {
   if (!info) return undefined;
   const handle = handleMap.get(info.index);
@@ -337,5 +360,5 @@ export function resolveTextureRef(
     ...(minFilter !== undefined ? { minFilter } : {}),
     ...(mipFilter !== undefined ? { mipFilter } : {}),
   };
-  return ref;
+  return attachGltfTextureRefSource(ref, sourcePath !== undefined ? { path: sourcePath } : undefined);
 }

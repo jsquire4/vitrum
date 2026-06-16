@@ -189,6 +189,27 @@ const WALKAROUND_OPAQUE_SWEEP_FIELDS = new Set<keyof MaterialSpec>([
   'iridescenceThicknessMap',
 ]);
 
+const EXPECTED_SOURCE_PATH_BY_FIELD: Readonly<Record<string, string>> = {
+  baseColorMap: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+  roughnessMap: 'materials[0].pbrMetallicRoughness.metallicRoughnessTexture',
+  metallicMap: 'materials[0].pbrMetallicRoughness.metallicRoughnessTexture',
+  normalMap: 'materials[0].normalTexture',
+  aoMap: 'materials[0].occlusionTexture',
+  emissiveMap: 'materials[0].emissiveTexture',
+  transmissionMap: 'materials[0].extensions.KHR_materials_transmission.transmissionTexture',
+  specularIntensityMap: 'materials[0].extensions.KHR_materials_specular.specularTexture',
+  specularColorMap: 'materials[0].extensions.KHR_materials_specular.specularColorTexture',
+  sheenColorMap: 'materials[0].extensions.KHR_materials_sheen.sheenColorTexture',
+  sheenRoughnessMap: 'materials[0].extensions.KHR_materials_sheen.sheenRoughnessTexture',
+  clearcoatMap: 'materials[0].extensions.KHR_materials_clearcoat.clearcoatTexture',
+  clearcoatRoughnessMap: 'materials[0].extensions.KHR_materials_clearcoat.clearcoatRoughnessTexture',
+  clearcoatNormalMap: 'materials[0].extensions.KHR_materials_clearcoat.clearcoatNormalTexture',
+  iridescenceMap: 'materials[0].extensions.KHR_materials_iridescence.iridescenceTexture',
+  iridescenceThicknessMap: 'materials[0].extensions.KHR_materials_iridescence.iridescenceThicknessTexture',
+  anisotropyMap: 'materials[0].extensions.KHR_materials_anisotropy.anisotropyTexture',
+  thicknessMap: 'materials[0].extensions.KHR_materials_volume.thicknessTexture',
+};
+
 function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
   const imageBytes = new Uint8Array(PNG_MAGIC);
@@ -393,7 +414,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         primitiveKind: 'mesh',
         primitiveIndex: 0,
         materialField: field,
-        path: `scene.primitives[0].material.${String(field)}`,
+        path: EXPECTED_SOURCE_PATH_BY_FIELD[String(field)],
         texCoord: 1,
         hasTransform: true,
         wrapS: wrap.wrapS,
@@ -456,7 +477,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
           primitiveKind: 'mesh',
           primitiveIndex: 0,
           materialField: 'baseColorMap',
-          path: 'scene.primitives[0].material.baseColorMap',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
           colorSpace: 'srgb',
           handleKind: 'opaque',
           backendReadiness: {

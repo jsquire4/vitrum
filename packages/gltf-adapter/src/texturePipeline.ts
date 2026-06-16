@@ -9,7 +9,7 @@ import type {
   TextureRef,
   TextureWrapMode,
 } from '@vitrum/core';
-import type { RawImageHandle } from './textures.js';
+import { gltfTextureRefSource, type RawImageHandle } from './textures.js';
 
 export type GltfMaterialTextureField =
   | 'baseColorMap'
@@ -243,12 +243,13 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       uniqueHandles.add(ref.handle);
       const handleKind = classifyTextureHandle(ref.handle);
       const samplerFields = textureSamplerReportFields(ref);
+      const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
       entries.push({
         primitiveId: String(primitive.id),
         primitiveKind: primitive.kind,
         primitiveIndex,
         materialField: field,
-        path: `scene.primitives[${primitiveIndex}].material.${field}`,
+        path: gltfTextureRefSource(ref)?.path ?? scenePath,
         texCoord: ref.texCoord ?? 0,
         hasTransform: ref.transform !== undefined,
         wrapS: ref.wrapS ?? 'repeat',
@@ -316,7 +317,8 @@ export async function decodeSceneTextures(
     for (const field of MATERIAL_TEXTURE_FIELDS) {
       const ref = material[field] as TextureRef | undefined;
       if (!ref) continue;
-      const path = `scene.primitives[${primitiveIndex}].material.${field}`;
+      const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
+      const path = gltfTextureRefSource(ref)?.path ?? scenePath;
       const nextRef = await decodeTextureRef(ref, {
         field,
         path,
@@ -473,6 +475,8 @@ function maybeBakeSpecGlossRoughnessMap(
   if (!isRecord(specGloss) || !isRecord(specGloss.specularGlossinessTexture)) return null;
   const sourceRef = material.specularColorMap;
   if (sourceRef == null) return null;
+  const path = gltfTextureRefSource(sourceRef)?.path ??
+    `scene.primitives[${context.primitiveIndex}].material.roughnessMap`;
   const glossinessFactor = clamp01Number(specGloss.glossinessFactor, 1);
   const sourceHandle = cpuLinearTextureHandleForSpecGlossBake(sourceRef.handle);
   if (sourceHandle !== null) {
@@ -490,13 +494,13 @@ function maybeBakeSpecGlossRoughnessMap(
   context.diagnostic({
     severity: 'warning',
     code: 'spec-gloss-alpha-bake-unavailable',
-    path: `scene.primitives[${context.primitiveIndex}].material.roughnessMap`,
+    path,
     materialField: 'roughnessMap',
     primitiveId: context.primitiveId,
     primitiveIndex: context.primitiveIndex,
     handleKind: classifyTextureHandle(sourceRef.handle),
     message:
-      `[vitrum/gltf-adapter] scene.primitives[${context.primitiveIndex}].material uses ` +
+      `[vitrum/gltf-adapter] ${path} uses ` +
       'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture alpha for glossiness, ' +
       'but the texture was not decoded to CPU-linear pixels, so no roughnessMap could be baked. ' +
       'Supply decodePixels through decodeSceneTextures() or loadGltfAndDecodeTextures() to derive roughness per pixel.',

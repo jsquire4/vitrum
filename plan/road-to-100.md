@@ -34,7 +34,8 @@
 > into backend-readable CPU texture payloads instead of returning a no-op. glTF
 > required-extension, generated-tangent, tangent-failure, missing-UV, and ignored-camera
 > degradations now surface as source-pathed `GltfImportDiagnostic` rows instead of only
-> free-form warning strings.
+> free-form warning strings, and glTF-origin texture decode/readiness diagnostics now point
+> at their original `materials[i]...Texture` slots instead of only scene material slots.
 > pt-webgpu extension-lobe CPU reference tests now pin clearcoat, sheen,
 > iridescence zero-default, and normalized sampled-PDF behavior; this closes the
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /

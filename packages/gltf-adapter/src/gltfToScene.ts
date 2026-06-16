@@ -439,8 +439,8 @@ export async function gltfToScene(
   );
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
-  const coreMaterials = (gltf.materials ?? []).map((m) =>
-    convertMaterial(m, handleMap, warnings, gltf),
+  const coreMaterials = (gltf.materials ?? []).map((m, materialIndex) =>
+    convertMaterial(m, handleMap, warnings, gltf, materialIndex),
   );
   for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
     if (material.doubleSided !== true) continue;

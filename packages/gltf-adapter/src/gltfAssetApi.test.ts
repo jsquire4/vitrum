@@ -299,7 +299,7 @@ describe('loadGltfAsset', () => {
         primitiveId: 'gltf-prim-0',
         materialField: 'baseColorMap',
         handleKind: 'opaque',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         wrapS: 'clamp-to-edge',
         wrapT: 'mirrored-repeat',
         colorSpace: 'srgb',
@@ -403,7 +403,7 @@ describe('loadGltfAsset', () => {
         primitiveId: 'gltf-prim-0',
         primitiveKind: 'mesh',
         materialField: 'baseColorMap',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         wrapS: 'repeat',
         wrapT: 'repeat',
         colorSpace: 'srgb',
@@ -436,7 +436,7 @@ describe('loadGltfAsset', () => {
     expect(decodePixels).toHaveBeenCalledTimes(1);
     expect(decodePixels.mock.calls[0]?.[1]).toMatchObject({
       materialField: 'baseColorMap',
-      path: 'scene.primitives[0].material.baseColorMap',
+      path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
       colorSpace: 'srgb',
       primitiveId: 'gltf-prim-0',
       primitiveIndex: 0,
@@ -468,7 +468,7 @@ describe('loadGltfAsset', () => {
     const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => {
       expect(context).toMatchObject({
         materialField: 'specularColorMap',
-        path: 'scene.primitives[0].material.specularColorMap',
+        path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
         colorSpace: 'srgb',
       });
       return {
@@ -743,14 +743,14 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'raw-image-decoder-missing',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         materialField: 'baseColorMap',
         primitiveId: 'gltf-prim-0',
         primitiveIndex: 0,
         handleKind: 'raw-image',
       }),
     ]);
-    expect(warnings[0]).toContain('scene.primitives[0].material.baseColorMap');
+    expect(warnings[0]).toContain('materials[0].pbrMetallicRoughness.baseColorTexture');
     expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
     expect(result.report.rawImageCount).toBe(1);
   });
@@ -787,7 +787,7 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'decoded-texture-exceeds-max-size',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         materialField: 'baseColorMap',
         primitiveId: 'gltf-prim-0',
         primitiveIndex: 0,
@@ -841,7 +841,7 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'decoded-texture-npot-repeat-wrap',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         materialField: 'baseColorMap',
         primitiveId: 'gltf-prim-0',
         primitiveIndex: 0,
@@ -1405,7 +1405,7 @@ describe('loadGltfForEngine', () => {
       compatibilityMode: 'reject-degraded',
       createEngine,
     })).rejects.toThrow(
-      'texture:baseColorMap=requires-hook at scene.primitives[0].material.baseColorMap (opaque)',
+      'texture:baseColorMap=requires-hook at materials[0].pbrMetallicRoughness.baseColorTexture (opaque)',
     );
 
     expect(createEngine).not.toHaveBeenCalled();
@@ -1461,7 +1461,7 @@ describe('loadGltfForEngine', () => {
     expect(result.textureDecodeDiagnostics).toEqual([
       expect.objectContaining({
         code: 'decoded-texture-exceeds-max-size',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         materialField: 'baseColorMap',
         resizedWidth: 2,
         resizedHeight: 1,
