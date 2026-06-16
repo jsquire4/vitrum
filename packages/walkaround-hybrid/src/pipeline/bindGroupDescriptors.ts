@@ -192,11 +192,12 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // camera (the real-time analogue of pt-webgpu camera-visible emitters).
       // Shade-only; the other primary passes declare a subset of the layout.
       { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade-only)' },
-      // H41 — analytic point/spot emitters for shade NEE (separate from the
-      // RIS area-emitter pool). The rgba32float texture starts with a header
-      // texel whose .x lane is the light count, so zero-light scenes bind a
-      // valid placeholder while the shade loop remains a no-op.
-      { binding: 13, kind: 'tex', note: 'analytic_lights (H41 point/spot NEE; rgba32float texture; shade-only)' },
+      // H41 — analytic point/spot emitters for camera-visible NEE in opaque shade
+      // and transparent OIT (separate from the RIS area-emitter pool). The
+      // rgba32float texture starts with a header texel whose .x lane is the light
+      // count, so zero-light scenes bind a valid placeholder while the loops stay
+      // no-op.
+      { binding: 13, kind: 'tex', note: 'analytic_lights (H41 point/spot NEE; rgba32float texture; shade + transparent OIT)' },
       // B1 (road-to-100) — per-triangle roughness+metalness lane (r32uint
       // texture, one u32 per triangle: bits[31:24]=rough×255, [23:16]=metal×255).
       // Read by ris/risGi/risGiNrc/restirCastPrimary/shade via

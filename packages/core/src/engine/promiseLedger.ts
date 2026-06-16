@@ -359,7 +359,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
   // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
-  // but lighting/GI/shadow participation remains approximate.
+  // including direct sun plus analytic point/spot lighting, but area-emitter /
+  // ReSTIR direct light, GI, and shadow participation remain approximate.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',
@@ -390,9 +391,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Approximate because emissive selection power still uses the CPU-readable
   // average rather than texel-PDF importance sampling, TLAS/analytic emitters
   // and GI/RC/DDGI emitter payloads still fall back to averaged Le,
-  // GI receiver/reuse targets remain a proxy around stored Lo rather than a
-  // full receiver-lobe reservoir, lightMap is camera-visible only, and
-  // transparent blend lighting/GI/shadow semantics remain approximate.
+  // lightMap is camera-visible only, and transparent blend area-emitter/ReSTIR
+  // direct light plus GI/shadow semantics remain approximate.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',

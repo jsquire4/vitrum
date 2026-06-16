@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TRANSPARENT_OIT_MODULE, TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 
 describe('transparent OIT material parity', () => {
-  it('shades camera-visible blend layers with extension-aware material BRDFs for sky and direct sun', () => {
+  it('shades camera-visible blend layers with extension-aware material BRDFs for sky, sun, and point/spot lights', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f');
     expect(TRANSPARENT_OIT_WGSL).toContain('let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f');
@@ -24,6 +24,17 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + hit.normal * 1e-3,');
     expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = select(1.0, 0.0, sunOccluded);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(13) var analytic_lights: texture_2d<f32>;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAnalyticNEE(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let analyticHeader = textureLoad(analytic_lights, vec2i(0, 0), 0);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let count = u32(max(analyticHeader.x, 0.0));');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let castShadowDisabled = light3.y > 0.5;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('if (!castShadowDisabled) {');
+    expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + geoNormal * 1e-3,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * brdf * nDotL * cone * invDist2;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect) * viewFacing + emissive + baked;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');
     expect(TRANSPARENT_OIT_WGSL).toContain('oitLayerRadiance(hit, hitPos, primaryRay.direction, word);');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');

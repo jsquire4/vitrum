@@ -7,13 +7,13 @@
  * composites them over the already-denoised opaque/background radiance.
  *
  * Lighting policy: transparent layer radiance is an intentionally cheap
- * camera-visible approximation. The sky/environment and direct sun terms use
- * the same atlas-backed material-lobe BRDF as opaque shade/ReSTIR material
- * scoring; direct sun also uses the same castShadow-aware scene visibility
- * query as opaque shade. Emissive and light-map terms remain first-hit
- * camera-visible approximations. ReSTIR/GI participation remains handled by
- * the existing stochastic traversal path until transparent GI has its own
- * validation row.
+ * camera-visible approximation. The sky/environment, direct sun, and analytic
+ * point/spot terms use the same atlas-backed material-lobe BRDF as opaque
+ * shade/ReSTIR material scoring; direct lights also use the same
+ * castShadow-aware scene visibility query as opaque shade. Emissive and
+ * light-map terms remain first-hit camera-visible approximations. ReSTIR/GI
+ * participation remains handled by the existing stochastic traversal path until
+ * transparent GI has its own validation row.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -29,6 +29,7 @@ export const TRANSPARENT_OIT_WGSL = /* wgsl */ `
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 @group(1) @binding(12) var bvh_emissive: texture_2d<f32>;
+@group(1) @binding(13) var analytic_lights: texture_2d<f32>;
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -146,6 +147,96 @@ fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3
   return avg * (2.0 * PI / 5.0);
 }
 
+fn oitLayerAnalyticNEE(
+  hitPos: vec3f,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  geoNormal: vec3f,
+  payload: RestirDIMaterialPayload,
+  wo: vec3f,
+) -> vec3f {
+  let analyticDims = textureDimensions(analytic_lights);
+  let analyticHeader = textureLoad(analytic_lights, vec2i(0, 0), 0);
+  let count = u32(max(analyticHeader.x, 0.0));
+  if (count == 0u) { return vec3f(0.0); }
+
+  var Lo = vec3f(0.0);
+  for (var li = 0u; li < count; li++) {
+    let base = 1u + li * 4u;
+    let light0 = textureLoad(analytic_lights, vec2i(i32(base % analyticDims.x), i32(base / analyticDims.x)), 0);
+    let light1 = textureLoad(analytic_lights, vec2i(i32((base + 1u) % analyticDims.x), i32((base + 1u) / analyticDims.x)), 0);
+    let light2 = textureLoad(analytic_lights, vec2i(i32((base + 2u) % analyticDims.x), i32((base + 2u) / analyticDims.x)), 0);
+    let light3 = textureLoad(analytic_lights, vec2i(i32((base + 3u) % analyticDims.x), i32((base + 3u) / analyticDims.x)), 0);
+    let lightPos = light0.xyz;
+    let lightLe = light1.xyz;
+    let lightDir = light2.xyz;
+    let cosInner = light2.w;
+    let cosOuter = light3.x;
+    let castShadowDisabled = light3.y > 0.5;
+
+    let toL = lightPos - hitPos;
+    let dist = length(toL);
+    if (dist < 1e-4) { continue; }
+    let wi = toL / dist;
+    let nDotL = dot(normal, wi);
+    if (nDotL <= 0.0) { continue; }
+
+    var cone = 1.0;
+    let hasSpot = dot(lightDir, lightDir) > 0.01;
+    if (hasSpot) {
+      let cosTheta = dot(-lightDir, wi);
+      if (cosTheta <= cosOuter) { continue; }
+      cone = smoothstep(cosOuter, cosInner, cosTheta);
+    }
+
+    if (!castShadowDisabled) {
+      let occluded = traceSceneAnyCastMask(
+        ubo.bvhMode,
+        ubo.tlasNodeCount,
+        &bvh_index,
+        &bvh_position,
+        &bvh,
+        &tlasNodes,
+        &tlasInstanceIndices,
+        &tlasBlasRoots,
+        &tlasInstanceWorldToLocal,
+        &tlasInstanceLocalToWorld,
+        hitPos + geoNormal * 1e-3,
+        wi,
+        dist - 2e-3,
+        ubo.triIntersectEpsilon,
+        true,
+        bvh_material,
+        BVH_MATERIAL_TEX_WIDTH,
+      );
+      if (occluded) { continue; }
+    }
+
+    let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
+    let brdf = evalGGXWithSpecularClearcoatSheen(
+      payload.albedo,
+      payload.rough,
+      payload.metal,
+      payload.specular.rgb,
+      payload.specular.a,
+      payload.anisotropy.x,
+      payload.anisotropy.y,
+      payload.iridescence,
+      payload.clearcoat.x,
+      payload.clearcoat.y,
+      payload.sheen.a,
+      payload.sheenRoughness,
+      payload.sheen.rgb,
+      normal,
+      clearcoatNormal,
+      wo,
+      wi,
+    );
+    Lo += lightLe * brdf * nDotL * cone * invDist2;
+  }
+  return Lo;
+}
+
 fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f {
   let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
   let uv1 = materialAtlasUv1ForHit(hit);
@@ -164,6 +255,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   let baked = sampleLightMap(hit.indices.w, hit.uv, uv1);
 
   let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);
+  let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let toSun = safe_normalize(ubo.sunDirection);
   let sunBrdf = evalGGXWithSpecularClearcoatSheen(
     payload.albedo,
@@ -209,7 +301,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   }
   let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));
-  return (skyAmbient + sunDirect) * viewFacing + emissive + baked;
+  return (skyAmbient + sunDirect + analyticDirect) * viewFacing + emissive + baked;
 }
 
 @compute @workgroup_size(8, 8, 1)

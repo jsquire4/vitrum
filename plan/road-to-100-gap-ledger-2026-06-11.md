@@ -161,6 +161,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   approximations, and transparent ReSTIR/GI/shadow participation is still not
   promoted, but direct sun matches the opaque path's scene-visibility convention
   via `traceSceneAnyCastMask` with `castShadow:false` respected and glass skipped.
+- Latest 2026-06-16 follow-up: transparent OIT now also binds the existing
+  `analytic_lights` texture and shades analytic point/spot emitters through the
+  same material-lobe payload, inverse-square falloff, spot cone attenuation, and
+  cast-shadow-aware visibility convention as opaque shade. Area-emitter/ReSTIR
+  direct light, transparent GI/RC/DDGI/ReSTIR-GI participation,
+  alpha-map-aware shadow filtering, and first-hit emissive/light-map semantics
+  remain open approximation/promotion tails.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
   GPU allocation; the tracked `starter-v1.vitrum-model` and
@@ -1571,10 +1578,13 @@ Evidence:
   GGX/clearcoat/sheen/aniso/iridescence material payload as opaque
   shade/ReSTIR material scoring instead of a diffuse-only sun term, and HDRI
   sky/environment lighting uses a deterministic five-tap material-lobe estimate.
-  The structured warning remains because no-HDRI sky fallback, light-map, and
-  emissive terms are first-hit approximations and ReSTIR/GI/shadow participation
-  is still approximate, including `updatePrimitive(id, { material })` patches
-  that mutate a primitive into fractional blend.
+  Latest 2026-06-16 follow-up: analytic point/spot light radiance now joins that
+  transparent OIT direct-light path through binding 13. The structured warning
+  remains because no-HDRI sky fallback plus light-map/emissive terms are
+  first-hit approximations, and area-emitter/ReSTIR direct light plus
+  GI/shadow/alpha-aware occlusion participation is still approximate, including
+  `updatePrimitive(id, { material })` patches that mutate a primitive into
+  fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow, direct-light selection power, and merged-BVH
   ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as

@@ -42,7 +42,8 @@
 > reference-render promotion. Follow-up code in this wave added map-free
 > `shadingModel:'unlit'` baseColor and map-free clearcoat scalars to the safe
 > pt-webgpu path-replay adjoint slice, made transparent-OIT direct sun
-> cast-shadow-aware, and warm-up gated NRC substitution so spread-fired records
+> cast-shadow-aware, added material-lobe analytic point/spot direct light to
+> transparent OIT, and warm-up gated NRC substitution so spread-fired records
 > train from frame 0 while cold MLP predictions cannot replace DDGI suffix
 > radiance.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
@@ -703,19 +704,21 @@ mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
 `traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
 visibility; the cast-shadow mask skips bit 2 in occlusion rays; and
 `HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
-fractional `alphaMode:'blend'` because no-HDRI sky fallback,
-light-map/emissive terms, and GI/shadow participation remain approximate.
+fractional `alphaMode:'blend'` because no-HDRI sky fallback, area-emitter/ReSTIR
+direct light, light-map/emissive terms, and GI/shadow participation remain
+approximate.
 Readable `alphaMap` cutout is
 atlas-backed; camera-visible fractional blend now uses the transparent-OIT pass
 after `indirect-combine` and before temporal accumulation, and its direct-sun
-term consumes the same atlas-backed GGX/clearcoat/sheen/aniso/iridescence
-material payload as opaque shade/ReSTIR material scoring.
+plus analytic point/spot terms consume the same atlas-backed
+GGX/specular/clearcoat/sheen/aniso/iridescence material payload as opaque
+shade/ReSTIR material scoring.
 
 | Step | Code | Footgun |
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` `traceSceneFirstHitAlphaMaskTextured`; RIS/shade/temporal/spatial/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
-| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe HDRI estimate for camera-visible sky/environment lighting, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent no-HDRI sky fallback plus light-map/emissive terms remain first-hit approximations; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun plus analytic point/spot lights through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe HDRI estimate for camera-visible sky/environment lighting, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent no-HDRI sky fallback plus first-hit light-map/emissive terms remain approximations; area-emitter/ReSTIR direct light, ReSTIR/GI/shadow participation, and alpha-aware shadow filtering still use the existing approximate lanes until validated separately |
 | ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and remains approximate for GI/shadow participation. | Keep warning until transparent lighting/GI promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)
@@ -759,8 +762,9 @@ emissive-map light selection still uses a CPU-readable average rather than
 texel-exact emitter PDFs, TLAS/analytic emitter payloads plus GI/RC/DDGI
 emission still use averaged `Le`, GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
-transparent blend now has camera-visible OIT composition but transparent
-lighting/GI/shadow participation still follows the approximate realtime lanes,
+transparent blend now has camera-visible OIT composition with direct sun plus
+analytic point/spot lighting, but area-emitter/ReSTIR direct light and
+GI/shadow participation still follow the approximate realtime lanes,
 and baked light maps' non-camera paths still use scalar packed lanes. Bump maps now feed
 shade-owned, DI, and GI suffix visible-normal payloads; displacement maps remain
 deliberately unsupported until a true geometry/BVH displacement path exists.
@@ -1007,7 +1011,7 @@ separate Deno/WebGPU harness issue to be cleared first.
 | Category | Fields | Walkaround work |
 |----------|--------|-----------------|
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, envMapIntensity, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override, DDGI material-emissive direct probe hits, and HDRI envMapIntensity scaling closed; remaining scalar work belongs to atlas/lobe parity rows |
-| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend camera composition code-closed via transparent OIT; transparent lighting/GI/shadow participation remains approximate |
+| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend camera composition code-closed via transparent OIT with direct sun plus analytic point/spot lighting; transparent area-emitter/ReSTIR direct light, GI/shadow participation, and alpha-aware occlusion filtering remain approximate |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
 | Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate after shade-owned, ReSTIR-DI, GI suffix, and receiver-lobe GI target consumption; native promotion still needs material-furnace/reference A/B where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |

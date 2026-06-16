@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent OIT analytic lights, 2026-06-16)
+
+- **Transparent blend layers now receive analytic point/spot direct light:** `@vitrum/walkaround-hybrid` transparent OIT binds the existing `analytic_lights` texture and adds a deterministic point/spot NEE loop using the atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload, inverse-square falloff, spot cone attenuation, and the shared cast-shadow-aware visibility query. Area-emitter/ReSTIR direct light, transparent GI/RC/DDGI/ReSTIR-GI participation, alpha-map-aware shadow filtering, and first-hit emissive/light-map semantics remain explicit approximation tails.
+
 ### Fixed (pt-webgpu clearcoat adjoint breadth, 2026-06-16)
 
 - **Map-free clearcoat scalars now participate in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for `clearcoat` and `clearcoatRoughness`, reads packed material vec4 #23 in the adjoint pass, scatters explicit field codes across the existing deterministic direct-light replay loops, and routes map-free opaque inverse sessions for those fields to `path-replay`. Clearcoat maps/normal maps, sheen, iridescence, anisotropy, transmission, environment, indirect, and stochastic area sampling remain finite-difference or validation tails.
