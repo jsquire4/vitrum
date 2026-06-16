@@ -433,9 +433,9 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // Wave 4 — ENV_SAMPLE_SENTINEL: shadow ray to infinity along the stored dir.
     if (lid == ENV_SAMPLE_SENTINEL) {
       let envDir = envDirFromXi(r.xi);
-      // SHADOW-01 — DI shadow rays honor primitive castShadow:false via the
-      // bvh_material bit-0 mask (traceSceneAnyCastMask).
-      let occluded = traceSceneAnyCastMask(
+      // SHADOW-01 / ALPHA-03 — DI shadow rays honor primitive castShadow:false
+      // and readable texture alpha coverage via the material atlas.
+      let occluded = traceSceneAnyAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -464,11 +464,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       let wi  = toL / dist;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      // SHADOW-01 — castShadow:false geometry is skipped via the bvh_material mask.
+      // SHADOW-01 / ALPHA-03 — castShadow:false geometry and readable texture
+      // alpha coverage are skipped via the material atlas.
       // Emitter castShadow:false disables the emitter's own NEE shadow ray.
       var occluded = false;
       if (e.castShadowDisabled < 0.5) {
-        occluded = traceSceneAnyCastMask(
+        occluded = traceSceneAnyAlphaMaskTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,

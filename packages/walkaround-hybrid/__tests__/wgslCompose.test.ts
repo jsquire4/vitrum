@@ -411,10 +411,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + materialDecode + SPATIAL_GI_GRIS', () => {
+  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + materialDecode + materialAtlas + SPATIAL_GI_GRIS', () => {
     // GRIS variant adds `sceneTraversal` (the reconnection-visibility ray's
     // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math),
     // and DROPS `jacobianShift` (grisShiftJacobian replaces the legacy reuse).
+    // ALPHA-03 adds `materialAtlas` directly so reconnection visibility can
+    // evaluate atlas-backed alpha coverage instead of the scalar-only mask.
     // Task3 — `spatialGiCommon` (requires:[]) is now the second declared dep,
     // so it lands immediately after walkaroundUbo, before sceneTraversal.
     expect(composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
@@ -425,8 +427,8 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       GRIS_REUSE_WGSL +
       MATERIAL_DECODE_WGSL +
-      CAMERA_RAYS_WGSL +
       MATERIAL_ATLAS_WGSL +
+      CAMERA_RAYS_WGSL +
       RESTIR_CAST_PRIMARY_WGSL +
       GGX_BRDF_WGSL +
       RESTIR_GI_MATERIAL_WGSL +

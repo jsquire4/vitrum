@@ -229,7 +229,7 @@ fn grisReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * GRIS_NORMAL_BIAS;
-  let occ = traceSceneAnyCastMask(
+  let occ = traceSceneAnyAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -494,5 +494,5 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SPATIAL_GI_GRIS_MODULE: WgslModule = {
   name: 'spatialGiGris',
   source: SPATIAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse', 'materialDecode', 'cameraRays', 'restirCastPrimary', 'restirGiMaterial'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse', 'materialDecode', 'materialAtlas', 'cameraRays', 'restirCastPrimary', 'restirGiMaterial'],
 };

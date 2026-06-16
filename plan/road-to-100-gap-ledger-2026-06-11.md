@@ -1667,8 +1667,12 @@ Evidence:
   per-triangle mode/opacity/cutoff metadata, and `materialAtlas.wgsl`
   `traceSceneFirstHitAlphaMaskTextured` applies `opacity * alphaMap.r <
   alphaCutoff` in RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and
-  NRC GI paths. The shared cast-shadow mask still skips scalar bit 2 for
-  occlusion rays. 2026-06-16 follow-up: camera-visible fractional blend now
+  NRC GI paths. 2026-06-16 follow-up: `traceSceneAnyAlphaMaskTextured` now
+  evaluates readable `baseColorMap.a`, `alphaMap.r`, vertex alpha, opacity,
+  and mask/blend coverage for shade direct-light shadows, ReSTIR-DI
+  visibility, ReSTIR-GI/NRC visibility, and GRIS temporal/spatial
+  reconnection visibility while preserving `castShadow:false` and `skipGlass`
+  semantics. Camera-visible fractional blend now
   routes through the transparent-OIT pass (`transparentOit.wgsl.ts`) after
   `indirect-combine`; the opaque shade pass skips fractional blend layers, OIT
   ray-walks those layers front-to-back, writes `transparentCompositeTexture`,

@@ -349,11 +349,13 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   emissiveIntensity: 'native',
   shadingModel: 'approximate',
   // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
-  // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
+  // handles are sampled in the atlas-backed primary/RIS/GI traversal path and
+  // in atlas-backed shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
   // including direct sun plus analytic point/spot lighting with alpha-aware
   // direct shadow transmittance and center-sampled finite-emitter direct light,
-  // but reservoir-backed ReSTIR direct light and GI participation remain approximate.
+  // but transparent layers still are not ReSTIR/GI/DDGI/RC transport
+  // participants.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',
@@ -721,8 +723,9 @@ type ShadowSupportMatrix = Readonly<
 /** walkaround-hybrid — primitive castShadow is honored by DI shadow predicates,
  *  ReSTIR-GI reservoir visibility, DDGI probe direct-light visibility, RC probe
  *  direct-light visibility, and GRIS reconnection visibility. The main pipeline
- *  reads bvh_material bit 0 via traceSceneAnyCastMask; DDGI/RC read shared
- *  MaterialEntry flag bit 1 through predicate-backed shared-BVH traversal.
+ *  uses traceSceneAnyAlphaMaskTextured for atlas-backed direct/ReSTIR/GI
+ *  shadow visibility; DDGI/RC read shared MaterialEntry flag bit 1 through
+ *  predicate-backed shared-BVH traversal.
  *  Emitter castShadow is honored across direct analytic/area NEE,
  *  DDGI fixture/sun probe lights, RC fixture/sun probe lights, and the main
  *  direct-sun shade path → 'native'. receiveShadow: see

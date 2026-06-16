@@ -53,7 +53,8 @@
  *
  *   Functions declared by required modules (common, surfaceTextures,
  *   ddgiGridUbo, sampleCascadeC0, stainedGlassShade, environmentSample):
- *     traceSceneAny, traceSceneAnyCastMask (SHADOW-01), traceSceneFirstHit, loadReservoirDI_rw,
+ *     traceSceneAny, traceSceneAnyAlphaMaskTextured (SHADOW-01 / ALPHA-03),
+ *     traceSceneFirstHit, loadReservoirDI_rw,
  *     loadReservoirGI_rw, sampleEmitterPoint, emitterGeometry,
  *     evalGGX, evalGGXSpecularOnly, decodeSurfaceTextureId,
  *     surfaceTextureMod, decodeMaterialColor, decodeIsMetal,
@@ -205,8 +206,9 @@ fn lo_analyticNEE(
 
     if (!castShadowDisabled) {
       // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
-      // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
-      let occ = traceSceneAnyCastMask(
+      // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
+      // and readable texture-alpha cutouts through the material atlas.
+      let occ = traceSceneAnyAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -298,8 +300,9 @@ fn lo_direct(
     // (light passes through glass; per-channel tinted-visibility handles tint).
     // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
     // shading normal can dip below the surface near silhouettes → self-hit).
-    // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
-    let occ = traceSceneAnyCastMask(
+    // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
+    // and readable texture-alpha cutouts through the material atlas.
+    let occ = traceSceneAnyAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -409,9 +412,10 @@ fn lo_sunNEE(
   // lo_sg_caustic handles the tinted-glass path separately when the stained-glass
   // flag is set. This conservative transparency matches the analytic-NEE convention
   // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
-  // SHADOW-01 — DI shadow rays skip castShadow:false geometry (bvh_material bit 0).
+  // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry and
+  // readable texture-alpha cutouts through the material atlas.
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    let occ = traceSceneAnyCastMask(
+    let occ = traceSceneAnyAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,

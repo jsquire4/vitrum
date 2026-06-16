@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround texture-alpha shadow predicates, 2026-06-16)
+
+- **Walkaround opaque/ReSTIR/GI shadow visibility now evaluates atlas alpha coverage:** `@vitrum/walkaround-hybrid` routes shade direct-light shadows, ReSTIR-DI visibility, ReSTIR-GI visibility, NRC GI visibility, and GRIS temporal/spatial reconnection visibility through a material-atlas shadow walk. The new path preserves `castShadow:false` and `skipGlass` semantics while evaluating readable `baseColorMap.a`, `alphaMap.r`, vertex alpha, opacity, and mask/blend coverage at the actual blocker hit. Transparent layers still do not participate as ReSTIR/GI/DDGI/RC transport vertices, and exact texel-PDF emissive selection remains an open tail.
+
 ### Fixed (glTF WebGPU spec-gloss roughness bake, 2026-06-16)
 
 - **WebGPU-target glTF texture decode now bakes legacy spec-gloss alpha roughness:** `decodeSceneTextures(target:'webgpu')` / `loadGltfAndDecodeTextures({ textureTarget:'webgpu' })` now synthesize the same linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.a` that the CPU-linear path already produced, while preserving the decoded `specularColorMap` handle in sRGB form for WebGPU upload.

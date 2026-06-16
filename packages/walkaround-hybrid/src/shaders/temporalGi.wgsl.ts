@@ -246,7 +246,7 @@ fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * TGI_GRIS_NORMAL_BIAS;
-  let occ = traceSceneAnyCastMask(
+  let occ = traceSceneAnyAlphaMaskTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -479,5 +479,5 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TEMPORAL_GI_GRIS_MODULE: WgslModule = {
   name: 'temporalGiGris',
   source: TEMPORAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse', 'materialDecode', 'restirCastPrimary', 'restirGiMaterial'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse', 'materialDecode', 'materialAtlas', 'restirCastPrimary', 'restirGiMaterial'],
 };

@@ -422,7 +422,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (distS_g > 1e-4) {
         let wiZ_g = toS_g / distS_g;
         let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
-        let occ_g = traceSceneAnyCastMask(
+        let occ_g = traceSceneAnyAlphaMaskTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
@@ -614,7 +614,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let occ = traceSceneAnyCastMask(
+      let occ = traceSceneAnyAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
