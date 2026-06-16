@@ -1000,8 +1000,19 @@ For each fixture in `tools/reference-assets/gltf/`:
 4. Assert `meanLum > ε`, no GPU validation errors
 5. Compare hash to golden PNG (tolerance for MC noise on PT)
 
-**Still queued:** the GPU render/golden-PNG half above. The new sweep is the
-CPU/API/diagnostic preflight, not a substitute for reference captures.
+✅ **FOCUSED GPU BOOT/READBACK ADDED (2026-06-16):** the same synthetic
+material-heavy fixture is now shared with `tools/behavioral-gate/gate.mjs` and
+runs as `pt/gltf-material-sweep`. The gate drives the asset through
+`loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear' })`,
+asserts all 18 decoded texture-report rows and CPU-readable handles survived
+controller attachment, boots `pt-webgpu`, renders 8 spp at 64², and requires
+finite non-black readback with zero GPU validation errors.
+
+**Still queued after this follow-up:** golden-PNG comparison, real-asset sweep
+coverage, and full-tier rich-material fidelity captures. On WSL lavapipe this
+gate proves one-call glTF decode/controller/backend boot/readback for the
+material-heavy asset, but `pt-webgpu` runs in the lite profile and still emits
+structured warnings for maps/lobes that the lite profile does not render.
 
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 
@@ -1044,16 +1055,18 @@ WSL GPU/browser harness.
 
 #### 5E — Behavioral gate expansion
 
-✅ CLOSED (Wave 10): behavioral gate now includes five adapter-backed glTF
+✅ CLOSED (Wave 10 + material-sweep follow-up): behavioral gate now includes six adapter-backed glTF
 fixtures on the runnable `pt-webgpu` lane: unlit (`KHR_materials_unlit`),
 textured PBR (`baseColorTexture` through the decode hook), transmission glass
 (`KHR_materials_transmission`), skinned animation (skin + animation channel
-import), and Draco (mock `KHR_draco_mesh_compression` decoder).
+import), Draco (mock `KHR_draco_mesh_compression` decoder), and the synthetic
+material sweep fixture covering base/KHR texture-map decode/report plumbing.
 `tools/behavioral-gate/gate.mjs` now prepares those fixtures through
 `loadGltfForEngine()` with an injected patch-target engine, asserts the
 controller attached and called `setScene()`, advances the skinned-animation
-controller and requires an `updatePrimitive()` patch, then boots the real
-renderer with the prepared scene and requires finite non-black output.
+controller and requires an `updatePrimitive()` patch, asserts the material
+sweep's 18 CPU-readable decoded map rows, then boots the real renderer with the
+prepared scene and requires finite non-black output.
 `--filter gltf` provides the focused lane.
 
 Honesty boundary: on the WSL lavapipe adapter this lane runs through
@@ -1116,7 +1129,9 @@ separate Deno/WebGPU harness issue to be cleared first.
 6. Walkaround texture atlas + UV/tangent buffers
 7. Walkaround alpha + shadow GI parity
 8. `createEngine` + `pickBackend` glTF-aware + `examples/gltf-viewer`
-9. Additional glTF material sweep beyond the closed behavioral gate fixtures
+9. ~~Additional glTF material sweep beyond the closed behavioral gate fixtures~~
+   ✅ narrowed by `pt/gltf-material-sweep`; remaining work is golden/full-tier
+   fidelity capture, not API boot/readback plumbing.
 10. Ledger/README/fidelity matrix reconciliation
 
 ### Active performance track

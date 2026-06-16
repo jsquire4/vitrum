@@ -57,6 +57,11 @@ import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { loadGltfForEngine } from "@vitrum/gltf-adapter";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+import {
+  SWEEP_MAPS,
+  makeSweepGltf,
+  makeSweepTextureDecodeHooks,
+} from "../gltf-material-sweep/fixture.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
@@ -100,6 +105,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-transmission": { expected: "ok" },
   "pt/gltf-skinned-animation": { expected: "ok" },
   "pt/gltf-draco-mock":   { expected: "ok" },
+  "pt/gltf-material-sweep": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -168,6 +174,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-transmission", eng: {},                                    scene: { gltf: "transmission" } },
   { label: "pt/gltf-skinned-animation", eng: {},                               scene: { gltf: "skinned-animation" } },
   { label: "pt/gltf-draco-mock",   eng: {},                                    scene: { gltf: "draco-mock" } },
+  { label: "pt/gltf-material-sweep", eng: {},                                  scene: { gltf: "material-sweep" } },
 ];
 
 const WH_CONFIGS = [
@@ -537,7 +544,8 @@ function makeDracoMockGltfFixture() {
 
 async function buildGltfFixtureScene(kind) {
   const fixture =
-    kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
+    kind === "material-sweep" ? { ...makeSweepGltf(), ...makeSweepTextureDecodeHooks(), materialSweep: true }
+      : kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
       : kind === "draco-mock" ? makeDracoMockGltfFixture()
       : makeQuadGltfFixture(kind);
   const preparedScenes = [];
@@ -568,6 +576,7 @@ async function buildGltfFixtureScene(kind) {
       textureTarget: "cpu-linear",
       decodeImage: fixture.decodeImage,
       decodePixels: fixture.decodePixels,
+      ...(fixture.materialSweep ? { maxTextureSize: 8, warnOnNpotRepeatWrap: true } : {}),
     } : {}),
     ...(fixture.dracoDecode ? { dracoDecode: fixture.dracoDecode } : {}),
   });
@@ -607,6 +616,38 @@ async function buildGltfFixtureScene(kind) {
     }
     if (preparedScenes[0] !== result.asset.scene || result.asset.scene !== result.controller.scene) {
       throw new Error("glTF textured-pbr fixture attached a scene other than the decoded controller scene");
+    }
+  }
+  if (kind === "material-sweep") {
+    const missing = SWEEP_MAPS.filter((field) => !result.textureDecodeReport.entries.some((entry) =>
+      entry.materialField === field && entry.primitiveIndex === 0));
+    if (missing.length > 0) {
+      throw new Error(`glTF material-sweep fixture missed textureDecodeReport fields: ${missing.join(", ")}`);
+    }
+    if (result.textureDecodeDiagnostics.length > 0) {
+      throw new Error(
+        `glTF material-sweep fixture emitted texture decode diagnostics: ` +
+        `${result.textureDecodeDiagnostics.map((d) => d.message ?? d.code ?? String(d)).join(" | ")}`,
+      );
+    }
+    if (result.textureDecodeWarnings.length > 0) {
+      throw new Error(`glTF material-sweep fixture emitted texture decode warnings: ${result.textureDecodeWarnings.join(" | ")}`);
+    }
+    if (result.textureDecodeReport.mapCount !== 18 || result.textureDecodeReport.cpuReadableCount !== 18) {
+      throw new Error(
+        `glTF material-sweep fixture did not decode every material map ` +
+        `(maps=${result.textureDecodeReport.mapCount}, cpu=${result.textureDecodeReport.cpuReadableCount})`,
+      );
+    }
+    const missingHandles = SWEEP_MAPS.filter((field) => {
+      const ref = first.material?.[field];
+      return !(ref?.handle?.data instanceof Float32Array);
+    });
+    if (missingHandles.length > 0) {
+      throw new Error(`glTF material-sweep fixture did not attach CPU-linear handles for: ${missingHandles.join(", ")}`);
+    }
+    if (preparedScenes[0] !== result.asset.scene || result.asset.scene !== result.controller.scene) {
+      throw new Error("glTF material-sweep fixture attached a scene other than the decoded controller scene");
     }
   }
   if (kind === "transmission" && (first.material?.transmission ?? 0) <= 0) {

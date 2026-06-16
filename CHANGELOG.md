@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF material sweep render gate, 2026-06-16)
+
+- **The material-heavy glTF sweep now has a focused `pt-webgpu` render/readback gate:** `tools/gltf-material-sweep` exposes its synthetic base/KHR texture-map fixture and decode hooks, and `tools/behavioral-gate` adds `pt/gltf-material-sweep`. The new lane drives the same asset through `loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear' })`, asserts all 18 decoded texture-report rows and CPU-readable handles survive controller attachment, boots the real `pt-webgpu` backend, renders 8 spp at 64², and requires finite non-black readback with zero GPU validation errors. On lavapipe this proves API/decode/controller/backend boot-readback for the material-heavy asset; full-tier rich-material fidelity and golden-PNG comparison remain promotion evidence.
+
 ### Fixed (pt-webgpu emitter inverse replay slice, 2026-06-16)
 
 - **`@vitrum/pt-webgpu` inverse sessions now accept renderer-consumed scalar map controls:** `materials.<id>.normalScale`, `bumpScale`, `clearcoatNormalScale`, `aoMapIntensity`, `lightMapIntensity`, and `envMapIntensity` can now be optimized through the finite-difference baseline, seeded from the scene, clamped to sane default ranges, and patched back through the incremental material hook. Requested `method:'path-replay'` still downgrades them with structured unsupported-field diagnostics until the analytic replay mirrors those normal/map-scale terms.
