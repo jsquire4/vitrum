@@ -224,7 +224,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropyRotation',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
-const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set(['ior', 'transmission', 'thickness']);
+const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set(['ior', 'transmission', 'thickness', 'attenuationDistance']);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 
 interface ParamSlot {
@@ -249,6 +249,7 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'ior',
   'transmission',
   'thickness',
+  'attenuationDistance',
   'specularIntensity',
   'clearcoat',
   'clearcoatRoughness',
@@ -1203,6 +1204,8 @@ function defaultClampRange(field: string): [number, number] {
       return [0, 1];
     case 'ior':
       return [1, 2.5];
+    case 'attenuationDistance':
+      return [1e-6, Infinity];
     case 'iridescenceIor':
       return [1, 3];
     case 'anisotropyRotation':
@@ -1251,6 +1254,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'ior': return [m.ior ?? 1.5];
       case 'transmission': return [m.transmission ?? 0];
       case 'thickness': return [m.thickness ?? 0];
+      case 'attenuationDistance': return [m.attenuationDistance ?? 1];
       case 'specularColor': return [...(m.specularColor ?? [1, 1, 1])];
       case 'specularIntensity': return [m.specularIntensity ?? 1];
       case 'clearcoat': return [m.clearcoat ?? 0];
@@ -1294,6 +1298,7 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'ior': return { ior: value[0]! };
     case 'transmission': return { transmission: value[0]! };
     case 'thickness': return { thickness: value[0]! };
+    case 'attenuationDistance': return { attenuationDistance: value[0]! };
     case 'specularColor': return { specularColor: value as unknown as Vec3 };
     case 'specularIntensity': return { specularIntensity: value[0]! };
     case 'clearcoat': return { clearcoat: value[0]! };

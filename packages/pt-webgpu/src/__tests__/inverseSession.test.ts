@@ -76,12 +76,13 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const alphaCutoff = mat.alphaMode === 'mask'
         ? mat.alphaCutoff ?? 0.5
         : 0;
+      const attenuationDistance = mat.attenuationDistance ?? 0;
       const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
         rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + alphaCutoff + materialMapIntensity;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity;
         rgb[p * 3 + 2] = mat.baseColor[2];
       }
       return { rgb, channels: 3 as const };
@@ -169,7 +170,7 @@ describe('InverseSession — path resolution + validation throws', () => {
     const fake = makeFakeEngine();
     expect(() => new PtWebgpuInverseSession(fake.hooks, {
       target: targetImage(2, 2, [0, 0, 0]),
-      parameters: [{ path: 'materials.panel.attenuationDistance', kind: 'scalar' }],
+      parameters: [{ path: 'materials.panel.displacementScale', kind: 'scalar' }],
     })).toThrow(/not optimizable/);
   });
 
@@ -208,7 +209,7 @@ describe('InverseSession — path resolution + validation throws', () => {
 });
 
 describe('InverseSession — Phase-0 finite-difference loop converges', () => {
-  it('optimizes scalar transmission and thickness through finite differences', async () => {
+  it('optimizes scalar transport controls through finite differences', async () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -220,6 +221,7 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
                 ...pr.material,
                 transmission: 0.3,
                 thickness: 0.6,
+                attenuationDistance: 0.9,
               },
             }
           : pr,
@@ -230,6 +232,7 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
       parameters: [
         { path: 'materials.panel.transmission', kind: 'scalar', max: 0.2 },
         { path: 'materials.panel.thickness', kind: 'scalar', max: 0.5 },
+        { path: 'materials.panel.attenuationDistance', kind: 'scalar', max: 0.4 },
       ],
       samplesPerStep: 1,
       optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
@@ -237,14 +240,18 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
 
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.3, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.6, 6)]);
+    expect(session.currentValues()[2]).toEqual([expect.closeTo(0.9, 6)]);
 
     const result = await session.step();
     expect(result.gradient[0]![0]).toBeGreaterThan(0);
     expect(result.gradient[1]![0]).toBeGreaterThan(0);
+    expect(result.gradient[2]![0]).toBeGreaterThan(0);
     expect(session.currentValues()[0]![0]).toBeLessThanOrEqual(0.2);
     expect(session.currentValues()[1]![0]).toBeLessThanOrEqual(0.5);
+    expect(session.currentValues()[2]![0]).toBeLessThanOrEqual(0.400001);
     expect(fake.scene.primitives[0]!.material.transmission).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.thickness).toBeCloseTo(session.currentValues()[1]![0]!, 6);
+    expect(fake.scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(session.currentValues()[2]![0]!, 6);
     session.dispose();
   });
 
@@ -1069,7 +1076,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps transmission and thickness params on finite-difference until path replay mirrors transport', () => {
+  it('keeps transport params on finite-difference until path replay mirrors transport', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1082,6 +1089,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 ior: 1.37,
                 transmission: 0.25,
                 thickness: 0.75,
+                attenuationDistance: 1.25,
               },
             }
           : pr,
@@ -1094,6 +1102,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         { path: 'materials.panel.transmission', kind: 'scalar' },
         { path: 'materials.panel.thickness', kind: 'scalar' },
         { path: 'materials.panel.ior', kind: 'scalar' },
+        { path: 'materials.panel.attenuationDistance', kind: 'scalar' },
       ],
       method: 'path-replay',
     });
@@ -1102,6 +1111,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.25, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.75, 6)]);
     expect(session.currentValues()[2]).toEqual([expect.closeTo(1.37, 6)]);
+    expect(session.currentValues()[3]).toEqual([expect.closeTo(1.25, 6)]);
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-transport',
       path: 'materials.panel.transmission',
@@ -1116,6 +1126,11 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       code: 'path-replay-unsupported-transport',
       path: 'materials.panel.ior',
       details: expect.objectContaining({ field: 'ior', finiteDifferenceReason: 'transport' }),
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-transport',
+      path: 'materials.panel.attenuationDistance',
+      details: expect.objectContaining({ field: 'attenuationDistance', finiteDifferenceReason: 'transport' }),
     }));
     session.dispose();
   });
