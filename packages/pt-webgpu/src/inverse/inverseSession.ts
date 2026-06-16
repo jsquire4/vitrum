@@ -165,21 +165,23 @@ export interface AdjointGradientRequest {
  *  - `sheen`, `sheenColor`, `sheenRoughness` — KHR_materials_sheen direct lobe
  *    controls through the additive Charlie lobe. Sheen color/roughness maps
  *    replay as local chain-rule factors.
- *  - `iridescence` — map-free KHR_materials_iridescence scalar through the
+ *  - `iridescence` — KHR_materials_iridescence scalar through the
  *    thin-film-modified base F0 in the same scoped opaque direct-light domain.
- *  - `iridescenceIor` — map-free scalar thin-film IOR through a local symmetric
- *    derivative of that F0 term. Thickness range, iridescence maps, and
- *    thickness maps stay on finite difference until their derivatives are
- *    mirrored and validated.
+ *    Iridescence maps replay as local scalar chain-rule factors.
+ *  - `iridescenceIor` — scalar thin-film IOR through a local symmetric
+ *    derivative of that F0 term. Iridescence thickness maps replay by collapsing
+ *    the min/max thickness range to the sampled forward value for the BRDF
+ *    derivative. Thickness range fields themselves are not optimized here.
  *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, specular color/intensity
- *    maps, and clearcoat/sheen maps are replayed as local chain-rule factors
- *    for the lit BRDF domain above. Emissive-on-lit-BRDF, alpha, transmission,
- *    AO, normal/bump, light-map, iridescence/thickness maps, anisotropy maps,
- *    and other extension maps remain finite-difference fallbacks until their
- *    own source terms are mirrored.
+ *    maps, clearcoat/sheen maps, iridescence/thickness maps, and anisotropy
+ *    maps are replayed as local chain-rule factors for the lit BRDF domain
+ *    above. Emissive-on-lit-BRDF, alpha, transmission, AO, normal/bump,
+ *    light-map, and other extension maps remain finite-difference fallbacks
+ *    until their own source terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
- *    lobe. Anisotropy maps stay on finite difference.
+ *    lobe. Anisotropy maps replay the B-channel strength multiplier and RG
+ *    rotation offset used by the forward shader.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
@@ -194,7 +196,7 @@ export interface AdjointGradientRequest {
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
  * scalar clearcoat, sheen controls, scalar iridescence,
- * scalar iridescenceIor, and map-free anisotropy controls are
+ * scalar iridescenceIor, and anisotropy controls are
  * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
@@ -586,9 +588,6 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
     m.alphaMap != null ||
     m.aoMap != null ||
     m.clearcoatNormalMap != null ||
-    m.iridescenceMap != null ||
-    m.iridescenceThicknessMap != null ||
-    m.anisotropyMap != null ||
     m.bumpMap != null ||
     m.displacementMap != null ||
     m.lightMap != null

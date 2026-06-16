@@ -112,11 +112,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   diameter, environment, indirect, most mapped/transmissive/layered/spectral/volume,
   full stochastic area sampling, and extension-lobe material domains on finite
   difference until those adjoints are implemented and validated. The current map
-	  exceptions are scoped camera-direct emissiveMap replay, baseColorMap/COLOR_0
-	  local chain factors for baseColor fits, roughnessMap/metallicMap local chain
-	  factors for ORM fits, specularColorMap/specularIntensityMap local chain
-	  factors for specular fits, and clearcoat/sheen map local chain factors,
-	  described below.
+  exceptions are scoped camera-direct emissiveMap replay, baseColorMap/COLOR_0
+  local chain factors for baseColor fits, roughnessMap/metallicMap local chain
+  factors for ORM fits, specularColorMap/specularIntensityMap local chain factors
+  for specular fits, clearcoat/sheen map local chain factors, iridescence/thickness
+  map local state, and anisotropy-map strength/rotation local state, described
+  below.
 - Later 2026-06-16 follow-up: scalar `metallic` joined the same scoped
   path-replay domain. The CPU oracle differentiates the opaque base-BRDF diffuse
   fade-out and F0 blend, the emitted WGSL mirrors it, the engine scatters the new
@@ -152,28 +153,39 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   material texture array, mirrors the forward ORM sampler (roughness G, metallic
   B, with each map's UV/transform/wrap metadata), evaluates BRDF partials with
   the hit-local mapped roughness/metallic values, and scatters scalar gradients
-	  through the local G/B chain factors. Normal/bump/AO/light/alpha/transmission
-	  maps and remaining extension-lobe maps remain finite-difference until their source terms,
-	  normals, visibility, emission, or lobe-specific derivatives are mirrored.
+  through the local G/B chain factors. Normal/bump/AO/light/alpha/transmission
+  maps and then-unimplemented extension-lobe maps remained finite-difference
+  until their source terms, normals, visibility, emission, or lobe-specific
+  derivatives were mirrored.
 - Next 2026-06-16 follow-up: specularColorMap and specularIntensityMap joined
   the same scoped direct-light adjoint treatment. The adjoint pass mirrors the
   forward KHR_materials_specular samplers (sRGB RGB color, linear A-channel
   intensity, per-map UV/transform/wrap metadata), evaluates BRDF partials with
   the hit-local mapped specular terms, and scatters specularColor/specularIntensity
-	  gradients through the local map factors. Clearcoat/sheen maps are covered by
-	  the next follow-up below; iridescence/anisotropy maps still remain
-	  finite-difference until their lobe-specific mapped derivatives are mirrored.
-	- Next 2026-06-16 follow-up: clearcoatMap, clearcoatRoughnessMap,
-	  sheenColorMap, and sheenRoughnessMap joined the same scoped direct-light
-	  adjoint treatment. The adjoint pass mirrors the forward extension samplers
-	  (linear clearcoat R, linear clearcoat roughness G, sRGB sheen RGB, linear
-	  sheen roughness A, each with its own UV/transform/wrap metadata), evaluates
-	  BRDF partials with the hit-local mapped extension-lobe terms, and scatters
-	  clearcoat/clearcoatRoughness/sheenColor/sheenRoughness gradients through the
-	  local map factors. ClearcoatNormalMap, iridescence/thickness maps,
-	  anisotropy maps, normal/visibility/path-changing maps, transmission,
-	  environment, indirect, stochastic area sampling, and GPU inverse-fit recapture
-	  remain open proof/implementation tails.
+  gradients through the local map factors. Extension-lobe maps are covered by
+  follow-ups below.
+- Next 2026-06-16 follow-up: clearcoatMap, clearcoatRoughnessMap,
+  sheenColorMap, and sheenRoughnessMap joined the same scoped direct-light
+  adjoint treatment. The adjoint pass mirrors the forward extension samplers
+  (linear clearcoat R, linear clearcoat roughness G, sRGB sheen RGB, linear
+  sheen roughness A, each with its own UV/transform/wrap metadata), evaluates
+  BRDF partials with the hit-local mapped extension-lobe terms, and scatters
+  clearcoat/clearcoatRoughness/sheenColor/sheenRoughness gradients through the
+  local map factors. ClearcoatNormalMap, iridescence/thickness maps,
+  anisotropy maps, normal/visibility/path-changing maps, transmission,
+  environment, indirect, stochastic area sampling, and GPU inverse-fit recapture
+  remained open proof/implementation tails at that point.
+- Next 2026-06-16 follow-up: iridescenceMap, iridescenceThicknessMap, and
+  anisotropyMap joined the same scoped direct-light adjoint treatment. The
+  adjoint pass mirrors the forward iridescence R scalar factor, thickness G
+  range-collapse, anisotropy B strength multiplier, and anisotropy RG rotation
+  offset with each map's UV/transform/wrap metadata. It evaluates BRDF partials
+  with those hit-local mapped lobe states and scatters `iridescence` and
+  `anisotropy` gradients through the local multipliers while leaving
+  `iridescenceIor` and `anisotropyRotation` as shape/offset controls. Clearcoat
+  normal maps, normal/visibility/path-changing maps, alpha/AO/light/transmission
+  maps, environment, indirect, stochastic area sampling, and GPU inverse-fit
+  recapture remain open proof/implementation tails.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
   path-replay domain. The CPU oracle now mirrors the additive fixed-F0
@@ -188,14 +200,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `iridescenceIor` now have the same scoped direct-light adjoint treatment;
   `iridescenceIor` is differentiated through a local symmetric derivative of
   the thin-film F0 term inside the replay pass, not through a full-render
-	  finite-difference probe. Clearcoat normal maps, iridescence/thickness maps,
-	  and thickness-range gradients remain open.
+  finite-difference probe. Clearcoat normal maps and thickness-range gradients
+  remain open.
   Next same-day follow-up: map-free scalar `anisotropy` and
   `anisotropyRotation` joined this scoped direct-light adjoint treatment through
   a local symmetric derivative of the anisotropic GGX specular lobe, using the
-  scalar descriptor lanes. Anisotropy maps, transmission, environment,
-  indirect, stochastic area sampling, and GPU inverse-fit recapture remain open
-  proof/implementation tails.
+  scalar descriptor lanes. Anisotropy maps are covered by the map follow-up
+  above; transmission, environment, indirect, stochastic area sampling, and GPU
+  inverse-fit recapture remain open proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including

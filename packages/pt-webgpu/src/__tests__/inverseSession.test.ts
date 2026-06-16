@@ -609,6 +609,74 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when a lit BRDF material uses iridescence maps in the scoped adjoint domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 0.7,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420] as [number, number],
+                iridescenceMap: { handle: { width: 1, height: 1, data: new Float32Array([0.65, 1, 1, 1]) } },
+                iridescenceThicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.iridescence', kind: 'scalar' },
+        { path: 'materials.panel.iridescenceIor', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.7, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(1.45, 6)]);
+    session.dispose();
+  });
+
+  it('keeps path-replay when a lit BRDF material uses an anisotropy map in the scoped adjoint domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                anisotropy: 0.55,
+                anisotropyRotation: 0.3,
+                anisotropyMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 0.8, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.anisotropy', kind: 'scalar' },
+        { path: 'materials.panel.anisotropyRotation', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.55, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.3, 6)]);
+    session.dispose();
+  });
+
   it.each([
     ['transmission', { transmission: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
@@ -983,7 +1051,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps anisotropy-map materials on finite-difference for anisotropy replay targets', () => {
+  it('keeps single-field anisotropy-map materials on path-replay for anisotropy replay targets', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1006,7 +1074,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'materials.panel.anisotropy', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
+    expect(session.method).toBe('path-replay');
     session.dispose();
   });
 

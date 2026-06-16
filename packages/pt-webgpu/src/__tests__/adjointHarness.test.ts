@@ -140,6 +140,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointClearcoatRoughnessTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointSheenColorTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointSheenRoughnessTexture');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointIridescenceTexture');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointIridescenceThicknessTexture');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointAnisotropyTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointSpecularColorTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointSpecularIntensityTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let baseColorFactor = sampleAdjointVertexColor(hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *');
@@ -160,6 +163,13 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveClearcoatRoughness = clamp(clearcoatRoughness * clearcoatRoughnessFactor, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveSheenColor = clamp(sheenColor * sheenColorFactor, vec3f(0.0), vec3f(1.0))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveSheenRoughness = clamp(sheenRoughness * sheenRoughnessFactor, 0.0, 1.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceFactor = sampleAdjointIridescenceTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceThicknessSample = sampleAdjointIridescenceThicknessTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var effectiveIridescence = clamp(iridescence * iridescenceFactor, 0.0, 1.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceThickness = mix(iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let anisotropyMapSample = sampleAdjointAnisotropyTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveAnisotropy = clamp(anisotropy * anisotropyMapSample.strength, 0.0, 1.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveAnisotropyRotation = anisotropyRotation + anisotropyMapSample.rotationOffset');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gUnlitBaseColor = dLoss_dR * baseColorFactor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gBase = select(gBaseColor * baseColorFactor, gUnlitBaseColor, isUnlit)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBase.x * invReplaySamples)'); // per-param scatter
@@ -170,9 +180,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheen * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheenRoughness * sheenRoughnessFactor * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheenColor.x * sheenColorFactor.x * invReplaySamples)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gIridescence * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gIridescence * iridescenceGradientFactor * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gIridescenceIor * invReplaySamples)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gAnisotropy * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gAnisotropy * anisotropyMapSample.strength * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gAnisotropyRotation * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * specularColorFactor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * specularIntensityFactor * invReplaySamples)');
@@ -194,8 +204,11 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = 53u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = 55u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SHEEN_ROUGHNESS = 57u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE = 59u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS = 61u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR = 63u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_ANISOTROPY = 35u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointEmissiveTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');

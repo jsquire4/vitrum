@@ -24,9 +24,10 @@
 > direct-light domains it actually supports (delta directional, point, spot, and
 > center-sampled rect/disc/mesh-area) and falls back to finite difference for most
 > maps except scoped camera-direct emissiveMap replay and baseColorMap/COLOR_0
-	> plus roughnessMap/metallicMap, specularColorMap/specularIntensityMap,
-	> clearcoatMap/clearcoatRoughnessMap, and sheenColorMap/sheenRoughnessMap local
-	> chain factors, plus transmission, layered, spectral/volume, soft-sun, environment,
+> plus roughnessMap/metallicMap, specularColorMap/specularIntensityMap,
+> clearcoatMap/clearcoatRoughnessMap, sheenColorMap/sheenRoughnessMap,
+> iridescenceMap/iridescenceThicknessMap, and anisotropyMap local chain/state
+> factors, plus transmission, layered, spectral/volume, soft-sun, environment,
 > indirect, and other unsupported light/material cases; walkaround material truth was tightened so textured
 > alpha blend emits structured approximation warnings and the ledger no longer
 > claims native rows where GI reuse still used stored-Lo/proxy targeting; neural
@@ -48,10 +49,11 @@
 > that same direct-light adjoint slice, added map-free scalar `iridescenceIor`
 > via a local thin-film-F0 derivative, added map-free scalar `anisotropy` /
 > `anisotropyRotation` through a local anisotropic-GGX derivative, added
-	> baseColorMap/COLOR_0, roughnessMap/metallicMap,
-	> specularColorMap/specularIntensityMap, clearcoatMap/clearcoatRoughnessMap,
-	> and sheenColorMap/sheenRoughnessMap local chain factors for scoped pt-webgpu
-	> path-replay fits, made transparent-OIT direct sun
+> baseColorMap/COLOR_0, roughnessMap/metallicMap,
+> specularColorMap/specularIntensityMap, clearcoatMap/clearcoatRoughnessMap,
+> sheenColorMap/sheenRoughnessMap, iridescenceMap/iridescenceThicknessMap,
+> and anisotropyMap local chain/state factors for scoped pt-webgpu
+> path-replay fits, made transparent-OIT direct sun
 > cast-shadow-aware, rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and
 > camera-visible finite-emitter direct lighting to transparent OIT, and
