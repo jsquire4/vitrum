@@ -150,7 +150,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   for those two fields when the material/light gates pass. 2026-06-16 follow-up:
   map-free `sheen` / `sheenColor` / `sheenRoughness` now have the same scoped
   direct-light adjoint treatment through CPU-FD-checked Charlie-lobe partials.
-  Clearcoat maps, clearcoat normal maps, sheen maps, iridescence/aniso,
+  Later same-day follow-up: map-free scalar `iridescence` and
+  `iridescenceIor` now have the same scoped direct-light adjoint treatment;
+  `iridescenceIor` is differentiated through a local symmetric derivative of
+  the thin-film F0 term inside the replay pass, not through a full-render
+  finite-difference probe. Clearcoat maps, clearcoat normal maps, sheen maps,
+  iridescence/thickness maps, thickness-range gradients, anisotropy,
   transmission, environment, indirect, stochastic area sampling, and GPU
   inverse-fit recapture remain open proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead

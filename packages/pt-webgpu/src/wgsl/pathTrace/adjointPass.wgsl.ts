@@ -70,6 +70,7 @@ export const ADJOINT_FIELD_SHEEN = 9;
 export const ADJOINT_FIELD_SHEEN_ROUGHNESS = 10;
 export const ADJOINT_FIELD_SHEEN_COLOR = 11;
 export const ADJOINT_FIELD_IRIDESCENCE = 12;
+export const ADJOINT_FIELD_IRIDESCENCE_IOR = 13;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -345,6 +346,7 @@ struct DirectLightAdjoint {
   sheenRoughness: f32,
   sheenColor: vec3f,
   iridescenceGrad: f32,
+  iridescenceIorGrad: f32,
 }
 
 fn directLightAdjoint(
@@ -362,6 +364,7 @@ fn directLightAdjoint(
   sheen: f32,
   sheenRoughness: f32,
   sheenColor: vec3f,
+  iridescence: f32,
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
@@ -402,10 +405,14 @@ fn directLightAdjoint(
     baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
     iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
+  let gIridescenceIor = dot(dLoss_dR, dBrdf_dIridescenceIor(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  ) * nDotL * Li);
   return DirectLightAdjoint(
     gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
     gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness, gSheenColor,
-    gIridescence,
+    gIridescence, gIridescenceIor,
   );
 }
 
@@ -446,6 +453,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let sheen = clamp(m23.z, 0.0, 1.0);
     let sheenRoughness = clamp(m23.w, 0.0, 1.0);
     let sheenColor = clamp(m24.rgb, vec3f(0.0), vec3f(1.0));
+    let iridescence = clamp(m24.w, 0.0, 1.0);
     let iridescenceIor = max(m25.x, 1.0);
     let iridescenceThicknessMin = max(m25.y, 0.0);
     let iridescenceThicknessMax = max(m25.z, 0.0);
@@ -484,6 +492,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gSheenRoughness = 0.0;
     var gSheenColor = vec3f(0.0);
     var gIridescence = 0.0;
+    var gIridescenceIor = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -500,6 +509,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         nDotL, dIrrMean.rgb,
       );
@@ -514,6 +524,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
+      gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -535,6 +546,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         nDotL, Li,
       );
@@ -549,6 +561,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
+      gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -576,6 +589,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         nDotL, Li,
       );
@@ -590,6 +604,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
+      gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -624,6 +639,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         nDotL, Li,
       );
@@ -638,6 +654,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
+      gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -667,6 +684,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+        iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         nDotL, Li,
       );
@@ -681,6 +699,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
+      gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -723,6 +742,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset + 2u, gSheenColor.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_IRIDESCENCE}u) {
         adjointScatter(gradOffset, gIridescence * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_IRIDESCENCE_IOR}u) {
+        adjointScatter(gradOffset, gIridescenceIor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed

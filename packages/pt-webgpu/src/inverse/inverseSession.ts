@@ -23,8 +23,8 @@
  * (delta directional, point, spot, and center-sampled rect/disc area lights), or
  * is a map-free `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
- * emissive / specularColor / specularIntensity / clearcoat / map-free sheen
- * controls); any
+ * emissive / specularColor / specularIntensity / clearcoat / map-free sheen /
+ * map-free iridescence controls); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
@@ -93,8 +93,8 @@ export interface InverseEngineHooks {
    * stays inside the adjoint-compatible direct-light domain (delta directional,
    * point, spot, and center-sampled rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
-   * emissive / specularColor / specularIntensity / clearcoat / map-free sheen
-   * controls); otherwise it reports + uses
+   * emissive / specularColor / specularIntensity / clearcoat / map-free sheen /
+   * map-free iridescence controls); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -166,9 +166,10 @@ export interface AdjointGradientRequest {
  *    mirrors those texture derivatives.
  *  - `iridescence` — map-free KHR_materials_iridescence scalar through the
  *    thin-film-modified base F0 in the same scoped opaque direct-light domain.
- *    `iridescenceIor`, thickness range, iridescence maps, and thickness maps
- *    stay on finite difference until their derivatives are mirrored and
- *    validated.
+ *  - `iridescenceIor` — map-free scalar thin-film IOR through a local symmetric
+ *    derivative of that F0 term. Thickness range, iridescence maps, and
+ *    thickness maps stay on finite difference until their derivatives are
+ *    mirrored and validated.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
@@ -182,7 +183,8 @@ export interface AdjointGradientRequest {
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
- * scalar clearcoat, map-free sheen controls, and scalar iridescence are
+ * scalar clearcoat, map-free sheen controls, scalar iridescence, and scalar
+ * iridescenceIor are
  * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
@@ -199,6 +201,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'sheenColor',
   'sheenRoughness',
   'iridescence',
+  'iridescenceIor',
 ]);
 
 interface ParamSlot {
@@ -300,7 +303,11 @@ export class PtWebgpuInverseSession implements InverseSession {
     // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
     const iridescenceOptimizedPrimitiveIds = new Set(
       this.#slots
-        .filter((s) => s.target.domain === 'materials' && s.target.field === 'iridescence')
+        .filter(
+          (s) =>
+            s.target.domain === 'materials' &&
+            (s.target.field === 'iridescence' || s.target.field === 'iridescenceIor'),
+        )
         .map((s) => s.target.id),
     );
     const allEligible = this.#slots.every(
@@ -473,7 +480,7 @@ function isPathReplayCompatibleTarget(
   if (target.field === 'emissive' || target.field === 'emissiveIntensity') {
     return isPathReplayCompatibleEmissiveMaterial(m);
   }
-  if (target.field === 'iridescence') {
+  if (target.field === 'iridescence' || target.field === 'iridescenceIor') {
     return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleIridescenceMaterial(m);
   }
   if (iridescenceOptimizedPrimitiveIds.has(target.id)) return false;

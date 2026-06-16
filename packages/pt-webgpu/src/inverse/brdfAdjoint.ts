@@ -32,8 +32,10 @@
  *    Sheen colour/roughness maps remain outside this oracle.
  *  - map-free scalar KHR_materials_iridescence (`iridescence`) through the
  *    thin-film-modified base F0 used by the opaque direct-light specular and
- *    diffuse partition. Iridescence maps, thickness maps, and IOR/thickness
- *    parameter gradients remain outside this oracle.
+ *    diffuse partition. Map-free `iridescenceIor` is differentiated through a
+ *    local symmetric derivative of that thin-film F0 term. Iridescence maps,
+ *    thickness maps, and thickness-range parameter gradients remain outside
+ *    this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -55,6 +57,7 @@ export type Vec3 = readonly [number, number, number];
 
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
+const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
 
 // ── primitive mirrors (match material.wgsl.ts exactly) ──────────────────────
 
@@ -864,6 +867,49 @@ export function dBrdf_dIridescence(
     iridF[0] - baseF0[0],
     iridF[1] - baseF0[1],
     iridF[2] - baseF0[2],
+  ]);
+}
+
+/**
+ * Path-replay partial for map-free KHR_materials_iridescence `iridescenceIor`.
+ *
+ * The Belcour thin-film helper is piecewise and branchy (TIR, phase flips,
+ * clamps), so this mirrors the WGSL replay path with a local symmetric
+ * derivative of the thin-film F0 colour, then chains that through the existing
+ * ∂BRDF/∂F0 helper. This is still a single replay pass over the frozen path; it
+ * is not a full-render finite-difference probe.
+ */
+export function dBrdf_dIridescenceIor(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  iridescence: number,
+  iridescenceIor: number,
+  iridescenceThicknessMin: number,
+  iridescenceThicknessMax: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (iridescence < 1e-4) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const thicknessNm = iridescenceThicknessMin +
+    (iridescenceThicknessMax - iridescenceThicknessMin) * Math.min(Math.max(vDotH, 0.0), 1.0);
+  const step = IRIDESCENCE_IOR_DERIV_STEP;
+  const iorP = Math.max(1.0, iridescenceIor + step);
+  const iorM = Math.max(1.0, iridescenceIor - step);
+  const denom = iorP - iorM;
+  if (denom <= 1e-6) return [0, 0, 0];
+  const fp = evalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);
+  const fm = evalIridescence(1.0, iorM, vDotH, thicknessNm, baseF0);
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
+    iridescence * (fp[0] - fm[0]) / denom,
+    iridescence * (fp[1] - fm[1]) / denom,
+    iridescence * (fp[2] - fm[2]) / denom,
   ]);
 }
 

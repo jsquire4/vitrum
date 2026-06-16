@@ -32,6 +32,9 @@
  *    `sheenColor`, and `sheenRoughness`;
  *  - map-free KHR_materials_iridescence scalar through the thin-film-modified
  *    base F0 in the opaque direct-light domain;
+ *  - map-free KHR_materials_iridescence IOR through a local symmetric
+ *    derivative of the thin-film F0 term (single replay pass; not a full-render
+ *    finite-difference probe);
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -260,9 +263,10 @@ fn dBrdf_dSpecularIntensity(
   return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
 }
 
-// ── analytic KHR_materials_iridescence scalar partial ───────────────────────
-// Mirrors inverse/brdfAdjoint.ts:dBrdf_dIridescence. This is map-free scalar
-// iridescence only: IOR/thickness are frozen, no iridescence maps, no anisotropy.
+// ── KHR_materials_iridescence scalar partials ───────────────────────────────
+// Mirrors inverse/brdfAdjoint.ts:dBrdf_dIridescence*. This is map-free scalar
+// iridescence only: no iridescence maps, no thickness maps, no anisotropy.
+const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
 fn adjointIridXyzToRec709(xyz: vec3f) -> vec3f {
   return vec3f(
      3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
@@ -354,6 +358,29 @@ fn dBrdf_dIridescence(
   let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, clamp(vDotH, 0.0, 1.0));
   let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
   return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);
+}
+fn dBrdf_dIridescenceIor(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+  iridescence: f32, iridescenceIor: f32,
+  iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence < 1e-4) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let vDotH = max(dot(wo, h), 0.0);
+  let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, clamp(vDotH, 0.0, 1.0));
+  let iorP = max(1.0, iridescenceIor + IRIDESCENCE_IOR_DERIV_STEP);
+  let iorM = max(1.0, iridescenceIor - IRIDESCENCE_IOR_DERIV_STEP);
+  let denom = iorP - iorM;
+  if (denom <= 1e-6) { return vec3f(0.0); }
+  let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);
+  let fm = adjointEvalIridescence(1.0, iorM, vDotH, thicknessNm, baseF0);
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    iridescence * (fp - fm) / denom,
+  );
 }
 
 // ── analytic KHR_materials_clearcoat partials ───────────────────────────────

@@ -26,6 +26,7 @@ import {
 	  dBrdf_dSheenColor,
 	  dBrdf_dSheenRoughness,
 	  dBrdf_dIridescence,
+	  dBrdf_dIridescenceIor,
 	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -378,6 +379,38 @@ describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == 
       expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
     }
   });
+
+  it('matches FD for map-free scalar iridescenceIor over the unclamped interior', () => {
+    const h = 1e-3;
+    const analytic = dBrdf_dIridescenceIor(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.iridescence,
+      cfg.iridescenceIor,
+      cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const fp = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor + h, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence, cfg.iridescenceIor - h, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
 });
 
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
@@ -460,9 +493,13 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 
 	  it('iridescence partial mirrors the thin-film F0 scalar derivative', () => {
 	    expect(wgsl).toContain('fn dBrdf_dIridescence(');
+	    expect(wgsl).toContain('fn dBrdf_dIridescenceIor(');
 	    expect(wgsl).toContain('fn adjointEvalIridescence(');
 	    expect(wgsl).toContain('let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);');
 	    expect(wgsl).toContain('return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);');
+	    expect(wgsl).toContain('const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;');
+	    expect(wgsl).toContain('let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);');
+	    expect(wgsl).toContain('iridescence * (fp - fm) / denom');
 	  });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {

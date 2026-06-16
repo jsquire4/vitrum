@@ -787,6 +787,35 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('resolves map-free scalar iridescenceIor to path-replay when it is the optimized field', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 0.41,
+                iridescenceIor: 1.35,
+                iridescenceThicknessRange: [120, 360] as [number, number],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.iridescenceIor', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(1.35, 6)]);
+    session.dispose();
+  });
+
   it('keeps coupled BRDF params on finite-difference while iridescence is being optimized', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -803,6 +832,29 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [
         { path: 'materials.panel.baseColor', kind: 'rgb' },
         { path: 'materials.panel.iridescence', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it('keeps coupled BRDF params on finite-difference while iridescenceIor is being optimized', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, iridescence: 0.25, iridescenceIor: 1.35 } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb' },
+        { path: 'materials.panel.iridescenceIor', kind: 'scalar' },
       ],
       method: 'path-replay',
     });
