@@ -99,6 +99,17 @@ export interface GltfCpuLinearTextureHandle {
   };
 }
 
+export interface GltfCpuTextureHandle {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Float32Array;
+  readonly __vitrum_hint__: {
+    readonly channels: 4;
+    readonly dataType: 'float32';
+    readonly colorSpace: GltfTextureColorSpace;
+  };
+}
+
 export type DecodeGltfTexturePixelsFn = (
   handle: RawImageHandle,
   context: {
@@ -154,7 +165,7 @@ export interface DecodeSceneTexturesResult {
 }
 
 interface DecodedTextureCacheEntry {
-  readonly handle: GltfCpuLinearTextureHandle;
+  readonly handle: GltfCpuTextureHandle;
   readonly originalWidth: number;
   readonly originalHeight: number;
 }
@@ -387,7 +398,6 @@ async function decodeTextureRef(
     readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   },
 ): Promise<TextureRef> {
-  if (context.options.target === 'webgpu') return ref;
   const handleKind = classifyTextureHandle(ref.handle);
   if (handleKind === 'pixel-data' || handleKind === 'data-texture') return ref;
   if (handleKind !== 'raw-image') {
@@ -420,6 +430,8 @@ async function decodeTextureRef(
   }
 
   const colorSpace = gltfTextureColorSpaceForField(context.field);
+  const outputColorSpace: GltfTextureColorSpace =
+    context.options.target === 'webgpu' ? colorSpace : 'linear';
   let perSpace = context.decoded.get(ref.handle);
   if (perSpace == null) {
     perSpace = new Map();
@@ -434,7 +446,7 @@ async function decodeTextureRef(
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
     });
-    const normalized = normalizeDecodedPixels(pixels, colorSpace);
+    const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace);
     entry = {
       handle: resizeDecodedTextureToMaxSize(normalized, context.options.maxTextureSize),
       originalWidth: normalized.width,
@@ -625,7 +637,27 @@ function emitDecodedTextureDiagnostics(
 function normalizeDecodedPixels(
   pixels: GltfDecodedTexturePixels,
   fieldColorSpace: GltfTextureColorSpace,
-): GltfCpuLinearTextureHandle {
+): GltfCpuLinearTextureHandle;
+function normalizeDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  fieldColorSpace: GltfTextureColorSpace,
+  outputColorSpace: 'linear',
+): GltfCpuLinearTextureHandle;
+function normalizeDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  fieldColorSpace: GltfTextureColorSpace,
+  outputColorSpace: 'srgb',
+): GltfCpuTextureHandle;
+function normalizeDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  fieldColorSpace: GltfTextureColorSpace,
+  outputColorSpace: GltfTextureColorSpace,
+): GltfCpuTextureHandle;
+function normalizeDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  fieldColorSpace: GltfTextureColorSpace,
+  outputColorSpace: GltfTextureColorSpace = 'linear',
+): GltfCpuTextureHandle {
   const width = Math.max(0, Math.floor(pixels.width));
   const height = Math.max(0, Math.floor(pixels.height));
   if (width <= 0 || height <= 0) {
@@ -641,24 +673,23 @@ function normalizeDecodedPixels(
     const g = decodeChannel(pixels.data[s + (channels > 1 ? 1 : 0)] ?? 0, dataType);
     const b = decodeChannel(pixels.data[s + (channels > 2 ? 2 : 0)] ?? 0, dataType);
     const a = channels >= 4 ? decodeChannel(pixels.data[s + 3] ?? 1, dataType) : 1;
-    const convert = fieldColorSpace === 'srgb' && sourceColorSpace !== 'linear';
-    out[p * 4] = convert ? srgbToLinear(r) : r;
-    out[p * 4 + 1] = convert ? srgbToLinear(g) : g;
-    out[p * 4 + 2] = convert ? srgbToLinear(b) : b;
+    out[p * 4] = convertColorChannel(r, sourceColorSpace, outputColorSpace);
+    out[p * 4 + 1] = convertColorChannel(g, sourceColorSpace, outputColorSpace);
+    out[p * 4 + 2] = convertColorChannel(b, sourceColorSpace, outputColorSpace);
     out[p * 4 + 3] = a;
   }
   return {
     width,
     height,
     data: out,
-    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: outputColorSpace },
   };
 }
 
 function resizeDecodedTextureToMaxSize(
-  handle: GltfCpuLinearTextureHandle,
+  handle: GltfCpuTextureHandle,
   maxTextureSize: number | undefined,
-): GltfCpuLinearTextureHandle {
+): GltfCpuTextureHandle {
   if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0) return handle;
   if (handle.width <= maxTextureSize && handle.height <= maxTextureSize) return handle;
 
@@ -684,7 +715,11 @@ function resizeDecodedTextureToMaxSize(
     width,
     height,
     data,
-    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    __vitrum_hint__: {
+      channels: 4,
+      dataType: 'float32',
+      colorSpace: handle.__vitrum_hint__.colorSpace,
+    },
   };
 }
 
@@ -745,6 +780,21 @@ function decodeChannel(value: number, dataType: 'uint8' | 'uint16' | 'float32'):
 function srgbToLinear(v: number): number {
   const c = Math.max(0, Math.min(1, v));
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgb(v: number): number {
+  const c = Math.max(0, Math.min(1, v));
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * (c ** (1 / 2.4)) - 0.055;
+}
+
+function convertColorChannel(
+  value: number,
+  sourceColorSpace: GltfTextureColorSpace,
+  outputColorSpace: GltfTextureColorSpace,
+): number {
+  if (sourceColorSpace === outputColorSpace) return value;
+  if (sourceColorSpace === 'srgb' && outputColorSpace === 'linear') return srgbToLinear(value);
+  return linearToSrgb(value);
 }
 
 function isRawImageHandle(handle: unknown): handle is RawImageHandle {

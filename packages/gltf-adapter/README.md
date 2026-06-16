@@ -365,6 +365,13 @@ host supplies `decodePixels`, raw image handles are converted to linear
 `Float32Array` RGBA payloads using this same color/data policy before backend
 upload.
 
+`decodeSceneTextures(target: 'webgpu')` also resolves raw image handles through
+`decodePixels`, but preserves the backend upload color space: sRGB material maps
+stay sRGB-valued so WebGPU sRGB texture formats can perform the hardware decode,
+while linear/data maps stay linear. This is the predictable pre-upload path for
+Node/worker glTF loads that would otherwise leave `{ kind: 'raw-image' }`
+handles opaque to pt-webgpu.
+
 ### Sampler metadata
 
 `TextureRef` preserves glTF sampler address and filter intent:

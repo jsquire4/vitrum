@@ -116,6 +116,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   remaining tails are now analytic-adjoint breadth, walkaround receiver-lobe/OIT
   promotion, neural/NRC production quality, and validation-backed fidelity
   promotions.
+- Follow-up 2026-06-15: the glTF texture decode bridge now has a real
+  WebGPU-target path. `decodeSceneTextures(target:"webgpu")` resolves raw image
+  handles through `decodePixels` into CPU-readable float handles instead of
+  returning a no-op success, while preserving sRGB-valued pixels for sRGB
+  material maps so pt-webgpu's sRGB texture formats remain correct. The
+  focused adapter test now proves raw-image refs become CPU-readable and clear
+  the opaque-readiness report for pt-webgpu.
 - `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
   `createEngine()` runs and forwards `onWarning` through the facade.
 - `createProgressiveEngine.onError` now mirrors the same

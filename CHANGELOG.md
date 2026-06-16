@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF WebGPU texture decode bridge, 2026-06-15)
+
+- **WebGPU-target texture decode is no longer a no-op:** `decodeSceneTextures(target:'webgpu')` now resolves raw glTF image handles through the host `decodePixels` hook into CPU-readable `Float32Array` texture handles that pt-webgpu can upload deterministically. Unlike the `cpu-linear` target, WebGPU-target decode preserves backend upload color space: sRGB material maps stay sRGB-valued for WebGPU sRGB texture formats, while normal/scalar/data maps stay linear. `textureDecodeReport` now reflects those handles as CPU-readable instead of leaving `{ kind:'raw-image' }` refs opaque.
+
 ### Fixed (walkaround neural/NRC posture, 2026-06-15)
 
 - **Neural checkpoint validation and fallback:** `@vitrum/walkaround-hybrid` now validates `denoiser:'neural'` checkpoints against the U-Net spec before GPU allocation, rejecting missing, unknown, wrong-sized, duplicate, or non-finite layer payloads instead of allowing placeholder buffers. Neural dispatch failures now fall back to raw HDR and surface a fallback `denoiserState` rather than throwing the frame. Enabling `nrcEnabled:true` now emits a structured `walkaround-hybrid.nrc-experimental-biased` warning, and README/ledger wording now distinguishes repo-only research checkpoints from production neural weights.

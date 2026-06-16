@@ -43,6 +43,7 @@ export type {
   DecodeSceneTextureDiagnosticCode,
   DecodeSceneTexturesOptions,
   DecodeSceneTexturesResult,
+  GltfCpuTextureHandle,
   GltfCpuLinearTextureHandle,
   GltfDecodedTexturePixels,
   GltfBackendTextureStatus,

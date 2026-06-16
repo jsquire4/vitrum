@@ -41,6 +41,11 @@ function srgbToLinearForTest(value: number): number {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
+function linearToSrgbForTest(value: number): number {
+  const c = Math.max(0, Math.min(1, value));
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * (c ** (1 / 2.4)) - 0.055;
+}
+
 function response(data: ArrayBuffer, contentType = 'application/octet-stream'): GltfAssetFetchResponse {
   return {
     ok: true,
@@ -824,10 +829,17 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
-  it('leaves texture handles unchanged for the webgpu target', async () => {
+  it('decodes raw-image handles for the webgpu target while preserving backend color space', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const asset = await loadGltfAsset(gltf, { buffers });
-    const decodePixels = vi.fn();
+    const decodePixels = vi.fn(() => ({
+      width: 1,
+      height: 1,
+      data: new Float32Array([0.25, 0.5, 0.75, 1]),
+      channels: 4 as const,
+      dataType: 'float32' as const,
+      colorSpace: 'linear' as const,
+    }));
 
     const result = await decodeSceneTextures(asset.scene, {
       target: 'webgpu',
@@ -836,12 +848,27 @@ describe('decodeSceneTextures', () => {
 
     const before = asset.scene.primitives[0] as MeshPrimitive;
     const after = result.scene.primitives[0] as MeshPrimitive;
-    expect(decodePixels).not.toHaveBeenCalled();
-    expect(result.decodedCount).toBe(0);
-    expect(result.unchangedCount).toBe(1);
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(0);
     expect(result.diagnostics).toEqual([]);
     expect(result.warnings).toEqual([]);
-    expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
+    const handle = (after.material.baseColorMap as TextureRef).handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+      __vitrum_hint__: { colorSpace: string };
+    };
+    expect(handle).not.toBe((before.material.baseColorMap as TextureRef).handle);
+    expect(handle.width).toBe(1);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__.colorSpace).toBe('srgb');
+    expect(handle.data[0]).toBeCloseTo(linearToSrgbForTest(0.25));
+    expect(handle.data[1]).toBeCloseTo(linearToSrgbForTest(0.5));
+    expect(handle.data[2]).toBeCloseTo(linearToSrgbForTest(0.75));
+    expect(handle.data[3]).toBeCloseTo(1);
+    expect(result.report.cpuReadableCount).toBe(1);
+    expect(result.report.rawImageCount).toBe(0);
   });
 });
 

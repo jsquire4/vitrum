@@ -27,7 +27,9 @@
 > alpha blend emits structured approximation warnings and the ledger no longer
 > claims native rows where GI reuse still uses stored-Lo/proxy targeting; neural
 > weights are validated before allocation, dispatch failures fall back to raw HDR,
-> and NRC opt-in emits a structured experimental/biased warning.
+> NRC opt-in emits a structured experimental/biased warning, and glTF
+> `decodeSceneTextures(target:"webgpu")` now actually resolves raw image handles
+> into backend-readable CPU texture payloads instead of returning a no-op.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > point-direct-light slice; walkaround GI rich receiver-lobe reservoir targeting,
 > OIT-grade alpha blend, and finite-emitter/light-map promotion decisions; real
