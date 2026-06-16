@@ -92,7 +92,8 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   // clamp applied consistently with shade.wgsl (sweep finding Bug 3).
   let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
   let brdf = restir_di_eval_surface_brdf(surf, wi);
-  return luminance(e.Le * brdf * G);
+  let Le = sampleEmitterLeAtXi(e, xi);
+  return luminance(Le * brdf * G);
 }
 
 // Thin wrapper: legacy callers that don't have xi handy. Emitter callers should
@@ -113,6 +114,7 @@ export const RESTIR_PHAT_MODULE: WgslModule = {
   name: 'restirPHat',
   source: RESTIR_PHAT_WGSL,
   // `common` for PrimarySurface, emitters, emitterGeometry, full BRDF helpers, luminance, ubo.
+  // `emitterLeAtXi` for emissive-map texel Le on source-indexed mesh-material emitters.
   // `environmentSample` for ENV_SAMPLE_SENTINEL / envHasMap / envRadiance / envDirFromXi.
-  requires: ['common', 'environmentSample'],
+  requires: ['common', 'emitterLeAtXi', 'environmentSample'],
 };

@@ -310,7 +310,8 @@ fn lo_direct(
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGXWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi);
-  return e.Le * brdf * G * r.W;
+  let Le = sampleEmitterLeAtXi(e, r.xi);
+  return Le * brdf * G * r.W;
 }
 
 // --- Direct sun NEE (default-on, item 4 plan/residue-closure-plan-2026-06-10.md) ----

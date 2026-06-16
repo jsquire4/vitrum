@@ -1565,15 +1565,17 @@ Evidence:
   is still approximate, including `updatePrimitive(id, { material })` patches
   that mutate a primitive into fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
-  camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
-  packs emissive maps as sRGB-decoded atlas layers with per-map
-  UV/transform/wrap metadata, `shade.wgsl` calls
-  `sampleEmissiveMap(..., lo_emitterGlow(...))`, and
-  `materialSpecEmissiveLe()` now folds the average linear RGB of CPU-readable
-  emissive maps into the shared ReSTIR/DDGI/RC emitter radiance path. This
-  closes the scalar-only emitter-power hole for decoded glTF-style 1x1/CPU
-  handles. Exact UV-varying emitter texel PDFs, per-candidate spatial payloads,
-  and GI texel-space emission are still approximate rather than native parity.
+  camera-visible emitter glow, direct-light selection power, and merged-BVH
+  ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as
+  sRGB-decoded atlas layers with per-map UV/transform/wrap metadata,
+  `materialSpecEmissiveLe()` folds the average linear RGB of CPU-readable
+  emissive maps into the shared ReSTIR/DDGI/RC emitter selection-power path,
+  and the 2026-06-16 DI follow-up packs a source-triangle lane for merged-BVH
+  material emitters so RIS candidate scoring, pHat reuse, and final shade sample
+  mapped radiance at the stored triangle `xi`. This closes the scalar-only
+  merged-DI payload hole for decoded glTF-style CPU handles. Exact UV-varying
+  texel-PDF selection, TLAS/analytic emitter mapped payloads, and GI/RC/DDGI
+  texel-space emission are still approximate rather than native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
   `emitterPacking.ts` folds the CPU-readable sRGB-decoded average RGB into
   synthesized emissive-mesh radiance, uses that same helper for the geometry

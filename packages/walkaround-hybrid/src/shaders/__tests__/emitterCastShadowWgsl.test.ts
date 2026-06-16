@@ -10,6 +10,7 @@ import { SPATIAL_GI_GRIS_WGSL } from '../spatialGi.wgsl.js';
 
 describe('emitter castShadow:false shader gates', () => {
   it('threads the shared EmitterTri castShadowDisabled lane through ReSTIR-DI visibility', () => {
+    expect(RESERVOIR_DI_WGSL).toContain('sourceTriIndex: f32');
     expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');

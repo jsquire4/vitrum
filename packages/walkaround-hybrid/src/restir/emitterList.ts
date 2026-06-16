@@ -34,7 +34,7 @@ interface Vector3Like {
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
- *   0..15  : vertexA.xyz + pad
+ *   0..15  : vertexA.xyz + sourceTriIndex (-1 for non-BVH/placeholder emitters)
  *   16..31 : vertexB.xyz + pad
  *   32..47 : vertexC.xyz + pad
  *   48..63 : normal.xyz + area
@@ -71,6 +71,15 @@ interface EmitterListOptions {
     Le: [number, number, number];
     castShadow?: boolean;
   }>;
+  /**
+   * When true, mesh-material emitters pack their triangle index into the first
+   * padding lane so DI shaders can resample UV-varying emissive maps at the
+   * stored candidate `xi`. Only enable this when the emitter-list triangle
+   * stream is in the same BVH/material-atlas triangle order as the active
+   * render buffers. TLAS uses a separate world-expanded emitter stream, so it
+   * must leave this disabled and fall back to the averaged `Le`.
+   */
+  packSourceTriIndex?: boolean;
 }
 
 /**
@@ -169,7 +178,16 @@ export function buildEmitterListFromCore(
     (t, normal) => {
       const mat = materials[triMatIdMap[t]!];
       if (!mat) return null;
-      return classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
+      const classified = classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
+      if (classified == null || options.packSourceTriIndex !== true) return classified;
+      const scalarLe = scalarMaterialEmissiveLe(mat);
+      if (scalarLe == null) return classified;
+      return {
+        ...classified,
+        color: scalarLe,
+        selectionColor: classified.color,
+        sourceTriIndex: t,
+      };
     },
     options,
   );
@@ -186,7 +204,29 @@ export function buildEmitterListFromCore(
 type TriangleEmitterClassifier = (
   triIdx: number,
   normal: { x: number; y: number; z: number },
-) => { color: [number, number, number]; intensity: number } | null;
+) => {
+  /** Radiance packed into EmitterTri.Le for shader evaluation. */
+  color: [number, number, number];
+  intensity: number;
+  /**
+   * Radiance used for power-CDF / light-tree selection. This differs from
+   * `color` when shader evaluation applies a UV-varying emissive map at
+   * candidate time but selection still uses the stable CPU average.
+   */
+  selectionColor?: [number, number, number];
+  /** Valid atlas/BVH triangle id for emissive-map sampling, or absent for fallback. */
+  sourceTriIndex?: number;
+} | null;
+
+function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, number] | null {
+  const em = material.emissive;
+  if (!em) return null;
+  const ei = material.emissiveIntensity ?? 1;
+  if (!(ei > 0)) return null;
+  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
+  const out: [number, number, number] = [em[0] * ei, em[1] * ei, em[2] * ei];
+  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
+}
 
 /**
  * Shared emitter-list builder core. Iterates the merged world-space triangle
@@ -214,6 +254,7 @@ function buildEmitterListCore(
 
   const emitterData: {
     triIdx: number;
+    sourceTriIndex: number;
     vA: [number, number, number];
     vB: [number, number, number];
     vC: [number, number, number];
@@ -263,11 +304,13 @@ function buildEmitterListCore(
     const [cr, cg, cb] = classified.color;
     const intensity = classified.intensity;
 
-    const power = luminance(cr, cg, cb) * area;
+    const powerColor = classified.selectionColor ?? classified.color;
+    const power = luminance(powerColor[0], powerColor[1], powerColor[2]) * area;
     if (power < 1e-8) continue;
 
     emitterData.push({
       triIdx: t,
+      sourceTriIndex: classified.sourceTriIndex ?? -1,
       vA: [ax, ay, az],
       vB: [bx, by, bz],
       vC: [cx0, cy0, cz0],
@@ -287,6 +330,7 @@ function buildEmitterListCore(
       if (power < 1e-8) continue;
       emitterData.push({
         triIdx: -1,
+        sourceTriIndex: -1,
         vA: ex.vA, vB: ex.vB, vC: ex.vC,
         normal: ex.normal,
         area: ex.area,
@@ -310,7 +354,8 @@ function buildEmitterListCore(
     // contribution exactly 0. Verified: ris.wgsl:232 `let pHat = luminance(...)`
     // is 0 when Le=0, so `let w = select(0.0, pHat/pX, pHat > 0.0)` returns 0.
     emitterData.push({
-      triIdx: 0,
+      triIdx: -1,
+      sourceTriIndex: -1,
       vA: [0, 10, 0], vB: [1, 10, 0], vC: [0.5, 10, 1],
       normal: [0, -1, 0],
       area: 0.5,
@@ -334,7 +379,8 @@ function buildEmitterListCore(
   for (let i = 0; i < emitterCount; i++) {
     const e = emitterData[i]!;
     const base = i * EMITTER_FLOATS;
-    emitterFloats[base + 0] = e.vA[0]; emitterFloats[base + 1] = e.vA[1]; emitterFloats[base + 2] = e.vA[2]; emitterFloats[base + 3] = 0;
+    const sourceTriIndex = options.packSourceTriIndex === true ? e.sourceTriIndex : -1;
+    emitterFloats[base + 0] = e.vA[0]; emitterFloats[base + 1] = e.vA[1]; emitterFloats[base + 2] = e.vA[2]; emitterFloats[base + 3] = sourceTriIndex;
     emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = 0;
     emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = 0;
     emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;

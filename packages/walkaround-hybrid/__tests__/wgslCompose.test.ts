@@ -63,6 +63,7 @@ import { SHARED_PRIMITIVES_WGSL } from '../src/shaders/sharedPrimitives.wgsl.js'
 import { GGX_BRDF_WGSL } from '../src/shaders/ggxBrdf.wgsl.js';
 import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../src/shaders/materialAtlas.wgsl.js';
+import { EMITTER_LE_AT_XI_WGSL } from '../src/shaders/emitterLeAtXi.wgsl.js';
 import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
 import { JACOBIAN_SHIFT_WGSL } from '../src/shaders/jacobianShift.wgsl.js';
 import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
@@ -223,33 +224,28 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(COMMON_WGSL).toContain('tlasNodeCount:');
   });
 
-  it('ris: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
+  it('ris: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
     // RIS_MODULE.requires === ['restirPHat', 'regir', 'environmentSample'].
-    // Wave 4: restirPHat now requires ['common', 'environmentSample'] (the
-    // ENV_SAMPLE_SENTINEL branch calls envHasMap/envRadiance/envDirFromXi).
-    // DFS order: common (via restirPHat.requires[0]) → environmentSample
-    // (via restirPHat.requires[1]) → restirPHat → lightTree (via regir) →
-    // regir → environmentSample (already emitted, skipped) → ris.
-    // environmentSample now appears at position 2 (before restirPHat) rather
-    // than at the end, because restirPHat pulls it in first.
+    // restirPHat requires common + materialAtlas + environmentSample: materialAtlas
+    // supplies UV-varying emissive-map Le for source-indexed emitter triangles,
+    // while environmentSample supplies the sentinel env pHat branch.
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
+      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
     );
   });
 
-  it('temporal: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
-    // Wave 4: restirPHat now requires ['common', 'environmentSample'] so
-    // environmentSample is emitted before restirPHat in all passes that
-    // depend on restirPHat (temporal, spatial, ris).
+  it('temporal: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
+    // restirPHat pulls materialAtlas before environmentSample, then temporal
+    // adds the shared primary-cast helper.
     expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
+      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
     );
   });
 
-  it('spatial: COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
-    // Wave 4: see temporal note above — same dep change.
+  it('spatial: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
+    // Same dependency chain as temporal.
     expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + MATERIAL_ATLAS_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
+      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
     );
   });
 
@@ -269,6 +265,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL +
       MATERIAL_ATLAS_WGSL +
+      EMITTER_LE_AT_XI_WGSL +
       SURFACE_TEXTURES_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +

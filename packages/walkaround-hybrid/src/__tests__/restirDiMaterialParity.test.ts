@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { EMITTER_LE_AT_XI_WGSL } from '../shaders/emitterLeAtXi.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../shaders/restirCastPrimary.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../shaders/restirPHat.wgsl.js';
 import { buildReservoirGiWgsl } from '../shaders/reservoirGi.wgsl.js';
 import { RIS_WGSL } from '../shaders/ris.wgsl.js';
+import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
 
 describe('ReSTIR-DI material parity', () => {
   it('widens PrimarySurface with the material payload needed by extension-aware pHat', () => {
@@ -75,5 +77,15 @@ describe('ReSTIR-DI material parity', () => {
     expect(RIS_WGSL).not.toContain('let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);');
     expect(RIS_WGSL).not.toContain('let brdfB = evalGGX(albedo, roughness, metalness, normal, wo, wiB);');
     expect(RIS_WGSL).not.toContain('let brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir);');
+  });
+
+  it('samples UV-varying emissive-map radiance for ReSTIR-DI emitter evaluation', () => {
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('if (ubo.bvhMode != 0u)');
+    expect(EMITTER_LE_AT_XI_WGSL).toContain('return sampleEmissiveMap(triIndex, uv0, uv1, e.Le);');
+    expect(RESTIR_PHAT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
+    expect(RIS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xiTri);');
+    expect(RIS_WGSL).toContain('bestLe = sampleEmitterLeAtXi(eb, bestXi);');
+    expect(SHADING_TERMS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, r.xi);');
   });
 });

@@ -383,13 +383,16 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // derived per-triangle tangent frame. roughness/metallic sample glTF G/B
   // channels in shade for visible BRDF terms; AO samples the glTF R channel and
   // multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
-  // cutout traversal; emissiveMap modulates camera-visible emitter glow;
-  // transmissionMap modulates shade/RIS/GI glass gating; lightMap adds
-  // first-hit baked outgoing radiance. Approximate because finite-emitter power
-  // is still scalar at classification time, GI receiver/reuse targets remain a
-  // proxy around stored Lo rather than a full receiver-lobe reservoir, lightMap
-  // is camera-visible only, and transparent blend lighting/GI/shadow semantics
-  // remain approximate.
+  // cutout traversal; emissiveMap modulates camera-visible emitter glow and,
+  // on merged-BVH ReSTIR-DI emitters with a source-triangle lane, per-candidate
+  // pHat/final shade radiance at the stored xi; transmissionMap modulates
+  // shade/RIS/GI glass gating; lightMap adds first-hit baked outgoing radiance.
+  // Approximate because emissive selection power still uses the CPU-readable
+  // average rather than texel-PDF importance sampling, TLAS/analytic emitters
+  // and GI/RC/DDGI emitter payloads still fall back to averaged Le,
+  // GI receiver/reuse targets remain a proxy around stored Lo rather than a
+  // full receiver-lobe reservoir, lightMap is camera-visible only, and
+  // transparent blend lighting/GI/shadow semantics remain approximate.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',

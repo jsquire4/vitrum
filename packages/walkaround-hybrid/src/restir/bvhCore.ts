@@ -274,6 +274,7 @@ function coreEmitterBuffers(
   options: {
     primaryLightDir?: Vector3Like;
     primaryLightIntensity?: number;
+    packSourceTriIndex?: boolean;
   } = {},
 ): RebuiltEmitterBuffers {
   // This stream is only for ReSTIR light selection. Expanding instanced meshes
@@ -482,7 +483,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     return { ...m, emissive: [lo[0], lo[1], lo[2]] as const, emissiveIntensity: 1 };
   });
   const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, mergedMatsForEmissive, triCount);
-  const emitterSlice = coreEmitterBuffers(scene, options);
+  const emitterSlice = coreEmitterBuffers(scene, { ...options, packSourceTriIndex: true });
 
   return {
     bvhMode: 'merged',
@@ -554,6 +555,7 @@ export function rebuildEmitterBuffersFromCoreScene(
   options: {
     primaryLightDir?: Vector3Like;
     primaryLightIntensity?: number;
+    packSourceTriIndex?: boolean;
   } = {},
 ): RebuiltEmitterBuffers {
   return coreEmitterBuffers(scene, options);

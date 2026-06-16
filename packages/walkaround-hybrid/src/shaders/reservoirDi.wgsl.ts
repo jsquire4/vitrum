@@ -20,7 +20,7 @@ export const RESERVOIR_DI_WGSL = /* wgsl */ `// ================================
 // ============================================================
 struct EmitterTri {
   vA:        vec3f,   // bytes 0-11
-  _padA:     f32,     // bytes 12-15
+  sourceTriIndex: f32, // bytes 12-15 (-1.0 for analytic/placeholder emitters)
   vB:        vec3f,   // bytes 16-27
   _padB:     f32,     // bytes 28-31
   vC:        vec3f,   // bytes 32-43

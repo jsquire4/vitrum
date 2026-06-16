@@ -1452,6 +1452,7 @@ export class HybridEngine implements Engine {
         z: this._primaryLightDir[2],
       },
       primaryLightIntensity: this._primaryLightIntensity,
+      packSourceTriIndex: this._bvhBuffers.bvhMode === 'merged',
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
 

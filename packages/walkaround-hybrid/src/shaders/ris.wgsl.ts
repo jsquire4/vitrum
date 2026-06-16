@@ -282,7 +282,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // selection p̂ matches shade's evaluation p̂ (sweep finding Bug 3).
     let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
     let brdf = restir_di_eval_surface_brdf(surf, wi);
-    let pHat = luminance(ls.Le * brdf * G);
+    let Le = sampleEmitterLeAtXi(e, xiTri);
+    let pHat = luminance(Le * brdf * G);
 
     // p(x) = emitter-selection pmf × per-triangle uniform-area pdf. The first
     // factor is the EXACT pmf the chosen sampler drew from (tree or flat CDF);
@@ -359,7 +360,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       let bcSum = max(bB + bC, 1e-8);
       let xiY = clamp(bB / bcSum, 0.0, 1.0);
       bestXi = vec2f(xiX, xiY);
-      bestLe = eb.Le;
+      bestLe = sampleEmitterLeAtXi(eb, bestXi);
       bestNl = eb.normal;
       found = true;
     }

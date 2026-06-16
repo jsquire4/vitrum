@@ -483,10 +483,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 /** W1-R6 — declarative include-graph entry.
- *  The shade pass now consumes materialAtlas helpers directly and surfaceTextures
- *  also depends on materialAtlas for tinted visibility. The composer emits
- *  {common, materialAtlas, surfaceTextures, ddgiSample, ...} with shared deps
- *  deduplicated.
+ *  The shade pass now consumes materialAtlas helpers directly, the DI emitter
+ *  texel-radiance helper, and surfaceTextures (which also depends on materialAtlas
+ *  for tinted visibility). The composer emits {common, materialAtlas,
+ *  emitterLeAtXi, surfaceTextures, ddgiSample, ...} with shared deps deduplicated.
  *
  *  T5 — `stainedGlassShade` (lo_sg_caustic / lo_sg_aperture) is appended after
  *  `sampleCascadeC0`. It requires only `common` (already emitted by the time
@@ -497,5 +497,5 @@ export const SHADE_MODULE: WgslModule = {
   source: SHADE_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint).
-  requires: ['common', 'materialAtlas', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
+  requires: ['common', 'materialAtlas', 'emitterLeAtXi', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'environmentSample'],
 };
