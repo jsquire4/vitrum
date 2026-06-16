@@ -854,7 +854,7 @@ export class HybridEngine implements Engine {
       phase: method,
       method,
       message:
-        `[vitrum/walkaround-hybrid] ${method}: fractional alphaMode:'blend' ` +
+        `[vitrum/walkaround-hybrid] ${method}: fractional or texture-driven alphaMode:'blend' ` +
         `is approximated with deterministic stochastic alpha coverage; sorted ` +
         `or weighted transparent composition remains unsupported; primitives: ${primitiveIds.join(', ')}.`,
       details: { primitiveIds },

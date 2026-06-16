@@ -385,10 +385,10 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
   // cutout traversal; emissiveMap modulates camera-visible emitter glow;
   // transmissionMap modulates shade/RIS/GI glass gating; lightMap adds
-  // first-hit baked outgoing radiance. Approximate because upstream
-  // reservoir/candidate PDFs, emitter power, and GI payloads still use scalar
-  // packed lanes, lightMap is camera-visible only, and alpha blend has no OIT
-  // path.
+  // first-hit baked outgoing radiance. Approximate because finite-emitter power
+  // is still scalar at classification time, GI receiver/reuse targets remain a
+  // proxy around stored Lo rather than a full receiver-lobe reservoir, lightMap
+  // is camera-visible only, and alpha blend has no OIT path.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',
@@ -399,36 +399,39 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMap: 'approximate',
   aoMap: 'approximate',
   aoMapIntensity: 'approximate',
-  // Readable clearcoat factor/roughness maps modulate the shade-owned top-coat
-  // lobe. ReSTIR candidate PDFs/payloads and clearcoatNormalMap remain base-lobe
-  // only, so this is approximate rather than native.
+  // Readable clearcoat factor/roughness maps modulate shade-owned direct
+  // lighting and DI/GI suffix material payloads. Approximate rather than native
+  // until GI receiver/reuse targets and reference A/Bs prove the rich lobe end
+  // to end.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
   // Clearcoat normal maps reuse walkaround's authored-tangent-aware atlas
-  // normal path and feed only the shade-owned clearcoat lobe. ReSTIR candidate
-  // PDFs/payloads remain base-lobe-only.
+  // normal path and feed shade-owned/DI/GI suffix clearcoat evaluations.
+  // Approximate until GI receiver targeting and reference A/Bs catch up.
   clearcoatNormalMap: 'approximate',
   clearcoatNormalScale: 'approximate',
-  // Readable sheen maps modulate the shade-owned Charlie sheen lobe; ReSTIR
-  // candidate PDFs/payloads remain base-lobe only.
+  // Readable sheen maps modulate the shade-owned Charlie sheen lobe plus DI/GI
+  // suffix material payloads; GI receiver/reuse targets remain approximate.
   sheenColorMap: 'approximate',
   sheenRoughnessMap: 'approximate',
   // Readable KHR_materials_iridescence maps modulate the shade-owned thin-film
-  // F0 approximation. ReSTIR/GI candidate PDFs and payloads still use the base
-  // lobe, so these rows remain approximate rather than native.
+  // F0 approximation plus DI/GI suffix material payloads. Rows remain
+  // approximate until full receiver-lobe GI targeting and validation land.
   iridescenceMap: 'approximate',
   iridescenceThicknessMap: 'approximate',
   // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
-  // anisotropic GGX branch (B = strength, RG = direction). ReSTIR candidate
-  // PDFs/payloads are still not anisotropy-complete.
+  // anisotropic GGX branch (B = strength, RG = direction) and DI/GI suffix
+  // payloads. Reuse/receiver targeting remains approximate.
   anisotropyMap: 'approximate',
-  // Readable specular maps ride the material atlas and modulate shade-owned
-  // scalar specular controls. ReSTIR candidate PDFs/payloads remain scalar.
+  // Readable specular maps ride the material atlas and modulate shade-owned and
+  // DI/GI suffix scalar specular controls. GI receiver/reuse targets remain a
+  // proxy rather than a full specular-lobe reservoir.
   specularColorMap: 'approximate',
   specularIntensityMap: 'approximate',
   // Readable bump maps ride the walkaround material atlas and finite-difference a
-  // shade-owned visible normal perturbation. ReSTIR/GI candidate PDFs/payloads
-  // still use the base normal, so this is approximate rather than native.
+  // visible normal perturbation for shade-owned, DI, and GI suffix material
+  // payloads. GI receiver/reuse targeting remains approximate rather than
+  // native.
   bumpMap: 'approximate',
   bumpScale: 'approximate',
   displacementMap: 'unsupported',
@@ -437,25 +440,26 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   lightMap: 'approximate',
   lightMapIntensity: 'approximate',
   // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
-  // Pettineo lobe in shade-owned direct/analytic/sun/specular-indirect paths.
-  // ReSTIR candidate PDFs/payloads and sheen maps remain base-lobe-only.
+  // Pettineo lobe in shade-owned direct/analytic/sun/specular-indirect paths
+  // plus DI/GI suffix payloads. GI receiver/reuse targeting remains approximate.
   sheen: 'approximate',
   sheenColor: 'approximate',
   sheenRoughness: 'approximate',
   // Scalar clearcoat rides material atlas metadata and adds a fixed-F0 GGX top
-  // coat in shade-owned direct/analytic/sun/specular-indirect paths. ReSTIR
-  // candidate PDFs/payloads and clearcoat maps remain base-lobe-only.
+  // coat in shade-owned direct/analytic/sun/specular-indirect paths plus DI/GI
+  // suffix payloads. GI receiver/reuse targeting remains approximate.
   clearcoat: 'approximate',
   clearcoatRoughness: 'approximate',
   // Scalar KHR_materials_iridescence rides material atlas metadata and modifies
-  // shade-owned GGX F0 in direct/analytic/sun/specular-indirect paths. ReSTIR
-  // candidate PDFs/payloads remain base-lobe only.
+  // shade-owned GGX F0 in direct/analytic/sun/specular-indirect paths plus DI/GI
+  // suffix payloads. GI receiver/reuse targeting remains approximate.
   iridescence: 'approximate',
   iridescenceIor: 'approximate',
   iridescenceThicknessRange: 'approximate',
   // Scalar KHR_materials_specular controls ride the material atlas metadata and
   // modulate dielectric F0 in shade-owned direct/analytic/sun/specular-indirect
-  // paths. ReSTIR candidate PDFs still use default F0, so this stays approximate.
+  // paths plus DI/GI suffix payloads. GI receiver/reuse targeting remains
+  // approximate, so this stays approximate.
   specularIntensity: 'approximate',
   specularColor: 'approximate',
   // Material-atlas scalar consumed by the HDRI environment-light path:

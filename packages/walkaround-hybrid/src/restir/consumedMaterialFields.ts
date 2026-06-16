@@ -91,19 +91,23 @@
  *                           and spatial DI reuse.
  *  specularColor          stored in material atlas metadata and applied to the
  *                           dielectric GGX F0 tint in shade-owned direct,
- *                           analytic, sun, and specular-indirect paths.
+ *                           analytic, sun, specular-indirect, and DI/GI suffix
+ *                           material paths.
  *  specularIntensity      same scalar specular metadata path; approximate
- *                           because ReSTIR candidate PDFs still use default F0.
+ *                           because GI receiver/reuse targeting is still a
+ *                           stored-Lo proxy rather than a full specular-lobe
+ *                           reservoir.
  *  specularColorMap      readable sRGB maps multiply scalar `specularColor`
  *                           before shade-owned GGX evaluation.
  *  specularIntensityMap  readable linear maps multiply scalar
  *                           `specularIntensity` from their alpha channel.
  *  clearcoat             stored in material atlas metadata and added as a
  *                           fixed-F0 GGX top-coat lobe in shade-owned direct,
- *                           analytic, sun, and specular-indirect paths.
+ *                           analytic, sun, specular-indirect, and DI/GI suffix
+ *                           material paths.
  *  clearcoatRoughness    same scalar clearcoat metadata path; approximate
- *                           because ReSTIR candidate PDFs/payloads and maps
- *                           still use the base-lobe path.
+ *                           because GI receiver/reuse targeting remains a
+ *                           proxy around stored Lo.
  *  clearcoatMap          readable linear maps multiply scalar `clearcoat`
  *                           from their red channel before top-coat evaluation.
  *  clearcoatRoughnessMap readable linear maps multiply scalar
@@ -113,10 +117,11 @@
  *  clearcoatNormalScale  metadata scale for `clearcoatNormalMap`.
  *  sheen                 stored in material atlas metadata and added as a
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
- *                           direct, analytic, sun, and specular-indirect paths.
+ *                           direct, analytic, sun, specular-indirect, and DI/GI
+ *                           suffix material paths.
  *  sheenColor            same scalar sheen metadata path; approximate because
- *                           ReSTIR candidate PDFs/payloads and maps still use
- *                           the base-lobe path.
+ *                           GI receiver/reuse targeting remains a proxy around
+ *                           stored Lo.
  *  sheenRoughness        same scalar sheen metadata path.
  *  sheenColorMap         readable sRGB maps multiply scalar `sheenColor`.
  *  sheenRoughnessMap     readable linear maps multiply scalar
@@ -258,11 +263,11 @@ export function collectUnconsumedMaterialFields(
 }
 
 /**
- * Return primitive ids whose material asks for fractional `alphaMode:'blend'`.
+ * Return primitive ids whose material asks for nontrivial `alphaMode:'blend'`.
  * The scalar alpha traversal path can faithfully discard fully-transparent
  * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
- * but it does not implement order-independent alpha composition for partial
- * coverage. HybridEngine turns this into a structured warning.
+ * but it does not implement order-independent alpha composition for partial or
+ * texture-driven coverage. HybridEngine turns this into a structured warning.
  */
 export function collectApproximateAlphaBlendPrimitiveIds(
   primitives: ReadonlyArray<{
@@ -278,13 +283,26 @@ export function collectApproximateAlphaBlendPrimitiveIds(
     }
     const mat = prim.material;
     if (!mat || mat.alphaMode !== 'blend') continue;
-    const rawOpacity = mat.opacity;
-    const opacity = typeof rawOpacity === 'number' && Number.isFinite(rawOpacity)
-      ? Math.min(1, Math.max(0, rawOpacity))
-      : 1;
-    if (opacity > 0 && opacity < 1) {
+    const opacity = effectiveScalarBlendOpacity(mat);
+    const hasTextureAlphaSource = mat.baseColorMap != null || mat.alphaMap != null;
+    if (opacity > 0 && (opacity < 1 || hasTextureAlphaSource)) {
       ids.push(prim.id ?? '(unnamed)');
     }
   }
   return ids.sort();
+}
+
+function effectiveScalarBlendOpacity(material: Record<string, unknown>): number {
+  const opacity = unitAlpha(material.opacity, 1);
+  const baseColor = material.baseColor as ArrayLike<unknown> | undefined;
+  const baseAlpha = baseColor && typeof baseColor.length === 'number' && baseColor.length >= 4
+    ? unitAlpha(baseColor[3], 1)
+    : 1;
+  return Math.min(1, Math.max(0, opacity * baseAlpha));
+}
+
+function unitAlpha(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : fallback;
 }

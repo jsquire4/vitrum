@@ -277,9 +277,18 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'mask', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'mask', opacity: 0.25, alphaCutoff: 0.5 } },
       { id: 'transparent', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0 } },
       { id: 'fractional', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0.5 } },
+      { id: 'base-alpha', kind: 'mesh', material: { baseColor: [1, 1, 1, 0.4], alphaMode: 'blend' } },
+      { id: 'base-map-alpha', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', baseColorMap: { handle: 'rgba' } } },
+      { id: 'alpha-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', alphaMap: { handle: 'alpha' } } },
+      { id: 'transparent-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0, alphaMap: { handle: 'alpha' } } },
       { id: 'solid', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 } },
     ];
-    expect(collectApproximateAlphaBlendPrimitiveIds(prims)).toEqual(['fractional']);
+    expect(collectApproximateAlphaBlendPrimitiveIds(prims)).toEqual([
+      'alpha-map',
+      'base-alpha',
+      'base-map-alpha',
+      'fractional',
+    ]);
   });
 
   it('ignores null/undefined field values', () => {
@@ -399,7 +408,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits a structured warning for fractional alpha blend approximation', () => {
+  it('emits a structured warning for fractional and texture-driven alpha blend approximation', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -415,7 +424,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
             material: {
               ...consumedOnlyScene().primitives[0]!.material,
               alphaMode: 'blend',
-              opacity: 0.5,
+              baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 128]) } },
             },
           },
         ],

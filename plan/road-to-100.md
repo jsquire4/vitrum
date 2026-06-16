@@ -708,10 +708,11 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 `metallicMap`, `aoMap`, `aoMapIntensity`, `normalMap`, `normalScale`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, `envMapIntensity`, `specularColorMap`, `specularIntensityMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `clearcoatNormalScale`, `sheenColorMap`, `sheenRoughnessMap`, `anisotropy`, `anisotropyRotation`, `anisotropyMap`, `iridescence`, `iridescenceIor`, `iridescenceThicknessRange`, `iridescenceMap`, and `iridescenceThicknessMap` as
 `approximate`. They are deliberately not `native`: glass Beer/transmission/thickness tint,
 emissive-map direct power uses a CPU-readable average rather than texel-exact
-emitter PDFs, upstream reservoir/GI payloads, and baked light maps' non-camera
-paths still use scalar packed lanes. Bump maps are now a shade-owned visible
-normal perturbation; displacement maps remain deliberately unsupported until a
-true geometry/BVH displacement path exists.
+emitter PDFs, GI receiver/reuse targeting remains a stored-Lo proxy rather than
+a full receiver-lobe reservoir, alpha blend has no OIT composition, and baked
+light maps' non-camera paths still use scalar packed lanes. Bump maps now feed
+shade-owned, DI, and GI suffix visible-normal payloads; displacement maps remain
+deliberately unsupported until a true geometry/BVH displacement path exists.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
@@ -733,7 +734,7 @@ true geometry/BVH displacement path exists.
 
 #### 3E — Extension lobes on walkaround (clearcoat, sheen, iridescence, specular, anisotropy)
 
-Scalar `specularColor` / `specularIntensity`, readable `specularColorMap` / `specularIntensityMap`, scalar `clearcoat` / `clearcoatRoughness`, readable `clearcoatMap` / `clearcoatRoughnessMap` / `clearcoatNormalMap`, scalar `sheen` / `sheenColor` / `sheenRoughness`, readable `sheenColorMap` / `sheenRoughnessMap`, scalar/map `anisotropy` / `anisotropyRotation` / `anisotropyMap`, and scalar/map `iridescence` / `iridescenceIor` / `iridescenceThicknessRange` / `iridescenceMap` / `iridescenceThicknessMap` are now code-closed as approximate: material-atlas metadata stores the scalar controls/maps and shade-owned direct, analytic, sun, and glossy-indirect paths consume them. Remaining 3E work is ReSTIR/GI payload/PDF parity needed for promotion beyond approximate.
+Scalar `specularColor` / `specularIntensity`, readable `specularColorMap` / `specularIntensityMap`, scalar `clearcoat` / `clearcoatRoughness`, readable `clearcoatMap` / `clearcoatRoughnessMap` / `clearcoatNormalMap`, scalar `sheen` / `sheenColor` / `sheenRoughness`, readable `sheenColorMap` / `sheenRoughnessMap`, scalar/map `anisotropy` / `anisotropyRotation` / `anisotropyMap`, and scalar/map `iridescence` / `iridescenceIor` / `iridescenceThicknessRange` / `iridescenceMap` / `iridescenceThicknessMap` are now code-closed as approximate: material-atlas metadata stores the scalar controls/maps, shade-owned direct/analytic/sun/glossy-indirect paths consume them, ReSTIR-DI pHat/reuse consumes them, and default/NRC GI suffix payloads consume them through a rich-material proxy. Remaining 3E work is GI receiver/reuse targeting plus material-furnace/reference A/B needed for promotion beyond approximate.
 
 **Footgun:** Walkaround is not a path tracer — clearcoat/sheen are approximations. Grade `approximate` unless energy conservation verified; planner must surface this.
 
@@ -953,7 +954,7 @@ separate Deno/WebGPU harness issue to be cleared first.
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, envMapIntensity, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override, DDGI material-emissive direct probe hits, and HDRI envMapIntensity scaling closed; remaining scalar work belongs to atlas/lobe parity rows |
 | Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend uses stochastic coverage; sorted/weighted transparent composition remains open |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
-| Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate in shade-owned GGX paths; native promotion still needs ReSTIR/GI payload/PDF parity where applicable |
+| Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate after shade-owned, ReSTIR-DI, and GI suffix consumption; native promotion still needs GI receiver/reuse targeting and material-furnace/reference A/B where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends; diagnostics cover setScene, analytic authored materials, and walkaround material-only mutation paths |
 

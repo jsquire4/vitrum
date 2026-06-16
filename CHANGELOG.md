@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround material truthfulness, 2026-06-15)
+
+- **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material-payload implementation: rich DI and GI suffix payloads are implemented, but GI receiver/reuse targeting, finite-emitter power, light-map scope, OIT composition, and validation keep the rows `approximate`.
+
 ### Fixed (walkaround ReSTIR-GI material parity, 2026-06-15)
 
 - **Material-aware ReSTIR-GI suffix radiance:** `@vitrum/walkaround-hybrid` default and NRC GI-RIS producers now apply atlas-backed smooth/normal/bump normals at primary, post-glass, and bounce vertices, and compute reconnection-vertex `Lo` through the shared material payload. Default diffuse suffixes still use mapped albedo × irradiance/π; rich suffix materials (metal/glossy/specular/clearcoat/sheen/anisotropy/iridescence) use the extension-aware GGX/clearcoat/sheen BRDF proxy. NRC training records now use the same mapped albedo/roughness payload as the suffix query. Reservoir storage remains geometry+Lo; receiver-lobe reservoir targeting and GPU A/B promotion evidence remain validation/closure tail items.

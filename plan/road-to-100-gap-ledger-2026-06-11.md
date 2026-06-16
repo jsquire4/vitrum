@@ -346,77 +346,90 @@ Follow-up Codex closure sweep (same date, WSL Node 24.13.0):
   metadata. `packBVHRoughMetalFromCore()` stores `aoMapIntensity` in material
   word bits 3-7, `decodeAoMapIntensity()` exposes it to `shade.wgsl`, and shade
   multiplies runtime GTAO by `mix(1, aoMap.r, strength)`. The ledger promotes
-  `aoMap`/`aoMapIntensity` to approximate, not native, because upstream
-  reservoir/GI payloads still use scalar packed lanes.
+  `aoMap`/`aoMapIntensity` to approximate, not native, because finite-emitter
+  power, GI receiver/reuse targeting, and validation remain narrower than
+  shade-owned material evaluation.
 - Walkaround-hybrid Phase-3E scalar-specular follow-up (2026-06-14):
   `pipeline/materialTextureAtlas.ts` now appends a per-triangle metadata texel
   carrying `specularColor.rgb` + `specularIntensity`; `materialAtlas.wgsl.ts`
   exposes `sampleSpecularControls()`, and `shade.wgsl.ts` threads those controls
-  into direct, analytic, sun, and glossy-indirect GGX evaluation. The promise
-  ledger promotes scalar `specularColor` / `specularIntensity` to
-  `approximate`, not `native`, because ReSTIR candidate PDFs/payloads and
-  specular maps still use the default-F0 path.
+  into direct, analytic, sun, and glossy-indirect GGX evaluation. 2026-06-15
+  follow-up: ReSTIR-DI pHat/reuse and GI suffix payloads now consume the same
+  specular controls. The promise ledger keeps scalar `specularColor` /
+  `specularIntensity` `approximate`, not `native`, because GI receiver/reuse
+  targeting remains a stored-Lo proxy rather than a full specular-lobe
+  reservoir.
 - Walkaround-hybrid Phase-3E scalar-clearcoat follow-up (2026-06-14):
   `pipeline/materialTextureAtlas.ts` appends another per-triangle metadata texel
   carrying scalar `clearcoat` + `clearcoatRoughness`; `materialAtlas.wgsl.ts`
   exposes `sampleClearcoatControls()`, and shade-owned direct, analytic, sun,
   and glossy-indirect paths add a fixed-F0 GGX top-coat lobe. The promise ledger
   promotes scalar `clearcoat` / `clearcoatRoughness` to `approximate`, not
-  `native`, because ReSTIR candidate PDFs/payloads and clearcoat texture/normal
-  maps remain base-lobe-only.
+  `native`. 2026-06-15 follow-up: DI pHat/reuse and GI suffix payloads now
+  consume clearcoat controls; GI receiver/reuse targeting and validation remain
+  the promotion boundary.
 - Walkaround-hybrid Phase-3E scalar-sheen follow-up (2026-06-14):
   the material atlas now stores scalar `sheen`, `sheenRoughness`, and
   `sheenColor.rgb`; `materialAtlas.wgsl.ts` exposes scalar sheen controls, and
   shade-owned direct, analytic, sun, and glossy-indirect paths add a
   Charlie/Neubelt-Pettineo sheen lobe. The promise ledger promotes scalar
-  `sheen` / `sheenColor` / `sheenRoughness` to `approximate`, not `native`,
-  because ReSTIR candidate PDFs/payloads and sheen texture maps remain
-  base-lobe-only.
+  `sheen` / `sheenColor` / `sheenRoughness` to `approximate`, not `native`.
+  2026-06-15 follow-up: DI pHat/reuse and GI suffix payloads now consume sheen
+  controls; GI receiver/reuse targeting and validation remain the promotion
+  boundary.
 - Walkaround-hybrid Phase-3E specular-map follow-up (2026-06-14):
   readable `specularColorMap` and `specularIntensityMap` handles now use the
   material atlas with per-map uv0/uv1, wrap, and texture-transform metadata.
   Shade-owned GGX paths multiply scalar specular color by the sRGB RGB map and
-  scalar specular intensity by the linear alpha map. The promise ledger promotes
-  both rows to `approximate`, not `native`, because ReSTIR candidate PDFs and
-  payloads remain scalar/specular-map unaware.
+  scalar specular intensity by the linear alpha map. 2026-06-15 follow-up: DI
+  pHat/reuse and GI suffix payloads now consume mapped specular controls. The
+  promise ledger keeps both rows `approximate`, not `native`, because GI
+  receiver/reuse targeting remains a stored-Lo proxy and material-furnace A/Bs
+  are still pending.
 - Walkaround-hybrid Phase-3E clearcoat/sheen map follow-up (2026-06-14):
   readable `clearcoatMap`, `clearcoatRoughnessMap`, `sheenColorMap`, and
   `sheenRoughnessMap` handles now use the material atlas with per-map uv0/uv1,
   wrap, and texture-transform metadata. Shade-owned top-coat and Charlie sheen
-  paths multiply scalar controls by glTF R/G/RGB/A channels respectively. The
-  promise ledger promotes these rows to `approximate`, not `native`, because
-  ReSTIR candidate PDFs/payloads remain base-lobe-only.
+  paths multiply scalar controls by glTF R/G/RGB/A channels respectively.
+  2026-06-15 follow-up: DI pHat/reuse and GI suffix payloads now consume these
+  mapped controls. The promise ledger keeps these rows `approximate`, not
+  `native`, because GI receiver/reuse targeting and validation remain narrower.
 - Walkaround-hybrid Phase-3E clearcoat-normal follow-up (2026-06-14):
   readable `clearcoatNormalMap` handles now use the same material atlas and
   authored-tangent-aware normal-map path as base normal maps, with
   `clearcoatNormalScale` stored in per-triangle metadata. Shade-owned top-coat
   direct, analytic, sun, and glossy-indirect paths receive a separate clearcoat
-  normal. The promise ledger promotes `clearcoatNormalMap` /
-  `clearcoatNormalScale` to `approximate`, not `native`, because ReSTIR
-  candidate PDFs/payloads remain base-lobe-only.
+  normal. 2026-06-15 follow-up: DI pHat/reuse and GI suffix payloads now carry
+  clearcoat-normal-aware material payloads. The promise ledger keeps
+  `clearcoatNormalMap` / `clearcoatNormalScale` `approximate`, not `native`,
+  because GI receiver/reuse targeting and validation remain narrower.
 - Walkaround-hybrid Phase-3E bump-map follow-up (2026-06-15): readable
   `bumpMap` handles now use the material atlas as linear height fields with
   per-map uv0/uv1, wrap, and texture-transform metadata. `bumpScale` is stored
   in per-triangle metadata, and `materialAtlas.wgsl.ts` finite-differences the
   sampled height field into a visible shade-normal perturbation after normal-map
-  application. The promise ledger promotes `bumpMap` / `bumpScale` to
-  `approximate`, not `native`, because ReSTIR/GI candidate PDFs/payloads still
-  use the base visible-normal path.
+  application. 2026-06-15 follow-up: DI pHat/reuse and GI suffix payloads now
+  use the mapped visible normal. The promise ledger keeps `bumpMap` /
+  `bumpScale` `approximate`, not `native`, because GI receiver/reuse targeting
+  and validation remain narrower.
 - Walkaround-hybrid Phase-3E anisotropy follow-up (2026-06-14): scalar
   `anisotropy` / `anisotropyRotation` and readable `anisotropyMap` handles now
   ride the material atlas. The shader samples glTF B-channel strength and RG
   direction, then uses a guarded anisotropic GGX branch for shade-owned direct,
-  analytic, sun, and glossy-indirect paths. The promise ledger promotes these
-  rows to `approximate`, not `native`, because ReSTIR/GI reservoir PDFs/payloads
-  remain isotropic.
+  analytic, sun, and glossy-indirect paths. 2026-06-15 follow-up: DI pHat/reuse
+  and GI suffix payloads consume anisotropy. The promise ledger keeps these rows
+  `approximate`, not `native`, because GI receiver/reuse targeting remains
+  approximate and validation is still pending.
 - Walkaround-hybrid Phase-3E iridescence follow-up (2026-06-14): scalar
   `iridescence` / `iridescenceIor` / `iridescenceThicknessRange` and readable
   `iridescenceMap` / `iridescenceThicknessMap` handles now ride the material
   atlas. The shader samples glTF red-channel iridescence strength and
   green-channel thickness, then modifies shade-owned GGX F0 with the same
-  Belcour/Barla-style thin-film helper shape used by pt-webgpu. The promise
-  ledger promotes these rows to `approximate`, not `native`, because ReSTIR/GI
-  reservoir PDFs/payloads remain base-lobe-only.
+  Belcour/Barla-style thin-film helper shape used by pt-webgpu. 2026-06-15
+  follow-up: DI pHat/reuse and GI suffix payloads consume the iridescence
+  approximation. The promise ledger keeps these rows `approximate`, not
+  `native`, because GI receiver/reuse targeting remains approximate and
+  validation is still pending.
 - The fourteenth glTF extension-policy slice landed: `extensionsRequired` now
   accepts `KHR_materials_unlit` and archived
   `KHR_materials_pbrSpecularGlossiness` when the importer can represent them,
