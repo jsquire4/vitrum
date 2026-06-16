@@ -224,7 +224,13 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropyRotation',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
-const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set(['ior', 'transmission', 'thickness', 'attenuationDistance']);
+const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
+  'ior',
+  'transmission',
+  'thickness',
+  'attenuationColor',
+  'attenuationDistance',
+]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 
 interface ParamSlot {
@@ -237,6 +243,7 @@ interface ParamSlot {
 const MATERIAL_RGB_FIELDS = new Set([
   'baseColor',
   'emissive',
+  'attenuationColor',
   'specularColor',
   'sheenColor',
 ]);
@@ -1177,7 +1184,8 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
 
 /** Field-aware default [min, max] clamp range, used when a parameter doesn't
  *  supply its own `min`/`max`. baseColor / roughness / metallic / emissive
- *  saturate at [0, 1] (physical reflectance / microfacet range); emissive
+ *  saturate at [0, 1] (physical reflectance / microfacet range);
+ *  attenuationColor uses the finite material-packer clamp [1e-4, 1]; emissive
  *  intensity and emitter intensity / color are non-negative but unbounded above
  *  (an explicit `max` from the host narrows them); `ior` is bounded to the
  *  dielectric range [1, 2.5] the material decoder clamps to (material.wgsl.ts:615
@@ -1202,6 +1210,8 @@ function defaultClampRange(field: string): [number, number] {
     case 'anisotropy':
     case 'aoMapIntensity':
       return [0, 1];
+    case 'attenuationColor':
+      return [1e-4, 1];
     case 'ior':
       return [1, 2.5];
     case 'attenuationDistance':
@@ -1254,6 +1264,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'ior': return [m.ior ?? 1.5];
       case 'transmission': return [m.transmission ?? 0];
       case 'thickness': return [m.thickness ?? 0];
+      case 'attenuationColor': return [...(m.attenuationColor ?? [1, 1, 1])];
       case 'attenuationDistance': return [m.attenuationDistance ?? 1];
       case 'specularColor': return [...(m.specularColor ?? [1, 1, 1])];
       case 'specularIntensity': return [m.specularIntensity ?? 1];
@@ -1298,6 +1309,7 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'ior': return { ior: value[0]! };
     case 'transmission': return { transmission: value[0]! };
     case 'thickness': return { thickness: value[0]! };
+    case 'attenuationColor': return { attenuationColor: value as unknown as Vec3 };
     case 'attenuationDistance': return { attenuationDistance: value[0]! };
     case 'specularColor': return { specularColor: value as unknown as Vec3 };
     case 'specularIntensity': return { specularIntensity: value[0]! };

@@ -77,13 +77,14 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
         ? mat.alphaCutoff ?? 0.5
         : 0;
       const attenuationDistance = mat.attenuationDistance ?? 0;
+      const attenuationColor = mat.attenuationColor ?? [0, 0, 0];
       const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity;
-        rgb[p * 3 + 2] = mat.baseColor[2];
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0]!;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1]!;
+        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2]!;
       }
       return { rgb, channels: 3 as const };
     },
@@ -252,6 +253,52 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(fake.scene.primitives[0]!.material.transmission).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.thickness).toBeCloseTo(session.currentValues()[1]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(session.currentValues()[2]![0]!, 6);
+    session.dispose();
+  });
+
+  it('optimizes attenuationColor through finite differences', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                attenuationColor: [0.8, 0.7, 0.6],
+              },
+            }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.attenuationColor', kind: 'rgb', max: 0.5 },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(0.8, 6),
+      expect.closeTo(0.7, 6),
+      expect.closeTo(0.6, 6),
+    ]);
+
+    const result = await session.step();
+    for (const grad of result.gradient[0]!) {
+      expect(grad).toBeGreaterThan(0);
+    }
+    for (const value of session.currentValues()[0]!) {
+      expect(value).toBeLessThanOrEqual(0.500001);
+    }
+    expect(fake.scene.primitives[0]!.material.attenuationColor).toEqual([
+      expect.closeTo(session.currentValues()[0]![0]!, 6),
+      expect.closeTo(session.currentValues()[0]![1]!, 6),
+      expect.closeTo(session.currentValues()[0]![2]!, 6),
+    ]);
     session.dispose();
   });
 
@@ -1089,6 +1136,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 ior: 1.37,
                 transmission: 0.25,
                 thickness: 0.75,
+                attenuationColor: [0.8, 0.7, 0.6],
                 attenuationDistance: 1.25,
               },
             }
@@ -1103,6 +1151,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         { path: 'materials.panel.thickness', kind: 'scalar' },
         { path: 'materials.panel.ior', kind: 'scalar' },
         { path: 'materials.panel.attenuationDistance', kind: 'scalar' },
+        { path: 'materials.panel.attenuationColor', kind: 'rgb' },
       ],
       method: 'path-replay',
     });
@@ -1112,6 +1161,11 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.75, 6)]);
     expect(session.currentValues()[2]).toEqual([expect.closeTo(1.37, 6)]);
     expect(session.currentValues()[3]).toEqual([expect.closeTo(1.25, 6)]);
+    expect(session.currentValues()[4]).toEqual([
+      expect.closeTo(0.8, 6),
+      expect.closeTo(0.7, 6),
+      expect.closeTo(0.6, 6),
+    ]);
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-transport',
       path: 'materials.panel.transmission',
@@ -1131,6 +1185,11 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       code: 'path-replay-unsupported-transport',
       path: 'materials.panel.attenuationDistance',
       details: expect.objectContaining({ field: 'attenuationDistance', finiteDifferenceReason: 'transport' }),
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-transport',
+      path: 'materials.panel.attenuationColor',
+      details: expect.objectContaining({ field: 'attenuationColor', finiteDifferenceReason: 'transport' }),
     }));
     session.dispose();
   });
