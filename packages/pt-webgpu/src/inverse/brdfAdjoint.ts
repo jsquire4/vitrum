@@ -36,6 +36,9 @@
  *    local symmetric derivative of that thin-film F0 term. Iridescence maps,
  *    thickness maps, and thickness-range parameter gradients remain outside
  *    this oracle.
+ *  - map-free KHR_materials_anisotropy scalar controls (`anisotropy` and
+ *    `anisotropyRotation`) through a local symmetric derivative of the
+ *    anisotropic GGX specular lobe. Anisotropy maps remain outside this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -58,6 +61,8 @@ export type Vec3 = readonly [number, number, number];
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
+const ANISOTROPY_DERIV_STEP = 1e-3;
+const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
 
 // ── primitive mirrors (match material.wgsl.ts exactly) ──────────────────────
 
@@ -69,6 +74,20 @@ function safeNormalize(v: Vec3): Vec3 {
 
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function buildOnb(n: Vec3): [Vec3, Vec3] {
+  const up: Vec3 = Math.abs(n[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0];
+  const t = safeNormalize(cross(up, n));
+  return [t, cross(n, t)];
 }
 
 /** fresnelSchlick (material.wgsl.ts:313) — per-channel. */
@@ -398,6 +417,53 @@ function evalSheenLobe(
   ];
 }
 
+function ggxDAnis(hT: number, hB: number, hN: number, ax: number, ay: number): number {
+  const d = (hT / ax) * (hT / ax) + (hB / ay) * (hB / ay) + hN * hN;
+  return 1.0 / Math.max(PI * ax * ay * d * d, 1e-10);
+}
+
+function smithG1Anis(vT: number, vB: number, vN: number, ax: number, ay: number): number {
+  const vN2 = Math.max(vN * vN, 1e-10);
+  const numer = 2.0 * vN;
+  const denom = vN + Math.sqrt(vN2 + (vT * ax) * (vT * ax) + (vB * ay) * (vB * ay));
+  return numer / Math.max(denom, 1e-6);
+}
+
+function evalBrdfSpecAnisotropic(
+  f0: Vec3,
+  roughness: number,
+  anisotropy: number,
+  normal: Vec3,
+  tangent: Vec3,
+  bitangent: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  const nDotV = Math.max(dot(normal, wo), 1e-6);
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.max(dot(wo, h), 1e-6);
+  const f = fresnelSchlick(vDotH, f0);
+  const alpha = Math.max(roughness * roughness, 1e-3);
+  const aspect = Math.sqrt(Math.max(1.0 - 0.9 * anisotropy, 1e-4));
+  const ax = Math.max(alpha / aspect, 1e-4);
+  const ay = Math.max(alpha * aspect, 1e-4);
+  const hT = dot(h, tangent);
+  const hB = dot(h, bitangent);
+  const hN = Math.max(dot(h, normal), 0.0);
+  const woT = dot(wo, tangent);
+  const woB = dot(wo, bitangent);
+  const woN = Math.max(dot(wo, normal), 1e-6);
+  const wiT = dot(wi, tangent);
+  const wiB = dot(wi, bitangent);
+  const wiN = Math.max(dot(wi, normal), 1e-6);
+  const d = ggxDAnis(hT, hB, hN, ax, ay);
+  const g = smithG1Anis(woT, woB, woN, ax, ay) * smithG1Anis(wiT, wiB, wiN, ax, ay);
+  const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  return [specScale * f[0], specScale * f[1], specScale * f[2]];
+}
+
 /**
  * Map-free forward mirror of `evaluateBrdfFull(... clearcoat, clearcoatRoughness,
  * sheen=0, iridescence=0, anisotropy=0)`. Used by the clearcoat adjoint FD gate.
@@ -491,6 +557,58 @@ export function evaluateBrdfWithIridescence(
     vDotH,
   );
   return evaluateBrdfWithF0(baseColor, roughness, metallic, normal, wo, wi, f0);
+}
+
+/**
+ * Map-free forward mirror of the KHR_materials_anisotropy scalar path in the
+ * opaque direct-light domain. It mirrors the anisotropic replacement of the
+ * base specular lobe; additive clearcoat/sheen and texture maps are outside
+ * this helper.
+ */
+export function evaluateBrdfWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const f = fresnelSchlick(vDotH, f0);
+  const kd0 = 1.0 - metallic;
+  const diff: Vec3 = [
+    (1.0 - f[0]) * kd0 * baseColor[0] * INV_PI,
+    (1.0 - f[1]) * kd0 * baseColor[1] * INV_PI,
+    (1.0 - f[2]) * kd0 * baseColor[2] * INV_PI,
+  ];
+  if (anisotropy <= 1e-4) {
+    const iso = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity);
+    return iso;
+  }
+  const [tanT, tanB] = buildOnb(normal);
+  const c = Math.cos(anisotropyRotation);
+  const s = Math.sin(anisotropyRotation);
+  const anisoT: Vec3 = [
+    c * tanT[0] + s * tanB[0],
+    c * tanT[1] + s * tanB[1],
+    c * tanT[2] + s * tanB[2],
+  ];
+  const anisoB: Vec3 = [
+    -s * tanT[0] + c * tanB[0],
+    -s * tanT[1] + c * tanB[1],
+    -s * tanT[2] + c * tanB[2],
+  ];
+  const spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+  return [diff[0] + spec[0], diff[1] + spec[1], diff[2] + spec[2]];
 }
 
 // ── analytic partials ────────────────────────────────────────────────────────
@@ -911,6 +1029,75 @@ export function dBrdf_dIridescenceIor(
     iridescence * (fp[1] - fm[1]) / denom,
     iridescence * (fp[2] - fm[2]) / denom,
   ]);
+}
+
+/**
+ * Path-replay partial for map-free KHR_materials_anisotropy `anisotropy`.
+ *
+ * The anisotropic GGX branch changes the roughness axes and activates only
+ * above the zero-anisotropy guard, so this uses a local symmetric derivative of
+ * the map-free anisotropic BRDF mirror with frozen directions. This is still a
+ * replay-local partial, not a full-render finite-difference optimization step.
+ */
+export function dBrdf_dAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const step = ANISOTROPY_DERIV_STEP;
+  const ap = Math.min(1.0, Math.max(0.0, anisotropy + step));
+  const am = Math.min(1.0, Math.max(0.0, anisotropy - step));
+  const denom = ap - am;
+  if (denom <= 1e-6) return [0, 0, 0];
+  const fp = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    ap, anisotropyRotation, specularColor, specularIntensity,
+  );
+  const fm = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    am, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return [(fp[0] - fm[0]) / denom, (fp[1] - fm[1]) / denom, (fp[2] - fm[2]) / denom];
+}
+
+/**
+ * Path-replay partial for map-free KHR_materials_anisotropy
+ * `anisotropyRotation`. Rotation is inert when anisotropy is zero.
+ */
+export function dBrdf_dAnisotropyRotation(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) return [0, 0, 0];
+  const step = ANISOTROPY_ROTATION_DERIV_STEP;
+  const fp = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation + step, specularColor, specularIntensity,
+  );
+  const fm = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation - step, specularColor, specularIntensity,
+  );
+  return [
+    (fp[0] - fm[0]) / (2 * step),
+    (fp[1] - fm[1]) / (2 * step),
+    (fp[2] - fm[2]) / (2 * step),
+  ];
 }
 
 function dBrdf_dSpecularF0(

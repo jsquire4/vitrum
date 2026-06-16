@@ -862,6 +862,58 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('resolves map-free scalar anisotropy controls to path-replay when optimized directly', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, anisotropy: 0.42, anisotropyRotation: 0.31 } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.anisotropy', kind: 'scalar' },
+        { path: 'materials.panel.anisotropyRotation', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.42, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.31, 6)]);
+    session.dispose();
+  });
+
+  it('keeps anisotropy-map materials on finite-difference for anisotropy replay targets', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                anisotropy: 0.42,
+                anisotropyMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.anisotropy', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
   it('degrades to finite-difference for primitive targets the adjoint pass cannot replay as triangles', () => {
     const fake = makeFakeEngine();
     const identity = asMat4(new Float32Array([

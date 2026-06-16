@@ -34,6 +34,8 @@ import {
   ADJOINT_FIELD_SHEEN_COLOR,
   ADJOINT_FIELD_IRIDESCENCE,
   ADJOINT_FIELD_IRIDESCENCE_IOR,
+  ADJOINT_FIELD_ANISOTROPY,
+  ADJOINT_FIELD_ANISOTROPY_ROTATION,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -165,6 +167,12 @@ export class AdjointPass {
           break;
         case 'iridescenceIor':
           fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;
+          break;
+        case 'anisotropy':
+          fieldCode = ADJOINT_FIELD_ANISOTROPY;
+          break;
+        case 'anisotropyRotation':
+          fieldCode = ADJOINT_FIELD_ANISOTROPY_ROTATION;
           break;
         case 'specularColor':
           fieldCode = ADJOINT_FIELD_SPECULAR_COLOR;

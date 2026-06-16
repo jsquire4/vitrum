@@ -15,6 +15,7 @@ import {
 	  evaluateBrdfWithClearcoat,
 	  evaluateBrdfWithSheen,
 	  evaluateBrdfWithIridescence,
+	  evaluateBrdfWithAnisotropy,
 	  dBrdf_dBaseColor,
 	  dBrdf_dRoughness,
 	  dBrdf_dMetallic,
@@ -27,6 +28,8 @@ import {
 	  dBrdf_dSheenRoughness,
 	  dBrdf_dIridescence,
 	  dBrdf_dIridescenceIor,
+	  dBrdf_dAnisotropy,
+	  dBrdf_dAnisotropyRotation,
 	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -413,6 +416,77 @@ describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == 
   });
 });
 
+describe('BRDF adjoint — map-free KHR_materials_anisotropy scalar partials == finite difference', () => {
+  const cfg = {
+    baseColor: [0.55, 0.33, 0.18] as V3,
+    roughness: 0.42,
+    metallic: 0.18,
+    normal: normalize([0.14, 0.11, 1]),
+    wo: normalize([0.36, -0.24, 1]),
+    wi: normalize([-0.31, 0.46, 1]),
+    anisotropy: 0.48,
+    anisotropyRotation: 0.37,
+    specularColor: [0.9, 0.74, 0.62] as V3,
+    specularIntensity: 0.82,
+  };
+
+  it('matches FD for map-free scalar anisotropy over the unclamped interior', () => {
+    const h = 1e-3;
+    const analytic = dBrdf_dAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const fp = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy + h, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy - h, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('matches FD for map-free scalar anisotropyRotation over the unclamped interior', () => {
+    const h = 1e-3;
+    const analytic = dBrdf_dAnisotropyRotation(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const fp = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation + h, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation - h, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+});
+
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
   it('dBrdf/dBaseColor of a pure-diffuse (metallic=0) surface ≈ (1-F)/π on the diagonal', () => {
     // For metallic=0: f0 = 0.04 everywhere, F is achromatic, diffuse term
@@ -500,6 +574,16 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;');
 	    expect(wgsl).toContain('let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);');
 	    expect(wgsl).toContain('iridescence * (fp - fm) / denom');
+	  });
+
+	  it('anisotropy partials mirror the map-free anisotropic GGX local derivatives', () => {
+	    expect(wgsl).toContain('fn dBrdf_dAnisotropy(');
+	    expect(wgsl).toContain('fn dBrdf_dAnisotropyRotation(');
+	    expect(wgsl).toContain('const ANISOTROPY_DERIV_STEP = 1e-3;');
+	    expect(wgsl).toContain('const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;');
+	    expect(wgsl).toContain('fn adjointEvalBrdfSpecAnisotropic(');
+	    expect(wgsl).toContain('let ap = clamp(anisotropy + ANISOTROPY_DERIV_STEP, 0.0, 1.0);');
+	    expect(wgsl).toContain('anisotropyRotation + ANISOTROPY_ROTATION_DERIV_STEP');
 	  });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {

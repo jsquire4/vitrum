@@ -71,6 +71,8 @@ export const ADJOINT_FIELD_SHEEN_ROUGHNESS = 10;
 export const ADJOINT_FIELD_SHEEN_COLOR = 11;
 export const ADJOINT_FIELD_IRIDESCENCE = 12;
 export const ADJOINT_FIELD_IRIDESCENCE_IOR = 13;
+export const ADJOINT_FIELD_ANISOTROPY = 14;
+export const ADJOINT_FIELD_ANISOTROPY_ROTATION = 15;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -347,6 +349,8 @@ struct DirectLightAdjoint {
   sheenColor: vec3f,
   iridescenceGrad: f32,
   iridescenceIorGrad: f32,
+  anisotropyGrad: f32,
+  anisotropyRotationGrad: f32,
 }
 
 fn directLightAdjoint(
@@ -368,6 +372,8 @@ fn directLightAdjoint(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
   nDotL: f32,
   Li: vec3f,
 ) -> DirectLightAdjoint {
@@ -409,10 +415,18 @@ fn directLightAdjoint(
     baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
+  let gAnisotropy = dot(dLoss_dR, dBrdf_dAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  ) * nDotL * Li);
+  let gAnisotropyRotation = dot(dLoss_dR, dBrdf_dAnisotropyRotation(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  ) * nDotL * Li);
   return DirectLightAdjoint(
     gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
     gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness, gSheenColor,
-    gIridescence, gIridescenceIor,
+    gIridescence, gIridescenceIor, gAnisotropy, gAnisotropyRotation,
   );
 }
 
@@ -457,6 +471,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let iridescenceIor = max(m25.x, 1.0);
     let iridescenceThicknessMin = max(m25.y, 0.0);
     let iridescenceThicknessMax = max(m25.z, 0.0);
+    let materialTexBase = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+    var anisotropy = 0.0;
+    var anisotropyRotation = 0.0;
+    if (materialTexBase + 5u < arrayLength(&materialTexDescriptors)) {
+      let anisoDesc = materialTexDescriptors[materialTexBase + 5u];
+      anisotropy = clamp(anisoDesc.x, 0.0, 1.0);
+      anisotropyRotation = anisoDesc.y;
+    }
 
     let idx = indices[hit.tri];
     let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
@@ -493,6 +515,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gSheenColor = vec3f(0.0);
     var gIridescence = 0.0;
     var gIridescenceIor = 0.0;
+    var gAnisotropy = 0.0;
+    var gAnisotropyRotation = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -511,6 +535,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
         nDotL, dIrrMean.rgb,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -525,6 +550,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+      gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -548,6 +575,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -562,6 +590,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+      gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -591,6 +621,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -605,6 +636,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+      gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -641,6 +674,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -655,6 +689,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+      gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -686,6 +722,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+        anisotropy, anisotropyRotation,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -700,6 +737,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gSheenColor = gSheenColor + lg.sheenColor;
       gIridescence = gIridescence + lg.iridescenceGrad;
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+      gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+      gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -744,6 +783,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gIridescence * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_IRIDESCENCE_IOR}u) {
         adjointScatter(gradOffset, gIridescenceIor * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY}u) {
+        adjointScatter(gradOffset, gAnisotropy * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY_ROTATION}u) {
+        adjointScatter(gradOffset, gAnisotropyRotation * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed

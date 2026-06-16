@@ -12,14 +12,16 @@
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
  * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
- * clearcoatRoughness, sheen, sheenColor, sheenRoughness, iridescence).
+ * clearcoatRoughness, sheen, sheenColor, sheenRoughness, iridescence,
+ * iridescenceIor, anisotropy, anisotropyRotation).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
  * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
  * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
- * specular/metallic/clearcoat/sheen partials are CPU-FD-oracle + WGSL-shape +
- * shader-gate covered until their GPU inverse-fit recaptures land.
+ * specular/metallic/clearcoat/sheen/iridescence/anisotropy partials are
+ * CPU-FD-oracle + WGSL-shape + shader-gate covered until their GPU inverse-fit
+ * recaptures land.
  *
  * Emits the WGSL functions that compute the analytic partials of:
  *  - the Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. `baseColor` (rgb) and
@@ -35,6 +37,8 @@
  *  - map-free KHR_materials_iridescence IOR through a local symmetric
  *    derivative of the thin-film F0 term (single replay pass; not a full-render
  *    finite-difference probe);
+ *  - map-free KHR_materials_anisotropy scalar controls through a local
+ *    symmetric derivative of the anisotropic GGX specular lobe;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -267,6 +271,8 @@ fn dBrdf_dSpecularIntensity(
 // Mirrors inverse/brdfAdjoint.ts:dBrdf_dIridescence*. This is map-free scalar
 // iridescence only: no iridescence maps, no thickness maps, no anisotropy.
 const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
+const ANISOTROPY_DERIV_STEP = 1e-3;
+const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
 fn adjointIridXyzToRec709(xyz: vec3f) -> vec3f {
   return vec3f(
      3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
@@ -381,6 +387,151 @@ fn dBrdf_dIridescenceIor(
     baseColor, roughness, metallic, normal, wo, wi,
     iridescence * (fp - fm) / denom,
   );
+}
+
+fn adjointBuildTangent(n: vec3f) -> vec3f {
+  let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
+  return safe_normalize(cross(up, n));
+}
+
+fn adjointGgxDAnis(hT: f32, hB: f32, hN: f32, ax: f32, ay: f32) -> f32 {
+  let d = (hT / ax) * (hT / ax) + (hB / ay) * (hB / ay) + hN * hN;
+  return 1.0 / max(PI * ax * ay * d * d, 1e-10);
+}
+
+fn adjointSmithG1Anis(vT: f32, vB: f32, vN: f32, ax: f32, ay: f32) -> f32 {
+  let vN2 = max(vN * vN, 1e-10);
+  let numer = 2.0 * vN;
+  let denom = vN + sqrt(vN2 + (vT * ax) * (vT * ax) + (vB * ay) * (vB * ay));
+  return numer / max(denom, 1e-6);
+}
+
+fn adjointEvalBrdfSpecAnisotropic(
+  f0: vec3f,
+  roughness: f32,
+  anisotropy: f32,
+  normal: vec3f,
+  tangent: vec3f,
+  bitangent: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let nDotV = max(dot(normal, wo), 1e-6);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let vDotH = max(dot(wo, h), 1e-6);
+  let f = fresnelSchlick(vDotH, f0);
+  let alpha = max(roughness * roughness, 1e-3);
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  let hT = dot(h, tangent);
+  let hB = dot(h, bitangent);
+  let hN = max(dot(h, normal), 0.0);
+  let woT = dot(wo, tangent);
+  let woB = dot(wo, bitangent);
+  let woN = max(dot(wo, normal), 1e-6);
+  let wiT = dot(wi, tangent);
+  let wiB = dot(wi, bitangent);
+  let wiN = max(dot(wi, normal), 1e-6);
+  let d = adjointGgxDAnis(hT, hB, hN, ax, ay);
+  let g = adjointSmithG1Anis(woT, woB, woN, ax, ay) *
+    adjointSmithG1Anis(wiT, wiB, wiN, ax, ay);
+  return (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+}
+
+fn adjointEvaluateBrdfWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let f = fresnelSchlick(vDotH, f0);
+  let diff = (vec3f(1.0) - f) * (1.0 - metallic) * baseColor * INV_PI;
+  if (anisotropy <= 1e-4) {
+    let alpha = max(roughness * roughness, 1e-3);
+    let d = ggxD(nDotH, alpha);
+    let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+    let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+    return diff + spec;
+  }
+  let tanT = adjointBuildTangent(normal);
+  let tanB = cross(normal, tanT);
+  let c = cos(anisotropyRotation);
+  let s = sin(anisotropyRotation);
+  let anisoT = c * tanT + s * tanB;
+  let anisoB = -s * tanT + c * tanB;
+  let spec = adjointEvalBrdfSpecAnisotropic(
+    f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
+  );
+  return diff + spec;
+}
+
+fn dBrdf_dAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  let ap = clamp(anisotropy + ANISOTROPY_DERIV_STEP, 0.0, 1.0);
+  let am = clamp(anisotropy - ANISOTROPY_DERIV_STEP, 0.0, 1.0);
+  let denom = ap - am;
+  if (denom <= 1e-6) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    ap, anisotropyRotation, specularColor, specularIntensity,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    am, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return (fp - fm) / denom;
+}
+
+fn dBrdf_dAnisotropyRotation(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation + ANISOTROPY_ROTATION_DERIV_STEP,
+    specularColor, specularIntensity,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation - ANISOTROPY_ROTATION_DERIV_STEP,
+    specularColor, specularIntensity,
+  );
+  return (fp - fm) / (2.0 * ANISOTROPY_ROTATION_DERIV_STEP);
 }
 
 // ── analytic KHR_materials_clearcoat partials ───────────────────────────────

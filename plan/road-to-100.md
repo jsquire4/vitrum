@@ -43,7 +43,8 @@
 > `shadingModel:'unlit'` baseColor and map-free clearcoat scalars to the safe
 > pt-webgpu path-replay adjoint slice, added map-free scalar `iridescence` to
 > that same direct-light adjoint slice, added map-free scalar `iridescenceIor`
-> via a local thin-film-F0 derivative, made transparent-OIT direct sun
+> via a local thin-film-F0 derivative, added map-free scalar `anisotropy` /
+> `anisotropyRotation` through a local anisotropic-GGX derivative, made transparent-OIT direct sun
 > cast-shadow-aware, rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and
 > camera-visible finite-emitter direct lighting to transparent OIT, and

@@ -31,6 +31,8 @@ import {
   ADJOINT_FIELD_SHEEN_COLOR,
   ADJOINT_FIELD_IRIDESCENCE,
   ADJOINT_FIELD_IRIDESCENCE_IOR,
+  ADJOINT_FIELD_ANISOTROPY,
+  ADJOINT_FIELD_ANISOTROPY_ROTATION,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
@@ -106,11 +108,16 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let sheenColor = clamp(m24.rgb, vec3f(0.0), vec3f(1.0))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescence = clamp(m24.w, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceIor = max(m25.x, 1.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let materialTexBase = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let anisoDesc = materialTexDescriptors[materialTexBase + 5u]');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('anisotropy = clamp(anisoDesc.x, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheen(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheenColor(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheenRoughness(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dIridescence(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dIridescenceIor(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dAnisotropy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dAnisotropyRotation(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = dDirAD.w < 0.0');
@@ -137,6 +144,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheenColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gIridescence * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gIridescenceIor * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gAnisotropy * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gAnisotropyRotation * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
@@ -172,6 +181,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_SHEEN_COLOR).toBe(11);
     expect(ADJOINT_FIELD_IRIDESCENCE).toBe(12);
     expect(ADJOINT_FIELD_IRIDESCENCE_IOR).toBe(13);
+    expect(ADJOINT_FIELD_ANISOTROPY).toBe(14);
+    expect(ADJOINT_FIELD_ANISOTROPY_ROTATION).toBe(15);
   });
 
   it('engine adjoint PASS binds the emissive texture replay resources', () => {
@@ -181,5 +192,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('binding: 17, resource: sb.materialTextureSampler');
     expect(ADJOINT_PASS_TS).toContain("case 'iridescenceIor':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;');
+    expect(ADJOINT_PASS_TS).toContain("case 'anisotropy':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY;');
+    expect(ADJOINT_PASS_TS).toContain("case 'anisotropyRotation':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY_ROTATION;');
   });
 });

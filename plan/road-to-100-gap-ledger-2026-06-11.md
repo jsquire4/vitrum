@@ -155,9 +155,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `iridescenceIor` is differentiated through a local symmetric derivative of
   the thin-film F0 term inside the replay pass, not through a full-render
   finite-difference probe. Clearcoat maps, clearcoat normal maps, sheen maps,
-  iridescence/thickness maps, thickness-range gradients, anisotropy,
-  transmission, environment, indirect, stochastic area sampling, and GPU
-  inverse-fit recapture remain open proof/implementation tails.
+  iridescence/thickness maps, and thickness-range gradients remain open.
+  Next same-day follow-up: map-free scalar `anisotropy` and
+  `anisotropyRotation` joined this scoped direct-light adjoint treatment through
+  a local symmetric derivative of the anisotropic GGX specular lobe, using the
+  scalar descriptor lanes. Anisotropy maps, transmission, environment,
+  indirect, stochastic area sampling, and GPU inverse-fit recapture remain open
+  proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including

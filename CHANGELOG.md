@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu anisotropy adjoint breadth, 2026-06-16)
+
+- **Map-free anisotropy scalars now participate in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored local partials for KHR_materials_anisotropy `anisotropy` and `anisotropyRotation`, reading the scalar descriptor lanes and differentiating the anisotropic GGX specular lobe in the existing opaque direct-light replay domain. Anisotropy maps, mapped/normal/alpha/transmissive/layered/volume/spectral materials, environment/soft-sun terms, indirect paths, stochastic area sampling, and GPU inverse-fit recaptures remain finite-difference or validation tails.
+
 ### Fixed (walkaround transparent OIT scalar sky parity, 2026-06-16)
 
 - **Transparent blend sky lighting now uses material lobes even without HDRI:** `@vitrum/walkaround-hybrid` removes the diffuse-only no-HDRI fallback from `transparentOit.wgsl.ts`, so scalar/procedural sky radiance now flows through the same deterministic five-tap GGX/specular/clearcoat/sheen/anisotropy/iridescence estimate used for HDRI-backed transparent layers. Transparent ReSTIR direct-light reservoir participation and transparent GI remain approximation tails.
