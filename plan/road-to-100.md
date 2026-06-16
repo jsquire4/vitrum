@@ -306,14 +306,14 @@ buckets that the A–D framing was missing:**
   via `compilePipelines()`. Remaining D10/H55 proof work is now the non-mirrored
   WGSL behavior-oracle class, not missing shader or pipeline creation gates.
   M effort total; this is what stops the next H1 from shipping green.
-- **MaterialSpec consumption matrix** (items H46–H52): the contract advertises ~60 material
-  fields; walkaround's default path consumes ~8 (with roughness/metallic/ior/UVs among the
-  casualties — see B1/B13), and a dozen fields had zero consumers in ANY backend. **R7b
-  update (ba1429d):** `anisotropy`/`anisotropyRotation` now consumed by pt-webgpu (Heitz
-  anisotropic GGX); later waves closed pt-webgpu AO/bump/light maps, shadow flags, and
-  authored/generated tangent.xyzw consumption. Remaining broad-residual rows are
-  displacement, receiveShadow, and backend-specific approximation rows ledgered in
-  `BACKEND_PROMISE_LEDGER`; walkaround texture-map parity remains the large material gap.
+- **MaterialSpec consumption matrix** (items H46–H52): the original "~60 fields
+  advertised / walkaround consumes ~8" audit is now stale. Later waves closed
+  pt-webgpu AO/bump/light maps, shadow flags, authored/generated tangent.xyzw
+  consumption, and walkaround atlas/rich-lobe consumption for the current
+  map-backed material rows. Remaining broad-residual rows are displacement,
+  receiveShadow, OIT-grade alpha blend, UV-varying emissive/light-map promotion,
+  unsupported specialty fields (spectral/scattering/layered/thin-film), and
+  backend-specific approximation/proof rows ledgered in `BACKEND_PROMISE_LEDGER`.
   The former pt-webgl2 `TextureRef.texCoord`/`alphaMap.transform` warning is closed:
   pt-webgl2 now packs per-map UV bits, KHR texture transforms, and wrap modes for its
   atlas-backed material maps, including alpha sampling in both surface and attenuation
@@ -630,7 +630,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 
 | Task | File | Behavior |
 |------|------|----------|
-| ~~`loadGltfWithEngine` enforces runtime pt-webgpu profile rows for strict modes~~ ✅ DONE (2026-06-15 follow-up) | `packages/engine/src/gltf.ts`, `gltfStrictPtWebgpuTier.test.ts` | The `@vitrum/engine/gltf` one-call wrapper probes the adapter profile before construction and evaluates the actual runtime compatibility row (`pt-webgpu` full vs `pt-webgpu-lite`) for both `reject-unsupported` and `reject-degraded`. Lite assets with unsupported rows now reject under `reject-unsupported`; degraded-but-supported lite assets pass that mode but reject under `reject-degraded`; best-effort stays non-blocking. The generic `@vitrum/gltf-adapter` bridge remains engine-agnostic and cannot inspect `createEngine()`'s runtime tier. |
+| ~~`loadGltfWithEngine` enforces runtime pt-webgpu profile rows for strict modes~~ ✅ DONE (2026-06-15 follow-up; existing-engine path closed 2026-06-16) | `packages/engine/src/gltf.ts`, `gltfStrictPtWebgpuTier.test.ts` | The `@vitrum/engine/gltf` one-call wrapper probes the adapter profile before construction/attachment and evaluates the actual runtime compatibility row (`pt-webgpu` full vs `pt-webgpu-lite`) for both `reject-unsupported` and `reject-degraded`. Lite assets with unsupported rows now reject under `reject-unsupported`; degraded-but-supported lite assets pass that mode but reject under `reject-degraded`; best-effort stays non-blocking. Existing caller-supplied pt-webgpu engines now load unattached, run the same strict tier gate, and attach only after acceptance, so the factory path and existing-engine path are equivalent. The generic `@vitrum/gltf-adapter` bridge remains engine-agnostic and cannot inspect `createEngine()`'s runtime tier. |
 | ~~`rankGltfBackends` lite row~~ ✅ DONE (2026-06-13) | `packages/gltf-adapter/src/featureReport.ts`, `packages/pt-webgpu/src/index.ts` | `rankGltfBackends()` now emits separate `pt-webgpu` full and `pt-webgpu-lite` profile rows (`profileId`, `traceTier`) while preserving `.backend: 'pt-webgpu'` for existing callers. Lite profile scores full-tier-only material texture/alpha/env/aniso fields as unsupported; runtime lite `supportDetails.materials` and structured `setScene()` warnings now match the shader's no-group-3 material path. Tests: `gltfAssetApi.test.ts`, `liteTierCapabilities.test.ts`. |
 | ~~PTWG-07 verify~~ ✅ DONE (source-verified 2026-06-13) | `sceneMutationRouter.ts`, lite texture refresh tests | Emitter/env mutation refreshes `liteLightTex` / `liteEnvTex`; remaining lite work is ranking/policy, not stale sampled textures. |
 

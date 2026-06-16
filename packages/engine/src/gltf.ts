@@ -85,6 +85,30 @@ export async function loadGltfWithEngine(
   options: LoadGltfWithEngineOptions = {},
 ): Promise<GltfForEngineResult<EngineWithBackendId>> {
   const { engineOptions, ...adapterOptions } = options;
+  if (adapterOptions.engine != null) {
+    const { engine, attachScene, ...loadOptions } = adapterOptions;
+    const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
+      ...loadOptions,
+      backend: engine.backendId,
+      attachScene: false,
+      engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
+    });
+    await assertStrictPtWebgpuTier(
+      engine.backendId,
+      adapterOptions.compatibilityMode ?? 'best-effort',
+      loaded.asset,
+      adapterOptions,
+    );
+    loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
+    return {
+      ...loaded,
+      backend: engine.backendId,
+      engine,
+      attached: true,
+      warnings: [...loaded.asset.warnings, ...loaded.textureDecodeWarnings, ...loaded.controller.warnings],
+    };
+  }
+
   return loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
     ...adapterOptions,
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (engine glTF strict existing-engine path, 2026-06-16)
+
+- **Existing pt-webgpu engines now honor strict glTF runtime-tier gates:** `loadGltfWithEngine()` no longer bypasses `pt-webgpu-lite` compatibility checks when the caller supplies an already-created engine. Existing engines are loaded unattached, checked against the actual runtime tier for `reject-unsupported` / `reject-degraded`, then attached only after the gate accepts the asset. This prevents strict one-call glTF loads from validating through the factory path while silently attaching an incompatible lite-tier engine.
+
 ### Fixed (walkaround ReSTIR-GI receiver-lobe targets, 2026-06-16)
 
 - **Receiver-lobe ReSTIR-GI target/reuse:** `@vitrum/walkaround-hybrid` GI RIS/NRC producers and temporal/spatial default+GRIS reuse now evaluate candidate and final `pHat` through a material-aware receiver-lobe helper. Diffuse receivers algebraically reduce to the old `luminance(Lo) * cosTheta / pi` target, while rich receivers add the same specular/clearcoat/sheen BRDF proxy used by the GI material-payload path. Default and GRIS GI reuse now bind the scene/material group for receiver recasts; temporal previous-domain recast remains best-effort and falls back to the geometric target when the current UBO cannot reconstruct the previous camera ray exactly. Structural tests, the shader gate, and the full walkaround test suite pass; GPU smoke passed the lavapipe DDGI/RC/ReSTIR-TLAS/DDGI-BVH oracles but the dzn/RTX path timed out during pipeline init, so browser/dzn recapture remains a validation tail.

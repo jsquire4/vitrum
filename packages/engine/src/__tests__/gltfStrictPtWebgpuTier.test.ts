@@ -81,6 +81,7 @@ const mocks = vi.hoisted(() => {
     recommendedBackend: makeCompatibility()[0],
     textureDecodeReport,
   });
+  const attachEngine = vi.fn();
   return {
     state,
     unsupportedLiteIssue,
@@ -92,6 +93,7 @@ const mocks = vi.hoisted(() => {
       renderFrame: vi.fn(),
       setScene: vi.fn(),
     })),
+    attachEngine,
     loadGltfForEngine: vi.fn(async (_input: unknown, options: Record<string, unknown>) => {
       const factory = options['createEngine'] as
         | ((args: { scene: unknown; backend: string; asset: unknown; options: object }) => Promise<unknown>)
@@ -110,7 +112,7 @@ const mocks = vi.hoisted(() => {
         asset,
         backend: state.selectedBackend,
         ...(engine != null ? { engine } : {}),
-        controller: { warnings: [], attachEngine: vi.fn() },
+        controller: { warnings: [], attachEngine },
         attached: engine != null,
         textureDecodeReport: asset.textureDecodeReport,
         decodedTextureCount: 0,
@@ -151,12 +153,28 @@ vi.mock('../createEngine.js', () => ({
 }));
 
 import { loadGltfWithEngine } from '../gltf.js';
+import type { EngineWithBackendId } from '../createEngine.js';
+
+function makeExistingPtWebgpuEngine(): EngineWithBackendId {
+  return {
+    backendId: 'pt-webgpu',
+    state: 'ready',
+    capabilities: {} as EngineWithBackendId['capabilities'],
+    dispose: vi.fn(),
+    renderFrame: vi.fn(),
+    setScene: vi.fn(),
+    reset: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+  };
+}
 
 describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
   beforeEach(() => {
     mocks.state.selectedBackend = 'pt-webgpu';
     mocks.state.liteIssues = [mocks.unsupportedLiteIssue];
     mocks.createEngine.mockClear();
+    mocks.attachEngine.mockClear();
     mocks.loadGltfForEngine.mockClear();
     mocks.probeAdapterProfile.mockClear();
     mocks.probeAdapterProfile.mockResolvedValue({
@@ -191,6 +209,46 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 
     expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
     expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects existing pt-webgpu engines before controller attachment when runtime tier is degraded', async () => {
+    const existingEngine = makeExistingPtWebgpuEngine();
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'reject-degraded',
+      }),
+    ).rejects.toThrow(/pt-webgpu.*lite.*reject-degraded.*baseColorMap=unsupported/);
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+    expect(mocks.attachEngine).not.toHaveBeenCalled();
+    expect(existingEngine.setScene).not.toHaveBeenCalled();
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        backend: 'pt-webgpu',
+        attachScene: false,
+      }),
+    );
+    expect(mocks.loadGltfForEngine.mock.calls[0]?.[1]).not.toHaveProperty('engine');
+  });
+
+  it('attaches existing pt-webgpu engines after strict runtime tier accepts the asset', async () => {
+    mocks.state.liteIssues = [mocks.approximateLiteIssue];
+    const existingEngine = makeExistingPtWebgpuEngine();
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'reject-unsupported',
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', engine: existingEngine, attached: true });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+    expect(mocks.attachEngine).toHaveBeenCalledWith(existingEngine, { setScene: true });
   });
 
   it('allows reject-unsupported pt-webgpu glTF loads on lite tier when rows are degraded but supported', async () => {
