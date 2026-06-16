@@ -115,6 +115,7 @@ import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import {
   collectApproximateAlphaBlendPrimitiveIds,
+  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
@@ -213,6 +214,8 @@ export class HybridEngine implements Engine {
   private _warnedMaterialFields = new Set<string>();
   /** Tracks which fractional alpha-blend primitive sets have already warned. */
   private _warnedAlphaBlendApproximationIds = new Set<string>();
+  /** Tracks which emissive-map texel-PDF approximation primitive sets have warned. */
+  private _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
@@ -886,6 +889,33 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnApproximateEmissiveMapTexelPdfPrimitiveIds(
+    primitiveIds: readonly string[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveIds.length === 0) return;
+    const key = primitiveIds.join(',');
+    if (this._warnedEmissiveMapTexelPdfApproximationIds.has(key)) return;
+    this._warnedEmissiveMapTexelPdfApproximationIds.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: material-backed emissiveMap ` +
+        `surfaces are rendered and localized with UV-aware micro-emitter ` +
+        `selection, but exact texel-space emitter alias tables/PDFs are not ` +
+        `guaranteed across direct, GI, RC, DDGI, and fallback sampling paths; ` +
+        `primitives: ${primitiveIds.join(', ')}.`,
+      details: {
+        primitiveIds,
+        approximation: 'uv-local-micro-emitter-selection',
+        missing: 'exact-texel-alias-pdf',
+      },
+    });
+  }
+
   private _warnMaterialTextureAtlasDiagnostics(
     diagnostics: readonly MaterialTextureAtlasDiagnostic[],
     method: 'setScene' | 'updatePrimitive',
@@ -970,6 +1000,15 @@ export class HybridEngine implements Engine {
       }>,
     );
     this._warnApproximateAlphaBlendPrimitiveIds(alphaBlendApproxIds, 'setScene');
+
+    const emissiveMapTexelPdfApproxIds = collectApproximateEmissiveMapTexelPdfPrimitiveIds(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
+    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
 
     // SHADOW-01 — primitive castShadow remains approximate because GI-side
     // occlusion rays still see castShadow:false geometry. Emitter castShadow is
@@ -1302,6 +1341,9 @@ export class HybridEngine implements Engine {
       },
       warnApproximateAlphaBlendPrimitiveIds: (primitiveIds) => {
         this._warnApproximateAlphaBlendPrimitiveIds(primitiveIds, 'updatePrimitive');
+      },
+      warnApproximateEmissiveMapTexelPdfPrimitiveIds: (primitiveIds) => {
+        this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, 'updatePrimitive');
       },
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {

@@ -832,7 +832,10 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   instead of always using averaged `Le`. The glTF compatibility planner now
   reports this remaining boundary as `emissiveMap.texelPdf: approximate` for
   imported emissive textures instead of letting native visible-emission support
-  imply exact emitter-PDF semantics. These paths still do not build full
+  imply exact emitter-PDF semantics; `HybridEngine.setScene()` and material
+  `updatePrimitive()` patches now emit the same truth as a structured
+  `walkaround-hybrid.emissive-map-texel-pdf-approximation` runtime warning for
+  non-glTF hosts. These paths still do not build full
   texel-alias emitter PDFs; analytic/extra emitter mapped payloads, UV1-only RC
   emissive maps, and non-NEE GI/DDGI emission remain approximate,
 GI receiver/reuse targeting is now material-lobe aware but still

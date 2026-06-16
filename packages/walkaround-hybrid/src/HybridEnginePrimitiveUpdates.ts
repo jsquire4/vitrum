@@ -98,6 +98,7 @@ import {
 } from './restir/packingHelpers.js';
 import {
   collectApproximateAlphaBlendPrimitiveIds,
+  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFieldsForMaterial,
 } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
@@ -396,6 +397,8 @@ export interface PrimitiveUpdateContext {
   readonly warnUnconsumedMaterialFields?: (fields: readonly string[]) => void;
   /** Emits backend-honesty warnings for fractional alpha-blend material patches. */
   readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
+  /** Emits backend-honesty warnings for emissive-map texel-PDF approximations. */
+  readonly warnApproximateEmissiveMapTexelPdfPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -1294,6 +1297,13 @@ export function materialPatch(
   );
   ctx.warnApproximateAlphaBlendPrimitiveIds?.(
     collectApproximateAlphaBlendPrimitiveIds([{
+      id,
+      kind: prevPrim?.kind ?? 'mesh',
+      material: nextMaterial as unknown as Record<string, unknown>,
+    }]),
+  );
+  ctx.warnApproximateEmissiveMapTexelPdfPrimitiveIds?.(
+    collectApproximateEmissiveMapTexelPdfPrimitiveIds([{
       id,
       kind: prevPrim?.kind ?? 'mesh',
       material: nextMaterial as unknown as Record<string, unknown>,

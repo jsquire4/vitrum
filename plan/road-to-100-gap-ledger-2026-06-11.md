@@ -259,12 +259,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   same material-lobe payload, inverse-square falloff, spot cone attenuation, and
   cast-shadow-aware visibility convention as opaque shade. Later same-day work
   added finite mesh-emitter OIT lighting with alpha-aware per-sample visibility.
-  Current working-tree follow-up: DDGI probe direct sun, point/spot, and mesh
+  Later same-day DDGI follow-up: DDGI probe direct sun, point/spot, and mesh
   emitter NEE visibility now samples material-atlas `baseColorMap.a` /
   `alphaMap.r` coverage for mask/blend shadow transmittance. Transparent
   ReSTIR direct-light reservoir participation, true GI/RC/DDGI/ReSTIR-GI
   transport vertices, exact UV-varying emissive/light-map PDFs, and first-hit
-  emissive/light-map promotion remain open approximation/promotion tails.
+  emissive/light-map promotion remain open approximation/promotion tails. The
+  exact emissive-map PDF tail is now also surfaced at runtime by
+  `walkaround-hybrid.emissive-map-texel-pdf-approximation` for non-glTF hosts.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
   GPU allocation; the tracked `starter-v1.vitrum-model` and

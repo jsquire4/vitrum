@@ -457,6 +457,35 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning for emissive-map texel-PDF approximation', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const mappedEmissiveMaterial = {
+        baseColor: [0.6, 0.6, 0.6] as [number, number, number],
+        roughness: 0.35,
+        metallic: 0,
+        emissive: [1, 0.5, 0.25] as [number, number, number],
+        emissiveIntensity: 2,
+        emissiveMap: {
+          handle: { width: 1, height: 1, data: new Uint8Array([255, 128, 64, 255]) },
+        },
+      };
+
+      engine.updatePrimitive('mesh-a', { material: mappedEmissiveMaterial });
+      engine.updatePrimitive('mesh-a', { material: mappedEmissiveMaterial });
+
+      const texelPdfWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
+      );
+      expect(texelPdfWarnings).toHaveLength(1);
+      expect(texelPdfWarnings[0]?.method).toBe('updatePrimitive');
+      expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(texelPdfWarnings[0]?.details?.missing).toBe('exact-texel-alias-pdf');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

@@ -21,6 +21,7 @@ import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
   CONSUMED_MATERIAL_FIELDS,
   collectApproximateAlphaBlendPrimitiveIds,
+  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
 } from '../restir/consumedMaterialFields.js';
@@ -291,6 +292,17 @@ describe('collectUnconsumedMaterialFields', () => {
     ]);
   });
 
+  it('reports only emissive-map materials with nonzero scalar emissive energy for the texel-PDF warning', () => {
+    const prims: ReadonlyArray<PrimLike> = [
+      { id: 'non-emissive-map', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
+      { id: 'zero-intensity', kind: 'mesh', material: { emissive: [1, 1, 1], emissiveIntensity: 0, emissiveMap: { handle: 'map' } } },
+      { id: 'scalar-only', kind: 'mesh', material: { emissive: [1, 1, 1] } },
+      { id: 'mapped-emitter', kind: 'mesh', material: { emissive: [0.2, 0.1, 0], emissiveIntensity: 3, emissiveMap: { handle: 'map' } } },
+      { id: 'point', kind: 'point', material: { emissive: [1, 1, 1], emissiveMap: { handle: 'map' } } },
+    ];
+    expect(collectApproximateEmissiveMapTexelPdfPrimitiveIds(prims)).toEqual(['mapped-emitter']);
+  });
+
   it('ignores null/undefined field values', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { kind: 'mesh', material: { baseColor: [1, 0, 0], baseColorMap: null, normalMap: undefined } },
@@ -436,6 +448,41 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       );
       expect(alphaWarnings).toHaveLength(1);
       expect(alphaWarnings[0]?.details?.primitiveIds).toContain('blend-pane');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured warning for emissive-map texel-PDF approximation', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const emissiveScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'mapped-glow',
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              emissive: [1, 0.5, 0.25],
+              emissiveIntensity: 2,
+              emissiveMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 128, 64, 255]) } },
+            },
+          },
+        ],
+      };
+      engine.setScene(emissiveScene);
+      engine.setScene(emissiveScene);
+      const texelPdfWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
+      );
+      expect(texelPdfWarnings).toHaveLength(1);
+      expect(texelPdfWarnings[0]?.details?.primitiveIds).toContain('mapped-glow');
+      expect(texelPdfWarnings[0]?.details?.missing).toBe('exact-texel-alias-pdf');
     } finally {
       engine.dispose();
     }

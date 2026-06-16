@@ -293,6 +293,35 @@ export function collectApproximateAlphaBlendPrimitiveIds(
   return ids.sort();
 }
 
+/**
+ * Return primitive ids whose material-backed emissive maps are rendered through
+ * UV-local/micro-emitter approximations rather than exact texel-alias emitter
+ * PDFs. This is a truthfulness surface, not a rejection: walkaround still
+ * samples readable emissive maps for visible glow and localized direct
+ * lighting, but it does not build full texel alias tables across all DI/GI/RC
+ * paths.
+ */
+export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): string[] {
+  const ids: string[] = [];
+  for (const prim of primitives) {
+    if (!materialBearingPrimitiveKind(prim.kind)) {
+      continue;
+    }
+    const mat = prim.material;
+    if (!mat || mat.emissiveMap == null) continue;
+    if (emissiveEnergyIsNonZero(mat)) {
+      ids.push(prim.id ?? '(unnamed)');
+    }
+  }
+  return ids.sort();
+}
+
 function effectiveScalarBlendOpacity(material: Record<string, unknown>): number {
   const opacity = unitAlpha(material.opacity, 1);
   const baseColor = material.baseColor as ArrayLike<unknown> | undefined;
@@ -306,4 +335,20 @@ function unitAlpha(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.min(1, Math.max(0, value))
     : fallback;
+}
+
+function emissiveEnergyIsNonZero(material: Record<string, unknown>): boolean {
+  const intensity = typeof material.emissiveIntensity === 'number' && Number.isFinite(material.emissiveIntensity)
+    ? Math.max(0, material.emissiveIntensity)
+    : 1;
+  if (intensity <= 0) return false;
+  const emissive = material.emissive as ArrayLike<unknown> | undefined;
+  if (!emissive || typeof emissive.length !== 'number') return false;
+  for (let i = 0; i < Math.min(3, emissive.length); i += 1) {
+    const channel = emissive[i];
+    if (typeof channel === 'number' && Number.isFinite(channel) && channel > 0) {
+      return true;
+    }
+  }
+  return false;
 }
