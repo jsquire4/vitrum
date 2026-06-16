@@ -18,7 +18,7 @@
 // contracts (`MaterialsTextureData` / `LightsTextureData` / `EnvTextureData`).
 
 import type { EngineCapabilities, EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
-import { partitionSceneBySupport } from '@vitrum/core';
+import { analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
 import { mergeWorldSpaceFromCore, mergeUv1FromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
@@ -54,8 +54,10 @@ export function buildSceneTextures(
   scene: Scene,
   caps: EngineCapabilities,
 ): SceneTexturesBuild {
+  const analyticExpansion = expandAnalyticPrimitiveFallbacks(scene);
   // (1) capability filter
-  const { supported, warnings } = partitionSceneBySupport(scene, caps);
+  const { supported, warnings } = partitionSceneBySupport(analyticExpansion.scene, caps);
+  warnings.unshift(...analyticExpansion.warnings);
   const structuredWarnings: EngineWarning[] = [];
   const warningOptions = {
     onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
@@ -192,6 +194,28 @@ export function buildSceneTextures(
     warnings: meshLightsData.warnings.length > 0 ? [...warnings, ...meshLightsData.warnings] : warnings,
     structuredWarnings,
     supported,
+  };
+}
+
+function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene: Scene; readonly warnings: string[] } {
+  let changed = false;
+  const warnings: string[] = [];
+  const primitives = scene.primitives.map((primitive): ScenePrimitive => {
+    if (primitive.kind !== 'analytic') return primitive;
+    changed = true;
+    warnings.push(
+      `Scene primitive "${primitive.id}" (analytic ${primitive.shape}) is tessellated to a generated MeshPrimitive ` +
+      `fallback for @vitrum/pt-webgl2.`,
+    );
+    return analyticPrimitiveToMesh(primitive);
+  });
+  if (!changed) return { scene, warnings };
+  return {
+    scene: {
+      ...scene,
+      primitives,
+    },
+    warnings,
   };
 }
 

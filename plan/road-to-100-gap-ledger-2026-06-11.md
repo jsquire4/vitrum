@@ -1856,8 +1856,9 @@ Status:
 - Source-verified closed by `packages/core/src/__tests__/ledgerVsCapabilities.test.ts`.
 - The gate imports live pt-webgl2 support/capability data and compares it to
   `BACKEND_PROMISE_LEDGER`, including primitive/emitter/environment kinds,
-  analytic unsupported rows, mutation grades, debug surface, and full-tier
-  `supportsAuxBuffers:true` with lite-tier runtime downgrade to `false`.
+  analytic fallback-generated-mesh rows, mutation grades, debug surface, and
+  full-tier `supportsAuxBuffers:true` with lite-tier runtime downgrade to
+  `false`.
 - Keep the gate as a permanent regression guard; future backend rows should
   extend it rather than reopening this audit item.
 

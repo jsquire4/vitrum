@@ -34,7 +34,7 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Feature | Status |
 |---------|--------|
 | Mesh / instanced-mesh / skinned-mesh primitives | Supported |
-| Analytic shapes (sphere, box, etc.) | Not supported (mesh fallback via `@vitrum/engine`) |
+| Analytic shapes (sphere, box, capsule, cylinder, h-channel came) | Supported as generated mesh fallback (`fallback-generated-mesh`) |
 | Emitters: directional, point, spot, rect-area, disc-area, mesh-area | Supported |
 | Environment: none, hdri | Supported (HDRI requires raw `{width, height, data}` RGB float payload) |
 | Spectral hero-wavelength (`spectral: true`) | Lit, achromatic-flat until Jakob coefficient upload (H2 partial) |

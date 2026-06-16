@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 analytic primitive fallback, 2026-06-16)
+
+- **Analytic primitives now render on `@vitrum/pt-webgl2` via generated mesh fallback:** `setScene()` accepts core `AnalyticPrimitive` shapes (`sphere`, `box`, `capsule`, `cylinder`, `h-channel-came`) and tessellates them with `analyticPrimitiveToMesh()` before the WebGL2 triangle-BVH upload path. Capabilities and `BACKEND_PROMISE_LEDGER` now report `analytic` / analytic-shape rows as `fallback-generated-mesh` instead of unsupported, and `ledgerVsCapabilities` plus `engineContract` pin the runtime behavior.
+
 ### Fixed (glTF point/line fallback geometry, 2026-06-16)
 
 - **Point and line primitive modes now import as generated mesh fallback:** `@vitrum/gltf-adapter` converts glTF `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP` into deterministic triangle meshes (tiny cubes for points, thin rectangular prisms for line segments) instead of skipping them. The adapter preserves source-path diagnostics as `fallback-generated-primitive-mode`, reports compatibility as `fallback-generated-mesh`, keeps `reject-unsupported` usable for these assets, and still lets `reject-degraded` reject the topology approximation. Generated vertices replicate UV, UV1, COLOR_0, skin weights, and morph deltas from their source vertices where those streams exist.

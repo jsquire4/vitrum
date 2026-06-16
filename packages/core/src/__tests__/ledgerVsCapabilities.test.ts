@@ -35,8 +35,7 @@ function sorted(values: Iterable<string>): string[] {
 describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
   const ledger = BACKEND_PROMISE_LEDGER['pt-webgl2'];
 
-  it('supportedPrimitiveKinds matches ledger (analytic excluded — empty runtime set)', () => {
-    // PT_WEBGL2_SUPPORT does not include 'analytic'; ledger now matches.
+  it('supportedPrimitiveKinds matches ledger', () => {
     expect(sorted(PT_WEBGL2_SUPPORT.supportedPrimitiveKinds)).toEqual(
       sorted(ledger.supportedPrimitiveKinds),
     );
@@ -54,11 +53,10 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     );
   });
 
-  it('supportedAnalyticShapes: runtime set is empty; ledger says [] (unsupported)', () => {
-    // The runtime set is an empty Set<AnalyticShape>; no analytic shape is
-    // accepted. The ledger must also be empty.
-    expect(PT_WEBGL2_SUPPORT.supportedAnalyticShapes.size).toBe(0);
-    expect(ledger.supportedAnalyticShapes).toHaveLength(0);
+  it('supportedAnalyticShapes matches ledger', () => {
+    expect(sorted(PT_WEBGL2_SUPPORT.supportedAnalyticShapes)).toEqual(
+      sorted(ledger.supportedAnalyticShapes),
+    );
   });
 
   it('ledger mutations grade: scalar material/emitter/env edits and resize are native; geometry rows stay fallback', () => {
@@ -92,17 +90,17 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(liteCaps.supportsAuxBuffers).toBe(false);
   });
 
-  it('analytic primitiveKind not in supportedPrimitiveKinds (warn-and-skip)', () => {
-    expect(ledger.supportedPrimitiveKinds).not.toContain('analytic');
+  it('analytic primitiveKind is accepted through generated-mesh fallback', () => {
+    expect(ledger.supportedPrimitiveKinds).toContain('analytic');
   });
 
-  it('supportDetails.primitives.analytic is "unsupported"', () => {
-    expect(ledger.supportDetails.primitives.analytic).toBe('unsupported');
+  it('supportDetails.primitives.analytic is "fallback-generated-mesh"', () => {
+    expect(ledger.supportDetails.primitives.analytic).toBe('fallback-generated-mesh');
   });
 
-  it('supportDetails.analyticShapes: all shapes are "unsupported"', () => {
+  it('supportDetails.analyticShapes: all shapes are "fallback-generated-mesh"', () => {
     for (const grade of Object.values(ledger.supportDetails.analyticShapes)) {
-      expect(grade).toBe('unsupported');
+      expect(grade).toBe('fallback-generated-mesh');
     }
   });
 });

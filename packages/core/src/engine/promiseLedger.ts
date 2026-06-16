@@ -228,14 +228,6 @@ const WALKAROUND_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
  */
 const PT_WEBGPU_EMITTERS: BackendSupportDetails['emitters'] = ALL_EMITTERS_NATIVE;
 
-const NO_ANALYTIC_SHAPES: BackendSupportDetails['analyticShapes'] = Object.freeze({
-  sphere: 'unsupported',
-  box: 'unsupported',
-  capsule: 'unsupported',
-  cylinder: 'unsupported',
-  'h-channel-came': 'unsupported',
-});
-
 const PT_WEBGPU_ANALYTIC_SHAPES_NATIVE: BackendSupportDetails['analyticShapes'] = Object.freeze({
   sphere: 'native',
   box: 'native',
@@ -1011,18 +1003,15 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // auxiliary attachments off; the ledger row records the default/full promise.
     supportsAuxBuffers: true,
     accumulates: true,
-    // The native WebGL2 packer ingests mesh / skinned-mesh / instanced-mesh.
-    // `analytic` is NOT in the runtime set (PT_WEBGL2_SUPPORT.supportedAnalyticShapes
-    // is empty); analytic primitives are warned-and-skipped. No generated-mesh
-    // fallback path exists in the current slice — road-to-100 D3.
+    // The native WebGL2 packer ingests triangle geometry. Authored analytic
+    // primitives are accepted at the contract boundary and tessellated to
+    // generated MeshPrimitive fallbacks before scene texture/BVH upload.
     // instanced-mesh IS supported: the backend scene pack preserves each
     // instance at its real per-instance world transform.
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
-    // Runtime supportedAnalyticShapes is an empty Set (PT_WEBGL2_SUPPORT). No
-    // analytic shape is accepted — none here either.
-    supportedAnalyticShapes: [],
+    supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'offscreen-texture',
     supportDetails: {
       primitives: {
@@ -1033,10 +1022,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         // through the full-rebuild path. Promoted approximate→native.
         'skinned-mesh': 'native',
         'instanced-mesh': 'native',
-        // Analytic primitives are warned-and-skipped in the current slice.
-        // The authored scene is cached for param/shape patches, but ingestion
-        // skips the shape (no generated-mesh fallback). Road-to-100 D3.
-        analytic: 'unsupported',
+        // Authored analytic primitives are tessellated via core's
+        // analyticPrimitiveToMesh() before the triangle-only WebGL2 packer.
+        analytic: 'fallback-generated-mesh',
       },
       emitters: ALL_EMITTERS_NATIVE,
       environments: {
@@ -1047,7 +1035,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         // fields are consumed; 'approximate' reflects finite bake resolution.
         'procedural-sky': 'approximate',
       },
-      analyticShapes: NO_ANALYTIC_SHAPES,
+      analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
       denoisers: PT_WEBGL2_DENOISERS,

@@ -8,7 +8,7 @@
 
 ## Where we actually are
 
-> **Updated 2026-06-16 after the latest code-first closure wave (commits d9415357, 8d29d387, bc6b023f plus the receiver-lobe GI target wave and glTF/OIT predictable-tail closures).**
+> **Updated 2026-06-16 after the latest code-first closure wave (receiver-lobe GI target, glTF/OIT predictable-tail closures, point/line fallback geometry, and pt-webgl2 analytic fallback parity).**
 > Per `plan/v1-closure-plan-2026-06-10.md §0`, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
 > GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
@@ -452,7 +452,7 @@ buckets that the A–D framing was missing:**
 
 | Gate | Plug-in | Footgun |
 |------|---------|---------|
-| **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic unsupported rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
+| **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic fallback-generated-mesh rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
 | **GATE-02** | ✅ CLOSED — `core/src/__tests__/materialNativeEvidence.test.ts` enumerates every `native` material row from `BACKEND_PROMISE_LEDGER` and fails unless that backend/field has a named packer+shader/shared-classifier/readback evidence record with existing test/source file paths. | This is the ledger-evidence gate; renderer A/B and material-furnace proof still live in Phase 5 where required. |
 | **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; WGSL/PASS_ORDER parse gate is source-verified present as root `npm run shader-gate` and CI-backed with lavapipe (51 production modules + self-test). Keep it explicit rather than default `npm test` because that path needs a WebGPU adapter. | WGSL string tests don't compile shaders; pipeline-layout creation remains a stronger future proof gate |
 | **GATE-GLTF** | ✅ CLOSED — `gltfKhronosSweep.test.ts` exercises representative Khronos-style JSON fixtures through `analyzeGltfAsset` + compatibility ranking only: scalar mesh, textured PBR, extension glass, skin/morph/animation, compression hooks, source-path diagnostics, and full-vs-lite WebGPU profile differences. | Live URL tests stay out of CI; render-based glTF sweep remains a later proof gate. |

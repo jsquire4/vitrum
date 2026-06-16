@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { EngineWarning, FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
+import type { AnalyticPrimitive, EngineWarning, FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import type { PTEngineWebGL2Options } from '../index.js';
 import { createMockGl } from './mockGl.js';
@@ -114,6 +114,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.accumulates).toBe(true);
     expect(c.causticStrategy).toBe('none');
     expect(c.supportedPrimitiveKinds?.has('mesh')).toBe(true);
+    expect(c.supportedPrimitiveKinds?.has('analytic')).toBe(true);
+    expect(c.supportedAnalyticShapes?.has('sphere')).toBe(true);
+    expect(c.supportedAnalyticShapes?.has('box')).toBe(true);
+    expect(c.supportDetails?.primitives.analytic).toBe('fallback-generated-mesh');
+    expect(c.supportDetails?.analyticShapes.sphere).toBe('fallback-generated-mesh');
     expect(c.supportsIncrementalScene).toBe(true);
     expect(c.incrementalPatchSupport).toEqual({
       transform: true,
@@ -162,6 +167,41 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     e.setScene(triScene());
     expect(e.getScene?.()?.primitives.map((p) => p.id)).toEqual(['tri']);
     expect(e._debugGeoPack?.triangleCount).toBe(2);
+  });
+
+  it('setScene tessellates analytic primitives to generated mesh fallbacks', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const sphere: AnalyticPrimitive = {
+        kind: 'analytic',
+        id: 'sphere-a',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: GREY,
+      };
+
+      e.setScene({ primitives: [sphere], emitters: [], environment: { kind: 'none' } });
+
+      const converted = e.getScene?.()?.primitives[0];
+      expect(converted?.id).toBe('sphere-a');
+      expect(converted?.kind).toBe('mesh');
+      if (converted?.kind !== 'mesh') {
+        throw new Error('expected analytic primitive to be converted before pt-webgl2 ingestion');
+      }
+      expect(converted.indices?.length).toBeGreaterThan(0);
+      expect(e._debugGeoPack?.triangleCount).toBeGreaterThan(0);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.scene-upload-warning' &&
+        String(w.details?.warning).includes('tessellated to a generated MeshPrimitive fallback'),
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('emits structured warnings for unreadable material textures and HDRIs', async () => {
