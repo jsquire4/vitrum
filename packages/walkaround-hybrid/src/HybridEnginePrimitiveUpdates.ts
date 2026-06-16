@@ -13,9 +13,10 @@
  *
  *  - `patch.transform` present AND no topology fields → call
  *    {@link transformRefit}: refit BVH bounds in place (no SAH rebuild,
- *    no pipeline recompile, no DDGI atlas invalidation), rewrite the
- *    affected primitive's vertex slice in `bvhPositions`, reset the
- *    accumulator.
+ *    no pipeline recompile), rewrite the affected primitive's vertex slice
+ *    in `bvhPositions` when using merged BVH, reset the accumulator, and
+ *    invalidate DDGI probes because cached irradiance is anchored to the old
+ *    object placement.
  *  - structural topology fields present (`uvs` / `tangents` / `indices` /
  *    `instances` / `params` / `shape` / `fallbackMesh` / `kind`) → call
  *    {@link topologyRebuild}: re-run `buildReSTIRSceneBVH`, destroy +
@@ -23,14 +24,24 @@
  *  - `patch.positions` present, with optional same-count `normals` → call
  *    {@link positionsRefit}: update packed vertex data, refit bounds, and
  *    upload normals when provided.
+ *  - skinned pose patches (`bones`, `boneInverses`, `morphWeights`) → call
+ *    {@link skinnedPosePatch}: solve the pose, then reuse the positions/normals
+ *    refit path while preserving the pose fields in scene state.
  *  - material-only patches → {@link materialPatch}: re-pack bvhIndex and
  *    bvhBeerColors slices and partial GPU upload (no setScene).
  *
- * The hot-path branch design is preserved from the pre-extraction code
- * verbatim — no behaviour change.
+ * The hot-path branch design is preserved from the pre-extraction code.
  */
 
-import type { Mat4, MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
+import {
+  solveSkin,
+  type Mat4,
+  type MaterialSpec,
+  type MeshPrimitive,
+  type Scene,
+  type ScenePrimitive,
+  type SkinnedMeshPrimitive,
+} from '@vitrum/core';
 import {
   computeLocalAabb,
   computeWorldAabbForBindings,
@@ -240,6 +251,10 @@ export const TOPOLOGY_PATCH_WHOLESALE_FIELDS = [
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
 
+export const SKIN_POSE_PATCH_FIELDS = [
+  'bones', 'boneInverses', 'morphWeights',
+] as const;
+
 /** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
 function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGpuSnapshot {
   return {
@@ -418,6 +433,54 @@ export interface PrimitiveUpdateResult {
   readonly refreshRcMaterials?: boolean;
 }
 
+function findSkinnedPrimitive(scene: Scene, id: string): SkinnedMeshPrimitive | null {
+  const primitive = scene.primitives.find((p) => String(p.id) === id);
+  return primitive?.kind === 'skinned-mesh' ? primitive : null;
+}
+
+/**
+ * Skinned-pose mutation path for host patches that update only skeleton state
+ * (`bones`, `boneInverses`) or morph weights.
+ *
+ * The renderer buffers still need deformed positions/normals, so this resolves
+ * the next skinned pose through the canonical CPU solver and then delegates to
+ * the existing geometry refit path. The committed scene keeps the submitted pose
+ * fields alongside the solved geometry so subsequent pose patches start from the
+ * latest skeleton state instead of turning into an unrecognised no-op.
+ */
+export function skinnedPosePatch(
+  id: string,
+  patch: Partial<ScenePrimitive>,
+  ctx: PrimitiveUpdateContext,
+): PrimitiveUpdateResult {
+  const current = findSkinnedPrimitive(ctx.lastScene, id);
+  if (current == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): bones/boneInverses/morphWeights patches ` +
+      `require a skinned-mesh primitive.`,
+    );
+  }
+
+  const nextPrimitive = { ...current, ...patch } as SkinnedMeshPrimitive;
+  const solved = solveSkin(nextPrimitive);
+  const resolvedPatch = {
+    ...patch,
+    positions: solved.positions,
+    normals: solved.normals,
+    ...(solved.tangents ? { tangents: solved.tangents } : {}),
+  } as Partial<ScenePrimitive>;
+
+  if (solved.tangents != null) {
+    return topologyRebuild(id, resolvedPatch, ctx);
+  }
+
+  const result = positionsRefit(id, resolvedPatch, ctx);
+  return {
+    ...result,
+    updatedScene: applyPrimitivePatchToScene(ctx.lastScene, id, resolvedPatch),
+  };
+}
+
 /**
  * Transform-only fast path (Option (c) per items_to_fix.md A3).
  *
@@ -479,6 +542,7 @@ export function transformRefit(
         }
         ctx.pipeline?.requestAccumReset();
         ctx.ddgi.markInstancesDirty();
+        ctx.ddgi.invalidateProbeCache();
         const rcBounds = computeWorldAabbForBindings(
           updatedRenderScene,
           bvh.primitiveTlasBindings,
@@ -820,6 +884,7 @@ export function refitSkinnedMeshAfterGpuWrite(
 
     ctx.pipeline?.requestAccumReset();
     ctx.ddgi.markInstancesDirty();
+    ctx.ddgi.invalidateProbeCache();
     const rcBounds = computeWorldAabbForBindings(updatedRenderScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {

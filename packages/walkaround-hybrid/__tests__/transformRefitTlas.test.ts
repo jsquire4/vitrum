@@ -86,7 +86,7 @@ describe('transformRefit TLAS (C2)', () => {
     expect(pipeline.refreshTlasRefit).toHaveBeenCalled();
     expect(pipeline.requestAccumReset).toHaveBeenCalled();
     expect(ddgi.markInstancesDirty).toHaveBeenCalled();
-    expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
+    expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
   });
 
   it('uses render-scene mesh fallbacks for authored analytic transform refits', () => {

@@ -90,7 +90,9 @@ import {
   positionsRefit,
   topologyRebuild,
   materialPatch,
+  skinnedPosePatch,
   refitSkinnedMeshAfterGpuWrite,
+  SKIN_POSE_PATCH_FIELDS,
   TOPOLOGY_PATCH_FIELDS,
   TOPOLOGY_PATCH_WHOLESALE_FIELDS,
   type PrimitiveUpdateContext,
@@ -1028,8 +1030,9 @@ export class HybridEngine implements Engine {
   // **Routing rules**:
   //  - `patch.transform` present AND no topology fields → fast-path (c):
   //     refit the BVH bounds in-place (no SAH rebuild, no pipeline
-  //     recompile, no DDGI atlas invalidation), rewrite the affected
-  //     primitive's vertex slice in `bvhPositions`, reset the accumulator.
+  //     recompile), rewrite the affected primitive's vertex slice in
+  //     `bvhPositions` for merged BVH, reset the accumulator, and invalidate
+  //     DDGI probes so cached irradiance follows the moved object.
   //  - vertex/index-count topology field present (`positions` / `normals` /
   //     `uvs` / `tangents` / `indices`) → full-rebuild path (a): re-run
   //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
@@ -1040,6 +1043,9 @@ export class HybridEngine implements Engine {
   //     geometry/instance change invalidates every cached GI signal on this
   //     realtime stack anyway, so honoring `incrementalPatchSupport.topology`
   //     beats throwing "call setScene()" and matches pt-webgl/pt-webgpu.
+  //  - skinned pose fields (`bones` / `boneInverses` / `morphWeights`) →
+  //     solve the pose through `solveSkin` and reuse the positions/normals
+  //     refit path while preserving the pose fields in scene state.
   //  - material-only patches → `materialPatch` fast path (A3): re-pack the
   //     affected `bvhIndex` / `bvhBeerColors` triangle slices + partial GPU
   //     upload — NO `setScene`, no pipeline recompile.
@@ -1106,11 +1112,13 @@ export class HybridEngine implements Engine {
   /**
    * Select the fast/full path for an `updatePrimitive` patch and run it.
    * Returns `null` for an unrecognised patch (no-op). Branch order is
-   * load-bearing — structural topology beats positions beats transform beats material:
+   * load-bearing — skinned pose beats structural topology beats positions beats transform beats material:
    *  - structural topology fields (`indices` / UVs / tangents / instances /
    *    analytic shape data / kind) → full SAH `topologyRebuild` (Option (a)).
    *  - `positions` with optional same-count `normals` → A3/H19
    *    `positionsRefit` (same topology, new verts/normals).
+   *  - skinned pose fields (`bones` / `boneInverses` / `morphWeights`) →
+   *    solve + route through the positions/normals refit path.
    *  - `normals` without `positions` → full rebuild until a normals-only
    *    upload path exists.
    *  - `transform` only → `transformRefit` (refit AABB bounds in place).
@@ -1123,6 +1131,8 @@ export class HybridEngine implements Engine {
   ): PrimitiveUpdateResult | null {
     const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
     const ctx = this._buildPrimitiveUpdateContext();
+    const hasSkinnedPose = SKIN_POSE_PATCH_FIELDS.some((f) => has(f));
+    if (hasSkinnedPose) return skinnedPosePatch(id, patch, ctx);
     const hasStructuralTopology = TOPOLOGY_PATCH_FIELDS.some((f) => f !== 'normals' && has(f));
     if (hasStructuralTopology) return topologyRebuild(id, patch, ctx);
     if (has('positions')) return positionsRefit(id, patch, ctx);

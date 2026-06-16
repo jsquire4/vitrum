@@ -117,9 +117,12 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly height: number;
 
   /**
-   * PR-7 — when true, run {@link solveSkin} for every `skinned-mesh` primitive
-   * at the start of each {@link HybridEngine.renderFrame} and refit BLAS via
-   * `updatePrimitive({ positions, normals })`.
+   * PR-7 — when true, run eligible `skinned-mesh` primitives through the GPU
+   * skinning kernel at the start of each {@link HybridEngine.renderFrame}, then
+   * refit the live BVH. Meshes with morph targets, tangents, non-identity bind
+   * matrices, unavailable compute support, or missing BVH ranges fall back to
+   * the canonical CPU {@link solveSkin} path and the same positions/normals
+   * refit.
    */
   readonly gpuSkinning?: boolean;
 

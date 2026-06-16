@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround mutation GI invalidation, 2026-06-16)
+
+- **TLAS transform refits now invalidate DDGI probes:** `HybridEngine.updatePrimitive(id, { transform })` in TLAS mode already reset accumulation, marked DDGI instances dirty, and re-synced the shared BVH, but it did not invalidate the DDGI probe atlas. TLAS and merged transform refits now share the physically correct invalidation behavior, and the mutation-matrix seam asserts it.
+- **Skinned pose patches no longer no-op in walkaround:** `HybridEngine.updatePrimitive(id, { bones | boneInverses | morphWeights })` now re-solves skinned poses with the canonical `solveSkin` path, routes the solved positions/normals through the existing TLAS/merged refit path, preserves the submitted pose fields in scene state, and invalidates DDGI for GPU-skinned TLAS refits.
+
 ### Fixed (glTF animation invalidation, 2026-06-16)
 
 - **glTF controller incremental patches now reset engine temporal state:** `GltfSceneController` calls an Engine-like target's optional `reset()` hook after successful incremental animation or material-variant `updatePrimitive()` batches, while `setScene()` fallback keeps the full-scene invalidation path. `ProgressiveHandoffCoordinator` exposes the same reset hook on its synthetic glTF controller target, so realtime/PT handoff animation remains synchronized and stale temporal/converged histories are invalidated through one predictable mutation path.

@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { asMat4, type EngineWarning, type Scene, type SceneEmitter, type ScenePrimitive } from '@vitrum/core';
+import {
+  asMat4,
+  type EngineWarning,
+  type Scene,
+  type SceneEmitter,
+  type ScenePrimitive,
+  type SkinnedMeshPrimitive,
+} from '@vitrum/core';
 import { HybridEngine, type HybridEngineOptions } from '../HybridEngine.js';
 import {
   buildReSTIRSceneBVHForCoreScene,
@@ -43,12 +50,41 @@ function mat4Translate(x: number, y = 0, z = 0) {
   ]));
 }
 
+function identityMat4(): Float32Array {
+  return new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]);
+}
+
 function mesh(id: string, x: number, baseColor: [number, number, number]): ScenePrimitive {
   return {
     kind: 'mesh',
     id,
     positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    material: { baseColor, roughness: 0.5, metallic: 0 },
+    transform: mat4Translate(x),
+  };
+}
+
+function skinnedMesh(id: string, x: number, baseColor: [number, number, number]): SkinnedMeshPrimitive {
+  const skinIndices = new Uint32Array(12);
+  const skinWeights = new Float32Array(12);
+  for (let v = 0; v < 3; v += 1) {
+    skinWeights[v * 4] = 1;
+  }
+  return {
+    kind: 'skinned-mesh',
+    id,
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    skinIndices,
+    skinWeights,
+    bones: identityMat4(),
+    boneInverses: identityMat4(),
     material: { baseColor, roughness: 0.5, metallic: 0 },
     transform: mat4Translate(x),
   };
@@ -268,7 +304,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     },
   );
 
-  it('updatePrimitive(transform) refits TLAS, resets accumulation, and re-syncs DDGI BVH without invalidating probes', () => {
+  it('updatePrimitive(transform) refits TLAS, resets accumulation, re-syncs DDGI BVH, and invalidates probes', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const moved = mat4Translate(2, 0.5, 0);
@@ -279,7 +315,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(ddgi.markInstancesDirty).toHaveBeenCalledTimes(1);
       expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
-      expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(Array.from((storedScene(engine).primitives[0] as { transform: Float32Array }).transform))
         .toEqual(Array.from(moved));
     } finally {
@@ -316,6 +352,38 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(f32[1]).toBeCloseTo(0, 5);
       expect(f32[2]).toBeCloseTo(0, 5);
       expect(f32[3]).toBeCloseTo(0, 5);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(bones) re-solves a skinned pose and routes through the TLAS refit path', () => {
+    const scene: Scene = {
+      primitives: [skinnedMesh('skin-a', 0, [0.8, 0.2, 0.2])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { engine, pipeline, ddgi } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      const bones = new Float32Array(mat4Translate(4, 0, 0));
+
+      engine.updatePrimitive('skin-a', { bones } as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshTlasRefit).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
+      expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
+
+      const updated = storedScene(engine).primitives[0];
+      expect(updated?.kind).toBe('skinned-mesh');
+      if (updated?.kind === 'skinned-mesh') {
+        expect(updated.bones[12]).toBeCloseTo(4, 5);
+        expect(updated.positions[0]).toBeCloseTo(4, 5);
+        expect(updated.positions[3]).toBeCloseTo(5, 5);
+      }
     } finally {
       engine.dispose();
     }

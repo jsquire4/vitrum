@@ -1735,6 +1735,16 @@ Status:
   emitter, environment, lighting, resize behavior, unsupported material-field
   diagnostics, and fractional alpha-blend diagnostics on incremental material
   mutation.
+- 2026-06-16 follow-up: TLAS transform refits now invalidate the DDGI probe
+  cache in addition to marking instances dirty and re-syncing the shared BVH.
+  The mutation-matrix seam asserts this directly, matching the merged-BVH
+  transform behavior and closing the stale Road 4D probe-invalidation row.
+- 2026-06-16 follow-up: walkaround `updatePrimitive({ bones | boneInverses |
+  morphWeights })` on a skinned mesh now re-solves through `solveSkin`, routes
+  the solved positions/normals through the existing TLAS/merged refit path, and
+  preserves the submitted pose fields in scene state. The same seam asserts
+  bones-only TLAS mutation, accumulation reset, DDGI sync, and DDGI probe
+  invalidation.
 
 Remaining:
 - Full GPU/resource mutation matrix promotion still needs end-to-end tests where

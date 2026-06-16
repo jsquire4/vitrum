@@ -870,9 +870,9 @@ pt-webgpu frame.
 | Concern | Code | Footgun |
 |---------|------|---------|
 | ~~ReSTIR temporal reset~~ ✅ CODE CLOSED | `GltfSceneController` calls `reset()` after successful incremental animation/variant `updatePrimitive()` batches when the target exposes it; `setScene()` fallback keeps the normal full-scene invalidation path; `ProgressiveHandoffCoordinator` exposes the same reset hook on its synthetic controller target. | Custom non-engine patch targets that intentionally omit `reset()` remain responsible for their own history invalidation |
-| DDGI probe invalidation | `updatePrimitive` material vs transform | Transform refit must invalidate probe cache (`HybridEngineGiPropagation.ts`) |
+| ~~DDGI probe invalidation~~ ✅ CODE CLOSED | `updatePrimitive` material vs transform | TLAS and merged transform/positions/topology refits invalidate DDGI probes; material-only patches skip geometry GI propagation except emissive/transmission material edits, which invalidate lighting state. Test: `walkaround-hybrid/src/__tests__/mutationMatrix.test.ts`. |
 | ~~pt-webgpu accum~~ ✅ SOURCE VERIFIED | `attachVitrum` tracks and forwards `prevViewMatrix` / `prevProjMatrix` every RAF tick through `composeAttachVitrumFrameInput()`. | Broader animated real-scene sweeps remain validation tails |
-| Skinning GPU path | `GpuSkinningSubsystem` vs CPU `solveSkin` | Controller uses CPU `solveSkin` — OK; GPU skinning path must receive bone patches too |
+| ~~Skinning pose patches~~ ✅ CODE CLOSED | `GpuSkinningSubsystem` vs CPU `solveSkin` | `updatePrimitive({ bones | boneInverses | morphWeights })` now solves skinned pose patches through the canonical solver and routes them through the TLAS/merged positions-refit path; GPU-skinned TLAS refits invalidate DDGI probes too. Broader animated real-scene/GPU captures remain validation tails. |
 
 #### 4E — Engine integration residue (H31)
 
