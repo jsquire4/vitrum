@@ -19,11 +19,11 @@
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
- * material stays within the direct-light base/specular domain this pass mirrors
+ * material stays within the direct-light base/specular/extension-lobe domain this pass mirrors
  * (delta directional, point, spot, and center-sampled rect/disc area lights), or
  * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
- * emissive / specularColor / specularIntensity / clearcoat / map-free sheen /
+ * emissive / specularColor / specularIntensity / clearcoat / sheen /
  * map-free iridescence / map-free anisotropy controls); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
@@ -93,7 +93,7 @@ export interface InverseEngineHooks {
    * stays inside the adjoint-compatible direct-light domain (delta directional,
    * point, spot, and center-sampled rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
-   * emissive / specularColor / specularIntensity / clearcoat / map-free sheen /
+   * emissive / specularColor / specularIntensity / clearcoat / sheen /
    * map-free iridescence / map-free anisotropy controls); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
@@ -158,24 +158,25 @@ export interface AdjointGradientRequest {
  *    the diffuse/specular partition and the specular Fresnel colour for
  *    non-metallic and partially-metallic surfaces; fully metallic surfaces still
  *    source F0 from baseColor and therefore have zero derivative here.
- *  - `clearcoat`, `clearcoatRoughness` — map-free KHR_materials_clearcoat direct
- *    lobe controls. Clearcoat maps and clearcoatNormalMap stay on finite
- *    difference until the adjoint pass mirrors texture/normal-map sampling.
- *  - `sheen`, `sheenColor`, `sheenRoughness` — map-free KHR_materials_sheen
- *    direct lobe controls through the additive Charlie lobe. Sheen maps and
- *    sheen-roughness maps stay on finite difference until the adjoint pass
- *    mirrors those texture derivatives.
+ *  - `clearcoat`, `clearcoatRoughness` — KHR_materials_clearcoat direct lobe
+ *    controls. Clearcoat/clearcoatRoughness maps replay as local scalar
+ *    chain-rule factors; clearcoatNormalMap stays on finite difference until
+ *    the adjoint pass mirrors normal-map sampling and path/visibility effects.
+ *  - `sheen`, `sheenColor`, `sheenRoughness` — KHR_materials_sheen direct lobe
+ *    controls through the additive Charlie lobe. Sheen color/roughness maps
+ *    replay as local chain-rule factors.
  *  - `iridescence` — map-free KHR_materials_iridescence scalar through the
  *    thin-film-modified base F0 in the same scoped opaque direct-light domain.
  *  - `iridescenceIor` — map-free scalar thin-film IOR through a local symmetric
  *    derivative of that F0 term. Thickness range, iridescence maps, and
  *    thickness maps stay on finite difference until their derivatives are
  *    mirrored and validated.
- *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, and specular
- *    color/intensity maps are replayed as local chain-rule factors for the lit
- *    BRDF domain above. Emissive-on-lit-BRDF, alpha, transmission, AO,
- *    normal/bump, light-map, and other extension maps remain finite-difference
- *    fallbacks until their own source terms are mirrored.
+ *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, specular color/intensity
+ *    maps, and clearcoat/sheen maps are replayed as local chain-rule factors
+ *    for the lit BRDF domain above. Emissive-on-lit-BRDF, alpha, transmission,
+ *    AO, normal/bump, light-map, iridescence/thickness maps, anisotropy maps,
+ *    and other extension maps remain finite-difference fallbacks until their
+ *    own source terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps stay on finite difference.
@@ -192,7 +193,7 @@ export interface AdjointGradientRequest {
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
- * scalar clearcoat, map-free sheen controls, scalar iridescence,
+ * scalar clearcoat, sheen controls, scalar iridescence,
  * scalar iridescenceIor, and map-free anisotropy controls are
  * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
@@ -307,7 +308,8 @@ export class PtWebgpuInverseSession implements InverseSession {
     // compatible direct-light domain, or a map-free unlit baseColor primary-hit
     // fit (`ADJOINT_ELIGIBLE_FIELDS`: material
     // baseColor / roughness / metallic / emissive / emissiveIntensity /
-    // specularColor / specularIntensity — see its doc for the ior exclusion). Any shortfall
+    // specularColor / specularIntensity / clearcoat / sheen / iridescence /
+    // anisotropy slices — see its doc for scoped map coverage and exclusions). Any shortfall
     // degrades to finite-difference and is reported via `method`, so the host
     // never receives a silently-wrong gradient. The two adjoint stages
     // the hook relies on (partials; chain rule + accumulation) are GPU-validated
@@ -583,11 +585,7 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
     m.emissiveMap != null ||
     m.alphaMap != null ||
     m.aoMap != null ||
-    m.clearcoatMap != null ||
-    m.clearcoatRoughnessMap != null ||
     m.clearcoatNormalMap != null ||
-    m.sheenColorMap != null ||
-    m.sheenRoughnessMap != null ||
     m.iridescenceMap != null ||
     m.iridescenceThicknessMap != null ||
     m.anisotropyMap != null ||

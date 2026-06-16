@@ -562,16 +562,60 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when a lit BRDF material uses clearcoat/sheen maps in the scoped adjoint domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                clearcoat: 0.6,
+                clearcoatRoughness: 0.35,
+                sheen: 0.5,
+                sheenColor: [0.8, 0.7, 0.6],
+                sheenRoughness: 0.4,
+                clearcoatMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 1, 1]) } },
+                clearcoatRoughnessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.45, 1, 1]) } },
+                sheenColorMap: { handle: { width: 1, height: 1, data: new Float32Array([0.8, 0.7, 0.6, 1]) } },
+                sheenRoughnessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 0.55]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(6) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.clearcoat', kind: 'scalar' },
+        { path: 'materials.panel.clearcoatRoughness', kind: 'scalar' },
+        { path: 'materials.panel.sheenColor', kind: 'rgb' },
+        { path: 'materials.panel.sheenRoughness', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.6, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.35, 6)]);
+    expect(session.currentValues()[2]).toEqual([
+      expect.closeTo(0.8, 6),
+      expect.closeTo(0.7, 6),
+      expect.closeTo(0.6, 6),
+    ]);
+    expect(session.currentValues()[3]).toEqual([expect.closeTo(0.4, 6)]);
+    session.dispose();
+  });
+
   it.each([
     ['transmission', { transmission: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
     ['AO map', { aoMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['emissive map on a lit BRDF target', { emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
-    ['clearcoat map', { clearcoatMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
-    ['sheen color map', { sheenColorMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
-    ['sheen roughness map', { sheenRoughnessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }],
     ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }],
     ['spectral attenuation', {

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu clearcoat/sheen-map adjoint replay, 2026-06-16)
+
+- **Clearcoat and sheen maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_clearcoat and KHR_materials_sheen map sampling in `adjointPass`, including linear `clearcoatMap` R, linear `clearcoatRoughnessMap` G, sRGB `sheenColorMap` RGB, and linear `sheenRoughnessMap` A with each map's UV/transform/wrap metadata. The direct-light replay evaluates BRDF partials with the hit-local mapped lobe terms and applies the same local chain factors to `clearcoat`, `clearcoatRoughness`, `sheenColor`, and `sheenRoughness` gradients. Clearcoat normal maps, iridescence/thickness maps, anisotropy maps, normal/visibility/path-selection maps, transmission/layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or validation tails.
+
 ### Fixed (pt-webgpu specular-map adjoint replay, 2026-06-16)
 
 - **Specular color/intensity maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_specular map sampling in `adjointPass`, including sRGB `specularColorMap` RGB and linear `specularIntensityMap` A with each map's UV/transform/wrap metadata. The direct-light replay now evaluates BRDF partials with the hit-local mapped specular terms and applies the same local chain factors to `specularColor` and `specularIntensity` gradients. Clearcoat/sheen/iridescence/anisotropy maps, normal/visibility/path-selection maps, transmission/layered/volume/spectral cases, environment/soft-sun terms, and indirect paths remain finite-difference or validation tails.
