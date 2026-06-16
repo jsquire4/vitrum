@@ -576,4 +576,71 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(ddgiPacked.data[7]).toBe(1);
     expect(ddgiPacked.data[11]).toBe(0);
   });
+
+  it('subdivides explicit mesh-area DDGI triangles through the referenced material emissiveMap', () => {
+    const panel: MeshPrimitive = {
+      ...supportTriangle('panel'),
+      uvs: new Float32Array([0.75, 0, 0.75, 0, 0.75, 0]),
+      material: {
+        ...opaqueMaterial(),
+        emissiveMap: {
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Uint8Array([
+              255, 0, 0, 255,
+              0, 255, 0, 255,
+            ]),
+          },
+        },
+      },
+    };
+    const scene: Scene = {
+      primitives: [panel],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-panel',
+        meshId: 'panel',
+        color: [2, 2, 2],
+        intensity: 1,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const extra = collectMeshAreaEmitterTrisFromCore(scene, {
+      tlasPrimitiveBindings: [{
+        primitiveId: 'panel',
+        primitiveKind: 'mesh',
+        blasRoot: 0,
+        instanceCount: 1,
+        vertexStart: 0,
+        vertexCount: 3,
+        triStart: 7,
+        triCount: 1,
+        localAabbMin: [0, 0, 0],
+        localAabbMax: [1, 1, 0],
+      }],
+    });
+
+    expect(extra).toHaveLength(4);
+    expect(extra.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(0.5, 6);
+    expect(extra.map((e) => e.Le)).toEqual([
+      [0, 2, 0],
+      [0, 2, 0],
+      [0, 2, 0],
+      [0, 2, 0],
+    ]);
+    expect(extra.map((e) => e.sourceTriIndex)).toEqual([7, 7, 7, 7]);
+    expect(extra.map((e) => e.sourceSubdivLevel)).toEqual([2, 2, 2, 2]);
+    expect(extra.map((e) => e.sourceSubdivOrdinal)).toEqual([0, 1, 2, 3]);
+
+    const ddgiPacked = packEmitterTrisForDDGI(extra);
+    expect(ddgiPacked.count).toBe(4);
+    expect(ddgiPacked.data[3]).toBe(7);
+    expect(ddgiPacked.data[7]).toBe(2);
+    expect(ddgiPacked.data[11]).toBe(0);
+    expect(ddgiPacked.data[16]).toBeCloseTo(0, 6);
+    expect(ddgiPacked.data[17]).toBeCloseTo(2, 6);
+    expect(ddgiPacked.data[18]).toBeCloseTo(0, 6);
+  });
 });

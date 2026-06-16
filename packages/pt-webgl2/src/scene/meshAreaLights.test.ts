@@ -208,6 +208,43 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.warnings).toEqual([]);
   });
 
+  it('subdivides explicit mesh-area triangle lights through the referenced material emissiveMap', () => {
+    const emissiveMap = {
+      handle: {
+        width: 2,
+        height: 1,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+        ]),
+      },
+    };
+    const scene: Scene = {
+      primitives: [panelPrimitive(material({
+        emissiveMap,
+      }))],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-explicit',
+        meshId: 'panel',
+        color: [2, 2, 2],
+        intensity: 1,
+      }],
+      environment: { kind: 'none' },
+    };
+    const out = packMeshAreaLights(
+      scene,
+      fakeMerged({ uvs: new Float32Array([0.75, 0, 0.75, 0, 0.75, 0, 0.75, 0]) }),
+    );
+
+    expect(out.triLightCount).toBe(8);
+    expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    expect(out.data![4]).toBeCloseTo(0, 6);
+    expect(out.data![5]).toBeCloseTo(2, 6);
+    expect(out.data![6]).toBeCloseTo(0, 6);
+    expect(out.warnings).toEqual([]);
+  });
+
   it('suppresses implicit mesh-light synthesis when a readable emissiveMap is black', () => {
     const out = packMeshAreaLights(
       sceneWithPrimitive(panelPrimitive(material({

@@ -1,5 +1,5 @@
 /**
- * Unit tests for H-remediation items H15, H16, H22, H24-A/B/C, H25-H29, H46/H47.
+ * Unit tests for H-remediation items H15, H16, H22, H24-A/B/C, H25-H29, H42, H46/H47.
  *
  * Items covered:
  *  H15  — UV plumb-through: bvhCore passes real UVs into packUVIntoPositionW
@@ -9,6 +9,7 @@
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
  *  H25-H28 — Road/items ledger does not re-open already-closed PPG/NRC/ReLU defects
+ *  H42  — renderer-fidelity matrix tracks pt-webgl2 and retired fork gates
  *  H46  — HybridEngine warns on inherited options that walkaround cannot honour
  *  H47/H29 — PPG spatial-cell and dTree-node caps thread to PPGCoordinator.initialize
  */
@@ -95,6 +96,22 @@ describe('H25-H28 — Road/items ledger reconciliation guard', () => {
     expect(combined).not.toContain('Needs a one-shot real-adapter repro before the fix lands');
     expect(combined).not.toContain('ppgMaxSpatialCells` is a documented knob with zero reads');
     expect(combined).not.toContain('spreadTermination.test.ts` exercises only c ∈ {1e-9(1-seg), mid, 1.2, 8.0}');
+  });
+});
+
+describe('H42 — renderer-fidelity matrix reconciliation guard', () => {
+  it('keeps the active fidelity matrix on pt-webgl2/pt-webgpu and retired fork gates', () => {
+    const items = readFileSync(new URL('../../../items_to_fix.md', import.meta.url), 'utf8');
+    const matrix = readFileSync(new URL('../../../plan/renderer-fidelity-matrix.md', import.meta.url), 'utf8');
+
+    expect(items).toContain('**H42 ✅ CLOSED');
+    expect(items).not.toContain('**H42 ◻');
+    expect(matrix).toContain('`@vitrum/pt-webgl2`');
+    expect(matrix).toContain('| Feature | pt-webgl2 (WebGL2) | pt-webgpu (WebGPU) |');
+    expect(matrix).toContain('The former `@vitrum/pt-webgl` (fork-backed) column was removed');
+    expect(matrix).toContain('`npm run fork-shader-smoke` was removed');
+    expect(matrix).toContain('pre-push T1 GPU smoke');
+    expect(matrix).toContain('| Hero-wavelength + CMF accumulation | experimental | supported |');
   });
 });
 

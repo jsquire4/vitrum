@@ -6,8 +6,14 @@
  * the DDGI probe-NEE kernel and the ReSTIR shade pass.
  */
 
-import type { Mat4, Scene, Vec3 } from '@vitrum/core';
-import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
+import type { Mat4, MaterialSpec, Scene, Vec3 } from '@vitrum/core';
+import {
+  emissiveMapTriangleSubdivisionLevel,
+  estimateMaterialSpecEmissiveLeOverTriangle,
+  forEachBarycentricSubTriangle,
+  type BarycentricWeights,
+  type PrimitiveTlasBinding,
+} from '@vitrum/shared-bvh';
 
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
@@ -28,6 +34,36 @@ function transformPoint(
     (m[0]! * x + m[4]! * y + m[8]! * z + m[12]!) * invW,
     (m[1]! * x + m[5]! * y + m[9]! * z + m[13]!) * invW,
     (m[2]! * x + m[6]! * y + m[10]! * z + m[14]!) * invW,
+  ];
+}
+
+function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
+  if (uvs == null) return [0, 0];
+  return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
+}
+
+function baryVec3(
+  a: [number, number, number],
+  b: [number, number, number],
+  c: [number, number, number],
+  w: BarycentricWeights,
+): [number, number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
+  ];
+}
+
+function baryUv2(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+  w: BarycentricWeights,
+): [number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
   ];
 }
 
@@ -272,6 +308,9 @@ export function collectMeshAreaEmitterTrisFromCore(
     const indices = prim.indices;
     const transform: Mat4 | undefined = (prim as { transform?: Mat4 }).transform;
     const Le = emitterLe(e.color, e.intensity);
+    const mappedRadianceMaterial: MaterialSpec | undefined = prim.material.emissiveMap != null
+      ? { ...prim.material, emissive: Le, emissiveIntensity: 1 }
+      : undefined;
 
     const m: ArrayLike<number> = transform != null ? (transform) : IDENTITY_MAT4;
 
@@ -287,6 +326,12 @@ export function collectMeshAreaEmitterTrisFromCore(
       const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
       const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
       const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
+      const uv0A = uvAt(prim.uvs, i0);
+      const uv0B = uvAt(prim.uvs, i1);
+      const uv0C = uvAt(prim.uvs, i2);
+      const uv1A = uvAt(prim.uv1, i0);
+      const uv1B = uvAt(prim.uv1, i1);
+      const uv1C = uvAt(prim.uv1, i2);
 
       const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
       const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
@@ -295,16 +340,80 @@ export function collectMeshAreaEmitterTrisFromCore(
       const nz = abx * acy - aby * acx;
       const crossLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
       if (crossLen < 1e-8) continue;
-      const area = crossLen * 0.5;
       const invLen = 1 / crossLen;
-      out.push({
-        vA, vB, vC,
-        normal: [nx * invLen, ny * invLen, nz * invLen],
-        area,
-        Le,
-        ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
-        ...(sourceTriIndexFor != null ? { sourceTriIndex: sourceTriIndexFor(String(prim.id), ti) } : {}),
-      });
+      const normal: [number, number, number] = [nx * invLen, ny * invLen, nz * invLen];
+      const sourceTriIndex = sourceTriIndexFor?.(String(prim.id), ti);
+      const pushTri = (
+        triA: [number, number, number],
+        triB: [number, number, number],
+        triC: [number, number, number],
+        tuv0A: readonly [number, number],
+        tuv0B: readonly [number, number],
+        tuv0C: readonly [number, number],
+        tuv1A: readonly [number, number],
+        tuv1B: readonly [number, number],
+        tuv1C: readonly [number, number],
+        sourceSubdivLevel?: number,
+        sourceSubdivOrdinal?: number,
+      ): void => {
+        const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
+        const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
+        const triArea = 0.5 * Math.sqrt(
+          (sy * tz - sz * ty) ** 2 +
+          (sz * tx - sx * tz) ** 2 +
+          (sx * ty - sy * tx) ** 2,
+        );
+        if (triArea < 1e-12) return;
+        const triLe = mappedRadianceMaterial == null
+          ? Le
+          : estimateMaterialSpecEmissiveLeOverTriangle(
+              mappedRadianceMaterial,
+              tuv0A,
+              tuv0B,
+              tuv0C,
+              tuv1A,
+              tuv1B,
+              tuv1C,
+            );
+        if (triLe == null) return;
+        out.push({
+          vA: triA,
+          vB: triB,
+          vC: triC,
+          normal,
+          area: triArea,
+          Le: triLe,
+          ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+          ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
+          ...(sourceSubdivLevel != null ? { sourceSubdivLevel } : {}),
+          ...(sourceSubdivOrdinal != null ? { sourceSubdivOrdinal } : {}),
+        });
+      };
+
+      const subdiv = mappedRadianceMaterial == null
+        ? 1
+        : emissiveMapTriangleSubdivisionLevel(mappedRadianceMaterial);
+      if (subdiv <= 1) {
+        pushTri(vA, vB, vC, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
+      } else {
+        let ordinal = 0;
+        forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
+          pushTri(
+            baryVec3(vA, vB, vC, wa),
+            baryVec3(vA, vB, vC, wb),
+            baryVec3(vA, vB, vC, wc),
+            baryUv2(uv0A, uv0B, uv0C, wa),
+            baryUv2(uv0A, uv0B, uv0C, wb),
+            baryUv2(uv0A, uv0B, uv0C, wc),
+            baryUv2(uv1A, uv1B, uv1C, wa),
+            baryUv2(uv1A, uv1B, uv1C, wb),
+            baryUv2(uv1A, uv1B, uv1C, wc),
+            subdiv,
+            ordinal,
+          );
+          ordinal += 1;
+        });
+      }
     }
   }
   return out;

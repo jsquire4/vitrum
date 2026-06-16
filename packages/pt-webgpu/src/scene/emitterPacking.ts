@@ -447,8 +447,16 @@ function packMeshAreaTriangles(
     warnings.push(`Mesh-area emitter "${emitter.id}" references instanced primitive "${emitter.meshId}" with no instances.`);
     return [];
   }
-  const implicitMaterial = emitter.id === `__implicit__${primitive.id}` ? primitive.material : undefined;
   const radiance = emitterRadiance(emitter);
+  const implicitMaterial = emitter.id === `__implicit__${primitive.id}` ? primitive.material : undefined;
+  const mappedRadianceMaterial: MaterialSpec | undefined = implicitMaterial ??
+    (primitive.material.emissiveMap != null
+      ? {
+          ...primitive.material,
+          emissive: [radiance[0], radiance[1], radiance[2]],
+          emissiveIntensity: 1,
+        }
+      : undefined);
   // SHADOW-01 — carry the emitter's castShadow flag onto every packed triangle.
   const castShadowDisabled = emitter.castShadow === false;
   const packed: PackedMeshAreaTriangle[] = [];
@@ -499,10 +507,10 @@ function packMeshAreaTriangles(
         tuv1C: readonly [number, number],
       ): void => {
         if (meshTriangleArea(triA, triB, triC) < 1e-12) return;
-        const triangleRadiance = implicitMaterial == null
+        const triangleRadiance = mappedRadianceMaterial == null
           ? radiance
           : estimateMaterialSpecEmissiveLeOverTriangle(
-              implicitMaterial,
+              mappedRadianceMaterial,
               tuv0A,
               tuv0B,
               tuv0C,
@@ -526,9 +534,9 @@ function packMeshAreaTriangles(
         });
       };
 
-      const subdiv = implicitMaterial == null
+      const subdiv = mappedRadianceMaterial == null
         ? 1
-        : emissiveMapTriangleSubdivisionLevel(implicitMaterial);
+        : emissiveMapTriangleSubdivisionLevel(mappedRadianceMaterial);
       if (subdiv <= 1) {
         pushTriangle(a, b, c, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
       } else {

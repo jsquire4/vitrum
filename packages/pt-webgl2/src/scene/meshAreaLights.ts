@@ -224,9 +224,15 @@ function collectMeshAreaSources(
   const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number; implicitMaterial?: MaterialSpec }>();
   for (const e of scene.emitters) {
     if (e.kind !== 'mesh-area') continue;
+    const primitive = scene.primitives.find((p) => String(p.id) === String(e.meshId));
+    const material = primitive != null && isMeshLikePrimitive(primitive) ? primitive.material : undefined;
+    const radiance: Vec3 = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity];
     emitterByMesh.set(e.meshId, {
-      radiance: [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity],
+      radiance,
       castShadowDisabled: e.castShadow === false ? 1 : 0,
+      ...(material?.emissiveMap != null
+        ? { implicitMaterial: { ...material, emissive: radiance, emissiveIntensity: 1 } }
+        : {}),
     });
   }
 

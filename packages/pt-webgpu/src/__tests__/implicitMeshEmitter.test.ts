@@ -102,6 +102,40 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
   });
 
+  it('subdivides explicit mesh-area radiance through the referenced material emissiveMap', () => {
+    const primitive = {
+      ...triMesh('mapped-panel', [0, 0, 0], 0, {
+        emissiveMap: emissiveMap(
+          new Float32Array([
+            1, 0, 0, 1,
+            0, 1, 0, 1,
+          ]),
+          2,
+          1,
+        ),
+      }),
+      uvs: new Float32Array([0.75, 0, 0.75, 0, 0.75, 0]),
+    } as Scene['primitives'][number];
+    const scene: Scene = {
+      primitives: [primitive],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-explicit',
+        meshId: 'mapped-panel',
+        color: [2, 2, 2],
+        intensity: 1,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packEmitterArrays(scene);
+
+    expect(packed.meshAreaLightCount).toBe(4);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+  });
+
   it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {
     const scene: Scene = {
       primitives: [
