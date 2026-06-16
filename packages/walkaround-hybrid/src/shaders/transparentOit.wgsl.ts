@@ -287,6 +287,15 @@ fn oitLayerAnalyticNEE(
   return Lo;
 }
 
+const OIT_AREA_EMITTER_SAMPLE_COUNT = 4u;
+
+fn oitAreaEmitterXi(sampleIndex: u32) -> vec2f {
+  if (sampleIndex == 0u) { return vec2f(0.125, 0.375); }
+  if (sampleIndex == 1u) { return vec2f(0.375, 0.875); }
+  if (sampleIndex == 2u) { return vec2f(0.625, 0.125); }
+  return vec2f(0.875, 0.625);
+}
+
 fn oitLayerAreaEmitterNEE(
   hitPos: vec3f,
   normal: vec3f,
@@ -299,56 +308,62 @@ fn oitLayerAreaEmitterNEE(
   if (count == 0u) { return vec3f(0.0); }
 
   var Lo = vec3f(0.0);
-  // Deterministic area estimate: one stable uniform-area sample per emitter.
+  // Deterministic area estimate: four fixed stratified uniform-area samples per
+  // emitter. This is still camera-visible OIT lighting, not transparent
+  // ReSTIR/GI participation, but it avoids the old centroid-only blind spot on
+  // large or emissive-textured finite emitters while staying temporally stable.
   // This gives transparent layers native finite-emitter visibility without
   // coupling the OIT pass to the opaque ReSTIR-DI reservoir state.
-  let xi = vec2f(0.5, 0.5);
+  let sampleWeight = 1.0 / f32(OIT_AREA_EMITTER_SAMPLE_COUNT);
   for (var lid = 0u; lid < count; lid = lid + 1u) {
     let e = emitters[lid];
-    let ls = sampleEmitterPoint(e, xi);
-    let toL = ls.pos - hitPos;
-    let dist2 = dot(toL, toL);
-    if (dist2 < 1e-8 || ls.area <= 0.0) { continue; }
+    for (var si = 0u; si < OIT_AREA_EMITTER_SAMPLE_COUNT; si = si + 1u) {
+      let xi = oitAreaEmitterXi(si);
+      let ls = sampleEmitterPoint(e, xi);
+      let toL = ls.pos - hitPos;
+      let dist2 = dot(toL, toL);
+      if (dist2 < 1e-8 || ls.area <= 0.0) { continue; }
 
-    let dist = sqrt(dist2);
-    let wi = toL / dist;
-    let nDotL = max(0.0, dot(normal, wi));
-    let nlDotL = max(0.0, dot(-ls.normal, wi));
-    if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
+      let dist = sqrt(dist2);
+      let wi = toL / dist;
+      let nDotL = max(0.0, dot(normal, wi));
+      let nlDotL = max(0.0, dot(-ls.normal, wi));
+      if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
 
-    var shadowT = 1.0;
-    if (e.castShadowDisabled < 0.5) {
-      shadowT = oitShadowTransmittance(
-        hitPos + geoNormal * 1e-3,
+      var shadowT = 1.0;
+      if (e.castShadowDisabled < 0.5) {
+        shadowT = oitShadowTransmittance(
+          hitPos + geoNormal * 1e-3,
+          wi,
+          max(dist - 2e-3, 0.0),
+          ubo.triIntersectEpsilon,
+        );
+        if (shadowT <= 0.001) { continue; }
+      }
+
+      let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
+      let brdf = evalGGXWithSpecularClearcoatSheen(
+        payload.albedo,
+        payload.rough,
+        payload.metal,
+        payload.specular.rgb,
+        payload.specular.a,
+        payload.anisotropy.x,
+        payload.anisotropy.y,
+        payload.iridescence,
+        payload.clearcoat.x,
+        payload.clearcoat.y,
+        payload.sheen.a,
+        payload.sheenRoughness,
+        payload.sheen.rgb,
+        normal,
+        clearcoatNormal,
+        wo,
         wi,
-        max(dist - 2e-3, 0.0),
-        ubo.triIntersectEpsilon,
       );
-      if (shadowT <= 0.001) { continue; }
+      let Le = sampleEmitterLeAtXi(e, xi);
+      Lo += Le * brdf * G * ls.area * shadowT * sampleWeight;
     }
-
-    let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheen(
-      payload.albedo,
-      payload.rough,
-      payload.metal,
-      payload.specular.rgb,
-      payload.specular.a,
-      payload.anisotropy.x,
-      payload.anisotropy.y,
-      payload.iridescence,
-      payload.clearcoat.x,
-      payload.clearcoat.y,
-      payload.sheen.a,
-      payload.sheenRoughness,
-      payload.sheen.rgb,
-      normal,
-      clearcoatNormal,
-      wo,
-      wi,
-    );
-    let Le = sampleEmitterLeAtXi(e, xi);
-    Lo += Le * brdf * G * ls.area * shadowT;
   }
   return Lo;
 }

@@ -100,7 +100,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround transparent OIT finite emitters, 2026-06-16)
 
-- **Transparent blend layers now receive finite mesh-emitter direct light:** `@vitrum/walkaround-hybrid` transparent OIT reads the existing ReSTIR emitter list, center-samples each finite emitter as a deterministic area estimate, evaluates the same atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload used by opaque shade, samples emissive-map-aware `Le` where source-triangle payloads are available, and uses alpha-aware direct shadow transmittance. Reservoir-backed transparent ReSTIR direct-light participation, transparent GI/RC/DDGI/ReSTIR-GI participation, exact texel-PDF emissive selection, and GPU A/B promotion remain open tails.
+- **Transparent blend layers now receive finite mesh-emitter direct light:** `@vitrum/walkaround-hybrid` transparent OIT reads the existing ReSTIR emitter list, uses four fixed stratified uniform-area samples per finite emitter as a deterministic estimate, evaluates the same atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload used by opaque shade, samples emissive-map-aware `Le` where source-triangle payloads are available, and uses alpha-aware direct shadow transmittance per sample. Reservoir-backed transparent ReSTIR direct-light participation, transparent GI/RC/DDGI/ReSTIR-GI participation, exact texel-PDF emissive selection, and GPU A/B promotion remain open tails.
 
 ### Fixed (walkaround transparent OIT shadow filtering, 2026-06-16)
 

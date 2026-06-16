@@ -40,13 +40,16 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('const OIT_AREA_EMITTER_SAMPLE_COUNT = 4u;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitAreaEmitterXi(sampleIndex: u32) -> vec2f');
+    expect(TRANSPARENT_OIT_WGSL).toContain('for (var si = 0u; si < OIT_AREA_EMITTER_SAMPLE_COUNT; si = si + 1u)');
     expect(TRANSPARENT_OIT_WGSL).toContain('let count = min(ubo.emitterCount, arrayLength(&emitters));');
     expect(TRANSPARENT_OIT_WGSL).toContain('let ls = sampleEmitterPoint(e, xi);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let nlDotL = max(0.0, dot(-ls.normal, wi));');
     expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * brdf * G * ls.area * shadowT;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * brdf * G * ls.area * shadowT * sampleWeight;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');

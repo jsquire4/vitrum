@@ -353,7 +353,7 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // in atlas-backed shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
   // including direct sun plus analytic point/spot lighting with alpha-aware
-  // direct shadow transmittance and center-sampled finite-emitter direct light,
+  // direct shadow transmittance and fixed-stratified finite-emitter direct light,
   // but transparent layers still are not ReSTIR/GI/DDGI/RC transport
   // participants.
   alphaMode: 'approximate',

@@ -880,7 +880,7 @@ export class HybridEngine implements Engine {
         `[vitrum/walkaround-hybrid] ${method}: fractional or texture-driven alphaMode:'blend' ` +
         `is camera-composited by the transparent OIT pass, but transparent-layer ` +
         `ReSTIR/GI participation remains approximate; finite emitters are ` +
-        `camera-visible center-sampled direct lights, not reservoir participants; ` +
+        `camera-visible fixed-stratified direct lights, not reservoir participants; ` +
         `primitives: ${primitiveIds.join(', ')}.`,
       details: { primitiveIds },
     });
