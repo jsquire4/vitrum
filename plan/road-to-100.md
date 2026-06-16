@@ -30,6 +30,10 @@
 > NRC opt-in emits a structured experimental/biased warning, and glTF
 > `decodeSceneTextures(target:"webgpu")` now actually resolves raw image handles
 > into backend-readable CPU texture payloads instead of returning a no-op.
+> pt-webgpu extension-lobe CPU reference tests now pin clearcoat, sheen,
+> iridescence zero-default, and normalized sampled-PDF behavior; this closes the
+> lobe-specific unit-proof tail but does **not** close GPU material-furnace /
+> reference-render promotion.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > point-direct-light slice; walkaround GI rich receiver-lobe reservoir targeting,
 > OIT-grade alpha blend, and finite-emitter/light-map promotion decisions; real
@@ -905,6 +909,7 @@ CPU/API/diagnostic preflight, not a substitute for reference captures.
 | Oracle | File | Regression guard |
 |--------|------|------------------|
 | ~~PTWG-BDPT-01~~ ✅ code/proof closed | `oracle.bdptConnectionCosine.test.ts`; `bdptGlossyLightSubpath.test.ts` | Finite-area endpoint, one-bounce diffuse light tracing, and non-Lambertian light-vertex connection |
+| ~~PTWG-MAT lobe CPU proof~~ ✅ code/proof closed | `extensionLobeReference.test.ts` | Clearcoat zero-default/linearity, sheen color/scalar behavior, normalized base/clearcoat/sheen sampled PDF, iridescence F0 zero-default, and explicit sheen-PDF approximation posture |
 | ~~HYB-GI-01/02~~ ✅ code/proof closed | `oracle.restirDiEstimator.test.ts` | RIS candidate accounting, selected-xi p-hat/finalize, selected-point shading, env + area DI characterization |
 | ~~HYB-DDGI-01~~ ✅ code/proof closed | `oracle.ddgiVisibilityMoments.test.ts` | Probe miss visibility, all-sky open semantics, f32/f16 moment poisoning regression |
 | PTWG-LITE-01 | `oracle.liteRectMis.test.ts` | Lite policy |

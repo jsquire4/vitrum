@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Tests (pt-webgpu material-lobe proof, 2026-06-15)
+
+- **Extension-lobe CPU reference oracles:** `@vitrum/pt-webgpu` now has focused CPU tests for clearcoat zero-default/scalar-linearity, sheen zero-default/color/scalar behavior, normalized base/clearcoat/sheen sampled-PDF accounting, and iridescence F0 zero-default behavior. The tests also lock the current sheen PDF as an explicitly documented cosine approximation until a true Charlie-lobe sampler lands. GPU material-furnace/reference A/B remains a promotion tail, not implied closed by these CPU oracles.
+
 ### Fixed (glTF WebGPU texture decode bridge, 2026-06-15)
 
 - **WebGPU-target texture decode is no longer a no-op:** `decodeSceneTextures(target:'webgpu')` now resolves raw glTF image handles through the host `decodePixels` hook into CPU-readable `Float32Array` texture handles that pt-webgpu can upload deterministically. Unlike the `cpu-linear` target, WebGPU-target decode preserves backend upload color space: sRGB material maps stay sRGB-valued for WebGPU sRGB texture formats, while normal/scalar/data maps stay linear. `textureDecodeReport` now reflects those handles as CPU-readable instead of leaving `{ kind:'raw-image' }` refs opaque.

@@ -123,6 +123,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   material maps so pt-webgpu's sRGB texture formats remain correct. The
   focused adapter test now proves raw-image refs become CPU-readable and clear
   the opaque-readiness report for pt-webgpu.
+- Follow-up 2026-06-15: pt-webgpu material-lobe unit proof was narrowed and
+  executed. `extensionLobeReference.test.ts` now independently pins clearcoat
+  zero-default/scalar-linearity, sheen zero-default/color/scalar behavior,
+  normalized base/clearcoat/sheen sampled-PDF accounting, iridescence F0
+  zero-default behavior, and the explicit sheen-PDF cosine approximation
+  posture. GPU material-furnace/reference A/B remains open.
 - `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
   `createEngine()` runs and forwards `onWarning` through the facade.
 - `createProgressiveEngine.onError` now mirrors the same
@@ -1204,8 +1210,12 @@ Closure:
   material payloads now cover mapped base/ORM/transmission/normal/bump/
   clearcoat-normal/extension/specular/anisotropy fields plus layer/thin-film/
   spectral transforms; remaining BDPT work is oracle/reference promotion.
-- Add material-furnace and lobe-specific tests plus reference A/B before
-  promoting these rows from approximate/experimental.
+- Keep `extensionLobeReference.test.ts` green for lobe-specific CPU proof. It
+  closes the clearcoat/sheen/iridescence sampled-density unit tail, including
+  the explicit sheen-PDF approximation posture.
+- Add material-furnace and reference A/B before promoting these rows from
+  approximate/experimental; the CPU lobe oracle is not enough to promote a
+  render row by itself.
 
 ### PTWG-LITE-01 - CLOSED 2026-06-15 - Lite rect/disc area MIS is paired
 
@@ -1471,8 +1481,9 @@ Closure:
 - Prefer pt-webgl2/full pt-webgpu for fidelity policy until walkaround either
   implements texture-driven PBR fallback or is explicitly a realtime-profile
   target in the compatibility report.
-- Remaining material-furnace proof is GPU/reference-render work: render the
-  sweep/golden fixtures on the recommended backend, assert non-black output, and
+- Remaining material-furnace proof is GPU/reference-render work: the
+  lobe-specific CPU oracle is now present, but the sweep/golden fixtures still
+  need to render on the recommended backend, assert non-black output, and
   compare against tolerance-bounded references.
 - Remaining pt-webgpu material-lobe work must be scheduled as specialty schema
   work, not helper plumbing: inverse/adjoint gradients and reference A/B /
@@ -1699,7 +1710,8 @@ Remaining:
   path-replay adjoints remain open until their contribution/PDF/light-source
   gradients are implemented and converging inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
-  BDPT paths now structurally implemented.
+  BDPT paths now structurally implemented. The local extension-lobe CPU oracle
+  is closed; the remaining promotion evidence is GPU/reference-render based.
 
 ### GATE-05 - Reference-render A/B suite
 
