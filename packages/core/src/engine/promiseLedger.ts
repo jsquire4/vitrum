@@ -402,37 +402,40 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   aoMapIntensity: 'approximate',
   // Readable clearcoat factor/roughness maps modulate shade-owned direct
   // lighting and DI/GI suffix material payloads. Approximate rather than native
-  // until GI receiver/reuse targets and reference A/Bs prove the rich lobe end
-  // to end.
+  // pending rich-material GI GPU A/B promotion; receiver-lobe targeting now
+  // consumes the material proxy, but compact geometry+Lo reservoirs keep these
+  // rows below native.
   clearcoatMap: 'approximate',
   clearcoatRoughnessMap: 'approximate',
   // Clearcoat normal maps reuse walkaround's authored-tangent-aware atlas
-  // normal path and feed shade-owned/DI/GI suffix clearcoat evaluations.
-  // Approximate until GI receiver targeting and reference A/Bs catch up.
+  // normal path and feed shade-owned/DI/GI suffix plus receiver clearcoat
+  // evaluations. Approximate until reference A/B promotion lands.
   clearcoatNormalMap: 'approximate',
   clearcoatNormalScale: 'approximate',
   // Readable sheen maps modulate the shade-owned Charlie sheen lobe plus DI/GI
-  // suffix material payloads; GI receiver/reuse targets remain approximate.
+  // suffix and receiver material payloads; compact reservoirs keep this
+  // approximate.
   sheenColorMap: 'approximate',
   sheenRoughnessMap: 'approximate',
   // Readable KHR_materials_iridescence maps modulate the shade-owned thin-film
-  // F0 approximation plus DI/GI suffix material payloads. Rows remain
-  // approximate until full receiver-lobe GI targeting and validation land.
+  // F0 approximation plus DI/GI suffix and receiver-lobe material payloads.
+  // Rows remain approximate until rich-material GI GPU A/B promotion lands.
   iridescenceMap: 'approximate',
   iridescenceThicknessMap: 'approximate',
   // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
-  // anisotropic GGX branch (B = strength, RG = direction) and DI/GI suffix
-  // payloads. Reuse/receiver targeting remains approximate.
+  // anisotropic GGX branch (B = strength, RG = direction) and DI/GI suffix plus
+  // receiver-lobe payloads. Reservoirs stay compact, so this remains
+  // approximate until A/B promotion.
   anisotropyMap: 'approximate',
-  // Readable specular maps ride the material atlas and modulate shade-owned and
-  // DI/GI suffix scalar specular controls. GI receiver/reuse targets remain a
-  // proxy rather than a full specular-lobe reservoir.
+  // Readable specular maps ride the material atlas and modulate shade-owned,
+  // DI/GI suffix, and receiver-lobe scalar specular controls. GI reservoirs stay
+  // geometry+Lo compact rather than full specular-lobe reservoirs.
   specularColorMap: 'approximate',
   specularIntensityMap: 'approximate',
   // Readable bump maps ride the walkaround material atlas and finite-difference a
-  // visible normal perturbation for shade-owned, DI, and GI suffix material
-  // payloads. GI receiver/reuse targeting remains approximate rather than
-  // native.
+  // visible normal perturbation for shade-owned, DI, GI suffix, and receiver
+  // material payloads. The compact reservoir path keeps this approximate rather
+  // than native.
   bumpMap: 'approximate',
   bumpScale: 'approximate',
   displacementMap: 'unsupported',
@@ -442,25 +445,27 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   lightMapIntensity: 'approximate',
   // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
   // Pettineo lobe in shade-owned direct/analytic/sun/specular-indirect paths
-  // plus DI/GI suffix payloads. GI receiver/reuse targeting remains approximate.
+  // plus DI/GI suffix and receiver material payloads. Compact reservoirs keep
+  // this approximate pending GPU A/B promotion.
   sheen: 'approximate',
   sheenColor: 'approximate',
   sheenRoughness: 'approximate',
   // Scalar clearcoat rides material atlas metadata and adds a fixed-F0 GGX top
   // coat in shade-owned direct/analytic/sun/specular-indirect paths plus DI/GI
-  // suffix payloads. GI receiver/reuse targeting remains approximate.
+  // suffix and receiver material payloads; approximate pending GPU A/B promotion.
   clearcoat: 'approximate',
   clearcoatRoughness: 'approximate',
   // Scalar KHR_materials_iridescence rides material atlas metadata and modifies
   // shade-owned GGX F0 in direct/analytic/sun/specular-indirect paths plus DI/GI
-  // suffix payloads. GI receiver/reuse targeting remains approximate.
+  // suffix and receiver material payloads. Compact reservoirs keep this
+  // approximate pending GPU A/B promotion.
   iridescence: 'approximate',
   iridescenceIor: 'approximate',
   iridescenceThicknessRange: 'approximate',
   // Scalar KHR_materials_specular controls ride the material atlas metadata and
   // modulate dielectric F0 in shade-owned direct/analytic/sun/specular-indirect
-  // paths plus DI/GI suffix payloads. GI receiver/reuse targeting remains
-  // approximate, so this stays approximate.
+  // paths plus DI/GI suffix and receiver material payloads. Compact reservoirs
+  // and pending GPU A/B promotion keep this approximate.
   specularIntensity: 'approximate',
   specularColor: 'approximate',
   // Material-atlas scalar consumed by the HDRI environment-light path:
