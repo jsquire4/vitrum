@@ -147,10 +147,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   partials; the WGSL partial bundle mirrors that math; the adjoint pass reads
   packed material vec4 #23, scatters explicit clearcoat field codes across the
   covered deterministic direct-light loops, and `inverseSession` selects replay
-  for those two fields when the material/light gates pass. Clearcoat maps,
-  clearcoat normal maps, sheen/iridescence/aniso, transmission, environment,
-  indirect, stochastic area sampling, and GPU inverse-fit recapture remain open
-  proof/implementation tails.
+  for those two fields when the material/light gates pass. 2026-06-16 follow-up:
+  map-free scalar `sheen` / `sheenRoughness` now have the same scoped
+  direct-light adjoint treatment through CPU-FD-checked Charlie-lobe partials.
+  Clearcoat maps, clearcoat normal maps, sheen color/maps, iridescence/aniso,
+  transmission, environment, indirect, stochastic area sampling, and GPU
+  inverse-fit recapture remain open proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including

@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	  evaluateBrdf,
 	  evaluateBrdfWithClearcoat,
+	  evaluateBrdfWithSheen,
 	  dBrdf_dBaseColor,
 	  dBrdf_dRoughness,
 	  dBrdf_dMetallic,
@@ -20,6 +21,8 @@ import {
 	  dBrdf_dSpecularIntensity,
 	  dBrdf_dClearcoat,
 	  dBrdf_dClearcoatRoughness,
+	  dBrdf_dSheen,
+	  dBrdf_dSheenRoughness,
 	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -251,6 +254,60 @@ describe('BRDF adjoint — analytic KHR_materials_clearcoat partials == finite d
   });
 });
 
+describe('BRDF adjoint — analytic KHR_materials_sheen partials == finite difference', () => {
+  const cfg = {
+    baseColor: [0.36, 0.28, 0.22] as V3,
+    roughness: 0.47,
+    metallic: 0.08,
+    normal: normalize([0.08, 0.18, 1]),
+    wo: normalize([0.3, -0.18, 1]),
+    wi: normalize([-0.32, 0.28, 1]),
+    sheen: 0.52,
+    sheenRoughness: 0.46,
+    sheenColor: [0.85, 0.42, 0.18] as V3,
+    specularColor: [0.75, 0.85, 0.9] as V3,
+    specularIntensity: 0.68,
+  };
+
+  it('matches FD for sheen over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dSheen(
+      cfg.sheenRoughness, cfg.sheenColor, cfg.normal, cfg.wo, cfg.wi,
+    );
+    const fp = evaluateBrdfWithSheen(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.sheen + h, cfg.sheenRoughness, cfg.sheenColor, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithSheen(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.sheen - h, cfg.sheenRoughness, cfg.sheenColor, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('matches FD for sheenRoughness over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dSheenRoughness(
+      cfg.sheen, cfg.sheenRoughness, cfg.sheenColor, cfg.normal, cfg.wo, cfg.wi,
+    );
+    const fp = evaluateBrdfWithSheen(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.sheen, cfg.sheenRoughness + h, cfg.sheenColor, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithSheen(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.sheen, cfg.sheenRoughness - h, cfg.sheenColor, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+});
+
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
   it('dBrdf/dBaseColor of a pure-diffuse (metallic=0) surface ≈ (1-F)/π on the diagonal', () => {
     // For metallic=0: f0 = 0.04 everywhere, F is achromatic, diffuse term
@@ -317,6 +374,14 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('return adjointClearcoatLobe(1.0, clearcoatRoughness, normal, wo, wi);');
 	    expect(wgsl).toContain('let f = fresnelSchlick(vDotH, vec3f(0.04));');
 	    expect(wgsl).toContain('let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;');
+	  });
+
+	  it('sheen partials mirror the additive Charlie sheen lobe', () => {
+	    expect(wgsl).toContain('fn dBrdf_dSheen(');
+	    expect(wgsl).toContain('fn dBrdf_dSheenRoughness(');
+	    expect(wgsl).toContain('return adjointSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);');
+	    expect(wgsl).toContain('let dD_dQ = powTerm * (1.0 + (2.0 + q) * logSin) / (2.0 * PI);');
+	    expect(wgsl).toContain('let dQ_dAlpha = -1.0 / (alpha * alpha);');
 	  });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {

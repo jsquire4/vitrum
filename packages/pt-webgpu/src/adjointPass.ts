@@ -29,6 +29,8 @@ import {
   ADJOINT_FIELD_EMISSIVE_INTENSITY,
   ADJOINT_FIELD_CLEARCOAT,
   ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
+  ADJOINT_FIELD_SHEEN,
+  ADJOINT_FIELD_SHEEN_ROUGHNESS,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -50,7 +52,7 @@ export class AdjointPass {
    * per pixel it re-traces the frozen-seed primary ray (brute-force closest-hit)
    * and accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness / metallic / specular / clearcoat scalar controls —
+   *  - baseColor / roughness / metallic / specular / clearcoat / sheen scalar controls —
    *    single-bounce directional + point + spot + center-sampled rect/disc/mesh-area
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
    *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
@@ -145,6 +147,12 @@ export class AdjointPass {
           break;
         case 'clearcoatRoughness':
           fieldCode = ADJOINT_FIELD_CLEARCOAT_ROUGHNESS;
+          break;
+        case 'sheen':
+          fieldCode = ADJOINT_FIELD_SHEEN;
+          break;
+        case 'sheenRoughness':
+          fieldCode = ADJOINT_FIELD_SHEEN_ROUGHNESS;
           break;
         case 'specularColor':
           fieldCode = ADJOINT_FIELD_SPECULAR_COLOR;

@@ -12,7 +12,7 @@
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
  * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
- * clearcoatRoughness).
+ * clearcoatRoughness, sheen, sheenRoughness).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
@@ -28,6 +28,8 @@
  *    partition and F0 blend;
  *  - the additive, map-free KHR_materials_clearcoat lobe w.r.t. `clearcoat`
  *    and `clearcoatRoughness`;
+ *  - the additive, map-free KHR_materials_sheen lobe w.r.t. `sheen`
+ *    and `sheenRoughness`;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -329,6 +331,75 @@ fn dBrdf_dClearcoatRoughness(
   let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
   let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return clearcoat * f * dSpecScale;
+}
+
+// ── analytic KHR_materials_sheen partials ───────────────────────────────────
+// Mirrors inverse/brdfAdjoint.ts:dBrdf_dSheen*. This is the additive
+// map-free Charlie sheen lobe only: no sheen maps, frozen sheenColor, frozen wi.
+fn adjointCharlieD(nDotH: f32, alpha: f32) -> f32 {
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * PI);
+}
+fn adjointSheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
+  return 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+}
+fn adjointSheenLobe(
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (sheen < 1e-4) { return vec3f(0.0); }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  let d = adjointCharlieD(nDotH, alpha);
+  let vis = adjointSheenVisibility(nDotL, nDotV);
+  return sheen * sheenColor * d * vis;
+}
+fn dBrdf_dSheen(
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  return adjointSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);
+}
+fn dBrdf_dSheenRoughness(
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (sheen < 1e-4) { return vec3f(0.0); }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  let alphaRaw = sheenRoughness * sheenRoughness;
+  let dAlpha_dRough = select(2.0 * sheenRoughness, 0.0, alphaRaw < 1e-3);
+  if (sinThetaH <= 1e-6 || dAlpha_dRough == 0.0) { return vec3f(0.0); }
+
+  let alpha = max(alphaRaw, 1e-3);
+  let q = 1.0 / max(alpha, 1e-4);
+  let powTerm = pow(sinThetaH, q);
+  let logSin = log(sinThetaH);
+  let dD_dQ = powTerm * (1.0 + (2.0 + q) * logSin) / (2.0 * PI);
+  let dQ_dAlpha = -1.0 / (alpha * alpha);
+  let dD_dRough = dD_dQ * dQ_dAlpha * dAlpha_dRough;
+  let vis = adjointSheenVisibility(nDotL, nDotV);
+  return sheen * sheenColor * dD_dRough * vis;
 }
 
 // ── analytic ∂(contribution)_c / ∂emissive_c (diagonal identity) ────────────

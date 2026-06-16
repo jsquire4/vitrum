@@ -24,8 +24,8 @@
  * emissive texel multiplier for `emissive` / `emissiveIntensity`.
  * Direct lights are summed deterministically over all eligible lights (no MC
  * light selection: the adjoint is the deterministic expectation; finite area
- * lights are center-sampled). baseColor/roughness/metallic/specular/clearcoat
- * scalar params share this direct-light BRDF path. Map-free unlit baseColor is a primary-hit
+ * lights are center-sampled). baseColor/roughness/metallic/specular/clearcoat/
+ * sheen scalar params share this direct-light BRDF path. Map-free unlit baseColor is a primary-hit
  * contribution-level identity (`radiance += throughput * baseColor`) and is
  * scattered without requiring any light. The shading normal is faced toward the viewer
  * (the same flip the forward shade prologue applies). The primary-ray jitter
@@ -66,6 +66,8 @@ export const ADJOINT_FIELD_METALLIC = 5;
 export const ADJOINT_FIELD_EMISSIVE_INTENSITY = 6;
 export const ADJOINT_FIELD_CLEARCOAT = 7;
 export const ADJOINT_FIELD_CLEARCOAT_ROUGHNESS = 8;
+export const ADJOINT_FIELD_SHEEN = 9;
+export const ADJOINT_FIELD_SHEEN_ROUGHNESS = 10;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -337,6 +339,8 @@ struct DirectLightAdjoint {
   metallicGrad: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
 }
 
 fn directLightAdjoint(
@@ -351,6 +355,9 @@ fn directLightAdjoint(
   specularIntensity: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
   nDotL: f32,
   Li: vec3f,
 ) -> DirectLightAdjoint {
@@ -375,9 +382,15 @@ fn directLightAdjoint(
   let gClearcoatRoughness = dot(dLoss_dR, dBrdf_dClearcoatRoughness(
     clearcoat, clearcoatRoughness, n, wo, wi,
   ) * nDotL * Li);
+  let gSheen = dot(dLoss_dR, dBrdf_dSheen(
+    sheenRoughness, sheenColor, n, wo, wi,
+  ) * nDotL * Li);
+  let gSheenRoughness = dot(dLoss_dR, dBrdf_dSheenRoughness(
+    sheen, sheenRoughness, sheenColor, n, wo, wi,
+  ) * nDotL * Li);
   return DirectLightAdjoint(
     gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
-    gClearcoat, gClearcoatRoughness,
+    gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness,
   );
 }
 
@@ -403,6 +416,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
     let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
     let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u];
+    let m24 = materials[matId * MATERIAL_VEC4_STRIDE + 24u];
     let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u];
     let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
     let baseColor = m0.rgb;
@@ -413,6 +427,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let specularIntensity = clamp(m27.w, 0.0, 1.0);
     let clearcoat = clamp(m23.x, 0.0, 1.0);
     let clearcoatRoughness = clamp(m23.y, 0.0, 1.0);
+    let sheen = clamp(m23.z, 0.0, 1.0);
+    let sheenRoughness = clamp(m23.w, 0.0, 1.0);
+    let sheenColor = clamp(m24.rgb, vec3f(0.0), vec3f(1.0));
 
     let idx = indices[hit.tri];
     let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
@@ -444,6 +461,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gMetallic = 0.0;
     var gClearcoat = 0.0;
     var gClearcoatRoughness = 0.0;
+    var gSheen = 0.0;
+    var gSheenRoughness = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -459,7 +478,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (!directionalShadowDisabled && anyHit(pos + n * 1e-3, wi, 1e30)) { continue; }
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-        clearcoat, clearcoatRoughness,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         nDotL, dIrrMean.rgb,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -469,6 +488,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gMetallic = gMetallic + lg.metallicGrad;
       gClearcoat = gClearcoat + lg.clearcoat;
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+      gSheen = gSheen + lg.sheen;
+      gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -489,7 +510,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let Li = rad * attenuation;
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-        clearcoat, clearcoatRoughness,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -499,6 +520,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gMetallic = gMetallic + lg.metallicGrad;
       gClearcoat = gClearcoat + lg.clearcoat;
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+      gSheen = gSheen + lg.sheen;
+      gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -525,7 +548,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let Li = sradW.rgb * softness * attenuation;
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-        clearcoat, clearcoatRoughness,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -535,6 +558,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gMetallic = gMetallic + lg.metallicGrad;
       gClearcoat = gClearcoat + lg.clearcoat;
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+      gSheen = gSheen + lg.sheen;
+      gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -568,7 +593,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let Li = rad * (cosLight * area / dist2);
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-        clearcoat, clearcoatRoughness,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -578,6 +603,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gMetallic = gMetallic + lg.metallicGrad;
       gClearcoat = gClearcoat + lg.clearcoat;
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+      gSheen = gSheen + lg.sheen;
+      gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -606,7 +633,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let Li = mr.rgb * (cosLight * area / dist2);
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-        clearcoat, clearcoatRoughness,
+        clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         nDotL, Li,
       );
       gBaseColor = gBaseColor + lg.baseColor;
@@ -616,6 +643,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gMetallic = gMetallic + lg.metallicGrad;
       gClearcoat = gClearcoat + lg.clearcoat;
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+      gSheen = gSheen + lg.sheen;
+      gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -648,6 +677,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gClearcoat * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {
         adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_SHEEN}u) {
+        adjointScatter(gradOffset, gSheen * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_SHEEN_ROUGHNESS}u) {
+        adjointScatter(gradOffset, gSheenRoughness * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed

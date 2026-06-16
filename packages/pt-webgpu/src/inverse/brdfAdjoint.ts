@@ -27,6 +27,9 @@
  *  - scalar KHR_materials_clearcoat controls (`clearcoat` and
  *    `clearcoatRoughness`) for the additive, map-free direct-light clearcoat
  *    lobe. Clearcoat normal maps remain outside this oracle.
+ *  - scalar KHR_materials_sheen controls (`sheen` and `sheenRoughness`) for the
+ *    additive, map-free direct-light sheen lobe. Sheen colour/roughness maps
+ *    and `sheenColor` gradients remain outside this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -198,6 +201,40 @@ function evalClearcoatLobe(
   return [clearcoat * f[0] * specScale, clearcoat * f[1] * specScale, clearcoat * f[2] * specScale];
 }
 
+function charlieD(nDotH: number, alpha: number): number {
+  const invAlpha = 1.0 / Math.max(alpha, 1e-4);
+  const sinThetaH = Math.sqrt(Math.max(0.0, 1.0 - nDotH * nDotH));
+  return ((2.0 + invAlpha) * Math.pow(sinThetaH, invAlpha)) / (2.0 * PI);
+}
+
+function sheenVisibility(nDotL: number, nDotV: number): number {
+  return 1.0 / Math.max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+}
+
+function evalSheenLobe(
+  sheen: number,
+  sheenRoughness: number,
+  sheenColor: Vec3,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  if (sheen < 1e-4) return [0, 0, 0];
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const alpha = Math.max(sheenRoughness * sheenRoughness, 1e-3);
+  const d = charlieD(nDotH, alpha);
+  const vis = sheenVisibility(nDotL, nDotV);
+  return [
+    sheen * sheenColor[0] * d * vis,
+    sheen * sheenColor[1] * d * vis,
+    sheen * sheenColor[2] * d * vis,
+  ];
+}
+
 /**
  * Map-free forward mirror of `evaluateBrdfFull(... clearcoat, clearcoatRoughness,
  * sheen=0, iridescence=0, anisotropy=0)`. Used by the clearcoat adjoint FD gate.
@@ -226,6 +263,38 @@ export function evaluateBrdfWithClearcoat(
   );
   const cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, wi);
   return [base[0] + cc[0], base[1] + cc[1], base[2] + cc[2]];
+}
+
+/**
+ * Map-free forward mirror of the additive KHR_materials_sheen lobe. Used by the
+ * scalar sheen adjoint FD gate; sheenColor gradients/maps remain finite
+ * difference because the pass does not yet replay texture sampling for this lobe.
+ */
+export function evaluateBrdfWithSheen(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  sheen: number,
+  sheenRoughness: number,
+  sheenColor: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const base = evaluateBrdf(
+    baseColor,
+    roughness,
+    metallic,
+    normal,
+    wo,
+    wi,
+    specularColor,
+    specularIntensity,
+  );
+  const sh = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, wo, wi);
+  return [base[0] + sh[0], base[1] + sh[1], base[2] + sh[2]];
 }
 
 // ── analytic partials ────────────────────────────────────────────────────────
@@ -503,6 +572,59 @@ export function dBrdf_dClearcoatRoughness(
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return [clearcoat * f[0] * dSpecScale, clearcoat * f[1] * dSpecScale, clearcoat * f[2] * dSpecScale];
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂sheen for the additive map-free
+ * KHR_materials_sheen lobe. The returned value is the per-unit sheen lobe;
+ * callers still multiply by NdotL and incident radiance.
+ */
+export function dBrdf_dSheen(
+  sheenRoughness: number,
+  sheenColor: Vec3,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  return evalSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂sheenRoughness for the additive map-free
+ * KHR_materials_sheen Charlie lobe. Directions and sheenColor are frozen.
+ */
+export function dBrdf_dSheenRoughness(
+  sheen: number,
+  sheenRoughness: number,
+  sheenColor: Vec3,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  if (sheen < 1e-4) return [0, 0, 0];
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const sinThetaH = Math.sqrt(Math.max(0.0, 1.0 - nDotH * nDotH));
+  const alphaRaw = sheenRoughness * sheenRoughness;
+  const dAlpha_dRough = alphaRaw < 1e-3 ? 0.0 : 2.0 * sheenRoughness;
+  if (sinThetaH <= 1e-6 || dAlpha_dRough === 0.0) return [0, 0, 0];
+
+  const alpha = Math.max(alphaRaw, 1e-3);
+  const q = 1.0 / Math.max(alpha, 1e-4);
+  const powTerm = Math.pow(sinThetaH, q);
+  const logSin = Math.log(sinThetaH);
+  const dD_dQ = (powTerm * (1.0 + (2.0 + q) * logSin)) / (2.0 * PI);
+  const dQ_dAlpha = -1.0 / (alpha * alpha);
+  const dD_dRough = dD_dQ * dQ_dAlpha * dAlpha_dRough;
+  const vis = sheenVisibility(nDotL, nDotV);
+  return [
+    sheen * sheenColor[0] * dD_dRough * vis,
+    sheen * sheenColor[1] * dD_dRough * vis,
+    sheen * sheenColor[2] * dD_dRough * vis,
+  ];
 }
 
 function dBrdf_dSpecularF0(
