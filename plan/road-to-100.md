@@ -42,7 +42,8 @@
 > reference-render promotion.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current center-sampled direct-light slice; walkaround transparent
-> sky/light-map plus GI/shadow promotion after direct-sun material-lobe closure,
+> GI/shadow promotion plus validation of first-hit sky/light-map approximations
+> after direct-sun material-lobe closure,
 > finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
@@ -768,7 +769,9 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
 - `materialPatch` with atlas-backed maps now rebuilds correctly (`mutationMatrix.test.ts`);
   the remaining footgun is cost, not correctness: map/atlas-metadata edits still route
   through a full rebuild instead of a narrower atlas refresh.
-- ReSTIR primary hit uses different UV than shade — must share `materialDecode` helpers.
+- ~~ReSTIR primary hit uses different UV than shade~~ ✅ SOURCE-VERIFIED STALE:
+  RIS/primary/OIT paths call the shared material-atlas helpers with hit UV0 plus
+  `materialAtlasUv1ForHit`.
 - Atlas rebuild on every animation frame if UVs deform — morph targets need UV-aware or full atlas refresh.
 
 #### 3E — Extension lobes on walkaround (clearcoat, sheen, iridescence, specular, anisotropy)

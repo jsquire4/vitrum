@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu emissive-map emitter power, 2026-06-16)
+
+- **Readable emissive maps now drive implicit mesh-area NEE strength:** `@vitrum/pt-webgpu` implicit emissive-mesh synthesis now multiplies scalar `emissive * emissiveIntensity` by the CPU-readable emissive-map average, decoded through the same sRGB role used by the material texture array. Black readable emissive maps no longer synthesize phantom mesh-area lights, and opaque/unreadable map handles emit a warning while keeping the previous scalar fallback.
+
 ### Fixed (walkaround mutation GI invalidation, 2026-06-16)
 
 - **TLAS transform refits now invalidate DDGI probes:** `HybridEngine.updatePrimitive(id, { transform })` in TLAS mode already reset accumulation, marked DDGI instances dirty, and re-synced the shared BVH, but it did not invalidate the DDGI probe atlas. TLAS and merged transform refits now share the physically correct invalidation behavior, and the mutation-matrix seam asserts it.

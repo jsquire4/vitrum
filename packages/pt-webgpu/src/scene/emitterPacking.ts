@@ -1,4 +1,4 @@
-import type { DiscAreaEmitter, Mat4, MeshAreaEmitter, Scene } from '@vitrum/core';
+import type { DiscAreaEmitter, Mat4, MaterialSpec, MeshAreaEmitter, Scene, TextureRef } from '@vitrum/core';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
@@ -71,6 +71,12 @@ const RECT_DISC_SHAPE_RECT = 0.0;
 const RECT_DISC_SHAPE_DISC = 1.0;
 
 type Vec3 = [number, number, number];
+
+interface RawTexturePayload {
+  readonly width: number;
+  readonly height: number;
+  readonly data: ArrayBufferView;
+}
 
 type PackedMeshAreaTriangle = {
   readonly triA: Vec3;
@@ -145,6 +151,93 @@ function emitterRadiance(
     e.color[0] * e.intensity,
     e.color[1] * e.intensity,
     e.color[2] * e.intensity,
+  ];
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+function srgbToLinear(value: number): number {
+  const c = clamp01(value);
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function numericChannelMax(data: ArrayBufferView): number | null {
+  if (data instanceof Float32Array || data instanceof Float64Array) return 1;
+  if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 255;
+  if (data instanceof Uint16Array) return 65535;
+  if (data instanceof Uint32Array) return 4294967295;
+  if (data instanceof Int8Array) return 127;
+  if (data instanceof Int16Array) return 32767;
+  if (data instanceof Int32Array) return 2147483647;
+  return null;
+}
+
+function rawPayloadOfTexture(ref: TextureRef | undefined): RawTexturePayload | null {
+  const source = ref?.handle;
+  if (source == null || typeof source !== 'object') return null;
+  const img = ('image' in source && (source as { image?: unknown }).image != null
+    ? (source as { image?: unknown }).image
+    : source) as Record<string, unknown>;
+  if (img == null || typeof img !== 'object') return null;
+  const width = typeof img.width === 'number' ? img.width : 0;
+  const height = typeof img.height === 'number' ? img.height : 0;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return ArrayBuffer.isView(img.data)
+    ? { width: Math.floor(width), height: Math.floor(height), data: img.data }
+    : null;
+}
+
+function averageSrgbTextureRgb(ref: TextureRef | undefined): Vec3 | null {
+  const payload = rawPayloadOfTexture(ref);
+  if (payload == null) return null;
+  const pixelCount = payload.width * payload.height;
+  if (pixelCount <= 0) return null;
+  const data = payload.data as unknown as ArrayLike<number>;
+  const channelCount = data.length / pixelCount;
+  if (![1, 2, 3, 4].includes(channelCount) || !Number.isInteger(channelCount)) {
+    return null;
+  }
+  const maxValue = numericChannelMax(payload.data);
+  if (maxValue == null) return null;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channelCount;
+    const rawR = Number(data[src] ?? 0);
+    const rawG = channelCount >= 2 ? Number(data[src + 1] ?? 0) : rawR;
+    const rawB = channelCount >= 3 ? Number(data[src + 2] ?? 0) : rawR;
+    r += srgbToLinear(rawR / maxValue);
+    g += srgbToLinear(rawG / maxValue);
+    b += srgbToLinear(rawB / maxValue);
+  }
+  const inv = 1 / pixelCount;
+  return [r * inv, g * inv, b * inv];
+}
+
+function emissiveRadianceForMaterial(
+  material: MaterialSpec,
+  primitiveId: string,
+  warnings?: string[],
+): Vec3 {
+  const emissive = material.emissive ?? [0, 0, 0];
+  const intensity = material.emissiveIntensity ?? 1;
+  const mapAverage = averageSrgbTextureRgb(material.emissiveMap);
+  if (material.emissiveMap != null && mapAverage == null && warnings != null) {
+    warnings.push(
+      `@vitrum/pt-webgpu: primitive "${primitiveId}" has an emissiveMap without CPU-readable texels; ` +
+        'implicit mesh-area NEE uses scalar emissive radiance only.',
+    );
+  }
+  const map = mapAverage ?? [1, 1, 1];
+  return [
+    emissive[0] * intensity * map[0],
+    emissive[1] * intensity * map[1],
+    emissive[2] * intensity * map[2],
   ];
 }
 
@@ -361,10 +454,11 @@ function packMeshAreaTriangles(
 
 /**
  * Luminance threshold for implicit mesh-area emitter synthesis (H14-A).
- * A material must have `luminance(emissive · emissiveIntensity) ≥ IMPLICIT_EMITTER_THRESHOLD`
- * to be treated as an area light by NEE/BDPT. The same constant is used by both
- * `packEmitterArrays` (synthesis) and `hasMeshAreaEmitterForPrimitive` (staleness
- * check), so the threshold cannot drift between the two paths.
+ * A material must have `luminance(emissive · emissiveIntensity · avg(emissiveMap))`
+ * ≥ IMPLICIT_EMITTER_THRESHOLD to be treated as an area light by NEE/BDPT. The same
+ * helper is used by both `packEmitterArrays` (synthesis) and
+ * `hasMeshAreaEmitterForPrimitive` (staleness check), so the threshold cannot drift
+ * between the two paths.
  */
 const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
 
@@ -377,7 +471,10 @@ const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
  * Without this synthesis, an emissive mesh is invisible to NEE/BDPT — the
  * kernel's emissive-on-hit term fires, but the direct-lighting estimators never
  * enumerate it. The synthetic emitters are virtual (id = `__implicit__<primitiveId>`)
- * and carry the material's emissive radiance as `color · intensity = 1`.
+ * and carry the material's average emissive radiance as `color · intensity = 1`.
+ * CPU-readable emissive maps modulate the radiance by their average sRGB-decoded
+ * linear RGB. Opaque/unreadable map handles keep the old scalar fallback and emit
+ * a warning from `packEmitterArrays`.
  *
  * Guard: explicit mesh-area emitters take priority — if a `mesh-area` entry in
  * `scene.emitters` already references a primitive, that primitive is skipped to
@@ -393,6 +490,7 @@ function synthesizeImplicitEmitters(
   /** When set, only consider this primitive id (early-exit fast path for the
    *  `hasMeshAreaEmitterForPrimitive` staleness predicate). */
   onlyPrimitiveId?: string,
+  warnings?: string[],
 ): Extract<Scene['emitters'][number], { kind: 'mesh-area' }>[] {
   const explicitMeshAreaIds = new Set<string>(
     scene.emitters
@@ -405,11 +503,7 @@ function synthesizeImplicitEmitters(
     if (onlyPrimitiveId !== undefined && primitive.id !== onlyPrimitiveId) continue;
     if (primitive.kind === 'analytic') continue;
     if (explicitMeshAreaIds.has(primitive.id)) continue;
-    const em = primitive.material.emissive ?? [0, 0, 0];
-    const ei = primitive.material.emissiveIntensity ?? 1;
-    const emR = em[0] * ei;
-    const emG = em[1] * ei;
-    const emB = em[2] * ei;
+    const [emR, emG, emB] = emissiveRadianceForMaterial(primitive.material, primitive.id, warnings);
     if (luminance(emR, emG, emB) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) continue;
     result.push({
       kind: 'mesh-area',
@@ -570,7 +664,7 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
 
   // H14-A: synthesize implicit mesh-area emitters and pack their triangles.
   // See `synthesizeImplicitEmitters` for the synthesis contract.
-  for (const synthetic of synthesizeImplicitEmitters(scene)) {
+  for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
     meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
   }
 

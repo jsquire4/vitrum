@@ -1514,8 +1514,8 @@ Evidence:
   follow-up: OIT direct-sun layer radiance now consumes the same atlas-backed
   GGX/clearcoat/sheen/aniso/iridescence material payload as opaque
   shade/ReSTIR material scoring instead of a diffuse-only sun term. The
-  structured warning remains because transparent sky/light-map terms plus
-  ReSTIR/GI/shadow participation are still approximate, including
+  structured warning remains because camera-visible sky/light-map terms are
+  first-hit approximations and ReSTIR/GI/shadow participation is still approximate, including
   `updatePrimitive(id, { material })` patches that mutate a primitive into
   fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
@@ -1528,6 +1528,13 @@ Evidence:
   closes the scalar-only emitter-power hole for decoded glTF-style 1x1/CPU
   handles. Exact UV-varying emitter texel PDFs, per-candidate spatial payloads,
   and GI texel-space emission are still approximate rather than native parity.
+- pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
+  `emitterPacking.ts` folds the CPU-readable sRGB-decoded average RGB into
+  synthesized emissive-mesh radiance, uses that same helper for the geometry
+  staleness predicate, suppresses black-map phantom emitters, and warns when an
+  opaque/unreadable map handle forces the scalar-emissive fallback. This closes
+  the scalar-only implicit emitter hole for decoded glTF/WebGPU-target texture
+  payloads; exact UV-varying emitter texel PDFs remain a promotion tail.
 - pt-webgl2 is the closest material-complete backend, but still has unsupported
   rows and needs tests for the high-value rows it claims.
 - pt-webgpu has substantial material support, and full-tier megakernel

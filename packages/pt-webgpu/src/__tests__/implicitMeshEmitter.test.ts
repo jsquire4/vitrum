@@ -13,12 +13,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene, TextureRef } from '@vitrum/core';
 import { packEmitterArrays } from '../scene/emitterPacking.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function triMesh(id: string, emissive?: [number, number, number], emissiveIntensity?: number): Scene['primitives'][number] {
+function triMesh(
+  id: string,
+  emissive?: [number, number, number],
+  emissiveIntensity?: number,
+  materialPatch: Partial<MaterialSpec> = {},
+): Scene['primitives'][number] {
   return {
     kind: 'mesh',
     id,
@@ -30,8 +35,13 @@ function triMesh(id: string, emissive?: [number, number, number], emissiveIntens
       metallic: 0,
       emissive: emissive ?? [0, 0, 0],
       emissiveIntensity: emissiveIntensity ?? 1,
+      ...materialPatch,
     },
   };
+}
+
+function emissiveMap(data: Float32Array, width: number, height: number): TextureRef {
+  return { handle: { width, height, data } };
 }
 
 function meshAreaEmitter(id: string, meshId: string): Scene['emitters'][number] {
@@ -66,6 +76,63 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(radG).toBeCloseTo(1, 5);
     expect(radB).toBeCloseTo(0.5, 5);
     void STRIDE;
+  });
+
+  it('modulates implicit mesh-area radiance by a CPU-readable emissiveMap average', () => {
+    const scene: Scene = {
+      primitives: [
+        triMesh('mapped-glow', [2, 2, 2], 1, {
+          emissiveMap: emissiveMap(
+            new Float32Array([
+              1, 0, 0, 1,
+              0, 0, 1, 1,
+            ]),
+            2,
+            1,
+          ),
+        }),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(1, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(1, 5);
+  });
+
+  it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {
+    const scene: Scene = {
+      primitives: [
+        triMesh('mapped-dark', [4, 4, 4], 10, {
+          emissiveMap: emissiveMap(new Float32Array([0, 0, 0, 1]), 1, 1),
+        }),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(0);
+  });
+
+  it('warns and falls back to scalar emissive radiance for opaque emissiveMap handles', () => {
+    const scene: Scene = {
+      primitives: [
+        triMesh('opaque-map', [1, 0.25, 0], 2, {
+          emissiveMap: { handle: { label: 'gpu-only-texture' } },
+        }),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0.5, 5);
+    expect(packed.warnings).toContain(
+      '@vitrum/pt-webgpu: primitive "opaque-map" has an emissiveMap without CPU-readable texels; implicit mesh-area NEE uses scalar emissive radiance only.',
+    );
   });
 
   it('emissive mesh WITH explicit mesh-area emitter → NOT double-counted', () => {

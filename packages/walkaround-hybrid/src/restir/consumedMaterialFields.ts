@@ -265,8 +265,8 @@ export function collectUnconsumedMaterialFields(
  * The scalar alpha traversal path can faithfully discard fully-transparent
  * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
  * and the transparent-OIT pass camera-composites partial coverage. HybridEngine
- * still emits a structured warning because transparent sky/light-map terms plus
- * ReSTIR/GI/shadow participation remain approximate.
+ * still emits a structured warning because camera-visible sky/light-map terms are
+ * first-hit approximations and ReSTIR/GI/shadow participation remains approximate.
  */
 export function collectApproximateAlphaBlendPrimitiveIds(
   primitives: ReadonlyArray<{
