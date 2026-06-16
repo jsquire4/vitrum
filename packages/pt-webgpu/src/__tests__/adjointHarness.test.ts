@@ -92,6 +92,10 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('max(PI * dot(ru, ru), 1e-6)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights[rb].w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('meshAreaLights');                  // mesh-area NEE
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let center = (a + b + c) * (1.0 / 3.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x * invReplaySamples)'); // per-param scatter
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');

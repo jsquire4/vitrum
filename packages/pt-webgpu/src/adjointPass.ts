@@ -103,6 +103,7 @@ export class AdjointPass {
     uboU[27] = sampleCount >>> 0;
     uboU[28] = sb.directionalLightCount >>> 0;
     uboU[29] = sb.spotLightCount >>> 0;
+    uboU[30] = sb.meshAreaLightCount >>> 0;
 
     // adjointParamDescs: per param {matId, fieldCode, gradOffset, w}. For an
     // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the
@@ -177,6 +178,7 @@ export class AdjointPass {
         { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
         { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
         { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
+        { binding: 13, resource: { buffer: sb.meshAreaLightsBuffer } },
       ],
     });
 

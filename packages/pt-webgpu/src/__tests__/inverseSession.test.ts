@@ -480,6 +480,13 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       normal: [0, -1, 0] as [number, number, number],
       radius: 0.5,
     }]],
+    ['mesh-area', [{
+      kind: 'mesh-area' as const,
+      id: 'mesh-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      meshId: 'panel',
+    }]],
   ])('keeps path-replay for %s direct-light scenes now covered by the adjoint pass', (_label, emitters) => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -497,13 +504,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
   });
 
   it.each([
-    ['mesh-area', [{
-      kind: 'mesh-area' as const,
-      id: 'mesh-light',
-      color: [1, 1, 1] as [number, number, number],
-      intensity: 1,
-      meshId: 'panel',
-    }]],
     ['soft directional', [{
       kind: 'directional' as const,
       id: 'soft-sun',

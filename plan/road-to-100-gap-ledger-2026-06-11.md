@@ -104,12 +104,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   for delta directional, spot, and native disc-area direct lights too. The adjoint
   pass now binds packed directional/spot buffers, consumes directional/spot counts
   from a widened UBO, honors point/spot/rect/disc emitter shadow-disable lanes,
-  and uses the native disc `πr²` center-sample area. `inverseSession` now selects
-  replay for delta directional, point, spot, and center-sampled rect/disc-area
-  scenes; it still keeps soft-sun angular diameter, mesh-area, environment,
-  indirect, mapped/transmissive/layered/spectral/volume, and extension-lobe
-  material domains on finite difference until those adjoints are implemented and
-  validated.
+  and uses the native disc `πr²` center-sample area. Later 2026-06-16 follow-up:
+  mesh-area direct lights joined the same scoped path via the existing packed
+  mesh-triangle buffer and a deterministic center-sampled triangle area term.
+  `inverseSession` now selects replay for delta directional, point, spot, and
+  center-sampled rect/disc/mesh-area scenes; it still keeps soft-sun angular
+  diameter, environment, indirect, mapped/transmissive/layered/spectral/volume,
+  full stochastic area sampling, and extension-lobe material domains on finite
+  difference until those adjoints are implemented and validated.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including
@@ -1733,11 +1735,11 @@ Remaining:
   the finite-difference baseline and explicitly degrade requested path-replay
   sessions back to finite-difference for those fields. 2026-06-16 follow-up:
   scoped light-source path replay now covers delta directional, point, spot, and
-  center-sampled rect/disc-area direct lights. Analytic path-replay adjoints
-  remain open for environment, mesh-area, soft-sun angular diameter, indirect
-  paths, maps/transmission/layers/volume/spectral material domains, and full
-  extension-lobe contribution/PDF gradients until converging inverse fits validate
-  them.
+  center-sampled rect/disc/mesh-area direct lights. Analytic path-replay adjoints
+  remain open for environment, soft-sun angular diameter, full stochastic area
+  sampling, indirect paths, maps/transmission/layers/volume/spectral material
+  domains, and full extension-lobe contribution/PDF gradients until converging
+  inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
   BDPT paths now structurally implemented. The local extension-lobe CPU oracle
   is closed; the remaining promotion evidence is GPU/reference-render based.

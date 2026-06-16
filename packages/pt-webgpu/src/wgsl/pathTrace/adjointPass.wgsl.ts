@@ -16,8 +16,8 @@
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
  * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
- * delta + point + spot + center-sampled rect/disc-area direct lights. Mesh-area,
- * environment, indirect, soft-sun angular diameter, and mapped/transmissive/
+ * delta + point + spot + center-sampled rect/disc/mesh-area direct lights.
+ * Environment, indirect, soft-sun angular diameter, and mapped/transmissive/
  * layered/volume/spectral material terms remain deliberate finite-difference
  * fallbacks until their source terms are mirrored here and GPU-validated.
  * Direct lights are summed deterministically over all eligible lights (no MC
@@ -82,7 +82,7 @@ struct AdjointParams {
   sampleCount: u32,
   directionalLightCount: u32,
   spotLightCount: u32,
-  _pad0: u32,
+  meshAreaLightCount: u32,
   _pad1: u32,
 }
 
@@ -103,6 +103,8 @@ struct AdjointParams {
 @group(0) @binding(11) var<storage, read>      directionalLights: array<vec4f>;
 // spot lights: per light {position, axis+cosOuter, radiance+cosInner, distance+decay+shadowFlag} (4 vec4 stride).
 @group(0) @binding(12) var<storage, read>      spotLights: array<vec4f>;
+// mesh-area lights: per triangle {a, b, c, radiance+shadowFlag} (4 vec4 stride).
+@group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -406,6 +408,40 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         isDisc,
       );
       let Li = rad * (cosLight * area / dist2);
+      let lg = directLightAdjoint(
+        dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+        nDotL, Li,
+      );
+      gBaseColor = gBaseColor + lg.baseColor;
+      gRough = gRough + lg.roughness;
+      gSpecularColor = gSpecularColor + lg.specularColor;
+      gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+    }
+
+    // Mesh-area lights: deterministic CENTER-sample of each packed emissive
+    // triangle. This mirrors the rect/disc scoped adjoint: it differentiates a
+    // stable direct-light estimate without pretending to cover the stochastic
+    // full triangle sampler or light-selection MIS yet.
+    for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+      let mb = mi * 4u;
+      let a = meshAreaLights[mb].xyz;
+      let b = meshAreaLights[mb + 1u].xyz;
+      let c = meshAreaLights[mb + 2u].xyz;
+      let mr = meshAreaLights[mb + 3u];
+      let center = (a + b + c) * (1.0 / 3.0);
+      let edgeCross = cross(b - a, c - a);
+      let area = max(0.5 * length(edgeCross), 1e-6);
+      let lightNormal = safe_normalize(edgeCross);
+      let toLight = center - pos;
+      let dist2 = max(dot(toLight, toLight), 1e-6);
+      let dist = sqrt(dist2);
+      let wi = toLight / dist;
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL <= 0.0) { continue; }
+      let cosLight = max(dot(lightNormal, -wi), 0.0);
+      if (cosLight <= 0.0) { continue; }
+      if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
+      let Li = mr.rgb * (cosLight * area / dist2);
       let lg = directLightAdjoint(
         dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
         nDotL, Li,

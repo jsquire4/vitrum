@@ -89,7 +89,7 @@ export interface InverseEngineHooks {
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists, every parameter is adjoint-eligible, and every target material
    * stays inside the adjoint-compatible direct-light domain (delta directional,
-   * point, spot, and center-sampled rect/disc area lights;
+   * point, spot, and center-sampled rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
    * specularColor / specularIntensity); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
@@ -483,12 +483,18 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
 function isPathReplayCompatibleLighting(scene: Scene): boolean {
   if ((scene.environment?.kind ?? 'none') !== 'none') return false;
   // The path-replay pass differentiates deterministic direct-light terms for
-  // delta directional, point, spot, and center-sampled rect/disc-area lights.
-  // Soft-sun angular-diameter directionals, mesh-area, and environment lighting
+  // delta directional, point, spot, and center-sampled rect/disc/mesh-area lights.
+  // Soft-sun angular-diameter directionals and environment lighting
   // stay on finite difference until their stochastic/source terms are mirrored
   // and validated end-to-end.
   return scene.emitters.every((e) => {
-    if (e.kind === 'point' || e.kind === 'spot' || e.kind === 'rect-area' || e.kind === 'disc-area') {
+    if (
+      e.kind === 'point' ||
+      e.kind === 'spot' ||
+      e.kind === 'rect-area' ||
+      e.kind === 'disc-area' ||
+      e.kind === 'mesh-area'
+    ) {
       return true;
     }
     if (e.kind === 'directional') {
