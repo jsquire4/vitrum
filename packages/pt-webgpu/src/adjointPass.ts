@@ -37,6 +37,7 @@ import {
   ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE,
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
+  ADJOINT_FIELD_AO_MAP_INTENSITY,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -174,6 +175,9 @@ export class AdjointPass {
           break;
         case 'metallic':
           fieldCode = ADJOINT_FIELD_METALLIC;
+          break;
+        case 'aoMapIntensity':
+          fieldCode = ADJOINT_FIELD_AO_MAP_INTENSITY;
           break;
         case 'emissive':
           fieldCode = ADJOINT_FIELD_EMISSIVE;

@@ -11,15 +11,16 @@
  * resolves the effective method to 'path-replay' (NOT finite-difference)
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
- * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
- * clearcoatRoughness, sheen, sheenColor, sheenRoughness, iridescence,
- * iridescenceIor, anisotropy, anisotropyRotation).
+ * roughness, metallic, aoMapIntensity, emissive, specularColor,
+ * specularIntensity, clearcoat, clearcoatRoughness, sheen, sheenColor,
+ * sheenRoughness, iridescence, iridescenceIor, iridescenceThicknessRange,
+ * anisotropy, anisotropyRotation).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
  * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
  * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
- * specular/metallic/clearcoat/sheen/iridescence/anisotropy partials are
+ * specular/metallic/AO/clearcoat/sheen/iridescence/anisotropy partials are
  * CPU-FD-oracle + WGSL-shape + shader-gate covered until their GPU inverse-fit
  * recaptures land.
  *

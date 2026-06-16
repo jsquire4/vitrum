@@ -199,18 +199,19 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   baseColor adjoint treatment. `adjointPass` mirrors the forward full-tier
   linear R-channel AO sampler, `aoMapIntensity`, per-map UV/transform/wrap/fit
   metadata, and multiplies the local baseColor chain factor by the sampled AO
-  factor. This is intentionally limited to the documented glTF-style local
-  albedo multiplier; alpha visibility, light maps, transmission/thickness,
+  factor. Current follow-up: `aoMapIntensity` itself now scatters through the
+  local derivative of `mix(1, aoR, intensity)` and stays on scoped path replay.
+  This is intentionally limited to the documented glTF-style local albedo
+  multiplier; alpha visibility, light maps, transmission/thickness,
   normal/bump/displacement, clearcoat-normal, layered/volume/spectral,
   environment, indirect, and forward light-selection MIS parity remain outside the
   scoped path-replay domain.
 - Later 2026-06-16 inverse API follow-up: pt-webgpu finite-difference inverse
   sessions now accept renderer-consumed scalar map controls (`normalScale`,
-  `bumpScale`, `clearcoatNormalScale`, `aoMapIntensity`, `lightMapIntensity`,
-  `envMapIntensity`). They seed from the scene, patch through the incremental
-  material hook, and requested `method:'path-replay'` reports structured
-  unsupported-field diagnostics until analytic normal/map-scale replay is
-  implemented.
+  `bumpScale`, `clearcoatNormalScale`, `lightMapIntensity`, `envMapIntensity`).
+  They seed from the scene, patch through the incremental material hook, and
+  requested `method:'path-replay'` reports structured unsupported-field
+  diagnostics until analytic normal/light/env-map replay is implemented.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
   path-replay domain. The CPU oracle now mirrors the additive fixed-F0

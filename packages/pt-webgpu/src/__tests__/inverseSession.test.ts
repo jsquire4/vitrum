@@ -1364,7 +1364,40 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps scalar map controls on finite-difference until path replay mirrors normal/map-scale terms', () => {
+  it('keeps AO map intensity on path-replay through the local base-color chain factor', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                baseColor: [0.8, 0.7, 0.6],
+                aoMapIntensity: 0.5,
+                aoMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.aoMapIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.5, 6)]);
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps scalar normal/light/env map controls on finite-difference until path replay mirrors those terms', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1377,7 +1410,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 normalScale: 0.8,
                 bumpScale: 0.7,
                 clearcoatNormalScale: 0.6,
-                aoMapIntensity: 0.5,
                 lightMapIntensity: 0.4,
                 envMapIntensity: 0.3,
               },
@@ -1385,14 +1417,13 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(6) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(5) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
         { path: 'materials.panel.normalScale', kind: 'scalar' },
         { path: 'materials.panel.bumpScale', kind: 'scalar' },
         { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar' },
-        { path: 'materials.panel.aoMapIntensity', kind: 'scalar' },
         { path: 'materials.panel.lightMapIntensity', kind: 'scalar' },
         { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
       ],
@@ -1404,7 +1435,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       [expect.closeTo(0.8, 6)],
       [expect.closeTo(0.7, 6)],
       [expect.closeTo(0.6, 6)],
-      [expect.closeTo(0.5, 6)],
       [expect.closeTo(0.4, 6)],
       [expect.closeTo(0.3, 6)],
     ]);
@@ -1412,7 +1442,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       'normalScale',
       'bumpScale',
       'clearcoatNormalScale',
-      'aoMapIntensity',
       'lightMapIntensity',
       'envMapIntensity',
     ]) {

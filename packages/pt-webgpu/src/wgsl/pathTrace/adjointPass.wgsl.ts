@@ -81,6 +81,7 @@ export const ADJOINT_FIELD_ANISOTROPY_ROTATION = 15;
 export const ADJOINT_FIELD_EMITTER_COLOR = 16;
 export const ADJOINT_FIELD_EMITTER_INTENSITY = 17;
 export const ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE = 18;
+export const ADJOINT_FIELD_AO_MAP_INTENSITY = 19;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -180,9 +181,11 @@ struct AdjointParams {
 @group(0) @binding(12) var<storage, read>      spotLights: array<vec4f>;
 // mesh-area lights: per triangle {a, b, c, radiance+shadowFlag} (4 vec4 stride).
 @group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
-// Emissive-map replay subset: mirrors the forward sRGB material texture sampler
-// only for camera-direct emissive partials. BRDF/scalar maps still route through
-// finite difference until their full shading/PDF terms are replayed here.
+// Material-map replay subset: mirrors the forward texture samplers for local
+// base/ORM/AO/specular/clearcoat/sheen/iridescence/anisotropy chain factors and
+// camera-direct emissive partials. Path-changing maps (alpha, transmission,
+// normal/bump/clearcoat-normal, displacement) still route through finite
+// difference until their visibility/transport/normal terms are replayed here.
 @group(0) @binding(14) var<storage, read>      meshUvs: array<vec4f>;
 @group(0) @binding(15) var<storage, read>      materialTexDescriptors: array<vec4f>;
 @group(0) @binding(16) var                      materialTextures: texture_2d_array<f32>;
@@ -446,13 +449,22 @@ fn sampleAdjointOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   return vec4f(1.0, roughness, metallic, 1.0);
 }
 
-fn sampleAdjointAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+struct AdjointAoSample {
+  factor: f32,
+  dFactor_dIntensity: f32,
+}
+
+fn sampleAdjointAo(matId: u32, triIndex: u32, baryVW: vec2f) -> AdjointAoSample {
   let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 15u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  if (base + 15u >= arrayLength(&materialTexDescriptors)) {
+    return AdjointAoSample(1.0, 0.0);
+  }
   let idx = i32(materialTexDescriptors[base + 3u].y);
-  if (idx < 0) { return 1.0; }
+  if (idx < 0) {
+    return AdjointAoSample(1.0, 0.0);
+  }
   let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
-  let r = sampleAdjointMaterialLayerLinear(
+  let r = clamp(sampleAdjointMaterialLayerLinear(
     idx,
     base,
     triIndex,
@@ -460,8 +472,8 @@ fn sampleAdjointAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
     ADJOINT_MATERIAL_TEX_UV_AO,
     materialTexDescriptors[base + 9u].zw,
     materialTexDescriptors[base + 15u].zw,
-  ).r;
-  return clamp(mix(1.0, r, intensity), 0.0, 1.0);
+  ).r, 0.0, 1.0);
+  return AdjointAoSample(mix(1.0, r, intensity), r - 1.0);
 }
 
 fn sampleAdjointClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -891,9 +903,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u];
     let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
     let baseColor = m0.rgb;
-    let baseColorFactor = sampleAdjointVertexColor(hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *
-      sampleAdjointBaseColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *
-      sampleAdjointAoFactor(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
+    let hitBaryVW = vec2f(hit.bary.y, hit.bary.z);
+    let baseColorNoAoFactor = sampleAdjointVertexColor(hit.tri, hitBaryVW).rgb *
+      sampleAdjointBaseColorTexture(matId, hit.tri, hitBaryVW).rgb;
+    let aoSample = sampleAdjointAo(matId, hit.tri, hitBaryVW);
+    let baseColorFactor = baseColorNoAoFactor * aoSample.factor;
     let effectiveBaseColor = baseColor * baseColorFactor;
     let roughness = clamp(m0.w, 0.02, 1.0);
     let metallic = clamp(m1.w, 0.0, 1.0);
@@ -1333,6 +1347,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gSpecularIntensity * specularIntensityFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_METALLIC}u) {
         adjointScatter(gradOffset, gMetallic * ormFactor.b * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_AO_MAP_INTENSITY}u) {
+        let gAoBase = baseColor * baseColorNoAoFactor * aoSample.dFactor_dIntensity;
+        let gAoMapIntensity = select(dot(gBaseColor, gAoBase), dot(dLoss_dR, gAoBase), isUnlit);
+        adjointScatter(gradOffset, gAoMapIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
         adjointScatter(gradOffset, gClearcoat * clearcoatFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {

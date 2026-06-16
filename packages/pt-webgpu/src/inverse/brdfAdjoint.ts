@@ -27,18 +27,20 @@
  *  - scalar KHR_materials_clearcoat controls (`clearcoat` and
  *    `clearcoatRoughness`) for the additive, map-free direct-light clearcoat
  *    lobe. Clearcoat normal maps remain outside this oracle.
- *  - map-free KHR_materials_sheen controls (`sheen`, `sheenColor`, and
- *    `sheenRoughness`) for the additive, map-free direct-light sheen lobe.
- *    Sheen colour/roughness maps remain outside this oracle.
- *  - map-free scalar KHR_materials_iridescence (`iridescence`) through the
+ *  - KHR_materials_sheen controls (`sheen`, `sheenColor`, and
+ *    `sheenRoughness`) for the additive direct-light sheen lobe. Texture-map
+ *    factors are handled as local chain-rule multipliers in the replay pass.
+ *  - scalar KHR_materials_iridescence (`iridescence`) through the
  *    thin-film-modified base F0 used by the opaque direct-light specular and
  *    diffuse partition. Map-free `iridescenceIor` is differentiated through a
- *    local symmetric derivative of that thin-film F0 term. Iridescence maps,
- *    thickness maps, and thickness-range parameter gradients remain outside
- *    this oracle.
- *  - map-free KHR_materials_anisotropy scalar controls (`anisotropy` and
+ *    local symmetric derivative of that thin-film F0 term. Authored
+ *    `iridescenceThicknessRange` gradients are differentiated by chaining the
+ *    sampled thickness (`V·H` or readable thickness-map texel) to min/max
+ *    endpoints. Texture-pixel gradients remain outside this oracle.
+ *  - KHR_materials_anisotropy scalar controls (`anisotropy` and
  *    `anisotropyRotation`) through a local symmetric derivative of the
- *    anisotropic GGX specular lobe. Anisotropy maps remain outside this oracle.
+ *    anisotropic GGX specular lobe. Anisotropy map factors are handled as local
+ *    strength/rotation chain-rule terms in the replay pass.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
