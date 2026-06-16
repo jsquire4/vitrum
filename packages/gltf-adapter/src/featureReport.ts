@@ -82,6 +82,7 @@ export interface GltfMaterialFeatureReport {
   readonly unsupportedKnownExtensions: readonly string[];
   readonly alphaModes: readonly string[];
   readonly uvSets: readonly number[];
+  readonly unrepresentableUvSets: readonly number[];
   readonly textureTransformCount: number;
   readonly volumeThicknessTextureCount: number;
   readonly specularGlossinessMaterialCount: number;
@@ -533,6 +534,7 @@ export function evaluateGltfBackendProfileCompatibility(
 
   for (const uvSet of report.materials.uvSets) {
     if (uvSet <= 1) continue;
+    if (!report.materials.unrepresentableUvSets.includes(uvSet)) continue;
     addIssue({
       category: 'material',
       name: `TEXCOORD_${uvSet}`,
@@ -540,7 +542,8 @@ export function evaluateGltfBackendProfileCompatibility(
       path: firstSourcePath(report.materials.issuePaths, `uvSet:${uvSet}`, 'materials'),
       message:
         `glTF material textures reference TEXCOORD_${uvSet}, but the core Scene ` +
-        'contract currently carries only UV sets 0 and 1 (`uvs` / `uv1`).',
+        'contract carries only UV sets 0 and 1 (`uvs` / `uv1`) and this asset ' +
+        'cannot be losslessly remapped into the uv1 lane.',
     });
   }
 
@@ -908,6 +911,42 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   };
 }
 
+function analyzeUnrepresentableMaterialUvSets(
+  gltf: GltfJson,
+  materialUvSets: ReadonlyMap<number, ReadonlySet<number>>,
+): readonly number[] {
+  const unrepresentable = new Set<number>();
+  const usedMaterials = new Set<number>();
+
+  for (const mesh of gltf.meshes ?? []) {
+    for (const primitive of mesh.primitives ?? []) {
+      const materialIndex = primitive.material;
+      if (materialIndex === undefined) continue;
+      usedMaterials.add(materialIndex);
+      const uvSets = materialUvSets.get(materialIndex);
+      if (uvSets === undefined) continue;
+      const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
+      if (highUvSets.length === 0) continue;
+      const canRemap =
+        highUvSets.length === 1 &&
+        !uvSets.has(1) &&
+        primitive.attributes?.[`TEXCOORD_${highUvSets[0]}`] !== undefined;
+      if (!canRemap) {
+        for (const uvSet of highUvSets) unrepresentable.add(uvSet);
+      }
+    }
+  }
+
+  for (const [materialIndex, uvSets] of materialUvSets) {
+    if (usedMaterials.has(materialIndex)) continue;
+    for (const uvSet of uvSets) {
+      if (uvSet > 1) unrepresentable.add(uvSet);
+    }
+  }
+
+  return [...unrepresentable].sort((a, b) => a - b);
+}
+
 function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
   const materials = gltf.materials ?? [];
   const fields = new Set<keyof MaterialSpec>();
@@ -917,12 +956,14 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
   const uvSets = new Set<number>();
+  const materialUvSets = new Map<number, Set<number>>();
   const issuePaths: SourcePathMap = new Map();
   let textureTransformCount = 0;
   let volumeThicknessTextureCount = 0;
   let specularGlossinessMaterialCount = 0;
   let specularGlossinessTextureCount = 0;
   let doubleSidedCount = 0;
+  let currentMaterialIndex = -1;
 
   const addField = (field: keyof MaterialSpec, path: string): void => {
     fields.add(field);
@@ -937,11 +978,20 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
     if (samplerPolicy !== null) samplerPolicies.push(samplerPolicy);
     const uvSet = textureInfoUvSet(info);
     uvSets.add(uvSet);
+    if (currentMaterialIndex >= 0) {
+      let perMaterial = materialUvSets.get(currentMaterialIndex);
+      if (perMaterial === undefined) {
+        perMaterial = new Set<number>();
+        materialUvSets.set(currentMaterialIndex, perMaterial);
+      }
+      perMaterial.add(uvSet);
+    }
     if (uvSet > 1) addSourcePath(issuePaths, `uvSet:${uvSet}`, textureInfoUvSetPath(info, path));
     if (info.extensions?.KHR_texture_transform) textureTransformCount += 1;
   };
 
   for (const [materialIndex, mat] of materials.entries()) {
+    currentMaterialIndex = materialIndex;
     const matPath = `materials[${materialIndex}]`;
     const pbr = mat.pbrMetallicRoughness;
     if (pbr?.baseColorFactor) {
@@ -1083,6 +1133,7 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
     uvSets: [...uvSets].sort((a, b) => a - b),
+    unrepresentableUvSets: analyzeUnrepresentableMaterialUvSets(gltf, materialUvSets),
     textureTransformCount,
     volumeThicknessTextureCount,
     specularGlossinessMaterialCount,

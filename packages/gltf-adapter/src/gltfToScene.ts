@@ -55,6 +55,7 @@ import {
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
+  type TextureRef,
 } from '@vitrum/core';
 import type {
   GltfJson,
@@ -87,6 +88,33 @@ import {
 } from './triangulation.js';
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
+
+const MATERIAL_TEXTURE_REF_FIELDS = [
+  'baseColorMap',
+  'normalMap',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'thicknessMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'displacementMap',
+  'lightMap',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
 
 const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_draco_mesh_compression',
@@ -304,7 +332,8 @@ export type GltfImportDiagnosticCode =
   | 'unreadable-position'
   | 'unreadable-indices'
   | 'ignored-vertex-color-set'
-  | 'empty-triangulated-primitive';
+  | 'empty-triangulated-primitive'
+  | 'ignored-material-texcoord';
 
 export interface GltfImportDiagnostic {
   readonly severity: 'warning' | 'error';
@@ -773,13 +802,24 @@ export async function gltfToScene(
         materialIndex !== undefined && materialIndex < coreMaterials.length
           ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
           : GLTF_DEFAULT_MATERIAL;
+      const uvResolvedMaterial = _resolvePrimitiveUvMaterial(
+        gltf,
+        buffers,
+        prim,
+        material,
+        uv1,
+        warnings,
+        diagnostics,
+        primitivePath,
+        mesh.name ?? node.mesh,
+      );
       const finalTangents = tangents ?? _maybeGenerateTangents(
         positions,
         normals,
         uvs,
-        uv1,
+        uvResolvedMaterial.uv1,
         indices,
-        material,
+        uvResolvedMaterial.material,
         `${mesh.name ?? node.mesh}`,
         warnings,
         diagnostics,
@@ -858,7 +898,7 @@ export async function gltfToScene(
 
       primitives.push(_buildPrimitive(
         id, worldMat, positions, normals, indices,
-        uvs, uv1, finalTangents, colors, material, skinArg, morph, primitiveInstances,
+        uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, primitiveInstances,
       ));
     }
   }
@@ -1335,6 +1375,105 @@ function _extractSkinData(
   }
 
   return { bones, boneInverses };
+}
+
+interface PrimitiveUvMaterialResolution {
+  readonly material: MaterialSpec;
+  readonly uv1?: Float32Array;
+}
+
+function _isTextureRef(value: unknown): value is TextureRef {
+  return value !== null && typeof value === 'object' && 'handle' in value;
+}
+
+function _cloneMaterialWithTextureRef(
+  material: MaterialSpec,
+  field: MaterialTextureRefField,
+  ref: TextureRef,
+): MaterialSpec {
+  return {
+    ...material,
+    [field]: ref,
+  } as MaterialSpec;
+}
+
+function _cloneMaterialWithoutTextureRefs(
+  material: MaterialSpec,
+  fields: readonly MaterialTextureRefField[],
+): MaterialSpec {
+  const next: Record<string, unknown> = { ...material };
+  for (const field of fields) delete next[field];
+  return next as unknown as MaterialSpec;
+}
+
+function _resolvePrimitiveUvMaterial(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  primitive: GltfPrimitive,
+  material: MaterialSpec,
+  uv1: Float32Array | undefined,
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  primitivePath: string,
+  meshName: string | number,
+): PrimitiveUvMaterialResolution {
+  const highFields: { field: MaterialTextureRefField; ref: TextureRef; texCoord: number }[] = [];
+  const highTexCoords = new Set<number>();
+  let usesUv1 = false;
+
+  for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
+    const ref = material[field];
+    if (!_isTextureRef(ref)) continue;
+    const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+    if (texCoord === 1) {
+      usesUv1 = true;
+    } else if (texCoord > 1) {
+      highFields.push({ field, ref, texCoord });
+      highTexCoords.add(texCoord);
+    }
+  }
+
+  if (highFields.length === 0) return { material, ...(uv1 ? { uv1 } : {}) };
+
+  if (highTexCoords.size === 1 && !usesUv1) {
+    const texCoord = [...highTexCoords][0]!;
+    const attrName = `TEXCOORD_${texCoord}`;
+    const remapUv = _tryUnpackFloat(
+      gltf,
+      buffers,
+      primitive.attributes[attrName],
+      `${attrName} for "${meshName}"`,
+      warnings,
+    );
+    if (remapUv !== undefined) {
+      let remapped = material;
+      for (const { field, ref } of highFields) {
+        remapped = _cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: 1 });
+      }
+      return { material: remapped, uv1: remapUv };
+    }
+  }
+
+  const dropFields = highFields.map(({ field }) => field);
+  const dropped = _cloneMaterialWithoutTextureRefs(material, dropFields);
+  const conflictReason = highTexCoords.size > 1
+    ? `material references multiple high UV sets (${[...highTexCoords].sort((a, b) => a - b).map((n) => `TEXCOORD_${n}`).join(', ')})`
+    : usesUv1
+      ? 'material already references TEXCOORD_1, so the high UV set cannot be losslessly remapped into uv1'
+      : `primitive has no readable TEXCOORD_${[...highTexCoords][0] ?? '?'} accessor`;
+
+  for (const { field, texCoord } of highFields) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-material-texcoord',
+      path: `${primitivePath}.material`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshName}" material field "${field}" references ` +
+        `TEXCOORD_${texCoord}, but ${conflictReason}. The texture field is ignored ` +
+        'for this primitive instead of being sampled with the wrong UV channel.',
+    });
+  }
+  return { material: dropped, ...(uv1 ? { uv1 } : {}) };
 }
 
 /**

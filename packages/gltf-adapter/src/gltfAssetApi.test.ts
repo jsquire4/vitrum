@@ -1034,6 +1034,19 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(uvIssue?.message).toContain('only UV sets 0 and 1');
   });
 
+  it('does not reject a single high material UV set that can be remapped into uv1', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
+    gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = 1;
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([2]);
+    expect(report.materials.unrepresentableUvSets).toEqual([]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
+  });
+
   it('reports KHR_texture_transform texCoord overrides beyond uv1 at the override source path', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = {

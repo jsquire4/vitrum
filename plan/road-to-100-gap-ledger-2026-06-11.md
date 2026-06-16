@@ -1602,6 +1602,17 @@ Evidence:
   instancing still emit an `ignored-gpu-instancing` diagnostic and import the
   base mesh/skinned representation once because core has no instanced-skinned /
   instanced-morphed primitive contract yet.
+- 2026-06-16 follow-up: the broad UV2+ material-texture gap is narrowed. `uv1`
+  remains the core/backend native second UV lane, but `gltfToScene()` now
+  losslessly remaps a primitive material that references exactly one higher
+  glTF UV set (`TEXCOORD_N`, `N > 1`) into that lane when the primitive has the
+  accessor and the material does not also need `texCoord:1`. The primitive-local
+  `TextureRef.texCoord` values are cloned to `1`, tangent generation consumes
+  the remapped UVs, and compatibility analysis no longer rejects those cases.
+  Missing or conflicting high-UV cases emit `ignored-material-texcoord`
+  diagnostics and drop the affected texture fields instead of silently sampling
+  UV0. Native arbitrary UV-array support remains future core/backend contract
+  work.
 
 Closure:
 - Decide per extension: implement, require host hook, translate approximately,

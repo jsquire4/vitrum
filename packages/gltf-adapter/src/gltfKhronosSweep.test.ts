@@ -529,21 +529,15 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     ]));
   });
 
-  it('reports TEXCOORD_2 material textures as structured unsupported compatibility issues', () => {
+  it('accepts TEXCOORD_2 material textures when the primitive can remap them into uv1', () => {
     const report = reportFor(uv2MaterialTexture());
 
     expect(report.primitives.attributeSemantics).toContain('TEXCOORD_2');
     expect(report.materials.uvSets).toEqual([2]);
+    expect(report.materials.unrepresentableUvSets).toEqual([]);
     for (const profile of ['pt-webgl2', 'pt-webgpu', 'pt-webgpu-lite', 'walkaround-hybrid'] as const) {
       const compatibility = evaluateGltfBackendProfileCompatibility(report, profile);
-      expect(compatibility.issues).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          category: 'material',
-          name: 'TEXCOORD_2',
-          support: 'unsupported',
-          path: 'materials[0].pbrMetallicRoughness.baseColorTexture.texCoord',
-        }),
-      ]));
+      expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
     }
   });
 

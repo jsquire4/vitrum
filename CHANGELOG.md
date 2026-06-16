@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF high-UV material remap, 2026-06-16)
+
+- **Single high material UV sets now import predictably:** `@vitrum/gltf-adapter` remaps a primitive material that references one `TEXCOORD_N` beyond UV1 into the core `uv1` lane when that primitive has a readable `TEXCOORD_N` accessor and no material-visible `texCoord:1` conflict. The adapter clones the primitive material refs to `texCoord:1`, feeds tangent generation from the remapped UVs, and compatibility analysis no longer rejects those lossless cases. Conflicting or missing high-UV cases now drop the affected texture fields with structured `ignored-material-texcoord` diagnostics instead of silently sampling UV0.
+
 ### Fixed (pt-webgpu iridescence/anisotropy-map adjoint replay, 2026-06-16)
 
 - **Iridescence and anisotropy maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_iridescence `iridescenceMap` R and `iridescenceThicknessMap` G sampling, collapses the film thickness range to the sampled forward value, mirrors KHR_materials_anisotropy map sampling with B-channel strength and RG-derived rotation offset, evaluates direct-light BRDF partials with those hit-local mapped lobe values, and applies the correct local chain factors to `iridescence` and `anisotropy` gradients. `iridescenceIor` and `anisotropyRotation` use the mapped lobe state without extra multiplier because they are IOR/offset controls. Clearcoat normal maps, normal/visibility/path-selection maps, alpha/AO/light/transmission maps, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or validation tails.

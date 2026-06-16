@@ -323,7 +323,7 @@ describe('minimal triangle', () => {
     }));
   });
 
-  it('warns instead of generating tangents from the wrong UV channel for texCoord 2', async () => {
+  it('drops a texCoord 2 tangent-space map when the primitive has no TEXCOORD_2 accessor', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 2,
       includeUv0: true,
@@ -332,13 +332,77 @@ describe('minimal triangle', () => {
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect(prim.tangents).toBeUndefined();
-    expect(warnings.some((w) =>
-      w.includes('TEXCOORD_2') &&
-      w.includes('imports only TEXCOORD_0 and TEXCOORD_1'),
-    )).toBe(true);
+    expect(prim.material.normalMap).toBeUndefined();
+    expect(warnings.some((w) => w.includes('normalMap') && w.includes('TEXCOORD_2'))).toBe(true);
     expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'missing-tangent-texcoord',
-      path: 'meshes[0].primitives[0].attributes.TEXCOORD_2',
+      code: 'ignored-material-texcoord',
+      path: 'meshes[0].primitives[0].material',
+    }));
+  });
+
+  it('remaps one high material UV set into core uv1 when the accessor exists', async () => {
+    const fixture = makeUv1NormalMappedTriangleGltf({
+      normalTexCoord: 2,
+      includeUv0: true,
+    });
+    const uv2 = appendF32Accessor(
+      fixture,
+      [
+        0.25, 0.25,
+        0.75, 0.25,
+        0.25, 0.75,
+      ],
+      'VEC2',
+      3,
+    );
+    fixture.gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = uv2;
+
+    const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect((prim.material.normalMap as TextureRef | undefined)?.texCoord).toBe(1);
+    expect(Array.from(prim.uv1 ?? [])).toEqual([
+      0.25, 0.25,
+      0.75, 0.25,
+      0.25, 0.75,
+    ]);
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
+    expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
+  });
+
+  it('drops high-UV maps instead of remapping when texCoord 1 is also material-visible', async () => {
+    const fixture = makeUv1NormalMappedTriangleGltf({
+      normalTexCoord: 2,
+      includeUv0: true,
+    });
+    const uv2 = appendF32Accessor(
+      fixture,
+      [
+        0.25, 0.25,
+        0.75, 0.25,
+        0.25, 0.75,
+      ],
+      'VEC2',
+      3,
+    );
+    fixture.gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = uv2;
+    fixture.gltf.materials![0] = {
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: 1 },
+      },
+      normalTexture: { index: 0, texCoord: 2 },
+    };
+
+    const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect((prim.material.baseColorMap as TextureRef | undefined)?.texCoord).toBe(1);
+    expect(prim.material.normalMap).toBeUndefined();
+    expect(warnings.some((w) => w.includes('normalMap') && w.includes('already references TEXCOORD_1'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'ignored-material-texcoord',
+      path: 'meshes[0].primitives[0].material',
     }));
   });
 
