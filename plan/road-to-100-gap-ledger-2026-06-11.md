@@ -163,12 +163,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `Lo` and temporal previous-domain recast falls back to geometry when exact
   previous-camera reconstruction is unavailable.
 - Later 2026-06-16 follow-up: transparent OIT direct sun is now
-  cast-shadow-aware, and HDRI sky/environment lighting now uses a deterministic
-  five-tap material-lobe estimate for camera-visible transparent layers. The
-  no-HDRI fallback, emissive, and light-map terms remain first-hit
-  approximations, and transparent ReSTIR/GI/shadow participation is still not
-  promoted, but direct sun matches the opaque path's scene-visibility convention
-  via `traceSceneAnyCastMask` with `castShadow:false` respected and glass skipped.
+  cast-shadow-aware, and sky/environment lighting now uses a deterministic
+  five-tap material-lobe estimate for camera-visible transparent layers in both
+  HDRI-backed and no-HDRI scalar/procedural sky scenes. Emissive and light-map
+  terms remain first-hit approximations, and transparent ReSTIR/GI participation
+  is still not promoted, but direct sun, point/spot, and finite-emitter shadows
+  now use the OIT material-atlas shadow walk with `castShadow:false` respected,
+  scalar glass skipped, and blend blockers attenuated by `1 - alpha`.
 - Latest 2026-06-16 follow-up: transparent OIT now also binds the existing
   `analytic_lights` texture and shades analytic point/spot emitters through the
   same material-lobe payload, inverse-square falloff, spot cone attenuation, and
@@ -196,7 +197,7 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   strict progressive glTF tiering, optional Draco fallback analysis, and
   transparent HDRI sky material-lobe OIT no longer appear as open implementation
   gaps. The honest remaining tails are now analytic-adjoint breadth,
-  walkaround transparent no-HDRI sky fallback/light-map/emissive plus GI/shadow
+  walkaround transparent light-map/emissive plus ReSTIR/GI
   promotion, rich-material GI validation/promotion, neural/NRC production
   quality, and validation-backed fidelity promotions.
 - Follow-up 2026-06-15: the glTF texture decode bridge now has a real
@@ -1589,10 +1590,10 @@ Evidence:
   Latest 2026-06-16 follow-up: analytic point/spot light radiance now joins that
   transparent OIT direct-light path through binding 13, and direct sun/point/spot
   shadows deterministically attenuate through atlas-backed alpha coverage. The
-  structured warning remains because no-HDRI sky fallback plus light-map/emissive
-  terms are first-hit approximations, and area-emitter/ReSTIR direct light plus
-  GI participation is still approximate, including material `updatePrimitive`
-  patches that mutate a primitive into fractional blend.
+  structured warning remains because light-map/emissive terms are first-hit
+  approximations, and reservoir-backed ReSTIR direct light plus GI participation
+  is still approximate, including material `updatePrimitive` patches that mutate
+  a primitive into fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow, direct-light selection power, and merged-BVH
   ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as

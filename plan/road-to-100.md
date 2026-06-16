@@ -51,8 +51,8 @@
 > radiance.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped direct-light/unlit-primary slice; walkaround transparent
-> ReSTIR/GI promotion plus validation of no-HDRI sky fallback, first-hit
-> light-map/emissive approximations, finite-emitter/light-map promotion
+> ReSTIR/GI promotion plus validation of first-hit light-map/emissive
+> approximations, finite-emitter/light-map promotion
 > decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
@@ -326,7 +326,7 @@ buckets that the A–D framing was missing:**
   pt-webgpu AO/bump/light maps, shadow flags, authored/generated tangent.xyzw
   consumption, and walkaround atlas/rich-lobe consumption for the current
 	  map-backed material rows. Remaining broad-residual rows are displacement,
-	  receiveShadow, transparent no-HDRI sky fallback/light-map/emissive/GI/shadow promotion, UV-varying emissive/light-map promotion,
+	  receiveShadow, transparent light-map/emissive/GI promotion, UV-varying emissive/light-map promotion,
   unsupported specialty fields (spectral/scattering/layered/thin-film), and
   backend-specific approximation/proof rows ledgered in `BACKEND_PROMISE_LEDGER`.
   The former pt-webgl2 `TextureRef.texCoord`/`alphaMap.transform` warning is closed:
@@ -707,8 +707,8 @@ mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
 `traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
 visibility; the cast-shadow mask skips bit 2 in occlusion rays; and
 `HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
-fractional `alphaMode:'blend'` because no-HDRI sky fallback, ReSTIR direct light,
-light-map/emissive terms, and GI participation remain approximate.
+fractional `alphaMode:'blend'` because ReSTIR direct light, light-map/emissive
+terms, and GI participation remain approximate.
 Readable `alphaMap` cutout is
 atlas-backed; camera-visible fractional blend now uses the transparent-OIT pass
 after `indirect-combine` and before temporal accumulation, and its direct-sun
@@ -720,7 +720,7 @@ shade/ReSTIR material scoring.
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` `traceSceneFirstHitAlphaMaskTextured`; RIS/shade/temporal/spatial/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
-| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun plus analytic point/spot and finite mesh emitters through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe HDRI estimate for camera-visible sky/environment lighting, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent no-HDRI sky fallback plus first-hit light-map/emissive terms remain approximations; direct sun/point/spot/finite-emitter shadows now use alpha-aware deterministic transmittance, while reservoir-backed ReSTIR direct light and ReSTIR/GI participation still use the existing approximate lanes until validated separately |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun plus analytic point/spot and finite mesh emitters through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe estimate for camera-visible sky/environment lighting across HDRI-backed and no-HDRI scalar/procedural sky scenes, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | First-hit light-map/emissive terms remain camera-visible approximations; direct sun/point/spot/finite-emitter shadows now use alpha-aware deterministic transmittance, while reservoir-backed ReSTIR direct light and ReSTIR/GI participation still use the existing approximate lanes until validated separately |
 | ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and direct sun/point/spot/finite-emitter shadow transmittance, while GI/ReSTIR participation remains approximate. | Keep warning until transparent GI/ReSTIR promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)

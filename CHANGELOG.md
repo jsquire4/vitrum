@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent OIT scalar sky parity, 2026-06-16)
+
+- **Transparent blend sky lighting now uses material lobes even without HDRI:** `@vitrum/walkaround-hybrid` removes the diffuse-only no-HDRI fallback from `transparentOit.wgsl.ts`, so scalar/procedural sky radiance now flows through the same deterministic five-tap GGX/specular/clearcoat/sheen/anisotropy/iridescence estimate used for HDRI-backed transparent layers. Transparent ReSTIR direct-light reservoir participation and transparent GI remain approximation tails.
+
 ### Fixed (pt-webgpu iridescence adjoint truthfulness, 2026-06-16)
 
 - **Map-free scalar iridescence now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for KHR_materials_iridescence `iridescence`, reading packed material vec4 #25 and differentiating the thin-film-modified base F0 in the existing opaque direct-light replay domain. `inverseSession` only routes the targeted scalar iridescence fit to `path-replay`; coupled BRDF+iridescence sessions, iridescence maps, IOR/thickness gradients, anisotropy, transmission, layered/volume/spectral materials, alpha visibility, environment/soft-sun terms, indirect paths, and stochastic area sampling still degrade to finite difference. The same routing guard now rejects analytic primitives, instanced meshes, and transformed meshes because the replay shader intersects raw triangle buffers only.

@@ -8,8 +8,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerEnvSampleRadiance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('if (!envHasMap()) {');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('light for both HDRI-backed scenes and no-HDRI scalar/procedural sky fallback.');
     expect(TRANSPARENT_OIT_WGSL).toContain('let d1 = oitEnvSampleDir(normal,  0.70,  0.00);');
     expect(TRANSPARENT_OIT_WGSL).toContain('return avg * (2.0 * PI / 5.0);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);');
@@ -55,6 +54,8 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('vec3f(ubo.sunIntensity) * albedo * INV_PI');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('if (!envHasMap()) {');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunVisibility = select(1.0, 0.0, sunOccluded);');
   });
 

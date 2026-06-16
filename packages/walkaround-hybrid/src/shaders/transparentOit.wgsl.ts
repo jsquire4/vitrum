@@ -191,14 +191,10 @@ fn oitLayerEnvSampleRadiance(
 }
 
 fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f {
-  if (!envHasMap()) {
-    return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;
-  }
-
-  // Deterministic five-tap hemisphere estimate for HDRI-backed transparent
-  // layers. This keeps the pass temporally stable while letting clearcoat,
-  // sheen, anisotropy, iridescence, and envMapIntensity affect camera-visible
-  // alpha-blended sky light instead of falling back to a diffuse normal lookup.
+  // Deterministic five-tap hemisphere estimate for transparent layers. This
+  // keeps the pass temporally stable while letting clearcoat, sheen, anisotropy,
+  // iridescence, and envMapIntensity affect camera-visible alpha-blended sky
+  // light for both HDRI-backed scenes and no-HDRI scalar/procedural sky fallback.
   let d0 = normal;
   let d1 = oitEnvSampleDir(normal,  0.70,  0.00);
   let d2 = oitEnvSampleDir(normal, -0.70,  0.00);
