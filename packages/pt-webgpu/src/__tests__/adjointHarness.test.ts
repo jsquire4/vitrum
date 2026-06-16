@@ -134,6 +134,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let center = (a + b + c) * (1.0 / 3.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointBaseColorTexture');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointAoFactor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointVertexColor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointOrmTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointClearcoatTexture');
@@ -147,6 +148,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointSpecularIntensityTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let baseColorFactor = sampleAdjointVertexColor(hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sampleAdjointBaseColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sampleAdjointAoFactor(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveBaseColor = baseColor * baseColorFactor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let ormFactor = sampleAdjointOrmTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveRoughness = clamp(roughness * ormFactor.g, 0.02, 1.0)');
@@ -200,6 +202,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = 21u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = 25u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_METALLIC = 27u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_AO = 29u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = 51u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = 53u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = 55u;');

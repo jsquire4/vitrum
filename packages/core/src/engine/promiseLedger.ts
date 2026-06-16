@@ -630,6 +630,8 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // emissiveIntensity, while non-primary/indirect emission remains FD.
   emissiveMap: 'native',
   alphaMap: 'native',
+  // Forward paths apply AO as a deliberate glTF local albedo multiplier. The
+  // path-replay adjoint now mirrors that local factor for scoped baseColor fits.
   aoMap: 'native',
   aoMapIntensity: 'native',
   // Full-tier megakernel, ReSTIR-PT suffix/visible payloads, and BDPT surface
@@ -669,8 +671,8 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // SPEC-01 — scalar factors are packed in material vec4 #27 and consumed by the
   // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, ReSTIR-PT visible-domain
   // reservoirs/resolve, and BDPT eye/light + light-subpath surface scattering.
-  // Scalar path-replay adjoints exist for the direct-light inverse slice, but
-  // the row stays approximate until mapped/specialty adjoints and remaining
+  // Path-replay adjoints exist for the direct-light inverse slice, including
+  // local specular maps, but the row stays approximate until remaining specialty
   // reference/furnace proof gates carry the same scalar/material-lobe coherence.
   specularIntensity: 'approximate',
   specularColor: 'approximate',

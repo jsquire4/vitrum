@@ -183,9 +183,18 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   with those hit-local mapped lobe states and scatters `iridescence` and
   `anisotropy` gradients through the local multipliers while leaving
   `iridescenceIor` and `anisotropyRotation` as shape/offset controls. Clearcoat
-  normal maps, normal/visibility/path-changing maps, alpha/AO/light/transmission
+  normal maps, normal/visibility/path-changing maps, alpha/light/transmission
   maps, environment, indirect, stochastic area sampling, and GPU inverse-fit
   recapture remain open proof/implementation tails.
+- Later same-day follow-up: `aoMap` joined the same local direct-light/unlit
+  baseColor adjoint treatment. `adjointPass` mirrors the forward full-tier
+  linear R-channel AO sampler, `aoMapIntensity`, per-map UV/transform/wrap/fit
+  metadata, and multiplies the local baseColor chain factor by the sampled AO
+  factor. This is intentionally limited to the documented glTF-style local
+  albedo multiplier; alpha visibility, light maps, transmission/thickness,
+  normal/bump/displacement, clearcoat-normal, layered/volume/spectral,
+  environment, indirect, and full stochastic area sampling remain outside the
+  scoped path-replay domain.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
   path-replay domain. The CPU oracle now mirrors the additive fixed-F0
@@ -1999,8 +2008,9 @@ Remaining:
   scoped light-source path replay now covers delta directional, point, spot, and
   center-sampled rect/disc/mesh-area direct lights. Analytic path-replay adjoints
   remain open for environment, soft-sun angular diameter, full stochastic area
-  sampling, indirect paths, maps/transmission/layers/volume/spectral material
-  domains, and full extension-lobe contribution/PDF gradients until converging
+  sampling, indirect paths, remaining nonlocal/path-changing maps,
+  transmission/layers/volume/spectral material domains, and full extension-lobe
+  contribution/PDF gradients until converging
   inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
   BDPT paths is now structurally implemented. The local extension-lobe CPU oracle

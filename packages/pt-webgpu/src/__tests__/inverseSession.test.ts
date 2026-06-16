@@ -498,6 +498,34 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when a lit BRDF material uses an AO map in the scoped adjoint domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                baseColor: [0.8, 0.7, 0.6],
+                aoMapIntensity: 0.75,
+                aoMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
   it('keeps path-replay when a lit BRDF material uses roughness/metallic maps in the scoped adjoint domain', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -681,7 +709,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['transmission', { transmission: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
-    ['AO map', { aoMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['emissive map on a lit BRDF target', { emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
     ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }],

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu AO-map adjoint replay, 2026-06-16)
+
+- **AO maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors the forward full-tier `aoMap` sampler in `adjointPass`, including linear R-channel sampling, `aoMapIntensity`, per-map UV/transform/wrap metadata, and the local chain-rule multiplier on `baseColor` gradients for lit direct-light and unlit primary-hit fits. Normal/bump/light/alpha/transmission/thickness/displacement maps, clearcoat-normal maps, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or unsupported tails.
+
 ### Fixed (glTF runtime backend profile bridge, 2026-06-16)
 
 - **Adapter-only glTF loads can now validate against the actual pt-webgpu runtime tier:** `loadGltfForEngine()` accepts `runtimeProfile`, constrained to the selected backend family, so hosts that construct `pt-webgpu` outside `@vitrum/engine/gltf` can validate strict loads against `pt-webgpu-lite` before engine creation. Cross-backend profile mismatches throw immediately instead of silently validating the wrong profile.
@@ -51,7 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgpu iridescence/anisotropy-map adjoint replay, 2026-06-16)
 
-- **Iridescence and anisotropy maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_iridescence `iridescenceMap` R and `iridescenceThicknessMap` G sampling, collapses the film thickness range to the sampled forward value, mirrors KHR_materials_anisotropy map sampling with B-channel strength and RG-derived rotation offset, evaluates direct-light BRDF partials with those hit-local mapped lobe values, and applies the correct local chain factors to `iridescence` and `anisotropy` gradients. `iridescenceIor` and `anisotropyRotation` use the mapped lobe state without extra multiplier because they are IOR/offset controls. Clearcoat normal maps, normal/visibility/path-selection maps, alpha/AO/light/transmission maps, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or validation tails.
+- **Iridescence and anisotropy maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_iridescence `iridescenceMap` R and `iridescenceThicknessMap` G sampling, collapses the film thickness range to the sampled forward value, mirrors KHR_materials_anisotropy map sampling with B-channel strength and RG-derived rotation offset, evaluates direct-light BRDF partials with those hit-local mapped lobe values, and applies the correct local chain factors to `iridescence` and `anisotropy` gradients. `iridescenceIor` and `anisotropyRotation` use the mapped lobe state without extra multiplier because they are IOR/offset controls. Clearcoat normal maps, normal/visibility/path-selection maps, alpha/light/transmission maps, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, and full stochastic area sampling remain finite-difference or validation tails. AO maps are covered by the later same-day AO replay entry.
 
 ### Fixed (pt-webgpu clearcoat/sheen-map adjoint replay, 2026-06-16)
 

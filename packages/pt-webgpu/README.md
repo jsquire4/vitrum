@@ -139,9 +139,12 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
   extension-lobe rows remain graded `approximate` until inverse/adjoint gradients and
   material-furnace/reference A/B prove the same texture-modulated parameters across the
   sampled eye, ReSTIR-PT, and BDPT paths. The path-replay inverse slice now replays
-  camera-direct `emissiveMap` texels for `emissive` / `emissiveIntensity`, but BRDF
-  maps, alpha-map visibility, indirect/environment emission, and extension-lobe adjoints
-  still use finite difference or remain validation tails.
+  camera-direct `emissiveMap` texels for `emissive` / `emissiveIntensity`, plus local
+  baseColor/COLOR_0/AO, roughness/metallic, specular, clearcoat, sheen, iridescence,
+  and anisotropy map factors inside the scoped direct-light adjoint domain. Alpha-map
+  visibility, normal/bump/light/transmission/thickness/displacement and clearcoat-normal
+  maps, layered/volume/spectral domains, indirect/environment emission, and full
+  stochastic area sampling still use finite difference or remain validation tails.
 - **`denoiser: 'oidn-final'` is NOT turnkey** — vitrum ships neither of the two required host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`, e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer dep installed in the host application. Missing either produces a clear error at construction time.
 ## Polish commands
 

@@ -586,7 +586,6 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
     m.thicknessMap != null ||
     m.emissiveMap != null ||
     m.alphaMap != null ||
-    m.aoMap != null ||
     m.clearcoatNormalMap != null ||
     m.bumpMap != null ||
     m.displacementMap != null ||

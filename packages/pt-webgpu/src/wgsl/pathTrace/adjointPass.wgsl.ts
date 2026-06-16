@@ -22,7 +22,7 @@
  * finite-difference fallbacks until their source terms are mirrored here and
  * GPU-validated. Mapped terms replayed here are scoped to the camera-direct
  * emissive texel multiplier for `emissive` / `emissiveIntensity`, plus
- * baseColorMap / COLOR_0, roughnessMap / metallicMap, clearcoat/sheen/
+ * baseColorMap / COLOR_0 / aoMap, roughnessMap / metallicMap, clearcoat/sheen/
  * iridescence/anisotropy maps, and specular color/intensity local factors used
  * by lit direct BRDF derivatives.
  * Direct lights are summed deterministically over all eligible lights (no MC
@@ -88,6 +88,8 @@ const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 3;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 4;
+const ADJOINT_MATERIAL_TEX_UV_AO =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 5;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS =
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
@@ -213,6 +215,7 @@ const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = ${ADJOINT_MATERIAL_TEX_UV_BASE_COLOR}
 const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = ${ADJOINT_MATERIAL_TEX_UV_EMISSIVE}u;
 const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC = ${ADJOINT_MATERIAL_TEX_UV_METALLIC}u;
+const ADJOINT_MATERIAL_TEX_UV_AO = ${ADJOINT_MATERIAL_TEX_UV_AO}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = ${ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR}u;
@@ -423,6 +426,24 @@ fn sampleAdjointOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
     materialTexDescriptors[base + 15u].xy,
   ).b;
   return vec4f(1.0, roughness, metallic, 1.0);
+}
+
+fn sampleAdjointAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 15u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 3u].y);
+  if (idx < 0) { return 1.0; }
+  let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
+  let r = sampleAdjointMaterialLayerLinear(
+    idx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_AO,
+    materialTexDescriptors[base + 9u].zw,
+    materialTexDescriptors[base + 15u].zw,
+  ).r;
+  return clamp(mix(1.0, r, intensity), 0.0, 1.0);
 }
 
 fn sampleAdjointClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -764,7 +785,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
     let baseColor = m0.rgb;
     let baseColorFactor = sampleAdjointVertexColor(hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *
-      sampleAdjointBaseColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb;
+      sampleAdjointBaseColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *
+      sampleAdjointAoFactor(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
     let effectiveBaseColor = baseColor * baseColorFactor;
     let roughness = clamp(m0.w, 0.02, 1.0);
     let metallic = clamp(m1.w, 0.0, 1.0);
