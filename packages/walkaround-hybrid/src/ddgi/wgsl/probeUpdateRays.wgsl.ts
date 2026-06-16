@@ -251,15 +251,17 @@ struct DdgiTraceParams {
 @group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
 // H18 Stage 2 — packed area-emitter triangles for per-probe NEE (same layout as
 // the RC probeRayCast rc_emitters). Stride: 80 bytes / 20 f32 per tri.
-//   [0..2]  vA.xyz + pad    [4..6]  vB.xyz + pad    [8..10] vC.xyz + pad
+//   [0..2]  vA.xyz + sourceTriIndex (-1 = scalar fallback)
+//   [4..6]  vB.xyz + sourceSubdivLevel
+//   [8..10] vC.xyz + sourceSubdivOrdinal
 //   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + castShadowDisabled
 // emitterCount (uniform in lights) is reused for the area-emitter count. A
 // dedicated u32 is cheaper than a second UBO; it lives in DdgiTraceParams.
 @group(1) @binding(2) var<storage, read> ddgiEmitterTris: array<vec4f>;
-// DDGI probe-hit emission-map subset. These are a DDGI-local copy of the
-// walkaround material atlas, used only to modulate direct probe hits on emissive
-// materials. Explicit emitter selection/NEE still uses the existing triangle
-// payloads and remains triangle-level.
+// DDGI probe-hit / emitter-NEE emission-map subset. These are a DDGI-local copy
+// of the walkaround material atlas, used to modulate direct probe hits on
+// emissive materials and mapped mesh-area emitter samples whose packed
+// sourceTriIndex points back to a material-atlas triangle.
 @group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;
 
@@ -392,6 +394,90 @@ fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3
     DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
     uvs.uv0,
     uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return scalarEmission;
+  }
+  return scalarEmission * texel.rgb;
+}
+
+fn ddgiEmitterSubdivWeightAt(i: u32, j: u32, level: u32) -> vec3f {
+  let invLevel = 1.0 / f32(max(level, 1u));
+  let u = f32(i) * invLevel;
+  let v = f32(j) * invLevel;
+  return vec3f(1.0 - u - v, u, v);
+}
+
+fn ddgiEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: f32) -> vec3f {
+  let level = min(16u, max(1u, u32(round(max(levelF, 1.0)))));
+  if (level <= 1u) {
+    return localBary;
+  }
+
+  let ordinal = u32(round(max(ordinalF, 0.0)));
+  var cursor = 0u;
+  for (var i = 0u; i < level; i = i + 1u) {
+    for (var j = 0u; j < level - i; j = j + 1u) {
+      let a = ddgiEmitterSubdivWeightAt(i, j, level);
+      let b = ddgiEmitterSubdivWeightAt(i + 1u, j, level);
+      let c = ddgiEmitterSubdivWeightAt(i, j + 1u, level);
+      if (cursor == ordinal) {
+        return localBary.x * a + localBary.y * b + localBary.z * c;
+      }
+      cursor = cursor + 1u;
+
+      if (i + j < level - 1u) {
+        let d = ddgiEmitterSubdivWeightAt(i + 1u, j + 1u, level);
+        if (cursor == ordinal) {
+          return localBary.x * b + localBary.y * d + localBary.z * c;
+        }
+        cursor = cursor + 1u;
+      }
+    }
+  }
+
+  return localBary;
+}
+
+fn ddgiSampleEmitterLeAtBary(base: u32, localBary: vec3f, scalarEmission: vec3f) -> vec3f {
+  let encodedSourceTri = i32(round(ddgiEmitterTris[base + 0u].w));
+  if (encodedSourceTri == -1) {
+    return scalarEmission;
+  }
+  let mirroredSourceTri = encodedSourceTri < -1;
+  let sourceTri = select(encodedSourceTri, -encodedSourceTri - 2, mirroredSourceTri);
+  let triIndex = u32(sourceTri);
+  if (triIndex >= arrayLength(&bvh_index)) {
+    return scalarEmission;
+  }
+  let tri = bvh_index[triIndex].xyz;
+  if (tri.x >= arrayLength(&bvh_position) || tri.y >= arrayLength(&bvh_position) || tri.z >= arrayLength(&bvh_position) ||
+      tri.x >= arrayLength(&bvh_normal) || tri.y >= arrayLength(&bvh_normal) || tri.z >= arrayLength(&bvh_normal)) {
+    return scalarEmission;
+  }
+
+  var bary = ddgiEmitterParentBarycentricFromLocal(
+    localBary,
+    ddgiEmitterTris[base + 1u].w,
+    ddgiEmitterTris[base + 2u].w,
+  );
+  if (mirroredSourceTri) {
+    bary = vec3f(bary.z, bary.y, bary.x);
+  }
+
+  let uv0a = ddgiPackedUvFromVec4(bvh_position[tri.x]);
+  let uv0b = ddgiPackedUvFromVec4(bvh_position[tri.y]);
+  let uv0c = ddgiPackedUvFromVec4(bvh_position[tri.z]);
+  let uv1a = ddgiPackedUvFromVec4(bvh_normal[tri.x]);
+  let uv1b = ddgiPackedUvFromVec4(bvh_normal[tri.y]);
+  let uv1c = ddgiPackedUvFromVec4(bvh_normal[tri.z]);
+  let uv0 = bary.x * uv0a + bary.y * uv0b + bary.z * uv0c;
+  let uv1 = bary.x * uv1a + bary.y * uv1b + bary.z * uv1c;
+  let texel = ddgiSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+    uv0,
+    uv1,
   );
   if (texel.x < 0.0) {
     return scalarEmission;
@@ -818,14 +904,16 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     let vC  = ddgiEmitterTris[base + 2u].xyz;
     let nrm = ddgiEmitterTris[base + 3u].xyz;
     let area = ddgiEmitterTris[base + 3u].w;
-    let Le   = ddgiEmitterTris[base + 4u].xyz;
+    let scalarLe = ddgiEmitterTris[base + 4u].xyz;
     let castShadowDisabled = ddgiEmitterTris[base + 4u].w > 0.5;
 
     // Jittered uniform area sample (deterministic per emitter index).
     let s0 = pcgHashToF32Ddgi(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
     let s1 = pcgHashToF32Ddgi((seed0 * 7919u) ^ (ei * 0x85EBCA6Bu + 0x2u));
     let su = sqrt(s0);
-    let pos = (1.0 - su) * vA + (su * (1.0 - s1)) * vB + (su * s1) * vC;
+    let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);
+    let pos = localBary.x * vA + localBary.y * vB + localBary.z * vC;
+    let Le = ddgiSampleEmitterLeAtBary(base, localBary, scalarLe);
 
     let toL     = pos - hitPos;
     let dist2   = max(dot(toL, toL), 1e-8);

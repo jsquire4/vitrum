@@ -1488,6 +1488,9 @@ export class HybridEngine implements Engine {
       ctorLights: this._ctorLights,
       primaryLightIntensity: this._primaryLightIntensity,
       primaryLightDir: this._primaryLightDir,
+      ...(this._bvhBuffers?.bvhMode === 'tlas'
+        ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
+        : {}),
     }, this._renderScene);
     // B3 — push the scene's directional IBL map+CDFs to the pipeline (or reset to
     // the no-HDRI placeholder). Called here so both the initial scene load and any

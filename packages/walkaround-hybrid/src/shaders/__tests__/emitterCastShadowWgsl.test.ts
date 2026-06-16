@@ -37,6 +37,14 @@ describe('emitter castShadow:false shader gates', () => {
     expect(EMITTER_LE_AT_XI_WGSL).toContain('return localBary.x * b + localBary.y * d + localBary.z * c;');
     expect(EMITTER_LE_AT_XI_WGSL).toContain('var bary = emitterParentBarycentricFromXi(e, xi);');
     expect(EMITTER_LE_AT_XI_WGSL).toContain('bary = vec3f(bary.z, bary.y, bary.x);');
+
+    const ddgi = makeProbeUpdateRaysWGSL(4);
+    expect(ddgi).toContain('fn ddgiEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: f32) -> vec3f');
+    expect(ddgi).toContain('let encodedSourceTri = i32(round(ddgiEmitterTris[base + 0u].w));');
+    expect(ddgi).toContain('ddgiEmitterTris[base + 1u].w');
+    expect(ddgi).toContain('ddgiEmitterTris[base + 2u].w');
+    expect(ddgi).toContain('bary = vec3f(bary.z, bary.y, bary.x);');
+    expect(ddgi).toContain('let Le = ddgiSampleEmitterLeAtBary(base, localBary, scalarLe);');
   });
 
   it('threads analytic point/spot and DDGI area-emitter flags into shadow-ray gates', () => {

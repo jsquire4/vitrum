@@ -7,6 +7,7 @@
  */
 
 import type { Mat4, Scene, Vec3 } from '@vitrum/core';
+import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
@@ -38,6 +39,9 @@ export interface ExtraEmitterTri {
   area: number;
   Le: [number, number, number];
   castShadow?: boolean;
+  sourceTriIndex?: number;
+  sourceSubdivLevel?: number;
+  sourceSubdivOrdinal?: number;
 }
 
 /**
@@ -46,9 +50,9 @@ export interface ExtraEmitterTri {
  * `ddgiEmitterTris` storage buffer and the RC `rc_emitters` buffer.
  *
  * Layout per entry (20 floats):
- *   [0..2]  vA.xyz + pad(0)
- *   [4..6]  vB.xyz + pad(0)
- *   [8..10] vC.xyz + pad(0)
+ *   [0..2]  vA.xyz + sourceTriIndex (-1 = scalar fallback)
+ *   [4..6]  vB.xyz + sourceSubdivLevel
+ *   [8..10] vC.xyz + sourceSubdivOrdinal
  *   [12..14] normal.xyz + area
  *   [16..18] Le.rgb + castShadowDisabled
  *
@@ -66,13 +70,18 @@ export function packEmitterTrisForDDGI(tris: readonly ExtraEmitterTri[]): {
   for (let i = 0; i < count; i++) {
     const t = tris[i]!;
     const base = i * STRIDE;
-    data[base + 0]  = t.vA[0]!; data[base + 1]  = t.vA[1]!; data[base + 2]  = t.vA[2]!; data[base + 3]  = 0;
-    data[base + 4]  = t.vB[0]!; data[base + 5]  = t.vB[1]!; data[base + 6]  = t.vB[2]!; data[base + 7]  = 0;
-    data[base + 8]  = t.vC[0]!; data[base + 9]  = t.vC[1]!; data[base + 10] = t.vC[2]!; data[base + 11] = 0;
+    const sourceTriIndex = t.sourceTriIndex ?? -1;
+    data[base + 0]  = t.vA[0]!; data[base + 1]  = t.vA[1]!; data[base + 2]  = t.vA[2]!; data[base + 3]  = sourceTriIndex;
+    data[base + 4]  = t.vB[0]!; data[base + 5]  = t.vB[1]!; data[base + 6]  = t.vB[2]!; data[base + 7]  = sourceTriIndex !== -1 ? t.sourceSubdivLevel ?? 1 : 1;
+    data[base + 8]  = t.vC[0]!; data[base + 9]  = t.vC[1]!; data[base + 10] = t.vC[2]!; data[base + 11] = sourceTriIndex !== -1 ? t.sourceSubdivOrdinal ?? 0 : 0;
     data[base + 12] = t.normal[0]!; data[base + 13] = t.normal[1]!; data[base + 14] = t.normal[2]!; data[base + 15] = t.area;
     data[base + 16] = t.Le[0]!; data[base + 17] = t.Le[1]!; data[base + 18] = t.Le[2]!; data[base + 19] = t.castShadow === false ? 1 : 0;
   }
   return { data, count };
+}
+
+export interface CollectMeshAreaEmitterTrisOptions {
+  readonly tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
 }
 
 const DISC_AREA_TRIANGLE_COUNT = 32;
@@ -233,7 +242,10 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
  * ReSTIR `extraEmitters` stream — that would double-count the triangles that
  * the merged world-space geometry stream already carries.
  */
-export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTri[] {
+export function collectMeshAreaEmitterTrisFromCore(
+  scene: Scene,
+  options: CollectMeshAreaEmitterTrisOptions = {},
+): ExtraEmitterTri[] {
   const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
   if (meshAreaEmitters.length === 0) return [];
 
@@ -241,6 +253,7 @@ export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
   for (const p of scene.primitives) {
     primById.set(String(p.id), p);
   }
+  const sourceTriIndexFor = buildMeshAreaTlasSourceTriResolver(scene, options.tlasPrimitiveBindings);
 
   const out: ExtraEmitterTri[] = [];
   for (const e of meshAreaEmitters) {
@@ -290,10 +303,53 @@ export function collectMeshAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
         area,
         Le,
         ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+        ...(sourceTriIndexFor != null ? { sourceTriIndex: sourceTriIndexFor(String(prim.id), ti) } : {}),
       });
     }
   }
   return out;
+}
+
+function determinantSignOfLinear(m: ArrayLike<number> | undefined): number {
+  const a = m?.[0] ?? 1;
+  const b = m?.[4] ?? 0;
+  const c = m?.[8] ?? 0;
+  const d = m?.[1] ?? 0;
+  const e = m?.[5] ?? 1;
+  const f = m?.[9] ?? 0;
+  const g = m?.[2] ?? 0;
+  const h = m?.[6] ?? 0;
+  const i = m?.[10] ?? 1;
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  return det < 0 ? -1 : 1;
+}
+
+function buildMeshAreaTlasSourceTriResolver(
+  scene: Scene,
+  bindings: readonly PrimitiveTlasBinding[] | undefined,
+): ((primitiveId: string, localTri: number) => number) | null {
+  if (bindings == null || bindings.length === 0) return null;
+  const bindingByPrimitiveId = new Map<string, PrimitiveTlasBinding>();
+  for (const binding of bindings) {
+    if (!bindingByPrimitiveId.has(binding.primitiveId)) {
+      bindingByPrimitiveId.set(binding.primitiveId, binding);
+    }
+  }
+
+  const windingSignByPrimitiveId = new Map<string, number>();
+  for (const p of scene.primitives) {
+    if (p.kind !== 'mesh' && p.kind !== 'skinned-mesh') continue;
+    windingSignByPrimitiveId.set(String(p.id), determinantSignOfLinear(p.transform));
+  }
+
+  return (primitiveId: string, localTri: number): number => {
+    const binding = bindingByPrimitiveId.get(primitiveId);
+    if (binding == null || localTri < 0 || localTri >= binding.triCount) return -1;
+    const sourceTri = binding.triStart + localTri;
+    return (windingSignByPrimitiveId.get(primitiveId) ?? 1) < 0
+      ? -(sourceTri + 2)
+      : sourceTri;
+  };
 }
 
 /**

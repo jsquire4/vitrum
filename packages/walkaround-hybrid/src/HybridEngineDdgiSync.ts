@@ -28,6 +28,7 @@
  */
 
 import type { Scene } from '@vitrum/core';
+import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGILight } from './ddgi/types.js';
@@ -62,6 +63,8 @@ export interface SyncDdgiFromCoreSceneDeps {
    * lifecycle path does not call `orientDdgiSunLights`.
    */
   primaryLightDir?: readonly [number, number, number];
+  /** TLAS primitive bindings from the active shared-BVH pack, when available. */
+  tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
   /**
    * When true, only call `ddgi.setLights` if the scene contributes at least
    * one emitter (lifecycle init path). When false (default), always merge and
@@ -114,7 +117,9 @@ export function syncDdgiFromCoreScene(
   // (mesh-area tris added to probe NEE, 2026-06-10)
   const emitterTris = [
     ...collectRectAreaEmitterTrisFromCore(scene),
-    ...collectMeshAreaEmitterTrisFromCore(scene),
+    ...collectMeshAreaEmitterTrisFromCore(scene, {
+      ...(deps.tlasPrimitiveBindings != null ? { tlasPrimitiveBindings: deps.tlasPrimitiveBindings } : {}),
+    }),
   ];
   const packed = packEmitterTrisForDDGI(emitterTris);
   deps.ddgi.setEmitterTris(packed.data, packed.count);

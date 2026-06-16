@@ -529,6 +529,9 @@ export class PipelineInitCoordinator {
           ctorLights: host.ctorLights,
           primaryLightIntensity: host.primaryLightIntensity,
           setLightsConditional: true,
+          ...(bvhPublished.bvhMode === 'tlas'
+            ? { tlasPrimitiveBindings: bvhPublished.primitiveTlasBindings }
+            : {}),
           // primaryLightDir intentionally absent — lifecycle does not orient sun lights here
         }, sceneForSun);
       } else {

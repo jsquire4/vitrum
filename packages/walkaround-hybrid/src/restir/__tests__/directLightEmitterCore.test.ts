@@ -507,6 +507,47 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
 
     const ddgiPacked = packEmitterTrisForDDGI(extra);
     expect(ddgiPacked.count).toBe(1);
+    expect(ddgiPacked.data[3]).toBe(-1);
+    expect(ddgiPacked.data[7]).toBe(1);
+    expect(ddgiPacked.data[11]).toBe(0);
     expect(ddgiPacked.data[19]).toBe(1);
+  });
+
+  it('packs mesh-area source triangle metadata into the DDGI emitter-triangle lanes when TLAS bindings are available', () => {
+    const panel: MeshPrimitive = supportTriangle('panel');
+    const scene: Scene = {
+      primitives: [panel],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'panel-emitter',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 2,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const extra = collectMeshAreaEmitterTrisFromCore(scene, {
+      tlasPrimitiveBindings: [{
+        primitiveId: 'panel',
+        primitiveKind: 'mesh',
+        blasRoot: 0,
+        instanceCount: 1,
+        vertexStart: 0,
+        vertexCount: 3,
+        triStart: 7,
+        triCount: 1,
+        localAabbMin: [0, 0, 0],
+        localAabbMax: [1, 1, 0],
+      }],
+    });
+    expect(extra).toHaveLength(1);
+    expect(extra[0]!.sourceTriIndex).toBe(7);
+
+    const ddgiPacked = packEmitterTrisForDDGI(extra);
+    expect(ddgiPacked.count).toBe(1);
+    expect(ddgiPacked.data[3]).toBe(7);
+    expect(ddgiPacked.data[7]).toBe(1);
+    expect(ddgiPacked.data[11]).toBe(0);
   });
 });

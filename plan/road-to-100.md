@@ -66,7 +66,8 @@
 > `attachVitrum`/`VitrumCanvas` can opt into RAF-driven glTF controller playback
 > with real delta seconds, DDGI probe direct-light visibility samples
 > atlas-backed baseColor/alpha-map coverage for blend/mask shadow transmittance,
-> and pt-webgpu inverse sessions finite-difference scalar transmission,
+> DDGI mesh-area emitter NEE samples mapped source texels when TLAS metadata is
+> available, and pt-webgpu inverse sessions finite-difference scalar transmission,
 > thickness, opacity, and alphaCutoff while keeping requested path replay on a
 > structured finite-difference downgrade until those visibility/transport terms
 > are mirrored in the adjoint pass.
@@ -793,8 +794,10 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   emissive-map light selection now uses CPU-readable UV-local per-triangle quadrature
   plus bounded barycentric micro-emitter subdivision for material-backed walkaround
   ReSTIR-DI emitters and implicit PT mesh lights rather than whole-texture average
-  power, but still does not build full texel-alias emitter PDFs; analytic/extra
-  emitter mapped payloads plus GI/RC/DDGI emission still use averaged `Le`,
+  power, and DDGI mesh-area emitter NEE samples material-atlas emissive texels
+  when TLAS source-triangle metadata is available, but still does not build full
+  texel-alias emitter PDFs; analytic/extra emitter mapped payloads plus RC and
+  non-NEE GI/DDGI emission still use averaged `Le`,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus
