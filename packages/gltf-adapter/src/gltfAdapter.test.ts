@@ -278,7 +278,7 @@ describe('minimal triangle', () => {
   it('generates tangents for a normal-mapped primitive that omits TANGENT', async () => {
     const handle = { kind: 'decoded-normal' };
     const { gltf, buffers } = makeNormalMappedTriangleGltf();
-    const { scene, warnings } = await gltfToScene(gltf, {
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, {
       buffers,
       decodeImage: async () => handle,
     });
@@ -292,6 +292,30 @@ describe('minimal triangle', () => {
       1, 0, 0, 1,
     ]);
     expect(warnings.some((w) => w.includes('generated per-vertex tangents'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'generated-tangents',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+      message: expect.stringContaining('generated per-vertex tangents'),
+    }));
+  });
+
+  it('emits a structured diagnostic when tangent generation lacks TEXCOORD_0', async () => {
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    delete gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_0;
+    const { scene, diagnostics } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-normal' }),
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.tangents).toBeUndefined();
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'missing-tangent-texcoord',
+      path: 'meshes[0].primitives[0].attributes.TEXCOORD_0',
+      message: expect.stringContaining('has no TEXCOORD_0'),
+    }));
   });
 
   it('preserves authored tangents instead of regenerating them', async () => {
@@ -1043,7 +1067,7 @@ describe('out-of-scope feature warnings', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'ignored-camera',
-        path: 'cameras',
+        path: 'cameras[0]',
       }),
     ]);
   });

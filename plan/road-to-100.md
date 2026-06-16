@@ -31,7 +31,10 @@
 > covered by loader/spec tests, dispatch failures fall back to raw HDR,
 > NRC opt-in emits a structured experimental/biased warning, and glTF
 > `decodeSceneTextures(target:"webgpu")` now actually resolves raw image handles
-> into backend-readable CPU texture payloads instead of returning a no-op.
+> into backend-readable CPU texture payloads instead of returning a no-op. glTF
+> required-extension, generated-tangent, tangent-failure, missing-UV, and ignored-camera
+> degradations now surface as source-pathed `GltfImportDiagnostic` rows instead of only
+> free-form warning strings.
 > pt-webgpu extension-lobe CPU reference tests now pin clearcoat, sheen,
 > iridescence zero-default, and normalized sampled-PDF behavior; this closes the
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /

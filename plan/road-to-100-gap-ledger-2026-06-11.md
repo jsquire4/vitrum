@@ -559,8 +559,8 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   normal/bump/clearcoat-normal mapped primitives that omit authored `TANGENT`
   now synthesize per-vertex xyzw tangents from POSITION/NORMAL/TEXCOORD_0 during
   import. Authored tangents are preserved unchanged, and missing-UV/degenerate
-  cases emit adapter warnings instead of silently pretending the tangent-space
-  basis exists.
+  cases emit source-pathed `GltfImportDiagnostic` rows (plus legacy warning text)
+  instead of silently pretending the tangent-space basis exists.
 - The eighteenth pt-webgpu ReSTIR-PT material-lobe slice landed:
   `ReservoirPTHero` widened from 36 to 48 u32 words and now serializes the
   visible vertex's scalar clearcoat/sheen/iridescence fields plus anisotropy
@@ -1300,6 +1300,10 @@ Status:
 - Converter-owned import degradations now return structured
   `GltfImportDiagnostic` entries with stable codes and glTF source paths
   alongside the legacy string `warnings` array.
+- Tangent generation/failure/missing-UV degradations now point at the exact
+  `meshes[i].primitives[j].attributes.TANGENT` or `.TEXCOORD_0` source path, ignored
+  cameras point at `cameras[i]`, and unknown required extensions point at
+  `extensionsRequired[i]`.
 - `decodeSceneTextures(target:'cpu-linear', { maxTextureSize })` now resizes
   oversized decoded raw-image payloads before backend upload and reports the
   original/resized dimensions in structured diagnostics.

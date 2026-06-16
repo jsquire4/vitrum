@@ -264,6 +264,9 @@ export type GltfImportDiagnosticCode =
   | 'unsupported-required-extension'
   | 'ignored-camera'
   | 'double-sided-material'
+  | 'generated-tangents'
+  | 'missing-tangent-texcoord'
+  | 'tangent-generation-failed'
   | 'skin-rest-pose'
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
@@ -385,14 +388,16 @@ export async function gltfToScene(
 
   // ── 3. Warn on out-of-scope top-level features ─────────────────────────────
   if (gltf.cameras && (gltf.cameras).length > 0) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-camera',
-      path: 'cameras',
-      message:
-        '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
-        '@vitrum/core Scene contract; pass camera data via FrameInput instead).',
-    });
+    for (const [cameraIndex] of gltf.cameras.entries()) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'ignored-camera',
+        path: `cameras[${cameraIndex}]`,
+        message:
+          '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
+          '@vitrum/core Scene contract; pass camera data via FrameInput instead).',
+      });
+    }
   }
   if (gltf.skins && gltf.skins.length > 0) {
     emitImportDiagnostic(warnings, diagnostics, {
@@ -726,8 +731,17 @@ export async function gltfToScene(
         materialIndex !== undefined && materialIndex < coreMaterials.length
           ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
           : GLTF_DEFAULT_MATERIAL;
+      const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
       const finalTangents = tangents ?? _maybeGenerateTangents(
-        positions, normals, uvs, indices, material, `${mesh.name ?? node.mesh}`, warnings,
+        positions,
+        normals,
+        uvs,
+        indices,
+        material,
+        `${mesh.name ?? node.mesh}`,
+        warnings,
+        diagnostics,
+        primitivePath,
       );
 
       const id = `gltf-prim-${primIdCounter++}`;
@@ -917,27 +931,41 @@ function _maybeGenerateTangents(
   material: MaterialSpec,
   meshLabel: string,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  primitivePath: string,
 ): Float32Array | undefined {
   if (!materialNeedsTangentFrame(material)) return undefined;
   if (!uvs) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'missing-tangent-texcoord',
+      path: `${primitivePath}.attributes.TEXCOORD_0`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
         'but has no TEXCOORD_0. Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
-    );
+    });
     return undefined;
   }
   const generated = generateTangents(positions, normals, uvs, indices);
   if (!generated) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'tangent-generation-failed',
+      path: `${primitivePath}.attributes.TANGENT`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
         'but tangents could not be generated from POSITION/NORMAL/TEXCOORD_0.',
-    );
+    });
     return undefined;
   }
-  warnings.push(
-    `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map without ` +
+  emitImportDiagnostic(warnings, diagnostics, {
+    severity: 'warning',
+    code: 'generated-tangents',
+    path: `${primitivePath}.attributes.TANGENT`,
+    message:
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map without ` +
       'TANGENT; generated per-vertex tangents from POSITION/NORMAL/TEXCOORD_0.',
-  );
+  });
   return generated;
 }
 
