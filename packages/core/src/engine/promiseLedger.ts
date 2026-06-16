@@ -359,8 +359,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
   // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
-  // including direct sun plus analytic point/spot lighting, but area-emitter /
-  // ReSTIR direct light, GI, and shadow participation remain approximate.
+  // including direct sun plus analytic point/spot lighting with alpha-aware
+  // direct shadow transmittance, but area-emitter / ReSTIR direct light and GI
+  // participation remain approximate.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',

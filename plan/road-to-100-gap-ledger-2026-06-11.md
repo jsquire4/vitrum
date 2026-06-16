@@ -1585,12 +1585,12 @@ Evidence:
   shade/ReSTIR material scoring instead of a diffuse-only sun term, and HDRI
   sky/environment lighting uses a deterministic five-tap material-lobe estimate.
   Latest 2026-06-16 follow-up: analytic point/spot light radiance now joins that
-  transparent OIT direct-light path through binding 13. The structured warning
-  remains because no-HDRI sky fallback plus light-map/emissive terms are
-  first-hit approximations, and area-emitter/ReSTIR direct light plus
-  GI/shadow/alpha-aware occlusion participation is still approximate, including
-  `updatePrimitive(id, { material })` patches that mutate a primitive into
-  fractional blend.
+  transparent OIT direct-light path through binding 13, and direct sun/point/spot
+  shadows deterministically attenuate through atlas-backed alpha coverage. The
+  structured warning remains because no-HDRI sky fallback plus light-map/emissive
+  terms are first-hit approximations, and area-emitter/ReSTIR direct light plus
+  GI participation is still approximate, including material `updatePrimitive`
+  patches that mutate a primitive into fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow, direct-light selection power, and merged-BVH
   ReSTIR-DI emitter payloads: `materialTextureAtlas.ts` packs emissive maps as

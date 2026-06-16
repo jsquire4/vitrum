@@ -9,11 +9,11 @@
  * Lighting policy: transparent layer radiance is an intentionally cheap
  * camera-visible approximation. The sky/environment, direct sun, and analytic
  * point/spot terms use the same atlas-backed material-lobe BRDF as opaque
- * shade/ReSTIR material scoring; direct lights also use the same
- * castShadow-aware scene visibility query as opaque shade. Emissive and
- * light-map terms remain first-hit camera-visible approximations. ReSTIR/GI
- * participation remains handled by the existing stochastic traversal path until
- * transparent GI has its own validation row.
+ * shade/ReSTIR material scoring; direct sun/point/spot shadows walk the material
+ * atlas and deterministically attenuate through alphaMode:'blend' blockers.
+ * Emissive and light-map terms remain first-hit camera-visible approximations.
+ * ReSTIR/GI/area-light participation remains handled by the existing stochastic
+ * traversal path until transparent GI has its own validation row.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -53,6 +53,72 @@ fn oitHitIsMaskDiscarded(hit: IntersectionResult, alpha: MaterialAlphaCoverage) 
     return alpha.coverage < alpha.cutoff;
   }
   return false;
+}
+
+fn oitCastsShadow(materialWord: u32) -> bool {
+  return (materialWord & 1u) == 0u;
+}
+
+fn oitHitIsScalarGlass(hit: IntersectionResult) -> bool {
+  let trans4 = (hit.matColorPacked >> 4u) & 0xFu;
+  return trans4 > 4u;
+}
+
+fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32 {
+  let maxDistance = max(tMax, 0.0);
+  if (maxDistance <= 1e-4) {
+    return 1.0;
+  }
+
+  var walkRay: Ray;
+  walkRay.origin = origin;
+  walkRay.direction = dir;
+
+  var traveled = 0.0;
+  var tau = 1.0;
+  let step = max(1e-4, triEps * 4.0);
+
+  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+    let remaining = maxDistance - traveled;
+    if (remaining <= step || tau <= 0.001) {
+      break;
+    }
+
+    let hit = traceSceneFirstHit(
+      ubo.bvhMode,
+      ubo.tlasNodeCount,
+      &bvh_index,
+      &bvh_position,
+      &bvh,
+      &tlasNodes,
+      &tlasInstanceIndices,
+      &tlasBlasRoots,
+      &tlasInstanceWorldToLocal,
+      &tlasInstanceLocalToWorld,
+      walkRay,
+      triEps,
+    );
+    if (!hit.didHit || hit.dist >= remaining) {
+      break;
+    }
+
+    let word = oitMaterialWord(hit.indices.w);
+    if (oitCastsShadow(word) && !oitHitIsScalarGlass(hit)) {
+      let alpha = materialAlphaCoverageForHit(hit, word);
+      if (!oitHitIsMaskDiscarded(hit, alpha)) {
+        if (alpha.mode == 2u) {
+          tau = tau * clamp(1.0 - alpha.coverage, 0.0, 1.0);
+        } else {
+          return 0.0;
+        }
+      }
+    }
+
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = origin + dir * traveled;
+  }
+
+  return clamp(tau, 0.0, 1.0);
 }
 
 struct OitLayerNormals {
@@ -189,27 +255,15 @@ fn oitLayerAnalyticNEE(
       cone = smoothstep(cosOuter, cosInner, cosTheta);
     }
 
+    var shadowT = 1.0;
     if (!castShadowDisabled) {
-      let occluded = traceSceneAnyCastMask(
-        ubo.bvhMode,
-        ubo.tlasNodeCount,
-        &bvh_index,
-        &bvh_position,
-        &bvh,
-        &tlasNodes,
-        &tlasInstanceIndices,
-        &tlasBlasRoots,
-        &tlasInstanceWorldToLocal,
-        &tlasInstanceLocalToWorld,
+      shadowT = oitShadowTransmittance(
         hitPos + geoNormal * 1e-3,
         wi,
-        dist - 2e-3,
+        max(dist - 2e-3, 0.0),
         ubo.triIntersectEpsilon,
-        true,
-        bvh_material,
-        BVH_MATERIAL_TEX_WIDTH,
       );
-      if (occluded) { continue; }
+      if (shadowT <= 0.001) { continue; }
     }
 
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
@@ -232,7 +286,7 @@ fn oitLayerAnalyticNEE(
       wo,
       wi,
     );
-    Lo += lightLe * brdf * nDotL * cone * invDist2;
+    Lo += lightLe * brdf * nDotL * cone * invDist2 * shadowT;
   }
   return Lo;
 }
@@ -278,26 +332,12 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   );
   var sunVisibility = 1.0;
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    let sunOccluded = traceSceneAnyCastMask(
-      ubo.bvhMode,
-      ubo.tlasNodeCount,
-      &bvh_index,
-      &bvh_position,
-      &bvh,
-      &tlasNodes,
-      &tlasInstanceIndices,
-      &tlasBlasRoots,
-      &tlasInstanceWorldToLocal,
-      &tlasInstanceLocalToWorld,
+    sunVisibility = oitShadowTransmittance(
       hitPos + hit.normal * 1e-3,
       toSun,
       1e6,
       ubo.triIntersectEpsilon,
-      true,
-      bvh_material,
-      BVH_MATERIAL_TEX_WIDTH,
     );
-    sunVisibility = select(1.0, 0.0, sunOccluded);
   }
   let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));

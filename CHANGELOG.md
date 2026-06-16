@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent OIT shadow filtering, 2026-06-16)
+
+- **Transparent blend layers now attenuate direct shadows through alpha coverage:** `@vitrum/walkaround-hybrid` transparent OIT replaces its binary cast-shadow query for direct sun and analytic point/spot lights with a material-atlas shadow walk. The new path skips `castShadow:false` and scalar-glass blockers like the old shadow query, hard-blocks opaque/mask hits, and deterministically multiplies visibility by `1 - alphaCoverage` through `alphaMode:'blend'` blockers. Transparent ReSTIR/GI/area-light participation and GPU A/B promotion remain open tails.
+
 ### Fixed (pt-webgpu emissive-map adjoint replay, 2026-06-16)
 
 - **Camera-direct emissive maps now participate in path-replay adjoint:** `@vitrum/pt-webgpu` binds the existing full-tier UV/texture descriptor/sRGB texture resources into `adjointPass`, mirrors the forward emissive-map sampler including per-map UV set, transform, wrap, heterogeneous-layer fit, and explicit LOD, and multiplies both RGB `emissive` and scalar `emissiveIntensity` gradients by the hit-local emissive texel. `inverseSession` now keeps opaque emissive/emissiveIntensity fits with `emissiveMap` on `path-replay`; alpha maps, BRDF/material maps, transmission, environment/indirect paths, stochastic area terms, and extension-lobe adjoints remain finite-difference tails.
