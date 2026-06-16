@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF skin attribute compatibility truthfulness, 2026-06-16)
+
+- **glTF skin attributes now report the same semantics the importer uses:** `analyzeGltfAsset()` no longer predicts `skinned-mesh` support from raw `JOINTS_0` / `WEIGHTS_0` attributes alone. Skinning now requires a node that binds `skin` plus both joint and weight streams; unbound skin attributes report `skinAttributesWithoutNodeSkin=unsupported`, incomplete streams report `incompleteSkinAttributes=unsupported`, and best-effort import returns structured `ignored-skin-attributes` / `incomplete-skin-attributes` diagnostics while importing the primitive as a static mesh.
+
 ### Fixed (glTF instanced morph/skinning compatibility truthfulness, 2026-06-16)
 
 - **glTF compatibility preflight now rejects instanced skinned/morphed meshes explicitly:** `analyzeGltfAsset()` marks `EXT_mesh_gpu_instancing` on skinned or morphed meshes as `EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported`, matching the importer behavior that falls back to a single skinned/morphed primitive because the core Scene contract has no instanced skinned/morphed primitive kind yet. `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')` now fails before constructing an engine for this combined case instead of relying on the later `ignored-gpu-instancing` degraded import diagnostic.

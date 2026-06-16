@@ -328,6 +328,8 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
   'unreadable-position',
   'unreadable-indices',
   'empty-triangulated-primitive',
+  'ignored-skin-attributes',
+  'incomplete-skin-attributes',
 ]);
 
 const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([

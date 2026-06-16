@@ -1507,6 +1507,12 @@ Status:
   primitive modes/attributes, expected primitive kinds, material fields/maps,
   texture UV sets/transforms, skins, morphs, animations, cameras, and punctual
   lights.
+- 2026-06-16 follow-up: skin feature reporting now mirrors import semantics.
+  Raw `JOINTS_0` / `WEIGHTS_0` attributes no longer imply `skinned-mesh` unless
+  a node actually binds `skin` and both streams are present. Unbound skin
+  attributes report `skinAttributesWithoutNodeSkin=unsupported`; incomplete
+  skinned streams report `incompleteSkinAttributes=unsupported`; best-effort
+  import returns matching structured diagnostics and a static mesh fallback.
 - `loadGltfAsset()` returns this report beside the converted `Scene`.
 
 Closure:

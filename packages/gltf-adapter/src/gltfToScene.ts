@@ -10,9 +10,10 @@
 //     README.md and emitted as per-file warnings.
 //
 // Supported:
-//   - Skins → SkinnedMeshPrimitive (JOINTS_0 u8/u16, WEIGHTS_0 float/u8/u16,
-//     inverseBindMatrices, rest-pose joint transforms converted into the
-//     skinned mesh node's local space).
+//   - Skins → SkinnedMeshPrimitive when a mesh node binds `skin` and the
+//     primitive provides both JOINTS_0 + WEIGHTS_0 (JOINTS_0 u8/u16,
+//     WEIGHTS_0 float/u8/u16, inverseBindMatrices, rest-pose joint transforms
+//     converted into the skinned mesh node's local space).
 //   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
 //     morphTargetTangents / morphWeights (POSITION + NORMAL + TANGENT deltas;
 //     node/mesh weights; unskinned morphed meshes are promoted with a synthesized
@@ -338,6 +339,8 @@ export type GltfImportDiagnosticCode =
   | 'missing-tangent-texcoord'
   | 'tangent-generation-failed'
   | 'skin-rest-pose'
+  | 'ignored-skin-attributes'
+  | 'incomplete-skin-attributes'
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
   | 'unsupported-primitive-mode'
@@ -751,13 +754,27 @@ export async function gltfToScene(
       }
 
       // ── Skinning attributes ────────────────────────────────────────────────
-      // Only unpacked when this node has a skin; JOINTS_0 / WEIGHTS_0 without a
-      // node.skin are silently ignored (they carry no semantics without a skin).
+      // Only unpacked when this node has a skin. JOINTS_0 / WEIGHTS_0 without
+      // node.skin carry no glTF skinning semantics, but report the ignored data
+      // so strict one-call loading can reject the degradation before rendering.
       let skinIndices: Uint32Array | undefined;
       let skinWeights: Float32Array | undefined;
+      const jointsIdx = prim.attributes['JOINTS_0'];
+      const weightsIdx = prim.attributes['WEIGHTS_0'];
+      if (!skinData && (jointsIdx !== undefined || weightsIdx !== undefined)) {
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'ignored-skin-attributes',
+          path: jointsIdx !== undefined
+            ? `${primitivePath}.attributes.JOINTS_0`
+            : `${primitivePath}.attributes.WEIGHTS_0`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ` +
+            'JOINTS_0/WEIGHTS_0 data, but the node does not bind a skin. ' +
+            'Skin attributes are ignored and the primitive is imported as a static mesh.',
+        });
+      }
       if (skinData && bones && boneInverses) {
-        const jointsIdx = prim.attributes['JOINTS_0'];
-        const weightsIdx = prim.attributes['WEIGHTS_0'];
         if (jointsIdx !== undefined && weightsIdx !== undefined) {
           try {
             skinIndices = _unpackJoints(gltf, buffers, jointsIdx);
@@ -776,6 +793,16 @@ export async function gltfToScene(
             );
             skinIndices = undefined; // don't emit skinned if weights failed
           }
+        } else {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'incomplete-skin-attributes',
+            path: `${primitivePath}.attributes.${jointsIdx === undefined ? 'JOINTS_0' : 'WEIGHTS_0'}`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
+              'but the primitive does not provide both JOINTS_0 and WEIGHTS_0. ' +
+              'Skinning is omitted and the primitive is imported as a static mesh.',
+          });
         }
       }
 

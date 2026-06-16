@@ -69,6 +69,8 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasMorphTargetTangents: boolean;
   readonly hasSkins: boolean;
   readonly hasInstancedSkinnedOrMorphed: boolean;
+  readonly hasIgnoredSkinAttributes: boolean;
+  readonly hasIncompleteSkinAttributes: boolean;
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
@@ -486,6 +488,30 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  if (report.primitives.hasIgnoredSkinAttributes) {
+    addIssue({
+      category: 'primitive',
+      name: 'skinAttributesWithoutNodeSkin',
+      support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, 'ignoredSkinAttributes', 'meshes'),
+      message:
+        'glTF JOINTS_0/WEIGHTS_0 attributes are present on a mesh instance whose node does not bind a skin; ' +
+        'the importer ignores those attributes and imports the primitive as an ordinary mesh.',
+    });
+  }
+
+  if (report.primitives.hasIncompleteSkinAttributes) {
+    addIssue({
+      category: 'primitive',
+      name: 'incompleteSkinAttributes',
+      support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, 'incompleteSkinAttributes', 'meshes'),
+      message:
+        'glTF skinned primitives must provide both JOINTS_0 and WEIGHTS_0; ' +
+        'the importer falls back to a static mesh when either stream is missing.',
+    });
+  }
+
   if (report.primitives.hasVertexColors) {
     const support = VERTEX_COLOR_SUPPORT[profileId];
     if (support === 'native') {
@@ -881,9 +907,20 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasVertexColors = false;
   const ignoredVertexColorSets = new Set<string>();
   let hasUv1 = false;
-  let hasJointAttrs = false;
+  let hasBoundSkinAttrs = false;
   let hasInstancing = false;
   let hasInstancedSkinnedOrMorphed = false;
+  let hasIgnoredSkinAttributes = false;
+  let hasIncompleteSkinAttributes = false;
+  const meshNodesWithSkin = new Map<number, string[]>();
+  const meshNodesWithoutSkin = new Map<number, string[]>();
+  for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
+    if (node.mesh === undefined) continue;
+    const target = node.skin !== undefined ? meshNodesWithSkin : meshNodesWithoutSkin;
+    const paths = target.get(node.mesh) ?? [];
+    paths.push(`nodes[${nodeIndex}]`);
+    target.set(node.mesh, paths);
+  }
 
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
@@ -911,9 +948,26 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
           addSourcePath(issuePaths, `ignoredVertexColorSet:${semantic}`, `${primitivePath}.attributes.${semantic}`);
         }
         if (semantic === 'TEXCOORD_1') hasUv1 = true;
-        if (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0') {
-          hasJointAttrs = true;
-          addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.${semantic}`);
+      }
+      const hasJoints = primitive.attributes?.JOINTS_0 !== undefined;
+      const hasWeights = primitive.attributes?.WEIGHTS_0 !== undefined;
+      const meshHasSkinnedNode = meshNodesWithSkin.has(meshIndex);
+      const meshHasUnskinnedNode = meshNodesWithoutSkin.has(meshIndex);
+      if (meshHasSkinnedNode) {
+        if (hasJoints && hasWeights) {
+          hasBoundSkinAttrs = true;
+          addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.JOINTS_0`);
+          addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.WEIGHTS_0`);
+        } else {
+          hasIncompleteSkinAttributes = true;
+          addSourcePath(issuePaths, 'incompleteSkinAttributes', primitivePath);
+        }
+      }
+      if (hasJoints || hasWeights) {
+        if (!meshHasSkinnedNode || meshHasUnskinnedNode) {
+          hasIgnoredSkinAttributes = true;
+          if (hasJoints) addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.JOINTS_0`);
+          if (hasWeights) addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.WEIGHTS_0`);
         }
       }
       const ext = primitive.extensions ?? {};
@@ -931,7 +985,6 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
       }
     }
   }
-  (gltf.skins ?? []).forEach((_, index) => addSourcePath(issuePaths, 'kind:skinned-mesh', `skins[${index}]`));
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
     if (node.mesh === undefined || node.extensions?.EXT_mesh_gpu_instancing === undefined) continue;
     hasInstancing = true;
@@ -949,10 +1002,10 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   for (const bv of gltf.bufferViews ?? []) {
     if (bv.extensions?.['EXT_meshopt_compression']) usesMeshopt = true;
   }
-  const hasSkins = (gltf.skins?.length ?? 0) > 0 || hasJointAttrs;
+  const hasSkins = hasBoundSkinAttrs;
   const expectedPrimitiveKinds = new Set<'mesh' | 'skinned-mesh' | 'instanced-mesh'>();
   expectedPrimitiveKinds.add('mesh');
-  if (hasSkins || hasMorphTargets) expectedPrimitiveKinds.add('skinned-mesh');
+  if (hasBoundSkinAttrs || hasMorphTargets) expectedPrimitiveKinds.add('skinned-mesh');
   if (hasInstancing) expectedPrimitiveKinds.add('instanced-mesh');
   return {
     total,
@@ -968,6 +1021,8 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasMorphTargetTangents,
     hasSkins,
     hasInstancedSkinnedOrMorphed,
+    hasIgnoredSkinAttributes,
+    hasIncompleteSkinAttributes,
     hasVertexColors,
     ignoredVertexColorSets: sorted(ignoredVertexColorSets),
     hasUv1,

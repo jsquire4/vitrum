@@ -149,6 +149,58 @@ function addMorphedGpuInstancing(
   buffers.set(instanceBuffer, instanceTranslations);
 }
 
+function addUnboundSkinAttributes(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  opts: { omitWeights?: boolean } = {},
+): void {
+  const joints = bytes([
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+  ]);
+  const weights = f32Buffer([
+    1, 0, 0, 0,
+    1, 0, 0, 0,
+    1, 0, 0, 0,
+  ]);
+  const jointsAccessor = gltf.accessors?.length ?? 0;
+  const weightsAccessor = jointsAccessor + 1;
+  const jointsBufferView = gltf.bufferViews?.length ?? 0;
+  const weightsBufferView = jointsBufferView + 1;
+  const jointsBuffer = gltf.buffers?.length ?? 0;
+  const weightsBuffer = jointsBuffer + 1;
+  gltf.meshes![0]!.primitives[0] = {
+    ...gltf.meshes![0]!.primitives[0]!,
+    attributes: {
+      ...gltf.meshes![0]!.primitives[0]!.attributes,
+      JOINTS_0: jointsAccessor,
+      ...(opts.omitWeights === true ? {} : { WEIGHTS_0: weightsAccessor }),
+    },
+  };
+  gltf.accessors = [
+    ...(gltf.accessors ?? []),
+    { bufferView: jointsBufferView, componentType: 5121, count: 3, type: 'VEC4' as const },
+    ...(opts.omitWeights === true
+      ? []
+      : [{ bufferView: weightsBufferView, componentType: 5126, count: 3, type: 'VEC4' as const }]),
+  ];
+  gltf.bufferViews = [
+    ...(gltf.bufferViews ?? []),
+    { buffer: jointsBuffer, byteOffset: 0, byteLength: joints.byteLength },
+    ...(opts.omitWeights === true
+      ? []
+      : [{ buffer: weightsBuffer, byteOffset: 0, byteLength: weights.byteLength }]),
+  ];
+  gltf.buffers = [
+    ...(gltf.buffers ?? []),
+    { byteLength: joints.byteLength },
+    ...(opts.omitWeights === true ? [] : [{ byteLength: weights.byteLength }]),
+  ];
+  buffers.set(jointsBuffer, joints);
+  if (opts.omitWeights !== true) buffers.set(weightsBuffer, weights);
+}
+
 function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const colors = f32Buffer([1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -1554,6 +1606,78 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
+  it('reports skin attributes without node.skin as unsupported ignored primitive data', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers);
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.hasSkins).toBe(false);
+    expect(report.primitives.expectedPrimitiveKinds).toEqual(['mesh']);
+    expect(report.primitives.hasIgnoredSkinAttributes).toBe(true);
+    expect(report.primitives.issuePaths.ignoredSkinAttributes).toEqual([
+      'meshes[0].primitives[0].attributes.JOINTS_0',
+      'meshes[0].primitives[0].attributes.WEIGHTS_0',
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'skinAttributesWithoutNodeSkin',
+      support: 'unsupported',
+      path: 'meshes[0].primitives[0].attributes.JOINTS_0',
+    }));
+  });
+
+  it('reports skin nodes with incomplete JOINTS_0/WEIGHTS_0 streams as unsupported', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers, { omitWeights: true });
+    gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
+    gltf.nodes!.push({ name: 'joint' });
+    gltf.skins = [{ joints: [1] }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.hasSkins).toBe(false);
+    expect(report.primitives.expectedPrimitiveKinds).toEqual(['mesh']);
+    expect(report.primitives.hasIncompleteSkinAttributes).toBe(true);
+    expect(report.primitives.issuePaths.incompleteSkinAttributes).toEqual([
+      'meshes[0].primitives[0]',
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'incompleteSkinAttributes',
+      support: 'unsupported',
+      path: 'meshes[0].primitives[0]',
+    }));
+  });
+
+  it('reports skin nodes with no JOINTS_0/WEIGHTS_0 streams as unsupported', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
+    gltf.nodes!.push({ name: 'joint' });
+    gltf.skins = [{ joints: [1] }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.hasSkins).toBe(false);
+    expect(report.primitives.expectedPrimitiveKinds).toEqual(['mesh']);
+    expect(report.primitives.hasIncompleteSkinAttributes).toBe(true);
+    expect(report.primitives.issuePaths.incompleteSkinAttributes).toEqual([
+      'meshes[0].primitives[0]',
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'incompleteSkinAttributes',
+      support: 'unsupported',
+      path: 'meshes[0].primitives[0]',
+    }));
+  });
+
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
@@ -2197,6 +2321,50 @@ describe('loadGltfForEngine', () => {
       'primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported at nodes[0].extensions.EXT_mesh_gpu_instancing',
     );
     expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects unbound skin attributes in reject-unsupported mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers);
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'primitive:skinAttributesWithoutNodeSkin=unsupported at meshes[0].primitives[0].attributes.JOINTS_0',
+    );
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('returns structured diagnostics for unbound skin attributes in best-effort mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers);
+
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    expect(asset.scene.primitives[0]?.kind).toBe('mesh');
+    expect(asset.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'ignored-skin-attributes',
+      path: 'meshes[0].primitives[0].attributes.JOINTS_0',
+    }));
+  });
+
+  it('returns structured diagnostics for skin nodes with missing skin streams in best-effort mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
+    gltf.nodes!.push({ name: 'joint' });
+    gltf.skins = [{ joints: [1] }];
+
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    expect(asset.scene.primitives[0]?.kind).toBe('mesh');
+    expect(asset.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'incomplete-skin-attributes',
+      path: 'meshes[0].primitives[0].attributes.JOINTS_0',
+    }));
   });
 
   it('allows reject-degraded to use an optional texture-source extension fallback without a hook', async () => {

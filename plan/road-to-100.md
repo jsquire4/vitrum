@@ -547,7 +547,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 
 #### 1C — Import (`gltfToScene.ts`, `materials.ts`, `accessors.ts`)
 
-**Closed:** strip/fan triangulation, morph POSITION/NORMAL, animations, skins, punctual lights, KHR material extensions, `resolveTextureRef` UV/transform.
+**Closed:** strip/fan triangulation, morph POSITION/NORMAL, animations, bound skins, punctual lights, KHR material extensions, `resolveTextureRef` UV/transform. Skin attributes now match importer semantics in compatibility preflight: `JOINTS_0` / `WEIGHTS_0` only predict `skinned-mesh` when a node binds `skin` and both streams are present; unbound or incomplete skin streams are structured unsupported issues and best-effort static-mesh fallbacks.
 
 **Still required:**
 
@@ -708,7 +708,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 
 #### 2F — Analytic + instancing (pt-webgpu full)
 
-Already native. **glTF instancing:** ordinary glTF multi-node reuse still flattens to separate primitives. **`EXT_mesh_gpu_instancing` import + node animation DONE (2026-06-16):** accessor-driven node instancing now imports to core `InstancedMeshPrimitive`, with `nodeWorld * instanceTRS` baked into each matrix; required use is accepted; feature reporting predicts `instanced-mesh` instead of an unsupported extension; direct and `loadGltfForEngine()` bridge-created `GltfSceneController` instances carry the local instance matrices and patch `instances[]` when the instanced node or an ancestor animates. Malformed accessors, custom per-instance attributes, and skinned/morphed instancing remain explicit fallback edges: malformed or no-transform data imports the base mesh once with an `ignored-gpu-instancing` diagnostic, custom non-transform attributes warn and are ignored, and skinned/morphed instancing imports through the existing skinned/morph primitive because core has no instanced-skinned/morphed contract yet.
+Already native. **glTF instancing:** ordinary glTF multi-node reuse still flattens to separate primitives. **`EXT_mesh_gpu_instancing` import + node animation DONE (2026-06-16):** accessor-driven node instancing now imports to core `InstancedMeshPrimitive`, with `nodeWorld * instanceTRS` baked into each matrix; required use is accepted; feature reporting predicts `instanced-mesh` instead of an unsupported extension; direct and `loadGltfForEngine()` bridge-created `GltfSceneController` instances carry the local instance matrices and patch `instances[]` when the instanced node or an ancestor animates. Malformed accessors, custom per-instance attributes, and skinned/morphed instancing remain explicit fallback edges: malformed or no-transform data imports the base mesh once with an `ignored-gpu-instancing` diagnostic, custom non-transform attributes warn and are ignored, and skinned/morphed instancing preflights as `EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported` under strict compatibility because core has no instanced-skinned/morphed contract yet.
 
 ---
 
