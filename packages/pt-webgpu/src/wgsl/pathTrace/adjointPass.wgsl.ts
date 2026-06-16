@@ -22,8 +22,8 @@
  * finite-difference fallbacks until their source terms are mirrored here and
  * GPU-validated. Mapped terms replayed here are scoped to the camera-direct
  * emissive texel multiplier for `emissive` / `emissiveIntensity`, plus
- * baseColorMap / COLOR_0 and roughnessMap / metallicMap local factors used by
- * lit direct BRDF derivatives.
+ * baseColorMap / COLOR_0, roughnessMap / metallicMap, and specular color/
+ * intensity local factors used by lit direct BRDF derivatives.
  * Direct lights are summed deterministically over all eligible lights (no MC
  * light selection: the adjoint is the deterministic expectation; finite area
  * lights are center-sampled). baseColor/roughness/metallic/specular/clearcoat/
@@ -45,6 +45,7 @@
  */
 import { PCG_WGSL } from '@vitrum/shared-samplers';
 import {
+  MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
@@ -86,6 +87,10 @@ const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 3;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 4;
+const ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR =
+  MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 6;
+const ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY =
+  MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 7;
 
 export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
@@ -194,6 +199,8 @@ const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = ${ADJOINT_MATERIAL_TEX_UV_BASE_COLOR}
 const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = ${ADJOINT_MATERIAL_TEX_UV_EMISSIVE}u;
 const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC = ${ADJOINT_MATERIAL_TEX_UV_METALLIC}u;
+const ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR = ${ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR}u;
+const ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY = ${ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY}u;
 
 fn adjointWrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -390,6 +397,38 @@ fn sampleAdjointOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
     materialTexDescriptors[base + 15u].xy,
   ).b;
   return vec4f(1.0, roughness, metallic, 1.0);
+}
+
+fn sampleAdjointSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 66u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
+  let idx = i32(materialTexDescriptors[base + 42u].z);
+  if (idx < 0) { return vec3f(1.0); }
+  return clamp(sampleAdjointMaterialLayer(
+    idx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR,
+    materialTexDescriptors[base + 46u].xy,
+    materialTexDescriptors[base + 50u].xy,
+  ).rgb, vec3f(0.0), vec3f(1.0));
+}
+
+fn sampleAdjointSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 66u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let idx = i32(materialTexDescriptors[base + 42u].w);
+  if (idx < 0) { return 1.0; }
+  return clamp(sampleAdjointMaterialLayerLinear(
+    idx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY,
+    materialTexDescriptors[base + 46u].zw,
+    materialTexDescriptors[base + 50u].zw,
+  ).a, 0.0, 1.0);
 }
 
 // ── the GPU-validated BRDF partials + adjointScatter (gradAccum at binding 8) ──
@@ -590,6 +629,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
     let specularColor = m27.rgb;
     let specularIntensity = clamp(m27.w, 0.0, 1.0);
+    let specularColorFactor = sampleAdjointSpecularColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
+    let specularIntensityFactor = sampleAdjointSpecularIntensityTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
+    let effectiveSpecularColor = clamp(specularColor * specularColorFactor, vec3f(0.0), vec3f(1.0));
+    let effectiveSpecularIntensity = clamp(specularIntensity * specularIntensityFactor, 0.0, 1.0);
     let clearcoat = clamp(m23.x, 0.0, 1.0);
     let clearcoatRoughness = clamp(m23.y, 0.0, 1.0);
     let sheen = clamp(m23.z, 0.0, 1.0);
@@ -659,7 +702,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (nDotL <= 0.0) { continue; }
       if (!directionalShadowDisabled && anyHit(pos + n * 1e-3, wi, 1e30)) { continue; }
       let lg = directLightAdjoint(
-        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, specularColor, specularIntensity,
+        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -699,7 +742,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
       let Li = rad * attenuation;
       let lg = directLightAdjoint(
-        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, specularColor, specularIntensity,
+        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -745,7 +788,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spExtra.y), spExtra.y > 0.01);
       let Li = sradW.rgb * softness * attenuation;
       let lg = directLightAdjoint(
-        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, specularColor, specularIntensity,
+        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -798,7 +841,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       );
       let Li = rad * (cosLight * area / dist2);
       let lg = directLightAdjoint(
-        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, specularColor, specularIntensity,
+        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -846,7 +889,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
       let Li = mr.rgb * (cosLight * area / dist2);
       let lg = directLightAdjoint(
-        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, specularColor, specularIntensity,
+        dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
         iridescence,
         iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
@@ -890,11 +933,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       } else if (d.y == ${ADJOINT_FIELD_ROUGHNESS}u) {
         adjointScatter(gradOffset, gRough * ormFactor.g * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SPECULAR_COLOR}u) {
-        adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples);
-        adjointScatter(gradOffset + 1u, gSpecularColor.y * invReplaySamples);
-        adjointScatter(gradOffset + 2u, gSpecularColor.z * invReplaySamples);
+        adjointScatter(gradOffset, gSpecularColor.x * specularColorFactor.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gSpecularColor.y * specularColorFactor.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gSpecularColor.z * specularColorFactor.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SPECULAR_INTENSITY}u) {
-        adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples);
+        adjointScatter(gradOffset, gSpecularIntensity * specularIntensityFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_METALLIC}u) {
         adjointScatter(gradOffset, gMetallic * ormFactor.b * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {

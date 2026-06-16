@@ -171,10 +171,11 @@ export interface AdjointGradientRequest {
  *    derivative of that F0 term. Thickness range, iridescence maps, and
  *    thickness maps stay on finite difference until their derivatives are
  *    mirrored and validated.
- *  - baseColorMap/COLOR_0 and roughnessMap/metallicMap are replayed as local
- *    chain-rule factors for the lit BRDF domain above. Emissive-on-lit-BRDF,
- *    alpha, transmission, AO, normal/bump, light-map, and extension maps remain
- *    finite-difference fallbacks until their own source terms are mirrored.
+ *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, and specular
+ *    color/intensity maps are replayed as local chain-rule factors for the lit
+ *    BRDF domain above. Emissive-on-lit-BRDF, alpha, transmission, AO,
+ *    normal/bump, light-map, and other extension maps remain finite-difference
+ *    fallbacks until their own source terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps stay on finite difference.
@@ -590,8 +591,6 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
     m.iridescenceMap != null ||
     m.iridescenceThicknessMap != null ||
     m.anisotropyMap != null ||
-    m.specularColorMap != null ||
-    m.specularIntensityMap != null ||
     m.bumpMap != null ||
     m.displacementMap != null ||
     m.lightMap != null

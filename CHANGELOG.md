@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu specular-map adjoint replay, 2026-06-16)
+
+- **Specular color/intensity maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` mirrors KHR_materials_specular map sampling in `adjointPass`, including sRGB `specularColorMap` RGB and linear `specularIntensityMap` A with each map's UV/transform/wrap metadata. The direct-light replay now evaluates BRDF partials with the hit-local mapped specular terms and applies the same local chain factors to `specularColor` and `specularIntensity` gradients. Clearcoat/sheen/iridescence/anisotropy maps, normal/visibility/path-selection maps, transmission/layered/volume/spectral cases, environment/soft-sun terms, and indirect paths remain finite-difference or validation tails.
+
 ### Fixed (pt-webgpu roughness/metallic-map adjoint replay, 2026-06-16)
 
 - **Roughness and metallic maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` binds the linear material texture array into `adjointPass`, mirrors the forward ORM sampler for roughness G and metallic B with each map's UV/transform/wrap metadata, evaluates lit direct-light BRDF partials with the hit-local mapped roughness/metallic values, and applies the same local G/B chain factors to scalar `roughness` and `metallic` gradients. Normal/bump/AO/light/alpha/transmission and extension-lobe maps remain finite-difference tails until their nonlocal or lobe-specific terms are mirrored and validated.
