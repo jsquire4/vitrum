@@ -93,11 +93,12 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
 Follow-up Codex closure sweeps (WSL Node 24.13.0):
 
 - Follow-up 2026-06-15: pt-webgpu inverse rendering no longer over-promises
-  analytic path replay. `inverseSession` only selects replay for the
-  point-direct-light domain the implementation actually differentiates, and
-  falls back to finite difference for map-heavy materials, transmission,
-  layered lobes, spectral/volume cases, environments, rect-area lights, and
-  directional lights. Focused inverse-session tests pin every downgrade case.
+  analytic path replay. `inverseSession` only selects replay for the direct-light
+  domains the implementation actually differentiates (point plus center-sampled
+  rect-area), and falls back to finite difference for map-heavy materials,
+  transmission, layered lobes, spectral/volume cases, environments,
+  directional/spot/mesh-area lights, and other unsupported source terms. Focused
+  inverse-session tests pin the promoted rect-area path and every downgrade case.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including
@@ -106,8 +107,11 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   stores geometry plus `Lo` instead of a full receiver-lobe payload.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
-  GPU allocation; inference dispatch exceptions fall back to the raw HDR texture
-  with a recorded fallback reason; and `nrcEnabled:true` emits a structured
+  GPU allocation; the tracked `starter-v1.vitrum-model` and
+  `v2-random.vitrum-model` files load through the runtime loader/spec validator;
+  inference dispatch exceptions fall back to the raw HDR texture with a recorded
+  fallback reason; NRC record unpacking now scans the whole encoded-input prefix
+  before declaring an empty slot; and `nrcEnabled:true` emits a structured
   experimental/biased warning instead of silently presenting NRC as production
   default behavior.
 - Follow-up 2026-06-15: the top Road summary was reconciled with the detailed

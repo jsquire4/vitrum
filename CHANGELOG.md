@@ -10,13 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Extension-lobe CPU reference oracles:** `@vitrum/pt-webgpu` now has focused CPU tests for clearcoat zero-default/scalar-linearity, sheen zero-default/color/scalar behavior, normalized base/clearcoat/sheen sampled-PDF accounting, and iridescence F0 zero-default behavior. The tests also lock the current sheen PDF as an explicitly documented cosine approximation until a true Charlie-lobe sampler lands. GPU material-furnace/reference A/B remains a promotion tail, not implied closed by these CPU oracles.
 
+### Fixed (adjoint + learned-system tails, 2026-06-15)
+
+- **Rect-area direct-light path-replay adjoint promotion:** `@vitrum/pt-webgpu` now allows path-replay inverse sessions for material adjoint params under point and center-sampled rect-area direct lighting, matching the implemented `adjointPass.wgsl.ts` source terms. Environment, directional, spot, mesh-area, mapped/transmissive/layered/spectral/volume material cases still fall back to finite difference.
+- **Neural/NRC proof hardening:** `@vitrum/walkaround-hybrid` now loads and validates the tracked `starter-v1.vitrum-model` and `v2-random.vitrum-model` checkpoints in tests, and NRC record unpacking treats a slot as empty only when the entire encoded-input prefix is zero rather than dropping valid records whose first feature is zero.
+
 ### Fixed (glTF WebGPU texture decode bridge, 2026-06-15)
 
 - **WebGPU-target texture decode is no longer a no-op:** `decodeSceneTextures(target:'webgpu')` now resolves raw glTF image handles through the host `decodePixels` hook into CPU-readable `Float32Array` texture handles that pt-webgpu can upload deterministically. Unlike the `cpu-linear` target, WebGPU-target decode preserves backend upload color space: sRGB material maps stay sRGB-valued for WebGPU sRGB texture formats, while normal/scalar/data maps stay linear. `textureDecodeReport` now reflects those handles as CPU-readable instead of leaving `{ kind:'raw-image' }` refs opaque.
 
 ### Fixed (walkaround neural/NRC posture, 2026-06-15)
 
-- **Neural checkpoint validation and fallback:** `@vitrum/walkaround-hybrid` now validates `denoiser:'neural'` checkpoints against the U-Net spec before GPU allocation, rejecting missing, unknown, wrong-sized, duplicate, or non-finite layer payloads instead of allowing placeholder buffers. Neural dispatch failures now fall back to raw HDR and surface a fallback `denoiserState` rather than throwing the frame. Enabling `nrcEnabled:true` now emits a structured `walkaround-hybrid.nrc-experimental-biased` warning, and README/ledger wording now distinguishes repo-only research checkpoints from production neural weights.
+- **Neural checkpoint validation and fallback:** `@vitrum/walkaround-hybrid` now validates `denoiser:'neural'` checkpoints against the U-Net spec before GPU allocation, rejecting missing, unknown, wrong-sized, duplicate, or non-finite layer payloads instead of allowing placeholder buffers. Neural dispatch failures now fall back to raw HDR and surface a fallback `denoiserState` rather than throwing the frame. Enabling `nrcEnabled:true` now emits a structured `walkaround-hybrid.nrc-experimental-biased` warning, tracked research checkpoints are covered by loader/spec tests, and README/ledger wording now distinguishes repo-only research checkpoints from production neural weights.
 
 ### Fixed (walkaround material truthfulness, 2026-06-15)
 
@@ -49,7 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgpu inverse adjoint, 2026-06-15)
 
-- **KHR_materials_specular path-replay adjoint coverage:** `@vitrum/pt-webgpu` now differentiates `specularColor` and `specularIntensity` in the path-replay adjoint fast path, reads packed material vec4 #27 in the adjoint pass, and keeps `baseColor` / `roughness` derivatives aligned with non-default dielectric F0. Path-replay selection is now field/material/light aware and point-direct-light only: rich mapped, transmissive, layered, anisotropic, unlit, environment-lit, rect/disc-area, spot/directional/mesh-lit, and non-emissive extension-lobe cases degrade to finite difference instead of taking a scoped analytic path outside its domain.
+- **KHR_materials_specular path-replay adjoint coverage:** `@vitrum/pt-webgpu` now differentiates `specularColor` and `specularIntensity` in the path-replay adjoint fast path, reads packed material vec4 #27 in the adjoint pass, and keeps `baseColor` / `roughness` derivatives aligned with non-default dielectric F0. Path-replay selection is now field/material/light aware: point and center-sampled rect-area direct-light scenes can use the adjoint path; rich mapped, transmissive, layered, anisotropic, unlit, environment-lit, disc-area, spot/directional/mesh-lit, and non-emissive extension-lobe cases degrade to finite difference instead of taking a scoped analytic path outside its domain.
 
 ### Fixed (pt-webgpu material PDFs, 2026-06-15)
 

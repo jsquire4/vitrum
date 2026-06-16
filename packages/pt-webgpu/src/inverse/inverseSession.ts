@@ -480,12 +480,11 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
 
 function isPathReplayCompatibleLighting(scene: Scene): boolean {
   if ((scene.environment?.kind ?? 'none') !== 'none') return false;
-  // The path-replay pass has production-grade direct-light parity for point
-  // emitters only. It still contains an experimental center-sampled rect-area
-  // derivative for oracle work, but the session must not request path-replay for
-  // non-point lighting until those source terms are promoted with end-to-end
-  // inverse-fit validation.
-  return scene.emitters.every((e) => e.kind === 'point');
+  // The path-replay pass differentiates deterministic direct-light terms for
+  // point lights and center-sampled rect-area lights. Other finite/non-point
+  // families still fall back to finite difference until their source terms are
+  // implemented in adjointPass.wgsl and validated end-to-end.
+  return scene.emitters.every((e) => e.kind === 'point' || e.kind === 'rect-area');
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

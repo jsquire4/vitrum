@@ -2,9 +2,9 @@
 // (D7.6, extracted from NrcSubsystem.trainFromRecords into recordUnpack.ts).
 //
 // Record layout (recordStride f32s): [ inW input | 3 target | 3 world pos ].
-// A6 empty-slot semantics: a slot is EMPTY iff its first encoded-input float is
-// zero (the GPU zero-initializes the record buffer and nrcWriteRecord only runs
-// when the spread heuristic fired); zero-TARGET records are VALID samples.
+// A6 empty-slot semantics: a slot is EMPTY iff every encoded-input float is zero
+// (the GPU zero-initializes the record buffer and nrcWriteRecord only runs when
+// the spread heuristic fired); zero-TARGET records are VALID samples.
 
 import { describe, it, expect } from 'vitest';
 import { unpackRecords } from '../recordUnpack.ts';
@@ -35,14 +35,14 @@ describe('unpackRecords — NRC record gap detection + dense repack', () => {
   const recA = { slot: 0, input: [0.5, 1, 2, 3, 4], target: [9, 8, 7], pos: [-1, 2, 3] };
   // slot 1 left empty (gap)
   const recB = { slot: 2, input: [0.25, 0, 0, 0, 0], target: [0, 0, 0], pos: [4, 5, 6] };
-  // slot 3: input[0] === 0 → EMPTY by the A6 criterion even with non-zero tail
+  // slot 3: input[0] === 0, later feature non-zero → VALID by the A6 criterion.
   const recC = { slot: 3, input: [0, 9, 9, 9, 9], target: [1, 1, 1], pos: [7, 7, 7] };
 
   it('repacks non-empty records densely, skipping gaps', () => {
     const { raw, stride } = makeRaw(cap, inW, [recA, recB, recC]);
     const { x, y, pos, filled } = unpackRecords(raw, cap, stride, inW);
 
-    expect(filled).toBe(2);
+    expect(filled).toBe(3);
     // dense sample 0 = slot 0
     expect(Array.from(x.subarray(0, inW))).toEqual(recA.input);
     expect(Array.from(y.subarray(0, OUT_W))).toEqual(recA.target);
@@ -51,13 +51,37 @@ describe('unpackRecords — NRC record gap detection + dense repack', () => {
     expect(Array.from(x.subarray(inW, 2 * inW))).toEqual(recB.input);
     expect(Array.from(y.subarray(OUT_W, 2 * OUT_W))).toEqual(recB.target);
     expect(Array.from(pos.subarray(3, 6))).toEqual(recB.pos);
+    // dense sample 2 = slot 3 (input[0] is zero, later features prove it is filled)
+    expect(Array.from(x.subarray(2 * inW, 3 * inW))).toEqual(recC.input);
+    expect(Array.from(y.subarray(2 * OUT_W, 3 * OUT_W))).toEqual(recC.target);
+    expect(Array.from(pos.subarray(6, 9))).toEqual(recC.pos);
   });
 
-  it('treats input[0] === 0 as an empty slot (A6 criterion), zeroing the tail', () => {
+  it('keeps records whose first encoded feature is zero but later features are nonzero', () => {
     const { raw, stride } = makeRaw(cap, inW, [recA, recB, recC]);
     const { x, y, pos, filled } = unpackRecords(raw, cap, stride, inW);
 
-    // recC (input[0]=0) was skipped: nothing of it appears anywhere.
+    expect(filled).toBe(3);
+    expect(Array.from(x.subarray(2 * inW, 3 * inW))).toEqual(recC.input);
+    expect(Array.from(y.subarray(2 * OUT_W, 3 * OUT_W))).toEqual(recC.target);
+    expect(Array.from(pos.subarray(6, 9))).toEqual(recC.pos);
+    for (let s = filled; s < cap; s++) {
+      expect(Array.from(x.subarray(s * inW, (s + 1) * inW))).toEqual([0, 0, 0, 0, 0]);
+      expect(Array.from(y.subarray(s * OUT_W, (s + 1) * OUT_W))).toEqual([0, 0, 0]);
+      expect(Array.from(pos.subarray(s * 3, (s + 1) * 3))).toEqual([0, 0, 0]);
+    }
+  });
+
+  it('treats only an all-zero encoded input as an empty slot', () => {
+    const emptyInputNonzeroTail = {
+      slot: 3,
+      input: [0, 0, 0, 0, 0],
+      target: [1, 1, 1],
+      pos: [7, 7, 7],
+    };
+    const { raw, stride } = makeRaw(cap, inW, [recA, recB, emptyInputNonzeroTail]);
+    const { x, y, pos, filled } = unpackRecords(raw, cap, stride, inW);
+
     expect(filled).toBe(2);
     for (let s = filled; s < cap; s++) {
       expect(Array.from(x.subarray(s * inW, (s + 1) * inW))).toEqual([0, 0, 0, 0, 0]);

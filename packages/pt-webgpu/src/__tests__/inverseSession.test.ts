@@ -430,16 +430,31 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for rect-area direct-light scenes', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [{
+        kind: 'rect-area',
+        id: 'panel-light',
+        color: [1, 1, 1],
+        intensity: 1,
+        position: [0, 1, 0],
+        uAxis: [1, 0, 0],
+        vAxis: [0, 0, 1],
+      }],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
   it.each([
-    ['rect-area', [{
-      kind: 'rect-area' as const,
-      id: 'panel-light',
-      color: [1, 1, 1] as [number, number, number],
-      intensity: 1,
-      position: [0, 1, 0] as [number, number, number],
-      uAxis: [1, 0, 0] as [number, number, number],
-      vAxis: [0, 0, 1] as [number, number, number],
-    }]],
     ['directional', [{
       kind: 'directional' as const,
       id: 'sun',
@@ -447,7 +462,23 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       intensity: 1,
       direction: [0, -1, 0] as [number, number, number],
     }]],
-  ])('degrades to finite-difference for non-point lighting: %s', (_label, emitters) => {
+    ['spot', [{
+      kind: 'spot' as const,
+      id: 'spot',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      direction: [0, -1, 0] as [number, number, number],
+      angle: 0.5,
+    }]],
+    ['mesh-area', [{
+      kind: 'mesh-area' as const,
+      id: 'mesh-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      meshId: 'panel',
+    }]],
+  ])('degrades to finite-difference for lighting outside adjoint pass scope: %s', (_label, emitters) => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,

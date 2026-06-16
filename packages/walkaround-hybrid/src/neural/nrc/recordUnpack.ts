@@ -7,12 +7,11 @@
 //
 // A6 empty-slot detection: an unfilled slot (NRC spread never fired for that
 // pixel) has all-zero ENCODED INPUT — the GPU record buffer is zero-initialized
-// and nrcWriteRecord only runs when nrcFired is set. Checking input[0] is
-// sufficient because a genuine record has at least one non-zero hash-grid
-// feature (slot races are resolved first-writer-wins by nrcSlotClaims, so the
-// readback sees one fully-assembled record per claimed slot). Do NOT skip
-// zero-TARGET records — r.Lo==0 is a valid training signal (occluded surface;
-// the NRC should predict black).
+// and nrcWriteRecord only runs when nrcFired is set. A genuine record guarantees
+// at least one non-zero encoded feature, but not specifically input[0], so the
+// CPU repack must scan the whole encoded-input prefix. Do NOT skip zero-TARGET
+// records — r.Lo==0 is a valid training signal (occluded surface; the NRC should
+// predict black).
 
 /** Radiance target width (RGB). MUST match nrcSubsystem's OUT_W. */
 const OUT_W = 3;
@@ -53,7 +52,14 @@ export function unpackRecords(
   let filled = 0;
   for (let rIdx = 0; rIdx < cap; rIdx++) {
     const base = rIdx * stride;
-    if (raw[base] === 0) continue; // empty slot: encoded input never written
+    let hasEncodedInput = false;
+    for (let i = 0; i < inW; i++) {
+      if (raw[base + i] !== 0) {
+        hasEncodedInput = true;
+        break;
+      }
+    }
+    if (!hasEncodedInput) continue; // empty slot: encoded input never written
     const tx = raw[base + inW + 0]!;
     const ty = raw[base + inW + 1]!;
     const tz = raw[base + inW + 2]!;

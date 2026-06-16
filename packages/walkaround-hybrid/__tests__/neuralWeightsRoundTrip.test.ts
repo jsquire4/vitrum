@@ -24,6 +24,7 @@
  * The canonical param count (535,107) is asserted on the loaded checkpoint.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 installWebGPUPolyfills();
@@ -55,6 +56,15 @@ const CANONICAL_EXPORT_LAYER_NAMES = [
   'proj',
 ];
 const CANONICAL_PARAM_COUNT = 535107;
+const TRACKED_CHECKPOINTS = [
+  'starter-v1.vitrum-model',
+  'v2-random.vitrum-model',
+];
+
+function readTrackedCheckpoint(name: string): ArrayBuffer {
+  const bytes = readFileSync(new URL(`../../../tools/neural-denoiser-training/checkpoints/${name}`, import.meta.url));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
 
 /**
  * Build a checkpoint with ONLY the weight-bearing layers (what the export path
@@ -162,6 +172,17 @@ describe('neural weights capture→train→export→load round-trip', () => {
 
   it('validates the exported checkpoint against the runtime U-Net spec', () => {
     expect(() => validateWeightsForSpec(buildUNetSpec(), loaded)).not.toThrow();
+  });
+
+  it.each(TRACKED_CHECKPOINTS)('tracked checkpoint %s loads and validates against the runtime U-Net spec', (name) => {
+    const actual = loadWeightsFromArrayBuffer(readTrackedCheckpoint(name));
+    expect(actual.layers.map((l) => l.name)).toEqual(CANONICAL_EXPORT_LAYER_NAMES);
+    const total = actual.layers.reduce(
+      (acc, l) => acc + l.weights.length + l.biases.length,
+      0,
+    );
+    expect(total).toBe(CANONICAL_PARAM_COUNT);
+    expect(() => validateWeightsForSpec(buildUNetSpec(), actual)).not.toThrow();
   });
 
   it('rejects missing, unknown, wrong-sized, and non-finite neural checkpoint layers', () => {
