@@ -735,6 +735,9 @@ fn directLightAdjoint(
   iridescenceIor: f32,
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
+  authoredIridescenceThicknessMin: f32,
+  authoredIridescenceThicknessMax: f32,
+  iridescenceThicknessTexel: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
   nDotL: f32,
@@ -780,7 +783,8 @@ fn directLightAdjoint(
   ) * nDotL * Li);
   let gIridescenceThicknessRangePartial = dBrdf_dIridescenceThicknessRange(
     baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    iridescence, iridescenceIor, authoredIridescenceThicknessMin,
+    authoredIridescenceThicknessMax, iridescenceThicknessTexel,
   );
   let gIridescenceThicknessRange = vec2f(
     dot(dLoss_dR, gIridescenceThicknessRangePartial.min * nDotL * Li),
@@ -1003,6 +1007,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+        iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
         nDotL, dIrrMean.rgb,
       );
@@ -1057,6 +1062,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+        iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
         nDotL, Li,
       );
@@ -1117,6 +1123,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+        iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
         nDotL, Li,
       );
@@ -1192,6 +1199,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+        iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
         nDotL, Li,
       );
@@ -1261,6 +1269,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+        iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
         nDotL, Li,
       );

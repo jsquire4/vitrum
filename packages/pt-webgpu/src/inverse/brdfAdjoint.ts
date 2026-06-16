@@ -1033,16 +1033,16 @@ export function dBrdf_dIridescenceIor(
 }
 
 /**
- * Path-replay partials for map-free KHR_materials_iridescence
+ * Path-replay partials for KHR_materials_iridescence
  * `iridescenceThicknessRange`.
  *
- * The forward single-layer helper evaluates a sampled thickness
- * `mix(min,max,V·H)` in the map-free direct-light domain. We take a local
+ * The forward single-layer helper evaluates a sampled thickness. In the
+ * map-free direct-light domain that sample is `V·H`; with
+ * `iridescenceThicknessMap` it is the readable G-channel texel. We take a local
  * symmetric derivative of that thin-film F0 colour with respect to sampled
  * thickness, then chain it to the authored range endpoints by
- * ∂thickness/∂min = 1 − V·H and ∂thickness/∂max = V·H. This mirrors the WGSL
- * replay pass and is still a frozen-path local partial, not a full-render FD
- * probe.
+ * ∂thickness/∂min = 1 − t and ∂thickness/∂max = t. This mirrors the WGSL replay
+ * pass and is still a frozen-path local partial, not a full-render FD probe.
  */
 export function dBrdf_dIridescenceThicknessRange(
   baseColor: Vec3,
@@ -1057,13 +1057,17 @@ export function dBrdf_dIridescenceThicknessRange(
   iridescenceThicknessMax: number,
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
+  iridescenceThicknessTexel: number | null = null,
 ): { min: Vec3; max: Vec3 } {
   if (iridescence < 1e-4) return { min: [0, 0, 0], max: [0, 0, 0] };
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const vDotH = Math.min(Math.max(dot(wo, h), 0.0), 1.0);
+  const rangeT = iridescenceThicknessTexel == null || !Number.isFinite(iridescenceThicknessTexel)
+    ? vDotH
+    : Math.min(Math.max(iridescenceThicknessTexel, 0.0), 1.0);
   const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   const thicknessNm = iridescenceThicknessMin +
-    (iridescenceThicknessMax - iridescenceThicknessMin) * vDotH;
+    (iridescenceThicknessMax - iridescenceThicknessMin) * rangeT;
   const step = IRIDESCENCE_THICKNESS_DERIV_STEP;
   const tp = Math.max(0.0, thicknessNm + step);
   const tm = Math.max(0.0, thicknessNm - step);
@@ -1076,8 +1080,8 @@ export function dBrdf_dIridescenceThicknessRange(
     iridescence * (fp[1] - fm[1]) / denom,
     iridescence * (fp[2] - fm[2]) / denom,
   ]);
-  const minWeight = 1.0 - vDotH;
-  const maxWeight = vDotH;
+  const minWeight = 1.0 - rangeT;
+  const maxWeight = rangeT;
   return {
     min: [
       dBrdf_dThickness[0] * minWeight,

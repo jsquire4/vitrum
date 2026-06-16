@@ -25,8 +25,8 @@
  * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
  * emissive / specularColor / specularIntensity / clearcoat / sheen /
- * map-free iridescence / map-free iridescenceThicknessRange / map-free
- * anisotropy controls); any
+ * iridescence / iridescenceThicknessRange / anisotropy controls with their
+ * readable local map factors); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
@@ -98,8 +98,8 @@ export interface InverseEngineHooks {
    * point, spot, and stochastic area-measure rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
    * emissive / specularColor / specularIntensity / clearcoat / sheen /
-   * map-free iridescence / map-free iridescenceThicknessRange / map-free
-   * anisotropy controls); otherwise it reports + uses
+   * iridescence / iridescenceThicknessRange / anisotropy controls with their
+   * readable local map factors); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -867,11 +867,8 @@ function pathReplayMaterialIssue(
   if (field === 'emissive' || field === 'emissiveIntensity') {
     return materialIssueForEmissive(material);
   }
-  if (field === 'iridescence' || field === 'iridescenceIor') {
+  if (field === 'iridescence' || field === 'iridescenceIor' || field === 'iridescenceThicknessRange') {
     return materialIssueForIridescence(material);
-  }
-  if (field === 'iridescenceThicknessRange') {
-    return materialIssueForIridescenceThicknessRange(material);
   }
   if (field === 'anisotropy' || field === 'anisotropyRotation') {
     return materialIssueForAnisotropy(material);
@@ -926,20 +923,6 @@ function materialIssueForIridescence(
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
     return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
-  }
-  return null;
-}
-
-function materialIssueForIridescenceThicknessRange(
-  material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
-  const common = materialIssueForIridescence(material);
-  if (common != null) return common;
-  if (material.iridescenceThicknessMap != null) {
-    return {
-      message: 'iridescenceThicknessMap range derivatives are texture-texel chained and not replayed yet',
-      details: { unsupportedMaterialFields: ['iridescenceThicknessMap'] },
-    };
   }
   return null;
 }

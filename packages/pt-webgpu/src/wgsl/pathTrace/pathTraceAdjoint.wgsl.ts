@@ -400,14 +400,16 @@ fn dBrdf_dIridescenceThicknessRange(
   specularColor: vec3f, specularIntensity: f32,
   iridescence: f32, iridescenceIor: f32,
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+  iridescenceThicknessTexel: f32,
 ) -> IridescenceThicknessRangePartial {
   if (iridescence < 1e-4) {
     return IridescenceThicknessRangePartial(vec3f(0.0), vec3f(0.0));
   }
   let h = safe_normalize(wi + wo);
   let vDotH = clamp(max(dot(wo, h), 0.0), 0.0, 1.0);
+  let rangeT = select(vDotH, clamp(iridescenceThicknessTexel, 0.0, 1.0), iridescenceThicknessTexel >= 0.0);
   let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
-  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, vDotH);
+  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, rangeT);
   let tp = max(0.0, thicknessNm + IRIDESCENCE_THICKNESS_DERIV_STEP);
   let tm = max(0.0, thicknessNm - IRIDESCENCE_THICKNESS_DERIV_STEP);
   let denom = tp - tm;
@@ -421,8 +423,8 @@ fn dBrdf_dIridescenceThicknessRange(
     iridescence * (fp - fm) / denom,
   );
   return IridescenceThicknessRangePartial(
-    dBrdf_dThickness * (1.0 - vDotH),
-    dBrdf_dThickness * vDotH,
+    dBrdf_dThickness * (1.0 - rangeT),
+    dBrdf_dThickness * rangeT,
   );
 }
 

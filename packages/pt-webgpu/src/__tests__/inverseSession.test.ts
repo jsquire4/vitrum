@@ -1281,7 +1281,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps mapped iridescence thickness ranges on finite-difference until texture-space range gradients replay', () => {
+  it('keeps mapped iridescence thickness ranges on path-replay through texture-space range gradients', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1311,12 +1311,12 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-material',
-      path: 'materials.panel.iridescenceThicknessRange',
-      details: expect.objectContaining({ unsupportedMaterialFields: ['iridescenceThicknessMap'] }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(120, 6),
+      expect.closeTo(420, 6),
+    ]);
+    expect(session.diagnostics).toEqual([]);
     session.dispose();
   });
 

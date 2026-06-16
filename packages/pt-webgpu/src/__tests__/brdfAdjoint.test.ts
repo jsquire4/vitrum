@@ -459,6 +459,44 @@ describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == 
       expect(Math.abs(analytic.max[c]! - fdMax)).toBeLessThan(1e-4);
     }
   });
+
+  it('matches FD for mapped vec2 iridescenceThicknessRange through the sampled texel weight', () => {
+    const h = 1e-2;
+    const thicknessTexel = 0.35;
+    const analytic = dBrdf_dIridescenceThicknessRange(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.iridescence,
+      cfg.iridescenceIor,
+      cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax,
+      cfg.specularColor,
+      cfg.specularIntensity,
+      thicknessTexel,
+    );
+    const evalMapped = (min: number, max: number) => {
+      const sampledThickness = min + (max - min) * thicknessTexel;
+      return evaluateBrdfWithIridescence(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.iridescence, cfg.iridescenceIor, sampledThickness,
+        sampledThickness, cfg.specularColor, cfg.specularIntensity,
+      );
+    };
+    const fpMin = evalMapped(cfg.iridescenceThicknessMin + h, cfg.iridescenceThicknessMax);
+    const fmMin = evalMapped(cfg.iridescenceThicknessMin - h, cfg.iridescenceThicknessMax);
+    const fpMax = evalMapped(cfg.iridescenceThicknessMin, cfg.iridescenceThicknessMax + h);
+    const fmMax = evalMapped(cfg.iridescenceThicknessMin, cfg.iridescenceThicknessMax - h);
+    for (let c = 0; c < 3; c++) {
+      const fdMin = (fpMin[c]! - fmMin[c]!) / (2 * h);
+      const fdMax = (fpMax[c]! - fmMax[c]!) / (2 * h);
+      expect(Math.abs(analytic.min[c]! - fdMin)).toBeLessThan(1e-4);
+      expect(Math.abs(analytic.max[c]! - fdMax)).toBeLessThan(1e-4);
+    }
+  });
 });
 
 describe('BRDF adjoint — map-free KHR_materials_anisotropy scalar partials == finite difference', () => {
@@ -621,7 +659,8 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;');
 	    expect(wgsl).toContain('let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);');
 	    expect(wgsl).toContain('iridescence * (fp - fm) / denom');
-	    expect(wgsl).toContain('dBrdf_dThickness * (1.0 - vDotH)');
+	    expect(wgsl).toContain('let rangeT = select(vDotH, clamp(iridescenceThicknessTexel, 0.0, 1.0), iridescenceThicknessTexel >= 0.0);');
+	    expect(wgsl).toContain('dBrdf_dThickness * (1.0 - rangeT)');
 	  });
 
 	  it('anisotropy partials mirror the map-free anisotropic GGX local derivatives', () => {

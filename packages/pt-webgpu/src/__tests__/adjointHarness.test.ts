@@ -183,6 +183,10 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceThicknessSample = sampleAdjointIridescenceThicknessTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var effectiveIridescence = clamp(iridescence * iridescenceFactor, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let iridescenceThickness = mix(iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('authoredIridescenceThicknessMin: f32');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('authoredIridescenceThicknessMax: f32');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('iridescenceThicknessTexel: f32');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let anisotropyMapSample = sampleAdjointAnisotropyTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveAnisotropy = clamp(anisotropy * anisotropyMapSample.strength, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveAnisotropyRotation = anisotropyRotation + anisotropyMapSample.rotationOffset');
