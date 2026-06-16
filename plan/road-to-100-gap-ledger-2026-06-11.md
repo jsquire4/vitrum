@@ -547,9 +547,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   with source paths when a host decoder is missing. It also returns structured
   diagnostics for missing decoders, unsupported handles, max-size hazards, and
   NPOT-repeat hazards so hosts do not have to parse warning strings. The WebGPU
-  target preserves opaque handles for backend upload. Built-in image transcoders,
-  automatic downsampling/mip generation, and remaining backend map consumption are
-  still tracked outside this API bridge.
+  target also resolves raw-image handles through the same decode hook, but
+  preserves backend-upload color space for each field instead of forcing
+  CPU-linear values; the refreshed report now distinguishes the material role
+  `colorSpace` from the decoded handle's `handleColorSpace` when a hint is
+  available. Built-in image transcoders, automatic downsampling/mip generation,
+  and remaining backend map consumption are still tracked outside this API
+  bridge.
   Follow-up closure (2026-06-14): `loadGltfAndDecodeTextures()` now calls
   `decodeSceneTextures()` directly when a host `decodePixels` hook is supplied
   and returns `decodedTextureCount`, `unchangedTextureCount`,

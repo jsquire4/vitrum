@@ -704,6 +704,7 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         materialField: 'baseColorMap',
         colorSpace: 'srgb',
+        handleColorSpace: 'linear',
         handleKind: 'pixel-data',
         backendReadiness: expect.objectContaining({
           ptWebgl2: 'ready',
@@ -714,6 +715,7 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         materialField: 'normalMap',
         colorSpace: 'linear',
+        handleColorSpace: 'linear',
         handleKind: 'pixel-data',
         backendReadiness: expect.objectContaining({
           ptWebgl2: 'ready',
@@ -896,6 +898,17 @@ describe('decodeSceneTextures', () => {
     expect(handle.data[3]).toBeCloseTo(1);
     expect(result.report.cpuReadableCount).toBe(1);
     expect(result.report.rawImageCount).toBe(0);
+    expect(result.report.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        colorSpace: 'srgb',
+        handleColorSpace: 'srgb',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({
+          ptWebgpu: 'ready',
+        }),
+      }),
+    ]);
   });
 });
 

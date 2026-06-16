@@ -381,12 +381,15 @@ handles opaque to pt-webgpu.
 - `mipFilter` carries authored mip policy (`none`, `nearest`, or `linear`).
 
 `textureDecodeReport.entries[]` includes the same sampler fields plus
-`usesMipmaps` when the asset authored a mipmapped minification mode. Current
-backends already consume per-map UV, transform, and wrap metadata where their
-material map rows are supported; per-texture filter/mipmap enforcement remains
-backend policy and is reported through `analyzeGltfAsset()` /
-`evaluateGltfBackendCompatibility()` as `*.samplerPolicy` compatibility issues
-when a selected backend can only approximate the authored filter/mipmap policy.
+`usesMipmaps` when the asset authored a mipmapped minification mode. It also
+separates the material role's color space (`colorSpace`) from the decoded handle
+hint (`handleColorSpace`) when known, so hosts can tell a CPU-linear bake from a
+WebGPU-ready sRGB-preserved payload. Current backends already consume per-map
+UV, transform, and wrap metadata where their material map rows are supported;
+per-texture filter/mipmap enforcement remains backend policy and is reported
+through `analyzeGltfAsset()` / `evaluateGltfBackendCompatibility()` as
+`*.samplerPolicy` compatibility issues when a selected backend can only
+approximate the authored filter/mipmap policy.
 
 ### ORM texture
 

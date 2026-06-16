@@ -60,6 +60,14 @@ export interface GltfTextureDecodeReportEntry {
   readonly minFilter?: TextureFilterMode;
   readonly mipFilter?: TextureMipFilterMode;
   readonly usesMipmaps?: boolean;
+  /**
+   * The decoded payload's own color-space hint when the handle exposes one.
+   * This is intentionally separate from `colorSpace`, which describes the
+   * glTF/material role. Example: `baseColorMap` has `colorSpace:'srgb'`; after
+   * `target:'cpu-linear'` its handleColorSpace is `'linear'`, while after
+   * `target:'webgpu'` it remains `'srgb'` for backend sRGB texture upload.
+   */
+  readonly handleColorSpace?: GltfTextureColorSpace;
   readonly colorSpace: GltfTextureColorSpace;
   readonly handleKind: GltfTextureHandleKind;
   readonly backendReadiness: {
@@ -242,6 +250,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       if (!ref) continue;
       uniqueHandles.add(ref.handle);
       const handleKind = classifyTextureHandle(ref.handle);
+      const handleColorSpace = textureHandleColorSpace(ref.handle);
       const samplerFields = textureSamplerReportFields(ref);
       const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
       entries.push({
@@ -255,6 +264,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         wrapS: ref.wrapS ?? 'repeat',
         wrapT: ref.wrapT ?? 'repeat',
         ...samplerFields,
+        ...(handleColorSpace !== undefined ? { handleColorSpace } : {}),
         colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
         backendReadiness: backendReadinessForHandle(field, handleKind),
@@ -412,7 +422,8 @@ async function decodeTextureRef(
       primitiveIndex: context.primitiveIndex,
       handleKind,
       message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
-        'decodeSceneTextures(target:"cpu-linear") can only normalize raw-image handles. Texture left unchanged.',
+        `decodeSceneTextures(target:"${context.options.target}") can only normalize raw-image handles. ` +
+        'Texture left unchanged.',
     });
     return ref;
   }
@@ -425,8 +436,9 @@ async function decodeTextureRef(
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
       handleKind,
-      message: `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied. ` +
-        'Texture left unchanged.',
+      message:
+        `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied ` +
+        `for decodeSceneTextures(target:"${context.options.target}"). Texture left unchanged.`,
     });
     return ref;
   }
@@ -612,7 +624,7 @@ function emitDecodedTextureDiagnostics(
       resizedHeight: handle.height,
       message: `[vitrum/gltf-adapter] ${context.path} decoded to ${entry.originalWidth}x${entry.originalHeight}, ` +
         `which exceeds maxTextureSize=${maxTextureSize}. Texture was resized to ${handle.width}x${handle.height} ` +
-        'during CPU-linear decode before backend upload.',
+        `during ${context.options.target} decode before backend upload.`,
     });
   }
 
@@ -767,6 +779,26 @@ function isCpuLinearTextureHandle(handle: unknown): handle is GltfCpuLinearTextu
     hint.channels === 4 &&
     hint.dataType === 'float32' &&
     hint.colorSpace === 'linear';
+}
+
+function textureHandleColorSpace(handle: unknown): GltfTextureColorSpace | undefined {
+  if (!isRecord(handle)) return undefined;
+  const direct = handle.colorSpace;
+  if (direct === 'srgb' || direct === 'linear') return direct;
+  const hint = handle.__vitrum_hint__;
+  if (isRecord(hint) && (hint.colorSpace === 'srgb' || hint.colorSpace === 'linear')) {
+    return hint.colorSpace;
+  }
+  const image = handle.image;
+  if (isRecord(image)) {
+    const imageColorSpace = image.colorSpace;
+    if (imageColorSpace === 'srgb' || imageColorSpace === 'linear') return imageColorSpace;
+    const imageHint = image.__vitrum_hint__;
+    if (isRecord(imageHint) && (imageHint.colorSpace === 'srgb' || imageHint.colorSpace === 'linear')) {
+      return imageHint.colorSpace;
+    }
+  }
+  return undefined;
 }
 
 function clamp01Number(value: unknown, fallback: number): number {

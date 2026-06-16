@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed (glTF texture decode reporting, 2026-06-16)
+
+- **Texture decode reports now expose decoded handle color space:** `textureDecodeReport.entries[]` separates the material role `colorSpace` from the decoded payload `handleColorSpace` when the handle supplies a Vitrum color-space hint. This makes `target:'cpu-linear'` vs `target:'webgpu'` auditable: base-color/emissive maps still report the glTF sRGB role, while the decoded handle reports either linear CPU-atlas payloads or sRGB-preserved WebGPU upload payloads. Target-specific decode diagnostics now name the active target instead of hard-coding `cpu-linear`.
+
 ### Tests (pt-webgpu ReSTIR-PT specialty proof, 2026-06-16)
 
 - **Static ReSTIR-PT specialty-lobe reference fixture:** `tools/radiometric-ab/ab-restir-pt-specialty.mjs` now pins a deterministic CPU identity check for clearcoat, sheen, iridescence, and anisotropy in the one-sample ReSTIR-PT producer/finalize/resolve path. The focused pt-webgpu test verifies the fixture, producer payload coverage, reservoir serialization fields, and resolve BRDF consumption. This is not a V28 GPU recapture; material-furnace/reference-render promotion remains a validation tail.
