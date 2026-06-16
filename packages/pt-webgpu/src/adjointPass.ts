@@ -31,6 +31,7 @@ import {
   ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
   ADJOINT_FIELD_SHEEN,
   ADJOINT_FIELD_SHEEN_ROUGHNESS,
+  ADJOINT_FIELD_SHEEN_COLOR,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -153,6 +154,9 @@ export class AdjointPass {
           break;
         case 'sheenRoughness':
           fieldCode = ADJOINT_FIELD_SHEEN_ROUGHNESS;
+          break;
+        case 'sheenColor':
+          fieldCode = ADJOINT_FIELD_SHEEN_COLOR;
           break;
         case 'specularColor':
           fieldCode = ADJOINT_FIELD_SPECULAR_COLOR;

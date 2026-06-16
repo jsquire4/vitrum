@@ -27,9 +27,9 @@
  *  - scalar KHR_materials_clearcoat controls (`clearcoat` and
  *    `clearcoatRoughness`) for the additive, map-free direct-light clearcoat
  *    lobe. Clearcoat normal maps remain outside this oracle.
- *  - scalar KHR_materials_sheen controls (`sheen` and `sheenRoughness`) for the
- *    additive, map-free direct-light sheen lobe. Sheen colour/roughness maps
- *    and `sheenColor` gradients remain outside this oracle.
+ *  - map-free KHR_materials_sheen controls (`sheen`, `sheenColor`, and
+ *    `sheenRoughness`) for the additive, map-free direct-light sheen lobe.
+ *    Sheen colour/roughness maps remain outside this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -587,6 +587,21 @@ export function dBrdf_dSheen(
   wi: Vec3,
 ): Vec3 {
   return evalSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂sheenColor_c for the additive map-free
+ * KHR_materials_sheen lobe. There is no cross-channel coupling, so the returned
+ * Vec3 is the diagonal of the RGB Jacobian.
+ */
+export function dBrdf_dSheenColor(
+  sheen: number,
+  sheenRoughness: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  return evalSheenLobe(sheen, sheenRoughness, [1, 1, 1], normal, wo, wi);
 }
 
 /**

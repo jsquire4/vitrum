@@ -148,9 +148,9 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   packed material vec4 #23, scatters explicit clearcoat field codes across the
   covered deterministic direct-light loops, and `inverseSession` selects replay
   for those two fields when the material/light gates pass. 2026-06-16 follow-up:
-  map-free scalar `sheen` / `sheenRoughness` now have the same scoped
+  map-free `sheen` / `sheenColor` / `sheenRoughness` now have the same scoped
   direct-light adjoint treatment through CPU-FD-checked Charlie-lobe partials.
-  Clearcoat maps, clearcoat normal maps, sheen color/maps, iridescence/aniso,
+  Clearcoat maps, clearcoat normal maps, sheen maps, iridescence/aniso,
   transmission, environment, indirect, stochastic area sampling, and GPU
   inverse-fit recapture remain open proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead

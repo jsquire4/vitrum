@@ -22,6 +22,7 @@ import {
 	  dBrdf_dClearcoat,
 	  dBrdf_dClearcoatRoughness,
 	  dBrdf_dSheen,
+	  dBrdf_dSheenColor,
 	  dBrdf_dSheenRoughness,
 	} from '../inverse/brdfAdjoint.js';
 import {
@@ -288,6 +289,27 @@ describe('BRDF adjoint — analytic KHR_materials_sheen partials == finite diffe
     }
   });
 
+  it('matches FD for sheenColor over the unclamped RGB interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dSheenColor(
+      cfg.sheen, cfg.sheenRoughness, cfg.normal, cfg.wo, cfg.wi,
+    );
+    for (let j = 0; j < 3; j++) {
+      const sp = perturb(cfg.sheenColor, j, h);
+      const sm = perturb(cfg.sheenColor, j, -h);
+      const fp = evaluateBrdfWithSheen(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.sheen, cfg.sheenRoughness, sp, cfg.specularColor, cfg.specularIntensity,
+      );
+      const fm = evaluateBrdfWithSheen(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.sheen, cfg.sheenRoughness, sm, cfg.specularColor, cfg.specularIntensity,
+      );
+      const fd = (fp[j]! - fm[j]!) / (2 * h);
+      expect(Math.abs(analytic[j]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
   it('matches FD for sheenRoughness over the unclamped interior', () => {
     const h = 1e-4;
     const analytic = dBrdf_dSheenRoughness(
@@ -378,8 +400,10 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 
 	  it('sheen partials mirror the additive Charlie sheen lobe', () => {
 	    expect(wgsl).toContain('fn dBrdf_dSheen(');
+	    expect(wgsl).toContain('fn dBrdf_dSheenColor(');
 	    expect(wgsl).toContain('fn dBrdf_dSheenRoughness(');
 	    expect(wgsl).toContain('return adjointSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);');
+	    expect(wgsl).toContain('return adjointSheenLobe(sheen, sheenRoughness, vec3f(1.0), normal, wo, wi);');
 	    expect(wgsl).toContain('let dD_dQ = powTerm * (1.0 + (2.0 + q) * logSin) / (2.0 * PI);');
 	    expect(wgsl).toContain('let dQ_dAlpha = -1.0 / (alpha * alpha);');
 	  });

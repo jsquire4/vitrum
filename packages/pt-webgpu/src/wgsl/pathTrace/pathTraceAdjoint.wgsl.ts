@@ -12,13 +12,13 @@
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
  * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
- * clearcoatRoughness, sheen, sheenRoughness).
+ * clearcoatRoughness, sheen, sheenColor, sheenRoughness).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
  * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
  * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
- * specular/metallic/clearcoat partials are CPU-FD-oracle + WGSL-shape +
+ * specular/metallic/clearcoat/sheen partials are CPU-FD-oracle + WGSL-shape +
  * shader-gate covered until their GPU inverse-fit recaptures land.
  *
  * Emits the WGSL functions that compute the analytic partials of:
@@ -28,8 +28,8 @@
  *    partition and F0 blend;
  *  - the additive, map-free KHR_materials_clearcoat lobe w.r.t. `clearcoat`
  *    and `clearcoatRoughness`;
- *  - the additive, map-free KHR_materials_sheen lobe w.r.t. `sheen`
- *    and `sheenRoughness`;
+ *  - the additive, map-free KHR_materials_sheen lobe w.r.t. `sheen`,
+ *    `sheenColor`, and `sheenRoughness`;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -371,6 +371,15 @@ fn dBrdf_dSheen(
   wi: vec3f,
 ) -> vec3f {
   return adjointSheenLobe(1.0, sheenRoughness, sheenColor, normal, wo, wi);
+}
+fn dBrdf_dSheenColor(
+  sheen: f32,
+  sheenRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  return adjointSheenLobe(sheen, sheenRoughness, vec3f(1.0), normal, wo, wi);
 }
 fn dBrdf_dSheenRoughness(
   sheen: f32,

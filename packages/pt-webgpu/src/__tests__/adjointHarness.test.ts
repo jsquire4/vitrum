@@ -28,6 +28,7 @@ import {
   ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
   ADJOINT_FIELD_SHEEN,
   ADJOINT_FIELD_SHEEN_ROUGHNESS,
+  ADJOINT_FIELD_SHEEN_COLOR,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
@@ -101,6 +102,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let sheenRoughness = clamp(m23.w, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let sheenColor = clamp(m24.rgb, vec3f(0.0), vec3f(1.0))');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheen(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheenColor(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSheenRoughness(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
@@ -125,6 +127,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheen * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheenRoughness * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheenColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
@@ -157,6 +160,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_CLEARCOAT_ROUGHNESS).toBe(8);
     expect(ADJOINT_FIELD_SHEEN).toBe(9);
     expect(ADJOINT_FIELD_SHEEN_ROUGHNESS).toBe(10);
+    expect(ADJOINT_FIELD_SHEEN_COLOR).toBe(11);
   });
 
   it('engine adjoint PASS binds the emissive texture replay resources', () => {

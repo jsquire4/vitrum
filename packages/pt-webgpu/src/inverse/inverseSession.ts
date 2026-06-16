@@ -23,7 +23,7 @@
  * (delta directional, point, spot, and center-sampled rect/disc area lights), or
  * is a map-free `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
- * emissive / specularColor / specularIntensity / clearcoat / sheen scalar
+ * emissive / specularColor / specularIntensity / clearcoat / map-free sheen
  * controls); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
@@ -93,7 +93,7 @@ export interface InverseEngineHooks {
    * stays inside the adjoint-compatible direct-light domain (delta directional,
    * point, spot, and center-sampled rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
-   * emissive / specularColor / specularIntensity / clearcoat / sheen scalar
+   * emissive / specularColor / specularIntensity / clearcoat / map-free sheen
    * controls); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
@@ -160,10 +160,10 @@ export interface AdjointGradientRequest {
  *  - `clearcoat`, `clearcoatRoughness` — map-free KHR_materials_clearcoat direct
  *    lobe controls. Clearcoat maps and clearcoatNormalMap stay on finite
  *    difference until the adjoint pass mirrors texture/normal-map sampling.
- *  - `sheen`, `sheenRoughness` — map-free KHR_materials_sheen direct lobe
- *    controls through the additive Charlie lobe. `sheenColor`, sheen maps, and
+ *  - `sheen`, `sheenColor`, `sheenRoughness` — map-free KHR_materials_sheen
+ *    direct lobe controls through the additive Charlie lobe. Sheen maps and
  *    sheen-roughness maps stay on finite difference until the adjoint pass
- *    mirrors those texture/colour derivatives.
+ *    mirrors those texture derivatives.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
@@ -177,7 +177,7 @@ export interface AdjointGradientRequest {
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
- * scalar clearcoat, and scalar sheen controls are CPU-FD-oracle + shader-gate covered and
+ * scalar clearcoat and map-free sheen controls are CPU-FD-oracle + shader-gate covered and
  * remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
@@ -191,6 +191,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'clearcoat',
   'clearcoatRoughness',
   'sheen',
+  'sheenColor',
   'sheenRoughness',
 ]);
 

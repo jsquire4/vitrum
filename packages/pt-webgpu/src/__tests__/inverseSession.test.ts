@@ -737,18 +737,24 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(5) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
         { path: 'materials.panel.sheen', kind: 'scalar' },
+        { path: 'materials.panel.sheenColor', kind: 'rgb' },
         { path: 'materials.panel.sheenRoughness', kind: 'scalar' },
       ],
       method: 'path-replay',
     });
     expect(session.method).toBe('path-replay');
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.44, 6)]);
-    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.57, 6)]);
+    expect(session.currentValues()[1]).toEqual([
+      expect.closeTo(0.8, 6),
+      expect.closeTo(0.3, 6),
+      expect.closeTo(0.15, 6),
+    ]);
+    expect(session.currentValues()[2]).toEqual([expect.closeTo(0.57, 6)]);
     session.dispose();
   });
 

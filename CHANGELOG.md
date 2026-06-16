@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu sheenColor adjoint breadth, 2026-06-16)
+
+- **Map-free `sheenColor` now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored diagonal RGB partials for KHR_materials_sheen `sheenColor`, scatters a dedicated adjoint field code across the deterministic direct-light replay loops, and routes map-free opaque inverse sessions for `materials.<id>.sheenColor` to `path-replay`. Sheen maps, transmission, layered/volume/spectral fields, environment/soft-sun terms, stochastic area sampling, indirect paths, and GPU inverse-fit recaptures remain finite-difference or validation tails.
+
 ### Fixed (pt-webgpu sheen adjoint breadth, 2026-06-16)
 
-- **Map-free scalar sheen now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for the additive KHR_materials_sheen Charlie lobe (`sheen` and `sheenRoughness`), reads packed material vec4s #23/#24 in the adjoint pass, scatters explicit field codes across the existing deterministic direct-light replay loops, and routes map-free opaque inverse sessions for those fields to `path-replay`. `sheenColor`, sheen maps, transmission, layered/volume/spectral fields, environment/soft-sun terms, stochastic area sampling, indirect paths, and GPU inverse-fit recaptures remain finite-difference or validation tails.
+- **Map-free scalar sheen now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for the additive KHR_materials_sheen Charlie lobe (`sheen` and `sheenRoughness`), reads packed material vec4s #23/#24 in the adjoint pass, scatters explicit field codes across the existing deterministic direct-light replay loops, and routes map-free opaque inverse sessions for those fields to `path-replay`. Sheen maps, transmission, layered/volume/spectral fields, environment/soft-sun terms, stochastic area sampling, indirect paths, and GPU inverse-fit recaptures remain finite-difference or validation tails.
 
 ### Fixed (walkaround transparent OIT finite emitters, 2026-06-16)
 
@@ -208,7 +212,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added (pt-webgpu inverse rendering, 2026-06-15)
 
-- **Finite-difference extension-lobe material params:** `@vitrum/pt-webgpu` inverse sessions now accept common scalar/RGB material extension fields for optimization, including specular, clearcoat, sheen, iridescence, and anisotropy controls. This was the initial finite-difference-safe landing; later 2026-06-15/16 bullets promote specular controls plus map-free clearcoat and sheen scalars into the scoped path-replay direct-light domain, while `sheenColor`, sheen maps, iridescence/aniso, and mapped variants remain finite-difference.
+- **Finite-difference extension-lobe material params:** `@vitrum/pt-webgpu` inverse sessions now accept common scalar/RGB material extension fields for optimization, including specular, clearcoat, sheen, iridescence, and anisotropy controls. This was the initial finite-difference-safe landing; later 2026-06-15/16 bullets promote specular controls plus map-free clearcoat and sheen controls into the scoped path-replay direct-light domain, while sheen maps, iridescence/aniso, and mapped variants remain finite-difference.
 
 ### Fixed (D1 source reconciliation, 2026-06-15)
 

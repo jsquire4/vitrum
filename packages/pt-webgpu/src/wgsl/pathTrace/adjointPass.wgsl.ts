@@ -68,6 +68,7 @@ export const ADJOINT_FIELD_CLEARCOAT = 7;
 export const ADJOINT_FIELD_CLEARCOAT_ROUGHNESS = 8;
 export const ADJOINT_FIELD_SHEEN = 9;
 export const ADJOINT_FIELD_SHEEN_ROUGHNESS = 10;
+export const ADJOINT_FIELD_SHEEN_COLOR = 11;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -341,6 +342,7 @@ struct DirectLightAdjoint {
   clearcoatRoughness: f32,
   sheen: f32,
   sheenRoughness: f32,
+  sheenColor: vec3f,
 }
 
 fn directLightAdjoint(
@@ -385,12 +387,15 @@ fn directLightAdjoint(
   let gSheen = dot(dLoss_dR, dBrdf_dSheen(
     sheenRoughness, sheenColor, n, wo, wi,
   ) * nDotL * Li);
+  let gSheenColor = dLoss_dR * dBrdf_dSheenColor(
+    sheen, sheenRoughness, n, wo, wi,
+  ) * nDotL * Li;
   let gSheenRoughness = dot(dLoss_dR, dBrdf_dSheenRoughness(
     sheen, sheenRoughness, sheenColor, n, wo, wi,
   ) * nDotL * Li);
   return DirectLightAdjoint(
     gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
-    gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness,
+    gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness, gSheenColor,
   );
 }
 
@@ -463,6 +468,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gClearcoatRoughness = 0.0;
     var gSheen = 0.0;
     var gSheenRoughness = 0.0;
+    var gSheenColor = vec3f(0.0);
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -490,6 +496,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
       gSheen = gSheen + lg.sheen;
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+      gSheenColor = gSheenColor + lg.sheenColor;
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -522,6 +529,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
       gSheen = gSheen + lg.sheen;
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+      gSheenColor = gSheenColor + lg.sheenColor;
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -560,6 +568,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
       gSheen = gSheen + lg.sheen;
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+      gSheenColor = gSheenColor + lg.sheenColor;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -605,6 +614,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
       gSheen = gSheen + lg.sheen;
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+      gSheenColor = gSheenColor + lg.sheenColor;
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -645,6 +655,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
       gSheen = gSheen + lg.sheen;
       gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+      gSheenColor = gSheenColor + lg.sheenColor;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -681,6 +692,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gSheen * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SHEEN_ROUGHNESS}u) {
         adjointScatter(gradOffset, gSheenRoughness * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_SHEEN_COLOR}u) {
+        adjointScatter(gradOffset, gSheenColor.x * invReplaySamples);
+        adjointScatter(gradOffset + 1u, gSheenColor.y * invReplaySamples);
+        adjointScatter(gradOffset + 2u, gSheenColor.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed
